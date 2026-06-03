@@ -1,0 +1,68 @@
+# Deploying Kora
+
+Everything code-side for production is in place (CI, tests, monitoring hooks,
+error handling, real-time sync, auth flows, responsive + a11y). The steps below
+are the ones that need **your accounts** — they can't be done from the codebase.
+
+## 1. Deploy to Vercel (frontend)
+
+The app is a static Vite SPA — any static host works; these are Vercel steps.
+
+1. Push this repo to GitHub.
+2. In Vercel: **New Project → import the repo**. Framework preset = **Vite**
+   (the included `vercel.json` already sets build command, output dir, and SPA
+   rewrites).
+3. Add **Environment Variables** (Project → Settings → Environment Variables):
+   | Name | Value |
+   |---|---|
+   | `VITE_SUPABASE_URL` | `https://htnchiljplrnjkwimgla.supabase.co` |
+   | `VITE_SUPABASE_ANON_KEY` | your anon key |
+   | `VITE_SENTRY_DSN` | (optional) your Sentry DSN |
+   | `VITE_APP_ENV` | `production` |
+   Set these for **Production** (and a separate set for **Preview** if you want a
+   staging Supabase project — that's the env separation).
+4. Deploy. Add a custom domain under Project → Domains.
+
+**Important:** after you have the deployed URL, set it in Supabase →
+**Authentication → URL Configuration → Site URL** (and add it to Redirect URLs),
+so email-confirm / password-reset / Google links return to the live app.
+
+## 2. Supabase dashboard (auth polish)
+
+- **Email templates** (Authentication → Email Templates): brand the confirm /
+  reset / magic-link emails. Right now they use Supabase's defaults.
+- **SMTP** (Authentication → Emails → SMTP): connect Resend/Postmark/SES so mail
+  comes from your domain and isn't rate-limited. *(Required before real traffic.)*
+- **Google provider** (Authentication → Providers → Google): add your OAuth
+  client ID/secret + redirect URL to light up the "Continue with Google" button.
+- The password-reset flow is already built in the app — it just needs the Site
+  URL (above) set so the reset link lands back here.
+
+## 3. Sentry (error monitoring) — optional but recommended
+
+1. Create a Sentry project (React).
+2. Put its DSN in `VITE_SENTRY_DSN` (Vercel env).
+   The app already initializes Sentry, reports caught errors, attaches the user,
+   and has a top-level error boundary. With no DSN it's a silent no-op.
+
+## 4. CI
+
+`.github/workflows/ci.yml` runs typecheck + tests + build on every push/PR to
+`main`. No setup needed beyond pushing to GitHub. For auto-deploy, connecting the
+repo to Vercel (step 1) gives you preview deploys per PR automatically.
+
+## Database migrations
+
+Apply `supabase/migrations/*.sql` in order in the Supabase SQL editor (or
+`supabase db push`). `0001`–`0005` are already applied on your project; re-running
+them is safe (they use `if not exists` / `add table`).
+
+## Local development
+
+```bash
+npm install
+cp .env.example .env   # fill in Supabase values (or leave blank for demo mode)
+npm run dev
+```
+
+Scripts: `npm test` (watch), `npm run test:run`, `npm run build`, `npm run ci`.

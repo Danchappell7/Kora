@@ -1,0 +1,262 @@
+/* ============================================================
+   KORA — design system
+   Apple "white glass" super-premium. visionOS-style frosted
+   translucent surfaces, SF typography, soft deep shadows.
+   Default = white glass. [data-theme="dark"] = dark glass alt.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* ---- Type — authentic SF Pro on Apple devices, graceful fallback ---- */
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  /* ---- Signal accent (refined Apple azure) ---- */
+  --accent: oklch(0.585 0.196 264);
+  --accent-strong: oklch(0.52 0.21 264);
+  --accent-dim: oklch(0.585 0.196 264 / 0.12);
+  --accent-glow: oklch(0.585 0.196 264 / 0.30);
+  --on-accent: oklch(0.99 0.01 264);
+
+  /* ---- Status palette (shared) ---- */
+  --st-todo: oklch(0.62 0.02 260);
+  --st-progress: oklch(0.62 0.17 256);
+  --st-review: oklch(0.72 0.15 70);
+  --st-blocked: oklch(0.62 0.20 18);
+  --st-done: oklch(0.66 0.16 156);
+
+  --prio-low: oklch(0.62 0.02 260);
+  --prio-medium: oklch(0.64 0.15 250);
+  --prio-high: oklch(0.70 0.16 70);
+  --prio-urgent: oklch(0.60 0.21 20);
+
+  --radius: 18px;
+  --radius-sm: 12px;
+  --radius-lg: 26px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ===================== WHITE GLASS (default) ===================== */
+:root, [data-theme="light"] {
+  --bg: oklch(0.955 0.008 255);
+  --bg-deep: oklch(0.925 0.011 258);
+  --ink: oklch(0.24 0.014 264);
+  --ink-2: oklch(0.40 0.013 264);
+  --ink-3: oklch(0.54 0.011 264);
+  --ink-4: oklch(0.66 0.009 264);
+
+  /* frosted translucent white surfaces */
+  --surface: oklch(1 0 0 / 0.55);
+  --surface-2: oklch(1 0 0 / 0.72);
+  --surface-solid: oklch(0.995 0.002 255);
+  --surface-raised: oklch(1 0 0 / 0.88);
+
+  --hairline: oklch(0.32 0.03 264 / 0.10);
+  --hairline-strong: oklch(0.32 0.03 264 / 0.18);
+  --edge-light: oklch(1 0 0 / 0.9);
+
+  --glass-blur: 32px;
+  --shadow: 0 1px 1px oklch(0.3 0.04 264 / 0.04), 0 8px 24px -8px oklch(0.3 0.05 264 / 0.13);
+  --shadow-lg: 0 2px 6px oklch(0.3 0.04 264 / 0.06), 0 34px 70px -22px oklch(0.3 0.05 264 / 0.28);
+
+  /* soft vibrancy bleeding behind the glass */
+  --aurora-1: oklch(0.82 0.13 262 / 0.50);
+  --aurora-2: oklch(0.84 0.11 320 / 0.42);
+  --aurora-3: oklch(0.90 0.10 200 / 0.40);
+  --grid-line: transparent;
+
+  color-scheme: light;
+}
+
+/* ===================== DARK GLASS (alternate) ===================== */
+[data-theme="dark"] {
+  --bg: oklch(0.20 0.014 264);
+  --bg-deep: oklch(0.16 0.014 266);
+  --ink: oklch(0.97 0.005 264);
+  --ink-2: oklch(0.78 0.012 264);
+  --ink-3: oklch(0.62 0.012 266);
+  --ink-4: oklch(0.50 0.012 266);
+
+  --surface: oklch(0.30 0.018 264 / 0.5);
+  --surface-2: oklch(0.34 0.02 264 / 0.6);
+  --surface-solid: oklch(0.24 0.016 264);
+  --surface-raised: oklch(0.28 0.018 264 / 0.9);
+
+  --hairline: oklch(0.92 0.01 264 / 0.12);
+  --hairline-strong: oklch(0.92 0.01 264 / 0.20);
+  --edge-light: oklch(1 0 0 / 0.10);
+
+  --glass-blur: 30px;
+  --shadow: 0 1px 0 oklch(1 0 0 / 0.05) inset, 0 12px 32px -12px oklch(0 0 0 / 0.6);
+  --shadow-lg: 0 1px 0 oklch(1 0 0 / 0.06) inset, 0 34px 70px -22px oklch(0 0 0 / 0.7);
+
+  --aurora-1: oklch(0.6 0.18 264 / 0.28);
+  --aurora-2: oklch(0.55 0.15 320 / 0.22);
+  --aurora-3: oklch(0.6 0.12 200 / 0.20);
+  --grid-line: transparent;
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+#root { height: 100vh; }
+
+::selection { background: var(--accent-glow); color: var(--ink); }
+
+/* thin scrollbars */
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 99px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-4); background-clip: padding-box; }
+* { scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent; }
+
+/* ---- atmospheric backdrop: soft color vibrancy behind the frosted glass ---- */
+.app-bg {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(760px 560px at 82% -6%, var(--aurora-1), transparent 62%),
+    radial-gradient(720px 600px at -6% 18%, var(--aurora-2), transparent 60%),
+    radial-gradient(900px 700px at 50% 116%, var(--aurora-3), transparent 60%);
+}
+.app-grid {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: radial-gradient(circle at 50% 30%, black, transparent 85%);
+}
+
+/* ---- glass surface ---- */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.9);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.9);
+  box-shadow: var(--shadow);
+  position: relative;
+}
+.glass::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  border-top: 1px solid var(--edge-light);
+  -webkit-mask: linear-gradient(black, transparent 38%);
+  mask: linear-gradient(black, transparent 38%);
+}
+
+/* ---- type helpers ---- */
+.mono { font-family: var(--font-mono); }
+.kicker {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-4);
+}
+.tnum { font-variant-numeric: tabular-nums; }
+h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
+
+/* ---- focus ring ---- */
+.ring-accent { box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-glow); }
+
+/* ---- buttons ---- */
+.btn {
+  font-family: var(--font-display); font-weight: 590; font-size: 13.5px;
+  display: inline-flex; align-items: center; gap: 8px;
+  border-radius: 12px; padding: 9px 15px; cursor: pointer;
+  border: 1px solid transparent; transition: all 0.18s var(--ease); white-space: nowrap;
+  color: var(--ink);
+}
+.btn-ghost { background: var(--surface-2); border-color: var(--hairline); color: var(--ink-2); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.btn-ghost:hover { background: var(--surface-raised); color: var(--ink); border-color: var(--hairline-strong); box-shadow: var(--shadow); }
+.btn-accent {
+  background: var(--accent); color: var(--on-accent); font-weight: 650;
+  box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 8px 22px -8px var(--accent-glow);
+}
+.btn-accent:hover { background: var(--accent-strong); box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 12px 30px -6px var(--accent-glow); transform: translateY(-1px); }
+.btn-icon {
+  width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 12px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
+}
+.btn-icon:hover { background: var(--surface-raised); color: var(--ink); border-color: var(--hairline-strong); }
+
+/* ---- animations ---- */
+@keyframes fadeUp { from { transform: translateY(12px); } to { transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scaleIn { from { transform: scale(0.97) translateY(4px); } to { transform: none; } }
+@keyframes slideInRight { from { transform: translateX(24px); } to { transform: none; } }
+@keyframes pulseGlow { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+@keyframes spinSlow { to { transform: rotate(360deg); } }
+@keyframes dash { to { stroke-dashoffset: 0; } }
+/* Base state is VISIBLE — animation is enhancement only, never gates content.
+   No `both`/backwards fill, so a paused/backgrounded frame still shows content. */
+.anim-fadeup { animation: fadeUp 0.5s var(--ease); }
+.anim-fadein { animation: fadeIn 0.4s var(--ease); }
+.anim-scalein { animation: scaleIn 0.32s var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* ---- misc ---- */
+.divider { height: 1px; background: var(--hairline); border: 0; }
+.clickable { cursor: pointer; }
+
+/* plan: meta chip, AI shimmer, intake add hover */
+.pchip { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-3); padding: 2px 7px; border-radius: 7px; background: var(--surface-2); border: 1px solid var(--hairline); }
+@keyframes shimmer { to { background-position: 200% 0; } }
+.ai-think { background: linear-gradient(90deg, var(--ink-3) 30%, var(--accent) 50%, var(--ink-3) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+.iadd:hover { color: var(--accent) !important; border-color: var(--accent) !important; }
+
+/* sidebar nav + project items — CSS-driven hover/active (no JS style mutation) */
+.knav { position: relative; display: flex; align-items: center; gap: 11px; width: 100%; padding: 8px 11px; border-radius: 10px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 14px; color: var(--ink-3); text-align: left; transition: background .16s var(--ease), color .16s var(--ease); }
+.knav:hover { background: var(--surface); color: var(--ink-2); }
+.knav[data-active="true"] { background: var(--surface-2); color: var(--ink); font-weight: 500; }
+.kproj { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 11px; border-radius: 9px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 13.5px; color: var(--ink-3); text-align: left; transition: background .15s; }
+.kproj:hover { background: var(--surface); }
+.kproj[data-active="true"] { background: var(--surface-2); color: var(--ink); }
+.kproj-del { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 24px; height: 24px; border: none; border-radius: 7px; background: var(--surface-2); color: var(--ink-3); cursor: pointer; opacity: 0; transition: opacity .14s, color .14s, background .14s; }
+.kproj-row:hover .kproj-del { opacity: 1; }
+.kproj-del:hover { color: var(--st-blocked); background: color-mix(in oklch, var(--st-blocked) 14%, transparent); }
+.kproj-row:hover .kproj-count { opacity: 0; }
+
+/* tag chip delete (hover-reveal) */
+.tagchip-del { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 99px; background: var(--st-blocked); color: oklch(0.99 0.01 20); cursor: pointer; opacity: 0; transition: opacity .14s; box-shadow: var(--shadow); }
+.tagchip:hover .tagchip-del { opacity: 1; }
+
+/* hover-lift helpers (CSS so no stale inline transforms) */
+.lift { transition: transform .16s var(--ease), border-color .16s var(--ease); }
+.lift:hover { transform: translateY(-2px); border-color: var(--hairline-strong); }
+.lift-row { transition: background .14s; }
+.lift-row:hover { background: var(--surface); }
+
+/* segmented control — CSS-driven active state */
+.kseg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--surface); border: 1px solid var(--hairline); }
+.kseg-btn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-family: var(--font-display); font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; border: none; background: transparent; color: var(--ink-3); transition: color .18s var(--ease), background .18s var(--ease); }
+.kseg-btn:hover { color: var(--ink-2); }
+.kseg-btn[data-active="true"] { color: var(--ink); background: var(--surface-raised); box-shadow: var(--shadow), 0 0 0 1px var(--hairline); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-tip] { position: relative; }
+
+/* ---- focus-visible ring for keyboard users (accessibility) ---- */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+button:focus:not(:focus-visible) { outline: none; }
+
+/* ---- responsive ---- */
+@media (max-width: 860px) {
+  .topbar { gap: 10px; padding: 12px 16px; flex-wrap: wrap; }
+  .topbar-search { min-width: 0 !important; flex: 1; }
+  .topbar-search span { display: none; }
+  .kseg { overflow-x: auto; max-width: 100%; }
+}
+@media (max-width: 560px) {
+  .topbar-search { display: none !important; }
+  [data-tip]::after { display: none; } /* tooltips are awkward on touch */
+}
