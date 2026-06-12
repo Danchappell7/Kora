@@ -24,12 +24,17 @@ Tracking the path from "runs on a laptop" to production. ✅ = done in code,
 - ✅ Responsive layout (collapsible sidebar + fluid panels on tablet/mobile)
 - ✅ Accessibility pass (modal focus traps, ARIA labels, Esc handling, contrast)
 
-## Feature completeness (larger / external-dependency work — next phases)
+## Feature completeness
+- ✅ Real comment threads (`comments` table + threaded UI in task detail)
+- ✅ Activity feed backend (`activity` table) — powers the Inbox + per-task history + badge
+- ✅ Board drag-and-drop (drag cards between status columns, persists)
+- ✅ Editable task descriptions (buffered, saves on blur — titles too)
+- �doc Run `supabase/migrations/0006_comments_activity.sql` (needs your dashboard)
+
+### Next phases (larger / external-dependency work)
+- ⏳ Team/collaboration (sharing, invites, multi-member workspaces + RLS redesign) — the big one
 - ⏳ Calendar integration (Google/Outlook OAuth + Edge Functions) — needs your Google Cloud project + OAuth verification
-- ⏳ Real comment threads (table + UI)
-- ⏳ Notifications/inbox backend
-- ⏳ Team/collaboration (sharing, invites, multi-member workspaces)
-- ⏳ Board drag-reorder, recurring tasks, reminders, attachments
+- ⏳ Recurring tasks, reminders, attachments, board manual ordering
 - ⏳ Real AI (LLM-backed auto-plan / prioritization) — currently a heuristic
 - ⏳ Billing / paywall (Stripe)
 

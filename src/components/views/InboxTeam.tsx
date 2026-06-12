@@ -1,33 +1,28 @@
 /* ============================================================
-   KORA — Inbox & Team views
+   KORA — Inbox (real activity feed) & Team views
    ============================================================ */
 import { Icon, Avatar, Tag } from "../primitives";
-import { getMember, MEMBERS } from "../../data/data";
+import { MEMBERS, timeAgo } from "../../data/data";
 import { isSupabaseConfigured } from "../../lib/supabase";
-import type { Task, Member, IconName } from "../../data/types";
+import type { Task, Member, Activity, ActivityKind, IconName } from "../../data/types";
 
-interface InboxItem {
-  id: string; who: string; action: string; target: string; time: string; unread: boolean; icon: IconName; ai?: boolean;
-}
+const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
+  created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
+  status:    { icon: "refresh", color: "var(--st-progress)", verb: "updated" },
+  completed: { icon: "check",   color: "var(--st-done)",    verb: "completed" },
+  reopened:  { icon: "refresh", color: "var(--st-review)",  verb: "reopened" },
+  comment:   { icon: "message", color: "var(--accent)",     verb: "commented on" },
+  deleted:   { icon: "trash",   color: "var(--st-blocked)", verb: "deleted" },
+};
 
-const INBOX: InboxItem[] = [
-  { id: "n1", who: "m-1", action: "assigned you", target: "Ship onboarding redesign to staging", time: "12m", unread: true, icon: "tasks" },
-  { id: "n2", who: "m-3", action: "mentioned you in", target: "Define design tokens v2", time: "1h", unread: true, icon: "message" },
-  { id: "n3", who: "m-self", action: "AI flagged a risk on", target: "Migrate auth to edge sessions", time: "2h", unread: true, icon: "sparkles", ai: true },
-  { id: "n4", who: "m-2", action: "completed", target: "Audit landing-page performance", time: "5h", unread: false, icon: "check" },
-  { id: "n5", who: "m-4", action: "commented on", target: "Interview 5 churned users", time: "1d", unread: false, icon: "message" },
-];
-
-export function InboxView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: string) => void }) {
-  // No notifications backend yet — real accounts start with an empty inbox.
-  const items = isSupabaseConfigured ? [] : INBOX;
-  if (items.length === 0) {
+export function InboxView({ activity, tasks, onOpen }: { activity: Activity[]; tasks: Task[]; onOpen: (id: string) => void }) {
+  if (activity.length === 0) {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 420 }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="inbox" size={24} style={{ color: "var(--ink-4)" }} /></div>
           <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>You're all caught up</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Mentions, assignments, and updates will show up here as your team starts collaborating.</p>
+          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Activity on your tasks — creates, completions, comments — will show up here.</p>
         </div>
       </div>
     );
@@ -35,28 +30,30 @@ export function InboxView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: strin
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", maxWidth: 760, width: "100%", margin: "0 auto" }}>
       <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
-        {INBOX.map((n, i) => {
-          const m = getMember(n.who);
-          const t = tasks.find((x) => x.title === n.target);
+        {activity.map((a, i) => {
+          const meta = KIND_META[a.kind] ?? KIND_META.status;
+          const taskStillExists = a.taskId && tasks.some((t) => t.id === a.taskId);
           return (
-            <button key={n.id} onClick={() => t && onOpen(t.id)} style={{
-              display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "14px 18px", cursor: "pointer", textAlign: "left",
-              border: "none", borderTop: i ? "1px solid var(--hairline)" : "none",
-              background: n.unread ? "color-mix(in oklch, var(--accent) 4%, transparent)" : "transparent", transition: "background .14s",
+            <button key={a.id} onClick={() => taskStillExists && onOpen(a.taskId!)} style={{
+              display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "13px 18px", textAlign: "left",
+              border: "none", borderTop: i ? "1px solid var(--hairline)" : "none", background: "transparent", transition: "background .14s",
+              cursor: taskStillExists ? "pointer" : "default",
             }}
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = n.unread ? "color-mix(in oklch, var(--accent) 4%, transparent)" : "transparent")}>
-              <span style={{ position: "relative" }}>
-                {n.ai ? <span style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 99, background: "var(--accent-dim)", color: "var(--accent)" }}><Icon name="sparkles" size={16} /></span> : <Avatar id={n.who} size={32} />}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+              <span style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 99, flexShrink: 0, background: `color-mix(in oklch, ${meta.color} 14%, transparent)`, color: meta.color }}>
+                <Icon name={meta.icon} size={15} />
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
-                  <strong style={{ color: "var(--ink)" }}>{n.ai ? "Kora AI" : m?.name}</strong> {n.action} <span style={{ color: "var(--ink)" }}>{n.target}</span>
+                <div className="truncate" style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
+                  You {meta.verb} <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong>
                 </div>
-                <div className="mono" style={{ fontSize: 11, color: "var(--ink-4)", marginTop: 3 }}>{n.time} ago</div>
+                <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2 }}>
+                  {a.kind === "comment" ? `“${a.detail}”` : a.detail}
+                </div>
               </div>
-              {n.unread && <span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent)", flexShrink: 0 }} />}
-              <Icon name="chevronRight" size={16} style={{ color: "var(--ink-4)" }} />
+              <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{timeAgo(a.createdAt)}</span>
+              {taskStillExists && <Icon name="chevronRight" size={16} style={{ color: "var(--ink-4)" }} />}
             </button>
           );
         })}

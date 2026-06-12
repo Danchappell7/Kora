@@ -1,6 +1,7 @@
 /* ============================================================
    KORA — Board (Kanban), Timeline (Gantt), Calendar views
    ============================================================ */
+import { useState } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { SubtaskProgress } from "./ListView";
 import {
@@ -15,7 +16,9 @@ function KanbanCard({ task, allTasks, onOpen }: { task: Task; allTasks: Task[]; 
   const blocked = blockingTasks(task, allTasks);
   const ds = dueState(task.dueDate, task.status);
   return (
-    <div onClick={() => onOpen(task.id)} className="glass clickable lift" style={{ padding: 13, borderRadius: 12 }}>
+    <div onClick={() => onOpen(task.id)} className="glass clickable lift" draggable
+      onDragStart={(e) => { e.dataTransfer.setData("text/kora-task", task.id); e.dataTransfer.effectAllowed = "move"; }}
+      style={{ padding: 13, borderRadius: 12, cursor: "grab" }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <PriorityFlag priority={task.priority} size={13} />
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
@@ -37,21 +40,27 @@ function KanbanCard({ task, allTasks, onOpen }: { task: Task; allTasks: Task[]; 
   );
 }
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd }: { tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void }) {
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void; onMove: (taskId: string, status: Status) => void }) {
+  const [dragOver, setDragOver] = useState<Status | null>(null);
   return (
     <div style={{ flex: 1, overflow: "auto" }}>
       <div style={{ display: "flex", gap: 16, padding: "20px 24px 28px", minHeight: "100%" }}>
         {STATUS_ORDER.map((s) => {
           const items = tasks.filter((t) => t.status === s);
           return (
-            <div key={s} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}>
+            <div key={s} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kora-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(s); } }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === s ? null : d); }}
+              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kora-task"); setDragOver(null); if (id) onMove(id, s); }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 4px 12px" }}>
                 <StatusDot status={s} glow />
                 <span style={{ fontSize: 13.5, fontWeight: 600 }}>{STATUS_META[s].label}</span>
                 <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{items.length}</span>
                 <button onClick={() => onAdd(s)} className="btn-icon" title="Add task" style={{ marginLeft: "auto", width: 24, height: 24, border: "none", color: "var(--ink-4)" }}><Icon name="plus" size={15} /></button>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, background: "color-mix(in oklch, var(--bg-deep) 28%, transparent)", minHeight: 120 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
+                background: dragOver === s ? "var(--accent-dim)" : "color-mix(in oklch, var(--bg-deep) 28%, transparent)",
+                boxShadow: dragOver === s ? "inset 0 0 0 2px var(--accent)" : "none" }}>
                 {items.map((t) => <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} />)}
                 <button onClick={() => onAdd(s)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
                   <Icon name="plus" size={14} /> Add task

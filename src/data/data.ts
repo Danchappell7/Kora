@@ -185,6 +185,21 @@ export function fmtDue(iso?: string): string | null {
   if (diff < 0) return `${Math.abs(diff)}d ago`;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+/* friendly relative timestamp for activity/comments */
+export function timeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export function dueState(iso: string | undefined, status: Status): "none" | "overdue" | "today" | "soon" | "future" {
   if (!iso || status === "done") return "none";
   const d = new Date(iso + "T00:00:00");

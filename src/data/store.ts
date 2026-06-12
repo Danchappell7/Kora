@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Subtask, TagDef, Status, Priority, EnergyKind } from "./types";
+import type { Task, Member, Project, Subtask, TagDef, Comment, Activity, ActivityKind, Status, Priority, EnergyKind } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -109,6 +109,27 @@ function rowToProject(r: ProjectRow): Project {
 interface TagRow { id: string; label: string; color: string; }
 
 export interface CreatedTag { id: string; label: string; color: string; }
+
+interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; }
+function rowToComment(r: CommentRow): Comment {
+  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at };
+}
+
+interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; }
+function rowToActivity(r: ActivityRow): Activity {
+  return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at };
+}
+
+export interface NewActivity {
+  taskId: string | null;
+  taskTitle: string;
+  kind: ActivityKind;
+  detail: string;
+}
+
+/* demo-mode in-memory stores (session-only, like the rest of demo mode) */
+const demoComments: Record<string, Comment[]> = {};
+let demoActivity: Activity[] = [];
 
 /* camelCase patch -> snake_case task row */
 function patchToRow(patch: Partial<Task>): Record<string, unknown> {
@@ -256,6 +277,50 @@ export const store = {
     if (!supabase) return;
     const { error } = await supabase.from("tags").delete().eq("id", id);
     if (error) throw error;
+  },
+
+  /* ---------- comments ---------- */
+  async listComments(taskId: string): Promise<Comment[]> {
+    if (!supabase) return demoComments[taskId] ?? [];
+    const { data, error } = await supabase.from("comments").select("*").eq("task_id", taskId).order("created_at", { ascending: true });
+    if (error) throw error;
+    return (data as CommentRow[]).map(rowToComment);
+  },
+
+  async addComment(taskId: string, body: string, userId: string, authorName: string): Promise<Comment> {
+    if (!supabase) {
+      const c: Comment = { id: newId(), taskId, authorId: userId, authorName, body, createdAt: new Date().toISOString() };
+      (demoComments[taskId] ??= []).push(c);
+      return c;
+    }
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("comments").insert({ task_id: taskId, user_id: uid, author_name: authorName, body }).select("*").single();
+    if (error) throw error;
+    return rowToComment(data as CommentRow);
+  },
+
+  /* ---------- activity feed ---------- */
+  async listActivity(limit = 100): Promise<Activity[]> {
+    if (!supabase) return demoActivity.slice(0, limit);
+    const { data, error } = await supabase.from("activity").select("*").order("created_at", { ascending: false }).limit(limit);
+    if (error) throw error;
+    return (data as ActivityRow[]).map(rowToActivity);
+  },
+
+  async logActivity(input: NewActivity, userId: string): Promise<Activity> {
+    if (!supabase) {
+      const a: Activity = { id: newId(), taskId: input.taskId, taskTitle: input.taskTitle, kind: input.kind, detail: input.detail, createdAt: new Date().toISOString() };
+      demoActivity = [a, ...demoActivity];
+      return a;
+    }
+    const uid = await authUid(userId);
+    const { data, error } = await supabase
+      .from("activity")
+      .insert({ user_id: uid, task_id: input.taskId, task_title: input.taskTitle, kind: input.kind, detail: input.detail })
+      .select("*")
+      .single();
+    if (error) throw error;
+    return rowToActivity(data as ActivityRow);
   },
 
   /* Real-time multi-tab sync: invoke onChange when any of this user's

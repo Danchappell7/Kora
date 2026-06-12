@@ -68,6 +68,26 @@ export interface Task {
   planToday?: boolean;
 }
 
+export interface Comment {
+  id: string;
+  taskId: string;
+  authorId: string;
+  authorName: string;
+  body: string;
+  createdAt: string;
+}
+
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted";
+
+export interface Activity {
+  id: string;
+  taskId: string | null;
+  taskTitle: string;
+  kind: ActivityKind;
+  detail: string;
+  createdAt: string;
+}
+
 export interface CalEvent {
   id: string;
   title: string;

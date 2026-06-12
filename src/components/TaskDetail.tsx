@@ -1,16 +1,18 @@
 /* ============================================================
    KORA — Task detail slide-over panel (fully editable)
    ============================================================ */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { ReactNode } from "react";
 import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { TagPicker } from "./TagPicker";
+import { store } from "../data/store";
+import { reportError } from "../lib/monitoring";
 import {
-  getProject, getMember, blockingTasks, dueState,
+  getProject, getMember, blockingTasks, dueState, timeAgo,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
-import type { Task, TagDef, Status, Priority, IconName } from "../data/types";
+import type { Task, TagDef, Comment, Activity, Status, Priority, IconName } from "../data/types";
 
 function MetaRow({ icon, label, children }: { icon: IconName; label: string; children: ReactNode }) {
   return (
@@ -23,10 +25,12 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, onClose, onToggle, onPatch, onDelete, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onFocus }: {
+export function TaskDetail({ taskId, tasks, tags, activity, currentUserId, onClose, onToggle, onPatch, onDelete, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
   taskId: string;
   tasks: Task[];
   tags: Record<string, TagDef>;
+  activity: Activity[];
+  currentUserId: string;
   onClose: () => void;
   onToggle: (id: string) => void;
   onPatch: (id: string, patch: Partial<Task>) => void;
@@ -35,24 +39,50 @@ export function TaskDetail({ taskId, tasks, tags, onClose, onToggle, onPatch, on
   onAddSubtask: (taskId: string, title: string) => void;
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
+  onAddComment: (taskId: string, body: string) => Promise<Comment | null>;
   onFocus: (id: string) => void;
 }) {
   const task = tasks.find((t) => t.id === taskId);
   const [newSub, setNewSub] = useState("");
   const [comment, setComment] = useState("");
+  const [thread, setThread] = useState<Comment[]>([]);
+  const [posting, setPosting] = useState(false);
+  const [desc, setDesc] = useState("");
+  const [titleBuf, setTitleBuf] = useState("");
   const trapRef = useFocusTrap<HTMLDivElement>(true, onClose);
+
+  // load the comment thread + description buffer when a task is opened
+  useEffect(() => {
+    let cancelled = false;
+    setThread([]);
+    const cur = tasks.find((t) => t.id === taskId);
+    setDesc(cur?.description ?? "");
+    setTitleBuf(cur?.title ?? "");
+    store.listComments(taskId).then((cs) => { if (!cancelled) setThread(cs); }).catch(reportError);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
+
   if (!task) return null;
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, tasks);
   const dependents = tasks.filter((t) => t.dependencies?.includes(task.id));
   const done = task.status === "done";
+  const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
 
   const toggleTag = (id: string) => {
     const next = task.tags.includes(id) ? task.tags.filter((x) => x !== id) : [...task.tags, id];
     onPatch(task.id, { tags: next });
   };
   const addSub = () => { const v = newSub.trim(); if (v) { onAddSubtask(task.id, v); setNewSub(""); } };
-  const sendComment = () => { const v = comment.trim(); if (v) { onPatch(task.id, { comments: task.comments + 1 }); setComment(""); } };
+  const sendComment = async () => {
+    const v = comment.trim();
+    if (!v || posting) return;
+    setPosting(true);
+    const c = await onAddComment(task.id, v);
+    setPosting(false);
+    if (c) { setThread((t) => [...t, c]); setComment(""); }
+  };
   const del = () => { if (window.confirm(`Delete "${task.title}"? This can't be undone.`)) { onDelete(task.id); onClose(); } };
 
   return (
@@ -75,8 +105,9 @@ export function TaskDetail({ taskId, tasks, tags, onClose, onToggle, onPatch, on
           <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
             <div style={{ marginTop: 3 }}><Check done={done} size={22} onToggle={() => onToggle(task.id)} /></div>
             <textarea
-              value={task.title}
-              onChange={(e) => onPatch(task.id, { title: e.target.value })}
+              value={titleBuf}
+              onChange={(e) => setTitleBuf(e.target.value)}
+              onBlur={() => { const v = titleBuf.trim(); if (v && v !== task.title) onPatch(task.id, { title: v }); else setTitleBuf(task.title); }}
               rows={1}
               style={{ flex: 1, resize: "none", border: "none", outline: "none", background: "transparent", fontFamily: "var(--font-display)", fontSize: 21, fontWeight: 600, lineHeight: 1.25, letterSpacing: "-0.02em", color: done ? "var(--ink-3)" : "var(--ink)", textDecoration: done ? "line-through" : "none", overflow: "hidden" }}
             />
@@ -129,7 +160,18 @@ export function TaskDetail({ taskId, tasks, tags, onClose, onToggle, onPatch, on
             </MetaRow>
           </div>
 
-          {task.description && <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--ink-2)", margin: "0 0 20px" }}>{task.description}</p>}
+          {/* description — editable */}
+          <div style={{ marginBottom: 20 }}>
+            <div className="kicker" style={{ marginBottom: 8 }}>Description</div>
+            <textarea
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              onBlur={() => { if (desc !== task.description) onPatch(task.id, { description: desc }); }}
+              placeholder="Add a description…"
+              rows={Math.max(2, Math.min(8, (desc.match(/\n/g)?.length ?? 0) + 2))}
+              style={{ width: "100%", resize: "vertical", padding: "10px 12px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 14, lineHeight: 1.6, outline: "none" }}
+            />
+          </div>
 
           {/* dependencies */}
           {(blocked.length > 0 || dependents.length > 0) && (
@@ -174,23 +216,49 @@ export function TaskDetail({ taskId, tasks, tags, onClose, onToggle, onPatch, on
             </div>
           </div>
 
-          {/* activity */}
-          <div className="kicker" style={{ marginBottom: 12 }}>Activity</div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-            <Avatar id={task.assigneeId} size={26} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, color: "var(--ink-2)" }}>Status: <span style={{ color: STATUS_META[task.status].color }}>{STATUS_META[task.status].label}</span></div>
-              <div className="mono" style={{ fontSize: 11, color: "var(--ink-4)", marginTop: 2 }}>updated just now</div>
+          {/* comments thread */}
+          <div style={{ marginBottom: 20 }}>
+            <div className="kicker" style={{ marginBottom: 12 }}>
+              Comments{thread.length > 0 && <span className="mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink-4)" }}>{thread.length}</span>}
             </div>
+            {thread.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>No comments yet — start the thread below.</p>}
+            {thread.map((c) => (
+              <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <Avatar id={c.authorId} size={26} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <strong style={{ fontSize: 13, color: "var(--ink)" }}>{c.authorName || "You"}</strong>
+                    <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{timeAgo(c.createdAt)}</span>
+                  </div>
+                  <p style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{c.body}</p>
+                </div>
+              </div>
+            ))}
           </div>
+
+          {/* activity history */}
+          {taskActivity.length > 0 && (
+            <>
+              <div className="kicker" style={{ marginBottom: 12 }}>Activity</div>
+              {taskActivity.map((a) => (
+                <div key={a.id} style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: 99, marginTop: 6, flexShrink: 0, background: a.kind === "completed" ? "var(--st-done)" : "var(--ink-4)" }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>{a.detail}</div>
+                    <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 1 }}>{timeAgo(a.createdAt)}</div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
         </div>
 
         {/* comment box */}
         <div style={{ padding: 14, borderTop: "1px solid var(--hairline)", display: "flex", gap: 10, alignItems: "center" }}>
-          <Avatar id={task.assigneeId} size={28} />
+          <Avatar id={currentUserId} size={28} />
           <input value={comment} onChange={(e) => setComment(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendComment(); }}
-            placeholder="Add a comment…" style={{ flex: 1, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
-          <button className="btn-icon" onClick={sendComment} disabled={!comment.trim()} style={{ background: "var(--accent)", color: "var(--on-accent)", border: "none", opacity: comment.trim() ? 1 : 0.5 }}><Icon name="arrowUpRight" size={17} /></button>
+            placeholder="Add a comment…" aria-label="Add a comment" style={{ flex: 1, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+          <button className="btn-icon" onClick={sendComment} disabled={!comment.trim() || posting} aria-label="Post comment" style={{ background: "var(--accent)", color: "var(--on-accent)", border: "none", opacity: comment.trim() && !posting ? 1 : 0.5 }}><Icon name="arrowUpRight" size={17} /></button>
         </div>
       </div>
     </div>

@@ -26,9 +26,9 @@ import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, type NewProject } from "./data/store";
 import {
-  WORKSPACES, getProject, projectProgress, getMember, setReferenceData, toLocalISO,
+  WORKSPACES, STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO,
 } from "./data/data";
-import type { Task, Project, TagDef, Status } from "./data/types";
+import type { Task, Project, TagDef, Comment, Activity, ActivityKind, Status } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -54,7 +54,7 @@ const PRIORITY_FILTERS: { value: string; label: string }[] = [
   { value: "low", label: "Low" },
 ];
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -67,6 +67,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onToggle: (id: string) => void;
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAdd: (status: Status) => void;
+  onMove: (taskId: string, status: Status) => void;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("all");
@@ -119,7 +120,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         </button>
       </div>
       {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} />}
-      {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} />}
+      {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
     </>
@@ -145,6 +146,7 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [tags, setTags] = useState<Record<string, TagDef>>({});
+  const [activity, setActivity] = useState<Activity[]>([]);
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
@@ -197,6 +199,8 @@ export default function App() {
       try {
         const b = await store.bootstrap(auth.user);
         if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); }
+        const feed = await store.listActivity();
+        if (!cancelled) setActivity(feed);
       } catch (e) {
         reportError(e, { op: "bootstrap" });
         if (!cancelled) { setTasks([]); toastError("Couldn't load your workspace. Please refresh."); }
@@ -228,6 +232,13 @@ export default function App() {
     setSidebarOpen(false); // close the mobile drawer on navigation
   };
 
+  /* append to the activity feed (Inbox) — fire-and-forget */
+  const log = useCallback((kind: ActivityKind, task: { id: string | null; title: string }, detail: string) => {
+    store.logActivity({ taskId: task.id, taskTitle: task.title, kind, detail }, userIdRef.current)
+      .then((a) => setActivity((xs) => [a, ...xs]))
+      .catch(reportError);
+  }, []);
+
   const toggleTask = useCallback((id: string) => {
     const cur = tasksRef.current; if (!cur) return;
     const t = cur.find((x) => x.id === id); if (!t) return;
@@ -235,24 +246,52 @@ export default function App() {
     const completedAt = t.status === "done" ? undefined : toLocalISO(new Date());
     setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status, completedAt } : x));
     store.updateTask(id, { status, completedAt }).catch(reportError);
-  }, []);
+    log(status === "done" ? "completed" : "reopened", t, status === "done" ? "Marked complete" : "Reopened");
+  }, [log]);
 
   const patchTask = useCallback((id: string, patch: Partial<Task>) => {
+    const prev = tasksRef.current?.find((t) => t.id === id);
     setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...patch } : t));
     store.updateTask(id, patch).catch(reportError);
-  }, []);
+    if (prev && patch.status && patch.status !== prev.status) {
+      if (patch.status === "done") log("completed", prev, "Marked complete");
+      else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
+    }
+  }, [log]);
 
   const createTask = useCallback((t: Task) => {
     setTasks((ts) => ts ? [t, ...ts] : [t]);
     store.createTask(t, userIdRef.current).then((saved) => {
       if (saved.id !== t.id) setTasks((ts) => ts && ts.map((x) => x.id === t.id ? saved : x));
+      log("created", saved, "Task created");
     }).catch(reportError);
-  }, []);
+  }, [log]);
 
   const deleteTask = useCallback((id: string) => {
-    setTasks((ts) => ts && ts.filter((t) => t.id !== id));
+    const t = tasksRef.current?.find((x) => x.id === id);
+    setTasks((ts) => ts && ts.filter((x) => x.id !== id));
     store.deleteTask(id).catch(reportError);
-  }, []);
+    if (t) log("deleted", { id: null, title: t.title }, "Task deleted");
+  }, [log]);
+
+  const addComment = useCallback(async (taskId: string, body: string): Promise<Comment | null> => {
+    const t = tasksRef.current?.find((x) => x.id === taskId);
+    const authorName = getMember(userIdRef.current)?.name || "You";
+    try {
+      const c = await store.addComment(taskId, body, userIdRef.current, authorName);
+      if (t) {
+        const count = t.comments + 1;
+        setTasks((ts) => ts && ts.map((x) => x.id === taskId ? { ...x, comments: count } : x));
+        store.updateTask(taskId, { comments: count }).catch(reportError);
+        log("comment", t, body.length > 80 ? body.slice(0, 77) + "…" : body);
+      }
+      return c;
+    } catch (e) {
+      reportError(e, { op: "addComment" });
+      toastError("Couldn't post the comment.");
+      return null;
+    }
+  }, [log, toastError]);
 
   const toggleSubtask = useCallback((taskId: string, subId: string) => {
     const cur = tasksRef.current; if (!cur) return;
@@ -356,7 +395,7 @@ export default function App() {
     breadcrumb = WORKSPACES.find((w) => w.id === p?.workspaceId)?.name || "Personal";
   }
 
-  const inboxCount = store.configured ? 0 : 3; // no notifications backend yet
+  const inboxCount = activity.filter((a) => Date.now() - new Date(a.createdAt).getTime() < 86400000).length;
   const currentUser = getMember(currentUserId);
   const firstName = currentUser?.name?.trim().split(/\s+/)[0] || "there";
   const hour = new Date().getHours();
@@ -368,12 +407,12 @@ export default function App() {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} />;
       case "home": return <HomeView tasks={allTasks} projects={projects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} />;
       case "analytics": return <AnalyticsView tasks={allTasks} />;
-      case "inbox": return <InboxView tasks={allTasks} onOpen={setDetailId} />;
+      case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} />;
       case "team": return <TeamView tasks={allTasks} />;
       case "tasks":
       case "project":
-        return <TasksPage tasks={scoped} allTasks={allTasks} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} />;
+        return <TasksPage tasks={scoped} allTasks={allTasks} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status) => patchTask(id, { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined })} />;
       default: return null;
     }
   };
@@ -427,7 +466,7 @@ export default function App() {
         else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.label.includes("analytics")) setRoute({ view: "analytics" });
       }} />
-      {detailId && <TaskDetail taskId={detailId} tasks={allTasks} tags={tags} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onFocus={focusTask} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={allTasks} tags={tags} activity={activity} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={projects} allTags={tags} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
