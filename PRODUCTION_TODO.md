@@ -38,10 +38,17 @@ Tracking the path from "runs on a laptop" to production. ✅ = done in code,
 - ✅ **Recurring tasks** — daily/weekly/monthly; completing one spawns the next
 - �doc Run `supabase/migrations/0007_teams_recurrence.sql` (workspaces, members, RLS)
 
+- ✅ **File attachments** — upload/download/delete on tasks via Supabase Storage
+  (migration `0008`), private bucket + signed URLs, follows task visibility
+- ✅ **Real LLM AI** — `ai-assist` Edge Function (Claude) prioritizes tasks with
+  rationale; "Auto-prioritize" + ⌘K use it, with automatic heuristic fallback
+- ✅ **Email reminders** — `daily-reminders` Edge Function (Resend) sends each user
+  their due/overdue tasks; schedule via cron
+- �doc Run migration `0008`; deploy the two Edge Functions + set their secrets (see DEPLOYMENT.md)
+
 ### Next phases (larger / external-dependency work)
 - ⏳ Calendar integration (Google/Outlook OAuth + Edge Functions) — needs your Google Cloud project + OAuth verification
-- ⏳ Reminders/notifications by email, attachments, board manual ordering, custom fields
-- ⏳ Real AI (LLM-backed auto-plan / prioritization) — currently a heuristic
+- ⏳ Board manual ordering, custom fields, dependencies-as-blockers UI
 - ⏳ Billing / paywall (Stripe)
 
 See `DEPLOYMENT.md` for the steps that need your accounts.

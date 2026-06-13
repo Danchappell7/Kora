@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Status, Priority, EnergyKind, Recurrence } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Status, Priority, EnergyKind, Recurrence } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -145,11 +145,19 @@ const MEMBER_COLORS = [
   "oklch(0.7 0.13 20)", "oklch(0.75 0.13 155)", "oklch(0.7 0.02 240)",
 ];
 
+interface AttachmentRow { id: string; task_id: string; name: string; size: number; mime: string; path: string; created_at: string; }
+function rowToAttachment(r: AttachmentRow, url?: string): Attachment {
+  return { id: r.id, taskId: r.task_id, name: r.name, size: r.size, mime: r.mime, path: r.path, url, createdAt: r.created_at };
+}
+
+const ATTACH_BUCKET = "task-files";
+
 /* demo-mode in-memory stores (session-only, like the rest of demo mode) */
 const demoComments: Record<string, Comment[]> = {};
 let demoActivity: Activity[] = [];
 let demoWorkspaces: Workspace[] = [];
 let demoMembers: WorkspaceMember[] = [];
+const demoAttachments: Record<string, Attachment[]> = {};
 
 /* camelCase patch -> snake_case task row */
 function patchToRow(patch: Partial<Task>): Record<string, unknown> {
@@ -170,6 +178,8 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("focusMin" in patch) row.focus_min = patch.focusMin;
   if ("recurrence" in patch) row.recurrence = patch.recurrence;
   if ("workspaceId" in patch) row.workspace_id = patch.workspaceId ?? null;
+  if ("aiScore" in patch) row.ai_score = patch.aiScore;
+  if ("aiReason" in patch) row.ai_reason = patch.aiReason;
   return row;
 }
 
@@ -399,6 +409,71 @@ export const store = {
     return rowToComment(data as CommentRow);
   },
 
+  /* ---------- attachments ---------- */
+  async listAttachments(taskId: string): Promise<Attachment[]> {
+    if (!supabase) return demoAttachments[taskId] ?? [];
+    const { data, error } = await supabase.from("attachments").select("*").eq("task_id", taskId).order("created_at", { ascending: true });
+    if (error) throw error;
+    const rows = data as AttachmentRow[];
+    // sign each path for download (best-effort)
+    const signed = await Promise.all(rows.map(async (r) => {
+      const { data: s } = await supabase!.storage.from(ATTACH_BUCKET).createSignedUrl(r.path, 3600);
+      return rowToAttachment(r, s?.signedUrl);
+    }));
+    return signed;
+  },
+
+  async uploadAttachment(taskId: string, file: File, userId: string): Promise<Attachment> {
+    if (!supabase) {
+      const a: Attachment = { id: newId(), taskId, name: file.name, size: file.size, mime: file.type, path: "demo", url: URL.createObjectURL(file), createdAt: new Date().toISOString() };
+      (demoAttachments[taskId] ??= []).push(a);
+      return a;
+    }
+    const uid = await authUid(userId);
+    const safe = file.name.replace(/[^\w.\-]+/g, "_");
+    const path = `${uid}/${taskId}/${newId()}_${safe}`;
+    const { error: upErr } = await supabase.storage.from(ATTACH_BUCKET).upload(path, file, { contentType: file.type || "application/octet-stream" });
+    if (upErr) throw upErr;
+    const { data, error } = await supabase.from("attachments")
+      .insert({ task_id: taskId, user_id: uid, name: file.name, size: file.size, mime: file.type, path })
+      .select("*").single();
+    if (error) throw error;
+    const { data: s } = await supabase.storage.from(ATTACH_BUCKET).createSignedUrl(path, 3600);
+    return rowToAttachment(data as AttachmentRow, s?.signedUrl);
+  },
+
+  async deleteAttachment(att: Attachment): Promise<void> {
+    if (!supabase) {
+      const list = demoAttachments[att.taskId];
+      if (list) demoAttachments[att.taskId] = list.filter((a) => a.id !== att.id);
+      return;
+    }
+    await supabase.storage.from(ATTACH_BUCKET).remove([att.path]).then(() => {}, () => {});
+    const { error } = await supabase.from("attachments").delete().eq("id", att.id);
+    if (error) throw error;
+  },
+
+  /* ---------- AI prioritization (real LLM with heuristic fallback) ---------- */
+  async aiPrioritize(tasks: Task[], today: string): Promise<{ items: { id: string; score: number; reason: string }[]; summary: string; source: "ai" | "heuristic" }> {
+    const heuristic = () => {
+      const open = tasks.filter((t) => t.status !== "done");
+      const items = [...open].sort((a, b) => b.aiScore - a.aiScore).map((t) => ({ id: t.id, score: t.aiScore, reason: t.aiReason || "Ranked by Kora's priority model." }));
+      return { items, summary: "Prioritized your open work — urgent and unblocking tasks first.", source: "heuristic" as const };
+    };
+    if (!supabase) return heuristic();
+    try {
+      const payload = tasks.filter((t) => t.status !== "done").map((t) => ({
+        id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate ?? null, tags: t.tags, focusMin: t.focusMin,
+        blockedBy: t.dependencies,
+      }));
+      const { data, error } = await supabase.functions.invoke("ai-assist", { body: { tasks: payload, today } });
+      if (error || !data || !Array.isArray(data.items)) return heuristic();
+      return { items: data.items, summary: data.summary || "Here's how I'd approach your day.", source: "ai" };
+    } catch {
+      return heuristic();
+    }
+  },
+
   /* ---------- activity feed ---------- */
   async listActivity(limit = 100): Promise<Activity[]> {
     if (!supabase) return demoActivity.slice(0, limit);
@@ -437,6 +512,7 @@ export const store = {
       .on("postgres_changes", { event: "*", schema: "public", table: "subtasks" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "workspaces" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "workspace_members" }, onChange)
+      .on("postgres_changes", { event: "*", schema: "public", table: "attachments" }, onChange)
       .subscribe();
     return () => { client.removeChannel(channel); };
   },

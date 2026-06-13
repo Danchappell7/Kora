@@ -93,6 +93,17 @@ export interface Comment {
   createdAt: string;
 }
 
+export interface Attachment {
+  id: string;
+  taskId: string;
+  name: string;
+  size: number;
+  mime: string;
+  path: string;
+  url?: string;
+  createdAt: string;
+}
+
 export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted";
 
 export interface Activity {

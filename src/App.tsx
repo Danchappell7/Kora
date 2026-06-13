@@ -142,7 +142,7 @@ function FullLoader() {
 
 export default function App() {
   const auth = useAuth();
-  const { error: toastError } = useToast();
+  const { error: toastError, success: toastSuccess } = useToast();
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -173,6 +173,8 @@ export default function App() {
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
   const tagsRef = useRef<Record<string, TagDef>>({}); tagsRef.current = tags;
   const workspacesRef = useRef<Workspace[]>([]); workspacesRef.current = workspaces;
+  const workspaceRef = useRef<string | null>(null); workspaceRef.current = workspace;
+  const [aiBusy, setAiBusy] = useState(false);
 
   // single source of truth for projects/tags: React state (drives re-renders) +
   // the module reference data (used by getProject()/<Tag> lookups deep in the tree).
@@ -423,6 +425,24 @@ export default function App() {
     store.removeMember(memberId).catch(reportError);
   }, []);
 
+  // AI auto-prioritize: real LLM (Edge Function) with heuristic fallback
+  const autoPrioritize = useCallback(async () => {
+    const cur = tasksRef.current; if (!cur) return;
+    setRouteRaw({ view: "tasks" }); setSmart(true); setSidebarOpen(false); setDetailId(null);
+    setAiBusy(true);
+    try {
+      const scope = cur.filter((t) => (t.workspaceId ?? null) === workspaceRef.current);
+      const res = await store.aiPrioritize(scope, toLocalISO(new Date()));
+      const byId = new Map(res.items.map((i) => [i.id, i]));
+      setTasks((ts) => ts && ts.map((t) => byId.has(t.id) ? { ...t, aiScore: byId.get(t.id)!.score, aiReason: byId.get(t.id)!.reason } : t));
+      res.items.forEach((i) => store.updateTask(i.id, { aiScore: i.score, aiReason: i.reason }).catch(() => {}));
+      toastSuccess((res.source === "ai" ? "✨ " : "") + res.summary);
+    } catch (e) {
+      reportError(e, { op: "autoPrioritize" });
+      toastError("Couldn't prioritize right now.");
+    } finally { setAiBusy(false); }
+  }, [toastSuccess, toastError]);
+
   const openNewTask = useCallback((status: Status = "todo") => { setNewTaskStatus(status); setNewTaskOpen(true); }, []);
 
   const openFocus = () => { focus.setRunning(true); setFocusOpen(true); };
@@ -460,7 +480,7 @@ export default function App() {
   const renderMain = () => {
     switch (route.view) {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} />;
-      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} />;
+      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} />;
       case "analytics": return <AnalyticsView tasks={allTasks} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} />;
@@ -516,7 +536,7 @@ export default function App() {
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={allTasks} onOpenTask={setDetailId} onAction={(s) => {
         if (s.label.includes("New task")) openNewTask();
-        else if (s.label.includes("prioritize")) { setRoute({ view: "tasks" }); setSmart(true); }
+        else if (s.label.includes("prioritize") || s.label.includes("focus on next")) autoPrioritize();
         else if (s.label.includes("focus")) openFocus();
         else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.label.includes("analytics")) setRoute({ view: "analytics" });

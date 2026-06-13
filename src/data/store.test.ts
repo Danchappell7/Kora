@@ -35,6 +35,27 @@ describe("store (demo mode) — workspaces & invites", () => {
   });
 });
 
+describe("store (demo mode) — attachments", () => {
+  it("uploads, lists, and deletes a file", async () => {
+    const file = new File(["hello"], "spec.txt", { type: "text/plain" });
+    const a = await store.uploadAttachment("t-att", file, "m-self");
+    expect(a.name).toBe("spec.txt");
+    expect(a.size).toBe(5);
+    expect(await store.listAttachments("t-att")).toHaveLength(1);
+    await store.deleteAttachment(a);
+    expect(await store.listAttachments("t-att")).toHaveLength(0);
+  });
+});
+
+describe("store (demo mode) — AI prioritize", () => {
+  it("falls back to the heuristic (highest aiScore first) without a backend", async () => {
+    const t = (id: string, aiScore: number): any => ({ id, title: id, status: "todo", priority: "medium", tags: [], dependencies: [], subtasks: [], focusMin: 30, comments: 0, aiScore, description: "" });
+    const res = await store.aiPrioritize([t("low", 20), t("high", 90), t("mid", 50)], "2026-06-03");
+    expect(res.source).toBe("heuristic");
+    expect(res.items.map((i) => i.id)).toEqual(["high", "mid", "low"]);
+  });
+});
+
 describe("store (demo mode) — activity", () => {
   it("logs activity newest-first", async () => {
     await store.logActivity({ taskId: "t-1", taskTitle: "A", kind: "created", detail: "Task created" }, "m-self");

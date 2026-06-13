@@ -25,8 +25,8 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject }: {
-  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void;
+export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onAutoPrioritize, aiBusy }: {
+  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onAutoPrioritize: () => void; aiBusy?: boolean;
 }) {
   const open = tasks.filter((t) => t.status !== "done");
   const counts = {
@@ -94,7 +94,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
             : "A good moment to plan ahead or clear your backlog."}
         </p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button className="btn btn-accent" onClick={() => setRoute({ view: "tasks", smart: true })}><Icon name="sparkles" size={15} /> Auto-prioritize my day</button>
+          <button className="btn btn-accent" onClick={onAutoPrioritize} disabled={aiBusy} style={{ opacity: aiBusy ? 0.6 : 1 }}><Icon name="sparkles" size={15} /> {aiBusy ? "Prioritizing…" : "Auto-prioritize my day"}</button>
           <button className="btn btn-ghost" onClick={openFocus}><Icon name="play" size={14} fill="currentColor" /> Start focus block</button>
           <button className="btn btn-ghost" onClick={() => setRoute({ view: "tasks" })}>Review all tasks <Icon name="arrowRight" size={14} /></button>
         </div>

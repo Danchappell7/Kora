@@ -51,6 +51,30 @@ so email-confirm / password-reset / Google links return to the live app.
 `main`. No setup needed beyond pushing to GitHub. For auto-deploy, connecting the
 repo to Vercel (step 1) gives you preview deploys per PR automatically.
 
+## Edge Functions (AI + email reminders) — optional
+
+These add real LLM prioritization and daily reminder emails. The app works
+without them (AI falls back to a local heuristic; reminders simply don't send).
+Requires the Supabase CLI (`brew install supabase/tap/supabase`).
+
+**Real AI (`ai-assist`)** — Claude-backed task prioritization:
+```bash
+supabase functions deploy ai-assist
+supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+```
+Once deployed, "Auto-prioritize my day" and the ⌘K palette use Claude; otherwise
+they use the built-in heuristic automatically.
+
+**Daily reminders (`daily-reminders`)** — emails each user their due/overdue tasks:
+```bash
+supabase functions deploy daily-reminders --no-verify-jwt
+supabase secrets set RESEND_API_KEY=re_...           # resend.com
+supabase secrets set REMINDER_FROM="Kora <no-reply@yourdomain.com>"
+supabase secrets set APP_URL=https://your-app.vercel.app
+```
+Then schedule it daily (Supabase Dashboard → Database → Cron, or pg_cron) — the
+exact SQL is in the header comment of `supabase/functions/daily-reminders/index.ts`.
+
 ## Database migrations
 
 Apply `supabase/migrations/*.sql` in order in the Supabase SQL editor (or

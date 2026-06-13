@@ -1,13 +1,20 @@
 /* ============================================================
    KORA — Task detail slide-over panel (fully editable)
    ============================================================ */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { TagPicker } from "./TagPicker";
 import { store } from "../data/store";
 import { reportError } from "../lib/monitoring";
+import type { Attachment } from "../data/types";
+
+const fmtBytes = (n: number): string => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+};
 import {
   getProject, getMember, blockingTasks, dueState, timeAgo,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
@@ -52,6 +59,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
   const [titleBuf, setTitleBuf] = useState("");
+  const [files, setFiles] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(true, onClose);
 
   // load the comment thread + description buffer when a task is opened
@@ -61,7 +71,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     const cur = tasks.find((t) => t.id === taskId);
     setDesc(cur?.description ?? "");
     setTitleBuf(cur?.title ?? "");
+    setFiles([]);
     store.listComments(taskId).then((cs) => { if (!cancelled) setThread(cs); }).catch(reportError);
+    store.listAttachments(taskId).then((fs) => { if (!cancelled) setFiles(fs); }).catch(reportError);
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
@@ -91,6 +103,21 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     if (c) { setThread((t) => [...t, c]); setComment(""); }
   };
   const del = () => { if (window.confirm(`Delete "${task.title}"? This can't be undone.`)) { onDelete(task.id); onClose(); } };
+  const onPickFiles = async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    setUploading(true);
+    for (const f of Array.from(list)) {
+      if (f.size > 25 * 1024 * 1024) { window.alert(`"${f.name}" is over 25 MB.`); continue; }
+      try { const a = await store.uploadAttachment(task.id, f, currentUserId); setFiles((xs) => [...xs, a]); }
+      catch (e) { reportError(e, { op: "uploadAttachment" }); window.alert("Couldn't upload " + f.name); }
+    }
+    setUploading(false);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+  const removeFile = async (a: Attachment) => {
+    setFiles((xs) => xs.filter((x) => x.id !== a.id));
+    try { await store.deleteAttachment(a); } catch (e) { reportError(e, { op: "deleteAttachment" }); }
+  };
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(3px)" }}>
@@ -236,6 +263,27 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 style={{ flex: 1, height: 30, border: "none", outline: "none", background: "transparent", fontFamily: "var(--font-display)", fontSize: 13.5, color: "var(--ink)" }} />
               {newSub.trim() && <button onClick={addSub} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>Add</button>}
             </div>
+          </div>
+
+          {/* attachments */}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+              <span className="kicker">Files</span>
+              {files.length > 0 && <span className="mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink-4)" }}>{files.length}</span>}
+              <button onClick={() => fileRef.current?.click()} disabled={uploading} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "5px 10px", fontSize: 12 }}>
+                <Icon name="plus" size={13} /> {uploading ? "Uploading…" : "Attach"}
+              </button>
+              <input ref={fileRef} type="file" multiple onChange={(e) => onPickFiles(e.target.files)} style={{ display: "none" }} />
+            </div>
+            {files.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>No files attached.</p>}
+            {files.map((a) => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6 }}>
+                <Icon name="folder" size={15} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
+                <a href={a.url} target="_blank" rel="noreferrer" className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)", textDecoration: "none" }} title={a.name}>{a.name}</a>
+                <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", flexShrink: 0 }}>{fmtBytes(a.size)}</span>
+                <button onClick={() => removeFile(a)} className="btn-icon" aria-label={`Remove ${a.name}`} style={{ border: "none", width: 26, height: 26, color: "var(--ink-4)" }}><Icon name="x" size={14} /></button>
+              </div>
+            ))}
           </div>
 
           {/* comments thread */}
