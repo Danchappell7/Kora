@@ -31,10 +31,16 @@ Tracking the path from "runs on a laptop" to production. ✅ = done in code,
 - ✅ Editable task descriptions (buffered, saves on blur — titles too)
 - �doc Run `supabase/migrations/0006_comments_activity.sql` (needs your dashboard)
 
+- ✅ **Team workspaces + invites** — create shared workspaces, invite by email
+  (auto-claimed on sign-in), members + workload on the Team page, RLS redesigned
+  so workspace members see/edit shared tasks/projects
+- ✅ **Assignee picker** — assign tasks to teammates (new-task modal + detail)
+- ✅ **Recurring tasks** — daily/weekly/monthly; completing one spawns the next
+- �doc Run `supabase/migrations/0007_teams_recurrence.sql` (workspaces, members, RLS)
+
 ### Next phases (larger / external-dependency work)
-- ⏳ Team/collaboration (sharing, invites, multi-member workspaces + RLS redesign) — the big one
 - ⏳ Calendar integration (Google/Outlook OAuth + Edge Functions) — needs your Google Cloud project + OAuth verification
-- ⏳ Recurring tasks, reminders, attachments, board manual ordering
+- ⏳ Reminders/notifications by email, attachments, board manual ordering, custom fields
 - ⏳ Real AI (LLM-backed auto-plan / prioritization) — currently a heuristic
 - ⏳ Billing / paywall (Stripe)
 

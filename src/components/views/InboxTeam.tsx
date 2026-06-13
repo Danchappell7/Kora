@@ -1,10 +1,10 @@
 /* ============================================================
    KORA — Inbox (real activity feed) & Team views
    ============================================================ */
-import { Icon, Avatar, Tag } from "../primitives";
-import { MEMBERS, timeAgo } from "../../data/data";
-import { isSupabaseConfigured } from "../../lib/supabase";
-import type { Task, Member, Activity, ActivityKind, IconName } from "../../data/types";
+import { useState } from "react";
+import { Icon, Avatar } from "../primitives";
+import { timeAgo } from "../../data/data";
+import type { Task, WorkspaceMember, Activity, ActivityKind, IconName } from "../../data/types";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
   created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
@@ -62,57 +62,118 @@ export function InboxView({ activity, tasks, onOpen }: { activity: Activity[]; t
   );
 }
 
-export function TeamView({ tasks }: { tasks: Task[] }) {
-  const team = MEMBERS.filter((m) => m.type !== "external");
-  const ext = MEMBERS.filter((m) => m.type === "external");
-  const hasTeammates = MEMBERS.some((m) => m.type !== "self");
+export function TeamView({ tasks, workspace, workspaces, members, currentUserId, onInvite, onRemoveMember, onNewWorkspace }: {
+  tasks: Task[];
+  workspace: string | null;
+  workspaces: { id: string | null; name: string; ownerId?: string }[];
+  members: WorkspaceMember[];
+  currentUserId: string;
+  onInvite: (workspaceId: string, email: string) => void;
+  onRemoveMember: (memberId: string) => void;
+  onNewWorkspace: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const ws = workspaces.find((w) => w.id === workspace);
+  const wsMembers = members.filter((m) => m.workspaceId === workspace);
+  const active = wsMembers.filter((m) => m.status === "active");
+  const invited = wsMembers.filter((m) => m.status === "invited");
+  const isOwner = ws?.ownerId === currentUserId || active.some((m) => m.userId === currentUserId && m.role === "owner");
 
-  // Real accounts have no teammates yet — show onboarding instead of demo people.
-  if (isSupabaseConfigured && !hasTeammates) {
+  // Personal workspace → prompt to create a team
+  if (workspace === null) {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 440 }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="users" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>It's just you for now</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Workspaces and teammate invites are coming — for now Kora is tuned for your own focus and planning.</p>
+          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>Personal is just for you</p>
+          <p style={{ fontSize: 13, margin: "5px 0 16px", lineHeight: 1.5 }}>Create a team workspace to invite people and collaborate on shared projects and tasks.</p>
+          <button className="btn btn-accent" onClick={onNewWorkspace}><Icon name="plus" size={15} /> New workspace</button>
         </div>
       </div>
     );
   }
-  const Card = ({ m }: { m: Member }) => {
-    const assigned = tasks.filter((t) => t.assigneeId === m.id);
+
+  const submitInvite = () => {
+    const v = email.trim();
+    if (!v || !/.+@.+\..+/.test(v) || !workspace) return;
+    onInvite(workspace, v);
+    setEmail("");
+  };
+
+  const MemberCard = ({ m }: { m: WorkspaceMember }) => {
+    const memberId = m.userId ?? "";
+    const assigned = tasks.filter((t) => t.assigneeId === memberId);
     const openN = assigned.filter((t) => t.status !== "done").length;
     const load = Math.min(100, openN * 25);
+    const isSelf = m.userId === currentUserId;
     return (
-      <div className="glass" style={{ padding: 18, borderRadius: 16 }}>
+      <div className="glass" style={{ padding: 18, borderRadius: 16, position: "relative" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-          <Avatar id={m.id} size={42} />
+          {m.userId ? <Avatar id={m.userId} size={42} /> : (
+            <span style={{ width: 42, height: 42, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={19} /></span>
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14.5, fontWeight: 600 }}>{m.name}{m.type === "self" && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
+            <div style={{ fontSize: 14.5, fontWeight: 600 }}>
+              {m.name || m.email}
+              {isSelf && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}
+            </div>
             <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{m.email}</div>
           </div>
-          {m.type === "external" && <Tag id="ops" small />}
+          <span className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
+            color: m.status === "invited" ? "var(--st-review)" : m.role === "owner" ? "var(--accent)" : "var(--ink-3)",
+            background: m.status === "invited" ? "color-mix(in oklch, var(--st-review) 12%, transparent)" : "var(--surface-2)" }}>
+            {m.status === "invited" ? "Invited" : m.role}
+          </span>
+          {isOwner && !isSelf && (
+            <button className="btn-icon" title="Remove" aria-label={`Remove ${m.email}`} onClick={() => { if (window.confirm(`Remove ${m.name || m.email} from this workspace?`)) onRemoveMember(m.id); }}
+              style={{ border: "none", width: 28, height: 28, color: "var(--ink-3)" }}><Icon name="x" size={15} /></button>
+          )}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 7 }}>
-          <span className="kicker">Workload</span>
-          <span className="mono tnum" style={{ color: load > 60 ? "var(--prio-high)" : "var(--ink-3)" }}>{openN} open</span>
-        </div>
-        <div style={{ height: 6, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}>
-          <div style={{ width: load + "%", height: "100%", borderRadius: 99, background: load > 60 ? "var(--prio-high)" : "var(--accent)", transition: "width .8s var(--ease)" }} />
-        </div>
+        {m.status === "active" ? (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 7 }}>
+              <span className="kicker">Workload</span>
+              <span className="mono tnum" style={{ color: load > 60 ? "var(--prio-high)" : "var(--ink-3)" }}>{openN} open</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}>
+              <div style={{ width: load + "%", height: "100%", borderRadius: 99, background: load > 60 ? "var(--prio-high)" : "var(--accent)", transition: "width .8s var(--ease)" }} />
+            </div>
+          </>
+        ) : (
+          <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5 }}>Will join when they sign in to Kora with this email.</p>
+        )}
       </div>
     );
   };
+
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px" }}>
-      <div className="kicker" style={{ marginBottom: 12 }}>Members</div>
+      {/* invite */}
+      {isOwner && (
+        <div className="glass" style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderRadius: 16, marginBottom: 24, flexWrap: "wrap" }}>
+          <Icon name="users" size={17} style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 13.5, fontWeight: 600 }}>Invite to {ws?.name}</span>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitInvite(); }}
+            type="email" placeholder="teammate@company.com" aria-label="Invite email"
+            style={{ flex: 1, minWidth: 200, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+          <button className="btn btn-accent" onClick={submitInvite} disabled={!/.+@.+\..+/.test(email)} style={{ opacity: /.+@.+\..+/.test(email) ? 1 : 0.5 }}>
+            <Icon name="plus" size={15} /> Invite
+          </button>
+        </div>
+      )}
+
+      <div className="kicker" style={{ marginBottom: 12 }}>Members · {active.length}</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14, marginBottom: 28 }}>
-        {team.map((m) => <Card key={m.id} m={m} />)}
+        {active.map((m) => <MemberCard key={m.id} m={m} />)}
       </div>
-      <div className="kicker" style={{ marginBottom: 12 }}>External collaborators</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
-        {ext.map((m) => <Card key={m.id} m={m} />)}
-      </div>
+      {invited.length > 0 && (
+        <>
+          <div className="kicker" style={{ marginBottom: 12 }}>Pending invites · {invited.length}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
+            {invited.map((m) => <MemberCard key={m.id} m={m} />)}
+          </div>
+        </>
+      )}
     </div>
   );
 }

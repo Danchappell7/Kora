@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseCapture, planDay, dueState, fmtDue, dueOffset, energyOf,
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
-  DAY_START, DAY_END,
+  DAY_START, DAY_END, nextDueDate,
 } from "./data";
 import type { Task } from "./types";
 
@@ -76,6 +76,20 @@ describe("date helpers", () => {
   it("dueOffset returns day delta", () => {
     expect(dueOffset(dayOffset(3))).toBe(3);
     expect(dueOffset(undefined)).toBe(99);
+  });
+});
+
+describe("nextDueDate (recurrence)", () => {
+  it("advances by the recurrence step and never lands in the past", () => {
+    // a due date a week ago, recurring weekly → next is today or future
+    const past = dayOffset(-7);
+    const next = nextDueDate(past, "weekly");
+    expect(next >= dayOffset(0)).toBe(true);
+    // daily from today → tomorrow
+    expect(nextDueDate(dayOffset(0), "daily")).toBe(dayOffset(1));
+    // monthly advances roughly a month
+    const m = nextDueDate(dayOffset(0), "monthly");
+    expect(m > dayOffset(0)).toBe(true);
   });
 });
 

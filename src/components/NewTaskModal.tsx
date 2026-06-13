@@ -6,11 +6,14 @@ import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { TagPicker } from "./TagPicker";
 import { PRIORITY_META, energyOf } from "../data/data";
-import type { Task, Project, TagDef, Priority, Status } from "../data/types";
+import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
 
 const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? "t-new-" + crypto.randomUUID() : "t-new-" + Date.now());
+const RECUR_OPTS: { v: Recurrence; label: string }[] = [
+  { v: "none", label: "Doesn't repeat" }, { v: "daily", label: "Daily" }, { v: "weekly", label: "Weekly" }, { v: "monthly", label: "Monthly" },
+];
 
-export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, currentUserId, defaultStatus = "todo", defaultProjectId }: {
+export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId }: {
   open: boolean;
   onClose: () => void;
   onCreate: (t: Task) => void;
@@ -18,6 +21,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   onDeleteTag: (id: string) => void;
   projects: Project[];
   allTags: Record<string, TagDef>;
+  members: WorkspaceMember[];
   currentUserId: string;
   defaultStatus?: Status;
   defaultProjectId?: string;
@@ -26,19 +30,25 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [title, setTitle] = useState("");
   const [projectId, setProjectId] = useState(firstProject);
   const [priority, setPriority] = useState<Priority>("medium");
+  const [assigneeId, setAssigneeId] = useState(currentUserId);
   const [dueDate, setDueDate] = useState("");
+  const [recurrence, setRecurrence] = useState<Recurrence>("none");
   const [focusMin, setFocusMin] = useState(30);
   const [tags, setTags] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
 
+  // assignable people: active workspace members (always includes you)
+  const assignable = members.filter((m) => m.status === "active" && m.userId);
+  const people = assignable.length > 0 ? assignable.map((m) => ({ id: m.userId!, name: m.name || m.email })) : [{ id: currentUserId, name: "You" }];
+
   useEffect(() => {
     if (open) {
       setTitle(""); setProjectId(defaultProjectId || projects[0]?.id || "p-personal");
-      setPriority("medium"); setDueDate(""); setFocusMin(30); setTags([]);
+      setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setRecurrence("none"); setFocusMin(30); setTags([]);
       setTimeout(() => inputRef.current?.focus(), 30);
     }
-  }, [open, defaultProjectId, projects]);
+  }, [open, defaultProjectId, projects, currentUserId]);
 
   if (!open) return null;
 
@@ -48,10 +58,10 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     const t: Task = {
       id: newId(), title: trimmed, description: "",
       status: defaultStatus, priority, projectId,
-      assigneeId: currentUserId, dueDate: dueDate || undefined,
+      assigneeId, dueDate: dueDate || undefined,
       tags, dependencies: [], subtasks: [], comments: 0,
       focusMin, dur: focusMin, energy: energyOf({ tags } as Task),
-      scheduled: null, planToday: true, aiScore: 50,
+      scheduled: null, planToday: true, aiScore: 50, recurrence,
     };
     onCreate(t);
     onClose();
@@ -85,8 +95,18 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
                 {(Object.keys(PRIORITY_META) as Priority[]).map((p) => <option key={p} value={p}>{PRIORITY_META[p].label}</option>)}
               </select>
             </label>
+            <label style={fieldLabel}>Assignee
+              <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={selectStyle}>
+                {people.map((p) => <option key={p.id} value={p.id}>{p.id === currentUserId ? `${p.name} (you)` : p.name}</option>)}
+              </select>
+            </label>
             <label style={fieldLabel}>Due date
               <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={selectStyle} />
+            </label>
+            <label style={fieldLabel}>Repeat
+              <select value={recurrence} onChange={(e) => setRecurrence(e.target.value as Recurrence)} style={selectStyle}>
+                {RECUR_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+              </select>
             </label>
             <label style={fieldLabel}>Focus estimate (min)
               <input type="number" min={5} step={5} value={focusMin} onChange={(e) => setFocusMin(Math.max(5, parseInt(e.target.value) || 5))} style={selectStyle} />

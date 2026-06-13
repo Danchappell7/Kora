@@ -12,7 +12,9 @@ import {
   getProject, getMember, blockingTasks, dueState, timeAgo,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
-import type { Task, TagDef, Comment, Activity, Status, Priority, IconName } from "../data/types";
+import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName } from "../data/types";
+
+const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
 
 function MetaRow({ icon, label, children }: { icon: IconName; label: string; children: ReactNode }) {
   return (
@@ -25,11 +27,12 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, currentUserId, onClose, onToggle, onPatch, onDelete, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
   taskId: string;
   tasks: Task[];
   tags: Record<string, TagDef>;
   activity: Activity[];
+  members: WorkspaceMember[];
   currentUserId: string;
   onClose: () => void;
   onToggle: (id: string) => void;
@@ -69,6 +72,10 @@ export function TaskDetail({ taskId, tasks, tags, activity, currentUserId, onClo
   const dependents = tasks.filter((t) => t.dependencies?.includes(task.id));
   const done = task.status === "done";
   const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
+  const activeMembers = members.filter((m) => m.status === "active" && m.userId);
+  const assignable = activeMembers.length > 0
+    ? activeMembers.map((m) => ({ id: m.userId!, name: m.name || m.email }))
+    : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
 
   const toggleTag = (id: string) => {
     const next = task.tags.includes(id) ? task.tags.filter((x) => x !== id) : [...task.tags, id];
@@ -150,10 +157,25 @@ export function TaskDetail({ taskId, tasks, tags, activity, currentUserId, onClo
                 ))}
               </div>
             </MetaRow>
-            <MetaRow icon="user" label="Assignee"><span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13 }}><Avatar id={task.assigneeId} size={22} />{getMember(task.assigneeId)?.name || "Unassigned"}</span></MetaRow>
+            <MetaRow icon="user" label="Assignee">
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <Avatar id={task.assigneeId} size={22} />
+                <select value={task.assigneeId} onChange={(e) => onPatch(task.id, { assigneeId: e.target.value })}
+                  style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+                  {assignable.map((p) => <option key={p.id} value={p.id}>{p.id === currentUserId ? `${p.name} (you)` : p.name}</option>)}
+                  {!assignable.some((p) => p.id === task.assigneeId) && <option value={task.assigneeId}>{getMember(task.assigneeId)?.name || "Unassigned"}</option>}
+                </select>
+              </span>
+            </MetaRow>
             <MetaRow icon="calendar" label="Due">
               <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })}
                 style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: dueState(task.dueDate, task.status) === "overdue" ? "var(--prio-urgent)" : "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+            </MetaRow>
+            <MetaRow icon="refresh" label="Repeat">
+              <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}
+                style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+                {(Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => <option key={r} value={r}>{RECUR_LABEL[r]}</option>)}
+              </select>
             </MetaRow>
             <MetaRow icon="grid" label="Tags">
               <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={onDeleteTag} small />

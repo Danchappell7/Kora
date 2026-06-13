@@ -9,6 +9,7 @@ import { Topbar } from "./components/Topbar";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
+import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
@@ -26,9 +27,9 @@ import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, type NewProject } from "./data/store";
 import {
-  WORKSPACES, STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO,
+  STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate,
 } from "./data/data";
-import type { Task, Project, TagDef, Comment, Activity, ActivityKind, Status } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Status } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -147,6 +148,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tags, setTags] = useState<Record<string, TagDef>>({});
   const [activity, setActivity] = useState<Activity[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([{ id: null, name: "Personal", kind: "personal" }]);
+  const [wsMembers, setWsMembers] = useState<WorkspaceMember[]>([]);
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
@@ -168,6 +172,7 @@ export default function App() {
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
   const tagsRef = useRef<Record<string, TagDef>>({}); tagsRef.current = tags;
+  const workspacesRef = useRef<Workspace[]>([]); workspacesRef.current = workspaces;
 
   // single source of truth for projects/tags: React state (drives re-renders) +
   // the module reference data (used by getProject()/<Tag> lookups deep in the tree).
@@ -198,7 +203,7 @@ export default function App() {
     (async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); }
+        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); }
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
       } catch (e) {
@@ -217,7 +222,8 @@ export default function App() {
     const reload = async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags);
+        setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members);
+        setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
     };
     const unsub = store.subscribeToChanges(() => { clearTimeout(timer); timer = setTimeout(reload, 500); });
@@ -239,33 +245,56 @@ export default function App() {
       .catch(reportError);
   }, []);
 
-  const toggleTask = useCallback((id: string) => {
-    const cur = tasksRef.current; if (!cur) return;
-    const t = cur.find((x) => x.id === id); if (!t) return;
-    const status: Status = t.status === "done" ? "todo" : "done";
-    const completedAt = t.status === "done" ? undefined : toLocalISO(new Date());
-    setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status, completedAt } : x));
-    store.updateTask(id, { status, completedAt }).catch(reportError);
-    log(status === "done" ? "completed" : "reopened", t, status === "done" ? "Marked complete" : "Reopened");
-  }, [log]);
-
-  const patchTask = useCallback((id: string, patch: Partial<Task>) => {
-    const prev = tasksRef.current?.find((t) => t.id === id);
-    setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...patch } : t));
-    store.updateTask(id, patch).catch(reportError);
-    if (prev && patch.status && patch.status !== prev.status) {
-      if (patch.status === "done") log("completed", prev, "Marked complete");
-      else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
-    }
-  }, [log]);
-
-  const createTask = useCallback((t: Task) => {
+  const persistTask = useCallback((raw: Task) => {
+    // a task lives in its project's workspace
+    const wsId = getProject(raw.projectId)?.workspaceId ?? null;
+    const t: Task = { ...raw, workspaceId: wsId };
     setTasks((ts) => ts ? [t, ...ts] : [t]);
     store.createTask(t, userIdRef.current).then((saved) => {
       if (saved.id !== t.id) setTasks((ts) => ts && ts.map((x) => x.id === t.id ? saved : x));
       log("created", saved, "Task created");
     }).catch(reportError);
   }, [log]);
+
+  // when a recurring task is completed, spawn its next occurrence
+  const spawnRecurrence = useCallback((t: Task) => {
+    if (!t.recurrence || t.recurrence === "none") return;
+    const next: Task = {
+      ...t,
+      id: "t-rec-" + Date.now() + "-" + Math.round(Math.random() * 1e5),
+      status: "todo",
+      completedAt: undefined,
+      dueDate: nextDueDate(t.dueDate, t.recurrence),
+      scheduled: null,
+      comments: 0,
+      subtasks: t.subtasks.map((s) => ({ ...s, done: false })),
+    };
+    persistTask(next);
+  }, [persistTask]);
+
+  const toggleTask = useCallback((id: string) => {
+    const cur = tasksRef.current; if (!cur) return;
+    const t = cur.find((x) => x.id === id); if (!t) return;
+    const becomingDone = t.status !== "done";
+    const status: Status = becomingDone ? "done" : "todo";
+    const completedAt = becomingDone ? toLocalISO(new Date()) : undefined;
+    setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status, completedAt } : x));
+    store.updateTask(id, { status, completedAt }).catch(reportError);
+    log(becomingDone ? "completed" : "reopened", t, becomingDone ? "Marked complete" : "Reopened");
+    if (becomingDone) spawnRecurrence(t);
+  }, [log, spawnRecurrence]);
+
+  const patchTask = useCallback((id: string, patch: Partial<Task>) => {
+    const prev = tasksRef.current?.find((t) => t.id === id);
+    setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...patch } : t));
+    store.updateTask(id, patch).catch(reportError);
+    if (prev && patch.status && patch.status !== prev.status) {
+      if (patch.status === "done") { log("completed", prev, "Marked complete"); spawnRecurrence(prev); }
+      else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
+    }
+  }, [log, spawnRecurrence]);
+
+  const createTask = persistTask;
 
   const deleteTask = useCallback((id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id);
@@ -370,6 +399,30 @@ export default function App() {
     store.deleteTag(id).catch(reportError);
   }, [applyTags]);
 
+  const createWorkspace = useCallback((name: string) => {
+    const me = getMember(userIdRef.current);
+    store.createWorkspace(name, { id: userIdRef.current, email: me?.email || "", name: me?.name || "You" })
+      .then((w) => {
+        setWorkspaces((ws) => [...ws, w]);
+        setWsMembers((m) => [...m, { id: "owner-" + w.id, workspaceId: w.id!, userId: userIdRef.current, email: me?.email || "", name: me?.name || "You", role: "owner", status: "active" }]);
+        setReferenceData({ workspaces: [...workspacesRef.current, w] });
+        setWorkspace(w.id);
+        setRoute({ view: "team" });
+      })
+      .catch((e) => { reportError(e, { op: "createWorkspace" }); toastError("Couldn't create the workspace: " + (e?.message || e)); });
+  }, [toastError]);
+
+  const inviteMember = useCallback((workspaceId: string, email: string) => {
+    store.inviteMember(workspaceId, email)
+      .then((m) => setWsMembers((xs) => [...xs, m]))
+      .catch((e) => { reportError(e, { op: "inviteMember" }); toastError("Couldn't send the invite: " + (e?.message || e)); });
+  }, [toastError]);
+
+  const removeMember = useCallback((memberId: string) => {
+    setWsMembers((xs) => xs.filter((m) => m.id !== memberId));
+    store.removeMember(memberId).catch(reportError);
+  }, []);
+
   const openNewTask = useCallback((status: Status = "todo") => { setNewTaskStatus(status); setNewTaskOpen(true); }, []);
 
   const openFocus = () => { focus.setRunning(true); setFocusOpen(true); };
@@ -380,9 +433,10 @@ export default function App() {
   if (auth.configured && !auth.user) return <LoginScreen />;
   if (auth.loading || tasks === null) return <FullLoader />;
 
-  const allTasks = tasks;
+  // scope everything to the active workspace
+  const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace);
 
-  const activeWsName = WORKSPACES.find((w) => w.id === workspace)?.name || "Personal";
+  const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
 
   // scope tasks by route
   let scoped = allTasks, title = "My tasks", subtitle = "Everything assigned to you", breadcrumb = activeWsName;
@@ -392,8 +446,9 @@ export default function App() {
     const p = getProject(route.projectId); newProj = p;
     scoped = allTasks.filter((t) => t.projectId === route.projectId);
     title = p?.name || "Project"; subtitle = scoped.length + " tasks · " + projectProgress(allTasks, route.projectId) + "% complete";
-    breadcrumb = WORKSPACES.find((w) => w.id === p?.workspaceId)?.name || "Personal";
+    breadcrumb = workspaces.find((w) => w.id === (p?.workspaceId ?? null))?.name || "Personal";
   }
+  const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
 
   const inboxCount = activity.filter((a) => Date.now() - new Date(a.createdAt).getTime() < 86400000).length;
   const currentUser = getMember(currentUserId);
@@ -405,11 +460,11 @@ export default function App() {
   const renderMain = () => {
     switch (route.view) {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} />;
-      case "home": return <HomeView tasks={allTasks} projects={projects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} />;
+      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} />;
       case "analytics": return <AnalyticsView tasks={allTasks} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} />;
-      case "team": return <TeamView tasks={allTasks} />;
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "tasks":
       case "project":
         return <TasksPage tasks={scoped} allTasks={allTasks} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status) => patchTask(id, { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined })} />;
@@ -430,7 +485,7 @@ export default function App() {
   const headerProps = headerMap[route.view];
 
   const sidebar = (
-    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
+    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} />
   );
 
@@ -466,10 +521,11 @@ export default function App() {
         else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.label.includes("analytics")) setRoute({ view: "analytics" });
       }} />
-      {detailId && <TaskDetail taskId={detailId} tasks={allTasks} tags={tags} activity={activity} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={allTasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
-      <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={projects} allTags={tags} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
+      <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
+      <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);
         if (!proj) return null;

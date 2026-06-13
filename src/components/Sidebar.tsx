@@ -3,8 +3,7 @@
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar } from "./primitives";
-import { WORKSPACES } from "../data/data";
-import type { Task, Project, Member, IconName } from "../data/types";
+import type { Task, Project, Member, Workspace, IconName } from "../data/types";
 import type { Route } from "../app-types";
 import type { FocusTimer } from "../hooks/useFocusTimer";
 
@@ -45,11 +44,13 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onNewProject, onDeleteProject }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onNewProject, onDeleteProject, onNewWorkspace }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
   setWorkspace: (id: string | null) => void;
+  workspaces: Workspace[];
+  onNewWorkspace: () => void;
   focus: FocusTimer;
   openFocus: () => void;
   tasks: Task[];
@@ -62,8 +63,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, focus, openF
   onDeleteProject: (id: string) => void;
 }) {
   const [wsOpen, setWsOpen] = useState(false);
-  const visibleProjects = projects.filter((p) => p.workspaceId === workspace);
-  const activeWs = WORKSPACES.find((w) => w.id === workspace) || WORKSPACES[0];
+  const visibleProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
+  const activeWs = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" as const };
   const myOpen = tasks.filter((t) => t.assigneeId === currentUserId && t.status !== "done").length;
 
   const nav: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] = [
@@ -102,7 +103,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, focus, openF
         {wsOpen && (
           <div className="glass anim-scalein" style={{ padding: 6, marginTop: 6, borderRadius: 12 }}>
             <div className="kicker" style={{ padding: "5px 8px 6px" }}>Workspaces</div>
-            {WORKSPACES.map((w) => (
+            {workspaces.map((w) => (
               <button key={w.id ?? "personal"} onClick={() => { setWorkspace(w.id); setWsOpen(false); }} style={{
                 display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "7px 8px", borderRadius: 8,
                 border: "none", cursor: "pointer", fontSize: 13.5, fontFamily: "var(--font-display)", textAlign: "left",
@@ -113,6 +114,10 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, focus, openF
                 {w.id === workspace && <Icon name="check" size={14} style={{ color: "var(--accent)" }} />}
               </button>
             ))}
+            <div className="divider" style={{ margin: "6px 4px" }} />
+            <button onClick={() => { setWsOpen(false); onNewWorkspace(); }} style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13.5, color: "var(--ink-3)", background: "transparent", fontFamily: "var(--font-display)" }}>
+              <Icon name="plus" size={15} /> New workspace
+            </button>
           </div>
         )}
       </div>

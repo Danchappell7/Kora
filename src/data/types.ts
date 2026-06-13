@@ -22,7 +22,20 @@ export interface Workspace {
   id: string | null;
   name: string;
   kind: "personal" | "team";
+  ownerId?: string;
 }
+
+export interface WorkspaceMember {
+  id: string;
+  workspaceId: string;
+  userId: string | null;
+  email: string;
+  name: string;
+  role: "owner" | "member";
+  status: "invited" | "active";
+}
+
+export type Recurrence = "none" | "daily" | "weekly" | "monthly";
 
 export interface Project {
   id: string;
@@ -66,6 +79,9 @@ export interface Task {
   dur?: number;
   scheduled?: number | null;
   planToday?: boolean;
+  /* collaboration + recurrence */
+  workspaceId?: string | null;
+  recurrence?: Recurrence;
 }
 
 export interface Comment {

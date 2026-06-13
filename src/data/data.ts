@@ -24,6 +24,23 @@ export function dayOffset(n: number): string {
   return toLocalISO(d);
 }
 
+/* advance a due date by one recurrence step (from the due date, or today) */
+export function nextDueDate(iso: string | undefined, recurrence: import("./types").Recurrence): string {
+  const base = iso ? new Date(iso + "T00:00:00") : new Date(KORA_TODAY);
+  const d = new Date(base);
+  if (recurrence === "daily") d.setDate(d.getDate() + 1);
+  else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
+  else if (recurrence === "monthly") d.setMonth(d.getMonth() + 1);
+  // if the computed next date is in the past, roll forward to the future
+  const todayMid = new Date(KORA_TODAY);
+  while (d < todayMid && recurrence !== "none") {
+    if (recurrence === "daily") d.setDate(d.getDate() + 1);
+    else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
+    else { d.setMonth(d.getMonth() + 1); }
+  }
+  return toLocalISO(d);
+}
+
 /* `let` (not `const`) so the authenticated user can replace the demo "self"
    member at runtime via setSelfMember — ES-module live bindings mean every
    importer sees the update. Teammates stay as seeded reference data. */

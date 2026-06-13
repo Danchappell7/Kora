@@ -19,6 +19,22 @@ describe("store (demo mode) — comments", () => {
   });
 });
 
+describe("store (demo mode) — workspaces & invites", () => {
+  it("creates a workspace and invites a member", async () => {
+    const ws = await store.createWorkspace("Acme", { id: "m-self", email: "me@kora.app", name: "Me" });
+    expect(ws.name).toBe("Acme");
+    expect(ws.kind).toBe("team");
+    expect(ws.id).toBeTruthy();
+    const invite = await store.inviteMember(ws.id!, "teammate@acme.com");
+    expect(invite.status).toBe("invited");
+    expect(invite.email).toBe("teammate@acme.com");
+    // bootstrap reflects the new workspace + members
+    const b = await store.bootstrap({ id: "m-self" });
+    expect(b.workspaces.some((w) => w.id === ws.id)).toBe(true);
+    expect(b.members.some((m) => m.email === "teammate@acme.com")).toBe(true);
+  });
+});
+
 describe("store (demo mode) — activity", () => {
   it("logs activity newest-first", async () => {
     await store.logActivity({ taskId: "t-1", taskTitle: "A", kind: "created", detail: "Task created" }, "m-self");

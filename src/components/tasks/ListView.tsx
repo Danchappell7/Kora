@@ -63,6 +63,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
             {(task.tags || []).slice(0, 2).map((tg) => <Tag key={tg} id={tg} small />)}
             <SubtaskProgress subtasks={task.subtasks} />
+            {task.recurrence && task.recurrence !== "none" && <span title={`Repeats ${task.recurrence}`} style={{ display: "inline-flex", color: "var(--ink-4)" }}><Icon name="refresh" size={12} /></span>}
             {task.comments > 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}><Icon name="message" size={12} /> {task.comments}</span>}
           </div>
         </div>
