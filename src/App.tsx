@@ -11,6 +11,7 @@ import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
+import { TrialBanner, UpgradeModal, Paywall, hasAccess } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
@@ -29,7 +30,7 @@ import { store, type NewProject } from "./data/store";
 import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate,
 } from "./data/data";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Status } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -151,6 +152,9 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([{ id: null, name: "Personal", kind: "personal" }]);
   const [wsMembers, setWsMembers] = useState<WorkspaceMember[]>([]);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState<Plan | null>(null);
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
@@ -208,6 +212,8 @@ export default function App() {
         if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); }
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
+        const subn = await store.getSubscription();
+        if (!cancelled) setSubscription(subn);
       } catch (e) {
         reportError(e, { op: "bootstrap" });
         if (!cancelled) { setTasks([]); toastError("Couldn't load your workspace. Please refresh."); }
@@ -425,6 +431,36 @@ export default function App() {
     store.removeMember(memberId).catch(reportError);
   }, []);
 
+  // returning from Stripe checkout → refresh subscription + toast, clean the URL
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get("billing");
+    if (!p) return;
+    if (p === "success") {
+      store.getSubscription().then(setSubscription).catch(reportError);
+      toastSuccess("You're all set — welcome to Kora.");
+    }
+    window.history.replaceState({}, "", window.location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startCheckout = useCallback(async (plan: Plan) => {
+    setCheckoutBusy(plan);
+    try {
+      const seats = Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1);
+      const url = await store.startCheckout(plan, seats);
+      if (url) window.location.href = url;
+      else { toastError("Checkout isn't connected yet — deploy the Stripe functions to enable it."); setCheckoutBusy(null); }
+    } catch (e) { reportError(e, { op: "startCheckout" }); toastError("Couldn't start checkout: " + ((e as Error)?.message || e)); setCheckoutBusy(null); }
+  }, [wsMembers, toastError]);
+
+  const manageBilling = useCallback(async () => {
+    try {
+      const url = await store.openBillingPortal();
+      if (url) window.location.href = url;
+      else toastError("Billing portal isn't connected yet.");
+    } catch (e) { reportError(e, { op: "manageBilling" }); toastError("Couldn't open billing."); }
+  }, [toastError]);
+
   // AI auto-prioritize: real LLM (Edge Function) with heuristic fallback
   const autoPrioritize = useCallback(async () => {
     const cur = tasksRef.current; if (!cur) return;
@@ -452,6 +488,10 @@ export default function App() {
   if (auth.recovery) return <UpdatePasswordScreen />;
   if (auth.configured && !auth.user) return <LoginScreen />;
   if (auth.loading || tasks === null) return <FullLoader />;
+  if (subscription && !hasAccess(subscription)) {
+    const seats = Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1);
+    return <Paywall sub={subscription} seats={seats} busyPlan={checkoutBusy} onChoose={startCheckout} onSignOut={auth.configured ? auth.signOut : undefined} />;
+  }
 
   // scope everything to the active workspace
   const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace);
@@ -506,7 +546,8 @@ export default function App() {
 
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
-      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} />
+      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)}
+      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} />
   );
 
   return (
@@ -522,6 +563,7 @@ export default function App() {
         </>
       ) : sidebar}
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
+        {subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
         <Topbar {...headerProps} theme={theme} toggleTheme={() => setTheme((t) => t === "dark" ? "light" : "dark")}
           onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
           onNewTask={() => openNewTask()} onNewProject={() => setNewProjectOpen(true)} onCommand={() => setCmdOpen(true)} onBell={() => setRoute({ view: "inbox" })}>
@@ -546,6 +588,7 @@ export default function App() {
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
+      <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);
         if (!proj) return null;

@@ -3,7 +3,8 @@
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar } from "./primitives";
-import type { Task, Project, Member, Workspace, IconName } from "../data/types";
+import { trialDaysLeft } from "./Billing";
+import type { Task, Project, Member, Workspace, Subscription, IconName } from "../data/types";
 import type { Route } from "../app-types";
 import type { FocusTimer } from "../hooks/useFocusTimer";
 
@@ -44,7 +45,7 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onNewProject, onDeleteProject, onNewWorkspace }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onNewProject, onDeleteProject, onNewWorkspace, subscription, onUpgrade, onManageBilling }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -61,6 +62,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onSignOut?: () => void;
   onNewProject: () => void;
   onDeleteProject: (id: string) => void;
+  subscription?: Subscription | null;
+  onUpgrade: () => void;
+  onManageBilling: () => void;
 }) {
   const [wsOpen, setWsOpen] = useState(false);
   const visibleProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
@@ -157,6 +161,24 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           );
         })}
       </div>
+
+      {/* billing */}
+      {subscription && (
+        <button onClick={subscription.status === "active" ? onManageBilling : onUpgrade}
+          style={{ display: "flex", alignItems: "center", gap: 9, margin: "0 12px 4px", padding: "8px 11px", borderRadius: 10, cursor: "pointer", textAlign: "left", border: "1px solid var(--hairline)", background: subscription.status === "trialing" ? "var(--accent-dim)" : "var(--surface)", fontFamily: "var(--font-display)" }}>
+          <Icon name="sparkles" size={15} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: "var(--ink-2)" }}>
+              {subscription.status === "active" ? (subscription.plan === "team" ? "Team plan" : "Personal plan")
+                : subscription.status === "trialing" ? "Free trial" : "Inactive"}
+            </span>
+            <span style={{ display: "block", fontSize: 11, color: "var(--ink-4)" }}>
+              {subscription.status === "active" ? "Manage billing"
+                : subscription.status === "trialing" ? `${trialDaysLeft(subscription)} day${trialDaysLeft(subscription) === 1 ? "" : "s"} left · Upgrade` : "Reactivate"}
+            </span>
+          </span>
+        </button>
+      )}
 
       {/* user */}
       <div style={{ padding: 12, borderTop: "1px solid var(--hairline)", display: "flex", alignItems: "center", gap: 10 }}>

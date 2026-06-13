@@ -37,6 +37,17 @@ export interface WorkspaceMember {
 
 export type Recurrence = "none" | "daily" | "weekly" | "monthly";
 
+export type Plan = "personal" | "team";
+export type SubStatus = "trialing" | "active" | "past_due" | "canceled";
+
+export interface Subscription {
+  plan: Plan | null;
+  status: SubStatus;
+  trialEndsAt: string;          // ISO
+  currentPeriodEnd?: string | null;
+  seats: number;
+}
+
 export interface Project {
   id: string;
   name: string;

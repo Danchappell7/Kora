@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Status, Priority, EnergyKind, Recurrence } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -451,6 +451,45 @@ export const store = {
     await supabase.storage.from(ATTACH_BUCKET).remove([att.path]).then(() => {}, () => {});
     const { error } = await supabase.from("attachments").delete().eq("id", att.id);
     if (error) throw error;
+  },
+
+  /* ---------- billing / subscription ---------- */
+  async getSubscription(): Promise<Subscription> {
+    if (!supabase) {
+      // demo: a trial with a few days left so the UI is testable
+      const ends = new Date(); ends.setDate(ends.getDate() + 3);
+      return { plan: null, status: "trialing", trialEndsAt: ends.toISOString(), seats: 1 };
+    }
+    const { data, error } = await supabase.rpc("ensure_subscription");
+    if (error || !data) {
+      // migration not applied yet → treat as a fresh trial, don't block the app
+      const ends = new Date(); ends.setDate(ends.getDate() + 7);
+      return { plan: null, status: "trialing", trialEndsAt: ends.toISOString(), seats: 1 };
+    }
+    const row = Array.isArray(data) ? data[0] : data;
+    return {
+      plan: (row.plan ?? null) as Plan | null,
+      status: (row.status ?? "trialing") as SubStatus,
+      trialEndsAt: row.trial_ends_at,
+      currentPeriodEnd: row.current_period_end ?? null,
+      seats: row.seats ?? 1,
+    };
+  },
+
+  async startCheckout(plan: Plan, seats: number): Promise<string | null> {
+    if (!supabase) return null; // demo: no real checkout
+    const { data, error } = await supabase.functions.invoke("create-checkout", {
+      body: { plan, seats, returnUrl: window.location.origin },
+    });
+    if (error || !data?.url) throw error || new Error("Checkout unavailable. Deploy the create-checkout function.");
+    return data.url as string;
+  },
+
+  async openBillingPortal(): Promise<string | null> {
+    if (!supabase) return null;
+    const { data, error } = await supabase.functions.invoke("customer-portal", { body: { returnUrl: window.location.origin } });
+    if (error || !data?.url) throw error || new Error("Billing portal unavailable.");
+    return data.url as string;
   },
 
   /* ---------- AI prioritization (real LLM with heuristic fallback) ---------- */

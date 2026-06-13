@@ -75,6 +75,37 @@ supabase secrets set APP_URL=https://your-app.vercel.app
 Then schedule it daily (Supabase Dashboard → Database → Cron, or pg_cron) — the
 exact SQL is in the header comment of `supabase/functions/daily-reminders/index.ts`.
 
+## Billing (Stripe) — 7-day trial then Personal/Team plans
+
+The trial works with no setup (every account gets 7 days). To actually charge,
+connect Stripe:
+
+1. **Stripe products** — in the Stripe Dashboard create two recurring prices:
+   a **Personal** monthly price and a **Team** monthly price (set as *per-seat* /
+   "per unit"). Copy both **price IDs** (`price_...`).
+2. **Deploy the functions:**
+   ```bash
+   supabase functions deploy create-checkout
+   supabase functions deploy customer-portal
+   supabase functions deploy stripe-webhook --no-verify-jwt
+   ```
+3. **Set secrets:**
+   ```bash
+   supabase secrets set STRIPE_SECRET_KEY=sk_live_...
+   supabase secrets set STRIPE_PRICE_PERSONAL=price_...
+   supabase secrets set STRIPE_PRICE_TEAM=price_...
+   supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...
+   ```
+4. **Webhook** — in Stripe → Developers → Webhooks, add the `stripe-webhook`
+   function URL and subscribe to `checkout.session.completed`,
+   `customer.subscription.updated`, `customer.subscription.deleted`. Put the
+   signing secret in `STRIPE_WEBHOOK_SECRET` (step 3).
+5. Run migration `0009_billing.sql`.
+
+Until Stripe is connected, "Choose plan" shows a friendly "checkout isn't
+connected yet" message and the trial still counts down. Team plans bill for the
+number of active workspace members (seats) automatically.
+
 ## Database migrations
 
 Apply `supabase/migrations/*.sql` in order in the Supabase SQL editor (or

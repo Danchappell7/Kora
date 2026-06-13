@@ -46,9 +46,14 @@ Tracking the path from "runs on a laptop" to production. ✅ = done in code,
   their due/overdue tasks; schedule via cron
 - �doc Run migration `0008`; deploy the two Edge Functions + set their secrets (see DEPLOYMENT.md)
 
+- ✅ **Billing / paywall (Stripe)** — 7-day free trial, then Personal ($8/mo) or
+  Team (per-seat) plans. Trial banner, plan picker, full paywall on expiry,
+  sidebar billing row + customer portal. `create-checkout` / `customer-portal` /
+  `stripe-webhook` Edge Functions; `subscriptions` table (migration `0009`)
+- �doc Run migration `0009`; create Stripe prices + deploy the 3 billing functions + set secrets (DEPLOYMENT.md)
+
 ### Next phases (larger / external-dependency work)
 - ⏳ Calendar integration (Google/Outlook OAuth + Edge Functions) — needs your Google Cloud project + OAuth verification
 - ⏳ Board manual ordering, custom fields, dependencies-as-blockers UI
-- ⏳ Billing / paywall (Stripe)
 
 See `DEPLOYMENT.md` for the steps that need your accounts.
