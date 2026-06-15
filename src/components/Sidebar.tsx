@@ -45,7 +45,7 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onNewProject, onDeleteProject, onNewWorkspace, subscription, onUpgrade, onManageBilling }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onNewWorkspace, subscription, onUpgrade, onManageBilling }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -60,6 +60,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   currentUserId: string;
   currentUser?: Member;
   onSignOut?: () => void;
+  onOpenSettings?: () => void;
   onNewProject: () => void;
   onDeleteProject: (id: string) => void;
   subscription?: Subscription | null;
@@ -182,14 +183,19 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
 
       {/* user */}
       <div style={{ padding: 12, borderTop: "1px solid var(--hairline)", display: "flex", alignItems: "center", gap: 10 }}>
-        <Avatar id={currentUserId} size={32} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="truncate" style={{ fontSize: 13, fontWeight: 500 }}>{currentUser?.name || "You"}</div>
-          <div className="truncate" style={{ fontSize: 11, color: "var(--ink-4)" }}>{currentUser?.email || ""}</div>
-        </div>
-        {onSignOut
-          ? <button className="btn-icon" onClick={onSignOut} style={{ border: "none", width: 28, height: 28 }} title="Sign out"><Icon name="logout" size={16} /></button>
-          : <button className="btn-icon" style={{ border: "none", width: 28, height: 28 }} title="Settings"><Icon name="settings" size={16} /></button>}
+        <button onClick={onOpenSettings} title="Edit your profile" aria-label="Edit your profile"
+          style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, padding: "4px 6px", margin: "-4px -6px", borderRadius: 10, border: "none", background: "transparent", cursor: onOpenSettings ? "pointer" : "default", textAlign: "left", fontFamily: "var(--font-display)" }}>
+          <Avatar id={currentUserId} size={32} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span className="truncate" style={{ display: "block", fontSize: 13, fontWeight: 500 }}>
+              {currentUser?.name || "You"}
+              {currentUser?.pronouns && <span style={{ fontSize: 11, fontWeight: 400, color: "var(--ink-4)" }}> · {currentUser.pronouns}</span>}
+            </span>
+            <span className="truncate" style={{ display: "block", fontSize: 11, color: "var(--ink-4)" }}>{currentUser?.email || ""}</span>
+          </span>
+        </button>
+        {onOpenSettings && <button className="btn-icon" onClick={onOpenSettings} style={{ border: "none", width: 28, height: 28 }} title="Settings"><Icon name="settings" size={16} /></button>}
+        {onSignOut && <button className="btn-icon" onClick={onSignOut} style={{ border: "none", width: 28, height: 28 }} title="Sign out"><Icon name="logout" size={16} /></button>}
       </div>
     </aside>
   );

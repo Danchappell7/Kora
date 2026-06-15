@@ -15,46 +15,64 @@ const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: str
   deleted:   { icon: "trash",   color: "var(--st-blocked)", verb: "deleted" },
 };
 
-export function InboxView({ activity, tasks, onOpen }: { activity: Activity[]; tasks: Task[]; onOpen: (id: string) => void }) {
+export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
+  activity: Activity[];
+  tasks: Task[];
+  onOpen: (id: string) => void;
+  onArchive: (id: string) => void;
+  onClearAll: () => void;
+}) {
   if (activity.length === 0) {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 420 }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="inbox" size={24} style={{ color: "var(--ink-4)" }} /></div>
           <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>You're all caught up</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Activity on your tasks — creates, completions, comments — will show up here.</p>
+          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Activity on your tasks — creates, completions, comments — shows up here. Archived items stay in your history.</p>
         </div>
       </div>
     );
   }
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", maxWidth: 760, width: "100%", margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
+        <span className="kicker">{activity.length} update{activity.length === 1 ? "" : "s"}</span>
+        <button className="btn btn-ghost" onClick={onClearAll} style={{ marginLeft: "auto", fontSize: 13 }}>
+          <Icon name="archive" size={15} /> Clear whole inbox
+        </button>
+      </div>
       <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
         {activity.map((a, i) => {
           const meta = KIND_META[a.kind] ?? KIND_META.status;
           const taskStillExists = a.taskId && tasks.some((t) => t.id === a.taskId);
           return (
-            <button key={a.id} onClick={() => taskStillExists && onOpen(a.taskId!)} style={{
-              display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "13px 18px", textAlign: "left",
-              border: "none", borderTop: i ? "1px solid var(--hairline)" : "none", background: "transparent", transition: "background .14s",
-              cursor: taskStillExists ? "pointer" : "default",
+            <div key={a.id} className="kinbox-row" style={{
+              display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "13px 18px",
+              borderTop: i ? "1px solid var(--hairline)" : "none", transition: "background .14s",
             }}
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
               <span style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 99, flexShrink: 0, background: `color-mix(in oklch, ${meta.color} 14%, transparent)`, color: meta.color }}>
                 <Icon name={meta.icon} size={15} />
               </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <button onClick={() => taskStillExists && onOpen(a.taskId!)} style={{
+                flex: 1, minWidth: 0, display: "block", textAlign: "left", border: "none", background: "transparent",
+                padding: 0, cursor: taskStillExists ? "pointer" : "default", fontFamily: "var(--font-display)",
+              }}>
                 <div className="truncate" style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
                   You {meta.verb} <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong>
                 </div>
                 <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2 }}>
                   {a.kind === "comment" ? `“${a.detail}”` : a.detail}
                 </div>
-              </div>
+              </button>
               <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{timeAgo(a.createdAt)}</span>
-              {taskStillExists && <Icon name="chevronRight" size={16} style={{ color: "var(--ink-4)" }} />}
-            </button>
+              <button className="btn-icon kinbox-archive" title="Archive" aria-label="Archive this update"
+                onClick={() => onArchive(a.id)}
+                style={{ border: "none", width: 30, height: 30, flexShrink: 0, color: "var(--ink-4)" }}>
+                <Icon name="archive" size={16} />
+              </button>
+            </div>
           );
         })}
       </div>

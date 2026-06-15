@@ -16,6 +16,17 @@ export interface Member {
   email: string;
   type: MemberType;
   color: string;
+  pronouns?: string;
+  avatarUrl?: string | null;
+}
+
+export interface Profile {
+  id: string;
+  firstName: string;
+  lastName: string;
+  pronouns: string;
+  email: string;
+  avatarUrl: string | null;
 }
 
 export interface Workspace {
@@ -160,4 +171,4 @@ export type IconName =
   | "play" | "pause" | "x" | "more" | "arrowUpRight" | "target" | "briefcase"
   | "user" | "sun" | "moon" | "command" | "filter" | "sort" | "link" | "zap"
   | "trendingUp" | "check" | "message" | "folder" | "dot" | "settings" | "circle"
-  | "grid" | "arrowRight" | "arrowLeft" | "refresh" | "calendarPlus" | "layers" | "trash" | "menu";
+  | "grid" | "arrowRight" | "arrowLeft" | "refresh" | "calendarPlus" | "layers" | "trash" | "menu" | "archive";

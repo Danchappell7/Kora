@@ -7,6 +7,7 @@ import type { IconName } from "../../data/types";
 const ICONS: Record<IconName, string> = {
   home: "M3 10.5 12 3l9 7.5M5 9.5V21h14V9.5",
   inbox: "M3 13h4l2 3h6l2-3h4M3 13l3-8h12l3 8v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  archive: "M3 4h18v4H3zM5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M9 12h6",
   tasks: "M9 11l3 3 8-8M3 12l3 3 8-8",
   calendar: "M3 5h18v16H3zM3 9h18M8 3v4M16 3v4",
   users: "M16 19c0-2.8-2.2-5-5-5s-5 2.2-5 5M11 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M18 19c0-2 -1-3.4-2.5-4.2M16 5.2A3 3 0 0 1 18 11",

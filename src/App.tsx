@@ -11,6 +11,7 @@ import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
@@ -28,9 +29,10 @@ import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, type NewProject } from "./data/store";
 import {
-  STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate,
+  STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS,
 } from "./data/data";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status } from "./data/types";
+import type { ProfileDraft } from "./components/SettingsModal";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -156,6 +158,8 @@ export default function App() {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState<Plan | null>(null);
   const [currentUserId, setCurrentUserId] = useState("m-self");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>("list");
@@ -209,7 +213,7 @@ export default function App() {
     (async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); }
+        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); }
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
         const subn = await store.getSubscription();
@@ -230,7 +234,7 @@ export default function App() {
     const reload = async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members);
+        setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
         setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
     };
@@ -252,6 +256,35 @@ export default function App() {
       .then((a) => setActivity((xs) => [a, ...xs]))
       .catch(reportError);
   }, []);
+
+  /* ---- inbox archiving ---- */
+  const archiveActivity = useCallback((id: string) => {
+    setActivity((xs) => xs.filter((a) => a.id !== id)); // optimistic
+    store.archiveActivity(id).catch((e) => { reportError(e); toastError("Couldn't archive that item."); });
+  }, [toastError]);
+
+  const clearInbox = useCallback(() => {
+    setActivity((xs) => { if (!xs.length) return xs; return []; });
+    store.clearInbox().then(() => toastSuccess("Inbox cleared")).catch((e) => { reportError(e); toastError("Couldn't clear the inbox."); });
+  }, [toastSuccess, toastError]);
+
+  /* ---- profile ---- */
+  const uploadAvatar = useCallback((file: File) => store.uploadAvatar(userIdRef.current, file), []);
+
+  const saveProfile = useCallback(async (draft: ProfileDraft) => {
+    const email = auth.user?.email ?? getMember(userIdRef.current)?.email ?? "";
+    const saved = await store.saveProfile(userIdRef.current, { ...draft, email });
+    setProfile(saved);
+    // reflect name/avatar/pronouns in reference data so every Avatar + assignee
+    // label across the app updates immediately.
+    const name = [saved.firstName, saved.lastName].filter(Boolean).join(" ").trim();
+    setReferenceData({
+      members: MEMBERS.map((m) => m.id === userIdRef.current
+        ? { ...m, name: name || m.name, email: saved.email || m.email, pronouns: saved.pronouns || undefined, avatarUrl: saved.avatarUrl }
+        : m),
+    });
+    toastSuccess("Profile saved");
+  }, [auth.user?.email, toastSuccess]);
 
   const persistTask = useCallback((raw: Task) => {
     // a task lives in its project's workspace
@@ -522,7 +555,7 @@ export default function App() {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} />;
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} />;
       case "analytics": return <AnalyticsView tasks={allTasks} />;
-      case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} />;
+      case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "tasks":
@@ -546,7 +579,7 @@ export default function App() {
 
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
-      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)}
+      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} />
   );
 
@@ -588,6 +621,10 @@ export default function App() {
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
+        initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
+        email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
+        onUpload={uploadAvatar} onSave={saveProfile} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);

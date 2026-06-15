@@ -14,13 +14,22 @@ export { Icon };
 export function Avatar({ id, size = 24, ring }: { id: string; size?: number; ring?: boolean }) {
   const m = getMember(id);
   if (!m) return null;
+  const shadow = ring ? `0 0 0 2px var(--bg), 0 0 0 3.5px ${m.color}` : "0 0 0 1.5px var(--bg)";
+  if (m.avatarUrl) {
+    return (
+      <img src={m.avatarUrl} alt={m.name} title={m.name} style={{
+        width: size, height: size, borderRadius: 99, flexShrink: 0, objectFit: "cover",
+        display: "inline-block", boxShadow: shadow,
+      }} />
+    );
+  }
   return (
     <span title={m.name} style={{
       width: size, height: size, borderRadius: 99, flexShrink: 0,
       display: "inline-grid", placeItems: "center",
       fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: size * 0.36,
       color: "var(--bg-deep)", background: m.color,
-      boxShadow: ring ? `0 0 0 2px var(--bg), 0 0 0 3.5px ${m.color}` : "0 0 0 1.5px var(--bg)",
+      boxShadow: shadow,
     }}>{memberInitials(m.name)}</span>
   );
 }

@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -20,6 +20,7 @@ export interface Bootstrap {
   members: WorkspaceMember[];
   currentUserId: string;
   defaultWorkspace: string | null;
+  profile: Profile | null;
 }
 
 export interface AuthedUser {
@@ -122,10 +123,19 @@ function rowToComment(r: CommentRow): Comment {
   return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at };
 }
 
-interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; }
+interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; }
 function rowToActivity(r: ActivityRow): Activity {
   return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at };
 }
+
+interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; }
+function rowToProfile(r: ProfileRow): Profile {
+  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url };
+}
+function fullName(p: { firstName: string; lastName: string }): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
+}
+const AVATAR_BUCKET = "avatars";
 
 export interface NewActivity {
   taskId: string | null;
@@ -155,6 +165,7 @@ const ATTACH_BUCKET = "task-files";
 /* demo-mode in-memory stores (session-only, like the rest of demo mode) */
 const demoComments: Record<string, Comment[]> = {};
 let demoActivity: Activity[] = [];
+let demoProfile: Profile | null = null;
 let demoWorkspaces: Workspace[] = [];
 let demoMembers: WorkspaceMember[] = [];
 const demoAttachments: Record<string, Attachment[]> = {};
@@ -231,7 +242,7 @@ export const store = {
       return {
         tasks: TASKS.map(withPlanFields), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
-        currentUserId: "m-self", defaultWorkspace: "ws-foundrise",
+        currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
       };
     }
     // resolve the REAL authenticated user from the live session — robust to a
@@ -241,14 +252,25 @@ export const store = {
     const uid = sUser?.id ?? (user && user.id !== "m-self" ? user.id : undefined);
     if (!uid) throw new Error("Not authenticated");
 
+    // load this user's profile (best-effort: tolerates the profiles migration
+    // not being applied yet). Drives the display name / avatar / pronouns.
+    let myProfile: Profile | null = null;
+    try {
+      const { data: pData } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
+      if (pData) myProfile = rowToProfile(pData as ProfileRow);
+    } catch { /* profiles table not present yet */ }
+
     // clean, minimal reference set (one Personal workspace + project, no demo
     // projects / teammates / calendar events).
+    const profileName = myProfile ? fullName(myProfile) : "";
     const self: Member = {
       id: uid,
-      name: (sUser?.user_metadata?.name as string) || sUser?.email || user?.name || user?.email || "You",
+      name: profileName || (sUser?.user_metadata?.name as string) || sUser?.email || user?.name || user?.email || "You",
       email: sUser?.email || user?.email || "",
       type: "self",
       color: "oklch(0.585 0.196 264)",
+      pronouns: myProfile?.pronouns || undefined,
+      avatarUrl: myProfile?.avatarUrl || null,
     };
 
     // claim any pending workspace invites for this email (best-effort —
@@ -288,6 +310,19 @@ export const store = {
       }
     });
 
+    // enrich teammates with their profiles (real name / avatar / pronouns) so
+    // collaborators see people, not emails (best-effort).
+    if (teammates.length) {
+      try {
+        const { data: profData } = await supabase.from("profiles").select("*").in("id", teammates.map((t) => t.id));
+        const byId = new Map((((profData as ProfileRow[] | null) ?? []).map(rowToProfile)).map((p) => [p.id, p]));
+        teammates.forEach((t) => {
+          const p = byId.get(t.id);
+          if (p) { const n = fullName(p); if (n) t.name = n; t.avatarUrl = p.avatarUrl; t.pronouns = p.pronouns || undefined; }
+        });
+      } catch { /* profiles table not present yet */ }
+    }
+
     setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
     return {
       tasks: (taskData as TaskRow[]).map(rowToTask),
@@ -297,6 +332,7 @@ export const store = {
       members,
       currentUserId: uid,
       defaultWorkspace: null,
+      profile: myProfile,
     };
   },
 
@@ -516,12 +552,65 @@ export const store = {
     }
   },
 
-  /* ---------- activity feed ---------- */
+  /* ---------- activity feed (Inbox) ---------- */
   async listActivity(limit = 100): Promise<Activity[]> {
     if (!supabase) return demoActivity.slice(0, limit);
-    const { data, error } = await supabase.from("activity").select("*").order("created_at", { ascending: false }).limit(limit);
+    // prefer non-archived only; fall back if the archived_at column isn't there
+    // yet (migration 0010 not applied) so the app still loads.
+    let res = await supabase.from("activity").select("*")
+      .is("archived_at", null).order("created_at", { ascending: false }).limit(limit);
+    if (res.error) {
+      res = await supabase.from("activity").select("*").order("created_at", { ascending: false }).limit(limit);
+    }
+    if (res.error) throw res.error;
+    return (res.data as ActivityRow[]).map(rowToActivity);
+  },
+
+  // Archive a single inbox item — hides it from the feed, keeps the history.
+  async archiveActivity(id: string): Promise<void> {
+    if (!supabase) { demoActivity = demoActivity.filter((a) => a.id !== id); return; }
+    const { error } = await supabase.from("activity").update({ archived_at: new Date().toISOString() }).eq("id", id);
     if (error) throw error;
-    return (data as ActivityRow[]).map(rowToActivity);
+  },
+
+  // "Clear whole inbox" — archive every still-active item for this user.
+  async clearInbox(): Promise<void> {
+    if (!supabase) { demoActivity = []; return; }
+    const { error } = await supabase.from("activity")
+      .update({ archived_at: new Date().toISOString() }).is("archived_at", null);
+    if (error) throw error;
+  },
+
+  /* ---------- profiles ---------- */
+  async getProfile(userId: string): Promise<Profile | null> {
+    if (!supabase) return demoProfile;
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
+    if (error) throw error;
+    return data ? rowToProfile(data as ProfileRow) : null;
+  },
+
+  async saveProfile(userId: string, p: { firstName: string; lastName: string; pronouns: string; email: string; avatarUrl: string | null }): Promise<Profile> {
+    if (!supabase) { demoProfile = { id: userId, ...p }; return demoProfile; }
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("profiles").upsert({
+      id: uid, first_name: p.firstName, last_name: p.lastName, pronouns: p.pronouns,
+      email: p.email, avatar_url: p.avatarUrl, updated_at: new Date().toISOString(),
+    }).select("*").single();
+    if (error) throw error;
+    return rowToProfile(data as ProfileRow);
+  },
+
+  // Upload an avatar image to the public "avatars" bucket; returns its URL.
+  async uploadAvatar(userId: string, file: File): Promise<string> {
+    if (!supabase) return URL.createObjectURL(file);
+    const uid = await authUid(userId);
+    const ext = (file.name.split(".").pop() || "png").toLowerCase();
+    const path = `${uid}/avatar-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+    if (error) throw error;
+    const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+    return data.publicUrl;
   },
 
   async logActivity(input: NewActivity, userId: string): Promise<Activity> {
