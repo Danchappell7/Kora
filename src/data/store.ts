@@ -207,7 +207,10 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
   };
 }
 
-const TASK_SELECT = "*, subtasks(*), task_dependencies(depends_on)";
+// tasks ↔ task_dependencies has TWO foreign keys (task_id and depends_on), so
+// the embed MUST name the FK or PostgREST returns 300 PGRST201 and the whole
+// query fails. We want this task's own dependency rows (task_id = id).
+const TASK_SELECT = "*, subtasks(*), task_dependencies!task_dependencies_task_id_fkey(depends_on)";
 
 /* ============================================================
    Public store API
