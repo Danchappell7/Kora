@@ -10,6 +10,9 @@ type Mode = "signin" | "signup" | "reset";
 // Invite-only mode: hides self-signup + Google. Real enforcement is the
 // "Disable signup" toggle in Supabase; this just matches the UI to it.
 const SIGNUP_DISABLED = import.meta.env.VITE_DISABLE_SIGNUP === "true";
+// Google sign-in is hidden until the Google provider is configured in Supabase.
+// Set VITE_ENABLE_GOOGLE=true once OAuth credentials are in place.
+const GOOGLE_ENABLED = import.meta.env.VITE_ENABLE_GOOGLE === "true";
 
 export function LoginScreen() {
   const { signIn, signUp, signInWithGoogle, resetPassword } = useAuth();
@@ -32,7 +35,7 @@ export function LoginScreen() {
     else res = await resetPassword(email);
     setBusy(false);
     if (res.error) setError(res.error);
-    else if (mode === "signup") setNotice("Check your email to confirm your account, then sign in.");
+    else if (mode === "signup") setNotice("Account created — signing you in…");
     else if (mode === "reset") setNotice("If that email has an account, a reset link is on its way.");
   };
 
@@ -51,7 +54,7 @@ export function LoginScreen() {
           </div>
         </div>
 
-        {mode !== "reset" && !SIGNUP_DISABLED && (
+        {mode !== "reset" && GOOGLE_ENABLED && !SIGNUP_DISABLED && (
           <>
             <button onClick={signInWithGoogle} className="btn btn-ghost" style={{ width: "100%", justifyContent: "center", marginBottom: 16, padding: "10px 15px" }}>
               <Icon name="sparkles" size={16} /> Continue with Google
