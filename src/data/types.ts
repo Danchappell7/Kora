@@ -146,6 +146,24 @@ export interface CalEvent {
   with?: string[];
 }
 
+/* external calendar integration (Google / Microsoft) */
+export type CalProvider = "google" | "microsoft";
+
+export interface CalendarConnection {
+  provider: CalProvider;
+  accountEmail: string;
+  createdAt?: string;
+}
+
+export interface ExternalEvent {
+  id: string;
+  title: string;
+  start: string;   // ISO datetime (or date for all-day)
+  end: string;
+  allDay: boolean;
+  provider: string;
+}
+
 export interface StatusMeta {
   label: string;
   color: string;

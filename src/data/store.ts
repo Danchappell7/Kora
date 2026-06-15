@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -161,6 +161,22 @@ function rowToAttachment(r: AttachmentRow, url?: string): Attachment {
 }
 
 const ATTACH_BUCKET = "task-files";
+
+// Call the `calendar` Edge Function (GET, query-string actions) with the live
+// session token. Throws with the function's error message on non-2xx.
+const CALENDAR_FN = (import.meta.env.VITE_SUPABASE_URL || "") + "/functions/v1/calendar";
+async function callCalendarFn(qs: string): Promise<Record<string, unknown>> {
+  if (!supabase) throw new Error("Calendar sync needs the live backend.");
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Not signed in.");
+  const res = await fetch(`${CALENDAR_FN}${qs}`, {
+    headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || "", Authorization: `Bearer ${token}` },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error || `Calendar request failed (${res.status})`);
+  return body as Record<string, unknown>;
+}
 
 /* demo-mode in-memory stores (session-only, like the rest of demo mode) */
 const demoComments: Record<string, Comment[]> = {};
@@ -611,6 +627,37 @@ export const store = {
     if (error) throw error;
     const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
     return data.publicUrl;
+  },
+
+  /* ---------- external calendars (Google / Microsoft) ---------- */
+  // which calendars the user has connected (no tokens — those stay server-side)
+  async listCalendarConnections(): Promise<CalendarConnection[]> {
+    if (!supabase) return [];
+    try {
+      const b = await callCalendarFn("?action=list");
+      return ((b.connections ?? []) as { provider: CalProvider; account_email: string; created_at?: string }[])
+        .map((c) => ({ provider: c.provider, accountEmail: c.account_email, createdAt: c.created_at }));
+    } catch { return []; }
+  },
+
+  // get the provider's OAuth consent URL to redirect the browser to
+  async getCalendarAuthUrl(provider: CalProvider): Promise<string> {
+    const b = await callCalendarFn(`?action=connect&provider=${provider}`);
+    if (!b.url) throw new Error((b.error as string) || "Couldn't start the connection.");
+    return b.url as string;
+  },
+
+  // merged upcoming events across all connected calendars in a window
+  async listExternalEvents(startISO: string, endISO: string): Promise<ExternalEvent[]> {
+    if (!supabase) return [];
+    try {
+      const b = await callCalendarFn(`?action=events&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`);
+      return (b.events ?? []) as ExternalEvent[];
+    } catch { return []; }
+  },
+
+  async disconnectCalendar(provider: CalProvider): Promise<void> {
+    await callCalendarFn(`?action=disconnect&provider=${provider}`);
   },
 
   async logActivity(input: NewActivity, userId: string): Promise<Activity> {

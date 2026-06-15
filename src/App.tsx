@@ -32,7 +32,7 @@ import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -160,6 +160,9 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
+  const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
+  const [calSyncing, setCalSyncing] = useState(false);
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>("list");
@@ -285,6 +288,55 @@ export default function App() {
     });
     toastSuccess("Profile saved");
   }, [auth.user?.email, toastSuccess]);
+
+  /* ---- external calendars (Google / Microsoft) ---- */
+  const refreshCalendar = useCallback(async () => {
+    if (!store.configured) return;
+    setCalSyncing(true);
+    try {
+      const conns = await store.listCalendarConnections();
+      setCalConnections(conns);
+      if (conns.length) {
+        const start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0);
+        const end = new Date(start); end.setMonth(end.getMonth() + 2);
+        setCalEvents(await store.listExternalEvents(start.toISOString(), end.toISOString()));
+      } else {
+        setCalEvents([]);
+      }
+    } catch (e) { reportError(e); }
+    finally { setCalSyncing(false); }
+  }, []);
+
+  const connectCalendar = useCallback(async (provider: CalProvider) => {
+    try {
+      const url = await store.getCalendarAuthUrl(provider);
+      window.location.href = url; // full redirect to the provider's consent screen
+    } catch (e) {
+      reportError(e);
+      toastError(e instanceof Error ? e.message : "Couldn't start the connection.");
+    }
+  }, [toastError]);
+
+  const disconnectCalendar = useCallback(async (provider: CalProvider) => {
+    try { await store.disconnectCalendar(provider); toastSuccess("Calendar disconnected"); refreshCalendar(); }
+    catch (e) { reportError(e); toastError("Couldn't disconnect that calendar."); }
+  }, [toastSuccess, toastError, refreshCalendar]);
+
+  // load connected calendars on sign-in, and handle the OAuth round-trip return
+  useEffect(() => {
+    if (!store.configured || !authUserId) return;
+    refreshCalendar();
+    const params = new URLSearchParams(window.location.search);
+    const cal = params.get("calendar");
+    if (cal === "connected") { toastSuccess("Calendar connected"); setRouteRaw({ view: "calendar" }); }
+    if (cal === "error") toastError("Couldn't connect that calendar. Please try again.");
+    if (cal) {
+      params.delete("calendar"); params.delete("fresh");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUserId]);
 
   const persistTask = useCallback((raw: Task) => {
     // a task lives in its project's workspace
@@ -556,7 +608,7 @@ export default function App() {
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} />;
       case "analytics": return <AnalyticsView tasks={allTasks} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
-      case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} />;
+      case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "tasks":
       case "project":
