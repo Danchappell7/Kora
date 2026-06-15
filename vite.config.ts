@@ -21,8 +21,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: false,
-    // run tests in demo mode (no Supabase) regardless of a local .env
-    env: { VITE_SUPABASE_URL: "", VITE_SUPABASE_ANON_KEY: "" },
+    // run tests in demo mode (no Supabase) regardless of a local .env;
+    // billing on so the trial/paywall math is exercised by Billing.test.ts
+    env: { VITE_SUPABASE_URL: "", VITE_SUPABASE_ANON_KEY: "", VITE_BILLING_ENABLED: "true" },
     coverage: { provider: "v8", reporter: ["text", "html"] },
   },
 });

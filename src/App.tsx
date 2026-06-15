@@ -11,7 +11,7 @@ import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
-import { TrialBanner, UpgradeModal, Paywall, hasAccess } from "./components/Billing";
+import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
@@ -563,7 +563,7 @@ export default function App() {
         </>
       ) : sidebar}
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
-        {subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
+        {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
         <Topbar {...headerProps} theme={theme} toggleTheme={() => setTheme((t) => t === "dark" ? "light" : "dark")}
           onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
           onNewTask={() => openNewTask()} onNewProject={() => setNewProjectOpen(true)} onCommand={() => setCmdOpen(true)} onBell={() => setRoute({ view: "inbox" })}>

@@ -3,7 +3,7 @@
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar } from "./primitives";
-import { trialDaysLeft } from "./Billing";
+import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
 import type { Task, Project, Member, Workspace, Subscription, IconName } from "../data/types";
 import type { Route } from "../app-types";
 import type { FocusTimer } from "../hooks/useFocusTimer";
@@ -163,7 +163,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
       </div>
 
       {/* billing */}
-      {subscription && (
+      {BILLING_ENABLED && subscription && (
         <button onClick={subscription.status === "active" ? onManageBilling : onUpgrade}
           style={{ display: "flex", alignItems: "center", gap: 9, margin: "0 12px 4px", padding: "8px 11px", borderRadius: 10, cursor: "pointer", textAlign: "left", border: "1px solid var(--hairline)", background: subscription.status === "trialing" ? "var(--accent-dim)" : "var(--surface)", fontFamily: "var(--font-display)" }}>
           <Icon name="sparkles" size={15} style={{ color: "var(--accent)", flexShrink: 0 }} />
