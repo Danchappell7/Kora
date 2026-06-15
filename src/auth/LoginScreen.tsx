@@ -7,6 +7,10 @@ import { useAuth } from "./AuthProvider";
 
 type Mode = "signin" | "signup" | "reset";
 
+// Invite-only mode: hides self-signup + Google. Real enforcement is the
+// "Disable signup" toggle in Supabase; this just matches the UI to it.
+const SIGNUP_DISABLED = import.meta.env.VITE_DISABLE_SIGNUP === "true";
+
 export function LoginScreen() {
   const { signIn, signUp, signInWithGoogle, resetPassword } = useAuth();
   const [mode, setMode] = useState<Mode>("signin");
@@ -47,7 +51,7 @@ export function LoginScreen() {
           </div>
         </div>
 
-        {mode !== "reset" && (
+        {mode !== "reset" && !SIGNUP_DISABLED && (
           <>
             <button onClick={signInWithGoogle} className="btn btn-ghost" style={{ width: "100%", justifyContent: "center", marginBottom: 16, padding: "10px 15px" }}>
               <Icon name="sparkles" size={16} /> Continue with Google
@@ -78,6 +82,8 @@ export function LoginScreen() {
         <div style={{ marginTop: 16, textAlign: "center", fontSize: 13, color: "var(--ink-3)" }}>
           {mode === "reset" ? (
             <button onClick={() => go("signin")} style={linkStyle}>← Back to sign in</button>
+          ) : SIGNUP_DISABLED ? (
+            <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Accounts are invite-only.</span>
           ) : mode === "signin" ? (
             <>New to Kora? <button onClick={() => go("signup")} style={linkStyle}>Create an account</button></>
           ) : (
