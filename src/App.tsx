@@ -693,8 +693,10 @@ export default function App() {
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
-      <WelcomeModal open={welcomeOpen} onClose={dismissWelcome} onSetupProfile={() => { dismissWelcome(); setSettingsOpen(true); }}
-        name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined} />
+      <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}
+        onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null })}
+        name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined}
+        initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
