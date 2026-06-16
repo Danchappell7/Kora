@@ -603,7 +603,9 @@ export default function App() {
   // scope tasks by route
   let scoped = allTasks, title = "My tasks", subtitle = "Everything assigned to you", breadcrumb = activeWsName;
   let newProj = getProject("");
-  if (route.view === "tasks") { scoped = allTasks.filter((t) => t.assigneeId === currentUserId); }
+  // "My tasks" spans every workspace — anything assigned to you, including tasks
+  // someone assigned you in a shared workspace you're not currently viewing.
+  if (route.view === "tasks") { scoped = tasks.filter((t) => t.assigneeId === currentUserId); }
   else if (route.view === "project" && route.projectId) {
     const p = getProject(route.projectId); newProj = p;
     scoped = allTasks.filter((t) => t.projectId === route.projectId);
@@ -686,12 +688,12 @@ export default function App() {
         else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.label.includes("analytics")) setRoute({ view: "analytics" });
       }} />
-      {detailId && <TaskDetail taskId={detailId} tasks={allTasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
-      <WelcomeModal open={welcomeOpen} onClose={dismissWelcome} onCreateTask={() => { dismissWelcome(); openNewTask(); }}
+      <WelcomeModal open={welcomeOpen} onClose={dismissWelcome} onSetupProfile={() => { dismissWelcome(); setSettingsOpen(true); }}
         name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}

@@ -691,6 +691,7 @@ export const store = {
       .on("postgres_changes", { event: "*", schema: "public", table: "workspaces" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "workspace_members" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "attachments" }, onChange)
+      .on("postgres_changes", { event: "*", schema: "public", table: "activity" }, onChange) // assignment notifications land live in the inbox
       .subscribe();
     return () => { client.removeChannel(channel); };
   },

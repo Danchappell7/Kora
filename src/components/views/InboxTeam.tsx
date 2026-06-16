@@ -13,6 +13,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: str
   reopened:  { icon: "refresh", color: "var(--st-review)",  verb: "reopened" },
   comment:   { icon: "message", color: "var(--accent)",     verb: "commented on" },
   deleted:   { icon: "trash",   color: "var(--st-blocked)", verb: "deleted" },
+  assigned:  { icon: "user",    color: "var(--accent)",     verb: "assigned you" },
 };
 
 export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
@@ -60,11 +61,15 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
                 padding: 0, cursor: taskStillExists ? "pointer" : "default", fontFamily: "var(--font-display)",
               }}>
                 <div className="truncate" style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
-                  You {meta.verb} <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong>
+                  {a.kind === "assigned"
+                    ? <><strong style={{ color: "var(--ink)" }}>{a.detail || "Someone"}</strong> assigned you <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong></>
+                    : <>You {meta.verb} <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong></>}
                 </div>
-                <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2 }}>
-                  {a.kind === "comment" ? `“${a.detail}”` : a.detail}
-                </div>
+                {a.kind !== "assigned" && (
+                  <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2 }}>
+                    {a.kind === "comment" ? `“${a.detail}”` : a.detail}
+                  </div>
+                )}
               </button>
               <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{timeAgo(a.createdAt)}</span>
               <button className="btn-icon kinbox-archive" title="Archive" aria-label="Archive this update"

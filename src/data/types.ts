@@ -126,7 +126,7 @@ export interface Attachment {
   createdAt: string;
 }
 
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted";
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned";
 
 export interface Activity {
   id: string;

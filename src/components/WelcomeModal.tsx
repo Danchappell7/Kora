@@ -11,10 +11,10 @@ const STEPS: { icon: IconName; title: string; body: string }[] = [
   { icon: "clock", title: "Focus & finish", body: "Start a focus block and watch the work get done." },
 ];
 
-export function WelcomeModal({ open, onClose, onCreateTask, name }: {
+export function WelcomeModal({ open, onClose, onSetupProfile, name }: {
   open: boolean;
   onClose: () => void;
-  onCreateTask: () => void;
+  onSetupProfile: () => void;
   name?: string;
 }) {
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
@@ -28,7 +28,7 @@ export function WelcomeModal({ open, onClose, onCreateTask, name }: {
           Welcome to Kanbo{first ? `, ${first}` : ""} 👋
         </h2>
         <p style={{ fontSize: 14, color: "var(--ink-3)", margin: "0 auto 22px", maxWidth: 360, lineHeight: 1.55 }}>
-          Your clean slate is ready. Here's the rhythm Kanbo is built around:
+          Let's get you set up. First, add your name so teammates know who they're working with — then here's the rhythm Kanbo runs on:
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left", marginBottom: 24 }}>
@@ -43,11 +43,11 @@ export function WelcomeModal({ open, onClose, onCreateTask, name }: {
           ))}
         </div>
 
-        <button className="btn btn-accent" onClick={() => { onClose(); onCreateTask(); }} style={{ width: "100%", justifyContent: "center", padding: "12px 15px" }}>
-          <Icon name="plus" size={16} /> Create your first task
+        <button className="btn btn-accent" onClick={() => { onClose(); onSetupProfile(); }} style={{ width: "100%", justifyContent: "center", padding: "12px 15px" }}>
+          <Icon name="user" size={16} /> Set up your profile
         </button>
         <button onClick={onClose} style={{ marginTop: 12, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>
-          I'll explore on my own
+          Skip for now
         </button>
       </div>
     </div>
