@@ -5,10 +5,12 @@ import type { ReactNode, CSSProperties } from "react";
 import { Icon, StatusDot, PriorityFlag } from "../primitives";
 import { Bars, Ring, type BarDatum } from "../charts";
 import { StatTile } from "./HomeView";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Priority } from "../../data/types";
 
 export function AnalyticsView({ tasks }: { tasks: Task[] }) {
+  const isMobile = useMediaQuery("(max-width: 860px)");
   const done = tasks.filter((t) => t.status === "done").length;
   const open = tasks.length - done;
   const completion = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
@@ -43,7 +45,7 @@ export function AnalyticsView({ tasks }: { tasks: Task[] }) {
   }
 
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px" }}>
+    <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 14px 32px" : "24px 24px 40px" }}>
       {/* insight — derived from real data */}
       <div className="glass anim-fadeup" style={{ padding: 18, borderRadius: 16, marginBottom: 18, display: "flex", alignItems: "center", gap: 13 }}>
         <span style={{ display: "grid", placeItems: "center", width: 30, height: 30, borderRadius: 9, background: "var(--accent-dim)", color: "var(--accent)", flexShrink: 0 }}><Icon name="sparkles" size={17} /></span>
@@ -54,14 +56,14 @@ export function AnalyticsView({ tasks }: { tasks: Task[] }) {
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
         <StatTile kicker="Completion rate" value={completion + "%"} icon="target" accent sub="of all tasks" />
         <StatTile kicker="Done this week" value={doneThisWeek} icon="check" sub="last 7 days" />
         <StatTile kicker="Finished early" value={finishedEarly} icon="trendingUp" sub="before due date" />
         <StatTile kicker="Open tasks" value={open} icon="clock" accent sub="not yet done" />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.5fr 1fr", gap: 16, marginBottom: 16 }}>
         <Card>
           <h3 style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 18 }}>Completed — last 7 days</h3>
           <Bars data={weekBars} h={150} />
@@ -76,7 +78,7 @@ export function AnalyticsView({ tasks }: { tasks: Task[] }) {
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
         {/* status breakdown */}
         <Card>
           <h3 style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 16 }}>By status</h3>

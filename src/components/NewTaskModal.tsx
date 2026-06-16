@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
 import { PRIORITY_META, energyOf } from "../data/data";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
@@ -37,6 +38,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [tags, setTags] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
+  const isMobile = useMediaQuery("(max-width: 860px)");
 
   // assignable people: active workspace members (always includes you)
   const assignable = members.filter((m) => m.status === "active" && m.userId);
@@ -84,7 +86,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
             placeholder="Task title…"
             style={{ width: "100%", height: 44, padding: "0 14px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 15.5, fontWeight: 500, outline: "none" }} />
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
             <label style={fieldLabel}>Project
               <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={selectStyle}>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.emoji} {p.name}</option>)}
