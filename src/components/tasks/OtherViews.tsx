@@ -17,14 +17,16 @@ const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
 };
 
 /* ---------------- KANBAN ---------------- */
-function KanbanCard({ task, allTasks, onOpen }: { task: Task; allTasks: Task[]; onOpen: (id: string) => void }) {
+function KanbanCard({ task, allTasks, onOpen, onMove }: { task: Task; allTasks: Task[]; onOpen: (id: string) => void; onMove: (id: string, status: Status) => void }) {
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const ds = dueState(task.dueDate, task.status);
+  const isMobile = useMediaQuery("(max-width: 860px)");
+  const [moveOpen, setMoveOpen] = useState(false);
   return (
-    <div onClick={() => onOpen(task.id)} className="glass clickable lift" draggable
+    <div onClick={() => onOpen(task.id)} className="glass clickable lift" draggable={!isMobile}
       onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; }}
-      style={{ padding: 13, borderRadius: 12, cursor: "grab" }}>
+      style={{ padding: 13, borderRadius: 12, cursor: isMobile ? "pointer" : "grab" }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <PriorityFlag priority={task.priority} size={13} />
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
@@ -41,6 +43,27 @@ function KanbanCard({ task, allTasks, onOpen }: { task: Task; allTasks: Task[]; 
         <div style={{ flex: 1 }} />
         {task.dueDate && <span className="mono" style={{ fontSize: 11, color: ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(task.dueDate)}</span>}
         <Avatar id={task.assigneeId} size={22} />
+        {/* touch devices can't drag between columns — give a tap-to-move menu */}
+        {isMobile && (
+          <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+            <button className="btn-icon" aria-label="Move to status" onClick={() => setMoveOpen((v) => !v)} style={{ border: "none", width: 30, height: 30, color: "var(--ink-3)" }}><Icon name="layers" size={15} /></button>
+            {moveOpen && (
+              <>
+                <div onClick={() => setMoveOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 41, width: 172, padding: 6, borderRadius: 12, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
+                  <div className="kicker" style={{ padding: "4px 9px 6px" }}>Move to</div>
+                  {STATUS_ORDER.map((s) => (
+                    <button key={s} onClick={() => { setMoveOpen(false); if (s !== task.status) onMove(task.id, s); }}
+                      style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "9px 9px", borderRadius: 8, border: "none", background: task.status === s ? "var(--surface-2)" : "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)" }}>
+                      <StatusDot status={s} size={7} /> {STATUS_META[s].label}
+                      {task.status === s && <Icon name="check" size={13} style={{ marginLeft: "auto", color: "var(--accent)" }} />}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -67,7 +90,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: T
               <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
                 background: dragOver === s ? "var(--accent-dim)" : "color-mix(in oklch, var(--bg-deep) 28%, transparent)",
                 boxShadow: dragOver === s ? "inset 0 0 0 2px var(--accent)" : "none" }}>
-                {items.map((t) => <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} />)}
+                {items.map((t) => <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onMove={onMove} />)}
                 <button onClick={() => onAdd(s)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
                   <Icon name="plus" size={14} /> Add task
                 </button>

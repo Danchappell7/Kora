@@ -13,6 +13,7 @@ import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { MobileNav } from "./components/MobileNav";
+import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
@@ -162,6 +163,7 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
@@ -323,6 +325,19 @@ export default function App() {
     try { await store.disconnectCalendar(provider); toastSuccess("Calendar disconnected"); refreshCalendar(); }
     catch (e) { reportError(e); toastError("Couldn't disconnect that calendar."); }
   }, [toastSuccess, toastError, refreshCalendar]);
+
+  // first-run welcome — once, for a brand-new account that has no tasks yet
+  const welcomeKey = `kanbo-welcomed-${currentUserId}`;
+  useEffect(() => {
+    if (!store.configured || tasks === null) return;
+    if (tasks.length === 0) {
+      try { if (!localStorage.getItem(welcomeKey)) setWelcomeOpen(true); } catch { /* private mode */ }
+    }
+  }, [tasks, welcomeKey]);
+  const dismissWelcome = useCallback(() => {
+    try { localStorage.setItem(welcomeKey, "1"); } catch { /* private mode */ }
+    setWelcomeOpen(false);
+  }, [welcomeKey]);
 
   // load connected calendars on sign-in, and handle the OAuth round-trip return
   useEffect(() => {
@@ -676,6 +691,8 @@ export default function App() {
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
+      <WelcomeModal open={welcomeOpen} onClose={dismissWelcome} onCreateTask={() => { dismissWelcome(); openNewTask(); }}
+        name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
