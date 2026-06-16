@@ -11,7 +11,7 @@ const createMenuItem: CSSProperties = {
   color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5,
 };
 
-export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNewProject, onCommand, onBell, onMenu, theme, toggleTheme }: {
+export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNewProject, onCommand, onBell, onMenu, theme, toggleTheme, hasUnread }: {
   title?: string;
   subtitle?: string;
   breadcrumb?: string;
@@ -23,6 +23,7 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
   onMenu?: () => void;
   theme: "light" | "dark";
   toggleTheme: () => void;
+  hasUnread?: boolean;
 }) {
   const [createOpen, setCreateOpen] = useState(false);
   return (
@@ -58,7 +59,7 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
       </button>
       <button className="btn-icon" onClick={onBell} title="Notifications" style={{ position: "relative" }}>
         <Icon name="bell" size={17} />
-        <span style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent)" }} />
+        {hasUnread && <span style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent)" }} />}
       </button>
       <div style={{ position: "relative" }}>
         <button className="btn btn-accent topbar-create" onClick={() => setCreateOpen((v) => !v)}>

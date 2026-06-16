@@ -652,7 +652,7 @@ export default function App() {
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
         <Topbar {...headerProps} theme={theme} toggleTheme={() => setTheme((t) => t === "dark" ? "light" : "dark")}
-          onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
+          hasUnread={inboxCount > 0} onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
           onNewTask={() => openNewTask()} onNewProject={() => setNewProjectOpen(true)} onCommand={() => setCmdOpen(true)} onBell={() => setRoute({ view: "inbox" })}>
           {(route.view === "project") && newProj && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "0 4px" }}>

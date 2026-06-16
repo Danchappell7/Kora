@@ -222,7 +222,10 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
   onDisconnect?: (p: CalProvider) => void;
   syncing?: boolean;
 }) {
-  const year = KANBO_TODAY.getFullYear(), month = KANBO_TODAY.getMonth();
+  // month navigation (0 = current month)
+  const [monthOffset, setMonthOffset] = useState(0);
+  const viewMonth = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth() + monthOffset, 1);
+  const year = viewMonth.getFullYear(), month = viewMonth.getMonth();
   const first = new Date(year, month, 1);
   const startDow = (first.getDay() + 6) % 7; // Mon-first
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -230,8 +233,18 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
   for (let i = 0; i < startDow; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7) cells.push(null);
-  const todayD = KANBO_TODAY.getDate();
+  // only highlight "today" when we're actually viewing the current month
+  const todayD = monthOffset === 0 ? KANBO_TODAY.getDate() : -1;
   const iso = (d: number) => toLocalISO(new Date(year, month, d));
+  const monthLabel = viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const MonthNav = () => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <button className="btn-icon" aria-label="Previous month" onClick={() => setMonthOffset((m) => m - 1)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronLeft" size={17} /></button>
+      <span style={{ fontSize: 14, fontWeight: 600, minWidth: 124, textAlign: "center" }}>{monthLabel}</span>
+      <button className="btn-icon" aria-label="Next month" onClick={() => setMonthOffset((m) => m + 1)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronRight" size={17} /></button>
+      {monthOffset !== 0 && <button className="btn btn-ghost" onClick={() => setMonthOffset(0)} style={{ fontSize: 12.5, padding: "5px 11px" }}>Today</button>}
+    </div>
+  );
 
   // group external events by local calendar day
   const evByDate: Record<string, ExternalEvent[]> = {};
@@ -258,6 +271,7 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "14px 14px 28px" }}>
         {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
+        <div style={{ marginBottom: 14 }}><MonthNav /></div>
         {agenda.length === 0 ? (
           <div style={{ textAlign: "center", color: "var(--ink-4)", padding: "40px 16px" }}>
             <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="calendar" size={24} /></div>
@@ -305,7 +319,11 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "18px 24px 28px" }}>
-      {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <MonthNav />
+        <div style={{ flex: 1 }} />
+        {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 8 }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="kicker" style={{ textAlign: "center", padding: "4px 0" }}>{d}</div>)}
       </div>
