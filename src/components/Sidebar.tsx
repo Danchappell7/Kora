@@ -2,7 +2,7 @@
    KANBO — Sidebar (nav, workspace switcher, projects, deep-work mini)
    ============================================================ */
 import { useState } from "react";
-import { Icon, Avatar } from "./primitives";
+import { Icon, Avatar, KanboLogo } from "./primitives";
 import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
 import type { Task, Project, Member, Workspace, Subscription, IconName } from "../data/types";
 import type { Route } from "../app-types";
@@ -94,13 +94,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "7px 8px",
           borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer",
         }}>
-          <span style={{
-            width: 30, height: 30, borderRadius: 9, flexShrink: 0, display: "grid", placeItems: "center",
-            background: "var(--accent)", color: "var(--on-accent)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17,
-            boxShadow: "0 0 16px var(--accent-glow)",
-          }}>K</span>
+          <KanboLogo size={30} glow />
           <span style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-            <span style={{ display: "block", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 15, letterSpacing: "-0.02em" }}>Kanbo</span>
+            <span style={{ display: "block", fontFamily: "var(--font-head)", fontWeight: 700, fontSize: 15, letterSpacing: "-0.01em" }}>Kanbo</span>
             <span className="truncate" style={{ display: "block", fontSize: 11, color: "var(--ink-4)" }}>{activeWs.name}</span>
           </span>
           <Icon name="chevronDown" size={15} style={{ color: "var(--ink-4)", transform: wsOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }} />

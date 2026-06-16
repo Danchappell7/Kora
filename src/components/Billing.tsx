@@ -1,7 +1,7 @@
 /* ============================================================
    KANBO — billing UI: trial banner, plan picker, paywall
    ============================================================ */
-import { Icon } from "./primitives";
+import { Icon, KanboLogo } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { Plan, Subscription } from "../data/types";
 
@@ -105,7 +105,7 @@ export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut }: {
     <div style={{ position: "relative", minHeight: "100vh", overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }}>
       <div className="app-bg" />
       <div style={{ position: "relative", zIndex: 1, width: 680, maxWidth: "100%", textAlign: "center" }}>
-        <span style={{ display: "inline-grid", placeItems: "center", width: 44, height: 44, borderRadius: 13, background: "var(--accent)", color: "var(--on-accent)", fontWeight: 700, fontSize: 22, boxShadow: "0 0 18px var(--accent-glow)", marginBottom: 16 }}>K</span>
+        <span style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={44} glow /></span>
         <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>
           {ended ? "Your subscription is inactive" : "Your free trial has ended"}
         </h1>

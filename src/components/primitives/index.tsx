@@ -9,6 +9,7 @@ import {
 import type { Status, Priority, IconName } from "../../data/types";
 
 export { Icon };
+export { KanboLogo } from "./KanboLogo";
 
 /* ---------- Avatar ---------- */
 export function Avatar({ id, size = 24, ring }: { id: string; size?: number; ring?: boolean }) {

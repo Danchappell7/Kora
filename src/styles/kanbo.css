@@ -5,19 +5,26 @@
    Default = white glass. [data-theme="dark"] = dark glass alt.
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  /* ---- Type — authentic SF Pro on Apple devices, graceful fallback ---- */
-  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  /* ---- Type — KANBO brand: Sora (headings) · Manrope (body/UI) · JetBrains Mono ---- */
+  --font-display: 'Manrope', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-head: 'Sora', 'Manrope', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* ---- Signal accent (refined Apple azure) ---- */
-  --accent: oklch(0.585 0.196 264);
-  --accent-strong: oklch(0.52 0.21 264);
-  --accent-dim: oklch(0.585 0.196 264 / 0.12);
-  --accent-glow: oklch(0.585 0.196 264 / 0.30);
-  --on-accent: oklch(0.99 0.01 264);
+  /* ---- KANBO brand accent — blue→violet→magenta (violet as the solid signal) ---- */
+  --accent: oklch(0.605 0.205 287);
+  --accent-strong: oklch(0.55 0.225 290);
+  --accent-dim: oklch(0.605 0.205 287 / 0.12);
+  --accent-glow: oklch(0.605 0.205 287 / 0.32);
+  --on-accent: oklch(0.99 0.01 287);
+  /* brand gradient (hero element, used with restraint) */
+  --brand-blue: #5B7CFA;
+  --brand-violet: #8B5CF6;
+  --brand-magenta: #C24BE0;
+  --brand-grad: linear-gradient(135deg, #5B7CFA, #8B5CF6 52%, #C24BE0);
+  --brand-grad-soft: linear-gradient(135deg, oklch(0.66 0.19 270 / 0.16), oklch(0.62 0.22 320 / 0.16));
 
   /* ---- Status palette (shared) ---- */
   --st-todo: oklch(0.62 0.02 260);
@@ -111,6 +118,13 @@ body {
   overflow: hidden;
 }
 #root { height: 100vh; }
+
+/* KANBO brand: Sora for display headings + page titles */
+h1, h2, h3 { font-family: var(--font-head); letter-spacing: -0.02em; }
+.brand-grad-text {
+  background: var(--brand-grad); -webkit-background-clip: text; background-clip: text;
+  color: transparent; -webkit-text-fill-color: transparent;
+}
 
 ::selection { background: var(--accent-glow); color: var(--ink); }
 
