@@ -105,7 +105,7 @@ export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut }: {
     <div style={{ position: "relative", minHeight: "100vh", overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }}>
       <div className="app-bg" />
       <div style={{ position: "relative", zIndex: 1, width: 680, maxWidth: "100%", textAlign: "center" }}>
-        <span style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={44} glow /></span>
+        <span style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={42} /></span>
         <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>
           {ended ? "Your subscription is inactive" : "Your free trial has ended"}
         </h1>

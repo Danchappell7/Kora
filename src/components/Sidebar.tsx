@@ -94,9 +94,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "7px 8px",
           borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer",
         }}>
-          <KanboLogo size={30} glow />
+          <KanboLogo size={26} />
           <span style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-            <span style={{ display: "block", fontFamily: "var(--font-head)", fontWeight: 700, fontSize: 15, letterSpacing: "-0.01em" }}>Kanbo</span>
+            <span style={{ display: "block", fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 14, letterSpacing: "0.15em", textTransform: "uppercase" }}>Kanbo</span>
             <span className="truncate" style={{ display: "block", fontSize: 11, color: "var(--ink-4)" }}>{activeWs.name}</span>
           </span>
           <Icon name="chevronDown" size={15} style={{ color: "var(--ink-4)", transform: wsOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }} />

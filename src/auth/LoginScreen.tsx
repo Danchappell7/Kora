@@ -47,9 +47,9 @@ export function LoginScreen() {
       <div className="app-bg" /><div className="app-grid" />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 400, maxWidth: "100%", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 22 }}>
-          <KanboLogo size={38} glow />
+          <KanboLogo size={34} />
           <div>
-            <div style={{ fontFamily: "var(--font-head)", fontSize: 19, fontWeight: 700, letterSpacing: "-0.01em" }}>Kanbo</div>
+            <div style={{ fontFamily: "var(--font-head)", fontSize: 19, fontWeight: 600, letterSpacing: "0.15em", textTransform: "uppercase" }}>Kanbo</div>
             <div style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{subtitle}</div>
           </div>
         </div>

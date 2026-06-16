@@ -1,34 +1,36 @@
 /* ============================================================
-   KANBO — brand logo mark (kanban glyph in the brand gradient)
-   Matches KANBO Brand Assets / icons / favicon.svg.
+   KANBO — brand logo mark (the kanban glyph, gradient bars)
+   Exact match to KANBO Brand Assets / logo / kanbo-icon-gradient.svg
+   (the lockup mark — bars themselves are the gradient, no square).
+   The square+white treatment is reserved for the favicon / app icon.
    ============================================================ */
 import { useId } from "react";
 
-export function KanboLogo({ size = 32, glow = false, style }: {
-  size?: number;
+const MARK_W = 48, MARK_H = 56; // brand mark aspect ratio
+
+export function KanboLogo({ size = 28, glow = false, style }: {
+  size?: number;        // rendered HEIGHT in px; width follows the brand 48:56 ratio
   glow?: boolean;
   style?: React.CSSProperties;
 }) {
   const gid = useId();
+  const width = Math.round((size * MARK_W) / MARK_H);
   return (
     <svg
-      width={size} height={size} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg"
+      width={width} height={size} viewBox="0 0 48 56" fill="none" xmlns="http://www.w3.org/2000/svg"
       aria-label="KANBO" role="img"
-      style={{ display: "block", flexShrink: 0, filter: glow ? "drop-shadow(0 0 14px var(--accent-glow))" : undefined, ...style }}
+      style={{ display: "block", flexShrink: 0, filter: glow ? "drop-shadow(0 0 12px var(--accent-glow))" : undefined, ...style }}
     >
       <defs>
-        <linearGradient id={gid} x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gid} x1="2" y1="2" x2="46" y2="54" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#5B7CFA" />
           <stop offset="0.52" stopColor="#8B5CF6" />
           <stop offset="1" stopColor="#C24BE0" />
         </linearGradient>
       </defs>
-      <rect width="64" height="64" rx="15" fill={`url(#${gid})`} />
-      <g transform="translate(21,18)" fill="#fff">
-        <rect x="0" y="0" width="7" height="28" rx="2.5" />
-        <rect x="13" y="0" width="11" height="12" rx="2.5" />
-        <rect x="13" y="16" width="11" height="12" rx="2.5" />
-      </g>
+      <rect x="0" y="0" width="14" height="56" rx="5" fill={`url(#${gid})`} />
+      <rect x="26" y="0" width="22" height="24" rx="5" fill={`url(#${gid})`} />
+      <rect x="26" y="32" width="22" height="24" rx="5" fill={`url(#${gid})`} />
     </svg>
   );
 }
