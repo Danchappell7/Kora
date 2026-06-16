@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — user profiles + inbox archiving
+-- KANBO — user profiles + inbox archiving
 --   profiles: real identity (first/last name, pronouns, avatar) so
 --     collaborators see people, not raw emails. Readable by any signed-in
 --     user (names/avatars power assignees, comments, team); editable only

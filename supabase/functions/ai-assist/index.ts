@@ -1,5 +1,5 @@
 // ============================================================
-// KORA — AI assist Edge Function (Deno / Supabase)
+// KANBO — AI assist Edge Function (Deno / Supabase)
 // Calls Claude to prioritize the user's tasks and write a short
 // rationale. The client sends its (RLS-filtered) tasks; we never
 // touch the DB here. Falls back to a 400 if no key is configured,
@@ -42,7 +42,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const prompt =
-      `You are Kora, a sharp productivity assistant. Today is ${today ?? "today"}.\n` +
+      `You are Kanbo, a sharp productivity assistant. Today is ${today ?? "today"}.\n` +
       `Given this JSON list of the user's open tasks, return STRICT JSON (no prose, no markdown) of the form ` +
       `{"items":[{"id":"...","score":0-100,"reason":"one short sentence"}],"summary":"one sentence on how to approach the day"}. ` +
       `Score by urgency: due/overdue today, things that unblock other work, and high priority rank highest. ` +

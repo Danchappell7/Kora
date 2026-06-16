@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — top-level error boundary
+   KANBO — top-level error boundary
    Catches render/runtime errors, reports them, and shows a
    recoverable fallback instead of a white screen.
    ============================================================ */
@@ -33,7 +33,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <p style={{ fontSize: 14, lineHeight: 1.55, color: "var(--ink-3)", margin: "0 0 20px" }}>
             An unexpected error interrupted the page. Reloading usually fixes it — and we've logged it so it can be looked into.
           </p>
-          <button className="btn btn-accent" onClick={() => window.location.reload()} style={{ justifyContent: "center" }}>Reload Kora</button>
+          <button className="btn btn-accent" onClick={() => window.location.reload()} style={{ justifyContent: "center" }}>Reload Kanbo</button>
         </div>
       </div>
     );

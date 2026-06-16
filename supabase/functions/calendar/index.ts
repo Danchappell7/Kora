@@ -1,5 +1,5 @@
 // ============================================================
-// KORA — external calendar integration (Google + Microsoft)
+// KANBO — external calendar integration (Google + Microsoft)
 // One function, action-routed. Keeps OAuth client secrets server-side.
 //
 //   GET  /calendar?action=connect&provider=google|microsoft   (JWT)  -> { url }
@@ -27,7 +27,7 @@ const json = (b: unknown, status = 200) =>
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const APP_URL = Deno.env.get("APP_URL") || "https://kora-zeta-five.vercel.app";
+const APP_URL = Deno.env.get("APP_URL") || "https://kanbo.co.uk";
 const REDIRECT_URI = `${SUPABASE_URL}/functions/v1/calendar/callback`;
 
 const admin = createClient(SUPABASE_URL, SERVICE_KEY);

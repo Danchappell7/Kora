@@ -21,7 +21,7 @@ describe("store (demo mode) — comments", () => {
 
 describe("store (demo mode) — workspaces & invites", () => {
   it("creates a workspace and invites a member", async () => {
-    const ws = await store.createWorkspace("Acme", { id: "m-self", email: "me@kora.app", name: "Me" });
+    const ws = await store.createWorkspace("Acme", { id: "m-self", email: "me@kanbo.app", name: "Me" });
     expect(ws.name).toBe("Acme");
     expect(ws.kind).toBe("team");
     expect(ws.id).toBeTruthy();

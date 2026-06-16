@@ -7,7 +7,7 @@ need doing **once**, using your accounts. Redirect/callback URL used everywhere:
 https://htnchiljplrnjkwimgla.supabase.co/functions/v1/calendar/callback
 ```
 
-App URL (where users land after connecting): `https://kora-zeta-five.vercel.app`
+App URL (where users land after connecting): `https://kanbo.co.uk`
 
 ---
 
@@ -19,7 +19,7 @@ Editor (same paste-and-Run as before). Creates the `calendar_connections` and
 
 ## 2. Google Cloud (Google Calendar)
 
-1. <https://console.cloud.google.com> → create a project (e.g. "Kora").
+1. <https://console.cloud.google.com> → create a project (e.g. "Kanbo").
 2. **APIs & Services → Library** → enable **Google Calendar API**.
 3. **APIs & Services → OAuth consent screen**: User type **External**, fill app
    name/support email. Add scopes: `.../auth/calendar.readonly`, `openid`,
@@ -52,7 +52,7 @@ supabase functions deploy calendar --no-verify-jwt
 
 supabase secrets set GOOGLE_CLIENT_ID=...      GOOGLE_CLIENT_SECRET=...
 supabase secrets set MS_CLIENT_ID=...          MS_CLIENT_SECRET=...
-supabase secrets set APP_URL=https://kora-zeta-five.vercel.app
+supabase secrets set APP_URL=https://kanbo.co.uk
 ```
 
 (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` are injected

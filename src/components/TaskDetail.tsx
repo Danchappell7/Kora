@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Task detail slide-over panel (fully editable)
+   KANBO — Task detail slide-over panel (fully editable)
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
@@ -152,7 +152,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             <div style={{ margin: "16px 0 4px", padding: "13px 14px", borderRadius: 12, background: "var(--accent-dim)", border: "1px solid color-mix(in oklch, var(--accent) 26%, transparent)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
                 <Icon name="sparkles" size={15} style={{ color: "var(--accent)" }} />
-                <span className="kicker" style={{ color: "var(--accent)" }}>Kora suggests</span>
+                <span className="kicker" style={{ color: "var(--accent)" }}>Kanbo suggests</span>
                 <span style={{ marginLeft: "auto" }}><AiScore score={task.aiScore} reason="AI priority score" /></span>
               </div>
               <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)" }}>{task.aiReason}</p>

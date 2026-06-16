@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — real comment threads + activity feed (powers the Inbox).
+-- KANBO — real comment threads + activity feed (powers the Inbox).
 -- comments: threaded discussion per task.
 -- activity: event log (created / status / completed / comment / deleted).
 --   task_id has NO foreign key on purpose — activity entries survive

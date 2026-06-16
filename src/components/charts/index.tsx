@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — lightweight SVG charts (Ring, Sparkline, Bars, Heatmap)
+   KANBO — lightweight SVG charts (Ring, Sparkline, Bars, Heatmap)
    ============================================================ */
 
 export function Ring({ value, size = 96, stroke = 9, color = "var(--accent)", label, sub }: {

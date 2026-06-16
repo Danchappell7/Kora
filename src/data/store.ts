@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — data store
+   KANBO — data store
    One interface, two adapters:
    - mock    : in-memory demo data (no backend needed)
    - supabase: real Postgres persistence
@@ -551,7 +551,7 @@ export const store = {
   async aiPrioritize(tasks: Task[], today: string): Promise<{ items: { id: string; score: number; reason: string }[]; summary: string; source: "ai" | "heuristic" }> {
     const heuristic = () => {
       const open = tasks.filter((t) => t.status !== "done");
-      const items = [...open].sort((a, b) => b.aiScore - a.aiScore).map((t) => ({ id: t.id, score: t.aiScore, reason: t.aiReason || "Ranked by Kora's priority model." }));
+      const items = [...open].sort((a, b) => b.aiScore - a.aiScore).map((t) => ({ id: t.id, score: t.aiScore, reason: t.aiReason || "Ranked by Kanbo's priority model." }));
       return { items, summary: "Prioritized your open work — urgent and unblocking tasks first.", source: "heuristic" as const };
     };
     if (!supabase) return heuristic();
@@ -683,7 +683,7 @@ export const store = {
     if (!supabase) return () => {};
     const client = supabase;
     const channel = client
-      .channel("kora-changes")
+      .channel("kanbo-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "tags" }, onChange)

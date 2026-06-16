@@ -1,11 +1,11 @@
 /* ============================================================
-   KORA — Analytics dashboard (data-driven, no placeholder claims)
+   KANBO — Analytics dashboard (data-driven, no placeholder claims)
    ============================================================ */
 import type { ReactNode, CSSProperties } from "react";
 import { Icon, StatusDot, PriorityFlag } from "../primitives";
 import { Bars, Ring, type BarDatum } from "../charts";
 import { StatTile } from "./HomeView";
-import { STATUS_META, STATUS_ORDER, PRIORITY_META, KORA_TODAY, toLocalISO } from "../../data/data";
+import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Priority } from "../../data/types";
 
 export function AnalyticsView({ tasks }: { tasks: Task[] }) {
@@ -15,7 +15,7 @@ export function AnalyticsView({ tasks }: { tasks: Task[] }) {
   const finishedEarly = tasks.filter((t) => t.status === "done" && t.completedAt && t.dueDate && t.completedAt < t.dueDate).length;
 
   // real completions per day over the last 7 days
-  const todayMid = new Date(KORA_TODAY.getFullYear(), KORA_TODAY.getMonth(), KORA_TODAY.getDate());
+  const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const last7 = Array.from({ length: 7 }, (_, i) => { const d = new Date(todayMid); d.setDate(d.getDate() - (6 - i)); return d; });
   const weekBars: BarDatum[] = last7.map((d, i) => {
     const iso = toLocalISO(d);

@@ -1,5 +1,5 @@
 // ============================================================
-// KORA — Stripe webhook → keeps the subscriptions table in sync.
+// KANBO — Stripe webhook → keeps the subscriptions table in sync.
 // Deploy:  supabase functions deploy stripe-webhook --no-verify-jwt
 // Secrets: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 // In Stripe Dashboard → Developers → Webhooks, add the function URL

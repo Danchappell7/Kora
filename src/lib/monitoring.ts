@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — error monitoring (Sentry)
+   KANBO — error monitoring (Sentry)
    Fully env-driven: a no-op until VITE_SENTRY_DSN is set, so it
    stays silent in local/dev and only reports in environments
    where you've configured a DSN.

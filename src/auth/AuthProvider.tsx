@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — auth context
+   KANBO — auth context
    In demo mode (no Supabase env) there's a synthetic always-on
    user so the app runs without a backend. With Supabase
    configured, this tracks the real session.
@@ -22,7 +22,7 @@ interface AuthValue {
   signOut: () => Promise<void>;
 }
 
-const DEMO_USER = { id: "m-self", email: "daniel@kora.app", name: "Daniel Okai" };
+const DEMO_USER = { id: "m-self", email: "daniel@kanbo.app", name: "Daniel Okai" };
 
 const AuthContext = createContext<AuthValue | null>(null);
 

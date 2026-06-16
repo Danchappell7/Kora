@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — initial schema (tasks, subtasks, dependencies) + RLS
+-- KANBO — initial schema (tasks, subtasks, dependencies) + RLS
 -- + per-user demo-data seed on signup.
 --
 -- Slice 1: tasks are persisted per user. Projects, workspaces,

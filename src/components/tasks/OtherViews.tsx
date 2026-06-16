@@ -1,12 +1,12 @@
 /* ============================================================
-   KORA — Board (Kanban), Timeline (Gantt), Calendar views
+   KANBO — Board (Kanban), Timeline (Gantt), Calendar views
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { SubtaskProgress } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
-  STATUS_META, STATUS_ORDER, PROJECTS, KORA_TODAY, toLocalISO,
+  STATUS_META, STATUS_ORDER, PROJECTS, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
 import type { Task, Status, CalProvider, CalendarConnection, ExternalEvent } from "../../data/types";
 
@@ -22,7 +22,7 @@ function KanbanCard({ task, allTasks, onOpen }: { task: Task; allTasks: Task[]; 
   const ds = dueState(task.dueDate, task.status);
   return (
     <div onClick={() => onOpen(task.id)} className="glass clickable lift" draggable
-      onDragStart={(e) => { e.dataTransfer.setData("text/kora-task", task.id); e.dataTransfer.effectAllowed = "move"; }}
+      onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; }}
       style={{ padding: 13, borderRadius: 12, cursor: "grab" }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <PriorityFlag priority={task.priority} size={13} />
@@ -54,9 +54,9 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: T
           const items = tasks.filter((t) => t.status === s);
           return (
             <div key={s} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
-              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kora-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(s); } }}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(s); } }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === s ? null : d); }}
-              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kora-task"); setDragOver(null); if (id) onMove(id, s); }}>
+              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); setDragOver(null); if (id) onMove(id, s); }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 4px 12px" }}>
                 <StatusDot status={s} glow />
                 <span style={{ fontSize: 13.5, fontWeight: 600 }}>{STATUS_META[s].label}</span>
@@ -82,12 +82,12 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: T
 /* ---------------- TIMELINE (Gantt) ---------------- */
 export function TimelineView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[]; onOpen: (id: string) => void }) {
   const DAYS = 16, START = -2; // show -2 .. +13
-  const dates = Array.from({ length: DAYS }, (_, i) => { const d = new Date(KORA_TODAY); d.setDate(d.getDate() + START + i); return d; });
+  const dates = Array.from({ length: DAYS }, (_, i) => { const d = new Date(KANBO_TODAY); d.setDate(d.getDate() + START + i); return d; });
   const colW = 78, labelW = 230, rowH = 46;
   const dayIndex = (iso?: string): number | null => {
     if (!iso) return null;
     const d = new Date(iso + "T00:00:00");
-    const base = new Date(KORA_TODAY); base.setDate(base.getDate() + START);
+    const base = new Date(KANBO_TODAY); base.setDate(base.getDate() + START);
     return Math.round((d.getTime() - new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime()) / 86400000);
   };
 
@@ -221,7 +221,7 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
   onDisconnect?: (p: CalProvider) => void;
   syncing?: boolean;
 }) {
-  const year = KORA_TODAY.getFullYear(), month = KORA_TODAY.getMonth();
+  const year = KANBO_TODAY.getFullYear(), month = KANBO_TODAY.getMonth();
   const first = new Date(year, month, 1);
   const startDow = (first.getDay() + 6) % 7; // Mon-first
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -229,7 +229,7 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
   for (let i = 0; i < startDow; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7) cells.push(null);
-  const todayD = KORA_TODAY.getDate();
+  const todayD = KANBO_TODAY.getDate();
   const iso = (d: number) => toLocalISO(new Date(year, month, d));
 
   // group external events by local calendar day

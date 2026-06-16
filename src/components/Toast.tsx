@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — toast notifications (replaces alert())
+   KANBO — toast notifications (replaces alert())
    ============================================================ */
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 

@@ -1,9 +1,9 @@
 /* ============================================================
-   KORA — Home dashboard
+   KANBO — Home dashboard
    ============================================================ */
 import { Icon, Avatar, StatusDot, AiScore } from "../primitives";
 import { Sparkline } from "../charts";
-import { getProject, projectProgress, dueState, KORA_TODAY, toLocalISO } from "../../data/data";
+import { getProject, projectProgress, dueState, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, IconName } from "../../data/types";
 import type { Route } from "../../app-types";
 
@@ -40,7 +40,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
     .sort((a, b) => b.aiScore - a.aiScore);
 
   // real "this week" metrics from completedAt
-  const todayMid = new Date(KORA_TODAY.getFullYear(), KORA_TODAY.getMonth(), KORA_TODAY.getDate());
+  const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const last7 = Array.from({ length: 7 }, (_, i) => { const d = new Date(todayMid); d.setDate(d.getDate() - (6 - i)); return d; });
   const weekData = last7.map((d) => { const iso = toLocalISO(d); return tasks.filter((t) => t.completedAt === iso).length; });
   const doneThisWeek = weekData.reduce((a, b) => a + b, 0);
@@ -50,7 +50,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   const firstName = userName?.trim().split(/\s+/)[0] || "there";
-  const dateLabel = `${KORA_TODAY.toLocaleDateString(undefined, { weekday: "short" })} · ${KORA_TODAY.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  const dateLabel = `${KANBO_TODAY.toLocaleDateString(undefined, { weekday: "short" })} · ${KANBO_TODAY.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
 
   if (tasks.length === 0) {
     return (
@@ -58,9 +58,9 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
         <div className="glass anim-fadeup" style={{ maxWidth: 520, padding: 28, borderRadius: 20, textAlign: "center", position: "relative", overflow: "hidden" }}>
           <div style={{ position: "absolute", top: -50, right: -30, width: 220, height: 220, background: "radial-gradient(circle, var(--accent-glow), transparent 70%)", opacity: 0.5, pointerEvents: "none" }} />
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 16 }}><Icon name="sparkles" size={24} /></div>
-          <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>Welcome to Kora</h2>
+          <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>Welcome to Kanbo</h2>
           <p style={{ fontSize: 14.5, lineHeight: 1.55, color: "var(--ink-3)", margin: "0 0 20px" }}>
-            Your workspace is a clean slate. Capture what's on your plate, and Kora will help you plan a realistic day around it.
+            Your workspace is a clean slate. Capture what's on your plate, and Kanbo will help you plan a realistic day around it.
           </p>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
             <button className="btn btn-accent" onClick={() => setRoute({ view: "plan" })}><Icon name="calendarPlus" size={15} /> Plan my day</button>
@@ -78,7 +78,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
         <div style={{ position: "absolute", top: -40, right: -20, width: 220, height: 220, background: "radial-gradient(circle, var(--accent-glow), transparent 70%)", opacity: 0.5, pointerEvents: "none" }} />
         <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}>
           <span style={{ display: "grid", placeItems: "center", width: 28, height: 28, borderRadius: 9, background: "var(--accent-dim)", color: "var(--accent)" }}><Icon name="sparkles" size={16} /></span>
-          <span className="kicker" style={{ color: "var(--accent)" }}>Kora · Daily brief</span>
+          <span className="kicker" style={{ color: "var(--accent)" }}>Kanbo · Daily brief</span>
           <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--ink-4)" }}>{dateLabel}</span>
         </div>
         <p style={{ margin: "0 0 18px", fontSize: 19, lineHeight: 1.5, letterSpacing: "-0.01em", maxWidth: 720 }}>

@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — user-created tags.
+-- KANBO — user-created tags.
 -- Built-in starter tags (Design, Engineering, …) live in the app
 -- as reference data; this table holds custom tags a user adds.
 -- tasks.tags is text[] holding tag keys (built-in slugs or row ids).

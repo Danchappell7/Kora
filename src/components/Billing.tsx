@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — billing UI: trial banner, plan picker, paywall
+   KANBO — billing UI: trial banner, plan picker, paywall
    ============================================================ */
 import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
@@ -110,7 +110,7 @@ export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut }: {
           {ended ? "Your subscription is inactive" : "Your free trial has ended"}
         </h1>
         <p style={{ fontSize: 14.5, color: "var(--ink-3)", margin: "0 auto 26px", maxWidth: 460, lineHeight: 1.55 }}>
-          Pick a plan to keep your tasks, projects, and team in Kora. Your data is safe and waiting.
+          Pick a plan to keep your tasks, projects, and team in Kanbo. Your data is safe and waiting.
         </p>
         <PlanCards seats={seats} busyPlan={busyPlan} onChoose={onChoose} />
         {onSignOut && <button onClick={onSignOut} style={{ marginTop: 22, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>Sign out</button>}

@@ -1,4 +1,4 @@
-# Kora — Production Readiness Checklist
+# Kanbo — Production Readiness Checklist
 
 Tracking the path from "runs on a laptop" to production. ✅ = done in code,
 �doc = done but needs an account/dashboard step from you, ⏳ = not started.

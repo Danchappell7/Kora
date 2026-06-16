@@ -1,9 +1,9 @@
-# Kora
+# Kanbo
 
 A futuristic, time-native task management OS — **Apple "white-glass" super-premium** aesthetic
 (frosted translucent surfaces, SF Pro typography, azure accent), light default with a dark toggle.
 
-This is the production implementation of the `Kora.html` design handoff, rebuilt as a
+This is the production implementation of the `Kanbo.html` design handoff, rebuilt as a
 **Vite + React + TypeScript** app. Every screen from the prototype is implemented:
 
 - **Plan my day** (default landing) — a day canvas where your meetings and time-blocked tasks live
@@ -84,7 +84,7 @@ src/
   auth/
     AuthProvider.tsx       # session context — synthetic user in demo mode, real session in Supabase mode
     LoginScreen.tsx        # email + Google sign-in (Supabase mode only)
-  styles/kora.css          # the design system (tokens, glass, animations) — copied 1:1 from the prototype
+  styles/kanbo.css          # the design system (tokens, glass, animations) — copied 1:1 from the prototype
   data/
     types.ts               # domain types (Task, Project, Member, CalEvent, …)
     data.ts                # reference data + helpers + the "Plan my day" engine (planDay, parseCapture)
@@ -102,7 +102,7 @@ supabase/
 
 ### Notes
 
-- **Design system is token-driven.** `styles/kora.css` defines every color/spacing/shadow as a CSS
+- **Design system is token-driven.** `styles/kanbo.css` defines every color/spacing/shadow as a CSS
   custom property under `:root` / `[data-theme="dark"]`, so the whole app re-themes from one place.
   Inline styles in components were preserved verbatim from the prototype to keep it pixel-perfect.
 - **Store abstraction.** All data access goes through `data/store.ts`, which exposes one interface

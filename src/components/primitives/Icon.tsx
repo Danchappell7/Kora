@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Icon (lucide-style stroke set)
+   KANBO — Icon (lucide-style stroke set)
    ============================================================ */
 import type { CSSProperties } from "react";
 import type { IconName } from "../../data/types";

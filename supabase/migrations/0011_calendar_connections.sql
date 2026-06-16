@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — external calendar connections (Google / Microsoft)
+-- KANBO — external calendar connections (Google / Microsoft)
 --   calendar_connections: per-user OAuth tokens. RLS is ENABLED with NO
 --     policies on purpose — the anon/authenticated client can never read
 --     these rows, so access/refresh tokens never leave the server. Only the

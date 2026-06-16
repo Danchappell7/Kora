@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — shared domain types
+   KANBO — shared domain types
    Mirrors the real Supabase schema + a few forward-looking
    fields: tags, aiScore, aiReason, focusMin, and the
    "Plan my day" scheduling fields (energy, dur, scheduled).

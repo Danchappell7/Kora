@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Sidebar (nav, workspace switcher, projects, deep-work mini)
+   KANBO — Sidebar (nav, workspace switcher, projects, deep-work mini)
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar } from "./primitives";
@@ -100,7 +100,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             boxShadow: "0 0 16px var(--accent-glow)",
           }}>K</span>
           <span style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-            <span style={{ display: "block", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 15, letterSpacing: "-0.02em" }}>Kora</span>
+            <span style={{ display: "block", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 15, letterSpacing: "-0.02em" }}>Kanbo</span>
             <span className="truncate" style={{ display: "block", fontSize: 11, color: "var(--ink-4)" }}>{activeWs.name}</span>
           </span>
           <Icon name="chevronDown" size={15} style={{ color: "var(--ink-4)", transform: wsOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }} />

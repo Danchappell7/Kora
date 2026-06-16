@@ -5,7 +5,7 @@ import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initMonitoring } from "./lib/monitoring";
-import "./styles/kora.css";
+import "./styles/kanbo.css";
 
 initMonitoring();
 

@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — login / sign-up / forgot-password (Supabase mode only)
+   KANBO — login / sign-up / forgot-password (Supabase mode only)
    ============================================================ */
 import { useState } from "react";
 import { Icon } from "../components/primitives";
@@ -49,7 +49,7 @@ export function LoginScreen() {
         <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 22 }}>
           <span style={{ width: 38, height: 38, borderRadius: 11, display: "grid", placeItems: "center", background: "var(--accent)", color: "var(--on-accent)", fontWeight: 700, fontSize: 21, boxShadow: "0 0 18px var(--accent-glow)" }}>K</span>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.02em" }}>Kora</div>
+            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.02em" }}>Kanbo</div>
             <div style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{subtitle}</div>
           </div>
         </div>
@@ -88,7 +88,7 @@ export function LoginScreen() {
           ) : SIGNUP_DISABLED ? (
             <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Accounts are invite-only.</span>
           ) : mode === "signin" ? (
-            <>New to Kora? <button onClick={() => go("signup")} style={linkStyle}>Create an account</button></>
+            <>New to Kanbo? <button onClick={() => go("signup")} style={linkStyle}>Create an account</button></>
           ) : (
             <>Already have an account? <button onClick={() => go("signin")} style={linkStyle}>Sign in</button></>
           )}

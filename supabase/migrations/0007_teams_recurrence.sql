@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — team workspaces + invites + shared visibility, and
+-- KANBO — team workspaces + invites + shared visibility, and
 -- recurring tasks.
 --
 -- Model:

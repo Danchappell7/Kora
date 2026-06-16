@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Deep Work focus mode (full-screen takeover)
+   KANBO — Deep Work focus mode (full-screen takeover)
    ============================================================ */
 import { Icon, StatusDot, AiScore } from "../primitives";
 import type { Task } from "../../data/types";

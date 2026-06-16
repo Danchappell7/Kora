@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — user-created projects.
+-- KANBO — user-created projects.
 -- The built-in "Personal" project lives in the app as reference
 -- data (id 'p-personal'); this table holds any extra projects a
 -- user creates. tasks.project_id is free text, so it references

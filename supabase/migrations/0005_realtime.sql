@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — enable real-time change streams for multi-tab / multi-device sync.
+-- KANBO — enable real-time change streams for multi-tab / multi-device sync.
 -- Adds the user-data tables to Supabase's realtime publication. RLS still
 -- applies, so a client only receives changes to rows it's allowed to see.
 -- ============================================================

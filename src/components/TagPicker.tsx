@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — tag picker with inline create + per-tag delete
+   KANBO — tag picker with inline create + per-tag delete
    ============================================================ */
 import { useState } from "react";
 import { Icon } from "./primitives";

@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — create-task modal (real, persisted task creation)
+   KANBO — create-task modal (real, persisted task creation)
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";

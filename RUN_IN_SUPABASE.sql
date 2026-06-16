@@ -1,12 +1,12 @@
 -- ============================================================
--- KORA — run migrations 0005 through 0009 (in order).
+-- KANBO — run migrations 0005 through 0009 (in order).
 -- Paste this whole file into a new Supabase SQL query and Run.
 -- ============================================================
 
 
 -- ===== supabase/migrations/0005_realtime.sql =====
 -- ============================================================
--- KORA — enable real-time change streams for multi-tab / multi-device sync.
+-- KANBO — enable real-time change streams for multi-tab / multi-device sync.
 -- Adds the user-data tables to Supabase's realtime publication. RLS still
 -- applies, so a client only receives changes to rows it's allowed to see.
 -- ============================================================
@@ -19,7 +19,7 @@ alter publication supabase_realtime add table public.subtasks;
 
 -- ===== supabase/migrations/0006_comments_activity.sql =====
 -- ============================================================
--- KORA — real comment threads + activity feed (powers the Inbox).
+-- KANBO — real comment threads + activity feed (powers the Inbox).
 -- comments: threaded discussion per task.
 -- activity: event log (created / status / completed / comment / deleted).
 --   task_id has NO foreign key on purpose — activity entries survive
@@ -62,7 +62,7 @@ alter publication supabase_realtime add table public.activity;
 
 -- ===== supabase/migrations/0007_teams_recurrence.sql =====
 -- ============================================================
--- KORA — team workspaces + invites + shared visibility, and
+-- KANBO — team workspaces + invites + shared visibility, and
 -- recurring tasks.
 --
 -- Model:
@@ -227,7 +227,7 @@ alter publication supabase_realtime add table public.workspace_members;
 
 -- ===== supabase/migrations/0008_attachments.sql =====
 -- ============================================================
--- KORA — file attachments on tasks (Supabase Storage + metadata).
+-- KANBO — file attachments on tasks (Supabase Storage + metadata).
 -- The attachments table follows task visibility (own + shared
 -- workspace). Files live in a private bucket; downloads use
 -- short-lived signed URLs. Object paths embed a random uuid so
@@ -272,7 +272,7 @@ create policy "owner delete task-files" on storage.objects
 
 -- ===== supabase/migrations/0009_billing.sql =====
 -- ============================================================
--- KORA — subscriptions: 7-day free trial, then paid Personal/Team.
+-- KANBO — subscriptions: 7-day free trial, then paid Personal/Team.
 -- One row per user. The trial starts the first time the app calls
 -- ensure_subscription(). Only the Stripe webhook (service role)
 -- changes plan/status; users can read their own row.

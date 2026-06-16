@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Supabase client
+   KANBO — Supabase client
    If the env vars aren't set, the app runs in in-memory "demo
    mode" (see data/store.ts). Set both to switch to the real
    backend — no code change required.

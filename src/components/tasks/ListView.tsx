@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — List view (the showpiece) + TaskRow
+   KANBO — List view (the showpiece) + TaskRow
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore } from "../primitives";
@@ -140,7 +140,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       {smart && (
         <div className="anim-fadein" style={{ margin: "16px 18px 0", display: "flex", alignItems: "center", gap: 11, padding: "11px 14px", borderRadius: 12, background: "var(--accent-dim)", border: "1px solid color-mix(in oklch, var(--accent) 28%, transparent)" }}>
           <Icon name="sparkles" size={16} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 13, color: "var(--ink-2)" }}>Sorted by Kora's recommended focus order — urgent, unblocking work first.</span>
+          <span style={{ fontSize: 13, color: "var(--ink-2)" }}>Sorted by Kanbo's recommended focus order — urgent, unblocking work first.</span>
         </div>
       )}
       {tasks.length === 0 ? (

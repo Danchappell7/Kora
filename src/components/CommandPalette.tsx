@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — AI command palette (⌘K)
+   KANBO — AI command palette (⌘K)
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Icon, StatusDot } from "./primitives";
@@ -43,14 +43,14 @@ export function CommandPalette({ open, onClose, onAction, tasks = [], onOpenTask
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Command palette" onClick={(e) => e.stopPropagation()} className="glass anim-scalein" style={{ width: 580, maxWidth: "90vw", borderRadius: 18, overflow: "hidden", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 18px", borderBottom: "1px solid var(--hairline)" }}>
           <Icon name="sparkles" size={19} style={{ color: "var(--accent)" }} />
-          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks, or ask Kora anything…"
+          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks, or ask Kanbo anything…"
             style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 16 }} />
           <kbd className="mono" style={{ fontSize: 11, padding: "3px 7px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-4)" }}>ESC</kbd>
         </div>
         <div style={{ padding: 8, maxHeight: 360, overflowY: "auto" }}>
           {asking ? (
             <div style={{ padding: "16px 14px" }}>
-              <div className="kicker" style={{ marginBottom: 10, color: "var(--accent)" }}>Kora AI</div>
+              <div className="kicker" style={{ marginBottom: 10, color: "var(--accent)" }}>Kanbo AI</div>
               <div style={{ display: "flex", gap: 11 }}>
                 <Icon name="sparkles" size={18} style={{ color: "var(--accent)", marginTop: 2 }} />
                 <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, color: "var(--ink-2)" }}>

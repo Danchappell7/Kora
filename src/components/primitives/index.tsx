@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — shared primitives (Avatar, StatusDot, Checkbox, Tag,
+   KANBO — shared primitives (Avatar, StatusDot, Checkbox, Tag,
    PriorityFlag, Segmented, Tooltip, AiScore)
    ============================================================ */
 import { Icon } from "./Icon";

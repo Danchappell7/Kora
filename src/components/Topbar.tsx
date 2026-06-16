@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Topbar
+   KANBO — Topbar
    ============================================================ */
 import { useState } from "react";
 import type { ReactNode, CSSProperties } from "react";
@@ -49,7 +49,7 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
         onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--hairline-strong)")}
         onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--hairline)")}>
         <Icon name="search" size={16} />
-        <span style={{ flex: 1, textAlign: "left" }}>Search or ask Kora…</span>
+        <span style={{ flex: 1, textAlign: "left" }}>Search or ask Kanbo…</span>
         <kbd className="mono" style={{ fontSize: 11, padding: "2px 6px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-4)" }}>⌘K</kbd>
       </button>
       {children}

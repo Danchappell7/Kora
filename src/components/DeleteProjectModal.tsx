@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — delete-project confirmation
+   KANBO — delete-project confirmation
    Asks whether to move the project's tasks elsewhere or delete them.
    ============================================================ */
 import { useState, useEffect } from "react";

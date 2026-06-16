@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — App shell: auth gate, store-backed state, routing,
+   KANBO — App shell: auth gate, store-backed state, routing,
    timer, tasks page
    ============================================================ */
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -522,7 +522,7 @@ export default function App() {
     if (!p) return;
     if (p === "success") {
       store.getSubscription().then(setSubscription).catch(reportError);
-      toastSuccess("You're all set — welcome to Kora.");
+      toastSuccess("You're all set — welcome to Kanbo.");
     }
     window.history.replaceState({}, "", window.location.pathname);
     // eslint-disable-next-line react-hooks/exhaustive-deps

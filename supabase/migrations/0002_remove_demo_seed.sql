@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — stop auto-seeding demo data on signup.
+-- KANBO — stop auto-seeding demo data on signup.
 -- New accounts now start as a clean slate (the app shows an
 -- onboarding empty state instead).
 --

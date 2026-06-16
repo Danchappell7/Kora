@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — create-workspace modal
+   KANBO — create-workspace modal
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";

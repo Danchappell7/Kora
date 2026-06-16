@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — create-project modal
+   KANBO — create-project modal
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";

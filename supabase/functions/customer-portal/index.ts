@@ -1,5 +1,5 @@
 // ============================================================
-// KORA — open the Stripe customer billing portal (Deno / Supabase)
+// KANBO — open the Stripe customer billing portal (Deno / Supabase)
 // Deploy:  supabase functions deploy customer-portal
 // Secrets: STRIPE_SECRET_KEY
 // ============================================================

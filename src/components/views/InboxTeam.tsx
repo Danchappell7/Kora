@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Inbox (real activity feed) & Team views
+   KANBO — Inbox (real activity feed) & Team views
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar } from "../primitives";
@@ -158,7 +158,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
             </div>
           </>
         ) : (
-          <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5 }}>Will join when they sign in to Kora with this email.</p>
+          <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5 }}>Will join when they sign in to Kanbo with this email.</p>
         )}
       </div>
     );

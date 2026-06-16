@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — profile settings: name, pronouns, avatar
+   KANBO — profile settings: name, pronouns, avatar
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";
@@ -115,29 +115,29 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
           {/* names */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
             <div>
-              <label htmlFor="kora-first" style={labelStyle}>First name</label>
-              <input id="kora-first" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Daniel" style={inputStyle} />
+              <label htmlFor="kanbo-first" style={labelStyle}>First name</label>
+              <input id="kanbo-first" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Daniel" style={inputStyle} />
             </div>
             <div>
-              <label htmlFor="kora-last" style={labelStyle}>Surname</label>
-              <input id="kora-last" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Chappell" style={inputStyle} />
+              <label htmlFor="kanbo-last" style={labelStyle}>Surname</label>
+              <input id="kanbo-last" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Chappell" style={inputStyle} />
             </div>
           </div>
 
           {/* pronouns */}
           <div style={{ marginBottom: 16 }}>
-            <label htmlFor="kora-pronouns" style={labelStyle}>Pronouns</label>
-            <input id="kora-pronouns" list="kora-pronoun-options" value={pronouns} onChange={(e) => setPronouns(e.target.value)} placeholder="they/them" style={inputStyle} />
-            <datalist id="kora-pronoun-options">
+            <label htmlFor="kanbo-pronouns" style={labelStyle}>Pronouns</label>
+            <input id="kanbo-pronouns" list="kanbo-pronoun-options" value={pronouns} onChange={(e) => setPronouns(e.target.value)} placeholder="they/them" style={inputStyle} />
+            <datalist id="kanbo-pronoun-options">
               {PRONOUN_SUGGESTIONS.map((p) => <option key={p} value={p} />)}
             </datalist>
           </div>
 
           {/* email (read-only) */}
           <div>
-            <label htmlFor="kora-email" style={labelStyle}>Email</label>
+            <label htmlFor="kanbo-email" style={labelStyle}>Email</label>
             <div style={{ position: "relative" }}>
-              <input id="kora-email" value={email} readOnly disabled style={{ ...inputStyle, color: "var(--ink-4)", paddingRight: 38 }} />
+              <input id="kanbo-email" value={email} readOnly disabled style={{ ...inputStyle, color: "var(--ink-4)", paddingRight: 38 }} />
               <Icon name="lock" size={14} style={{ position: "absolute", right: 13, top: 14, color: "var(--ink-4)" }} />
             </div>
             <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--ink-4)" }}>Your sign-in email can't be changed here.</p>

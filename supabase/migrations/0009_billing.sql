@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — subscriptions: 7-day free trial, then paid Personal/Team.
+-- KANBO — subscriptions: 7-day free trial, then paid Personal/Team.
 -- One row per user. The trial starts the first time the app calls
 -- ensure_subscription(). Only the Stripe webhook (service role)
 -- changes plan/status; users can read their own row.

@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — Plan my day (white-glass, time-native hero)
+   KANBO — Plan my day (white-glass, time-native hero)
    Day canvas + intake + NL capture + AI auto-plan.
    ============================================================ */
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
@@ -157,7 +157,7 @@ function PlanCapture({ onCapture }: { onCapture: (t: Task) => void }) {
       </div>
       {focused && preview && (
         <div className="glass anim-fadein" style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, right: 0, zIndex: 30, padding: "13px 15px", borderRadius: 16, boxShadow: "var(--shadow-lg)", background: "var(--surface-raised)" }}>
-          <div className="kicker" style={{ marginBottom: 9, color: "var(--accent)" }}>Kora understood</div>
+          <div className="kicker" style={{ marginBottom: 9, color: "var(--accent)" }}>Kanbo understood</div>
           <div style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 10 }}>{preview.title}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
             <span className="pchip"><Icon name="clock" size={12} /> {fmtDurMin(preview.dur!)}</span>
@@ -215,7 +215,7 @@ function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planni
           <h3 style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.02em" }}>Intake</h3>
           <span className="mono tnum" style={{ fontSize: 12, color: "var(--ink-4)", whiteSpace: "nowrap" }}>{unscheduled.length} unplaced</span>
         </div>
-        <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--ink-3)" }}>Drag onto your day, or let Kora plan it.</p>
+        <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--ink-3)" }}>Drag onto your day, or let Kanbo plan it.</p>
         <button onClick={onAutoPlan} disabled={planning || unscheduled.length === 0} className="btn btn-accent"
           style={{ width: "100%", justifyContent: "center", marginTop: 13, opacity: unscheduled.length === 0 ? 0.5 : 1 }}>
           <Icon name="sparkles" size={16} /> {planning ? "Planning your day…" : "Auto-plan my day"}
@@ -225,7 +225,7 @@ function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planni
         {onboarding ? (
           <div style={{ textAlign: "center", padding: "40px 18px", color: "var(--ink-4)" }}>
             <div style={{ display: "inline-flex", padding: 13, borderRadius: 16, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 12 }}><Icon name="sparkles" size={22} /></div>
-            <p style={{ fontSize: 14, color: "var(--ink)", margin: 0, fontWeight: 600 }}>Welcome to Kora 👋</p>
+            <p style={{ fontSize: 14, color: "var(--ink)", margin: 0, fontWeight: 600 }}>Welcome to Kanbo 👋</p>
             <p style={{ fontSize: 12.5, margin: "6px 0 0", lineHeight: 1.5 }}>Capture your first task in the bar above — try <span style={{ color: "var(--ink-2)" }}>“Draft proposal 60m deep work today”</span> — then hit Auto-plan to lay out your day.</p>
           </div>
         ) : unscheduled.length === 0 ? (
@@ -345,7 +345,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen }: {
           <div style={{ position: "absolute", inset: 0, zIndex: 50, display: "grid", placeItems: "center", background: "color-mix(in oklch, var(--bg) 35%, transparent)", backdropFilter: "blur(2px)" }}>
             <div className="glass anim-scalein" style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 22px", borderRadius: 16, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
               <Icon name="sparkles" size={20} style={{ color: "var(--accent)" }} />
-              <span className="ai-think" style={{ fontSize: 15, fontWeight: 600 }}>Kora is planning your day…</span>
+              <span className="ai-think" style={{ fontSize: 15, fontWeight: 600 }}>Kanbo is planning your day…</span>
             </div>
           </div>
         )}

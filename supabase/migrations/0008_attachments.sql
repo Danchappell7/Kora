@@ -1,5 +1,5 @@
 -- ============================================================
--- KORA — file attachments on tasks (Supabase Storage + metadata).
+-- KANBO — file attachments on tasks (Supabase Storage + metadata).
 -- The attachments table follows task visibility (own + shared
 -- workspace). Files live in a private bucket; downloads use
 -- short-lived signed URLs. Object paths embed a random uuid so

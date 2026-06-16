@@ -1,5 +1,5 @@
 // ============================================================
-// KORA — create a Stripe Checkout Session (Deno / Supabase)
+// KANBO — create a Stripe Checkout Session (Deno / Supabase)
 // Identifies the user from their JWT, ensures a Stripe customer,
 // and opens checkout for the chosen plan. Team plans are per-seat.
 //

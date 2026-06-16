@@ -1,14 +1,14 @@
 // ============================================================
-// KORA — daily reminder emails (Deno / Supabase Edge Function)
+// KANBO — daily reminder emails (Deno / Supabase Edge Function)
 // Finds tasks due today or overdue (not done) and emails each
 // assignee a digest. Meant to be run once a day by a cron.
 //
 // Deploy:  supabase functions deploy daily-reminders --no-verify-jwt
 // Secrets: supabase secrets set RESEND_API_KEY=re_...   (resend.com)
-//          supabase secrets set REMINDER_FROM="Kora <no-reply@yourdomain.com>"
+//          supabase secrets set REMINDER_FROM="Kanbo <no-reply@yourdomain.com>"
 //          supabase secrets set APP_URL=https://your-app.vercel.app
 // Schedule (Supabase Dashboard → Database → Cron, or pg_cron):
-//   select cron.schedule('kora-daily-reminders','0 13 * * *',
+//   select cron.schedule('kanbo-daily-reminders','0 13 * * *',
 //     $$ select net.http_post(
 //          url := 'https://<project>.supabase.co/functions/v1/daily-reminders',
 //          headers := jsonb_build_object('Authorization','Bearer <service-role-key>')) $$);
@@ -22,7 +22,7 @@ Deno.serve(async () => {
   const url = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const resendKey = Deno.env.get("RESEND_API_KEY");
-  const from = Deno.env.get("REMINDER_FROM") ?? "Kora <onboarding@resend.dev>";
+  const from = Deno.env.get("REMINDER_FROM") ?? "Kanbo <onboarding@resend.dev>";
   const appUrl = Deno.env.get("APP_URL") ?? "";
 
   if (!resendKey) return new Response(JSON.stringify({ error: "no RESEND_API_KEY" }), { status: 400 });
@@ -65,16 +65,16 @@ Deno.serve(async () => {
 
     const html =
       `<div style="font-family:-apple-system,sans-serif;max-width:520px;margin:auto">` +
-      `<h2 style="font-weight:600">Your day on Kora</h2>` +
+      `<h2 style="font-weight:600">Your day on Kanbo</h2>` +
       `<p style="color:#555">You have <strong>${list.length}</strong> task${list.length === 1 ? "" : "s"} due today or overdue.</p>` +
       `<table style="width:100%;border-collapse:collapse;font-size:14px">${rows}</table>` +
-      (appUrl ? `<p style="margin-top:20px"><a href="${appUrl}" style="background:#3b5bff;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Open Kora</a></p>` : "") +
+      (appUrl ? `<p style="margin-top:20px"><a href="${appUrl}" style="background:#3b5bff;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Open Kanbo</a></p>` : "") +
       `</div>`;
 
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: email, subject: `${list.length} task${list.length === 1 ? "" : "s"} due on Kora`, html }),
+      body: JSON.stringify({ from, to: email, subject: `${list.length} task${list.length === 1 ? "" : "s"} due on Kanbo`, html }),
     });
     if (r.ok) sent++;
   }

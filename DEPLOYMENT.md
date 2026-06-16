@@ -1,4 +1,4 @@
-# Deploying Kora
+# Deploying Kanbo
 
 Everything code-side for production is in place (CI, tests, monitoring hooks,
 error handling, real-time sync, auth flows, responsive + a11y). The steps below
@@ -69,7 +69,7 @@ they use the built-in heuristic automatically.
 ```bash
 supabase functions deploy daily-reminders --no-verify-jwt
 supabase secrets set RESEND_API_KEY=re_...           # resend.com
-supabase secrets set REMINDER_FROM="Kora <no-reply@yourdomain.com>"
+supabase secrets set REMINDER_FROM="Kanbo <no-reply@yourdomain.com>"
 supabase secrets set APP_URL=https://your-app.vercel.app
 ```
 Then schedule it daily (Supabase Dashboard → Database → Cron, or pg_cron) — the

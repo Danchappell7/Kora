@@ -1,5 +1,5 @@
 /* ============================================================
-   KORA — mock data (mirrors the real Supabase schema + a few
+   KANBO — mock data (mirrors the real Supabase schema + a few
    forward-looking fields: tags, aiScore, aiReason, focusMin)
    ============================================================ */
 
@@ -9,7 +9,7 @@ import type {
 } from "./types";
 
 // Real "today" (midnight, local) — drives all relative due-date math.
-export const KORA_TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
+export const KANBO_TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
 
 /* Local "YYYY-MM-DD" — avoids the UTC off-by-one that toISOString() causes in
    timezones ahead of UTC. All due-date math below parses dates as local. */
@@ -19,20 +19,20 @@ export function toLocalISO(d: Date): string {
 }
 
 export function dayOffset(n: number): string {
-  const d = new Date(KORA_TODAY);
+  const d = new Date(KANBO_TODAY);
   d.setDate(d.getDate() + n);
   return toLocalISO(d);
 }
 
 /* advance a due date by one recurrence step (from the due date, or today) */
 export function nextDueDate(iso: string | undefined, recurrence: import("./types").Recurrence): string {
-  const base = iso ? new Date(iso + "T00:00:00") : new Date(KORA_TODAY);
+  const base = iso ? new Date(iso + "T00:00:00") : new Date(KANBO_TODAY);
   const d = new Date(base);
   if (recurrence === "daily") d.setDate(d.getDate() + 1);
   else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
   else if (recurrence === "monthly") d.setMonth(d.getMonth() + 1);
   // if the computed next date is in the past, roll forward to the future
-  const todayMid = new Date(KORA_TODAY);
+  const todayMid = new Date(KANBO_TODAY);
   while (d < todayMid && recurrence !== "none") {
     if (recurrence === "daily") d.setDate(d.getDate() + 1);
     else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
@@ -45,10 +45,10 @@ export function nextDueDate(iso: string | undefined, recurrence: import("./types
    member at runtime via setSelfMember — ES-module live bindings mean every
    importer sees the update. Teammates stay as seeded reference data. */
 export let MEMBERS: Member[] = [
-  { id: "m-self", name: "Daniel Okai", email: "daniel@kora.app", type: "self", color: "oklch(0.585 0.196 264)" },
-  { id: "m-1", name: "Maya Lin", email: "maya@kora.app", type: "team", color: "oklch(0.74 0.14 230)" },
-  { id: "m-2", name: "Theo Vance", email: "theo@kora.app", type: "team", color: "oklch(0.78 0.15 70)" },
-  { id: "m-3", name: "Sana Rao", email: "sana@kora.app", type: "team", color: "oklch(0.74 0.16 305)" },
+  { id: "m-self", name: "Daniel Okai", email: "daniel@kanbo.app", type: "self", color: "oklch(0.585 0.196 264)" },
+  { id: "m-1", name: "Maya Lin", email: "maya@kanbo.app", type: "team", color: "oklch(0.74 0.14 230)" },
+  { id: "m-2", name: "Theo Vance", email: "theo@kanbo.app", type: "team", color: "oklch(0.78 0.15 70)" },
+  { id: "m-3", name: "Sana Rao", email: "sana@kanbo.app", type: "team", color: "oklch(0.74 0.16 305)" },
   { id: "m-4", name: "Idris Bell", email: "idris@partner.io", type: "external", color: "oklch(0.7 0.13 20)" },
 ];
 
@@ -193,7 +193,7 @@ export function getProject(id: string): Project | undefined { return PROJECTS.fi
 export function fmtDue(iso?: string): string | null {
   if (!iso) return null;
   const d = new Date(iso + "T00:00:00");
-  const today = new Date(KORA_TODAY.getFullYear(), KORA_TODAY.getMonth(), KORA_TODAY.getDate());
+  const today = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
@@ -220,7 +220,7 @@ export function timeAgo(iso: string): string {
 export function dueState(iso: string | undefined, status: Status): "none" | "overdue" | "today" | "soon" | "future" {
   if (!iso || status === "done") return "none";
   const d = new Date(iso + "T00:00:00");
-  const today = new Date(KORA_TODAY.getFullYear(), KORA_TODAY.getMonth(), KORA_TODAY.getDate());
+  const today = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
   if (diff < 0) return "overdue";
   if (diff === 0) return "today";
@@ -284,7 +284,7 @@ export const fmtDurMin = (m: number): string =>
 export function dueOffset(iso?: string): number {
   if (!iso) return 99;
   const d = new Date(iso + "T00:00:00");
-  const today = new Date(KORA_TODAY.getFullYear(), KORA_TODAY.getMonth(), KORA_TODAY.getDate());
+  const today = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
