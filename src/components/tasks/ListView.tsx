@@ -3,6 +3,7 @@
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore } from "../primitives";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   getProject, blockingTasks, dueState, fmtDue,
   STATUS_META, STATUS_ORDER, PRIORITY_META, PROJECTS,
@@ -24,6 +25,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; smart: boolean; depth?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const isMobile = useMediaQuery("(max-width: 860px)");
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const done = task.status === "done";
@@ -68,18 +70,18 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
           </div>
         </div>
 
-        {/* right meta */}
-        <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+        {/* right meta — drop secondary columns on phones so the title has room */}
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 9 : 14, flexShrink: 0 }}>
           {smart && task.status !== "done" && <AiScore score={task.aiScore} reason={task.aiReason} />}
-          {proj && (
+          {!isMobile && proj && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)" }}>
               <span style={{ width: 7, height: 7, borderRadius: 2, background: proj.color }} />
               <span className="truncate" style={{ maxWidth: 110 }}>{proj.name}</span>
             </span>
           )}
-          <PriorityFlag priority={task.priority} size={14} />
+          {!isMobile && <PriorityFlag priority={task.priority} size={14} />}
           {task.dueDate && (
-            <span className="mono tnum" style={{ fontSize: 12, color: dueColor, minWidth: 56, textAlign: "right", fontWeight: ds === "overdue" || ds === "today" ? 600 : 400 }}>
+            <span className="mono tnum" style={{ fontSize: 12, color: dueColor, minWidth: isMobile ? 0 : 56, textAlign: "right", fontWeight: ds === "overdue" || ds === "today" ? 600 : 400 }}>
               {fmtDue(task.dueDate)}
             </span>
           )}

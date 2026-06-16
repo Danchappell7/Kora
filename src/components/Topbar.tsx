@@ -61,8 +61,8 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
         <span style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent)" }} />
       </button>
       <div style={{ position: "relative" }}>
-        <button className="btn btn-accent" onClick={() => setCreateOpen((v) => !v)}>
-          <Icon name="plus" size={16} /> Create <Icon name="chevronDown" size={14} style={{ marginLeft: -2, opacity: 0.8 }} />
+        <button className="btn btn-accent topbar-create" onClick={() => setCreateOpen((v) => !v)}>
+          <Icon name="plus" size={16} /> <span className="topbar-create-label">Create <Icon name="chevronDown" size={14} style={{ marginLeft: -2, opacity: 0.8 }} /></span>
         </button>
         {createOpen && (
           <>

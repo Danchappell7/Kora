@@ -12,6 +12,7 @@ import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { MobileNav } from "./components/MobileNav";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
@@ -76,18 +77,19 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [hideDone, setHideDone] = useState(false);
+  const isMobile = useMediaQuery("(max-width: 860px)");
   const filterActive = priorityFilter !== "all" || hideDone;
   const filtered = tasks.filter((t) =>
     (priorityFilter === "all" || t.priority === priorityFilter) && (!hideDone || t.status !== "done"));
 
   return (
     <>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, padding: isMobile ? "10px 14px" : "12px 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, flexWrap: "wrap" }}>
         <Segmented options={VIEW_OPTS} value={view} onChange={setView} />
-        <div style={{ width: 1, height: 22, background: "var(--hairline)" }} />
+        {!isMobile && <div style={{ width: 1, height: 22, background: "var(--hairline)" }} />}
         {view === "list" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="kicker">Group</span>
+            {!isMobile && <span className="kicker">Group</span>}
             <Segmented options={GROUP_OPTS} value={groupBy} onChange={setGroupBy} />
           </div>
         )}
@@ -659,6 +661,7 @@ export default function App() {
           )}
         </Topbar>
         {renderMain()}
+        {isMobile && <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} />}
       </main>
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={allTasks} onOpenTask={setDetailId} onAction={(s) => {

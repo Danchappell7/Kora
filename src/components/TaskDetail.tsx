@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
 import { store } from "../data/store";
 import { reportError } from "../lib/monitoring";
@@ -63,6 +64,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(true, onClose);
+  const isMobile = useMediaQuery("(max-width: 860px)");
 
   // load the comment thread + description buffer when a task is opened
   useEffect(() => {
@@ -122,9 +124,10 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(3px)" }}>
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label={`Task: ${task.title}`} onClick={(e) => e.stopPropagation()} style={{
-        position: "absolute", top: 0, right: 0, bottom: 0, width: 480, maxWidth: "94vw",
-        background: "var(--surface-raised)", borderLeft: "1px solid var(--hairline-strong)",
-        boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", animation: "slideInRight .34s var(--ease)",
+        position: "absolute", top: 0, right: 0, bottom: 0, width: isMobile ? "100%" : 480, maxWidth: "100%",
+        background: "var(--surface-raised)", borderLeft: isMobile ? "none" : "1px solid var(--hairline-strong)",
+        boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column",
+        animation: `${isMobile ? "slideInUp" : "slideInRight"} .3s var(--ease)`,
       }}>
         {/* header */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--hairline)" }}>

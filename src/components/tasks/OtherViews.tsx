@@ -3,6 +3,7 @@
    ============================================================ */
 import { useState } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { SubtaskProgress } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
@@ -243,6 +244,64 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
     const d = new Date(e.start);
     return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   };
+  const isMobile = useMediaQuery("(max-width: 860px)");
+
+  // ---- mobile: an agenda list (the 7-col grid can't fit a phone) ----
+  if (isMobile) {
+    const agenda: { d: number; iso: string; tasks: Task[]; events: ExternalEvent[] }[] = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const di = iso(d);
+      const dt = tasks.filter((t) => t.dueDate === di);
+      const de = evByDate[di] ?? [];
+      if (dt.length || de.length) agenda.push({ d, iso: di, tasks: dt, events: de });
+    }
+    return (
+      <div style={{ flex: 1, overflowY: "auto", padding: "14px 14px 28px" }}>
+        {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
+        {agenda.length === 0 ? (
+          <div style={{ textAlign: "center", color: "var(--ink-4)", padding: "40px 16px" }}>
+            <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="calendar" size={24} /></div>
+            <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>Nothing scheduled this month</p>
+            <p style={{ fontSize: 13, margin: "5px 0 0" }}>Tasks with a due date and connected-calendar events show up here.</p>
+          </div>
+        ) : agenda.map((day) => {
+          const dt = new Date(year, month, day.d);
+          const isToday = day.d === todayD;
+          return (
+            <div key={day.iso} style={{ marginBottom: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span className="mono tnum" style={{ display: "grid", placeItems: "center", minWidth: 30, height: 30, borderRadius: 9, fontSize: 13, fontWeight: 600, color: isToday ? "var(--on-accent)" : "var(--ink-2)", background: isToday ? "var(--accent)" : "var(--surface-2)", boxShadow: isToday ? "0 0 12px var(--accent-glow)" : "none" }}>{day.d}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: isToday ? "var(--accent)" : "var(--ink-3)" }}>{dt.toLocaleDateString(undefined, { weekday: "long" })}</span>
+                <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{dt.toLocaleDateString(undefined, { month: "short" })}</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {day.events.map((e) => {
+                  const color = PROVIDER_META[(e.provider as CalProvider)]?.color || "var(--ink-3)";
+                  const time = fmtTime(e);
+                  return (
+                    <div key={e.id} className="glass" style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, borderLeft: `3px solid ${color}` }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: "var(--ink-2)" }} className="truncate">{e.title}</span>
+                      <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-4)", flexShrink: 0 }}>{time || "All day"}</span>
+                    </div>
+                  );
+                })}
+                {day.tasks.map((t) => {
+                  const proj = getProject(t.projectId);
+                  return (
+                    <button key={t.id} onClick={() => onOpen(t.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, width: "100%", textAlign: "left", cursor: "pointer", border: "1px solid var(--hairline)", background: "var(--surface)", borderLeft: `3px solid ${proj?.color || "var(--accent)"}` }}>
+                      <PriorityFlag priority={t.priority} size={13} />
+                      <span className="truncate" style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: t.status === "done" ? "var(--ink-4)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
+                      <Avatar id={t.assigneeId} size={22} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "18px 24px 28px" }}>

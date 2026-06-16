@@ -206,6 +206,7 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes scaleIn { from { transform: scale(0.97) translateY(4px); } to { transform: none; } }
 @keyframes slideInRight { from { transform: translateX(24px); } to { transform: none; } }
+@keyframes slideInUp { from { transform: translateY(28px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes pulseGlow { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 @keyframes spinSlow { to { transform: rotate(360deg); } }
 @keyframes dash { to { stroke-dashoffset: 0; } }
@@ -273,4 +274,31 @@ button:focus:not(:focus-visible) { outline: none; }
 @media (max-width: 560px) {
   .topbar-search { display: none !important; }
   [data-tip]::after { display: none; } /* tooltips are awkward on touch */
+  .topbar { padding: 12px 14px; }
+  .topbar h1 { font-size: 19px; }
+  .topbar-create-label { display: none; }      /* Create button → icon-only */
+  .topbar-create-label svg { display: none; }
+}
+
+/* ---- touch devices: no hover, so reveal hover-only affordances + grow tap targets ---- */
+@media (hover: none), (pointer: coarse) {
+  /* controls that fade in on hover must be permanently reachable by a finger */
+  .kproj-del { opacity: 1 !important; }
+  .tagchip-del { opacity: 1 !important; }
+  .kproj-row .kproj-count { opacity: 0 !important; } /* hide count so it doesn't sit under the delete button */
+  .lift:hover { transform: none; } /* no phantom hover-lift stuck after a tap */
+  /* comfortable 40px+ touch targets */
+  .btn-icon { width: 40px; height: 40px; }
+  .btn { padding: 10px 15px; }
+}
+
+/* ---- phone layout ---- */
+@media (max-width: 860px) {
+  html, body { overflow-x: hidden; }            /* never scroll sideways */
+  .knav { padding: 11px 12px; font-size: 15px; } /* roomier nav rows */
+}
+
+/* respect the notch / home indicator on modern phones */
+@supports (padding: max(0px)) {
+  .kanbo-safe-bottom { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 }
