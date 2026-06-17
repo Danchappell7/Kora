@@ -236,10 +236,16 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 </select>
               </span>
             </MetaRow>
+            <MetaRow icon="calendar" label="Start">
+              <input type="date" value={task.startDate || ""} max={task.dueDate || undefined} onChange={(e) => onPatch(task.id, { startDate: e.target.value || undefined })}
+                style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+            </MetaRow>
             <MetaRow icon="calendar" label="Due">
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })}
                   style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: dueState(task.dueDate, task.status) === "overdue" ? "var(--prio-urgent)" : "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+                <input type="time" value={task.dueTime || ""} onChange={(e) => onPatch(task.id, { dueTime: e.target.value || undefined })} title="Due time"
+                  style={{ height: 30, padding: "0 7px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
                 {DUE_PRESETS.map((p) => (
                   <button key={p.kind} onClick={() => onPatch(task.id, { dueDate: presetDate(p.kind) })} style={{ padding: "4px 9px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 11.5, fontFamily: "var(--font-display)" }}>{p.label}</button>
                 ))}

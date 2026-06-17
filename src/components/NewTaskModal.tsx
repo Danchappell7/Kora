@@ -38,6 +38,8 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [priority, setPriority] = useState<Priority>("medium");
   const [assigneeId, setAssigneeId] = useState(currentUserId);
   const [dueDate, setDueDate] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [dueTime, setDueTime] = useState("");
   const [recurrence, setRecurrence] = useState<Recurrence>("none");
   const [focusMin, setFocusMin] = useState(30);
   const [tags, setTags] = useState<string[]>([]);
@@ -53,7 +55,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   useEffect(() => {
     if (open) {
       setTitle(""); setProjectId(defaultProject);
-      setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setRecurrence("none"); setFocusMin(30); setTags([]);
+      setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setStartDate(""); setDueTime(""); setRecurrence("none"); setFocusMin(30); setTags([]);
       setTemplates(getTemplates());
       setTimeout(() => inputRef.current?.focus(), 30);
     }
@@ -67,7 +69,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     const t: Task = {
       id: newId(), title: trimmed, description: "",
       status: defaultStatus, priority, projectId,
-      assigneeId, dueDate: dueDate || undefined,
+      assigneeId, dueDate: dueDate || undefined, startDate: startDate || undefined, dueTime: dueTime || undefined,
       tags, dependencies: [], subtasks: [], comments: 0,
       focusMin, dur: focusMin, energy: energyOf({ tags } as Task),
       scheduled: null, planToday: true, aiScore: 50, recurrence,
@@ -117,8 +119,14 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
                 {people.map((p) => <option key={p.id} value={p.id}>{p.id === currentUserId ? `${p.name} (you)` : p.name}</option>)}
               </select>
             </label>
+            <label style={fieldLabel}>Start date
+              <input type="date" value={startDate} max={dueDate || undefined} onChange={(e) => setStartDate(e.target.value)} style={selectStyle} />
+            </label>
             <label style={fieldLabel}>Due date
-              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={selectStyle} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={{ ...selectStyle, flex: 1 }} />
+                <input type="time" value={dueTime} onChange={(e) => setDueTime(e.target.value)} title="Due time" style={{ ...selectStyle, width: 110 }} />
+              </div>
               <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
                 {DUE_PRESETS.map((p) => (
                   <button key={p.kind} type="button" onClick={() => setDueDate(presetDate(p.kind))} style={{ padding: "3px 8px", borderRadius: 6, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)" }}>{p.label}</button>
