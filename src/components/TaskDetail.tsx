@@ -147,7 +147,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     setPosting(false);
     if (c) { setThread((t) => [...t, c]); setComment(""); setMentionQuery(null); }
   };
-  const del = () => { if (window.confirm(`Delete "${task.title}"? This can't be undone.`)) { onDelete(task.id); onClose(); } };
+  const del = () => { onClose(); onDelete(task.id); };
   const onPickFiles = async (list: FileList | null) => {
     if (!list || list.length === 0) return;
     setUploading(true);

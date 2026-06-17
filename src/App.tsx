@@ -148,7 +148,7 @@ function FullLoader() {
 
 export default function App() {
   const auth = useAuth();
-  const { error: toastError, success: toastSuccess } = useToast();
+  const { error: toastError, success: toastSuccess, action: toastAction } = useToast();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try { const s = localStorage.getItem("kanbo-theme"); if (s === "light" || s === "dark") return s; } catch { /* private mode */ }
     return "light";
@@ -434,8 +434,15 @@ export default function App() {
     setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status, completedAt } : x));
     store.updateTask(id, { status, completedAt }).catch(reportError);
     log(becomingDone ? "completed" : "reopened", t, becomingDone ? "Marked complete" : "Reopened");
-    if (becomingDone) spawnRecurrence(t);
-  }, [log, spawnRecurrence]);
+    if (becomingDone) {
+      spawnRecurrence(t);
+      // offer to undo the completion (restore its previous status)
+      toastAction(`Completed “${t.title}”`, "Undo", () => {
+        setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status: t.status, completedAt: t.completedAt } : x));
+        store.updateTask(id, { status: t.status, completedAt: t.completedAt }).catch(reportError);
+      });
+    }
+  }, [log, spawnRecurrence, toastAction]);
 
   const patchTask = useCallback((id: string, patch: Partial<Task>) => {
     const prev = tasksRef.current?.find((t) => t.id === id);
@@ -451,10 +458,20 @@ export default function App() {
 
   const deleteTask = useCallback((id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id);
+    if (!t) return;
+    // optimistically remove, but defer the real delete so it can be undone
     setTasks((ts) => ts && ts.filter((x) => x.id !== id));
-    store.deleteTask(id).catch(reportError);
-    if (t) log("deleted", { id: null, title: t.title }, "Task deleted");
-  }, [log]);
+    let undone = false;
+    const timer = setTimeout(() => {
+      if (undone) return;
+      store.deleteTask(id).catch(reportError);
+      log("deleted", { id: null, title: t.title }, "Task deleted");
+    }, 6000);
+    toastAction(`Deleted “${t.title}”`, "Undo", () => {
+      undone = true; clearTimeout(timer);
+      setTasks((ts) => ts ? [t, ...ts] : [t]);
+    });
+  }, [log, toastAction]);
 
   const addComment = useCallback(async (taskId: string, body: string, mentions: string[] = []): Promise<Comment | null> => {
     const t = tasksRef.current?.find((x) => x.id === taskId);

@@ -4,12 +4,15 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 
 type ToastType = "error" | "success" | "info";
-interface ToastItem { id: number; message: string; type: ToastType }
+interface ToastAction { label: string; run: () => void }
+interface ToastItem { id: number; message: string; type: ToastType; action?: ToastAction }
 
 interface ToastApi {
   toast: (message: string, type?: ToastType) => void;
   error: (message: string) => void;
   success: (message: string) => void;
+  /** toast with an action button (e.g. Undo); auto-dismisses after `ms` */
+  action: (message: string, label: string, run: () => void, ms?: number) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -27,10 +30,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setTimeout(() => remove(id), type === "error" ? 7000 : 4000);
   }, [remove]);
 
+  const action = useCallback((message: string, label: string, run: () => void, ms = 6000) => {
+    const id = ++_id;
+    setItems((xs) => [...xs, { id, message, type: "info", action: { label, run } }]);
+    setTimeout(() => remove(id), ms);
+  }, [remove]);
+
   const api: ToastApi = {
     toast,
     error: useCallback((m: string) => toast(m, "error"), [toast]),
     success: useCallback((m: string) => toast(m, "success"), [toast]),
+    action,
   };
 
   const color = (t: ToastType) => t === "error" ? "var(--st-blocked)" : t === "success" ? "var(--st-done)" : "var(--accent)";
@@ -43,6 +53,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div key={it.id} className="glass anim-fadeup" style={{ pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: 11, padding: "12px 14px", borderRadius: 13, width: 340, maxWidth: "100%", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", borderLeft: `3px solid ${color(it.type)}` }}>
             <span style={{ width: 8, height: 8, borderRadius: 99, marginTop: 5, flexShrink: 0, background: color(it.type) }} />
             <p style={{ margin: 0, flex: 1, fontSize: 13.5, lineHeight: 1.45, color: "var(--ink-2)" }}>{it.message}</p>
+            {it.action && (
+              <button onClick={() => { it.action!.run(); remove(it.id); }} style={{ border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", padding: 0, fontSize: 13, fontWeight: 600, fontFamily: "var(--font-display)", flexShrink: 0 }}>{it.action.label}</button>
+            )}
             <button onClick={() => remove(it.id)} aria-label="Dismiss" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 0, fontSize: 16, lineHeight: 1 }}>×</button>
           </div>
         ))}
