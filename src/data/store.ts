@@ -230,8 +230,12 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
 // error isn't a missing-column error or the column isn't in the row.
 function withoutMissingColumn(row: Record<string, unknown>, message?: string): Record<string, unknown> | null {
   if (!message) return null;
-  const m = message.match(/'([^']+)' column|column "?([a-z_]+)"? .*does not exist|Could not find the '([^']+)'/i);
-  const col = m && (m[1] || m[2] || m[3]);
+  let col: string | null = null;
+  // PostgREST schema cache: Could not find the 'due_time' column of 'tasks' …
+  let m = message.match(/Could not find the '([^']+)' column/i);
+  if (m) col = m[1];
+  // Postgres 42703: column tasks.due_time does not exist  |  column "due_time" does not exist
+  if (!col) { m = message.match(/column\s+"?(?:[\w]+\.)?([a-z0-9_]+)"?\s+does not exist/i); if (m) col = m[1]; }
   if (!col || !(col in row)) return null;
   const copy = { ...row };
   delete copy[col];
