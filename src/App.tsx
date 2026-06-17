@@ -293,6 +293,26 @@ export default function App() {
     toastSuccess("Profile saved");
   }, [auth.user?.email, toastSuccess]);
 
+  // download all of the user's data as JSON (user-initiated, their own data)
+  const exportData = useCallback(() => {
+    const payload = {
+      app: "Kanbo",
+      exportedAt: new Date().toISOString(),
+      profile,
+      workspaces,
+      projects,
+      tasks: tasksRef.current ?? [],
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `kanbo-export-${toLocalISO(new Date())}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toastSuccess("Your data is downloading");
+  }, [profile, workspaces, projects, toastSuccess]);
+
   /* ---- external calendars (Google / Microsoft) ---- */
   const refreshCalendar = useCallback(async () => {
     if (!store.configured) return;
@@ -705,7 +725,7 @@ export default function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
-        onUpload={uploadAvatar} onSave={saveProfile} />
+        onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);

@@ -21,7 +21,7 @@ const inputStyle: React.CSSProperties = {
 };
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6, letterSpacing: ".01em" };
 
-export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave }: {
+export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -29,6 +29,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   color: string;
   onUpload: (file: File) => Promise<string>;
   onSave: (p: ProfileDraft) => Promise<void>;
+  onExport: () => void;
 }) {
   const [firstName, setFirstName] = useState(initial.firstName);
   const [lastName, setLastName] = useState(initial.lastName);
@@ -144,6 +145,14 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
           </div>
 
           {error && <div role="alert" style={{ marginTop: 14, fontSize: 12.5, color: "var(--prio-urgent)" }}>{error}</div>}
+
+          {/* your data */}
+          <div className="divider" style={{ margin: "22px 0 16px" }} />
+          <label style={labelStyle}>Your data</label>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button className="btn btn-ghost" onClick={onExport}><Icon name="archive" size={15} /> Export my data</button>
+            <span style={{ fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.4 }}>Download all your tasks and projects as a JSON file.</span>
+          </div>
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>
