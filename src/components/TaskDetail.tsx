@@ -51,7 +51,7 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
   taskId: string;
   tasks: Task[];
   tags: Record<string, TagDef>;
@@ -62,6 +62,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onToggle: (id: string) => void;
   onPatch: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
+  onDuplicate?: (id: string) => void;
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAddSubtask: (taskId: string, title: string) => void;
   onCreateTag: (label: string, color: string) => void;
@@ -73,6 +74,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [newSub, setNewSub] = useState("");
   const [comment, setComment] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const commentRef = useRef<HTMLInputElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
   const [posting, setPosting] = useState(false);
@@ -177,6 +179,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <button className="btn-icon" onClick={onClose} style={{ border: "none" }}><Icon name="x" size={18} /></button>
           <div style={{ flex: 1 }} />
           {proj && <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--ink-3)" }}><span style={{ width: 8, height: 8, borderRadius: 2, background: proj.color }} />{proj.name}</span>}
+          <button className="btn-icon" onClick={() => { try { navigator.clipboard?.writeText(`${location.origin}/?task=${task.id}`); } catch { /* ignore */ } setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Copy link to task" style={{ border: "none", color: copied ? "var(--accent)" : "var(--ink-3)" }}><Icon name={copied ? "check" : "link"} size={16} /></button>
+          {onDuplicate && <button className="btn-icon" onClick={() => { onDuplicate(task.id); onClose(); }} title="Duplicate task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="layers" size={16} /></button>}
           <button className="btn-icon" onClick={del} title="Delete task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="trash" size={17} /></button>
         </div>
 

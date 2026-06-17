@@ -456,6 +456,21 @@ export default function App() {
     setWelcomeOpen(false);
   }, [welcomeKey]);
 
+  // deep link: open ?task=<id> once tasks are loaded, then clean the URL
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || tasks === null) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const tid = params.get("task");
+      if (!tid) return;
+      deepLinkDone.current = true;
+      if (tasks.some((t) => t.id === tid)) setDetailId(tid);
+      params.delete("task");
+      window.history.replaceState({}, "", window.location.pathname + (params.toString() ? "?" + params : ""));
+    } catch { /* ignore */ }
+  }, [tasks]);
+
   // load connected calendars on sign-in, and handle the OAuth round-trip return
   useEffect(() => {
     if (!store.configured || !authUserId) return;
@@ -483,6 +498,19 @@ export default function App() {
       log("created", saved, "Task created");
     }).catch(reportError);
   }, [log]);
+
+  // duplicate a task (fresh copy, not done, no comments/deps carried over)
+  const duplicateTask = useCallback((id: string) => {
+    const src = tasksRef.current?.find((t) => t.id === id);
+    if (!src) return;
+    const uid = () => "t-dup-" + Date.now() + "-" + Math.round(Math.random() * 1e6);
+    persistTask({
+      ...src, id: uid(), title: src.title + " (copy)", status: "todo", completedAt: undefined,
+      comments: 0, dependencies: [], subtasks: src.subtasks.map((s) => ({ ...s, id: uid(), done: false })),
+      position: Date.now(),
+    });
+    toastSuccess("Task duplicated");
+  }, [persistTask, toastSuccess]);
 
   // when a recurring task is completed, spawn its next occurrence
   const spawnRecurrence = useCallback((t: Task) => {
@@ -857,7 +885,7 @@ export default function App() {
         else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.label.includes("analytics")) setRoute({ view: "analytics" });
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
