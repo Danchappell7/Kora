@@ -23,9 +23,9 @@ export function AdminApp() {
   }
 
   return (
-    <div style={{ position: "relative", minHeight: "100vh" }}>
+    <div style={{ position: "relative", height: "100vh", overflow: "hidden" }}>
       <div className="app-bg" />
-      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
         <header style={{ display: "flex", alignItems: "center", gap: 11, padding: "14px 24px", borderBottom: "1px solid var(--hairline)", background: "var(--surface-raised)", backdropFilter: "blur(10px)" }}>
           <KanboLogo size={26} />
           <span style={{ fontFamily: "var(--font-head)", fontSize: 16, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase" }}>Kanbo</span>

@@ -278,6 +278,7 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
 // query fails. We want this task's own dependency rows (task_id = id).
 const TASK_SELECT = "*, subtasks(*), task_dependencies!task_dependencies_task_id_fkey(depends_on)";
 
+export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string }
 export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
 export interface AdminSeries { days: AdminDay[]; by_status: Record<string, number>; by_priority: Record<string, number> }
 
@@ -648,24 +649,24 @@ export const store = {
   /* ---------- admin metrics (hidden /admin dashboard) ---------- */
   // Every signed-in user can read profiles (RLS policy), so this gives a real
   // account list/count with no extra setup.
-  async adminProfiles(): Promise<{ id: string; name: string; email: string; updatedAt: string }[]> {
+  async adminProfiles(): Promise<AdminAccount[]> {
     if (!supabase) {
-      return MEMBERS.filter((m) => m.type !== "external").map((m) => ({ id: m.id, name: m.name, email: m.email, updatedAt: new Date().toISOString() }));
+      return MEMBERS.filter((m) => m.type !== "external").map((m) => ({ id: m.id, name: m.name, email: m.email, createdAt: new Date(Date.now() - 12 * 86400000).toISOString(), updatedAt: new Date().toISOString() }));
     }
     const { data, error } = await supabase.from("profiles").select("id, first_name, last_name, email, updated_at").order("updated_at", { ascending: false });
     if (error) throw error;
     type PRow = { id: string; first_name: string | null; last_name: string | null; email: string | null; updated_at: string | null };
-    return ((data as PRow[] | null) ?? []).map((p) => ({ id: p.id, name: fullName({ firstName: p.first_name || "", lastName: p.last_name || "" }) || p.email || "Unnamed", email: p.email || "", updatedAt: p.updated_at || "" }));
+    return ((data as PRow[] | null) ?? []).map((p) => ({ id: p.id, name: fullName({ firstName: p.first_name || "", lastName: p.last_name || "" }) || p.email || "Unnamed", email: p.email || "", createdAt: "", updatedAt: p.updated_at || "" }));
   },
   // Full account list from auth.users via a SECURITY DEFINER RPC (so it matches
   // the user count and has real signup/last-active dates). null if not installed.
-  async adminAccounts(): Promise<{ id: string; name: string; email: string; updatedAt: string }[] | null> {
+  async adminAccounts(): Promise<AdminAccount[] | null> {
     if (!supabase) return null;
     try {
       const { data, error } = await supabase.rpc("admin_accounts");
       if (error || !data) return null;
       return (data as { id: string; email: string; name: string; created_at: string; last_sign_in_at: string }[])
-        .map((u) => ({ id: u.id, name: u.name || u.email || "Unnamed", email: u.email || "", updatedAt: u.last_sign_in_at || u.created_at || "" }));
+        .map((u) => ({ id: u.id, name: u.name || u.email || "Unnamed", email: u.email || "", createdAt: u.created_at || "", updatedAt: u.last_sign_in_at || u.created_at || "" }));
     } catch { return null; }
   },
 
