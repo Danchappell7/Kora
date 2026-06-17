@@ -1,15 +1,17 @@
 /* ============================================================
    KANBO — Board (Kanban), Timeline (Gantt), Calendar views
    ============================================================ */
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { SubtaskProgress } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
-  STATUS_META, STATUS_ORDER, KANBO_TODAY, toLocalISO,
+  STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
-import type { Task, Status, Project, CalProvider, CalendarConnection, ExternalEvent } from "../../data/types";
+import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent } from "../../data/types";
+
+type BoardGroup = "status" | "priority" | "project" | "assignee";
 
 const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
   google: { label: "Google Calendar", color: "oklch(0.7 0.18 25)" },
@@ -89,63 +91,117 @@ function between(before?: Task, after?: Task): number {
   return (bp + ap) / 2;
 }
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void; onMove: (taskId: string, status: Status, position?: number) => void }) {
+interface BoardCol { key: string; label: string; status?: Status; dot?: string }
+
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, members = [] }: {
+  tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void;
+  onMove: (taskId: string, status: Status, position?: number) => void;
+  onPatch?: (id: string, patch: Partial<Task>) => void;
+  members?: { id: string; name: string }[];
+}) {
   const isMobile = useMediaQuery("(max-width: 860px)");
-  const [dragOver, setDragOver] = useState<Status | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: string; half: Half } | null>(null);
+  const [group, setGroup] = useState<BoardGroup>(() => {
+    try { const s = localStorage.getItem("kanbo-board-group") as BoardGroup | null; if (s && ["status", "priority", "project", "assignee"].includes(s)) return s; } catch { /* ignore */ }
+    return "status";
+  });
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try { const s = localStorage.getItem("kanbo-board-collapsed"); if (s) return new Set(JSON.parse(s)); } catch { /* ignore */ }
+    return new Set();
+  });
+  useEffect(() => { try { localStorage.setItem("kanbo-board-group", group); } catch { /* ignore */ } }, [group]);
+  useEffect(() => { try { localStorage.setItem("kanbo-board-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ } }, [collapsed]);
   const colItems = useRef<Record<string, Task[]>>({});
 
-  const endHover = () => { setDragId(null); setHover(null); setDragOver(null); };
+  const keyOf = (t: Task): string => group === "status" ? t.status : group === "priority" ? t.priority : group === "project" ? t.projectId : (t.assigneeId || "—");
+  const columns: BoardCol[] =
+    group === "status" ? STATUS_ORDER.map((s) => ({ key: s, label: STATUS_META[s].label, status: s }))
+    : group === "priority" ? (["urgent", "high", "medium", "low"] as Priority[]).map((p) => ({ key: p, label: PRIORITY_META[p].label, dot: PRIORITY_META[p].color }))
+    : group === "project" ? [...new Set(tasks.map((t) => t.projectId))].map((pid) => ({ pid, p: getProject(pid) })).filter((x) => !!x.p).map(({ pid, p }) => ({ key: pid, label: p!.name, dot: p!.color }))
+    : (members.length ? members : [{ id: "—", name: "Unassigned" }]).map((m) => ({ key: m.id, label: m.name }));
 
-  // drop ONTO a card → place dragged just before/after it within that column
-  const onCardDrop = (draggedId: string, targetId: string, half: Half, status: Status) => {
+  const endHover = () => { setDragId(null); setHover(null); setDragOver(null); };
+  const applyDrop = (draggedId: string, col: BoardCol, pos: number) => {
+    if (group === "status") { onMove(draggedId, col.key as Status, pos); return; }
+    const field: Partial<Task> = group === "priority" ? { priority: col.key as Priority } : group === "project" ? { projectId: col.key } : { assigneeId: col.key };
+    onPatch?.(draggedId, { ...field, position: pos });
+  };
+  const onCardDrop = (draggedId: string, targetId: string, half: Half, col: BoardCol) => {
     endHover();
     if (draggedId === targetId) return;
-    const list = (colItems.current[status] ?? []).filter((t) => t.id !== draggedId);
+    const list = (colItems.current[col.key] ?? []).filter((t) => t.id !== draggedId);
     const ti = list.findIndex((t) => t.id === targetId);
     const at = half === "top" ? ti : ti + 1;
-    onMove(draggedId, status, between(list[at - 1], list[at]));
+    applyDrop(draggedId, col, between(list[at - 1], list[at]));
   };
-
-  // drop on empty column area → append to the end of that column
-  const onColumnDrop = (draggedId: string, status: Status) => {
+  const onColumnDrop = (draggedId: string, col: BoardCol) => {
     endHover();
-    const list = (colItems.current[status] ?? []).filter((t) => t.id !== draggedId);
-    onMove(draggedId, status, between(list[list.length - 1], undefined));
+    const list = (colItems.current[col.key] ?? []).filter((t) => t.id !== draggedId);
+    applyDrop(draggedId, col, between(list[list.length - 1], undefined));
   };
+  const toggleCollapse = (key: string) => setCollapsed((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  const GROUPS: { v: BoardGroup; label: string }[] = [{ v: "status", label: "Status" }, { v: "priority", label: "Priority" }, { v: "project", label: "Project" }, { v: "assignee", label: "Assignee" }];
 
   return (
-    <div style={{ flex: 1, overflow: "auto" }}>
-      <div style={{ display: "flex", gap: 16, padding: "20px 24px 28px", minHeight: "100%" }}>
-        {STATUS_ORDER.map((s) => {
-          const items = tasks.filter((t) => t.status === s).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-          colItems.current[s] = items;
+    <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
+      {/* board group selector */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 24px 0" }}>
+        <span className="kicker">Columns</span>
+        <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
+          {GROUPS.map((g) => (
+            <button key={g.v} onClick={() => setGroup(g.v)} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500,
+              background: group === g.v ? "var(--accent)" : "transparent", color: group === g.v ? "var(--on-accent)" : "var(--ink-3)" }}>{g.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 16, padding: "16px 24px 28px", minHeight: "100%" }}>
+        {columns.map((col) => {
+          const items = tasks.filter((t) => keyOf(t) === col.key).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+          colItems.current[col.key] = items;
+          const isCollapsed = collapsed.has(col.key);
+          const dot = col.status ? null : <span style={{ width: 9, height: 9, borderRadius: 99, background: col.dot || "var(--ink-4)", flexShrink: 0 }} />;
+          if (isCollapsed) {
+            return (
+              <button key={col.key} onClick={() => toggleCollapse(col.key)} title={`Expand ${col.label}`}
+                style={{ width: 46, flexShrink: 0, border: "1px solid var(--hairline)", borderRadius: 14, background: "color-mix(in oklch, var(--bg-deep) 28%, transparent)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "12px 0" }}>
+                <Icon name="chevronRight" size={15} style={{ color: "var(--ink-4)" }} />
+                {col.status ? <StatusDot status={col.status} /> : dot}
+                <span className="mono tnum" style={{ fontSize: 11, color: "var(--ink-4)" }}>{items.length}</span>
+                <span style={{ writingMode: "vertical-rl", fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", marginTop: 4 }}>{col.label}</span>
+              </button>
+            );
+          }
           return (
-            <div key={s} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
-              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(s); setHover(null); } }}
-              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === s ? null : d); }}
-              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); if (id) onColumnDrop(id, s); }}>
+            <div key={col.key} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(col.key); setHover(null); } }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === col.key ? null : d); }}
+              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); if (id) onColumnDrop(id, col); }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 4px 12px" }}>
-                <StatusDot status={s} glow />
-                <span style={{ fontSize: 13.5, fontWeight: 600 }}>{STATUS_META[s].label}</span>
+                <button onClick={() => toggleCollapse(col.key)} className="btn-icon" title="Collapse column" style={{ width: 20, height: 20, border: "none", background: "transparent", color: "var(--ink-4)", flexShrink: 0 }}><Icon name="chevronRight" size={13} style={{ transform: "rotate(90deg)" }} /></button>
+                {col.status ? <StatusDot status={col.status} glow /> : dot}
+                <span className="truncate" style={{ fontSize: 13.5, fontWeight: 600 }}>{col.label}</span>
                 <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{items.length}</span>
-                <button onClick={() => onAdd(s)} className="btn-icon" title="Add task" style={{ marginLeft: "auto", width: 24, height: 24, border: "none", color: "var(--ink-4)" }}><Icon name="plus" size={15} /></button>
+                {col.status && <button onClick={() => onAdd(col.status!)} className="btn-icon" title="Add task" style={{ marginLeft: "auto", width: 24, height: 24, border: "none", color: "var(--ink-4)" }}><Icon name="plus" size={15} /></button>}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
-                background: dragOver === s ? "var(--accent-dim)" : "color-mix(in oklch, var(--bg-deep) 28%, transparent)",
-                boxShadow: dragOver === s && !hover ? "inset 0 0 0 2px var(--accent)" : "none" }}>
+                background: dragOver === col.key ? "var(--accent-dim)" : "color-mix(in oklch, var(--bg-deep) 28%, transparent)",
+                boxShadow: dragOver === col.key && !hover ? "inset 0 0 0 2px var(--accent)" : "none" }}>
                 {items.map((t) => (
                   <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onMove={onMove}
                     isMobile={isMobile} dragging={dragId === t.id}
                     dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
                     onPickup={setDragId}
                     onHoverCard={(id, half) => { setDragOver(null); setHover({ id, half }); }}
-                    onCardDrop={(draggedId, targetId, half) => onCardDrop(draggedId, targetId, half, s)} />
+                    onCardDrop={(draggedId, targetId, half) => onCardDrop(draggedId, targetId, half, col)} />
                 ))}
-                <button onClick={() => onAdd(s)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
-                  <Icon name="plus" size={14} /> Add task
-                </button>
+                {col.status && (
+                  <button onClick={() => onAdd(col.status!)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
+                    <Icon name="plus" size={14} /> Add task
+                  </button>
+                )}
               </div>
             </div>
           );
