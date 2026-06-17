@@ -60,7 +60,7 @@ const PRIORITY_FILTERS: { value: string; label: string }[] = [
   { value: "low", label: "Low" },
 ];
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, members }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -74,6 +74,9 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAdd: (status: Status) => void;
   onMove: (taskId: string, status: Status, position?: number) => void;
+  onBulkPatch: (ids: string[], patch: Partial<Task>) => void;
+  onBulkDelete: (ids: string[]) => void;
+  members: { id: string; name: string }[];
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("all");
@@ -126,7 +129,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
           <Icon name="sparkles" size={15} /> AI sort {smart ? "on" : "off"}
         </button>
       </div>
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
@@ -473,6 +476,26 @@ export default function App() {
     });
   }, [log, toastAction]);
 
+  // ---- bulk actions (multi-select) ----
+  const bulkPatch = useCallback((ids: string[], patch: Partial<Task>) => {
+    if (!ids.length) return;
+    setTasks((ts) => ts && ts.map((t) => ids.includes(t.id) ? { ...t, ...patch } : t));
+    ids.forEach((id) => store.updateTask(id, patch).catch(reportError));
+    toastSuccess(`Updated ${ids.length} task${ids.length > 1 ? "s" : ""}`);
+  }, [toastSuccess]);
+
+  const bulkDelete = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const removed = (tasksRef.current ?? []).filter((t) => ids.includes(t.id));
+    setTasks((ts) => ts && ts.filter((t) => !ids.includes(t.id)));
+    let undone = false;
+    const timer = setTimeout(() => { if (undone) return; ids.forEach((id) => store.deleteTask(id).catch(reportError)); }, 6000);
+    toastAction(`Deleted ${ids.length} task${ids.length > 1 ? "s" : ""}`, "Undo", () => {
+      undone = true; clearTimeout(timer);
+      setTasks((ts) => ts ? [...removed, ...ts] : removed);
+    });
+  }, [toastAction]);
+
   const addComment = useCallback(async (taskId: string, body: string, mentions: string[] = []): Promise<Comment | null> => {
     const t = tasksRef.current?.find((x) => x.id === taskId);
     const authorName = getMember(userIdRef.current)?.name || "You";
@@ -678,6 +701,11 @@ export default function App() {
     breadcrumb = workspaces.find((w) => w.id === (p?.workspaceId ?? null))?.name || "Personal";
   }
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
+  // people you can bulk-assign to: active members of the workspace (always includes you)
+  const assignees = (() => {
+    const active = wsMembers.filter((m) => m.status === "active" && m.userId).map((m) => ({ id: m.userId!, name: m.name || m.email }));
+    return active.length > 0 ? active : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
+  })();
 
   const inboxCount = activity.filter((a) => Date.now() - new Date(a.createdAt).getTime() < 86400000).length;
   const currentUser = getMember(currentUserId);
@@ -700,7 +728,7 @@ export default function App() {
           const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
-        }} />;
+        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} members={assignees} />;
       default: return null;
     }
   };

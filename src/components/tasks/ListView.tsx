@@ -5,10 +5,10 @@ import { useState } from "react";
 import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
-  getProject, blockingTasks, dueState, fmtDue,
+  getProject, blockingTasks, dueState, fmtDue, toLocalISO,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
-import type { Task, Subtask, IconName } from "../../data/types";
+import type { Task, Subtask, IconName, Priority } from "../../data/types";
 import type { GroupBy } from "../../app-types";
 
 export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
@@ -21,10 +21,12 @@ export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
   );
 }
 
-function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0 }: {
+function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; smart: boolean; depth?: number;
+  selected?: boolean; selectionActive?: boolean; onSelect?: (id: string, additive: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const isMobile = useMediaQuery("(max-width: 860px)");
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
@@ -35,15 +37,25 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
 
   return (
     <div style={{ borderBottom: "1px solid var(--hairline)" }}>
-      <div onClick={() => onOpen(task.id)} className="task-row lift-row" style={{
+      <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="task-row lift-row" style={{
         display: "flex", alignItems: "center", gap: 12, padding: "10px 18px 10px " + (18 + depth * 22) + "px",
         cursor: "pointer", position: "relative",
         opacity: done ? 0.55 : 1,
+        background: selected ? "var(--accent-dim)" : undefined,
       }}>
         {/* priority accent bar */}
         <span style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 99,
           background: PRIORITY_META[task.priority].color,
           opacity: task.priority === "urgent" || task.priority === "high" ? 0.9 : 0.3 }} />
+
+        {onSelect && (
+          <button onClick={(e) => { e.stopPropagation(); onSelect(task.id, e.shiftKey || e.metaKey); }} aria-label={selected ? "Deselect task" : "Select task"}
+            style={{ width: 18, height: 18, borderRadius: 5, flexShrink: 0, padding: 0, cursor: "pointer", display: "grid", placeItems: "center",
+              border: `1.6px solid ${selected ? "var(--accent)" : "var(--hairline-strong)"}`, background: selected ? "var(--accent)" : "transparent",
+              opacity: selected || selectionActive || hovered ? 1 : 0, transition: "opacity .12s" }}>
+            {selected && <Icon name="check" size={12} sw={3} style={{ color: "var(--on-accent)" }} />}
+          </button>
+        )}
 
         <Check done={done} onToggle={() => onToggle(task.id)} />
 
@@ -116,9 +128,22 @@ function GroupHeader({ label, color, count, icon }: { label: string; color: stri
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, onBulkPatch, onBulkDelete, members = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
+  onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
+  onBulkDelete?: (ids: string[]) => void;
+  members?: { id: string; name: string }[];
 }) {
+  const bulkEnabled = !!onBulkPatch;
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
+  const selectionActive = selected.size > 0;
+  const toggleSelect = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const clearSel = () => { setSelected(new Set()); setBulkMenu(null); };
+  const ids = [...selected].filter((id) => tasks.some((t) => t.id === id));
+  const applyPatch = (patch: Partial<Task>) => { onBulkPatch?.(ids, patch); clearSel(); };
+  const PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
+
   const sortFn = (a: Task, b: Task) => {
     if (smart) return b.aiScore - a.aiScore;
     if (a.status === "done" && b.status !== "done") return 1;
@@ -159,10 +184,67 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       ) : groups.map((g) => (
         <div key={g.key}>
           <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon} />
-          <div>{g.items.map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart} />)}</div>
+          <div>{g.items.map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
+            selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined} />)}</div>
         </div>
       ))}
-      <div style={{ height: 40 }} />
+      <div style={{ height: selectionActive ? 90 : 40 }} />
+
+      {selectionActive && (
+        <div className="glass anim-fadeup" style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", zIndex: 60,
+          display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 14, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
+          <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", padding: "0 8px" }}>{ids.length} selected</span>
+          <span style={{ width: 1, height: 22, background: "var(--hairline)" }} />
+          <button className="btn btn-ghost" onClick={() => applyPatch({ status: "done", completedAt: toLocalISO(new Date()) })} style={{ padding: "7px 11px", fontSize: 13 }}><Icon name="check" size={15} /> Done</button>
+          <BulkMenuButton label="Status" icon="layers" open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
+            {STATUS_ORDER.map((s) => (
+              <button key={s} onClick={() => applyPatch({ status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })} style={bulkItemStyle}>
+                <StatusDot status={s} size={7} /> {STATUS_META[s].label}
+              </button>
+            ))}
+          </BulkMenuButton>
+          <BulkMenuButton label="Priority" icon="flag" open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
+            {PRIORITIES.map((p) => (
+              <button key={p} onClick={() => applyPatch({ priority: p })} style={bulkItemStyle}>
+                <PriorityFlag priority={p} size={13} /> {PRIORITY_META[p].label}
+              </button>
+            ))}
+          </BulkMenuButton>
+          {members.length > 0 && (
+            <BulkMenuButton label="Assign" icon="user" open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
+              {members.map((m) => (
+                <button key={m.id} onClick={() => applyPatch({ assigneeId: m.id })} style={bulkItemStyle}>
+                  <Avatar id={m.id} size={18} /> {m.name}
+                </button>
+              ))}
+            </BulkMenuButton>
+          )}
+          <button className="btn btn-ghost" onClick={() => { onBulkDelete?.(ids); clearSel(); }} style={{ padding: "7px 11px", fontSize: 13, color: "var(--prio-urgent)" }}><Icon name="trash" size={15} /> Delete</button>
+          <span style={{ width: 1, height: 22, background: "var(--hairline)" }} />
+          <button className="btn-icon" onClick={clearSel} aria-label="Clear selection" style={{ border: "none", width: 30, height: 30 }}><Icon name="x" size={16} /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const bulkItemStyle: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 9px", borderRadius: 8, border: "none",
+  background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)",
+};
+
+function BulkMenuButton({ label, icon, open, onToggle, children }: { label: string; icon: IconName; open: boolean; onToggle: () => void; children: React.ReactNode }) {
+  return (
+    <div style={{ position: "relative" }}>
+      <button className="btn btn-ghost" onClick={onToggle} style={{ padding: "7px 11px", fontSize: 13 }}><Icon name={icon} size={15} /> {label}</button>
+      {open && (
+        <>
+          <div onClick={onToggle} style={{ position: "fixed", inset: 0, zIndex: 1 }} />
+          <div className="glass anim-scalein" style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, zIndex: 2, minWidth: 168, padding: 5, borderRadius: 12, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
+            {children}
+          </div>
+        </>
+      )}
     </div>
   );
 }
