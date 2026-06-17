@@ -175,6 +175,8 @@ h1, h2, h3 { font-family: var(--font-head); letter-spacing: -0.02em; }
   letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-4);
 }
 .tnum { font-variant-numeric: tabular-nums; }
+/* hide on small screens (landing nav secondary action, dense table meta) */
+@media (max-width: 600px) { .hide-sm { display: none !important; } }
 h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 
 /* ---- focus ring ---- */

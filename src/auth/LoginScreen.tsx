@@ -3,9 +3,27 @@
    ============================================================ */
 import { useState } from "react";
 import { Icon, KanboLogo } from "../components/primitives";
+import { Landing } from "../components/Landing";
 import { useAuth } from "./AuthProvider";
 
 type Mode = "signin" | "signup" | "reset";
+
+/* Public site: marketing landing first, auth on demand. This is what a
+   signed-out visitor sees at the root. */
+export function PublicSite() {
+  const [view, setView] = useState<"landing" | "auth">("landing");
+  const [startMode, setStartMode] = useState<Mode>("signin");
+  if (view === "landing") {
+    return (
+      <Landing
+        signupDisabled={SIGNUP_DISABLED}
+        onGetStarted={() => { setStartMode("signup"); setView("auth"); }}
+        onSignIn={() => { setStartMode("signin"); setView("auth"); }}
+      />
+    );
+  }
+  return <LoginScreen initialMode={startMode} onBack={() => setView("landing")} />;
+}
 
 // Invite-only mode: hides self-signup + Google. Real enforcement is the
 // "Disable signup" toggle in Supabase; this just matches the UI to it.
@@ -14,9 +32,9 @@ const SIGNUP_DISABLED = import.meta.env.VITE_DISABLE_SIGNUP === "true";
 // Set VITE_ENABLE_GOOGLE=true once OAuth credentials are in place.
 const GOOGLE_ENABLED = import.meta.env.VITE_ENABLE_GOOGLE === "true";
 
-export function LoginScreen() {
+export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: Mode; onBack?: () => void } = {}) {
   const { signIn, signUp, signInWithGoogle, resetPassword } = useAuth();
-  const [mode, setMode] = useState<Mode>("signin");
+  const [mode, setMode] = useState<Mode>(SIGNUP_DISABLED ? "signin" : initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,6 +64,11 @@ export function LoginScreen() {
     <div style={{ position: "relative", height: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 16 }}>
       <div className="app-bg" /><div className="app-grid" />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 400, maxWidth: "100%", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
+        {onBack && (
+          <button onClick={onBack} style={{ ...linkStyle, color: "var(--ink-4)", display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 14, fontWeight: 500 }}>
+            <Icon name="arrowLeft" size={14} /> Back to home
+          </button>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 22 }}>
           <KanboLogo size={34} />
           <div>

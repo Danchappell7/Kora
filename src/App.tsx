@@ -23,7 +23,7 @@ import { AnalyticsView } from "./components/views/AnalyticsView";
 import { InboxView, TeamView } from "./components/views/InboxTeam";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
-import { LoginScreen, UpdatePasswordScreen } from "./auth/LoginScreen";
+import { PublicSite, UpdatePasswordScreen } from "./auth/LoginScreen";
 import { useAuth } from "./auth/AuthProvider";
 import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
@@ -588,7 +588,7 @@ export default function App() {
 
   // ---- auth / loading gates ----
   if (auth.recovery) return <UpdatePasswordScreen />;
-  if (auth.configured && !auth.user) return <LoginScreen />;
+  if (auth.configured && !auth.user) return <PublicSite />;
   if (auth.loading || tasks === null) return <FullLoader />;
   if (subscription && !hasAccess(subscription)) {
     const seats = Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1);
