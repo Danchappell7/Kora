@@ -42,8 +42,8 @@ export function AdminView() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([store.adminProfiles(), store.adminStats()])
-      .then(([profiles, s]) => { if (!cancelled) { setAccounts(profiles); setStats(s); } })
+    Promise.all([store.adminAccounts().then((a) => a ?? store.adminProfiles()), store.adminStats()])
+      .then(([list, s]) => { if (!cancelled) { setAccounts(list); setStats(s); } })
       .catch(reportError)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };

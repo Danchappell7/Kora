@@ -650,6 +650,18 @@ export const store = {
     type PRow = { id: string; first_name: string | null; last_name: string | null; email: string | null; updated_at: string | null };
     return ((data as PRow[] | null) ?? []).map((p) => ({ id: p.id, name: fullName({ firstName: p.first_name || "", lastName: p.last_name || "" }) || p.email || "Unnamed", email: p.email || "", updatedAt: p.updated_at || "" }));
   },
+  // Full account list from auth.users via a SECURITY DEFINER RPC (so it matches
+  // the user count and has real signup/last-active dates). null if not installed.
+  async adminAccounts(): Promise<{ id: string; name: string; email: string; updatedAt: string }[] | null> {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase.rpc("admin_accounts");
+      if (error || !data) return null;
+      return (data as { id: string; email: string; name: string; created_at: string; last_sign_in_at: string }[])
+        .map((u) => ({ id: u.id, name: u.name || u.email || "Unnamed", email: u.email || "", updatedAt: u.last_sign_in_at || u.created_at || "" }));
+    } catch { return null; }
+  },
+
   // Richer cross-user aggregates via a SECURITY DEFINER RPC (optional — returns
   // null if the admin_stats() function hasn't been installed yet).
   async adminStats(): Promise<Record<string, number> | null> {

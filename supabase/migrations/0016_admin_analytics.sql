@@ -50,3 +50,32 @@ end;
 $$;
 
 grant execute on function public.admin_stats() to authenticated;
+
+-- ---------- admin_accounts(): full account list (admins only) ----------
+create or replace function public.admin_accounts()
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me text := (select email from auth.users where id = auth.uid());
+begin
+  if me is null or lower(me) not in ('danchappell7@gmail.com') then
+    raise exception 'not authorized';
+  end if;
+  return (
+    select coalesce(json_agg(json_build_object(
+      'id', u.id,
+      'email', u.email,
+      'name', coalesce(nullif(btrim(coalesce(p.first_name, '') || ' ' || coalesce(p.last_name, '')), ''), u.email),
+      'created_at', u.created_at,
+      'last_sign_in_at', u.last_sign_in_at
+    ) order by u.created_at desc), '[]'::json)
+    from auth.users u
+    left join public.profiles p on p.id = u.id
+  );
+end;
+$$;
+
+grant execute on function public.admin_accounts() to authenticated;
