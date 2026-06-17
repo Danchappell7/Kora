@@ -104,6 +104,8 @@ export interface Task {
   /* collaboration + recurrence */
   workspaceId?: string | null;
   recurrence?: Recurrence;
+  /* manual board ordering — fractional index; lower sorts first within a column */
+  position?: number;
 }
 
 export interface Comment {

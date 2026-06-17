@@ -1,7 +1,7 @@
 /* ============================================================
    KANBO — Board (Kanban), Timeline (Gantt), Calendar views
    ============================================================ */
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { SubtaskProgress } from "./ListView";
@@ -17,16 +17,27 @@ const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
 };
 
 /* ---------------- KANBAN ---------------- */
-function KanbanCard({ task, allTasks, onOpen, onMove }: { task: Task; allTasks: Task[]; onOpen: (id: string) => void; onMove: (id: string, status: Status) => void }) {
+type Half = "top" | "bottom";
+function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop }: {
+  task: Task; allTasks: Task[]; onOpen: (id: string) => void; onMove: (id: string, status: Status) => void;
+  isMobile: boolean; dragging: boolean; dropHint: Half | null;
+  onPickup: (id: string) => void; onHoverCard: (id: string, half: Half) => void; onCardDrop: (draggedId: string, targetId: string, half: Half) => void;
+}) {
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const ds = dueState(task.dueDate, task.status);
-  const isMobile = useMediaQuery("(max-width: 860px)");
   const [moveOpen, setMoveOpen] = useState(false);
+  const halfFrom = (e: React.DragEvent): Half => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientY < r.top + r.height / 2 ? "top" : "bottom";
+  };
   return (
     <div onClick={() => onOpen(task.id)} className="glass clickable lift" draggable={!isMobile}
-      onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; }}
-      style={{ padding: 13, borderRadius: 12, cursor: isMobile ? "pointer" : "grab" }}>
+      onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup(task.id); }}
+      onDragOver={!isMobile ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); onHoverCard(task.id, halfFrom(e)); } : undefined}
+      onDrop={!isMobile ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); onCardDrop(id, task.id, halfFrom(e)); } : undefined}
+      style={{ padding: 13, borderRadius: 12, cursor: isMobile ? "pointer" : "grab", opacity: dragging ? 0.4 : 1,
+        boxShadow: dropHint === "top" ? "inset 0 3px 0 -1px var(--accent)" : dropHint === "bottom" ? "inset 0 -3px 0 -1px var(--accent)" : undefined }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <PriorityFlag priority={task.priority} size={13} />
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
@@ -69,18 +80,52 @@ function KanbanCard({ task, allTasks, onOpen, onMove }: { task: Task; allTasks: 
   );
 }
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void; onMove: (taskId: string, status: Status) => void }) {
+// Fractional index between two neighbours (either may be absent → ends of list).
+function between(before?: Task, after?: Task): number {
+  const bp = before?.position, ap = after?.position;
+  if (bp == null && ap == null) return Date.now();
+  if (bp == null) return (ap as number) - 1;
+  if (ap == null) return (bp as number) + 1;
+  return (bp + ap) / 2;
+}
+
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void; onMove: (taskId: string, status: Status, position?: number) => void }) {
+  const isMobile = useMediaQuery("(max-width: 860px)");
   const [dragOver, setDragOver] = useState<Status | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [hover, setHover] = useState<{ id: string; half: Half } | null>(null);
+  const colItems = useRef<Record<string, Task[]>>({});
+
+  const endHover = () => { setDragId(null); setHover(null); setDragOver(null); };
+
+  // drop ONTO a card → place dragged just before/after it within that column
+  const onCardDrop = (draggedId: string, targetId: string, half: Half, status: Status) => {
+    endHover();
+    if (draggedId === targetId) return;
+    const list = (colItems.current[status] ?? []).filter((t) => t.id !== draggedId);
+    const ti = list.findIndex((t) => t.id === targetId);
+    const at = half === "top" ? ti : ti + 1;
+    onMove(draggedId, status, between(list[at - 1], list[at]));
+  };
+
+  // drop on empty column area → append to the end of that column
+  const onColumnDrop = (draggedId: string, status: Status) => {
+    endHover();
+    const list = (colItems.current[status] ?? []).filter((t) => t.id !== draggedId);
+    onMove(draggedId, status, between(list[list.length - 1], undefined));
+  };
+
   return (
     <div style={{ flex: 1, overflow: "auto" }}>
       <div style={{ display: "flex", gap: 16, padding: "20px 24px 28px", minHeight: "100%" }}>
         {STATUS_ORDER.map((s) => {
-          const items = tasks.filter((t) => t.status === s);
+          const items = tasks.filter((t) => t.status === s).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+          colItems.current[s] = items;
           return (
             <div key={s} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
-              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(s); } }}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(s); setHover(null); } }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === s ? null : d); }}
-              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); setDragOver(null); if (id) onMove(id, s); }}>
+              onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); if (id) onColumnDrop(id, s); }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 4px 12px" }}>
                 <StatusDot status={s} glow />
                 <span style={{ fontSize: 13.5, fontWeight: 600 }}>{STATUS_META[s].label}</span>
@@ -89,8 +134,15 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove }: { tasks: T
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
                 background: dragOver === s ? "var(--accent-dim)" : "color-mix(in oklch, var(--bg-deep) 28%, transparent)",
-                boxShadow: dragOver === s ? "inset 0 0 0 2px var(--accent)" : "none" }}>
-                {items.map((t) => <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onMove={onMove} />)}
+                boxShadow: dragOver === s && !hover ? "inset 0 0 0 2px var(--accent)" : "none" }}>
+                {items.map((t) => (
+                  <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onMove={onMove}
+                    isMobile={isMobile} dragging={dragId === t.id}
+                    dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
+                    onPickup={setDragId}
+                    onHoverCard={(id, half) => { setDragOver(null); setHover({ id, half }); }}
+                    onCardDrop={(draggedId, targetId, half) => onCardDrop(draggedId, targetId, half, s)} />
+                ))}
                 <button onClick={() => onAdd(s)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
                   <Icon name="plus" size={14} /> Add task
                 </button>

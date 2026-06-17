@@ -76,6 +76,7 @@ interface TaskRow {
   plan_today: boolean | null;
   workspace_id?: string | null;
   recurrence?: Recurrence | null;
+  position?: number | null;
   subtasks?: { id: string; title: string; done: boolean; position?: number }[] | null;
   task_dependencies?: { depends_on: string }[] | null;
 }
@@ -106,6 +107,7 @@ function rowToTask(r: TaskRow): Task {
     planToday: r.plan_today ?? false,
     workspaceId: r.workspace_id ?? null,
     recurrence: r.recurrence ?? "none",
+    position: r.position ?? 0,
   };
 }
 
@@ -207,6 +209,7 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("workspaceId" in patch) row.workspace_id = patch.workspaceId ?? null;
   if ("aiScore" in patch) row.ai_score = patch.aiScore;
   if ("aiReason" in patch) row.ai_reason = patch.aiReason;
+  if ("position" in patch) row.position = patch.position;
   return row;
 }
 
@@ -231,6 +234,7 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
     plan_today: t.planToday ?? true,
     workspace_id: t.workspaceId ?? null,
     recurrence: t.recurrence ?? "none",
+    position: t.position ?? null,
   };
 }
 
@@ -256,7 +260,7 @@ export const store = {
         }));
       }
       return {
-        tasks: TASKS.map(withPlanFields), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
+        tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
       };

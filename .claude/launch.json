@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kanbo-dev",
+      "runtimeExecutable": "/Users/danielchappell/.kora-tools/node-v20.18.1-darwin-arm64/bin/npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    }
+  ]
+}

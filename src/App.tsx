@@ -73,7 +73,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onToggle: (id: string) => void;
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAdd: (status: Status) => void;
-  onMove: (taskId: string, status: Status) => void;
+  onMove: (taskId: string, status: Status, position?: number) => void;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("all");
@@ -358,7 +358,8 @@ export default function App() {
   const persistTask = useCallback((raw: Task) => {
     // a task lives in its project's workspace
     const wsId = getProject(raw.projectId)?.workspaceId ?? null;
-    const t: Task = { ...raw, workspaceId: wsId };
+    // new tasks sort to the bottom of their board column
+    const t: Task = { ...raw, workspaceId: wsId, position: raw.position ?? Date.now() };
     setTasks((ts) => ts ? [t, ...ts] : [t]);
     store.createTask(t, userIdRef.current).then((saved) => {
       if (saved.id !== t.id) setTasks((ts) => ts && ts.map((x) => x.id === t.id ? saved : x));
@@ -631,7 +632,11 @@ export default function App() {
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "tasks":
       case "project":
-        return <TasksPage tasks={scoped} allTasks={allTasks} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status) => patchTask(id, { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined })} />;
+        return <TasksPage tasks={scoped} allTasks={allTasks} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
+          const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
+          if (position !== undefined) patch.position = position;
+          patchTask(id, patch);
+        }} />;
       default: return null;
     }
   };
