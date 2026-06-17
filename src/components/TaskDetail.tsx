@@ -13,6 +13,8 @@ import { saveTemplate } from "../lib/templates";
 import { reportError } from "../lib/monitoring";
 import type { Attachment } from "../data/types";
 
+const REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅", "🚀"];
+
 const fmtBytes = (n: number): string => {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
@@ -64,6 +66,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [tmplSaved, setTmplSaved] = useState(false);
+  const [reactPickerFor, setReactPickerFor] = useState<string | null>(null);
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depQuery, setDepQuery] = useState("");
   const commentRef = useRef<HTMLInputElement>(null);
@@ -139,6 +142,14 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     const c = await onAddComment(task.id, v, mentions);
     setPosting(false);
     if (c) { setThread((t) => [...t, c]); setComment(""); setMentionQuery(null); }
+  };
+  const toggleReaction = (c: Comment, emoji: string) => {
+    const reactions: Record<string, string[]> = { ...(c.reactions || {}) };
+    const list = reactions[emoji] || [];
+    reactions[emoji] = list.includes(currentUserId) ? list.filter((x) => x !== currentUserId) : [...list, currentUserId];
+    if (reactions[emoji].length === 0) delete reactions[emoji];
+    setThread((t) => t.map((x) => x.id === c.id ? { ...x, reactions } : x));
+    store.toggleReaction(c.id, emoji, currentUserId).catch(reportError);
   };
   const del = () => { onClose(); onDelete(task.id); };
   const onPickFiles = async (list: FileList | null) => {
@@ -397,6 +408,28 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{timeAgo(c.createdAt)}</span>
                   </div>
                   <div style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", wordBreak: "break-word" }}>{renderRich(c.body, mentionable.map((m) => m.name))}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, position: "relative", flexWrap: "wrap" }}>
+                    {Object.entries(c.reactions || {}).map(([emoji, uids]) => (
+                      <button key={emoji} onClick={() => toggleReaction(c, emoji)} title={`${uids.length}`}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 99, cursor: "pointer", fontSize: 12, fontFamily: "var(--font-display)",
+                          border: `1px solid ${uids.includes(currentUserId) ? "var(--accent)" : "var(--hairline)"}`, background: uids.includes(currentUserId) ? "var(--accent-dim)" : "var(--surface)", color: "var(--ink-2)" }}>
+                        {emoji} <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{uids.length}</span>
+                      </button>
+                    ))}
+                    <button onClick={() => setReactPickerFor((v) => v === c.id ? null : c.id)} aria-label="Add reaction" style={{ width: 24, height: 22, borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, display: "grid", placeItems: "center" }}>
+                      <Icon name="message" size={12} />
+                    </button>
+                    {reactPickerFor === c.id && (
+                      <>
+                        <div onClick={() => setReactPickerFor(null)} style={{ position: "fixed", inset: 0, zIndex: 10 }} />
+                        <div className="anim-scalein" style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 11, display: "flex", gap: 3, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                          {REACTION_EMOJIS.map((e) => (
+                            <button key={e} onClick={() => { toggleReaction(c, e); setReactPickerFor(null); }} style={{ width: 30, height: 30, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 17 }}>{e}</button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
