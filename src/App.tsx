@@ -78,7 +78,7 @@ function FilterOption({ label, active, onClick, dot }: { label: string; active: 
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, members, allTags }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -95,6 +95,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onBulkPatch: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete: (ids: string[]) => void;
   onPatch: (id: string, patch: Partial<Task>) => void;
+  onQuickAdd: (partial: Partial<Task> & { title: string }) => void;
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;
 }) {
@@ -201,7 +202,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         </button>
         </div>
       </div>
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} members={members} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} members={members} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
@@ -498,6 +499,19 @@ export default function App() {
       log("created", saved, "Task created");
     }).catch(reportError);
   }, [log]);
+
+  // inline quick-add: build a full task from a small partial (group context)
+  const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {
+    const r = routeRef.current;
+    const projectId = partial.projectId || (r.view === "project" ? r.projectId : undefined) || "p-personal";
+    persistTask({
+      id: "t-new-" + Date.now() + "-" + Math.round(Math.random() * 1e6),
+      title: partial.title, description: "", status: partial.status || "todo", priority: partial.priority || "medium",
+      projectId, assigneeId: partial.assigneeId || userIdRef.current, tags: [], dependencies: [], subtasks: [],
+      comments: 0, aiScore: 50, aiReason: undefined, focusMin: 30, dur: 30, scheduled: null, planToday: true,
+      recurrence: "none", dueDate: partial.dueDate, position: Date.now(),
+    });
+  }, [persistTask]);
 
   // duplicate a task (fresh copy, not done, no comments/deps carried over)
   const duplicateTask = useCallback((id: string) => {
@@ -828,7 +842,7 @@ export default function App() {
           const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
-        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} members={assignees} allTags={tags} />;
+        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags} />;
       default: return null;
     }
   };

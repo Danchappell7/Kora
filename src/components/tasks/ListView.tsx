@@ -194,14 +194,26 @@ function GroupHeader({ label, color, count, icon }: { label: string; color: stri
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, onBulkPatch, onBulkDelete, onPatch, members = [] }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
+  onQuickAdd?: (partial: Partial<Task> & { title: string }) => void;
   members?: { id: string; name: string }[];
 }) {
   const bulkEnabled = !!onBulkPatch;
+  const [addingKey, setAddingKey] = useState<string | null>(null);
+  const [addDraft, setAddDraft] = useState("");
+  const quickAdd = (groupKey: string) => {
+    const v = addDraft.trim(); if (!v) { setAddingKey(null); return; }
+    const partial: Partial<Task> & { title: string } = { title: v };
+    if (groupBy === "status") partial.status = groupKey as Task["status"];
+    else if (groupBy === "priority") partial.priority = groupKey as Priority;
+    else if (groupBy === "project") partial.projectId = groupKey;
+    onQuickAdd?.(partial);
+    setAddDraft("");
+  };
   const dragEnabled = !!onPatch && !smart; // manual reorder only makes sense when not AI-sorted
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
@@ -281,6 +293,19 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
             draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
             onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop}
             onPatch={onPatch} members={members} />)}</div>
+          {onQuickAdd && (addingKey === g.key ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px 8px 30px", borderBottom: "1px solid var(--hairline)" }}>
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+              <input autoFocus value={addDraft} onChange={(e) => setAddDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") quickAdd(g.key); else if (e.key === "Escape") { setAddDraft(""); setAddingKey(null); } }}
+                onBlur={() => { quickAdd(g.key); setAddingKey(null); }} placeholder="Task name, then Enter…"
+                style={{ flex: 1, height: 32, padding: "0 11px", borderRadius: 8, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
+            </div>
+          ) : (
+            <button onClick={() => { setAddDraft(""); setAddingKey(g.key); }} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 18px 9px 30px", border: "none", borderBottom: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13 }}>
+              <Icon name="plus" size={14} /> Add task
+            </button>
+          ))}
         </div>
       ))}
       <div style={{ height: selectionActive ? 90 : 40 }} />
