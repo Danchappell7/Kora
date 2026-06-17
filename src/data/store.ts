@@ -225,8 +225,21 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   return row;
 }
 
+// If a write failed because the DB doesn't have a column (a migration not yet
+// applied), return a copy of the row with that column removed; null if the
+// error isn't a missing-column error or the column isn't in the row.
+function withoutMissingColumn(row: Record<string, unknown>, message?: string): Record<string, unknown> | null {
+  if (!message) return null;
+  const m = message.match(/'([^']+)' column|column "?([a-z_]+)"? .*does not exist|Could not find the '([^']+)'/i);
+  const col = m && (m[1] || m[2] || m[3]);
+  if (!col || !(col in row)) return null;
+  const copy = { ...row };
+  delete copy[col];
+  return copy;
+}
+
 function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
-  return {
+  const row: Record<string, unknown> = {
     user_id: userId,
     title: t.title,
     description: t.description,
@@ -235,9 +248,6 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
     project_id: t.projectId,
     assignee_id: t.assigneeId === "m-self" ? userId : t.assigneeId,
     due_date: t.dueDate ?? null,
-    due_time: t.dueTime ?? null,
-    start_date: t.startDate ?? null,
-    is_milestone: t.isMilestone ?? false,
     tags: t.tags,
     focus_min: t.focusMin,
     comments: t.comments,
@@ -251,6 +261,12 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
     recurrence: t.recurrence ?? "none",
     position: t.position ?? null,
   };
+  // only send newer (migration 0015) columns when actually used, so a normal
+  // task insert never depends on that migration being applied
+  if (t.dueTime) row.due_time = t.dueTime;
+  if (t.startDate) row.start_date = t.startDate;
+  if (t.isMilestone) row.is_milestone = true;
+  return row;
 }
 
 // tasks ↔ task_dependencies has TWO foreign keys (task_id and depends_on), so
@@ -412,17 +428,32 @@ export const store = {
   async createTask(t: Task, userId: string): Promise<Task> {
     if (!supabase) return t; // demo mode keeps the optimistic copy
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("tasks").insert(taskToInsertRow(t, uid)).select(TASK_SELECT).single();
-    if (error) throw error;
-    return rowToTask(data as TaskRow);
+    // Resilient insert: if the DB is missing a newer column (a migration not
+    // applied yet), strip that column and retry so the task ALWAYS saves —
+    // losing a field is acceptable, losing the whole task is not.
+    let row = taskToInsertRow(t, uid);
+    for (let i = 0; i < 8; i++) {
+      const { data, error } = await supabase.from("tasks").insert(row).select(TASK_SELECT).single();
+      if (!error) return rowToTask(data as TaskRow);
+      const stripped = withoutMissingColumn(row, error.message);
+      if (!stripped) throw error;
+      row = stripped;
+    }
+    throw new Error("createTask: could not persist after stripping unknown columns");
   },
 
   async updateTask(id: string, patch: Partial<Task>): Promise<void> {
     if (!supabase) return;
-    const row = patchToRow(patch);
+    let row = patchToRow(patch);
     if (Object.keys(row).length === 0) return;
-    const { error } = await supabase.from("tasks").update(row).eq("id", id);
-    if (error) throw error;
+    for (let i = 0; i < 8; i++) {
+      const { error } = await supabase.from("tasks").update(row).eq("id", id);
+      if (!error) return;
+      const stripped = withoutMissingColumn(row, error.message);
+      if (!stripped) throw error;
+      if (Object.keys(stripped).length === 0) return; // nothing left to write
+      row = stripped;
+    }
   },
 
   async deleteTask(id: string): Promise<void> {
