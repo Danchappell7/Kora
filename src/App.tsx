@@ -3,7 +3,7 @@
    timer, tasks page
    ============================================================ */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Icon, Segmented, GlobalTipStyles, type SegmentedOption } from "./components/primitives";
+import { Icon, Avatar, StatusDot, Segmented, GlobalTipStyles, type SegmentedOption } from "./components/primitives";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { CommandPalette } from "./components/CommandPalette";
@@ -78,7 +78,43 @@ function FilterOption({ label, active, onClick, dot }: { label: string; active: 
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags }: {
+function ProjectOverview({ project, tasks }: { project: Project; tasks: Task[] }) {
+  const total = tasks.length;
+  const done = tasks.filter((t) => t.status === "done").length;
+  const prog = total ? Math.round((done / total) * 100) : 0;
+  const contributors = [...new Set(tasks.map((t) => t.assigneeId))].slice(0, 6);
+  const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
+  const dueSoon = tasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
+  const byStatus = (["todo", "progress", "review", "blocked", "done"] as Status[]).map((s) => ({ s, n: tasks.filter((t) => t.status === s).length })).filter((x) => x.n > 0);
+  return (
+    <div className="glass" style={{ margin: "14px 24px 0", padding: "16px 18px", borderRadius: 16, display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 180 }}>
+        <span style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", fontSize: 20, background: `color-mix(in oklch, ${project.color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${project.color} 32%, transparent)` }}>{project.emoji}</span>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{project.name}</div>
+          <div style={{ fontSize: 12, color: "var(--ink-4)" }}>{total} task{total === 1 ? "" : "s"}{dueSoon > 0 ? ` · ${dueSoon} due soon` : ""}</div>
+        </div>
+      </div>
+      <div style={{ flex: 1, minWidth: 160 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 5 }}><span className="kicker">Progress</span><span className="mono tnum" style={{ color: prog > 0 ? "var(--accent)" : "var(--ink-4)" }}>{prog}%</span></div>
+        <div style={{ height: 7, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}><div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: project.color, transition: "width .9s var(--ease)" }} /></div>
+        <div style={{ display: "flex", gap: 12, marginTop: 9, flexWrap: "wrap" }}>
+          {byStatus.map(({ s, n }) => (
+            <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-3)" }}><StatusDot status={s} size={7} />{STATUS_META[s].label} <span className="mono" style={{ color: "var(--ink-4)" }}>{n}</span></span>
+          ))}
+        </div>
+      </div>
+      {contributors.length > 0 && (
+        <div>
+          <div className="kicker" style={{ marginBottom: 6 }}>Contributors</div>
+          <div style={{ display: "flex" }}>{contributors.map((id, i) => <span key={id} style={{ marginLeft: i ? -8 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised)" }}><Avatar id={id} size={28} /></span>)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, header }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -98,6 +134,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onQuickAdd: (partial: Partial<Task> & { title: string }) => void;
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;
+  header?: React.ReactNode;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
@@ -137,6 +174,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
 
   return (
     <>
+      {header}
       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, padding: isMobile ? "10px 14px" : "12px 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, flexWrap: "wrap" }}>
         <Segmented options={VIEW_OPTS} value={view} onChange={setView} />
         {!isMobile && <div style={{ width: 1, height: 22, background: "var(--hairline)" }} />}
@@ -875,7 +913,8 @@ export default function App() {
           const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
-        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags} />;
+        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags}
+          header={route.view === "project" && newProj ? <ProjectOverview project={newProj} tasks={scoped} /> : undefined} />;
       default: return null;
     }
   };
