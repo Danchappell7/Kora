@@ -21,6 +21,14 @@ const STEPS: { n: string; title: string; body: string }[] = [
   { n: "03", title: "Focus", body: "Work the queue one block at a time and watch it get done." },
 ];
 
+const FAQS: { q: string; a: string }[] = [
+  { q: "Is it free?", a: "Yes — Kanbo is completely free while we're in early access. No credit card, no trial countdown. When paid plans arrive later, you'll get plenty of notice." },
+  { q: "Can I use it with my team?", a: "Absolutely. Create a shared workspace, invite teammates by email, assign tasks, comment, @mention, and see everyone's workload live." },
+  { q: "Does it work on my phone?", a: "Yes. Kanbo is fully responsive — capture, plan, and check things off from your phone, tablet, or desktop." },
+  { q: "Is my data private?", a: "Your data is yours. Every workspace is isolated and access-controlled, and you can export everything or delete your account and all its data at any time." },
+  { q: "Do I need to set anything up?", a: "No. Sign up, add your name, and start typing tasks — Kanbo plans your day around them automatically." },
+];
+
 const sectionPad: React.CSSProperties = { maxWidth: 1080, margin: "0 auto", padding: "0 24px" };
 
 export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
@@ -129,6 +137,61 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
                 </div>
               ))}
             </div>
+          </div>
+        </section>
+
+        {/* ---- pricing ---- */}
+        <section style={{ ...sectionPad, padding: "40px 24px 20px" }}>
+          <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Simple pricing</h2>
+          <p style={{ textAlign: "center", fontSize: 16, color: "var(--ink-3)", margin: "0 auto 36px", maxWidth: 460, lineHeight: 1.55 }}>
+            Free while we're in early access. No card, no countdown.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18, maxWidth: 720, margin: "0 auto" }}>
+            <div className="glass" style={{ padding: 26, borderRadius: 20, border: "1px solid color-mix(in oklch, var(--accent) 45%, transparent)", boxShadow: "0 0 0 1px color-mix(in oklch, var(--accent) 30%, transparent), 0 14px 36px -16px var(--accent-glow)" }}>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 11px", borderRadius: 99, background: "var(--accent-dim)", color: "var(--accent)", fontSize: 12, fontWeight: 600, marginBottom: 14 }}>
+                <Icon name="sparkles" size={13} /> Early access
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 38, fontWeight: 700, letterSpacing: "-0.02em" }}>Free</span>
+              </div>
+              <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>Everything in Kanbo, for individuals and teams, while we're in early access.</p>
+              {["Unlimited tasks & projects", "Shared team workspaces", "AI planning & prioritization", "Export your data anytime"].map((f) => (
+                <div key={f} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, color: "var(--ink-2)", padding: "5px 0" }}>
+                  <Icon name="check" size={15} style={{ color: "var(--accent)" }} /> {f}
+                </div>
+              ))}
+              <button className="btn btn-accent" onClick={onPrimary} style={{ width: "100%", justifyContent: "center", padding: "12px 15px", marginTop: 18 }}>{primaryLabel}</button>
+            </div>
+            <div className="glass" style={{ padding: 26, borderRadius: 20 }}>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 11px", borderRadius: 99, background: "var(--surface-2)", color: "var(--ink-4)", fontSize: 12, fontWeight: 600, marginBottom: 14 }}>
+                Later
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 38, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--ink-3)" }}>Paid plans</span>
+              </div>
+              <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>Down the line we'll add affordable Personal and per-seat Team plans. Early users get plenty of notice — and a thank-you.</p>
+              {["Everything in early access", "Priority support", "Advanced team controls"].map((f) => (
+                <div key={f} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, color: "var(--ink-4)", padding: "5px 0" }}>
+                  <Icon name="check" size={15} style={{ color: "var(--ink-4)" }} /> {f}
+                </div>
+              ))}
+              <button className="btn btn-ghost" onClick={onPrimary} style={{ width: "100%", justifyContent: "center", padding: "12px 15px", marginTop: 18 }}>Start free today</button>
+            </div>
+          </div>
+        </section>
+
+        {/* ---- FAQ ---- */}
+        <section style={{ ...sectionPad, padding: "40px 24px 60px", maxWidth: 760 }}>
+          <h2 style={{ textAlign: "center", fontSize: "clamp(24px, 3.5vw, 32px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 28 }}>Questions</h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {FAQS.map((f) => (
+              <details key={f.q} className="glass" style={{ borderRadius: 14, padding: "14px 18px" }}>
+                <summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 600, listStyle: "none", display: "flex", alignItems: "center", gap: 10 }}>
+                  <Icon name="arrowRight" size={15} style={{ color: "var(--accent)", flexShrink: 0 }} /> {f.q}
+                </summary>
+                <p style={{ margin: "10px 0 0 25px", fontSize: 14, lineHeight: 1.6, color: "var(--ink-3)" }}>{f.a}</p>
+              </details>
+            ))}
           </div>
         </section>
 
