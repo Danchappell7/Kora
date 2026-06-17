@@ -21,7 +21,7 @@ const inputStyle: React.CSSProperties = {
 };
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6, letterSpacing: ".01em" };
 
-export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport }: {
+export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -30,6 +30,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onUpload: (file: File) => Promise<string>;
   onSave: (p: ProfileDraft) => Promise<void>;
   onExport: () => void;
+  onDeleteAccount: () => Promise<void>;
 }) {
   const [firstName, setFirstName] = useState(initial.firstName);
   const [lastName, setLastName] = useState(initial.lastName);
@@ -38,6 +39,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
 
@@ -45,7 +48,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     if (open) {
       setFirstName(initial.firstName); setLastName(initial.lastName);
       setPronouns(initial.pronouns); setAvatarUrl(initial.avatarUrl);
-      setError(null);
+      setError(null); setConfirmDelete(false); setDeleting(false);
     }
   }, [open, initial.firstName, initial.lastName, initial.pronouns, initial.avatarUrl]);
 
@@ -153,6 +156,34 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
             <button className="btn btn-ghost" onClick={onExport}><Icon name="archive" size={15} /> Export my data</button>
             <span style={{ fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.4 }}>Download all your tasks and projects as a JSON file.</span>
           </div>
+
+          {/* danger zone */}
+          <div className="divider" style={{ margin: "22px 0 16px" }} />
+          <label style={{ ...labelStyle, color: "var(--prio-urgent)" }}>Danger zone</label>
+          {!confirmDelete ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={() => { setError(null); setConfirmDelete(true); }} className="btn btn-ghost" style={{ color: "var(--prio-urgent)", borderColor: "color-mix(in oklch, var(--prio-urgent) 40%, transparent)" }}>
+                <Icon name="trash" size={15} /> Delete account
+              </button>
+              <span style={{ fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.4 }}>Permanently removes your account and all data.</span>
+            </div>
+          ) : (
+            <div style={{ padding: 14, borderRadius: 12, border: "1px solid color-mix(in oklch, var(--prio-urgent) 40%, transparent)", background: "color-mix(in oklch, var(--prio-urgent) 8%, transparent)" }}>
+              <p style={{ margin: "0 0 12px", fontSize: 13, lineHeight: 1.5, color: "var(--ink-2)" }}>
+                This <strong>permanently</strong> deletes your account, tasks, projects, and comments. This can't be undone.
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button className="btn btn-ghost" onClick={() => setConfirmDelete(false)} disabled={deleting}>Cancel</button>
+                <button onClick={async () => {
+                  setDeleting(true); setError(null);
+                  try { await onDeleteAccount(); }
+                  catch (err) { setError(err instanceof Error ? err.message : "Couldn't delete your account."); setDeleting(false); }
+                }} disabled={deleting} className="btn" style={{ background: "var(--prio-urgent)", color: "#fff", border: "none", opacity: deleting ? 0.6 : 1 }}>
+                  <Icon name="trash" size={15} /> {deleting ? "Deleting…" : "Delete forever"}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>

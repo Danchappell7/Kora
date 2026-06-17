@@ -313,6 +313,12 @@ export default function App() {
     toastSuccess("Your data is downloading");
   }, [profile, workspaces, projects, toastSuccess]);
 
+  const deleteAccount = useCallback(async () => {
+    await store.deleteAccount();
+    // wipe local state and bounce to the signed-out site
+    if (auth.configured) await auth.signOut();
+  }, [auth]);
+
   /* ---- external calendars (Google / Microsoft) ---- */
   const refreshCalendar = useCallback(async () => {
     if (!store.configured) return;
@@ -725,7 +731,7 @@ export default function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
-        onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} />
+        onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);

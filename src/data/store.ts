@@ -633,6 +633,21 @@ export const store = {
     return data.publicUrl;
   },
 
+  // Permanently delete the signed-in account + all its data (calls the
+  // delete-account Edge Function, which verifies the JWT and cascades).
+  async deleteAccount(): Promise<void> {
+    if (!supabase) return; // demo mode has no real account to delete
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Not signed in.");
+    const res = await fetch((import.meta.env.VITE_SUPABASE_URL || "") + "/functions/v1/delete-account", {
+      method: "POST",
+      headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || "", Authorization: `Bearer ${token}` },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string }).error || `Couldn't delete account (${res.status})`);
+  },
+
   /* ---------- external calendars (Google / Microsoft) ---------- */
   // which calendars the user has connected (no tokens — those stay server-side)
   async listCalendarConnections(): Promise<CalendarConnection[]> {
