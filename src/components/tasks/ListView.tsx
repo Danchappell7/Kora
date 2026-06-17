@@ -194,12 +194,13 @@ function GroupHeader({ label, color, count, icon }: { label: string; color: stri
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [] }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
   onQuickAdd?: (partial: Partial<Task> & { title: string }) => void;
+  sort?: string;
   members?: { id: string; name: string }[];
 }) {
   const bulkEnabled = !!onBulkPatch;
@@ -214,7 +215,8 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
     onQuickAdd?.(partial);
     setAddDraft("");
   };
-  const dragEnabled = !!onPatch && !smart; // manual reorder only makes sense when not AI-sorted
+  const sortMode = sort || "manual";
+  const dragEnabled = !!onPatch && !smart && sortMode === "manual"; // manual reorder only when in manual order
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -250,7 +252,18 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
     if (a.status === "done" && b.status !== "done") return 1;
     if (b.status === "done" && a.status !== "done") return -1;
     if (smart) return b.aiScore - a.aiScore;
-    // manual order (drag-to-reorder); falls back to priority for equal positions
+    if (sortMode === "due") {
+      if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
+      if (a.dueDate && !b.dueDate) return -1;
+      if (!a.dueDate && b.dueDate) return 1;
+    } else if (sortMode === "priority") {
+      const dr = PRIORITY_META[b.priority].rank - PRIORITY_META[a.priority].rank;
+      if (dr !== 0) return dr;
+    } else if (sortMode === "title") {
+      const dt = a.title.localeCompare(b.title);
+      if (dt !== 0) return dt;
+    }
+    // default / tiebreak: manual position order
     const dp = (a.position ?? 0) - (b.position ?? 0);
     return dp !== 0 ? dp : PRIORITY_META[b.priority].rank - PRIORITY_META[a.priority].rank;
   };

@@ -100,6 +100,9 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   allTags: Record<string, TagDef>;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
+  const [sort, setSort] = useState<string>(() => { try { return localStorage.getItem("kanbo-sort") || "manual"; } catch { return "manual"; } });
+  useEffect(() => { try { localStorage.setItem("kanbo-sort", sort); } catch { /* ignore */ } }, [sort]);
   const [search, setSearch] = useState("");
   // filters persist across sessions (key shared app-wide)
   const [filters, setFilters] = useState<{ priority: string; assignee: string; tag: string; due: string; hideDone: boolean }>(() => {
@@ -150,6 +153,25 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
             style={{ width: isMobile ? 120 : 168, height: 34, padding: "0 10px 0 30px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }} />
           {search && <button onClick={() => setSearch("")} aria-label="Clear search" style={{ position: "absolute", right: 6, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}>×</button>}
         </div>
+        {view === "list" && (
+          <div style={{ position: "relative" }}>
+            <button onClick={() => setSortOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: sort !== "manual" ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: sort !== "manual" ? "var(--accent-dim)" : "transparent", color: sort !== "manual" ? "var(--accent)" : "var(--ink-2)" }}>
+              <Icon name="sort" size={15} /> Sort
+            </button>
+            {sortOpen && (
+              <>
+                <div onClick={() => setSortOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
+                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 180, padding: 6, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                  {[{ v: "manual", l: "Manual" }, { v: "due", l: "Due date" }, { v: "priority", l: "Priority" }, { v: "title", l: "Name (A–Z)" }].map((o) => (
+                    <button key={o.v} onClick={() => { setSort(o.v); setSortOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 9px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: sort === o.v ? "var(--ink)" : "var(--ink-3)", background: sort === o.v ? "var(--surface-2)" : "transparent" }}>
+                      <span style={{ width: 13, display: "grid", placeItems: "center" }}>{sort === o.v && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}</span>{o.l}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <div style={{ position: "relative" }}>
           <button onClick={() => setFilterOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: filterActive ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: filterActive ? "var(--accent-dim)" : "transparent", color: filterActive ? "var(--accent)" : "var(--ink-2)" }}>
             <Icon name="filter" size={15} /> Filter{filterActive ? " · on" : ""}
@@ -202,7 +224,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         </button>
         </div>
       </div>
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} members={members} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
