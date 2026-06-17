@@ -9,6 +9,7 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
 import { store } from "../data/store";
 import { renderRich } from "../lib/richtext";
+import { saveTemplate } from "../lib/templates";
 import { reportError } from "../lib/monitoring";
 import type { Attachment } from "../data/types";
 
@@ -62,6 +63,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [comment, setComment] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [tmplSaved, setTmplSaved] = useState(false);
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depQuery, setDepQuery] = useState("");
   const commentRef = useRef<HTMLInputElement>(null);
@@ -170,6 +172,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           {proj && <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--ink-3)" }}><span style={{ width: 8, height: 8, borderRadius: 2, background: proj.color }} />{proj.name}</span>}
           <button className="btn-icon" onClick={() => { try { navigator.clipboard?.writeText(`${location.origin}/?task=${task.id}`); } catch { /* ignore */ } setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Copy link to task" style={{ border: "none", color: copied ? "var(--accent)" : "var(--ink-3)" }}><Icon name={copied ? "check" : "link"} size={16} /></button>
           {onDuplicate && <button className="btn-icon" onClick={() => { onDuplicate(task.id); onClose(); }} title="Duplicate task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="layers" size={16} /></button>}
+          <button className="btn-icon" onClick={() => { saveTemplate({ name: task.title, title: task.title, priority: task.priority, tags: task.tags, focusMin: task.focusMin, recurrence: task.recurrence ?? "none", description: desc }); setTmplSaved(true); setTimeout(() => setTmplSaved(false), 1500); }} title="Save as template" style={{ border: "none", color: tmplSaved ? "var(--accent)" : "var(--ink-3)" }}><Icon name={tmplSaved ? "check" : "briefcase"} size={16} /></button>
           <button className="btn-icon" onClick={del} title="Delete task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="trash" size={17} /></button>
         </div>
 

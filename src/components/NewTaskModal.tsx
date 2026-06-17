@@ -7,6 +7,7 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
 import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate } from "../data/data";
+import { getTemplates, type TaskTemplate } from "../lib/templates";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
 
 const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? "t-new-" + crypto.randomUUID() : "t-new-" + Date.now());
@@ -40,6 +41,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [recurrence, setRecurrence] = useState<Recurrence>("none");
   const [focusMin, setFocusMin] = useState(30);
   const [tags, setTags] = useState<string[]>([]);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -52,6 +54,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     if (open) {
       setTitle(""); setProjectId(defaultProject);
       setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setRecurrence("none"); setFocusMin(30); setTags([]);
+      setTemplates(getTemplates());
       setTimeout(() => inputRef.current?.focus(), 30);
     }
   }, [open, defaultProject, currentUserId]);
@@ -85,6 +88,14 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
         </div>
 
         <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+          {templates.length > 0 && (
+            <label style={{ ...fieldLabel, marginBottom: -4 }}>Start from template
+              <select value="" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); if (t) { setTitle(t.title); setPriority(t.priority); setTags(t.tags); setFocusMin(t.focusMin); setRecurrence(t.recurrence); } }} style={selectStyle}>
+                <option value="">Blank task</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+          )}
           <input ref={inputRef} value={title} onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
             placeholder="Task title…"
