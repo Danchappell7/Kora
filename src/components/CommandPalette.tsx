@@ -5,6 +5,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Icon, StatusDot } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { getProject, getMember } from "../data/data";
 import type { IconName, Task, Status } from "../data/types";
 
 export interface Suggestion {
@@ -53,7 +54,14 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
   if (!open) return null;
 
   const query = q.trim().toLowerCase();
-  const taskItems: Item[] = (query ? tasks.filter((t) => t.title.toLowerCase().includes(query)).slice(0, 6) : []).map((t) => ({ kind: "task", id: t.id, label: t.title, status: t.status }));
+  // match tasks by title, project name, assignee name, or tag
+  const matchTask = (t: Task) => {
+    if (t.title.toLowerCase().includes(query)) return true;
+    if (getProject(t.projectId)?.name.toLowerCase().includes(query)) return true;
+    if (getMember(t.assigneeId)?.name?.toLowerCase().includes(query)) return true;
+    return (t.tags || []).some((tg) => tg.toLowerCase().includes(query));
+  };
+  const taskItems: Item[] = (query ? tasks.filter(matchTask).slice(0, 8) : []).map((t) => ({ kind: "task", id: t.id, label: t.title, status: t.status }));
   const actionItems: Item[] = ACTIONS.filter((a) => !query || a.label.toLowerCase().includes(query)).map((s) => ({ kind: "action", s }));
   const navItems: Item[] = NAV.filter((n) => !query || n.label.toLowerCase().includes(query)).map((n) => ({ kind: "nav", view: n.view, label: n.label, icon: n.icon }));
   const items: Item[] = [...taskItems, ...actionItems, ...navItems];
