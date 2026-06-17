@@ -7,9 +7,9 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { SubtaskProgress } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
-  STATUS_META, STATUS_ORDER, PROJECTS, KANBO_TODAY, toLocalISO,
+  STATUS_META, STATUS_ORDER, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
-import type { Task, Status, CalProvider, CalendarConnection, ExternalEvent } from "../../data/types";
+import type { Task, Status, Project, CalProvider, CalendarConnection, ExternalEvent } from "../../data/types";
 
 const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
   google: { label: "Google Calendar", color: "oklch(0.7 0.18 25)" },
@@ -167,8 +167,24 @@ export function TimelineView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task
     return Math.round((d.getTime() - new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime()) / 86400000);
   };
 
-  const byProject = PROJECTS.map((p) => ({ project: p, items: tasks.filter((t) => t.projectId === p.id) })).filter((g) => g.items.length);
+  // group by the projects actually present in these tasks (works for real
+  // accounts, not just the demo seed)
+  const byProject = [...new Set(tasks.map((t) => t.projectId))]
+    .map((pid) => ({ project: getProject(pid), items: tasks.filter((t) => t.projectId === pid) }))
+    .filter((g): g is { project: Project; items: Task[] } => !!g.project && g.items.length > 0);
   const todayIdx = -START;
+
+  if (byProject.length === 0) {
+    return (
+      <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "grid", placeItems: "center" }}>
+        <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 380 }}>
+          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="layers" size={24} style={{ color: "var(--ink-4)" }} /></div>
+          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>Nothing to chart yet</p>
+          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Add a few tasks and they'll lay out here on a timeline by project and due date.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ flex: 1, overflow: "auto" }}>
