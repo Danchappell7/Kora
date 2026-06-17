@@ -177,12 +177,14 @@ export default function App() {
   const [focusOpen, setFocusOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newTaskStatus, setNewTaskStatus] = useState<Status>("todo");
+  const [newTaskProjectId, setNewTaskProjectId] = useState<string | undefined>(undefined);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const focus = useFocusTimer();
 
+  const routeRef = useRef<Route>(route); routeRef.current = route;
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
@@ -608,7 +610,12 @@ export default function App() {
     } finally { setAiBusy(false); }
   }, [toastSuccess, toastError]);
 
-  const openNewTask = useCallback((status: Status = "todo") => { setNewTaskStatus(status); setNewTaskOpen(true); }, []);
+  const openNewTask = useCallback((status: Status = "todo") => {
+    const r = routeRef.current;
+    // creating a task while viewing a project drops it into that project
+    setNewTaskProjectId(r.view === "project" ? r.projectId : undefined);
+    setNewTaskStatus(status); setNewTaskOpen(true);
+  }, []);
 
   const openFocus = () => { focus.setRunning(true); setFocusOpen(true); };
   const focusTask = (id: string) => { focus.setTaskId(id); setDetailId(null); setFocusOpen(true); focus.setRunning(true); };
@@ -721,7 +728,7 @@ export default function App() {
       }} />
       {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
-      <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} />
+      <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}

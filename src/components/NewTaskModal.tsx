@@ -27,9 +27,13 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   defaultStatus?: Status;
   defaultProjectId?: string;
 }) {
-  const firstProject = defaultProjectId || projects[0]?.id || "p-personal";
+  // Default to the project you're in (defaultProjectId); otherwise the neutral
+  // "Personal" bucket rather than auto-picking a real project.
+  const defaultProject = defaultProjectId
+    || (projects.some((p) => p.id === "p-personal") ? "p-personal" : projects[0]?.id)
+    || "p-personal";
   const [title, setTitle] = useState("");
-  const [projectId, setProjectId] = useState(firstProject);
+  const [projectId, setProjectId] = useState(defaultProject);
   const [priority, setPriority] = useState<Priority>("medium");
   const [assigneeId, setAssigneeId] = useState(currentUserId);
   const [dueDate, setDueDate] = useState("");
@@ -46,11 +50,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
 
   useEffect(() => {
     if (open) {
-      setTitle(""); setProjectId(defaultProjectId || projects[0]?.id || "p-personal");
+      setTitle(""); setProjectId(defaultProject);
       setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setRecurrence("none"); setFocusMin(30); setTags([]);
       setTimeout(() => inputRef.current?.focus(), 30);
     }
-  }, [open, defaultProjectId, projects, currentUserId]);
+  }, [open, defaultProject, currentUserId]);
 
   if (!open) return null;
 
