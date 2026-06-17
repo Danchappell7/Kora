@@ -18,10 +18,15 @@ declare
   actor_name text;
 begin
   if NEW.assignee_id is null then return NEW; end if;
-  -- ignore self-assignment and non-user (service) writes
-  if actor is null or NEW.assignee_id = actor then return NEW; end if;
+  -- assignee_id is TEXT (it can hold non-uuid ids too); compare as text and
+  -- ignore self-assignment / service writes
+  if actor is null or NEW.assignee_id = actor::text then return NEW; end if;
   -- on reassign, only fire when the assignee actually changed
   if TG_OP = 'UPDATE' and NEW.assignee_id is not distinct from OLD.assignee_id then
+    return NEW;
+  end if;
+  -- only notify real accounts (assignee_id must be a uuid)
+  if NEW.assignee_id !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
     return NEW;
   end if;
 
@@ -32,7 +37,7 @@ begin
    where u.id = actor;
 
   insert into public.activity (user_id, task_id, task_title, kind, detail)
-  values (NEW.assignee_id, NEW.id, NEW.title, 'assigned', coalesce(actor_name, 'Someone'));
+  values (NEW.assignee_id::uuid, NEW.id, NEW.title, 'assigned', coalesce(actor_name, 'Someone'));
 
   return NEW;
 end;
