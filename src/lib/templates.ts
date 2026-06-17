@@ -29,3 +29,16 @@ export function saveTemplate(t: Omit<TaskTemplate, "id">): TaskTemplate {
 export function deleteTemplate(id: string): void {
   try { localStorage.setItem(KEY, JSON.stringify(getTemplates().filter((x) => x.id !== id))); } catch { /* ignore */ }
 }
+
+/* ---------- project templates ---------- */
+export interface ProjectTemplate { id: string; name: string; emoji: string; color: string; }
+const PKEY = "kanbo-project-templates";
+
+export function getProjectTemplates(): ProjectTemplate[] {
+  try { const v = JSON.parse(localStorage.getItem(PKEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+export function saveProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemplate {
+  const tpl: ProjectTemplate = { ...t, id: "ptpl-" + Date.now() + "-" + Math.round(Math.random() * 1e5) };
+  try { localStorage.setItem(PKEY, JSON.stringify([tpl, ...getProjectTemplates()].slice(0, 24))); } catch { /* ignore */ }
+  return tpl;
+}

@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { getProjectTemplates, saveProjectTemplate, type ProjectTemplate } from "../lib/templates";
 import type { NewProject } from "../data/store";
 
 const EMOJI = ["📁", "🚀", "🎨", "⚙️", "📈", "🧪", "💡", "📊", "🛠️", "🌱", "🔮", "📦"];
@@ -21,11 +22,13 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState(EMOJI[0]);
   const [color, setColor] = useState(COLORS[0]);
+  const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
+  const [saved, setSaved] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
 
   useEffect(() => {
-    if (open) { setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setTimeout(() => inputRef.current?.focus(), 30); }
+    if (open) { setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setSaved(false); setTemplates(getProjectTemplates()); setTimeout(() => inputRef.current?.focus(), 30); }
   }, [open]);
 
   if (!open) return null;
@@ -46,6 +49,13 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
           <button className="btn-icon" onClick={onClose} style={{ marginLeft: "auto", border: "none", width: 30, height: 30 }}><Icon name="x" size={17} /></button>
         </div>
         <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }}>
+          {templates.length > 0 && (
+            <select value="" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); if (t) { setName(t.name); setEmoji(t.emoji); setColor(t.color); } }}
+              style={{ width: "100%", height: 38, padding: "0 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+              <option value="">Start from template…</option>
+              {templates.map((t) => <option key={t.id} value={t.id}>{t.emoji} {t.name}</option>)}
+            </select>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
             <span style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 12, display: "grid", placeItems: "center", fontSize: 22, background: `color-mix(in oklch, ${color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${color} 32%, transparent)` }}>{emoji}</span>
             <input ref={inputRef} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
@@ -69,7 +79,11 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
             </div>
           </div>
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>
+          <button className="btn btn-ghost" onClick={() => { if (name.trim()) { saveProjectTemplate({ name: name.trim(), emoji, color }); setSaved(true); setTimeout(() => setSaved(false), 1500); } }} disabled={!name.trim()} title="Save as template" style={{ opacity: name.trim() ? 1 : 0.5 }}>
+            <Icon name={saved ? "check" : "briefcase"} size={15} /> {saved ? "Saved" : "Save as template"}
+          </button>
+          <div style={{ flex: 1 }} />
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-accent" onClick={submit} disabled={!name.trim()} style={{ opacity: name.trim() ? 1 : 0.5 }}><Icon name="plus" size={15} /> Create</button>
         </div>
