@@ -17,6 +17,14 @@ const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: str
   mention:   { icon: "message", color: "var(--accent)",     verb: "mentioned you in" },
 };
 
+const INBOX_FILTERS: { v: string; label: string; kinds?: ActivityKind[] }[] = [
+  { v: "all", label: "All" },
+  { v: "assigned", label: "Assigned", kinds: ["assigned"] },
+  { v: "mention", label: "Mentions", kinds: ["mention"] },
+  { v: "comment", label: "Comments", kinds: ["comment"] },
+  { v: "updates", label: "Updates", kinds: ["created", "status", "completed", "reopened", "deleted"] },
+];
+
 export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   activity: Activity[];
   tasks: Task[];
@@ -24,6 +32,9 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   onArchive: (id: string) => void;
   onClearAll: () => void;
 }) {
+  const [filter, setFilter] = useState("all");
+  const activeFilter = INBOX_FILTERS.find((f) => f.v === filter) || INBOX_FILTERS[0];
+  const shown = activeFilter.kinds ? activity.filter((a) => activeFilter.kinds!.includes(a.kind)) : activity;
   if (activity.length === 0) {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
@@ -37,14 +48,24 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   }
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", maxWidth: 760, width: "100%", margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
-        <span className="kicker">{activity.length} update{activity.length === 1 ? "" : "s"}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
+          {INBOX_FILTERS.map((f) => {
+            const n = f.kinds ? activity.filter((a) => f.kinds!.includes(a.kind)).length : activity.length;
+            return (
+              <button key={f.v} onClick={() => setFilter(f.v)} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, background: filter === f.v ? "var(--accent)" : "transparent", color: filter === f.v ? "var(--on-accent)" : "var(--ink-3)" }}>{f.label}{f.v !== "all" && n > 0 ? ` ${n}` : ""}</button>
+            );
+          })}
+        </div>
         <button className="btn btn-ghost" onClick={onClearAll} style={{ marginLeft: "auto", fontSize: 13 }}>
-          <Icon name="archive" size={15} /> Clear whole inbox
+          <Icon name="archive" size={15} /> Mark all read
         </button>
       </div>
+      {shown.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "48px 24px", color: "var(--ink-4)", fontSize: 13 }}>No {activeFilter.label.toLowerCase()} updates.</div>
+      ) : (
       <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
-        {activity.map((a, i) => {
+        {shown.map((a, i) => {
           const meta = KIND_META[a.kind] ?? KIND_META.status;
           const taskStillExists = a.taskId && tasks.some((t) => t.id === a.taskId);
           return (
@@ -82,6 +103,7 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
           );
         })}
       </div>
+      )}
     </div>
   );
 }
