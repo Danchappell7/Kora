@@ -6,7 +6,7 @@ import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore } from "../p
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   getProject, blockingTasks, dueState, fmtDue,
-  STATUS_META, STATUS_ORDER, PRIORITY_META, PROJECTS,
+  STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
 import type { Task, Subtask, IconName } from "../../data/types";
 import type { GroupBy } from "../../app-types";
@@ -132,7 +132,12 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   } else if (groupBy === "priority") {
     groups = (["urgent", "high", "medium", "low"] as const).map((p) => ({ key: p, label: PRIORITY_META[p].label + " priority", color: PRIORITY_META[p].color, icon: "flag" as IconName, items: tasks.filter((t) => t.priority === p).sort(sortFn) })).filter((g) => g.items.length);
   } else if (groupBy === "project") {
-    groups = PROJECTS.map((p) => ({ key: p.id, label: p.name, color: p.color, items: tasks.filter((t) => t.projectId === p.id).sort(sortFn) })).filter((g) => g.items.length);
+    // group by the projects actually present in these tasks (real accounts, not just the demo seed)
+    groups = [...new Set(tasks.map((t) => t.projectId))]
+      .map((pid) => ({ pid, p: getProject(pid) }))
+      .filter((x) => !!x.p)
+      .map(({ pid, p }) => ({ key: pid, label: p!.name, color: p!.color, items: tasks.filter((t) => t.projectId === pid).sort(sortFn) }))
+      .filter((g) => g.items.length);
   } else {
     groups = [{ key: "all", label: smart ? "Smart order" : "All tasks", color: "var(--accent)", icon: (smart ? "sparkles" : "list") as IconName, items: [...tasks].sort(sortFn) }];
   }
