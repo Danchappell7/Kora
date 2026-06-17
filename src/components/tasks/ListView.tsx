@@ -21,15 +21,21 @@ export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
   );
 }
 
-function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop }: {
+function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onPatch, members }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; smart: boolean; depth?: number;
   selected?: boolean; selectionActive?: boolean; onSelect?: (id: string, additive: boolean) => void;
   draggable?: boolean; dragging?: boolean; dropHint?: "top" | "bottom" | null;
   onPickup?: (id: string) => void; onHover?: (id: string, half: "top" | "bottom") => void; onRowDrop?: (draggedId: string, targetId: string, half: "top" | "bottom") => void;
+  onPatch?: (id: string, patch: Partial<Task>) => void; members?: { id: string; name: string }[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(task.title);
+  const [menu, setMenu] = useState<null | "priority" | "assignee">(null);
   const isMobile = useMediaQuery("(max-width: 860px)");
+  const PRIORITIES_INLINE: Priority[] = ["urgent", "high", "medium", "low"];
+  const saveTitle = () => { const v = titleDraft.trim(); setEditingTitle(false); if (v && v !== task.title) onPatch?.(task.id, { title: v }); else setTitleDraft(task.title); };
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const done = task.status === "done";
@@ -76,7 +82,17 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-            <span className="truncate" style={{ fontSize: 14.5, fontWeight: 450, color: done ? "var(--ink-4)" : "var(--ink)", textDecoration: done ? "line-through" : "none" }}>{task.title}</span>
+            {editingTitle ? (
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              <input autoFocus value={titleDraft} onClick={(e) => e.stopPropagation()} onChange={(e) => setTitleDraft(e.target.value)}
+                onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveTitle(); else if (e.key === "Escape") { setTitleDraft(task.title); setEditingTitle(false); } }}
+                onBlur={saveTitle}
+                style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 450, fontFamily: "var(--font-display)", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--accent)", borderRadius: 7, padding: "3px 7px", outline: "none" }} />
+            ) : (
+              <span className="truncate" title={onPatch ? "Double-click to rename" : undefined}
+                onDoubleClick={onPatch ? (e) => { e.stopPropagation(); setTitleDraft(task.title); setEditingTitle(true); } : undefined}
+                style={{ fontSize: 14.5, fontWeight: 450, color: done ? "var(--ink-4)" : "var(--ink)", textDecoration: done ? "line-through" : "none" }}>{task.title}</span>
+            )}
             {blocked.length > 0 && (
               <span data-tip={"Blocked by " + blocked.map((b) => b.title).join(", ")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--st-blocked)", flexShrink: 0, position: "relative" }}>
                 <Icon name="lock" size={12} />
@@ -100,13 +116,54 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
               <span className="truncate" style={{ maxWidth: 110 }}>{proj.name}</span>
             </span>
           )}
-          {!isMobile && <PriorityFlag priority={task.priority} size={14} />}
-          {task.dueDate && (
-            <span className="mono tnum" style={{ fontSize: 12, color: dueColor, minWidth: isMobile ? 0 : 56, textAlign: "right", fontWeight: ds === "overdue" || ds === "today" ? 600 : 400 }}>
-              {fmtDue(task.dueDate)}
-            </span>
-          )}
-          <Avatar id={task.assigneeId} size={24} />
+          {!isMobile && (onPatch ? (
+            <div style={{ position: "relative", display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => setMenu((m) => m === "priority" ? null : "priority")} aria-label="Set priority" style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "inline-flex" }}>
+                <PriorityFlag priority={task.priority} size={14} />
+              </button>
+              {menu === "priority" && (
+                <>
+                  <div onClick={() => setMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                  <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 41, minWidth: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                    {PRIORITIES_INLINE.map((p) => (
+                      <button key={p} onClick={() => { setMenu(null); onPatch?.(task.id, { priority: p }); }} style={bulkItemStyle}>
+                        <PriorityFlag priority={p} size={13} /> {PRIORITY_META[p].label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : <PriorityFlag priority={task.priority} size={14} />)}
+          {onPatch ? (
+            <label onClick={(e) => e.stopPropagation()} style={{ position: "relative", display: "inline-flex", alignItems: "center" }} title="Set due date">
+              <span className="mono tnum" style={{ fontSize: 12, color: task.dueDate ? dueColor : "var(--ink-4)", minWidth: isMobile ? 0 : 56, textAlign: "right", fontWeight: ds === "overdue" || ds === "today" ? 600 : 400, cursor: "pointer" }}>
+                {task.dueDate ? fmtDue(task.dueDate) : "—"}
+              </span>
+              <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch?.(task.id, { dueDate: e.target.value || undefined })} aria-label="Due date" style={{ position: "absolute", inset: 0, width: "100%", opacity: 0, cursor: "pointer" }} />
+            </label>
+          ) : (task.dueDate && (
+            <span className="mono tnum" style={{ fontSize: 12, color: dueColor, minWidth: isMobile ? 0 : 56, textAlign: "right", fontWeight: ds === "overdue" || ds === "today" ? 600 : 400 }}>{fmtDue(task.dueDate)}</span>
+          ))}
+          {onPatch && members && members.length > 0 ? (
+            <div style={{ position: "relative", display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => setMenu((m) => m === "assignee" ? null : "assignee")} aria-label="Assign" style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "inline-flex" }}>
+                <Avatar id={task.assigneeId} size={24} />
+              </button>
+              {menu === "assignee" && (
+                <>
+                  <div onClick={() => setMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                  <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 41, minWidth: 170, maxHeight: 240, overflowY: "auto", padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                    {members.map((m) => (
+                      <button key={m.id} onClick={() => { setMenu(null); onPatch?.(task.id, { assigneeId: m.id }); }} style={bulkItemStyle}>
+                        <Avatar id={m.id} size={18} /> {m.name}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : <Avatar id={task.assigneeId} size={24} />}
         </div>
       </div>
 
@@ -222,7 +279,8 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
           <div>{g.items.map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
             selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
             draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
-            onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop} />)}</div>
+            onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop}
+            onPatch={onPatch} members={members} />)}</div>
         </div>
       ))}
       <div style={{ height: selectionActive ? 90 : 40 }} />
