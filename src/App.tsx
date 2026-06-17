@@ -31,7 +31,7 @@ import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, type NewProject } from "./data/store";
 import {
-  STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS,
+  STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
 import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent } from "./data/types";
@@ -60,7 +60,25 @@ const PRIORITY_FILTERS: { value: string; label: string }[] = [
   { value: "low", label: "Low" },
 ];
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, members }: {
+function FilterSection({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div className="kicker" style={{ padding: "6px 8px 4px" }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+function FilterOption({ label, active, onClick, dot }: { label: string; active: boolean; onClick: () => void; dot?: string }) {
+  return (
+    <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: active ? "var(--ink)" : "var(--ink-3)", background: active ? "var(--surface-2)" : "transparent" }}>
+      <span style={{ width: 13, display: "grid", placeItems: "center", flexShrink: 0 }}>{active && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}</span>
+      {dot && <span style={{ width: 8, height: 8, borderRadius: 3, background: dot, flexShrink: 0 }} />}
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, members, allTags }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -77,14 +95,40 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onBulkPatch: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete: (ids: string[]) => void;
   members: { id: string; name: string }[];
+  allTags: Record<string, TagDef>;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
-  const [priorityFilter, setPriorityFilter] = useState("all");
-  const [hideDone, setHideDone] = useState(false);
+  const [search, setSearch] = useState("");
+  // filters persist across sessions (key shared app-wide)
+  const [filters, setFilters] = useState<{ priority: string; assignee: string; tag: string; due: string; hideDone: boolean }>(() => {
+    try { const s = localStorage.getItem("kanbo-filters"); if (s) return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, ...JSON.parse(s) }; } catch { /* ignore */ }
+    return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false };
+  });
+  useEffect(() => { try { localStorage.setItem("kanbo-filters", JSON.stringify(filters)); } catch { /* ignore */ } }, [filters]);
+  const setFilter = (patch: Partial<typeof filters>) => setFilters((f) => ({ ...f, ...patch }));
   const isMobile = useMediaQuery("(max-width: 860px)");
-  const filterActive = priorityFilter !== "all" || hideDone;
+  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone } = filters;
+  const filterActive = priorityFilter !== "all" || assigneeFilter !== "all" || tagFilter !== "all" || dueFilter !== "all" || hideDone;
+  const dueOk = (t: Task) => {
+    if (dueFilter === "all") return true;
+    const ds = dueState(t.dueDate, t.status);
+    if (dueFilter === "overdue") return ds === "overdue";
+    if (dueFilter === "today") return ds === "today";
+    if (dueFilter === "week") {
+      if (!t.dueDate) return false;
+      const days = Math.round((new Date(t.dueDate + "T00:00:00").getTime() - new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime()) / 86400000);
+      return days >= 0 && days <= 7;
+    }
+    return true;
+  };
+  const q = search.trim().toLowerCase();
   const filtered = tasks.filter((t) =>
-    (priorityFilter === "all" || t.priority === priorityFilter) && (!hideDone || t.status !== "done"));
+    (priorityFilter === "all" || t.priority === priorityFilter) &&
+    (!hideDone || t.status !== "done") &&
+    (assigneeFilter === "all" || t.assigneeId === assigneeFilter) &&
+    (tagFilter === "all" || (t.tags || []).includes(tagFilter)) &&
+    dueOk(t) &&
+    (q === "" || t.title.toLowerCase().includes(q)));
 
   return (
     <>
@@ -97,7 +141,13 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
             <Segmented options={GROUP_OPTS} value={groupBy} onChange={setGroupBy} />
           </div>
         )}
-        <div style={{ flex: 1 }} />
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: isMobile ? 8 : 10 }}>
+        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+          <Icon name="search" size={14} style={{ position: "absolute", left: 10, color: "var(--ink-4)", pointerEvents: "none" }} />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter tasks…" aria-label="Filter tasks by title"
+            style={{ width: isMobile ? 120 : 168, height: 34, padding: "0 10px 0 30px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }} />
+          {search && <button onClick={() => setSearch("")} aria-label="Clear search" style={{ position: "absolute", right: 6, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}>×</button>}
+        </div>
         <div style={{ position: "relative" }}>
           <button onClick={() => setFilterOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: filterActive ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: filterActive ? "var(--accent-dim)" : "transparent", color: filterActive ? "var(--accent)" : "var(--ink-2)" }}>
             <Icon name="filter" size={15} /> Filter{filterActive ? " · on" : ""}
@@ -105,16 +155,36 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
           {filterOpen && (
             <>
               <div onClick={() => setFilterOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-              <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 200, padding: 8, borderRadius: 12, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
-                <div className="kicker" style={{ padding: "5px 8px 6px" }}>Priority</div>
-                {PRIORITY_FILTERS.map((p) => (
-                  <button key={p.value} onClick={() => setPriorityFilter(p.value)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: priorityFilter === p.value ? "var(--ink)" : "var(--ink-3)", background: priorityFilter === p.value ? "var(--surface-2)" : "transparent" }}>
-                    {priorityFilter === p.value && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}
-                    <span style={{ marginLeft: priorityFilter === p.value ? 0 : 21 }}>{p.label}</span>
-                  </button>
-                ))}
+              <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 224, maxHeight: 420, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                <div style={{ display: "flex", alignItems: "center", padding: "2px 6px 8px" }}>
+                  <span className="kicker">Filters</span>
+                  {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
+                </div>
+
+                <FilterSection label="Priority">
+                  {PRIORITY_FILTERS.map((p) => <FilterOption key={p.value} label={p.label} active={priorityFilter === p.value} onClick={() => setFilter({ priority: p.value })} />)}
+                </FilterSection>
+
+                <FilterSection label="Due">
+                  {[{ v: "all", l: "Any time" }, { v: "overdue", l: "Overdue" }, { v: "today", l: "Due today" }, { v: "week", l: "Next 7 days" }].map((d) => <FilterOption key={d.v} label={d.l} active={dueFilter === d.v} onClick={() => setFilter({ due: d.v })} />)}
+                </FilterSection>
+
+                {members.length > 1 && (
+                  <FilterSection label="Assignee">
+                    <FilterOption label="Anyone" active={assigneeFilter === "all"} onClick={() => setFilter({ assignee: "all" })} />
+                    {members.map((m) => <FilterOption key={m.id} label={m.name} active={assigneeFilter === m.id} onClick={() => setFilter({ assignee: m.id })} />)}
+                  </FilterSection>
+                )}
+
+                {Object.keys(allTags).length > 0 && (
+                  <FilterSection label="Tag">
+                    <FilterOption label="Any tag" active={tagFilter === "all"} onClick={() => setFilter({ tag: "all" })} />
+                    {Object.entries(allTags).map(([id, t]) => <FilterOption key={id} label={t.label} dot={t.color} active={tagFilter === id} onClick={() => setFilter({ tag: id })} />)}
+                  </FilterSection>
+                )}
+
                 <div className="divider" style={{ margin: "6px 4px" }} />
-                <button onClick={() => setHideDone((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
+                <button onClick={() => setFilter({ hideDone: !hideDone })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
                   <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${hideDone ? "var(--accent)" : "var(--hairline-strong)"}`, background: hideDone ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{hideDone && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
                   Hide completed
                 </button>
@@ -128,6 +198,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         }}>
           <Icon name="sparkles" size={15} /> AI sort {smart ? "on" : "off"}
         </button>
+        </div>
       </div>
       {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} />}
@@ -728,7 +799,7 @@ export default function App() {
           const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
-        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} members={assignees} />;
+        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} members={assignees} allTags={tags} />;
       default: return null;
     }
   };
