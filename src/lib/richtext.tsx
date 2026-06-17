@@ -7,6 +7,17 @@ import type { ReactNode } from "react";
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// allow only safe link schemes — blocks javascript:/data:/vbscript: URIs in
+// user-authored markdown (descriptions/comments are shared, so this is a
+// stored-XSS guard). Relative and anchor links are allowed.
+const safeHref = (url: string): string | null => {
+  const u = url.trim();
+  if (/^(https?:|mailto:|tel:)/i.test(u)) return u;
+  if (/^[/#.]/.test(u)) return u; // relative / anchor / ./path
+  if (/^[a-z][\w+.-]*:/i.test(u)) return null; // some other scheme → reject
+  return u; // bare "example.com/x" style — no scheme, safe
+};
+
 function inline(s: string, names: string[], keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
   const mentionAlt = names.length ? "|@(?:" + names.map(esc).sort((a, b) => b.length - a.length).join("|") + ")" : "";
@@ -17,7 +28,7 @@ function inline(s: string, names: string[], keyBase: string): ReactNode[] {
     const tok = m[0]; const key = keyBase + "-" + k++;
     if (tok.startsWith("**")) out.push(<strong key={key}>{tok.slice(2, -2)}</strong>);
     else if (tok.startsWith("`")) out.push(<code key={key} style={{ fontFamily: "var(--font-mono)", fontSize: "0.88em", background: "var(--surface-2)", padding: "1px 5px", borderRadius: 5 }}>{tok.slice(1, -1)}</code>);
-    else if (tok.startsWith("[")) { const mm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/); if (mm) out.push(<a key={key} href={mm[2]} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "var(--accent)", textDecoration: "underline" }}>{mm[1]}</a>); }
+    else if (tok.startsWith("[")) { const mm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/); if (mm) { const href = safeHref(mm[2]); if (href) out.push(<a key={key} href={href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "var(--accent)", textDecoration: "underline" }}>{mm[1]}</a>); else out.push(<span key={key}>{mm[1]}</span>); } }
     else if (tok.startsWith("@")) out.push(<strong key={key} style={{ color: "var(--accent)", fontWeight: 600 }}>{tok}</strong>);
     else if (tok.startsWith("*")) out.push(<em key={key}>{tok.slice(1, -1)}</em>);
     last = m.index + tok.length;

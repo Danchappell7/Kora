@@ -7,6 +7,11 @@ import { useEffect, useRef } from "react";
  */
 export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: () => void) {
   const ref = useRef<T>(null);
+  // keep the latest onEscape without making it an effect dependency — callers
+  // usually pass an inline arrow, which would otherwise re-run the effect every
+  // render and steal focus back to the previously-focused element.
+  const escRef = useRef(onEscape);
+  escRef.current = onEscape;
   useEffect(() => {
     if (!active) return;
     const el = ref.current;
@@ -20,7 +25,7 @@ export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: 
       ).filter((e) => e.offsetParent !== null);
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { onEscape?.(); return; }
+      if (e.key === "Escape") { escRef.current?.(); return; }
       if (e.key !== "Tab") return;
       const items = focusable();
       if (!items.length) return;
@@ -30,6 +35,6 @@ export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: 
     };
     el.addEventListener("keydown", onKey);
     return () => { el.removeEventListener("keydown", onKey); prev?.focus?.(); };
-  }, [active, onEscape]);
+  }, [active]);
   return ref;
 }

@@ -363,7 +363,7 @@ export default function App() {
     return "list";
   });
   const [groupBy, setGroupBy] = useState<GroupBy>(() => {
-    try { const s = localStorage.getItem("kanbo-groupby") as GroupBy | null; if (s && ["status", "priority", "project", "none"].includes(s)) return s; } catch { /* private mode */ }
+    try { const s = localStorage.getItem("kanbo-groupby") as GroupBy | null; if (s && ["status", "due", "priority", "project", "none"].includes(s)) return s; } catch { /* private mode */ }
     return "status";
   });
   useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
@@ -573,14 +573,18 @@ export default function App() {
     catch (e) { reportError(e); toastError("Couldn't disconnect that calendar."); }
   }, [toastSuccess, toastError, refreshCalendar]);
 
-  // first-run welcome — once, for a brand-new account that has no tasks yet
+  // first-run welcome — once, for a brand-new account (no tasks yet) OR any
+  // account that still has no real name set (a name is needed so teammates and
+  // assignment notifications show a person, not an email).
   const welcomeKey = `kanbo-welcomed-${currentUserId}`;
   useEffect(() => {
-    if (!store.configured || tasks === null) return;
-    if (tasks.length === 0) {
+    if (!store.configured || tasks === null || currentUserId === "m-self") return;
+    const self = getMember(currentUserId);
+    const named = !!(self?.name && !self.name.includes("@"));
+    if (tasks.length === 0 || !named) {
       try { if (!localStorage.getItem(welcomeKey)) setWelcomeOpen(true); } catch { /* private mode */ }
     }
-  }, [tasks, welcomeKey]);
+  }, [tasks, welcomeKey, currentUserId]);
   const dismissWelcome = useCallback(() => {
     try { localStorage.setItem(welcomeKey, "1"); } catch { /* private mode */ }
     setWelcomeOpen(false);
@@ -642,7 +646,12 @@ export default function App() {
   // inline quick-add: build a full task from a small partial (group context)
   const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {
     const r = routeRef.current;
-    const projectId = partial.projectId || (r.view === "project" ? r.projectId : undefined) || "p-personal";
+    // keep the new task in the workspace you're looking at — fall back to a
+    // project in the active workspace, not the global Personal bucket (which
+    // would silently file it elsewhere and vanish from the current view)
+    const wsId = workspaceRef.current;
+    const wsFallback = projectsRef.current.find((p) => (p.workspaceId ?? null) === wsId)?.id || "p-personal";
+    const projectId = partial.projectId || (r.view === "project" ? r.projectId : undefined) || wsFallback;
     persistTask({
       id: "t-new-" + Date.now() + "-" + Math.round(Math.random() * 1e6),
       title: partial.title, description: "", status: partial.status || "todo", priority: partial.priority || "medium",
@@ -973,7 +982,7 @@ export default function App() {
   let newProj = getProject("");
   // "My tasks" spans every workspace — anything assigned to you, including tasks
   // someone assigned you in a shared workspace you're not currently viewing.
-  if (route.view === "tasks") { scoped = tasks.filter((t) => t.assigneeId === currentUserId); }
+  if (route.view === "tasks") { scoped = tasks.filter((t) => t.assigneeId === currentUserId && !t.archivedAt); }
   else if (route.view === "project" && route.projectId) {
     const p = getProject(route.projectId); newProj = p;
     scoped = allTasks.filter((t) => t.projectId === route.projectId);
@@ -1073,6 +1082,7 @@ export default function App() {
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}
+        canSkip={!!((profile?.firstName?.trim()) || (profile?.lastName?.trim()))}
         onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null })}
         name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined}
         initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""} />

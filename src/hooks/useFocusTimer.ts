@@ -17,8 +17,8 @@ export function useFocusTimer(): FocusTimer {
   const [running, setRunning] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [targetMin, setTargetMin] = useState(90);
-  const [taskId, setTaskId] = useState("t-1");
-  const weekMin = 118;
+  const [taskId, setTaskId] = useState("");
+  const weekMin = 0;
   useEffect(() => {
     if (!running) return;
     const id = setInterval(() => setSeconds((s) => s + 1), 1000);

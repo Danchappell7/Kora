@@ -64,8 +64,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     async signUp(email, password) {
       if (!supabase) return {};
-      const { error } = await supabase.auth.signUp({ email, password });
-      return { error: error?.message };
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) return { error: error.message };
+      // With email confirmation OFF, signing up an already-registered address
+      // returns a user with an empty identities array and no error — surface it
+      // instead of showing a false "signing you in…" that never completes.
+      if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        return { error: "An account with that email already exists. Try signing in instead." };
+      }
+      return {};
     },
     async signInWithGoogle() {
       if (!supabase) return {};
@@ -88,7 +95,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     async signOut() {
       if (!supabase) return;
-      await supabase.auth.signOut();
+      // never strand the user (e.g. mid account-deletion) if the network call
+      // fails — force local signed-out state regardless.
+      try { await supabase.auth.signOut(); } catch { /* ignore */ }
+      setUser(null);
     },
   };
 

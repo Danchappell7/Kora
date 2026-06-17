@@ -23,12 +23,12 @@ const DAY = 86_400_000;
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  // bearer-token gate (set METRICS_TOKEN to enable; if unset, endpoint is open)
+  // bearer-token gate — FAIL CLOSED. Without METRICS_TOKEN set the endpoint is
+  // disabled, so a forgotten secret can never expose business metrics publicly.
   const token = Deno.env.get("METRICS_TOKEN");
-  if (token) {
-    const auth = req.headers.get("Authorization") || "";
-    if (auth !== `Bearer ${token}`) return json({ error: "unauthorized" }, 401);
-  }
+  if (!token) return json({ error: "not configured" }, 503);
+  const auth = req.headers.get("Authorization") || "";
+  if (auth !== `Bearer ${token}`) return json({ error: "unauthorized" }, 401);
 
   try {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);

@@ -27,6 +27,7 @@ export function Ring({ value, size = 96, stroke = 9, color = "var(--accent)", la
 export function Sparkline({ data, w = 220, h = 56, color = "var(--accent)", fill = true }: {
   data: number[]; w?: number; h?: number; color?: string; fill?: boolean;
 }) {
+  if (data.length < 2) return <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block" }} />;
   const max = Math.max(...data, 1), min = Math.min(...data, 0);
   const pts = data.map((v, i) => [(i / (data.length - 1)) * w, h - ((v - min) / (max - min || 1)) * (h - 8) - 4]);
   const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");

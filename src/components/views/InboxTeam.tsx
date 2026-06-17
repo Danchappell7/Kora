@@ -58,7 +58,7 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
           })}
         </div>
         <button className="btn btn-ghost" onClick={onClearAll} style={{ marginLeft: "auto", fontSize: 13 }}>
-          <Icon name="archive" size={15} /> Mark all read
+          <Icon name="archive" size={15} /> Archive all
         </button>
       </div>
       {shown.length === 0 ? (

@@ -21,13 +21,15 @@ const inputStyle: React.CSSProperties = {
 };
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6, letterSpacing: ".01em", textAlign: "left" };
 
-export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst, initialLast }: {
+export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst, initialLast, canSkip = false }: {
   open: boolean;
   onClose: () => void;
   onSaveProfile: (firstName: string, lastName: string) => Promise<void>;
   name?: string;
   initialFirst?: string;
   initialLast?: string;
+  /** allow dismissing the profile step without entering a name (only when one already exists) */
+  canSkip?: boolean;
 }) {
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   const [phase, setPhase] = useState<"profile" | "tour">("profile");
@@ -98,9 +100,11 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
                 {saving ? "Saving…" : <>Continue <Icon name="arrowRight" size={16} /></>}
               </button>
             </form>
-            <button onClick={onClose} style={{ marginTop: 12, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>
-              Skip for now
-            </button>
+            {canSkip && (
+              <button onClick={onClose} style={{ marginTop: 12, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>
+                Skip for now
+              </button>
+            )}
           </>
         ) : (
           <>

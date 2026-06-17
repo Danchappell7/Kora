@@ -486,11 +486,21 @@ export const store = {
 
   async updateProject(id: string, patch: { description?: string; status?: string }): Promise<void> {
     if (!supabase) return;
-    const row: Record<string, unknown> = {};
+    let row: Record<string, unknown> = {};
     if ("description" in patch) row.description = patch.description ?? null;
     if ("status" in patch) row.status = patch.status ?? null;
-    const { error } = await supabase.from("projects").update(row).eq("id", id);
-    if (error) throw error;
+    if (Object.keys(row).length === 0) return;
+    // Resilient update: projects.description/status arrive in migration 0015. If
+    // it isn't applied yet, strip the unknown column and retry so the rest of the
+    // edit still saves instead of throwing.
+    for (let i = 0; i < 4; i++) {
+      const { error } = await supabase.from("projects").update(row).eq("id", id);
+      if (!error) return;
+      const stripped = withoutMissingColumn(row, error.message);
+      if (!stripped) throw error;
+      if (Object.keys(stripped).length === 0) return;
+      row = stripped;
+    }
   },
 
   // toggle the signed-in user's reaction (emoji) on a comment
