@@ -21,9 +21,11 @@ export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
   );
 }
 
-function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect }: {
+function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; smart: boolean; depth?: number;
   selected?: boolean; selectionActive?: boolean; onSelect?: (id: string, additive: boolean) => void;
+  draggable?: boolean; dragging?: boolean; dropHint?: "top" | "bottom" | null;
+  onPickup?: (id: string) => void; onHover?: (id: string, half: "top" | "bottom") => void; onRowDrop?: (draggedId: string, targetId: string, half: "top" | "bottom") => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -37,11 +39,18 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
 
   return (
     <div style={{ borderBottom: "1px solid var(--hairline)" }}>
-      <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="task-row lift-row" style={{
+      <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="task-row lift-row"
+        draggable={draggable}
+        onDragStart={draggable ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}
+        onDragOver={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); onHover?.(task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
+        onDrop={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); const r = e.currentTarget.getBoundingClientRect(); onRowDrop?.(id, task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
+        onDragEnd={draggable ? () => onPickup?.("") : undefined}
+        style={{
         display: "flex", alignItems: "center", gap: 12, padding: "10px 18px 10px " + (18 + depth * 22) + "px",
-        cursor: "pointer", position: "relative",
-        opacity: done ? 0.55 : 1,
+        cursor: draggable ? "grab" : "pointer", position: "relative",
+        opacity: dragging ? 0.4 : (done ? 0.55 : 1),
         background: selected ? "var(--accent-dim)" : undefined,
+        boxShadow: dropHint === "top" ? "inset 0 3px 0 -1px var(--accent)" : dropHint === "bottom" ? "inset 0 -3px 0 -1px var(--accent)" : undefined,
       }}>
         {/* priority accent bar */}
         <span style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 99,
@@ -128,15 +137,19 @@ function GroupHeader({ label, color, count, icon }: { label: string; color: stri
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, onBulkPatch, onBulkDelete, members = [] }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, onBulkPatch, onBulkDelete, onPatch, members = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
+  onPatch?: (id: string, patch: Partial<Task>) => void;
   members?: { id: string; name: string }[];
 }) {
   const bulkEnabled = !!onBulkPatch;
+  const dragEnabled = !!onPatch && !smart; // manual reorder only makes sense when not AI-sorted
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [hover, setHover] = useState<{ id: string; half: "top" | "bottom" } | null>(null);
   const selectionActive = selected.size > 0;
   const toggleSelect = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const clearSel = () => { setSelected(new Set()); setBulkMenu(null); };
@@ -144,11 +157,33 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   const applyPatch = (patch: Partial<Task>) => { onBulkPatch?.(ids, patch); clearSel(); };
   const PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
 
+  // which group a task sits in for the current grouping
+  const groupKeyOf = (t: Task): string => groupBy === "status" ? t.status : groupBy === "priority" ? t.priority : groupBy === "project" ? t.projectId : "all";
+  // drop a dragged task next to a target row: change its group field if needed, and reposition
+  const onRowDrop = (draggedId: string, targetId: string, half: "top" | "bottom") => {
+    setDragId(null); setHover(null);
+    if (draggedId === targetId) return;
+    const dragged = tasks.find((t) => t.id === draggedId), target = tasks.find((t) => t.id === targetId);
+    if (!dragged || !target) return;
+    const patch: Partial<Task> = {};
+    if (groupBy === "status" && dragged.status !== target.status) {
+      patch.status = target.status;
+      patch.completedAt = target.status === "done" ? toLocalISO(new Date()) : undefined;
+    } else if (groupBy === "priority" && dragged.priority !== target.priority) patch.priority = target.priority;
+    else if (groupBy === "project" && dragged.projectId !== target.projectId) patch.projectId = target.projectId;
+    const groupItems = tasks.filter((t) => t.id !== draggedId && groupKeyOf(t) === groupKeyOf(target)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const ti = groupItems.findIndex((t) => t.id === targetId);
+    const at = half === "top" ? ti : ti + 1;
+    onPatch?.(draggedId, { ...patch, position: between(groupItems[at - 1], groupItems[at]) });
+  };
+
   const sortFn = (a: Task, b: Task) => {
-    if (smart) return b.aiScore - a.aiScore;
     if (a.status === "done" && b.status !== "done") return 1;
     if (b.status === "done" && a.status !== "done") return -1;
-    return PRIORITY_META[b.priority].rank - PRIORITY_META[a.priority].rank;
+    if (smart) return b.aiScore - a.aiScore;
+    // manual order (drag-to-reorder); falls back to priority for equal positions
+    const dp = (a.position ?? 0) - (b.position ?? 0);
+    return dp !== 0 ? dp : PRIORITY_META[b.priority].rank - PRIORITY_META[a.priority].rank;
   };
 
   let groups: Group[] = [];
@@ -185,7 +220,9 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
         <div key={g.key}>
           <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon} />
           <div>{g.items.map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
-            selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined} />)}</div>
+            selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
+            draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
+            onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop} />)}</div>
         </div>
       ))}
       <div style={{ height: selectionActive ? 90 : 40 }} />
@@ -226,6 +263,15 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       )}
     </div>
   );
+}
+
+// fractional index between two neighbours (matches the board's reorder math)
+function between(before?: Task, after?: Task): number {
+  const bp = before?.position, ap = after?.position;
+  if (bp == null && ap == null) return Date.now();
+  if (bp == null) return (ap as number) - 1;
+  if (ap == null) return (bp as number) + 1;
+  return (bp + ap) / 2;
 }
 
 const bulkItemStyle: React.CSSProperties = {

@@ -78,7 +78,7 @@ function FilterOption({ label, active, onClick, dot }: { label: string; active: 
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, members, allTags }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, members, allTags }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -94,6 +94,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onMove: (taskId: string, status: Status, position?: number) => void;
   onBulkPatch: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete: (ids: string[]) => void;
+  onPatch: (id: string, patch: Partial<Task>) => void;
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;
 }) {
@@ -200,7 +201,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         </button>
         </div>
       </div>
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} members={members} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
@@ -799,7 +800,7 @@ export default function App() {
           const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
-        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} members={assignees} allTags={tags} />;
+        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} members={assignees} allTags={tags} />;
       default: return null;
     }
   };
