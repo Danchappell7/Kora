@@ -4,7 +4,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { SubtaskProgress } from "./ListView";
+import { SubtaskProgress, bulkItemStyle, BulkMenuButton } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
@@ -20,27 +20,38 @@ const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
 
 /* ---------------- KANBAN ---------------- */
 type Half = "top" | "bottom";
-function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop }: {
+function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop, selected = false, selectionActive = false, onSelect }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onMove: (id: string, status: Status) => void;
   isMobile: boolean; dragging: boolean; dropHint: Half | null;
   onPickup: (id: string) => void; onHoverCard: (id: string, half: Half) => void; onCardDrop: (draggedId: string, targetId: string, half: Half) => void;
+  selected?: boolean; selectionActive?: boolean; onSelect?: (id: string) => void;
 }) {
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const ds = dueState(task.dueDate, task.status);
   const [moveOpen, setMoveOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const halfFrom = (e: React.DragEvent): Half => {
     const r = e.currentTarget.getBoundingClientRect();
     return e.clientY < r.top + r.height / 2 ? "top" : "bottom";
   };
   return (
-    <div onClick={() => onOpen(task.id)} className="glass clickable lift" draggable={!isMobile}
+    <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="glass clickable lift" draggable={!isMobile}
       onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup(task.id); }}
       onDragOver={!isMobile ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); onHoverCard(task.id, halfFrom(e)); } : undefined}
       onDrop={!isMobile ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); onCardDrop(id, task.id, halfFrom(e)); } : undefined}
-      style={{ padding: 13, borderRadius: 12, cursor: isMobile ? "pointer" : "grab", opacity: dragging ? 0.4 : 1,
+      style={{ padding: 13, borderRadius: 12, cursor: isMobile ? "pointer" : "grab", opacity: dragging ? 0.4 : 1, position: "relative",
+        outline: selected ? "1.5px solid var(--accent)" : undefined, background: selected ? "var(--accent-dim)" : undefined,
         boxShadow: dropHint === "top" ? "inset 0 3px 0 -1px var(--accent)" : dropHint === "bottom" ? "inset 0 -3px 0 -1px var(--accent)" : undefined }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        {onSelect && (
+          <button onClick={(e) => { e.stopPropagation(); onSelect(task.id); }} aria-label={selected ? "Deselect task" : "Select task"}
+            style={{ width: 17, height: 17, borderRadius: 5, flexShrink: 0, padding: 0, cursor: "pointer", display: "grid", placeItems: "center", marginTop: 1,
+              border: `1.6px solid ${selected ? "var(--accent)" : "var(--hairline-strong)"}`, background: selected ? "var(--accent)" : "transparent",
+              opacity: selected || selectionActive || hovered ? 1 : 0, transition: "opacity .12s" }}>
+            {selected && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}
+          </button>
+        )}
         <PriorityFlag priority={task.priority} size={13} />
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
       </div>
@@ -93,13 +104,23 @@ function between(before?: Task, after?: Task): number {
 
 interface BoardCol { key: string; label: string; status?: Status; dot?: string }
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, members = [] }: {
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void;
   onMove: (taskId: string, status: Status, position?: number) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
+  onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
+  onBulkDelete?: (ids: string[]) => void;
   members?: { id: string; name: string }[];
 }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
+  const selectionActive = selected.size > 0;
+  const toggleSelect = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const clearSel = () => { setSelected(new Set()); setBulkMenu(null); };
+  const selIds = [...selected].filter((id) => tasks.some((t) => t.id === id));
+  const applyBulk = (patch: Partial<Task>) => { onBulkPatch?.(selIds, patch); clearSel(); };
+  const BULK_PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: string; half: Half } | null>(null);
@@ -195,7 +216,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, mem
                     dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
                     onPickup={setDragId}
                     onHoverCard={(id, half) => { setDragOver(null); setHover({ id, half }); }}
-                    onCardDrop={(draggedId, targetId, half) => onCardDrop(draggedId, targetId, half, col)} />
+                    onCardDrop={(draggedId, targetId, half) => onCardDrop(draggedId, targetId, half, col)}
+                    selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={onBulkPatch ? toggleSelect : undefined} />
                 ))}
                 {col.status && (
                   <button onClick={() => onAdd(col.status!)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
@@ -207,6 +229,29 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, mem
           );
         })}
       </div>
+
+      {selectionActive && (
+        <div className="anim-fadeup" style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", zIndex: 60,
+          display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 14, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", border: "1px solid var(--hairline)" }}>
+          <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", padding: "0 8px" }}>{selIds.length} selected</span>
+          <span style={{ width: 1, height: 22, background: "var(--hairline)" }} />
+          <button className="btn btn-ghost" onClick={() => applyBulk({ status: "done", completedAt: toLocalISO(new Date()) })} style={{ padding: "7px 11px", fontSize: 13 }}><Icon name="check" size={15} /> Done</button>
+          <BulkMenuButton label="Status" icon="layers" open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
+            {STATUS_ORDER.map((s) => (<button key={s} onClick={() => applyBulk({ status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })} style={bulkItemStyle}><StatusDot status={s} size={7} /> {STATUS_META[s].label}</button>))}
+          </BulkMenuButton>
+          <BulkMenuButton label="Priority" icon="flag" open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
+            {BULK_PRIORITIES.map((p) => (<button key={p} onClick={() => applyBulk({ priority: p })} style={bulkItemStyle}><PriorityFlag priority={p} size={13} /> {PRIORITY_META[p].label}</button>))}
+          </BulkMenuButton>
+          {members.length > 0 && (
+            <BulkMenuButton label="Assign" icon="user" open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
+              {members.map((m) => (<button key={m.id} onClick={() => applyBulk({ assigneeId: m.id })} style={bulkItemStyle}><Avatar id={m.id} size={18} /> {m.name}</button>))}
+            </BulkMenuButton>
+          )}
+          <button className="btn btn-ghost" onClick={() => { onBulkDelete?.(selIds); clearSel(); }} style={{ padding: "7px 11px", fontSize: 13, color: "var(--prio-urgent)" }}><Icon name="trash" size={15} /> Delete</button>
+          <span style={{ width: 1, height: 22, background: "var(--hairline)" }} />
+          <button className="btn-icon" onClick={clearSel} aria-label="Clear selection" style={{ border: "none", width: 30, height: 30 }}><Icon name="x" size={16} /></button>
+        </div>
+      )}
     </div>
   );
 }

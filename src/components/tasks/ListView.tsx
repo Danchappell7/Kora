@@ -370,12 +370,12 @@ function between(before?: Task, after?: Task): number {
   return (bp + ap) / 2;
 }
 
-const bulkItemStyle: React.CSSProperties = {
+export const bulkItemStyle: React.CSSProperties = {
   display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 9px", borderRadius: 8, border: "none",
   background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)",
 };
 
-function BulkMenuButton({ label, icon, open, onToggle, children }: { label: string; icon: IconName; open: boolean; onToggle: () => void; children: React.ReactNode }) {
+export function BulkMenuButton({ label, icon, open, onToggle, children }: { label: string; icon: IconName; open: boolean; onToggle: () => void; children: React.ReactNode }) {
   return (
     <div style={{ position: "relative" }}>
       <button className="btn btn-ghost" onClick={onToggle} style={{ padding: "7px 11px", fontSize: 13 }}><Icon name={icon} size={15} /> {label}</button>
