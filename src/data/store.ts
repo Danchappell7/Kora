@@ -621,6 +621,44 @@ export const store = {
     return data.url as string;
   },
 
+  /* ---------- session tracking (dwell time) — all best-effort ---------- */
+  async recordSession(userId: string): Promise<string | null> {
+    if (!supabase) return null;
+    try {
+      const uid = await authUid(userId);
+      const { data, error } = await supabase.from("sessions").insert({ user_id: uid }).select("id").single();
+      if (error) return null;
+      return (data as { id: string }).id;
+    } catch { return null; }
+  },
+  async touchSession(id: string): Promise<void> {
+    if (!supabase) return;
+    try { await supabase.from("sessions").update({ last_seen_at: new Date().toISOString() }).eq("id", id); } catch { /* ignore */ }
+  },
+
+  /* ---------- admin metrics (hidden /admin dashboard) ---------- */
+  // Every signed-in user can read profiles (RLS policy), so this gives a real
+  // account list/count with no extra setup.
+  async adminProfiles(): Promise<{ id: string; name: string; email: string; updatedAt: string }[]> {
+    if (!supabase) {
+      return MEMBERS.filter((m) => m.type !== "external").map((m) => ({ id: m.id, name: m.name, email: m.email, updatedAt: new Date().toISOString() }));
+    }
+    const { data, error } = await supabase.from("profiles").select("id, first_name, last_name, email, updated_at").order("updated_at", { ascending: false });
+    if (error) throw error;
+    type PRow = { id: string; first_name: string | null; last_name: string | null; email: string | null; updated_at: string | null };
+    return ((data as PRow[] | null) ?? []).map((p) => ({ id: p.id, name: fullName({ firstName: p.first_name || "", lastName: p.last_name || "" }) || p.email || "Unnamed", email: p.email || "", updatedAt: p.updated_at || "" }));
+  },
+  // Richer cross-user aggregates via a SECURITY DEFINER RPC (optional — returns
+  // null if the admin_stats() function hasn't been installed yet).
+  async adminStats(): Promise<Record<string, number> | null> {
+    if (!supabase) return { total_users: 4, new_signups_30d: 1, active_users_30d: 3, total_tasks: 12, completed_tasks: 5, actions_30d: 34, dau: 2, wau: 3, sessions_30d: 27, avg_session_sec: 372, mrr_cents: 0 };
+    try {
+      const { data, error } = await supabase.rpc("admin_stats");
+      if (error || !data) return null;
+      return data as Record<string, number>;
+    } catch { return null; }
+  },
+
   /* ---------- AI prioritization (real LLM with heuristic fallback) ---------- */
   async aiPrioritize(tasks: Task[], today: string): Promise<{ items: { id: string; score: number; reason: string }[]; summary: string; source: "ai" | "heuristic" }> {
     const heuristic = () => {

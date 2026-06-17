@@ -416,6 +416,19 @@ export default function App() {
 
   // load data once the user is known (immediately in demo mode)
   const authUserId = auth.user?.id ?? null;
+
+  // dwell-time tracking: open a session and heartbeat while the tab is active
+  // (best-effort — quietly no-ops if the sessions table isn't installed yet)
+  useEffect(() => {
+    if (!store.configured || !authUserId) return;
+    let sessionId: string | null = null, stopped = false;
+    store.recordSession(authUserId).then((id) => { sessionId = id; });
+    const beat = () => { if (!stopped && sessionId && document.visibilityState === "visible") store.touchSession(sessionId); };
+    const iv = window.setInterval(beat, 45000);
+    document.addEventListener("visibilitychange", beat);
+    return () => { stopped = true; clearInterval(iv); document.removeEventListener("visibilitychange", beat); };
+  }, [authUserId]);
+
   useEffect(() => {
     if (auth.configured && !authUserId) { setTasks(null); return; }
     let cancelled = false;
