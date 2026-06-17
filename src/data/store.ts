@@ -63,8 +63,12 @@ interface TaskRow {
   project_id: string;
   assignee_id: string;
   due_date: string | null;
+  due_time?: string | null;
+  start_date?: string | null;
   original_due_date: string | null;
   completed_at: string | null;
+  archived_at?: string | null;
+  is_milestone?: boolean | null;
   tags: string[] | null;
   focus_min: number;
   comments: number;
@@ -92,8 +96,12 @@ function rowToTask(r: TaskRow): Task {
     projectId: r.project_id,
     assigneeId: r.assignee_id,
     dueDate: r.due_date ?? undefined,
+    dueTime: r.due_time ?? undefined,
+    startDate: r.start_date ?? undefined,
     originalDueDate: r.original_due_date ?? undefined,
     completedAt: r.completed_at ?? undefined,
+    archivedAt: r.archived_at ?? undefined,
+    isMilestone: r.is_milestone ?? false,
     tags: r.tags ?? [],
     dependencies: (r.task_dependencies ?? []).map((d) => d.depends_on),
     subtasks: subs.map((s) => ({ id: s.id, title: s.title, done: s.done })),
@@ -111,18 +119,18 @@ function rowToTask(r: TaskRow): Task {
   };
 }
 
-interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; }
+interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; }
 function rowToProject(r: ProjectRow): Project {
-  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null };
+  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined };
 }
 
 interface TagRow { id: string; label: string; color: string; }
 
 export interface CreatedTag { id: string; label: string; color: string; }
 
-interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; mentions?: string[] | null; }
+interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; mentions?: string[] | null; reactions?: Record<string, string[]> | null; }
 function rowToComment(r: CommentRow): Comment {
-  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [] };
+  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [], reactions: r.reactions ?? {} };
 }
 
 interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; }
@@ -210,6 +218,10 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("aiScore" in patch) row.ai_score = patch.aiScore;
   if ("aiReason" in patch) row.ai_reason = patch.aiReason;
   if ("position" in patch) row.position = patch.position;
+  if ("dueTime" in patch) row.due_time = patch.dueTime ?? null;
+  if ("startDate" in patch) row.start_date = patch.startDate ?? null;
+  if ("archivedAt" in patch) row.archived_at = patch.archivedAt ?? null;
+  if ("isMilestone" in patch) row.is_milestone = patch.isMilestone ?? false;
   return row;
 }
 
@@ -223,6 +235,9 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
     project_id: t.projectId,
     assignee_id: t.assigneeId === "m-self" ? userId : t.assigneeId,
     due_date: t.dueDate ?? null,
+    due_time: t.dueTime ?? null,
+    start_date: t.startDate ?? null,
+    is_milestone: t.isMilestone ?? false,
     tags: t.tags,
     focus_min: t.focusMin,
     comments: t.comments,
@@ -426,6 +441,30 @@ export const store = {
       .single();
     if (error) throw error;
     return rowToProject(data as ProjectRow);
+  },
+
+  async updateProject(id: string, patch: { description?: string; status?: string }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("description" in patch) row.description = patch.description ?? null;
+    if ("status" in patch) row.status = patch.status ?? null;
+    const { error } = await supabase.from("projects").update(row).eq("id", id);
+    if (error) throw error;
+  },
+
+  // toggle the signed-in user's reaction (emoji) on a comment
+  async toggleReaction(commentId: string, emoji: string, userId: string): Promise<Record<string, string[]>> {
+    if (!supabase) return {};
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("comments").select("reactions").eq("id", commentId).single();
+    if (error) throw error;
+    const reactions: Record<string, string[]> = (data?.reactions as Record<string, string[]>) || {};
+    const list = reactions[emoji] || [];
+    reactions[emoji] = list.includes(uid) ? list.filter((x) => x !== uid) : [...list, uid];
+    if (reactions[emoji].length === 0) delete reactions[emoji];
+    const { error: uErr } = await supabase.from("comments").update({ reactions }).eq("id", commentId);
+    if (uErr) throw uErr;
+    return reactions;
   },
 
   async deleteProject(id: string): Promise<void> {

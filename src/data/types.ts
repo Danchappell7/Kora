@@ -65,6 +65,8 @@ export interface Project {
   emoji: string;
   color: string;
   workspaceId: string | null;
+  description?: string;
+  status?: string;
 }
 
 export interface TagDef {
@@ -94,8 +96,12 @@ export interface Task {
   aiScore: number;
   aiReason?: string;
   dueDate?: string;
+  dueTime?: string;
+  startDate?: string;
   originalDueDate?: string;
   completedAt?: string;
+  archivedAt?: string;
+  isMilestone?: boolean;
   /* "Plan my day" fields */
   energy?: EnergyKind;
   dur?: number;
@@ -116,6 +122,8 @@ export interface Comment {
   body: string;
   createdAt: string;
   mentions?: string[];
+  /* emoji -> list of user ids who reacted with it */
+  reactions?: Record<string, string[]>;
 }
 
 export interface Attachment {

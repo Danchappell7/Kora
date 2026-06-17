@@ -8,4 +8,4 @@ export interface Route {
 }
 
 export type TaskView = "list" | "board" | "timeline" | "calendar";
-export type GroupBy = "status" | "priority" | "project" | "none";
+export type GroupBy = "status" | "priority" | "project" | "due" | "none";

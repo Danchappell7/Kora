@@ -47,6 +47,7 @@ const VIEW_OPTS: SegmentedOption<TaskView>[] = [
 
 const GROUP_OPTS: SegmentedOption<GroupBy>[] = [
   { value: "status", label: "Status" },
+  { value: "due", label: "Due" },
   { value: "priority", label: "Priority" },
   { value: "project", label: "Project" },
   { value: "none", label: "None" },

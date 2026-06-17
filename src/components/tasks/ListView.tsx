@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
-  getProject, blockingTasks, dueState, fmtDue, toLocalISO,
+  getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
 import type { Task, Subtask, IconName, Priority } from "../../data/types";
@@ -280,6 +280,27 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       .filter((x) => !!x.p)
       .map(({ pid, p }) => ({ key: pid, label: p!.name, color: p!.color, items: tasks.filter((t) => t.projectId === pid).sort(sortFn) }))
       .filter((g) => g.items.length);
+  } else if (groupBy === "due") {
+    // the "My Tasks" planner: bucket by when work is due
+    const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
+    const dueBucket = (t: Task): string => {
+      if (t.status === "done") return "completed";
+      if (!t.dueDate) return "nodate";
+      const d = new Date(t.dueDate + "T00:00:00").getTime();
+      if (d < todayMid) return "overdue";
+      if (d === todayMid) return "today";
+      if (d <= todayMid + 7 * 86400000) return "week";
+      return "later";
+    };
+    const BUCKETS: { key: string; label: string; color: string }[] = [
+      { key: "overdue", label: "Overdue", color: "var(--prio-urgent)" },
+      { key: "today", label: "Today", color: "var(--accent)" },
+      { key: "week", label: "This week", color: "var(--st-progress)" },
+      { key: "later", label: "Later", color: "var(--ink-4)" },
+      { key: "nodate", label: "No date", color: "var(--ink-4)" },
+      { key: "completed", label: "Completed", color: "var(--st-done)" },
+    ];
+    groups = BUCKETS.map((b) => ({ key: b.key, label: b.label, color: b.color, items: tasks.filter((t) => dueBucket(t) === b.key).sort(sortFn) })).filter((g) => g.items.length);
   } else {
     groups = [{ key: "all", label: smart ? "Smart order" : "All tasks", color: "var(--accent)", icon: (smart ? "sparkles" : "list") as IconName, items: [...tasks].sort(sortFn) }];
   }
