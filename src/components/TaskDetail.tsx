@@ -36,7 +36,7 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
   taskId: string;
   tasks: Task[];
   tags: Record<string, TagDef>;
@@ -48,6 +48,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onPatch: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
   onDuplicate?: (id: string) => void;
+  onAddDependency?: (taskId: string, dependsOn: string) => void;
+  onRemoveDependency?: (taskId: string, dependsOn: string) => void;
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAddSubtask: (taskId: string, title: string) => void;
   onCreateTag: (label: string, color: string) => void;
@@ -60,6 +62,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [comment, setComment] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [depPickerOpen, setDepPickerOpen] = useState(false);
+  const [depQuery, setDepQuery] = useState("");
   const commentRef = useRef<HTMLInputElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
   const [posting, setPosting] = useState(false);
@@ -88,7 +92,6 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
 
   if (!task) return null;
   const proj = getProject(task.projectId);
-  const blocked = blockingTasks(task, tasks);
   const dependents = tasks.filter((t) => t.dependencies?.includes(task.id));
   const done = task.status === "done";
   const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
@@ -271,27 +274,56 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             )}
           </div>
 
-          {/* dependencies */}
-          {(blocked.length > 0 || dependents.length > 0) && (
-            <div style={{ marginBottom: 20 }}>
-              <div className="kicker" style={{ marginBottom: 10 }}>Dependencies</div>
-              {blocked.map((b) => (
-                <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 11px", borderRadius: 9, background: "color-mix(in oklch, var(--st-blocked) 9%, transparent)", border: "1px solid color-mix(in oklch, var(--st-blocked) 24%, transparent)", marginBottom: 6 }}>
-                  <Icon name="lock" size={14} style={{ color: "var(--st-blocked)" }} />
-                  <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Blocked by</span>
-                  <span style={{ flex: 1, fontSize: 13, color: "var(--ink-2)" }}>{b.title}</span>
-                  <StatusDot status={b.status} size={7} />
-                </div>
-              ))}
-              {dependents.map((d) => (
-                <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 11px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6 }}>
-                  <Icon name="arrowUpRight" size={14} style={{ color: "var(--ink-4)" }} />
-                  <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Blocks</span>
-                  <span style={{ flex: 1, fontSize: 13, color: "var(--ink-2)" }}>{d.title}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* dependencies (blocked-by, editable) */}
+          {(() => {
+            const deps = task.dependencies.map((id) => tasks.find((t) => t.id === id)).filter((t): t is Task => !!t);
+            const candidates = tasks.filter((t) => t.id !== task.id && !task.dependencies.includes(t.id) && (!depQuery.trim() || t.title.toLowerCase().includes(depQuery.trim().toLowerCase()))).slice(0, 6);
+            return (
+              <div style={{ marginBottom: 20 }}>
+                <div className="kicker" style={{ marginBottom: 10 }}>Blocked by</div>
+                {deps.map((b) => (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 11px", borderRadius: 9, background: b.status !== "done" ? "color-mix(in oklch, var(--st-blocked) 9%, transparent)" : "var(--surface)", border: `1px solid ${b.status !== "done" ? "color-mix(in oklch, var(--st-blocked) 24%, transparent)" : "var(--hairline)"}`, marginBottom: 6 }}>
+                    <StatusDot status={b.status} size={8} />
+                    <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)", textDecoration: b.status === "done" ? "line-through" : "none" }}>{b.title}</span>
+                    {b.status !== "done" && <Icon name="lock" size={13} style={{ color: "var(--st-blocked)" }} />}
+                    {onRemoveDependency && <button onClick={() => onRemoveDependency(task.id, b.id)} aria-label="Remove dependency" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>}
+                  </div>
+                ))}
+                {onAddDependency && (depPickerOpen ? (
+                  <div style={{ position: "relative", marginTop: 2 }}>
+                    {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                    <input autoFocus value={depQuery} onChange={(e) => setDepQuery(e.target.value)} onBlur={() => setTimeout(() => setDepPickerOpen(false), 150)} placeholder="Search a task to depend on…"
+                      style={{ width: "100%", height: 34, padding: "0 11px", borderRadius: 9, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }} />
+                    {candidates.length > 0 && (
+                      <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 5, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", maxHeight: 220, overflowY: "auto" }}>
+                        {candidates.map((c) => (
+                          <button key={c.id} onMouseDown={(e) => { e.preventDefault(); onAddDependency(task.id, c.id); setDepQuery(""); setDepPickerOpen(false); }}
+                            style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 9px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "var(--font-display)", fontSize: 13, color: "var(--ink-2)" }}>
+                            <StatusDot status={c.status} size={7} /> <span className="truncate">{c.title}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <button onClick={() => { setDepQuery(""); setDepPickerOpen(true); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 4px", border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13 }}>
+                    <Icon name="plus" size={14} /> Add dependency
+                  </button>
+                ))}
+                {dependents.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="kicker" style={{ marginBottom: 6 }}>Blocks</div>
+                    {dependents.map((d) => (
+                      <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6 }}>
+                        <Icon name="arrowUpRight" size={13} style={{ color: "var(--ink-4)" }} />
+                        <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)" }}>{d.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* subtasks */}
           <div style={{ marginBottom: 20 }}>

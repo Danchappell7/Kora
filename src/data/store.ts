@@ -715,6 +715,18 @@ export const store = {
     return () => { client.removeChannel(channel); };
   },
 
+  /* ---------- dependencies (blocked-by) ---------- */
+  async addDependency(taskId: string, dependsOn: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("task_dependencies").insert({ task_id: taskId, depends_on: dependsOn });
+    if (error && !String(error.message).includes("duplicate")) throw error;
+  },
+  async removeDependency(taskId: string, dependsOn: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("task_dependencies").delete().eq("task_id", taskId).eq("depends_on", dependsOn);
+    if (error) throw error;
+  },
+
   async addSubtask(taskId: string, title: string, position: number): Promise<Subtask> {
     if (!supabase) return { id: newId(), title, done: false };
     const { data, error } = await supabase.from("subtasks").insert({ task_id: taskId, title, done: false, position }).select("*").single();
