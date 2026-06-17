@@ -6,7 +6,7 @@ import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
-import { PRIORITY_META, energyOf } from "../data/data";
+import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate } from "../data/data";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
 
 const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? "t-new-" + crypto.randomUUID() : "t-new-" + Date.now());
@@ -108,6 +108,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
             </label>
             <label style={fieldLabel}>Due date
               <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={selectStyle} />
+              <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+                {DUE_PRESETS.map((p) => (
+                  <button key={p.kind} type="button" onClick={() => setDueDate(presetDate(p.kind))} style={{ padding: "3px 8px", borderRadius: 6, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)" }}>{p.label}</button>
+                ))}
+              </div>
             </label>
             <label style={fieldLabel}>Repeat
               <select value={recurrence} onChange={(e) => setRecurrence(e.target.value as Recurrence)} style={selectStyle}>

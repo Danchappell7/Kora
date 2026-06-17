@@ -33,7 +33,7 @@ function renderCommentBody(body: string, names: string[]): ReactNode {
   return out;
 }
 import {
-  getProject, getMember, blockingTasks, dueState, timeAgo,
+  getProject, getMember, blockingTasks, dueState, timeAgo, DUE_PRESETS, presetDate,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
 import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName } from "../data/types";
@@ -245,8 +245,14 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               </span>
             </MetaRow>
             <MetaRow icon="calendar" label="Due">
-              <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })}
-                style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: dueState(task.dueDate, task.status) === "overdue" ? "var(--prio-urgent)" : "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })}
+                  style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: dueState(task.dueDate, task.status) === "overdue" ? "var(--prio-urgent)" : "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+                {DUE_PRESETS.map((p) => (
+                  <button key={p.kind} onClick={() => onPatch(task.id, { dueDate: presetDate(p.kind) })} style={{ padding: "4px 9px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 11.5, fontFamily: "var(--font-display)" }}>{p.label}</button>
+                ))}
+                {task.dueDate && <button onClick={() => onPatch(task.id, { dueDate: undefined })} title="Clear due date" style={{ padding: "4px 7px", borderRadius: 7, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13 }}>×</button>}
+              </div>
             </MetaRow>
             <MetaRow icon="refresh" label="Repeat">
               <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}

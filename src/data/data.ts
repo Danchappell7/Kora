@@ -18,6 +18,19 @@ export function toLocalISO(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+export type DuePreset = "today" | "tomorrow" | "weekend" | "nextweek";
+export const DUE_PRESETS: { kind: DuePreset; label: string }[] = [
+  { kind: "today", label: "Today" }, { kind: "tomorrow", label: "Tomorrow" },
+  { kind: "weekend", label: "Weekend" }, { kind: "nextweek", label: "Next week" },
+];
+export function presetDate(kind: DuePreset): string {
+  const d = new Date(KANBO_TODAY);
+  if (kind === "tomorrow") d.setDate(d.getDate() + 1);
+  else if (kind === "weekend") d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7)); // upcoming Saturday
+  else if (kind === "nextweek") d.setDate(d.getDate() + 7);
+  return toLocalISO(d);
+}
+
 export function dayOffset(n: number): string {
   const d = new Date(KANBO_TODAY);
   d.setDate(d.getDate() + n);
