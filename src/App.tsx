@@ -149,7 +149,10 @@ function FullLoader() {
 export default function App() {
   const auth = useAuth();
   const { error: toastError, success: toastSuccess } = useToast();
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    try { const s = localStorage.getItem("kanbo-theme"); if (s === "light" || s === "dark") return s; } catch { /* private mode */ }
+    return "light";
+  });
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [tags, setTags] = useState<Record<string, TagDef>>({});
@@ -169,8 +172,16 @@ export default function App() {
   const [calSyncing, setCalSyncing] = useState(false);
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
-  const [view, setView] = useState<TaskView>("list");
-  const [groupBy, setGroupBy] = useState<GroupBy>("status");
+  const [view, setView] = useState<TaskView>(() => {
+    try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar"].includes(s)) return s; } catch { /* private mode */ }
+    return "list";
+  });
+  const [groupBy, setGroupBy] = useState<GroupBy>(() => {
+    try { const s = localStorage.getItem("kanbo-groupby") as GroupBy | null; if (s && ["status", "priority", "project", "none"].includes(s)) return s; } catch { /* private mode */ }
+    return "status";
+  });
+  useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
+  useEffect(() => { try { localStorage.setItem("kanbo-groupby", groupBy); } catch { /* private mode */ } }, [groupBy]);
   const [smart, setSmart] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -204,7 +215,10 @@ export default function App() {
     setReferenceData({ tags: next });
   }, []);
 
-  useEffect(() => { document.documentElement.setAttribute("data-theme", theme); }, [theme]);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("kanbo-theme", theme); } catch { /* private mode */ }
+  }, [theme]);
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); }
