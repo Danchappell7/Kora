@@ -278,6 +278,9 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
 // query fails. We want this task's own dependency rows (task_id = id).
 const TASK_SELECT = "*, subtasks(*), task_dependencies!task_dependencies_task_id_fkey(depends_on)";
 
+export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
+export interface AdminSeries { days: AdminDay[]; by_status: Record<string, number>; by_priority: Record<string, number> }
+
 /* ============================================================
    Public store API
    ============================================================ */
@@ -674,6 +677,24 @@ export const store = {
       const { data, error } = await supabase.rpc("admin_stats");
       if (error || !data) return null;
       return data as Record<string, number>;
+    } catch { return null; }
+  },
+
+  // Daily time-series (last 30d) + status/priority breakdowns for the admin
+  // charts. SECURITY DEFINER RPC; returns null until admin_series() is installed.
+  async adminSeries(): Promise<AdminSeries | null> {
+    if (!supabase) {
+      const days: AdminDay[] = Array.from({ length: 30 }, (_, i) => {
+        const d = new Date(Date.now() - (29 - i) * 86400000).toISOString().slice(0, 10);
+        const w = Math.sin(i / 3) + 1.4;
+        return { d, signups: i % 9 === 0 ? 1 : 0, sessions: Math.round(w * 3 + (i % 5)), active: Math.round(w * 2), tasks: Math.round(w * 2 + (i % 4)), actions: Math.round(w * 6 + (i % 7)) };
+      });
+      return { days, by_status: { todo: 5, progress: 3, review: 1, blocked: 1, done: 6 }, by_priority: { low: 4, medium: 7, high: 3, urgent: 2 } };
+    }
+    try {
+      const { data, error } = await supabase.rpc("admin_series");
+      if (error || !data) return null;
+      return data as AdminSeries;
     } catch { return null; }
   },
 
