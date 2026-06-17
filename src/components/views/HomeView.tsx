@@ -25,8 +25,8 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onAutoPrioritize, aiBusy }: {
-  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onAutoPrioritize: () => void; aiBusy?: boolean;
+export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy }: {
+  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean;
 }) {
   const open = tasks.filter((t) => t.status !== "done");
   const counts = {
@@ -53,19 +53,38 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
   const dateLabel = `${KANBO_TODAY.toLocaleDateString(undefined, { weekday: "short" })} · ${KANBO_TODAY.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
 
   if (tasks.length === 0) {
+    const starters: { icon: IconName; title: string; body: string; onClick: () => void; primary?: boolean }[] = [
+      { icon: "plus", title: "Add your first task", body: "Capture something on your plate — Kanbo sorts out the rest.", onClick: onNewTask, primary: true },
+      { icon: "calendarPlus", title: "Plan your day", body: "Auto-plan lays your tasks around your meetings.", onClick: () => setRoute({ view: "plan" }) },
+      { icon: "layers", title: "Create a project", body: "Group related work and track progress in one place.", onClick: onNewProject },
+      { icon: "clock", title: "Start a focus block", body: "Put the timer on and do one thing properly.", onClick: openFocus },
+    ];
     return (
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
-        <div className="glass anim-fadeup" style={{ maxWidth: 520, padding: 28, borderRadius: 20, textAlign: "center", position: "relative", overflow: "hidden" }}>
-          <div style={{ position: "absolute", top: -50, right: -30, width: 220, height: 220, background: "radial-gradient(circle, var(--accent-glow), transparent 70%)", opacity: 0.5, pointerEvents: "none" }} />
+      <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", display: "grid", placeItems: "center" }}>
+        <div className="anim-fadeup" style={{ width: "100%", maxWidth: 720, textAlign: "center" }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 16 }}><Icon name="sparkles" size={24} /></div>
-          <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>Welcome to Kanbo</h2>
-          <p style={{ fontSize: 14.5, lineHeight: 1.55, color: "var(--ink-3)", margin: "0 0 20px" }}>
-            Your workspace is a clean slate. Capture what's on your plate, and Kanbo will help you plan a realistic day around it.
+          <h2 style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 8 }}>Welcome to Kanbo{firstName !== "there" ? `, ${firstName}` : ""} 👋</h2>
+          <p style={{ fontSize: 15, lineHeight: 1.55, color: "var(--ink-3)", margin: "0 auto 28px", maxWidth: 460 }}>
+            Your workspace is a clean slate. Pick a starting point — or just type a task in the capture bar up top.
           </p>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-            <button className="btn btn-accent" onClick={() => setRoute({ view: "plan" })}><Icon name="calendarPlus" size={15} /> Plan my day</button>
-            <button className="btn btn-ghost" onClick={openFocus}><Icon name="play" size={14} fill="currentColor" /> Start a focus session</button>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, textAlign: "left" }}>
+            {starters.map((s) => (
+              <button key={s.title} onClick={s.onClick} className="glass lift" style={{
+                display: "flex", alignItems: "flex-start", gap: 13, padding: 18, borderRadius: 16, cursor: "pointer", textAlign: "left",
+                border: s.primary ? "1px solid color-mix(in oklch, var(--accent) 45%, transparent)" : "1px solid var(--hairline)",
+                boxShadow: s.primary ? "0 0 0 1px color-mix(in oklch, var(--accent) 30%, transparent), 0 12px 30px -14px var(--accent-glow)" : undefined,
+              }}>
+                <span style={{ display: "grid", placeItems: "center", width: 38, height: 38, borderRadius: 11, flexShrink: 0, background: "var(--accent-dim)", color: "var(--accent)" }}><Icon name={s.icon} size={18} /></span>
+                <span>
+                  <span style={{ display: "block", fontSize: 14.5, fontWeight: 600, marginBottom: 3 }}>{s.title}</span>
+                  <span style={{ display: "block", fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-4)" }}>{s.body}</span>
+                </span>
+              </button>
+            ))}
           </div>
+          <p style={{ fontSize: 12.5, color: "var(--ink-4)", marginTop: 22 }}>
+            Tip: try typing <span className="mono" style={{ color: "var(--ink-3)" }}>“Draft deck 90m deep work today”</span> in the bar at the top.
+          </p>
         </div>
       </div>
     );
