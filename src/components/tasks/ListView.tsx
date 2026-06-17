@@ -82,6 +82,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            {task.isMilestone && <span title="Milestone" style={{ width: 9, height: 9, transform: "rotate(45deg)", background: "var(--st-review)", borderRadius: 2, flexShrink: 0 }} />}
             {editingTitle ? (
               // eslint-disable-next-line jsx-a11y/no-autofocus
               <input autoFocus value={titleDraft} onClick={(e) => e.stopPropagation()} onChange={(e) => setTitleDraft(e.target.value)}

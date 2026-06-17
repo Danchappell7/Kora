@@ -261,6 +261,12 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             <MetaRow icon="grid" label="Tags">
               <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={onDeleteTag} small />
             </MetaRow>
+            <MetaRow icon="target" label="Milestone">
+              <button onClick={() => onPatch(task.id, { isMilestone: !task.isMilestone })} style={{ display: "inline-flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, color: "var(--ink-2)", padding: 0 }}>
+                <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${task.isMilestone ? "var(--st-review)" : "var(--hairline-strong)"}`, background: task.isMilestone ? "var(--st-review)" : "transparent", display: "grid", placeItems: "center" }}>{task.isMilestone && <Icon name="check" size={11} sw={3} style={{ color: "var(--bg-deep)" }} />}</span>
+                Mark as milestone
+              </button>
+            </MetaRow>
           </div>
 
           {/* description — markdown, click to edit */}

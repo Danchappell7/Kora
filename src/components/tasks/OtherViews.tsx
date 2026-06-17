@@ -53,6 +53,7 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
           </button>
         )}
         <PriorityFlag priority={task.priority} size={13} />
+        {task.isMilestone && <span title="Milestone" style={{ width: 9, height: 9, transform: "rotate(45deg)", background: "var(--st-review)", borderRadius: 2, flexShrink: 0, marginTop: 3 }} />}
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
       </div>
       {(task.tags || []).length > 0 && <div style={{ display: "flex", gap: 6, marginTop: 9, flexWrap: "wrap" }}>{task.tags.slice(0, 2).map((tg) => <Tag key={tg} id={tg} small />)}</div>}
