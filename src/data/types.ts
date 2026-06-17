@@ -115,6 +115,7 @@ export interface Comment {
   authorName: string;
   body: string;
   createdAt: string;
+  mentions?: string[];
 }
 
 export interface Attachment {
@@ -128,7 +129,7 @@ export interface Attachment {
   createdAt: string;
 }
 
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned";
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention";
 
 export interface Activity {
   id: string;

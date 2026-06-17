@@ -16,6 +16,22 @@ const fmtBytes = (n: number): string => {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
+
+// highlight "@Name" tokens (for known teammates) inside a comment body
+function renderCommentBody(body: string, names: string[]): ReactNode {
+  if (names.length === 0) return body;
+  const esc = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).sort((a, b) => b.length - a.length);
+  const re = new RegExp(`@(?:${esc.join("|")})`, "g");
+  const out: ReactNode[] = [];
+  let last = 0, m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    if (m.index > last) out.push(body.slice(last, m.index));
+    out.push(<strong key={m.index} style={{ color: "var(--accent)", fontWeight: 600 }}>{m[0]}</strong>);
+    last = m.index + m[0].length;
+  }
+  if (last < body.length) out.push(body.slice(last));
+  return out;
+}
 import {
   getProject, getMember, blockingTasks, dueState, timeAgo,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
@@ -50,12 +66,14 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onAddSubtask: (taskId: string, title: string) => void;
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
-  onAddComment: (taskId: string, body: string) => Promise<Comment | null>;
+  onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
   onFocus: (id: string) => void;
 }) {
   const task = tasks.find((t) => t.id === taskId);
   const [newSub, setNewSub] = useState("");
   const [comment, setComment] = useState("");
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const commentRef = useRef<HTMLInputElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
@@ -96,13 +114,38 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     onPatch(task.id, { tags: next });
   };
   const addSub = () => { const v = newSub.trim(); if (v) { onAddSubtask(task.id, v); setNewSub(""); } };
+
+  // @mention autocomplete — suggest teammates as you type "@…", and on send
+  // resolve "@Name" tokens to user ids so the trigger can notify them.
+  const mentionable = assignable.filter((m) => m.id !== currentUserId);
+  const mentionMatches = mentionQuery !== null
+    ? mentionable.filter((m) => m.name.toLowerCase().includes(mentionQuery)).slice(0, 6)
+    : [];
+  const onCommentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setComment(val);
+    const caret = e.target.selectionStart ?? val.length;
+    const m = val.slice(0, caret).match(/(?:^|\s)@([\w'’.-]*)$/);
+    setMentionQuery(m ? m[1].toLowerCase() : null);
+  };
+  const pickMention = (name: string) => {
+    const el = commentRef.current;
+    const caret = el?.selectionStart ?? comment.length;
+    const before = comment.slice(0, caret).replace(/(^|\s)@[\w'’.-]*$/, `$1@${name} `);
+    const next = before + comment.slice(caret);
+    setComment(next);
+    setMentionQuery(null);
+    requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(before.length, before.length); } });
+  };
   const sendComment = async () => {
     const v = comment.trim();
     if (!v || posting) return;
+    const lower = v.toLowerCase();
+    const mentions = [...new Set(mentionable.filter((m) => lower.includes("@" + m.name.toLowerCase())).map((m) => m.id))];
     setPosting(true);
-    const c = await onAddComment(task.id, v);
+    const c = await onAddComment(task.id, v, mentions);
     setPosting(false);
-    if (c) { setThread((t) => [...t, c]); setComment(""); }
+    if (c) { setThread((t) => [...t, c]); setComment(""); setMentionQuery(null); }
   };
   const del = () => { if (window.confirm(`Delete "${task.title}"? This can't be undone.`)) { onDelete(task.id); onClose(); } };
   const onPickFiles = async (list: FileList | null) => {
@@ -303,7 +346,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     <strong style={{ fontSize: 13, color: "var(--ink)" }}>{c.authorName || "You"}</strong>
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{timeAgo(c.createdAt)}</span>
                   </div>
-                  <p style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{c.body}</p>
+                  <p style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{renderCommentBody(c.body, mentionable.map((m) => m.name))}</p>
                 </div>
               </div>
             ))}
@@ -329,8 +372,26 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
         {/* comment box */}
         <div style={{ padding: 14, borderTop: "1px solid var(--hairline)", display: "flex", gap: 10, alignItems: "center" }}>
           <Avatar id={currentUserId} size={28} />
-          <input value={comment} onChange={(e) => setComment(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendComment(); }}
-            placeholder="Add a comment…" aria-label="Add a comment" style={{ flex: 1, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+          <div style={{ position: "relative", flex: 1 }}>
+            {mentionMatches.length > 0 && (
+              <div className="glass anim-scalein" style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, right: 0, padding: 5, borderRadius: 12, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", zIndex: 5 }}>
+                <div className="kicker" style={{ padding: "4px 8px 5px" }}>Mention</div>
+                {mentionMatches.map((m) => (
+                  <button key={m.id} onMouseDown={(e) => { e.preventDefault(); pickMention(m.name); }}
+                    style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)" }}>
+                    <Avatar id={m.id} size={22} /> {m.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input ref={commentRef} value={comment} onChange={onCommentChange}
+              onKeyDown={(e) => {
+                if (mentionMatches.length > 0 && (e.key === "Enter" || e.key === "Tab")) { e.preventDefault(); pickMention(mentionMatches[0].name); }
+                else if (e.key === "Escape" && mentionQuery !== null) { e.preventDefault(); setMentionQuery(null); }
+                else if (e.key === "Enter") sendComment();
+              }}
+              placeholder="Add a comment…  @ to mention" aria-label="Add a comment" style={{ width: "100%", height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+          </div>
           <button className="btn-icon" onClick={sendComment} disabled={!comment.trim() || posting} aria-label="Post comment" style={{ background: "var(--accent)", color: "var(--on-accent)", border: "none", opacity: comment.trim() && !posting ? 1 : 0.5 }}><Icon name="arrowUpRight" size={17} /></button>
         </div>
       </div>

@@ -14,6 +14,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: str
   comment:   { icon: "message", color: "var(--accent)",     verb: "commented on" },
   deleted:   { icon: "trash",   color: "var(--st-blocked)", verb: "deleted" },
   assigned:  { icon: "user",    color: "var(--accent)",     verb: "assigned you" },
+  mention:   { icon: "message", color: "var(--accent)",     verb: "mentioned you in" },
 };
 
 export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
@@ -61,11 +62,11 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
                 padding: 0, cursor: taskStillExists ? "pointer" : "default", fontFamily: "var(--font-display)",
               }}>
                 <div className="truncate" style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
-                  {a.kind === "assigned"
-                    ? <><strong style={{ color: "var(--ink)" }}>{a.detail || "Someone"}</strong> assigned you <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong></>
+                  {a.kind === "assigned" || a.kind === "mention"
+                    ? <><strong style={{ color: "var(--ink)" }}>{a.detail || "Someone"}</strong> {a.kind === "assigned" ? "assigned you" : "mentioned you in"} <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong></>
                     : <>You {meta.verb} <strong style={{ color: "var(--ink)" }}>{a.taskTitle}</strong></>}
                 </div>
-                {a.kind !== "assigned" && (
+                {a.kind !== "assigned" && a.kind !== "mention" && (
                   <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2 }}>
                     {a.kind === "comment" ? `“${a.detail}”` : a.detail}
                   </div>

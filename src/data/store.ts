@@ -120,9 +120,9 @@ interface TagRow { id: string; label: string; color: string; }
 
 export interface CreatedTag { id: string; label: string; color: string; }
 
-interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; }
+interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; mentions?: string[] | null; }
 function rowToComment(r: CommentRow): Comment {
-  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at };
+  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [] };
 }
 
 interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; }
@@ -456,14 +456,14 @@ export const store = {
     return (data as CommentRow[]).map(rowToComment);
   },
 
-  async addComment(taskId: string, body: string, userId: string, authorName: string): Promise<Comment> {
+  async addComment(taskId: string, body: string, userId: string, authorName: string, mentions: string[] = []): Promise<Comment> {
     if (!supabase) {
-      const c: Comment = { id: newId(), taskId, authorId: userId, authorName, body, createdAt: new Date().toISOString() };
+      const c: Comment = { id: newId(), taskId, authorId: userId, authorName, body, createdAt: new Date().toISOString(), mentions };
       (demoComments[taskId] ??= []).push(c);
       return c;
     }
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("comments").insert({ task_id: taskId, user_id: uid, author_name: authorName, body }).select("*").single();
+    const { data, error } = await supabase.from("comments").insert({ task_id: taskId, user_id: uid, author_name: authorName, body, mentions }).select("*").single();
     if (error) throw error;
     return rowToComment(data as CommentRow);
   },
