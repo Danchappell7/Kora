@@ -39,7 +39,7 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
   taskId: string;
   tasks: Task[];
   tags: Record<string, TagDef>;
@@ -51,6 +51,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onPatch: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
   onDuplicate?: (id: string) => void;
+  onArchive?: (id: string) => void;
+  onUnarchive?: (id: string) => void;
   onAddDependency?: (taskId: string, dependsOn: string) => void;
   onRemoveDependency?: (taskId: string, dependsOn: string) => void;
   onToggleSubtask: (taskId: string, subId: string) => void;
@@ -184,6 +186,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <button className="btn-icon" onClick={() => { try { navigator.clipboard?.writeText(`${location.origin}/?task=${task.id}`); } catch { /* ignore */ } setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Copy link to task" style={{ border: "none", color: copied ? "var(--accent)" : "var(--ink-3)" }}><Icon name={copied ? "check" : "link"} size={16} /></button>
           {onDuplicate && <button className="btn-icon" onClick={() => { onDuplicate(task.id); onClose(); }} title="Duplicate task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="layers" size={16} /></button>}
           <button className="btn-icon" onClick={() => { saveTemplate({ name: task.title, title: task.title, priority: task.priority, tags: task.tags, focusMin: task.focusMin, recurrence: task.recurrence ?? "none", description: desc }); setTmplSaved(true); setTimeout(() => setTmplSaved(false), 1500); }} title="Save as template" style={{ border: "none", color: tmplSaved ? "var(--accent)" : "var(--ink-3)" }}><Icon name={tmplSaved ? "check" : "briefcase"} size={16} /></button>
+          {task.archivedAt
+            ? (onUnarchive && <button className="btn-icon" onClick={() => { onUnarchive(task.id); onClose(); }} title="Unarchive task" style={{ border: "none", color: "var(--accent)" }}><Icon name="refresh" size={16} /></button>)
+            : (onArchive && <button className="btn-icon" onClick={() => { onArchive(task.id); onClose(); }} title="Archive task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="archive" size={16} /></button>)}
           <button className="btn-icon" onClick={del} title="Delete task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="trash" size={17} /></button>
         </div>
 

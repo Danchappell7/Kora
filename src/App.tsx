@@ -157,7 +157,7 @@ function ProjectOverview({ project, tasks, onUpdate }: { project: Project; tasks
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, header }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -177,6 +177,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onQuickAdd: (partial: Partial<Task> & { title: string }) => void;
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;
+  archivedTasks?: Task[];
   header?: React.ReactNode;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
@@ -185,14 +186,14 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   useEffect(() => { try { localStorage.setItem("kanbo-sort", sort); } catch { /* ignore */ } }, [sort]);
   const [search, setSearch] = useState("");
   // filters persist across sessions (key shared app-wide)
-  const [filters, setFilters] = useState<{ priority: string; assignee: string; tag: string; due: string; hideDone: boolean }>(() => {
-    try { const s = localStorage.getItem("kanbo-filters"); if (s) return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, ...JSON.parse(s) }; } catch { /* ignore */ }
-    return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false };
+  const [filters, setFilters] = useState<{ priority: string; assignee: string; tag: string; due: string; hideDone: boolean; showArchived: boolean }>(() => {
+    try { const s = localStorage.getItem("kanbo-filters"); if (s) return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, ...JSON.parse(s), showArchived: false }; } catch { /* ignore */ }
+    return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false };
   });
   useEffect(() => { try { localStorage.setItem("kanbo-filters", JSON.stringify(filters)); } catch { /* ignore */ } }, [filters]);
   const setFilter = (patch: Partial<typeof filters>) => setFilters((f) => ({ ...f, ...patch }));
   const isMobile = useMediaQuery("(max-width: 860px)");
-  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone } = filters;
+  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone, showArchived } = filters;
   const filterActive = priorityFilter !== "all" || assigneeFilter !== "all" || tagFilter !== "all" || dueFilter !== "all" || hideDone;
   const dueOk = (t: Task) => {
     if (dueFilter === "all") return true;
@@ -207,7 +208,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
     return true;
   };
   const q = search.trim().toLowerCase();
-  const filtered = tasks.filter((t) =>
+  const filtered = (showArchived ? archivedTasks : tasks).filter((t) =>
     (priorityFilter === "all" || t.priority === priorityFilter) &&
     (!hideDone || t.status !== "done") &&
     (assigneeFilter === "all" || t.assigneeId === assigneeFilter) &&
@@ -263,7 +264,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
               <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 224, maxHeight: 420, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "2px 6px 8px" }}>
                   <span className="kicker">Filters</span>
-                  {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
+                  {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
                 </div>
 
                 <FilterSection label="Priority">
@@ -293,6 +294,12 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
                   <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${hideDone ? "var(--accent)" : "var(--hairline-strong)"}`, background: hideDone ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{hideDone && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
                   Hide completed
                 </button>
+                {archivedTasks.length > 0 && (
+                  <button onClick={() => setFilter({ showArchived: !showArchived })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
+                    <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${showArchived ? "var(--accent)" : "var(--hairline-strong)"}`, background: showArchived ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{showArchived && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
+                    <Icon name="archive" size={13} style={{ color: "var(--ink-4)" }} /> Show archived <span className="mono" style={{ color: "var(--ink-4)", marginLeft: "auto" }}>{archivedTasks.length}</span>
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -627,6 +634,16 @@ export default function App() {
     store.removeDependency(taskId, dependsOn).catch(reportError);
   }, []);
 
+  const archiveTask = useCallback((id: string) => {
+    setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, archivedAt: new Date().toISOString() } : t));
+    store.updateTask(id, { archivedAt: new Date().toISOString() }).catch(reportError);
+    toastSuccess("Task archived");
+  }, [toastSuccess]);
+  const unarchiveTask = useCallback((id: string) => {
+    setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, archivedAt: undefined } : t));
+    store.updateTask(id, { archivedAt: undefined }).catch(reportError);
+  }, []);
+
   // duplicate a task (fresh copy, not done, no comments/deps carried over)
   const duplicateTask = useCallback((id: string) => {
     const src = tasksRef.current?.find((t) => t.id === id);
@@ -917,7 +934,8 @@ export default function App() {
   }
 
   // scope everything to the active workspace
-  const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace);
+  const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt);
+  const archivedTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
 
   const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
 
@@ -962,6 +980,7 @@ export default function App() {
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
         }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags}
+          archivedTasks={archivedTasks}
           header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} /> : undefined} />;
       default: return null;
     }
@@ -1019,7 +1038,7 @@ export default function App() {
         else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.label.includes("analytics")) setRoute({ view: "analytics" });
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
