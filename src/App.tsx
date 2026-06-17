@@ -382,6 +382,9 @@ export default function App() {
   const focus = useFocusTimer();
 
   const routeRef = useRef<Route>(route); routeRef.current = route;
+  // tasks created locally but not yet confirmed saved — kept through realtime
+  // reloads so a refetch can never wipe a task you just added
+  const pendingTasksRef = useRef<Task[]>([]);
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
@@ -456,7 +459,10 @@ export default function App() {
     const reload = async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
+        // never drop a locally-created task that hasn't been confirmed in the DB yet
+        const pending = pendingTasksRef.current.filter((p) => !b.tasks.some((d) => d.id === p.id));
+        setTasks(pending.length ? [...pending, ...b.tasks] : b.tasks);
+        applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
         setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
     };
@@ -617,11 +623,21 @@ export default function App() {
     // new tasks sort to the bottom of their board column
     const t: Task = { ...raw, workspaceId: wsId, position: raw.position ?? Date.now() };
     setTasks((ts) => ts ? [t, ...ts] : [t]);
-    store.createTask(t, userIdRef.current).then((saved) => {
-      if (saved.id !== t.id) setTasks((ts) => ts && ts.map((x) => x.id === t.id ? saved : x));
-      log("created", saved, "Task created");
-    }).catch(reportError);
-  }, [log]);
+    // track as pending so a realtime reload can't drop it before it's saved
+    pendingTasksRef.current = [t, ...pendingTasksRef.current];
+    const clearPending = () => { pendingTasksRef.current = pendingTasksRef.current.filter((p) => p.id !== t.id); };
+    store.createTask(t, userIdRef.current)
+      .then((saved) => {
+        clearPending();
+        if (saved.id !== t.id) setTasks((ts) => ts && ts.map((x) => x.id === t.id ? saved : x));
+        log("created", saved, "Task created");
+      })
+      .catch((e) => {
+        // keep it on screen (still in pendingTasksRef) and tell the user loudly
+        reportError(e, { op: "createTask" });
+        toastError(`Couldn't save “${t.title}”: ${e?.message || e}`);
+      });
+  }, [log, toastError]);
 
   // inline quick-add: build a full task from a small partial (group context)
   const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {

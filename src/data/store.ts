@@ -433,8 +433,10 @@ export const store = {
     // losing a field is acceptable, losing the whole task is not.
     let row = taskToInsertRow(t, uid);
     for (let i = 0; i < 8; i++) {
-      const { data, error } = await supabase.from("tasks").insert(row).select(TASK_SELECT).single();
-      if (!error) return rowToTask(data as TaskRow);
+      // select only "id" — a brand-new task has no subtasks/deps, so we avoid
+      // the heavier embed (a frequent silent failure point) and just adopt the id
+      const { data, error } = await supabase.from("tasks").insert(row).select("id").single();
+      if (!error) return { ...t, id: (data as { id: string }).id };
       const stripped = withoutMissingColumn(row, error.message);
       if (!stripped) throw error;
       row = stripped;
