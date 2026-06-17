@@ -8,6 +8,7 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
 import { store } from "../data/store";
+import { renderRich } from "../lib/richtext";
 import { reportError } from "../lib/monitoring";
 import type { Attachment } from "../data/types";
 
@@ -16,22 +17,6 @@ const fmtBytes = (n: number): string => {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
-
-// highlight "@Name" tokens (for known teammates) inside a comment body
-function renderCommentBody(body: string, names: string[]): ReactNode {
-  if (names.length === 0) return body;
-  const esc = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).sort((a, b) => b.length - a.length);
-  const re = new RegExp(`@(?:${esc.join("|")})`, "g");
-  const out: ReactNode[] = [];
-  let last = 0, m: RegExpExecArray | null;
-  while ((m = re.exec(body))) {
-    if (m.index > last) out.push(body.slice(last, m.index));
-    out.push(<strong key={m.index} style={{ color: "var(--accent)", fontWeight: 600 }}>{m[0]}</strong>);
-    last = m.index + m[0].length;
-  }
-  if (last < body.length) out.push(body.slice(last));
-  return out;
-}
 import {
   getProject, getMember, blockingTasks, dueState, timeAgo, DUE_PRESETS, presetDate,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
@@ -79,6 +64,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [thread, setThread] = useState<Comment[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
+  const [descEditing, setDescEditing] = useState(false);
   const [titleBuf, setTitleBuf] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -265,17 +251,24 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             </MetaRow>
           </div>
 
-          {/* description — editable */}
+          {/* description — markdown, click to edit */}
           <div style={{ marginBottom: 20 }}>
             <div className="kicker" style={{ marginBottom: 8 }}>Description</div>
-            <textarea
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              onBlur={() => { if (desc !== task.description) onPatch(task.id, { description: desc }); }}
-              placeholder="Add a description…"
-              rows={Math.max(2, Math.min(8, (desc.match(/\n/g)?.length ?? 0) + 2))}
-              style={{ width: "100%", resize: "vertical", padding: "10px 12px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 14, lineHeight: 1.6, outline: "none" }}
-            />
+            {descEditing ? (
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              <textarea autoFocus
+                value={desc}
+                onChange={(e) => setDesc(e.target.value)}
+                onBlur={() => { setDescEditing(false); if (desc !== task.description) onPatch(task.id, { description: desc }); }}
+                placeholder="Add a description…  **bold**, *italic*, - bullets, [links](url)"
+                rows={Math.max(3, Math.min(10, (desc.match(/\n/g)?.length ?? 0) + 2))}
+                style={{ width: "100%", resize: "vertical", padding: "10px 12px", borderRadius: 11, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 14, lineHeight: 1.6, outline: "none" }}
+              />
+            ) : (
+              <div onClick={() => setDescEditing(true)} style={{ padding: "10px 12px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: desc ? "var(--ink-2)" : "var(--ink-4)", fontSize: 14, lineHeight: 1.6, cursor: "text", minHeight: 24 }}>
+                {desc ? renderRich(desc) : "Add a description…"}
+              </div>
+            )}
           </div>
 
           {/* dependencies */}
@@ -356,7 +349,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     <strong style={{ fontSize: 13, color: "var(--ink)" }}>{c.authorName || "You"}</strong>
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{timeAgo(c.createdAt)}</span>
                   </div>
-                  <p style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{renderCommentBody(c.body, mentionable.map((m) => m.name))}</p>
+                  <div style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", wordBreak: "break-word" }}>{renderRich(c.body, mentionable.map((m) => m.name))}</div>
                 </div>
               </div>
             ))}
