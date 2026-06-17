@@ -79,7 +79,17 @@ function FilterOption({ label, active, onClick, dot }: { label: string; active: 
   );
 }
 
-function ProjectOverview({ project, tasks }: { project: Project; tasks: Task[] }) {
+const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
+  { v: "on_track", label: "On track", color: "var(--st-done)" },
+  { v: "at_risk", label: "At risk", color: "var(--st-review)" },
+  { v: "off_track", label: "Off track", color: "var(--st-blocked)" },
+  { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
+];
+
+function ProjectOverview({ project, tasks, onUpdate }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string }) => void }) {
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [descEditing, setDescEditing] = useState(false);
+  const [descDraft, setDescDraft] = useState(project.description || "");
   const total = tasks.length;
   const done = tasks.filter((t) => t.status === "done").length;
   const prog = total ? Math.round((done / total) * 100) : 0;
@@ -87,12 +97,33 @@ function ProjectOverview({ project, tasks }: { project: Project; tasks: Task[] }
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
   const dueSoon = tasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
   const byStatus = (["todo", "progress", "review", "blocked", "done"] as Status[]).map((s) => ({ s, n: tasks.filter((t) => t.status === s).length })).filter((x) => x.n > 0);
+  const curStatus = PROJECT_STATUSES.find((s) => s.v === project.status);
   return (
-    <div className="glass" style={{ margin: "14px 24px 0", padding: "16px 18px", borderRadius: 16, display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+    <div className="glass" style={{ margin: "14px 24px 0", padding: "16px 18px", borderRadius: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+     <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 180 }}>
         <span style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", fontSize: 20, background: `color-mix(in oklch, ${project.color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${project.color} 32%, transparent)` }}>{project.emoji}</span>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{project.name}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 15, fontWeight: 600 }}>{project.name}</span>
+            <div style={{ position: "relative" }}>
+              <button onClick={() => setStatusOpen((v) => !v)} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 99, border: "1px solid var(--hairline)", background: curStatus ? `color-mix(in oklch, ${curStatus.color} 14%, transparent)` : "var(--surface)", cursor: "pointer", fontSize: 11.5, fontFamily: "var(--font-display)", color: curStatus ? curStatus.color : "var(--ink-4)" }}>
+                {curStatus ? <><span style={{ width: 7, height: 7, borderRadius: 99, background: curStatus.color }} />{curStatus.label}</> : "Set status"}
+              </button>
+              {statusOpen && (
+                <>
+                  <div onClick={() => setStatusOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
+                  <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 5px)", left: 0, zIndex: 21, width: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                    {PROJECT_STATUSES.map((s) => (
+                      <button key={s.v} onClick={() => { onUpdate(project.id, { status: project.status === s.v ? "" : s.v }); setStatusOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", background: project.status === s.v ? "var(--surface-2)" : "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)" }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 99, background: s.color }} /> {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
           <div style={{ fontSize: 12, color: "var(--ink-4)" }}>{total} task{total === 1 ? "" : "s"}{dueSoon > 0 ? ` · ${dueSoon} due soon` : ""}</div>
         </div>
       </div>
@@ -111,6 +142,17 @@ function ProjectOverview({ project, tasks }: { project: Project; tasks: Task[] }
           <div style={{ display: "flex" }}>{contributors.map((id, i) => <span key={id} style={{ marginLeft: i ? -8 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised)" }}><Avatar id={id} size={28} /></span>)}</div>
         </div>
       )}
+     </div>
+     {descEditing ? (
+       // eslint-disable-next-line jsx-a11y/no-autofocus
+       <textarea autoFocus value={descDraft} onChange={(e) => setDescDraft(e.target.value)} onBlur={() => { setDescEditing(false); if (descDraft !== (project.description || "")) onUpdate(project.id, { description: descDraft }); }}
+         placeholder="Add a project description…" rows={2}
+         style={{ width: "100%", resize: "vertical", padding: "8px 11px", borderRadius: 10, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, lineHeight: 1.55, outline: "none" }} />
+     ) : (
+       <div onClick={() => { setDescDraft(project.description || ""); setDescEditing(true); }} style={{ fontSize: 13, lineHeight: 1.55, color: project.description ? "var(--ink-3)" : "var(--ink-4)", cursor: "text", padding: "2px 0" }}>
+         {project.description || "Add a project description…"}
+       </div>
+     )}
     </div>
   );
 }
@@ -732,6 +774,11 @@ export default function App() {
       });
   }, [applyProjects, toastError]);
 
+  const updateProject = useCallback((id: string, patch: { description?: string; status?: string }) => {
+    applyProjects(projectsRef.current.map((p) => p.id === id ? { ...p, ...patch } : p));
+    store.updateProject(id, patch).catch(reportError);
+  }, [applyProjects]);
+
   const confirmDeleteProject = useCallback((id: string, mode: DeleteMode, targetId?: string) => {
     if (id === "p-personal") { setDeleteProjectId(null); return; } // built-in default can't be deleted
     const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
@@ -915,7 +962,7 @@ export default function App() {
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
         }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags}
-          header={route.view === "project" && newProj ? <ProjectOverview project={newProj} tasks={scoped} /> : undefined} />;
+          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} /> : undefined} />;
       default: return null;
     }
   };
