@@ -8,7 +8,21 @@ import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
-import type { Task, Subtask, IconName, Priority, Section } from "../../data/types";
+import type { Task, Subtask, IconName, Priority, Section, CustomFieldDef } from "../../data/types";
+
+// small chips showing a task's filled custom-field values (max 3)
+export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
+  const vals = task.custom ?? {};
+  const chips = fields.map((f) => {
+    const v = vals[f.id];
+    if (v == null || v === "" || v === false) return null;
+    if (f.type === "checkbox") return { id: f.id, label: f.name };
+    const label = f.type === "people" ? (members.find((m) => m.id === v)?.name ?? String(v)) : String(v);
+    return { id: f.id, label };
+  }).filter((c): c is { id: string; label: string } => !!c).slice(0, 3);
+  if (chips.length === 0) return null;
+  return <>{chips.map((c) => <span key={c.id} className="pchip" title={c.label}><span className="truncate" style={{ maxWidth: 90 }}>{c.label}</span></span>)}</>;
+}
 import type { GroupBy } from "../../app-types";
 
 export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
@@ -21,12 +35,12 @@ export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
   );
 }
 
-function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onPatch, members }: {
+function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, depth = 0, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onPatch, members, customFields = [] }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; smart: boolean; depth?: number;
   selected?: boolean; selectionActive?: boolean; onSelect?: (id: string, additive: boolean) => void;
   draggable?: boolean; dragging?: boolean; dropHint?: "top" | "bottom" | null;
   onPickup?: (id: string) => void; onHover?: (id: string, half: "top" | "bottom") => void; onRowDrop?: (draggedId: string, targetId: string, half: "top" | "bottom") => void;
-  onPatch?: (id: string, patch: Partial<Task>) => void; members?: { id: string; name: string }[];
+  onPatch?: (id: string, patch: Partial<Task>) => void; members?: { id: string; name: string }[]; customFields?: CustomFieldDef[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -111,6 +125,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
                 <Icon name="layers" size={12} /> {subDone}/{subTotal}
               </span>
             )}
+            <CustomChips task={task} fields={customFields} members={members} />
             {task.recurrence && task.recurrence !== "none" && <span title={`Repeats ${task.recurrence}`} style={{ display: "inline-flex", color: "var(--ink-4)" }}><Icon name="refresh" size={12} /></span>}
             {task.comments > 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}><Icon name="message" size={12} /> {task.comments}</span>}
           </div>
@@ -218,7 +233,7 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete }: { label:
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
@@ -230,6 +245,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   onCreateSection?: (projectId: string, name: string) => void;
   onRenameSection?: (id: string, name: string) => void;
   onDeleteSection?: (id: string) => void;
+  customFields?: CustomFieldDef[];
 }) {
   const bulkEnabled = !!onBulkPatch;
   const [addingKey, setAddingKey] = useState<string | null>(null);
@@ -372,7 +388,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
             selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
             draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
             onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop}
-            onPatch={onPatch} members={members} />)}</div>
+            onPatch={onPatch} members={members} customFields={customFields} />)}</div>
           {onQuickAdd && (addingKey === g.key ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px 8px 30px", borderBottom: "1px solid var(--hairline)" }}>
               {/* eslint-disable-next-line jsx-a11y/no-autofocus */}

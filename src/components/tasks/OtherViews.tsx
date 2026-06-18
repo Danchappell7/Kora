@@ -4,12 +4,12 @@
 import { useState, useRef, useEffect } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { bulkItemStyle, BulkMenuButton } from "./ListView";
+import { bulkItemStyle, BulkMenuButton, CustomChips } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
-import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent, Attachment } from "../../data/types";
+import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent, Attachment, CustomFieldDef } from "../../data/types";
 import { store } from "../../data/store";
 import { reportError } from "../../lib/monitoring";
 
@@ -22,11 +22,12 @@ const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
 
 /* ---------------- KANBAN ---------------- */
 type Half = "top" | "bottom";
-function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop, selected = false, selectionActive = false, onSelect }: {
+function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop, selected = false, selectionActive = false, onSelect, customFields = [], members = [] }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onMove: (id: string, status: Status) => void;
   isMobile: boolean; dragging: boolean; dropHint: Half | null;
   onPickup: (id: string) => void; onHoverCard: (id: string, half: Half) => void; onCardDrop: (draggedId: string, targetId: string, half: Half) => void;
   selected?: boolean; selectionActive?: boolean; onSelect?: (id: string) => void;
+  customFields?: CustomFieldDef[]; members?: { id: string; name: string }[];
 }) {
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
@@ -63,6 +64,7 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
       </div>
       {(task.tags || []).length > 0 && <div style={{ display: "flex", gap: 6, marginTop: 9, flexWrap: "wrap" }}>{task.tags.slice(0, 2).map((tg) => <Tag key={tg} id={tg} small />)}</div>}
+      {customFields.length > 0 && (task.custom && Object.keys(task.custom).length > 0) && <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}><CustomChips task={task} fields={customFields} members={members} /></div>}
       {blocked.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 9, fontSize: 11, color: "var(--st-blocked)" }}>
           <Icon name="lock" size={12} /> Blocked
@@ -115,13 +117,14 @@ function between(before?: Task, after?: Task): number {
 
 interface BoardCol { key: string; label: string; status?: Status; dot?: string }
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [] }: {
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [] }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void;
   onMove: (taskId: string, status: Status, position?: number) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
   members?: { id: string; name: string }[];
+  customFields?: CustomFieldDef[];
 }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -145,6 +148,16 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   });
   useEffect(() => { try { localStorage.setItem("kanbo-board-group", group); } catch { /* ignore */ } }, [group]);
   useEffect(() => { try { localStorage.setItem("kanbo-board-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ } }, [collapsed]);
+  // per-column WIP limits, keyed by group:column, persisted locally
+  const [wip, setWip] = useState<Record<string, number>>(() => { try { const s = localStorage.getItem("kanbo-board-wip"); if (s) return JSON.parse(s); } catch { /* ignore */ } return {}; });
+  useEffect(() => { try { localStorage.setItem("kanbo-board-wip", JSON.stringify(wip)); } catch { /* ignore */ } }, [wip]);
+  const wipKey = (k: string) => `${group}:${k}`;
+  const setLimit = (k: string) => {
+    const cur = wip[wipKey(k)];
+    const v = window.prompt("WIP limit for this column (blank to clear)", cur != null ? String(cur) : "");
+    if (v == null) return;
+    setWip((w) => { const n = { ...w }; const t = v.trim(); if (t === "") delete n[wipKey(k)]; else { const num = Math.max(0, parseInt(t, 10)); if (!isNaN(num)) n[wipKey(k)] = num; } return n; });
+  };
   const colItems = useRef<Record<string, Task[]>>({});
 
   const keyOf = (t: Task): string => group === "status" ? t.status : group === "priority" ? t.priority : group === "project" ? t.projectId : (t.assigneeId || "—");
@@ -215,7 +228,9 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
                 <button onClick={() => toggleCollapse(col.key)} className="btn-icon" title="Collapse column" style={{ width: 20, height: 20, border: "none", background: "transparent", color: "var(--ink-4)", flexShrink: 0 }}><Icon name="chevronRight" size={13} style={{ transform: "rotate(90deg)" }} /></button>
                 {col.status ? <StatusDot status={col.status} glow /> : dot}
                 <span className="truncate" style={{ fontSize: 13.5, fontWeight: 600 }}>{col.label}</span>
-                <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{items.length}</span>
+                {(() => { const limit = wip[wipKey(col.key)]; const over = limit != null && items.length > limit; return (
+                  <button onClick={() => setLimit(col.key)} title="Set WIP limit" className="mono tnum" style={{ fontSize: 11.5, cursor: "pointer", border: "none", borderRadius: 6, padding: "1px 7px", fontWeight: over ? 700 : 400, color: over ? "var(--prio-urgent)" : "var(--ink-4)", background: over ? "color-mix(in oklch, var(--prio-urgent) 15%, transparent)" : "var(--surface)" }}>{items.length}{limit != null ? `/${limit}` : ""}</button>
+                ); })()}
                 {col.status && <button onClick={() => onAdd(col.status!)} className="btn-icon" title="Add task" style={{ marginLeft: "auto", width: 24, height: 24, border: "none", color: "var(--ink-4)" }}><Icon name="plus" size={15} /></button>}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
@@ -228,7 +243,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
                     onPickup={setDragId}
                     onHoverCard={(id, half) => { setDragOver(null); setHover({ id, half }); }}
                     onCardDrop={(draggedId, targetId, half) => onCardDrop(draggedId, targetId, half, col)}
-                    selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={onBulkPatch ? toggleSelect : undefined} />
+                    selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={onBulkPatch ? toggleSelect : undefined}
+                    customFields={customFields} members={members} />
                 ))}
                 {col.status && (
                   <button onClick={() => onAdd(col.status!)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>

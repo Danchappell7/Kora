@@ -72,20 +72,26 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const activeWs = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" as const };
   const myOpen = tasks.filter((t) => t.assigneeId === currentUserId && t.status !== "done").length;
 
-  const nav: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] = [
-    { id: "plan", icon: "calendarPlus", label: "Plan my day" },
-    { id: "home", icon: "home", label: "Home" },
-    { id: "inbox", icon: "inbox", label: "Inbox", badge: inboxCount },
-    { id: "tasks", icon: "tasks", label: "My tasks", badge: myOpen },
-    { id: "calendar", icon: "calendar", label: "Calendar" },
-    { id: "search", icon: "search", label: "Search" },
-    { id: "team", icon: "users", label: "Team" },
-    { id: "analytics", icon: "chart", label: "Analytics" },
-    { id: "workload", icon: "users", label: "Workload" },
-    { id: "goals", icon: "target", label: "Goals" },
-    { id: "portfolios", icon: "briefcase", label: "Portfolios" },
-    { id: "automations", icon: "zap", label: "Automations" },
-    { id: "forms", icon: "inbox", label: "Forms" },
+  const navGroups: { label?: string; items: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] }[] = [
+    { items: [
+      { id: "plan", icon: "calendarPlus", label: "Plan my day" },
+      { id: "home", icon: "home", label: "Home" },
+      { id: "inbox", icon: "inbox", label: "Inbox", badge: inboxCount },
+      { id: "tasks", icon: "tasks", label: "My tasks", badge: myOpen },
+      { id: "calendar", icon: "calendar", label: "Calendar" },
+      { id: "search", icon: "search", label: "Search" },
+      { id: "team", icon: "users", label: "Team" },
+    ] },
+    { label: "Reporting", items: [
+      { id: "analytics", icon: "chart", label: "Analytics" },
+      { id: "workload", icon: "users", label: "Workload" },
+      { id: "goals", icon: "target", label: "Goals" },
+      { id: "portfolios", icon: "briefcase", label: "Portfolios" },
+    ] },
+    { label: "Intake & rules", items: [
+      { id: "automations", icon: "zap", label: "Automations" },
+      { id: "forms", icon: "inbox", label: "Forms" },
+    ] },
   ];
 
   return (
@@ -131,7 +137,12 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
 
       {/* nav */}
       <nav style={{ padding: "4px 12px", display: "flex", flexDirection: "column", gap: 2 }}>
-        {nav.map((n) => <NavItem key={n.id} icon={n.icon} label={n.label} badge={n.badge} active={route.view === n.id} onClick={() => setRoute({ view: n.id })} />)}
+        {navGroups.map((g, gi) => (
+          <div key={gi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {g.label && <div className="kicker" style={{ padding: "10px 10px 4px" }}>{g.label}</div>}
+            {g.items.map((n) => <NavItem key={n.id} icon={n.icon} label={n.label} badge={n.badge} active={route.view === n.id} onClick={() => setRoute({ view: n.id })} />)}
+          </div>
+        ))}
       </nav>
 
       <DeepWorkMini focus={focus} onOpen={openFocus} />
