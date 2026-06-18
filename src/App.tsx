@@ -534,6 +534,8 @@ export default function App() {
     store.markActivityRead().catch(reportError);
   }, [route.view]);
   const [cmdOpen, setCmdOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const gPrefixRef = useRef(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [focusOpen, setFocusOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
@@ -597,14 +599,30 @@ export default function App() {
   }, [theme]);
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); return; }
       if (e.key === "Escape") {
         // close whatever transient overlay is open (idempotent; modals also
         // handle their own Escape via the focus trap)
         setCmdOpen(false); setDetailId(null); setSidebarOpen(false); setFocusOpen(false);
         setUpgradeOpen(false); setNewTaskOpen(false); setNewProjectOpen(false);
-        setNewWorkspaceOpen(false); setDeleteProjectId(null);
+        setNewWorkspaceOpen(false); setDeleteProjectId(null); setShortcutsOpen(false);
+        return;
       }
+      // single-key shortcuts — ignore while typing or with modifiers held
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)) return;
+      if (gPrefixRef.current) {
+        gPrefixRef.current = false;
+        const nav: Record<string, Route["view"]> = { h: "home", p: "plan", i: "inbox", t: "tasks", c: "calendar", s: "search", a: "analytics" };
+        const v = nav[e.key.toLowerCase()];
+        if (v) { e.preventDefault(); setRouteRaw({ view: v }); setDetailId(null); setSidebarOpen(false); }
+        return;
+      }
+      if (e.key === "g") { gPrefixRef.current = true; window.setTimeout(() => { gPrefixRef.current = false; }, 800); return; }
+      if (e.key === "c") { e.preventDefault(); const r = routeRef.current; setNewTaskProjectId(r.view === "project" ? r.projectId : undefined); setNewTaskStatus("todo"); setNewTaskOpen(true); return; }
+      if (e.key === "/") { e.preventDefault(); setCmdOpen(true); return; }
+      if (e.key === "?") { e.preventDefault(); setShortcutsOpen(true); return; }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -1543,6 +1561,23 @@ export default function App() {
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
+      {shortcutsOpen && (
+        <div onClick={() => setShortcutsOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 200, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" className="glass anim-scalein" style={{ width: 440, maxWidth: "94vw", borderRadius: 18, padding: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+              <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
+              <h2 style={{ fontSize: 17, fontWeight: 600 }}>Keyboard shortcuts</h2>
+              <button onClick={() => setShortcutsOpen(false)} className="btn-icon" aria-label="Close" style={{ marginLeft: "auto", border: "none" }}><Icon name="x" size={16} /></button>
+            </div>
+            {([["⌘K · Ctrl+K", "Command palette"], ["c", "New task"], ["/", "Search"], ["g then h", "Home"], ["g then p", "Plan my day"], ["g then i", "Inbox"], ["g then t", "My tasks"], ["g then c", "Calendar"], ["g then s", "Search"], ["g then a", "Analytics"], ["?", "This help"], ["Esc", "Close / dismiss"]] as [string, string][]).map(([k, d]) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--hairline)" }}>
+                <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)" }}>{d}</span>
+                <kbd className="mono" style={{ fontSize: 11.5, padding: "2px 8px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-3)" }}>{k}</kbd>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} onCreateSection={createSection} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
