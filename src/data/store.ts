@@ -81,6 +81,7 @@ interface TaskRow {
   workspace_id?: string | null;
   recurrence?: Recurrence | null;
   position?: number | null;
+  parent_id?: string | null;
   subtasks?: { id: string; title: string; done: boolean; position?: number }[] | null;
   task_dependencies?: { depends_on: string }[] | null;
 }
@@ -95,6 +96,7 @@ function rowToTask(r: TaskRow): Task {
     priority: r.priority,
     projectId: r.project_id,
     assigneeId: r.assignee_id,
+    parentId: r.parent_id ?? undefined,
     dueDate: r.due_date ?? undefined,
     dueTime: r.due_time ?? undefined,
     startDate: r.start_date ?? undefined,
@@ -222,6 +224,7 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("startDate" in patch) row.start_date = patch.startDate ?? null;
   if ("archivedAt" in patch) row.archived_at = patch.archivedAt ?? null;
   if ("isMilestone" in patch) row.is_milestone = patch.isMilestone ?? false;
+  if ("parentId" in patch) row.parent_id = patch.parentId ?? null;
   return row;
 }
 
@@ -265,11 +268,12 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
     recurrence: t.recurrence ?? "none",
     position: t.position ?? null,
   };
-  // only send newer (migration 0015) columns when actually used, so a normal
-  // task insert never depends on that migration being applied
+  // only send newer (migration 0015/0018) columns when actually used, so a
+  // normal task insert never depends on that migration being applied
   if (t.dueTime) row.due_time = t.dueTime;
   if (t.startDate) row.start_date = t.startDate;
   if (t.isMilestone) row.is_milestone = true;
+  if (t.parentId) row.parent_id = t.parentId;
   return row;
 }
 

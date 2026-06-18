@@ -41,7 +41,11 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
   const done = task.status === "done";
   const ds = dueState(task.dueDate, task.status);
   const dueColor = ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-3)";
-  const hasSubs = (task.subtasks?.length ?? 0) > 0;
+  // sub-tasks are full tasks with parentId; legacy checklist items live on task.subtasks
+  const childTasks = allTasks.filter((c) => c.parentId === task.id);
+  const subDone = childTasks.filter((c) => c.status === "done").length + (task.subtasks ?? []).filter((s) => s.done).length;
+  const subTotal = childTasks.length + (task.subtasks?.length ?? 0);
+  const hasSubs = subTotal > 0;
 
   return (
     <div className="krow-cv" style={{ borderBottom: "1px solid var(--hairline)" }}>
@@ -102,7 +106,11 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
             {(task.tags || []).slice(0, 2).map((tg) => <Tag key={tg} id={tg} small />)}
-            <SubtaskProgress subtasks={task.subtasks} />
+            {subTotal > 0 && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>
+                <Icon name="layers" size={12} /> {subDone}/{subTotal}
+              </span>
+            )}
             {task.recurrence && task.recurrence !== "none" && <span title={`Repeats ${task.recurrence}`} style={{ display: "inline-flex", color: "var(--ink-4)" }}><Icon name="refresh" size={12} /></span>}
             {task.comments > 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}><Icon name="message" size={12} /> {task.comments}</span>}
           </div>
@@ -168,10 +176,23 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
         </div>
       </div>
 
-      {/* subtasks */}
+      {/* sub-tasks (full tasks) + any legacy checklist items */}
       {expanded && hasSubs && (
         <div className="anim-fadein" style={{ background: "color-mix(in oklch, var(--bg-deep) 30%, transparent)" }}>
-          {task.subtasks.map((s) => (
+          {childTasks.map((c) => {
+            const cdone = c.status === "done";
+            const cds = dueState(c.dueDate, c.status);
+            return (
+              <div key={c.id} onClick={() => onOpen(c.id)} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px 8px " + (52 + depth * 22) + "px", borderTop: "1px solid var(--hairline)", cursor: "pointer" }}>
+                <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={16} onToggle={() => onToggle(c.id)} /></span>
+                <span className="truncate" style={{ flex: 1, fontSize: 13.5, color: cdone ? "var(--ink-4)" : "var(--ink-2)", textDecoration: cdone ? "line-through" : "none" }}>{c.title}</span>
+                {c.priority !== "medium" && <PriorityFlag priority={c.priority} size={12} />}
+                {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}
+                <Avatar id={c.assigneeId} size={18} />
+              </div>
+            );
+          })}
+          {(task.subtasks ?? []).map((s) => (
             <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 18px 8px " + (52 + depth * 22) + "px", borderTop: "1px solid var(--hairline)" }}>
               <Check done={s.done} size={16} onToggle={() => onToggleSubtask(task.id, s.id)} />
               <span style={{ fontSize: 13.5, color: s.done ? "var(--ink-4)" : "var(--ink-2)", textDecoration: s.done ? "line-through" : "none", flex: 1 }}>{s.title}</span>
@@ -271,17 +292,23 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
     return dp !== 0 ? dp : PRIORITY_META[b.priority].rank - PRIORITY_META[a.priority].rank;
   };
 
+  // sub-tasks nest under their parent row, so exclude them from the top-level
+  // grouping WHEN their parent is also in view; a sub-task whose parent isn't
+  // here (e.g. an assigned sub-task in "My tasks") still shows as its own row.
+  const presentIds = new Set(tasks.map((t) => t.id));
+  const topLevel = tasks.filter((t) => !t.parentId || !presentIds.has(t.parentId));
+
   let groups: Group[] = [];
   if (groupBy === "status") {
-    groups = STATUS_ORDER.map((s) => ({ key: s, label: STATUS_META[s].label, color: STATUS_META[s].color, items: tasks.filter((t) => t.status === s).sort(sortFn) })).filter((g) => g.items.length);
+    groups = STATUS_ORDER.map((s) => ({ key: s, label: STATUS_META[s].label, color: STATUS_META[s].color, items: topLevel.filter((t) => t.status === s).sort(sortFn) })).filter((g) => g.items.length);
   } else if (groupBy === "priority") {
-    groups = (["urgent", "high", "medium", "low"] as const).map((p) => ({ key: p, label: PRIORITY_META[p].label + " priority", color: PRIORITY_META[p].color, icon: "flag" as IconName, items: tasks.filter((t) => t.priority === p).sort(sortFn) })).filter((g) => g.items.length);
+    groups = (["urgent", "high", "medium", "low"] as const).map((p) => ({ key: p, label: PRIORITY_META[p].label + " priority", color: PRIORITY_META[p].color, icon: "flag" as IconName, items: topLevel.filter((t) => t.priority === p).sort(sortFn) })).filter((g) => g.items.length);
   } else if (groupBy === "project") {
     // group by the projects actually present in these tasks (real accounts, not just the demo seed)
-    groups = [...new Set(tasks.map((t) => t.projectId))]
+    groups = [...new Set(topLevel.map((t) => t.projectId))]
       .map((pid) => ({ pid, p: getProject(pid) }))
       .filter((x) => !!x.p)
-      .map(({ pid, p }) => ({ key: pid, label: p!.name, color: p!.color, items: tasks.filter((t) => t.projectId === pid).sort(sortFn) }))
+      .map(({ pid, p }) => ({ key: pid, label: p!.name, color: p!.color, items: topLevel.filter((t) => t.projectId === pid).sort(sortFn) }))
       .filter((g) => g.items.length);
   } else if (groupBy === "due") {
     // the "My Tasks" planner: bucket by when work is due
@@ -303,9 +330,9 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       { key: "nodate", label: "No date", color: "var(--ink-4)" },
       { key: "completed", label: "Completed", color: "var(--st-done)" },
     ];
-    groups = BUCKETS.map((b) => ({ key: b.key, label: b.label, color: b.color, items: tasks.filter((t) => dueBucket(t) === b.key).sort(sortFn) })).filter((g) => g.items.length);
+    groups = BUCKETS.map((b) => ({ key: b.key, label: b.label, color: b.color, items: topLevel.filter((t) => dueBucket(t) === b.key).sort(sortFn) })).filter((g) => g.items.length);
   } else {
-    groups = [{ key: "all", label: smart ? "Smart order" : "All tasks", color: "var(--accent)", icon: (smart ? "sparkles" : "list") as IconName, items: [...tasks].sort(sortFn) }];
+    groups = [{ key: "all", label: smart ? "Smart order" : "All tasks", color: "var(--accent)", icon: (smart ? "sparkles" : "list") as IconName, items: [...topLevel].sort(sortFn) }];
   }
 
   return (

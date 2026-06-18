@@ -88,8 +88,11 @@ export interface Task {
   priority: Priority;
   projectId: string;
   assigneeId: string;
+  /** when set, this task is a sub-task of the task with this id (Asana-style) */
+  parentId?: string;
   tags: string[];
   dependencies: string[];
+  /** legacy lightweight checklist items (pre sub-tasks-as-tasks); still shown */
   subtasks: Subtask[];
   focusMin: number;
   comments: number;

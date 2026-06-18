@@ -21,7 +21,7 @@ const fmtBytes = (n: number): string => {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 import {
-  getProject, getMember, blockingTasks, dueState, timeAgo, DUE_PRESETS, presetDate,
+  getProject, getMember, blockingTasks, dueState, fmtDue, timeAgo, DUE_PRESETS, presetDate,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
 import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName } from "../data/types";
@@ -39,9 +39,11 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask }: {
   taskId: string;
   tasks: Task[];
+  /** open another task in this panel (used to drill into a sub-task) */
+  onOpenTask?: (id: string) => void;
   tags: Record<string, TagDef>;
   activity: Activity[];
   members: WorkspaceMember[];
@@ -113,6 +115,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   if (!task) return null;
   const proj = getProject(task.projectId);
   const dependents = tasks.filter((t) => t.dependencies?.includes(task.id));
+  const children = tasks.filter((t) => t.parentId === task.id);
+  const parent = task.parentId ? tasks.find((t) => t.id === task.parentId) : undefined;
   const done = task.status === "done";
   const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
   const activeMembers = members.filter((m) => m.status === "active" && m.userId);
@@ -370,12 +374,40 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             );
           })()}
 
-          {/* subtasks */}
+          {/* parent breadcrumb (when this task is itself a sub-task) */}
+          {parent && (
+            <button onClick={() => onOpenTask?.(parent.id)} className="btn-ghost" style={{ display: "inline-flex", alignItems: "center", gap: 7, marginBottom: 14, padding: "5px 10px", borderRadius: 9, fontSize: 12.5, fontFamily: "var(--font-display)", cursor: "pointer" }}>
+              <Icon name="arrowLeft" size={13} style={{ color: "var(--ink-4)" }} />
+              <span style={{ color: "var(--ink-4)" }}>Sub-task of</span>
+              <span className="truncate" style={{ maxWidth: 220, color: "var(--ink-2)", fontWeight: 500 }}>{parent.title}</span>
+            </button>
+          )}
+
+          {/* sub-tasks (full tasks) */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
               <span className="kicker">Subtasks</span>
-              {task.subtasks?.length > 0 && <span className="mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink-4)" }}>{task.subtasks.filter((s) => s.done).length}/{task.subtasks.length}</span>}
+              {children.length + (task.subtasks?.length ?? 0) > 0 && (
+                <span className="mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink-4)" }}>
+                  {children.filter((c) => c.status === "done").length + (task.subtasks ?? []).filter((s) => s.done).length}/{children.length + (task.subtasks?.length ?? 0)}
+                </span>
+              )}
             </div>
+            {children.map((c) => {
+              const cdone = c.status === "done";
+              const cds = dueState(c.dueDate, c.status);
+              return (
+                <div key={c.id} className="lift-row" onClick={() => onOpenTask?.(c.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 8px", margin: "0 -8px", borderRadius: 9, cursor: "pointer" }}>
+                  <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={17} onToggle={() => onToggle(c.id)} /></span>
+                  <span className="truncate" style={{ flex: 1, fontSize: 13.5, color: cdone ? "var(--ink-4)" : "var(--ink-2)", textDecoration: cdone ? "line-through" : "none" }}>{c.title}</span>
+                  {c.priority !== "medium" && <PriorityFlag priority={c.priority} size={13} />}
+                  {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}
+                  <Avatar id={c.assigneeId} size={19} />
+                  <Icon name="arrowRight" size={14} style={{ color: "var(--ink-4)" }} />
+                </div>
+              );
+            })}
+            {/* legacy lightweight checklist items, if any */}
             {task.subtasks?.map((s) => (
               <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0" }}>
                 <Check done={s.done} size={17} onToggle={() => onToggleSubtask(task.id, s.id)} />

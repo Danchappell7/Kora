@@ -904,13 +904,21 @@ export default function App() {
     store.setSubtaskDone(subId, done).catch(reportError);
   }, []);
 
-  const addSubtask = useCallback((taskId: string, title: string) => {
-    const cur = tasksRef.current; const task = cur?.find((t) => t.id === taskId);
-    const position = task?.subtasks.length ?? 0;
-    store.addSubtask(taskId, title, position).then((sub) => {
-      setTasks((ts) => ts && ts.map((t) => t.id === taskId ? { ...t, subtasks: [...t.subtasks, sub] } : t));
-    }).catch(reportError);
-  }, []);
+  // a sub-task is a full task with parentId — it inherits the parent's project
+  // (and therefore workspace) and assignee, and can be given its own due date,
+  // priority, etc. just like any task.
+  const addSubtask = useCallback((parentId: string, title: string) => {
+    const parent = tasksRef.current?.find((t) => t.id === parentId);
+    if (!parent) return;
+    persistTask({
+      id: "t-sub-" + Date.now() + "-" + Math.round(Math.random() * 1e6),
+      title, description: "", status: "todo", priority: "medium",
+      projectId: parent.projectId, assigneeId: parent.assigneeId || userIdRef.current,
+      parentId, tags: [], dependencies: [], subtasks: [], comments: 0,
+      aiScore: 50, aiReason: undefined, focusMin: 30, dur: 30, scheduled: null,
+      planToday: false, recurrence: "none", dueDate: undefined, position: Date.now(),
+    });
+  }, [persistTask]);
 
   const createProject = useCallback((input: NewProject) => {
     // optimistic: show it immediately, reconcile/rollback with the server
@@ -1177,7 +1185,7 @@ export default function App() {
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
