@@ -268,7 +268,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
 }
 
 /* ---------------- TIMELINE (Gantt) ---------------- */
-export function TimelineView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[]; onOpen: (id: string) => void }) {
+export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTasks?: Task[]; onOpen: (id: string) => void; onPatch?: (id: string, patch: Partial<Task>) => void }) {
   const DAYS = 16, START = -2; // show -2 .. +13
   const dates = Array.from({ length: DAYS }, (_, i) => { const d = new Date(KANBO_TODAY); d.setDate(d.getDate() + START + i); return d; });
   const colW = 78, labelW = 230, rowH = 46;
@@ -336,20 +336,42 @@ export function TimelineView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task
                     <div className="truncate" style={{ width: labelW, flexShrink: 0, padding: "0 18px", fontSize: 13, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 8 }}>
                       <StatusDot status={t.status} size={7} />{t.title}
                     </div>
-                    <div style={{ position: "absolute", left: labelW, right: 0, top: 0, bottom: 0 }}>
+                    <div style={{ position: "absolute", left: labelW, right: 0, top: 0, bottom: 0 }}
+                      onDragOver={onPatch ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-timeline")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } } : undefined}
+                      onDrop={onPatch ? (e) => {
+                        if (!e.dataTransfer.types.includes("text/kanbo-timeline")) return;
+                        e.preventDefault();
+                        const id = e.dataTransfer.getData("text/kanbo-timeline"); if (!id) return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const idx = Math.max(0, Math.min(DAYS - 1, Math.floor((e.clientX - rect.left) / colW)));
+                        onPatch(id, { dueDate: toLocalISO(dates[idx]) });
+                      } : undefined}>
                       {di != null && di >= 0 && di < DAYS && (
-                        <div onClick={() => onOpen(t.id)} className="clickable" style={{
-                          position: "absolute", top: rowH / 2 - 13, left: start * colW + 6, width: span * colW - 12, height: 26,
-                          borderRadius: 8, display: "flex", alignItems: "center", gap: 7, padding: "0 9px", overflow: "hidden",
-                          background: done ? "color-mix(in oklch, var(--st-done) 18%, transparent)" : `color-mix(in oklch, ${g.project.color} 22%, transparent)`,
-                          border: `1px solid color-mix(in oklch, ${done ? "var(--st-done)" : g.project.color} 45%, transparent)`,
-                          transition: "all .16s",
-                        }}
+                        <div onClick={() => onOpen(t.id)} className="clickable" draggable={!!onPatch}
+                          onDragStart={onPatch ? (e) => { e.dataTransfer.setData("text/kanbo-timeline", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
+                          title={onPatch ? "Drag to reschedule" : undefined}
+                          style={{
+                            position: "absolute", top: rowH / 2 - 13, left: start * colW + 6, width: span * colW - 12, height: 26,
+                            borderRadius: 8, display: "flex", alignItems: "center", gap: 7, padding: "0 9px", overflow: "hidden", cursor: onPatch ? "grab" : "pointer",
+                            background: done ? "color-mix(in oklch, var(--st-done) 18%, transparent)" : `color-mix(in oklch, ${g.project.color} 22%, transparent)`,
+                            border: `1px solid color-mix(in oklch, ${done ? "var(--st-done)" : g.project.color} 45%, transparent)`,
+                            transition: "all .16s",
+                          }}
                           onMouseEnter={(e) => (e.currentTarget.style.transform = "translateY(-1px)")}
                           onMouseLeave={(e) => (e.currentTarget.style.transform = "none")}>
                           <span style={{ width: 6, height: 6, borderRadius: 99, background: done ? "var(--st-done)" : g.project.color, flexShrink: 0 }} />
                           <span className="truncate" style={{ fontSize: 11.5, color: "var(--ink)" }}>{t.title}</span>
                           <Avatar id={t.assigneeId} size={16} />
+                        </div>
+                      )}
+                      {/* tasks with no due date: a draggable placeholder so they can be scheduled */}
+                      {di == null && onPatch && (
+                        <div onClick={() => onOpen(t.id)} className="clickable" draggable
+                          onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-timeline", t.id); e.dataTransfer.effectAllowed = "move"; }}
+                          title="Drag onto a day to schedule"
+                          style={{ position: "absolute", top: rowH / 2 - 11, left: 6, height: 22, borderRadius: 8, display: "flex", alignItems: "center", gap: 6, padding: "0 9px", cursor: "grab", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)" }}>
+                          <Icon name="calendarPlus" size={12} style={{ color: "var(--ink-4)" }} />
+                          <span style={{ fontSize: 11, color: "var(--ink-4)" }}>No date</span>
                         </div>
                       )}
                     </div>
