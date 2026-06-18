@@ -321,12 +321,34 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
 }
 
 function FullLoader() {
+  const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
+  const bar = (w: number | string, h = 12, style: React.CSSProperties = {}) => <div className="skel" style={{ width: w, height: h, ...style }} />;
   return (
-    <div style={{ position: "relative", height: "100vh", display: "grid", placeItems: "center", overflow: "hidden" }}>
+    <div style={{ position: "relative", height: "100vh", overflow: "hidden", display: "flex" }}>
       <div className="app-bg" />
-      <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 12, padding: "16px 22px", borderRadius: 16, background: "var(--surface-raised)" }}>
-        <Icon name="sparkles" size={20} style={{ color: "var(--accent)" }} />
-        <span className="ai-think" style={{ fontSize: 15, fontWeight: 600 }}>Loading your workspace…</span>
+      {/* sidebar rail */}
+      {!isMobile && (
+        <div style={{ position: "relative", zIndex: 1, width: 248, flexShrink: 0, borderRight: "1px solid var(--hairline)", padding: "18px 16px", display: "flex", flexDirection: "column", gap: 22 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>{bar(28, 28, { borderRadius: 9 })}{bar(96, 16)}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{Array.from({ length: 6 }, (_, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 11 }}>{bar(18, 18, { borderRadius: 6 })}{bar(`${60 + (i % 3) * 12}%`, 13)}</div>)}</div>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 9 }}>{bar(70, 10)}{Array.from({ length: 4 }, (_, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 11 }}>{bar(14, 14, { borderRadius: 99 })}{bar(`${50 + (i % 3) * 15}%`, 12)}</div>)}</div>
+        </div>
+      )}
+      {/* main column */}
+      <div style={{ position: "relative", zIndex: 1, flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 24px", borderBottom: "1px solid var(--hairline)" }}>
+          {bar(200, 22)}<div style={{ flex: 1 }} />{bar(120, 34, { borderRadius: 11 })}{bar(36, 34, { borderRadius: 11 })}
+        </div>
+        <div style={{ padding: "22px 24px", display: "flex", flexDirection: "column", gap: 14, maxWidth: 880, width: "100%" }}>
+          {bar(160, 14)}
+          {Array.from({ length: 7 }, (_, i) => (
+            <div key={i} className="glass" style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", borderRadius: 13, opacity: 1 - i * 0.1 }}>
+              {bar(20, 20, { borderRadius: 99 })}
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>{bar(`${40 + (i * 7) % 45}%`, 13)}{bar(`${20 + (i * 5) % 20}%`, 10)}</div>
+              {bar(54, 20, { borderRadius: 7 })}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

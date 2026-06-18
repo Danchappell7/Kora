@@ -230,6 +230,12 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .pchip { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-3); padding: 2px 7px; border-radius: 7px; background: var(--surface-2); border: 1px solid var(--hairline); }
 @keyframes shimmer { to { background-position: 200% 0; } }
 .ai-think { background: linear-gradient(90deg, var(--ink-3) 30%, var(--accent) 50%, var(--ink-3) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+
+/* skeleton loading blocks (app-shell first paint) */
+.skel { position: relative; overflow: hidden; background: var(--surface-2); border-radius: 8px; }
+.skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, color-mix(in oklch, var(--ink) 7%, transparent), transparent); animation: skelShimmer 1.4s ease-in-out infinite; }
+@keyframes skelShimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
 .iadd:hover { color: var(--accent) !important; border-color: var(--accent) !important; }
 
 /* sidebar nav + project items — CSS-driven hover/active (no JS style mutation) */
