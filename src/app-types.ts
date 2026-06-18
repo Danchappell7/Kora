@@ -1,6 +1,6 @@
 export type ViewId =
   | "plan" | "home" | "inbox" | "tasks" | "calendar" | "team" | "analytics" | "project" | "search"
-  | "goals" | "portfolios" | "workload" | "automations";
+  | "goals" | "portfolios" | "workload" | "automations" | "forms";
 
 export interface Route {
   view: ViewId;

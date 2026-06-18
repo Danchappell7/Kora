@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -28,6 +28,7 @@ export interface Bootstrap {
   portfolios: Portfolio[];
   statusUpdates: StatusUpdate[];
   automationRules: AutomationRule[];
+  forms: FormDef[];
 }
 
 export interface AuthedUser {
@@ -326,6 +327,8 @@ interface StatusUpdateRow { id: string; workspace_id: string | null; project_id:
 const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at });
 interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
 const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: "task_created", actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
+interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown }
+const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string }
 export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
@@ -351,7 +354,7 @@ export const store = {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
-        sections: [], customFields: [], savedSearches: [], goals: [], portfolios: [], statusUpdates: [], automationRules: [],
+        sections: [], customFields: [], savedSearches: [], goals: [], portfolios: [], statusUpdates: [], automationRules: [], forms: [],
       };
     }
     // resolve the REAL authenticated user from the live session — robust to a
@@ -464,6 +467,11 @@ export const store = {
       const { data: arData } = await supabase.from("automation_rules").select("*");
       automationRules = ((arData as AutomationRuleRow[] | null) ?? []).map(rowToRule);
     } catch { /* table not present yet */ }
+    let forms: FormDef[] = [];
+    try {
+      const { data: fmData } = await supabase.from("forms").select("*");
+      forms = ((fmData as FormRow[] | null) ?? []).map(rowToForm);
+    } catch { /* table not present yet */ }
 
     setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
     return {
@@ -482,6 +490,7 @@ export const store = {
       portfolios,
       statusUpdates,
       automationRules,
+      forms,
     };
   },
 
@@ -760,6 +769,30 @@ export const store = {
   async deleteRule(id: string): Promise<void> {
     if (!supabase) return;
     const { error } = await supabase.from("automation_rules").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  /* ---------- intake forms ---------- */
+  async createForm(input: { workspaceId: string | null; projectId: string; name: string; fields: FormFieldKey[] }, userId: string): Promise<FormDef> {
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, name: input.name, fields: input.fields };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("forms").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, fields: input.fields }).select("*").single();
+    if (error) throw error;
+    return rowToForm(data as FormRow);
+  },
+  async updateForm(id: string, patch: { name?: string; description?: string; fields?: FormFieldKey[] }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("name" in patch) row.name = patch.name;
+    if ("description" in patch) row.description = patch.description ?? null;
+    if ("fields" in patch) row.fields = patch.fields;
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("forms").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  async deleteForm(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("forms").delete().eq("id", id);
     if (error) throw error;
   },
 

@@ -177,6 +177,15 @@ export interface AutomationRule {
   actions: AutomationAction[];
   enabled: boolean;
 }
+export type FormFieldKey = "description" | "priority" | "dueDate" | "assignee";
+export interface FormDef {
+  id: string;
+  projectId: string;
+  workspaceId?: string | null;
+  name: string;
+  description?: string;
+  fields: FormFieldKey[];
+}
 export type StatusKind = "on_track" | "at_risk" | "off_track";
 export interface StatusUpdate {
   id: string;

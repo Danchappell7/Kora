@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Icon, Avatar } from "../primitives";
 import { getProject, getMember, projectProgress } from "../../data/data";
-import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, Section, AutomationRule, AutomationAction, AutomationActionType } from "../../data/types";
+import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, Section, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey } from "../../data/types";
 
 const inp: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" };
 
@@ -296,6 +296,85 @@ export function AutomationsView({ rules, projects, members, sections, onCreate, 
                     </button>
                   ))}
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- INTAKE FORMS ---------------- */
+const FORM_FIELDS: { key: FormFieldKey; label: string }[] = [
+  { key: "description", label: "Description" },
+  { key: "priority", label: "Priority" },
+  { key: "dueDate", label: "Due date" },
+  { key: "assignee", label: "Assignee" },
+];
+export interface FormValues { title: string; description?: string; priority?: string; dueDate?: string; assigneeId?: string }
+export function FormsView({ forms, projects, members, onCreate, onUpdate, onDelete, onSubmit }: {
+  forms: FormDef[];
+  projects: Project[];
+  members: { id: string; name: string }[];
+  onCreate: (projectId: string, name: string, fields: FormFieldKey[]) => void;
+  onUpdate: (id: string, patch: { name?: string; fields?: FormFieldKey[] }) => void;
+  onDelete: (id: string) => void;
+  onSubmit: (projectId: string, values: FormValues) => void;
+}) {
+  const realProjects = projects.filter((p) => p.id !== "p-personal");
+  const [adding, setAdding] = useState(false);
+  const [pid, setPid] = useState(realProjects[0]?.id ?? "");
+  const [name, setName] = useState("");
+  const [fillFor, setFillFor] = useState<string | null>(null);
+  const [vals, setVals] = useState<FormValues>({ title: "" });
+  const add = () => { const n = name.trim(); const proj = pid || realProjects[0]?.id; if (n && proj) { onCreate(proj, n, ["description", "priority"]); setName(""); setAdding(false); } };
+  const submit = (f: FormDef) => { if (vals.title.trim()) { onSubmit(f.projectId, { ...vals, title: vals.title.trim() }); setVals({ title: "" }); setFillFor(null); } };
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
+        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>Build a form — each submission becomes a task in its project.</p>
+        {realProjects.length > 0 && <button onClick={() => setAdding(true)} className="btn btn-accent" style={{ marginLeft: "auto", padding: "7px 13px", fontSize: 13 }}><Icon name="plus" size={15} /> New form</button>}
+      </div>
+      {realProjects.length === 0 ? <EmptyState icon="briefcase" title="No projects yet" sub="Create a project first — forms file submissions into it." /> : adding && (
+        <div className="glass" style={{ borderRadius: 12, padding: 12, marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select value={pid} onChange={(e) => setPid(e.target.value)} style={inp}>{realProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); else if (e.key === "Escape") setAdding(false); }} placeholder="Form name, e.g. Bug report" style={{ ...inp, flex: 1, minWidth: 160 }} />
+          <button onClick={add} className="btn btn-accent" style={{ padding: "5px 12px", fontSize: 12.5 }}>Add</button>
+          <button onClick={() => setAdding(false)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}>Cancel</button>
+        </div>
+      )}
+      {forms.length === 0 && !adding && realProjects.length > 0 ? <EmptyState icon="briefcase" title="No forms yet" sub="Create a form to capture requests as tasks." /> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {forms.map((f) => {
+            const proj = getProject(f.projectId);
+            const filling = fillFor === f.id;
+            return (
+              <div key={f.id} className="glass" style={{ borderRadius: 14, padding: "15px 17px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {proj && <span style={{ width: 9, height: 9, borderRadius: 2, background: proj.color, flexShrink: 0 }} />}
+                  <input value={f.name} onChange={(e) => onUpdate(f.id, { name: e.target.value })} style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }} />
+                  <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{proj?.name}</span>
+                  <button onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}>{filling ? "Close" : "Open form"}</button>
+                  <button onClick={() => onDelete(f.id)} aria-label="Delete form" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                  {FORM_FIELDS.map((ff) => {
+                    const on = f.fields.includes(ff.key);
+                    return <button key={ff.key} onClick={() => onUpdate(f.id, { fields: on ? f.fields.filter((x) => x !== ff.key) : [...f.fields, ff.key] })} style={{ padding: "3px 10px", borderRadius: 999, cursor: "pointer", fontSize: 12, border: `1px solid ${on ? "var(--accent)" : "var(--hairline)"}`, background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--ink)" : "var(--ink-4)", fontFamily: "var(--font-display)" }}>{ff.label}</button>;
+                  })}
+                </div>
+                {filling && (
+                  <div style={{ marginTop: 14, borderTop: "1px solid var(--hairline)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 9 }}>
+                    <input autoFocus value={vals.title} onChange={(e) => setVals((v) => ({ ...v, title: e.target.value }))} placeholder="Title (required)" style={inp} />
+                    {f.fields.includes("description") && <textarea value={vals.description ?? ""} onChange={(e) => setVals((v) => ({ ...v, description: e.target.value }))} placeholder="Description" rows={2} style={{ ...inp, height: "auto", padding: "8px 9px", resize: "vertical" }} />}
+                    {f.fields.includes("priority") && <select value={vals.priority ?? "medium"} onChange={(e) => setVals((v) => ({ ...v, priority: e.target.value }))} style={inp}>{PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}</select>}
+                    {f.fields.includes("dueDate") && <input type="date" value={vals.dueDate ?? ""} onChange={(e) => setVals((v) => ({ ...v, dueDate: e.target.value }))} style={inp} />}
+                    {f.fields.includes("assignee") && <select value={vals.assigneeId ?? ""} onChange={(e) => setVals((v) => ({ ...v, assigneeId: e.target.value }))} style={inp}><option value="">Unassigned</option>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>}
+                    <button onClick={() => submit(f)} disabled={!vals.title.trim()} className="btn btn-accent" style={{ alignSelf: "flex-start", padding: "6px 13px", fontSize: 13, opacity: vals.title.trim() ? 1 : 0.6 }}>Submit → create task</button>
+                  </div>
+                )}
               </div>
             );
           })}
