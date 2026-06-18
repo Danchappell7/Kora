@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -24,6 +24,9 @@ export interface Bootstrap {
   sections: Section[];
   customFields: CustomFieldDef[];
   savedSearches: SavedSearch[];
+  goals: Goal[];
+  portfolios: Portfolio[];
+  statusUpdates: StatusUpdate[];
 }
 
 export interface AuthedUser {
@@ -314,6 +317,12 @@ const rowToSection = (r: SectionRow): Section => ({ id: r.id, projectId: r.proje
 interface CustomFieldRow { id: string; project_id: string; workspace_id: string | null; name: string; type: string; options: string[] | null; position: number | null }
 const rowToCustomField = (r: CustomFieldRow): CustomFieldDef => ({ id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, name: r.name, type: r.type as CustomFieldDef["type"], options: r.options ?? [], position: r.position ?? undefined });
 interface SavedSearchRow { id: string; name: string; query: unknown }
+interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null }
+const rowToGoal = (r: GoalRow): Goal => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: r.target ?? undefined, current: r.current ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined });
+interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null }
+const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [] });
+interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string }
+const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at });
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string }
 export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
@@ -339,7 +348,7 @@ export const store = {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
-        sections: [], customFields: [], savedSearches: [],
+        sections: [], customFields: [], savedSearches: [], goals: [], portfolios: [], statusUpdates: [],
       };
     }
     // resolve the REAL authenticated user from the live session — robust to a
@@ -434,6 +443,19 @@ export const store = {
       const { data: ssData } = await supabase.from("saved_searches").select("*");
       savedSearches = ((ssData as SavedSearchRow[] | null) ?? []).map((s) => ({ id: s.id, name: s.name, query: (s.query as Record<string, unknown>) ?? {} }));
     } catch { /* table not present yet */ }
+    let goals: Goal[] = [], portfolios: Portfolio[] = [], statusUpdates: StatusUpdate[] = [];
+    try {
+      const { data: gData } = await supabase.from("goals").select("*");
+      goals = ((gData as GoalRow[] | null) ?? []).map(rowToGoal);
+    } catch { /* table not present yet */ }
+    try {
+      const { data: pData2 } = await supabase.from("portfolios").select("*");
+      portfolios = ((pData2 as PortfolioRow[] | null) ?? []).map(rowToPortfolio);
+    } catch { /* table not present yet */ }
+    try {
+      const { data: suData } = await supabase.from("status_updates").select("*").order("created_at", { ascending: false });
+      statusUpdates = ((suData as StatusUpdateRow[] | null) ?? []).map(rowToStatusUpdate);
+    } catch { /* table not present yet */ }
 
     setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
     return {
@@ -448,6 +470,9 @@ export const store = {
       sections,
       customFields,
       savedSearches,
+      goals,
+      portfolios,
+      statusUpdates,
     };
   },
 
@@ -644,6 +669,65 @@ export const store = {
     if (!supabase) return;
     const { error } = await supabase.from("saved_searches").delete().eq("id", id);
     if (error) throw error;
+  },
+
+  /* ---------- goals / OKRs ---------- */
+  async createGoal(input: { workspaceId: string | null; name: string; target?: number; current?: number; unit?: string; due?: string; status?: GoalStatus }, userId: string): Promise<Goal> {
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, name: input.name, target: input.target, current: input.current, unit: input.unit, due: input.due, status: input.status ?? "on_track" };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("goals").insert({ user_id: uid, workspace_id: input.workspaceId, name: input.name, target: input.target ?? null, current: input.current ?? null, unit: input.unit ?? null, due: input.due ?? null, status: input.status ?? "on_track" }).select("*").single();
+    if (error) throw error;
+    return rowToGoal(data as GoalRow);
+  },
+  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status">>): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("name" in patch) row.name = patch.name;
+    if ("target" in patch) row.target = patch.target ?? null;
+    if ("current" in patch) row.current = patch.current ?? null;
+    if ("unit" in patch) row.unit = patch.unit ?? null;
+    if ("due" in patch) row.due = patch.due ?? null;
+    if ("status" in patch) row.status = patch.status;
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("goals").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  async deleteGoal(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("goals").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  /* ---------- portfolios ---------- */
+  async createPortfolio(input: { workspaceId: string | null; name: string; projectIds?: string[] }, userId: string): Promise<Portfolio> {
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, name: input.name, projectIds: input.projectIds ?? [] };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("portfolios").insert({ user_id: uid, workspace_id: input.workspaceId, name: input.name, project_ids: input.projectIds ?? [] }).select("*").single();
+    if (error) throw error;
+    return rowToPortfolio(data as PortfolioRow);
+  },
+  async updatePortfolio(id: string, patch: { name?: string; projectIds?: string[] }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("name" in patch) row.name = patch.name;
+    if ("projectIds" in patch) row.project_ids = patch.projectIds ?? [];
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("portfolios").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  async deletePortfolio(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("portfolios").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  /* ---------- project status updates ---------- */
+  async createStatusUpdate(input: { workspaceId: string | null; projectId: string; summary: string; status: StatusKind }, userId: string): Promise<StatusUpdate> {
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, summary: input.summary, status: input.status, createdAt: new Date().toISOString() };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("status_updates").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, summary: input.summary, status: input.status }).select("*").single();
+    if (error) throw error;
+    return rowToStatusUpdate(data as StatusUpdateRow);
   },
 
   // every attachment across a set of tasks (for the Files view)

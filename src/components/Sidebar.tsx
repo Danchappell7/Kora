@@ -81,6 +81,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     { id: "search", icon: "search", label: "Search" },
     { id: "team", icon: "users", label: "Team" },
     { id: "analytics", icon: "chart", label: "Analytics" },
+    { id: "workload", icon: "users", label: "Workload" },
+    { id: "goals", icon: "target", label: "Goals" },
+    { id: "portfolios", icon: "briefcase", label: "Portfolios" },
   ];
 
   return (

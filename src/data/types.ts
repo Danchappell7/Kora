@@ -147,6 +147,34 @@ export interface SavedSearch {
   name: string;
   query: Record<string, unknown>;
 }
+export type GoalStatus = "on_track" | "at_risk" | "off_track" | "done";
+export interface Goal {
+  id: string;
+  name: string;
+  description?: string;
+  target?: number;
+  current?: number;
+  unit?: string;
+  due?: string;
+  status: GoalStatus;
+  workspaceId?: string | null;
+  position?: number;
+}
+export interface Portfolio {
+  id: string;
+  name: string;
+  projectIds: string[];
+  workspaceId?: string | null;
+}
+export type StatusKind = "on_track" | "at_risk" | "off_track";
+export interface StatusUpdate {
+  id: string;
+  projectId: string;
+  summary: string;
+  status: StatusKind;
+  createdAt: string;
+  workspaceId?: string | null;
+}
 
 export interface Comment {
   id: string;

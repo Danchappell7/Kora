@@ -21,6 +21,7 @@ import { PlanView } from "./components/views/PlanView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
 import { SearchView } from "./components/views/SearchView";
+import { WorkloadView, GoalsView, PortfoliosView, STATUS_KIND_META } from "./components/views/ManagerViews";
 import { InboxView, TeamView } from "./components/views/InboxTeam";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
@@ -35,7 +36,7 @@ import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -89,10 +90,15 @@ const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
 ];
 
-function ProjectOverview({ project, tasks, onUpdate }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string }) => void }) {
+function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(project.description || "");
+  const [updOpen, setUpdOpen] = useState(false);
+  const [updText, setUpdText] = useState("");
+  const [updKind, setUpdKind] = useState<StatusKind>("on_track");
+  const latest = statusUpdates.find((s) => s.projectId === project.id);
+  const postUpd = () => { const v = updText.trim(); if (v && onPostStatus) { onPostStatus(project.id, v, updKind); setUpdText(""); setUpdOpen(false); } };
   const total = tasks.length;
   const done = tasks.filter((t) => t.status === "done").length;
   const prog = total ? Math.round((done / total) * 100) : 0;
@@ -154,6 +160,29 @@ function ProjectOverview({ project, tasks, onUpdate }: { project: Project; tasks
      ) : (
        <div onClick={() => { setDescDraft(project.description || ""); setDescEditing(true); }} style={{ fontSize: 13, lineHeight: 1.55, color: project.description ? "var(--ink-3)" : "var(--ink-4)", cursor: "text", padding: "2px 0" }}>
          {project.description || "Add a project description…"}
+       </div>
+     )}
+     {onPostStatus && (
+       <div style={{ borderTop: "1px solid var(--hairline)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+           <span className="kicker">Status update</span>
+           {latest && <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: STATUS_KIND_META[latest.status].color }}><span style={{ width: 7, height: 7, borderRadius: 99, background: STATUS_KIND_META[latest.status].color }} />{STATUS_KIND_META[latest.status].label}</span>}
+           <button onClick={() => setUpdOpen((v) => !v)} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}>{updOpen ? "Cancel" : "Post update"}</button>
+         </div>
+         {latest && !updOpen && <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5 }}>{latest.summary}</div>}
+         {updOpen && (
+           <>
+             <div style={{ display: "flex", gap: 6 }}>
+               {(Object.keys(STATUS_KIND_META) as StatusKind[]).map((k) => (
+                 <button key={k} onClick={() => setUpdKind(k)} style={{ padding: "4px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12, border: `1px solid ${updKind === k ? STATUS_KIND_META[k].color : "var(--hairline)"}`, background: updKind === k ? `color-mix(in oklch, ${STATUS_KIND_META[k].color} 14%, transparent)` : "transparent", color: updKind === k ? STATUS_KIND_META[k].color : "var(--ink-3)", fontFamily: "var(--font-display)" }}>{STATUS_KIND_META[k].label}</button>
+               ))}
+             </div>
+             {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+             <textarea autoFocus value={updText} onChange={(e) => setUpdText(e.target.value)} placeholder="What's the latest? Wins, risks, next steps…" rows={2}
+               style={{ width: "100%", resize: "vertical", padding: "8px 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, lineHeight: 1.55, outline: "none" }} />
+             <button onClick={postUpd} className="btn btn-accent" style={{ alignSelf: "flex-start", padding: "6px 13px", fontSize: 13 }}>Post update</button>
+           </>
+         )}
        </div>
      )}
     </div>
@@ -376,6 +405,9 @@ export default function App() {
   const [sections, setSections] = useState<Section[]>([]);
   const [customFields, setCustomFields] = useState<CustomFieldDef[]>([]);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
+  const [statusUpdates, setStatusUpdates] = useState<StatusUpdate[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([{ id: null, name: "Personal", kind: "personal" }]);
   const [wsMembers, setWsMembers] = useState<WorkspaceMember[]>([]);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
@@ -515,7 +547,7 @@ export default function App() {
     (async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches); }
+        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches); setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates); }
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
         const subn = await store.getSubscription();
@@ -549,6 +581,7 @@ export default function App() {
         setTasks(pending.length ? [...pending, ...merged] : merged);
         applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
         setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches);
+        setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates);
         setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
     };
@@ -1060,6 +1093,50 @@ export default function App() {
     store.deleteSavedSearch(id).catch(reportError);
   }, []);
 
+  // ---- goals / OKRs ----
+  const createGoal = useCallback((name: string) => {
+    const wsId = workspaceRef.current;
+    const tmp: Goal = { id: "tmp-goal-" + Date.now(), workspaceId: wsId, name, status: "on_track", current: 0, target: 100 };
+    setGoals((g) => [...g, tmp]);
+    store.createGoal({ workspaceId: wsId, name, status: "on_track", current: 0, target: 100 }, userIdRef.current)
+      .then((goal) => setGoals((g) => g.map((x) => x.id === tmp.id ? goal : x)))
+      .catch((e) => { reportError(e, { op: "createGoal" }); setGoals((g) => g.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the goal: " + (e?.message || e)); });
+  }, [toastError]);
+  const updateGoal = useCallback((id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status">>) => {
+    setGoals((g) => g.map((x) => x.id === id ? { ...x, ...patch } : x));
+    store.updateGoal(id, patch).catch(reportError);
+  }, []);
+  const deleteGoal = useCallback((id: string) => {
+    setGoals((g) => g.filter((x) => x.id !== id));
+    store.deleteGoal(id).catch(reportError);
+  }, []);
+
+  // ---- portfolios ----
+  const createPortfolio = useCallback((name: string) => {
+    const wsId = workspaceRef.current;
+    const tmp: Portfolio = { id: "tmp-pf-" + Date.now(), workspaceId: wsId, name, projectIds: [] };
+    setPortfolios((p) => [...p, tmp]);
+    store.createPortfolio({ workspaceId: wsId, name }, userIdRef.current)
+      .then((pf) => setPortfolios((p) => p.map((x) => x.id === tmp.id ? pf : x)))
+      .catch((e) => { reportError(e, { op: "createPortfolio" }); setPortfolios((p) => p.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the portfolio: " + (e?.message || e)); });
+  }, [toastError]);
+  const updatePortfolio = useCallback((id: string, patch: { name?: string; projectIds?: string[] }) => {
+    setPortfolios((p) => p.map((x) => x.id === id ? { ...x, ...patch } : x));
+    store.updatePortfolio(id, patch).catch(reportError);
+  }, []);
+  const deletePortfolio = useCallback((id: string) => {
+    setPortfolios((p) => p.filter((x) => x.id !== id));
+    store.deletePortfolio(id).catch(reportError);
+  }, []);
+
+  // ---- project status updates ----
+  const postStatusUpdate = useCallback((projectId: string, summary: string, status: StatusKind) => {
+    const wsId = getProject(projectId)?.workspaceId ?? null;
+    store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status }, userIdRef.current)
+      .then((su) => setStatusUpdates((s) => [su, ...s]))
+      .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update."); });
+  }, [toastError]);
+
   // ---- custom fields (per-project definitions) ----
   const createCustomField = useCallback((projectId: string, name: string, type: CustomFieldDef["type"], options: string[] = []) => {
     const wsId = getProject(projectId)?.workspaceId ?? null;
@@ -1234,6 +1311,9 @@ export default function App() {
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} />;
       case "analytics": return <AnalyticsView tasks={allTasks} customFields={customFields} />;
       case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
+      case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
+      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
+      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
@@ -1247,7 +1327,7 @@ export default function App() {
           archivedTasks={archivedTasks}
           sections={route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
-          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} /> : undefined} />;
+          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} /> : undefined} />;
       default: return null;
     }
   };
@@ -1260,6 +1340,9 @@ export default function App() {
     calendar: { title: "Calendar", subtitle: monthLabel, breadcrumb: "Schedule" },
     team: { title: "Team", subtitle: "Who's working on what.", breadcrumb: "People" },
     search: { title: "Search", subtitle: "Find anything across your tasks.", breadcrumb: "Search" },
+    workload: { title: "Workload", subtitle: "Capacity across your team.", breadcrumb: "Reporting" },
+    goals: { title: "Goals", subtitle: "Objectives and their progress.", breadcrumb: "Reporting" },
+    portfolios: { title: "Portfolios", subtitle: "Projects, rolled up.", breadcrumb: "Reporting" },
     tasks: { title, subtitle, breadcrumb },
     project: { title, subtitle, breadcrumb },
   };
