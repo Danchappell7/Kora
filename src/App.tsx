@@ -965,6 +965,11 @@ export default function App() {
     const cur = tasksRef.current; if (!cur) return;
     const t = cur.find((x) => x.id === id); if (!t) return;
     const becomingDone = t.status !== "done";
+    if (becomingDone) {
+      // dependency enforcement: warn before completing a still-blocked task
+      const blockers = (t.dependencies ?? []).map((d) => cur.find((x) => x.id === d)).filter((b): b is Task => !!b && b.status !== "done");
+      if (blockers.length && !window.confirm(`“${t.title}” is blocked by ${blockers.length} unfinished task${blockers.length > 1 ? "s" : ""}. Mark it complete anyway?`)) return;
+    }
     const status: Status = becomingDone ? "done" : "todo";
     const completedAt = becomingDone ? toLocalISO(new Date()) : undefined;
     setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status, completedAt } : x));

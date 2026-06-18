@@ -324,11 +324,28 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
     });
   });
   const totalH = yAcc;
+  // critical path = longest dependency chain by bar span (cycle-guarded)
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const memo = new Map<string, { len: number; path: string[] }>();
+  const chain = (id: string, seen: Set<string>): { len: number; path: string[] } => {
+    if (memo.has(id)) return memo.get(id)!;
+    if (seen.has(id)) return { len: 0, path: [] };
+    const t = byId.get(id); if (!t) return { len: 0, path: [] };
+    seen.add(id);
+    let best = { len: 0, path: [] as string[] };
+    for (const dep of t.dependencies || []) { const c = chain(dep, seen); if (c.len > best.len) best = c; }
+    seen.delete(id);
+    const res = { len: best.len + Math.max(1, geom(t).span), path: [...best.path, id] };
+    memo.set(id, res); return res;
+  };
+  let critical = { len: 0, path: [] as string[] };
+  tasks.forEach((t) => { const c = chain(t.id, new Set()); if (c.len > critical.len) critical = c; });
+  const criticalSet = new Set(critical.path.length > 1 ? critical.path : []);
   const depLines = tasks.flatMap((t) => (t.dependencies || []).map((dep) => {
     const A = layout.get(dep), B = layout.get(t.id);
     if (!A || !B || A.barR == null || B.barL == null) return null;
-    return { key: dep + ">" + t.id, x1: A.barR, y1: A.y, x2: B.barL, y2: B.y };
-  })).filter((l): l is { key: string; x1: number; y1: number; x2: number; y2: number } => !!l);
+    return { key: dep + ">" + t.id, x1: A.barR, y1: A.y, x2: B.barL, y2: B.y, crit: criticalSet.has(dep) && criticalSet.has(t.id) };
+  })).filter((l): l is { key: string; x1: number; y1: number; x2: number; y2: number; crit: boolean } => !!l);
 
   if (byProject.length === 0) {
     return (
@@ -347,7 +364,7 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
       <div style={{ minWidth: labelW + DAYS * colW, padding: "8px 0 40px" }}>
         {/* axis */}
         <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "color-mix(in oklch, var(--bg) 88%, transparent)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--hairline)" }}>
-          <div style={{ width: labelW, flexShrink: 0, padding: "12px 18px" }}><span className="kicker">Task</span></div>
+          <div style={{ width: labelW, flexShrink: 0, padding: "12px 18px", display: "flex", alignItems: "center", gap: 8 }}><span className="kicker">Task</span>{criticalSet.size > 0 && <span style={{ fontSize: 10.5, color: "var(--prio-urgent)", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--prio-urgent)" }} />critical path</span>}
           {dates.map((d, i) => {
             const isToday = i === todayIdx;
             const weekend = d.getDay() === 0 || d.getDay() === 6;
@@ -367,8 +384,11 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
           {/* dependency connectors */}
           {depLines.length > 0 && (
             <svg width={labelW + DAYS * colW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 3, overflow: "visible" }}>
-              <defs><marker id="tl-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--ink-4)" /></marker></defs>
-              {depLines.map((l) => { const mx = (l.x1 + l.x2) / 2; return <path key={l.key} d={`M${l.x1},${l.y1} C${mx},${l.y1} ${mx},${l.y2} ${l.x2},${l.y2}`} fill="none" stroke="var(--ink-4)" strokeWidth="1.5" opacity="0.45" markerEnd="url(#tl-arrow)" />; })}
+              <defs>
+                <marker id="tl-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--ink-4)" /></marker>
+                <marker id="tl-arrow-crit" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--prio-urgent)" /></marker>
+              </defs>
+              {depLines.map((l) => { const mx = (l.x1 + l.x2) / 2; return <path key={l.key} d={`M${l.x1},${l.y1} C${mx},${l.y1} ${mx},${l.y2} ${l.x2},${l.y2}`} fill="none" stroke={l.crit ? "var(--prio-urgent)" : "var(--ink-4)"} strokeWidth={l.crit ? 2 : 1.5} opacity={l.crit ? 0.8 : 0.4} markerEnd={l.crit ? "url(#tl-arrow-crit)" : "url(#tl-arrow)"} />; })}
             </svg>
           )}
           {byProject.map((g) => (
@@ -380,6 +400,7 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
               {g.items.map((t) => {
                 const { di, start, span } = geom(t);
                 const done = t.status === "done";
+                const crit = criticalSet.has(t.id);
                 return (
                   <div key={t.id} style={{ display: "flex", height: rowH, alignItems: "center", position: "relative" }}>
                     <div className="truncate" style={{ width: labelW, flexShrink: 0, padding: "0 18px", fontSize: 13, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 8 }}>
@@ -404,7 +425,7 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
                             position: "absolute", top: rowH / 2 - 13, left: start * colW + 6, width: span * colW - 12, height: 26,
                             borderRadius: 8, display: "flex", alignItems: "center", gap: 7, padding: "0 9px", overflow: "hidden", cursor: onPatch ? "grab" : "pointer",
                             background: done ? "color-mix(in oklch, var(--st-done) 18%, transparent)" : `color-mix(in oklch, ${g.project.color} 22%, transparent)`,
-                            border: `1px solid color-mix(in oklch, ${done ? "var(--st-done)" : g.project.color} 45%, transparent)`,
+                            border: crit ? "1.5px solid var(--prio-urgent)" : `1px solid color-mix(in oklch, ${done ? "var(--st-done)" : g.project.color} 45%, transparent)`,
                             transition: "all .16s",
                           }}
                           onMouseEnter={(e) => (e.currentTarget.style.transform = "translateY(-1px)")}
