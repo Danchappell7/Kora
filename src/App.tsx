@@ -1259,6 +1259,7 @@ export default function App() {
     inbox: { title: "Inbox", subtitle: "Mentions, assignments, and updates.", breadcrumb: "Notifications" },
     calendar: { title: "Calendar", subtitle: monthLabel, breadcrumb: "Schedule" },
     team: { title: "Team", subtitle: "Who's working on what.", breadcrumb: "People" },
+    search: { title: "Search", subtitle: "Find anything across your tasks.", breadcrumb: "Search" },
     tasks: { title, subtitle, breadcrumb },
     project: { title, subtitle, breadcrumb },
   };

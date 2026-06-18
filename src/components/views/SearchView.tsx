@@ -75,7 +75,7 @@ export function SearchView({ tasks, projects, members, onOpen, savedSearches, on
           <span className="kicker" style={{ alignSelf: "center" }}>Saved</span>
           {savedSearches.map((s) => (
             <span key={s.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 11px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--surface)", fontSize: 12.5 }}>
-              <button onClick={() => setQ({ ...EMPTY, ...(s.query as Partial<Query>) })} style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5 }}>{s.name}</button>
+              <button onClick={() => setQ({ ...EMPTY, ...(s.query as unknown as Partial<Query>) })} style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5 }}>{s.name}</button>
               <button onClick={() => onDeleteSavedSearch(s.id)} aria-label="Delete saved search" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-4)", fontSize: 13 }}>×</button>
             </span>
           ))}
