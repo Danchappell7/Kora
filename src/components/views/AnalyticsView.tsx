@@ -1,16 +1,20 @@
 /* ============================================================
    KANBO — Analytics dashboard (data-driven, no placeholder claims)
    ============================================================ */
-import type { ReactNode, CSSProperties } from "react";
+import { useState, type ReactNode, type CSSProperties } from "react";
 import { Icon, StatusDot, PriorityFlag } from "../primitives";
 import { Bars, Ring, type BarDatum } from "../charts";
 import { StatTile } from "./HomeView";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO } from "../../data/data";
-import type { Task, Priority } from "../../data/types";
+import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO, getProject, getMember } from "../../data/data";
+import type { Task, Priority, Status, CustomFieldDef } from "../../data/types";
 
-export function AnalyticsView({ tasks }: { tasks: Task[] }) {
+type Dim = "status" | "priority" | "project" | "assignee" | string; // string = custom field id
+
+export function AnalyticsView({ tasks, customFields = [] }: { tasks: Task[]; customFields?: CustomFieldDef[] }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
+  const [dim, setDim] = useState<Dim>("status");
+  const [scope, setScope] = useState<"all" | "open" | "done">("all");
   const done = tasks.filter((t) => t.status === "done").length;
   const open = tasks.length - done;
   const completion = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
@@ -28,6 +32,30 @@ export function AnalyticsView({ tasks }: { tasks: Task[] }) {
   const statusBreak = STATUS_ORDER.map((s) => ({ s, n: tasks.filter((t) => t.status === s).length }));
   const totalS = statusBreak.reduce((a, b) => a + b.n, 0);
   const priorityBreak = (["urgent", "high", "medium", "low"] as Priority[]).map((p) => ({ p, n: tasks.filter((t) => t.priority === p).length }));
+
+  // configurable breakdown
+  const pool = tasks.filter((t) => scope === "all" ? true : scope === "open" ? t.status !== "done" : t.status === "done");
+  const dimKey = (t: Task): string => {
+    if (dim === "status") return t.status;
+    if (dim === "priority") return t.priority;
+    if (dim === "project") return t.projectId;
+    if (dim === "assignee") return t.assigneeId;
+    const v = (t.custom ?? {})[dim];
+    return v == null || v === "" ? "—" : String(v);
+  };
+  const dimLabel = (k: string): string => {
+    if (k === "—") return "Empty";
+    if (dim === "status") return STATUS_META[k as Status]?.label ?? k;
+    if (dim === "priority") return PRIORITY_META[k as Priority]?.label ?? k;
+    if (dim === "project") return getProject(k)?.name ?? "—";
+    if (dim === "assignee") return getMember(k)?.name ?? "—";
+    return k;
+  };
+  const counts = new Map<string, number>();
+  pool.forEach((t) => { const k = dimKey(t); counts.set(k, (counts.get(k) ?? 0) + 1); });
+  const breakdown = [...counts.entries()].map(([k, n]) => ({ k, n })).sort((a, b) => b.n - a.n).slice(0, 12);
+  const breakdownMax = Math.max(...breakdown.map((b) => b.n), 1);
+  const selStyleA: CSSProperties = { height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
 
   const Card = ({ children, style }: { children: ReactNode; style?: CSSProperties }) =>
     <div className="glass anim-fadeup" style={{ padding: 20, borderRadius: 16, ...style }}>{children}</div>;
@@ -62,6 +90,38 @@ export function AnalyticsView({ tasks }: { tasks: Task[] }) {
         <StatTile kicker="Finished early" value={finishedEarly} icon="trendingUp" sub="before due date" />
         <StatTile kicker="Open tasks" value={open} icon="clock" accent sub="not yet done" />
       </div>
+
+      {/* configurable breakdown */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14.5, fontWeight: 600 }}>Breakdown</h3>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <select value={dim} onChange={(e) => setDim(e.target.value)} style={selStyleA} aria-label="Group by">
+              <option value="status">By status</option>
+              <option value="priority">By priority</option>
+              <option value="project">By project</option>
+              <option value="assignee">By assignee</option>
+              {customFields.filter((f) => f.type === "dropdown" || f.type === "people" || f.type === "text").map((f) => <option key={f.id} value={f.id}>By {f.name}</option>)}
+            </select>
+            <select value={scope} onChange={(e) => setScope(e.target.value as "all" | "open" | "done")} style={selStyleA} aria-label="Scope">
+              <option value="all">All tasks</option>
+              <option value="open">Open only</option>
+              <option value="done">Completed only</option>
+            </select>
+          </div>
+        </div>
+        {breakdown.length === 0 ? (
+          <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>No tasks in this scope.</p>
+        ) : breakdown.map((b) => (
+          <div key={b.k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
+            <span className="truncate" style={{ width: 130, flexShrink: 0, fontSize: 12.5, color: "var(--ink-2)" }}>{dimLabel(b.k)}</span>
+            <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
+              <div style={{ width: `${(b.n / breakdownMax) * 100}%`, height: "100%", borderRadius: 6, background: "var(--accent)", minWidth: 4, transition: "width .6s var(--ease)" }} />
+            </div>
+            <span className="mono tnum" style={{ width: 30, textAlign: "right", fontSize: 12.5, color: "var(--ink-3)", flexShrink: 0 }}>{b.n}</span>
+          </div>
+        ))}
+      </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.5fr 1fr", gap: 16, marginBottom: 16 }}>
         <Card>
