@@ -64,7 +64,7 @@ export function SearchView({ tasks, projects, members, onOpen, savedSearches, on
         <select value={q.due} onChange={(e) => set({ due: e.target.value })} style={selStyle}><option value="all">Any due date</option><option value="has">Has a due date</option><option value="overdue">Overdue</option><option value="none">No due date</option></select>
         {active && (
           <>
-            <button onClick={() => { const name = window.prompt("Name this search"); if (name?.trim()) onSaveSearch(name.trim(), q as unknown as Record<string, unknown>); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="star" size={14} /> Save</button>
+            <button onClick={() => { const name = window.prompt("Name this search"); if (name?.trim()) onSaveSearch(name.trim(), q as unknown as Record<string, unknown>); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="filter" size={14} /> Save</button>
             <button onClick={() => setQ(EMPTY)} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}>Clear</button>
           </>
         )}

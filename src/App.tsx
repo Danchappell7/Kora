@@ -781,34 +781,6 @@ export default function App() {
     store.updateTask(id, { archivedAt: undefined }).catch(reportError);
   }, [noteWrite]);
 
-  // follow/unfollow a task (followers get its activity in their inbox)
-  const toggleFollow = useCallback((id: string) => {
-    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
-    const uid = userIdRef.current;
-    const cur = t.followers ?? [];
-    const next = cur.includes(uid) ? cur.filter((f) => f !== uid) : [...cur, uid];
-    patchTask(id, { followers: next });
-  }, [patchTask]);
-
-  // toggle the signed-in user's emoji reaction on a task itself
-  const toggleTaskReaction = useCallback((id: string, emoji: string) => {
-    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
-    const uid = userIdRef.current;
-    const r: Record<string, string[]> = { ...(t.reactions ?? {}) };
-    const list = r[emoji] ?? [];
-    r[emoji] = list.includes(uid) ? list.filter((x) => x !== uid) : [...list, uid];
-    if (r[emoji].length === 0) delete r[emoji];
-    patchTask(id, { reactions: r });
-  }, [patchTask]);
-
-  // add/remove a collaborator (extra assignee) on a task
-  const toggleCollaborator = useCallback((id: string, memberId: string) => {
-    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
-    const cur = t.collaborators ?? [];
-    const next = cur.includes(memberId) ? cur.filter((c) => c !== memberId) : [...cur, memberId];
-    patchTask(id, { collaborators: next });
-  }, [patchTask]);
-
   // duplicate a task (fresh copy, not done, no comments/deps carried over)
   const duplicateTask = useCallback((id: string) => {
     const src = tasksRef.current?.find((t) => t.id === id);
@@ -877,6 +849,34 @@ export default function App() {
       else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
     }
   }, [log, spawnRecurrence, noteWrite]);
+
+  // follow/unfollow a task (followers get its activity in their inbox)
+  const toggleFollow = useCallback((id: string) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    const uid = userIdRef.current;
+    const cur = t.followers ?? [];
+    const next = cur.includes(uid) ? cur.filter((f) => f !== uid) : [...cur, uid];
+    patchTask(id, { followers: next });
+  }, [patchTask]);
+
+  // toggle the signed-in user's emoji reaction on a task itself
+  const toggleTaskReaction = useCallback((id: string, emoji: string) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    const uid = userIdRef.current;
+    const r: Record<string, string[]> = { ...(t.reactions ?? {}) };
+    const list = r[emoji] ?? [];
+    r[emoji] = list.includes(uid) ? list.filter((x) => x !== uid) : [...list, uid];
+    if (r[emoji].length === 0) delete r[emoji];
+    patchTask(id, { reactions: r });
+  }, [patchTask]);
+
+  // add/remove a collaborator (extra assignee) on a task
+  const toggleCollaborator = useCallback((id: string, memberId: string) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    const cur = t.collaborators ?? [];
+    const next = cur.includes(memberId) ? cur.filter((c) => c !== memberId) : [...cur, memberId];
+    patchTask(id, { collaborators: next });
+  }, [patchTask]);
 
   const createTask = persistTask;
 
