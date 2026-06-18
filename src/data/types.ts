@@ -161,6 +161,8 @@ export interface Goal {
   status: GoalStatus;
   workspaceId?: string | null;
   position?: number;
+  parentId?: string;   // sub-goal of another goal
+  projectId?: string;  // linked project (auto-progress)
 }
 export interface Portfolio {
   id: string;

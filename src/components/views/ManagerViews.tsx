@@ -89,19 +89,26 @@ export function WorkloadView({ tasks, members, onOpen }: {
 }
 
 /* ---------------- GOALS / OKRs ---------------- */
-export function GoalsView({ goals, onCreate, onUpdate, onDelete }: {
+export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete }: {
   goals: Goal[];
+  projects: Project[];
+  tasks: Task[];
   onCreate: (name: string) => void;
-  onUpdate: (id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status">>) => void;
+  onUpdate: (id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>) => void;
   onDelete: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const add = () => { const n = name.trim(); if (n) { onCreate(n); setName(""); setAdding(false); } };
+  const realProjects = projects.filter((p) => p.id !== "p-personal");
+  // order: top-level goals, each followed by its sub-goals (one level deep)
+  const tops = goals.filter((g) => !g.parentId || !goals.some((x) => x.id === g.parentId));
+  const ordered: { g: Goal; depth: number }[] = [];
+  tops.forEach((g) => { ordered.push({ g, depth: 0 }); goals.filter((c) => c.parentId === g.id && c.id !== g.id).forEach((c) => ordered.push({ g: c, depth: 1 })); });
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
-        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>Track measurable objectives and their progress.</p>
+        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>Track measurable objectives — link a project for auto-progress, or nest sub-goals.</p>
         <button onClick={() => setAdding(true)} className="btn btn-accent" style={{ marginLeft: "auto", padding: "7px 13px", fontSize: 13 }}><Icon name="plus" size={15} /> New goal</button>
       </div>
       {adding && (
@@ -113,23 +120,42 @@ export function GoalsView({ goals, onCreate, onUpdate, onDelete }: {
       )}
       {goals.length === 0 && !adding ? <EmptyState icon="target" title="No goals yet" sub="Create a goal to track progress toward an outcome." /> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {goals.map((g) => {
-            const pct = g.target && g.target > 0 ? Math.min(100, Math.round(((g.current ?? 0) / g.target) * 100)) : 0;
+          {ordered.map(({ g, depth }) => {
             const meta = GOAL_STATUS[g.status] ?? GOAL_STATUS.on_track;
+            const linked = !!g.projectId;
+            const pct = linked ? projectProgress(tasks, g.projectId!) : (g.target && g.target > 0 ? Math.min(100, Math.round(((g.current ?? 0) / g.target) * 100)) : 0);
             return (
-              <div key={g.id} className="glass" style={{ borderRadius: 14, padding: "15px 17px" }}>
+              <div key={g.id} className="glass" style={{ borderRadius: 14, padding: "15px 17px", marginLeft: depth * 24 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {depth > 0 && <Icon name="arrowRight" size={13} style={{ color: "var(--ink-4)" }} />}
                   <input value={g.name} onChange={(e) => onUpdate(g.id, { name: e.target.value })} style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }} />
                   <select value={g.status} onChange={(e) => onUpdate(g.id, { status: e.target.value as GoalStatus })} style={{ ...inp, height: 28, color: meta.color }}>
                     {(Object.keys(GOAL_STATUS) as GoalStatus[]).map((s) => <option key={s} value={s}>{GOAL_STATUS[s].label}</option>)}
                   </select>
                   <button onClick={() => onDelete(g.id)} aria-label="Delete goal" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 9, margin: "12px 0 8px" }}>
-                  <input type="number" value={g.current ?? 0} onChange={(e) => onUpdate(g.id, { current: e.target.value === "" ? 0 : Number(e.target.value) })} style={{ ...inp, width: 90 }} aria-label="Current" />
-                  <span style={{ color: "var(--ink-4)", fontSize: 13 }}>/</span>
-                  <input type="number" value={g.target ?? 0} onChange={(e) => onUpdate(g.id, { target: e.target.value === "" ? 0 : Number(e.target.value) })} style={{ ...inp, width: 90 }} aria-label="Target" />
-                  <input value={g.unit ?? ""} onChange={(e) => onUpdate(g.id, { unit: e.target.value })} placeholder="unit" style={{ ...inp, width: 90 }} aria-label="Unit" />
+                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0", flexWrap: "wrap" }}>
+                  <select value={g.projectId ?? ""} onChange={(e) => onUpdate(g.id, { projectId: e.target.value || undefined })} style={{ ...inp, maxWidth: 180 }} aria-label="Linked project">
+                    <option value="">Not linked to a project</option>
+                    {realProjects.map((p) => <option key={p.id} value={p.id}>↪ {p.name}</option>)}
+                  </select>
+                  {depth === 0 && tops.length > 1 && (
+                    <select value={g.parentId ?? ""} onChange={(e) => onUpdate(g.id, { parentId: e.target.value || undefined })} style={{ ...inp, maxWidth: 160 }} aria-label="Parent goal">
+                      <option value="">No parent goal</option>
+                      {goals.filter((x) => x.id !== g.id && !x.parentId).map((x) => <option key={x.id} value={x.id}>under: {x.name}</option>)}
+                    </select>
+                  )}
+                </div>
+                {!linked && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
+                    <input type="number" value={g.current ?? 0} onChange={(e) => onUpdate(g.id, { current: e.target.value === "" ? 0 : Number(e.target.value) })} style={{ ...inp, width: 90 }} aria-label="Current" />
+                    <span style={{ color: "var(--ink-4)", fontSize: 13 }}>/</span>
+                    <input type="number" value={g.target ?? 0} onChange={(e) => onUpdate(g.id, { target: e.target.value === "" ? 0 : Number(e.target.value) })} style={{ ...inp, width: 90 }} aria-label="Target" />
+                    <input value={g.unit ?? ""} onChange={(e) => onUpdate(g.id, { unit: e.target.value })} placeholder="unit" style={{ ...inp, width: 90 }} aria-label="Unit" />
+                  </div>
+                )}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  {linked && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>From project {getProject(g.projectId!)?.name}</span>}
                   <span className="mono tnum" style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600, color: meta.color }}>{pct}%</span>
                 </div>
                 <div style={{ height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>

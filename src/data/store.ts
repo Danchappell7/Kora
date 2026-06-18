@@ -327,8 +327,8 @@ const rowToSection = (r: SectionRow): Section => ({ id: r.id, projectId: r.proje
 interface CustomFieldRow { id: string; project_id: string; workspace_id: string | null; name: string; type: string; options: string[] | null; position: number | null }
 const rowToCustomField = (r: CustomFieldRow): CustomFieldDef => ({ id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, name: r.name, type: r.type as CustomFieldDef["type"], options: r.options ?? [], position: r.position ?? undefined });
 interface SavedSearchRow { id: string; name: string; query: unknown }
-interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null }
-const rowToGoal = (r: GoalRow): Goal => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: r.target ?? undefined, current: r.current ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined });
+interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null; parent_id?: string | null; project_id?: string | null }
+const rowToGoal = (r: GoalRow): Goal => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: r.target ?? undefined, current: r.current ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined, parentId: r.parent_id ?? undefined, projectId: r.project_id ?? undefined });
 interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null }
 const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [] });
 interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string }
@@ -705,7 +705,7 @@ export const store = {
     if (error) throw error;
     return rowToGoal(data as GoalRow);
   },
-  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status">>): Promise<void> {
+  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>): Promise<void> {
     if (!supabase) return;
     const row: Record<string, unknown> = {};
     if ("name" in patch) row.name = patch.name;
@@ -714,6 +714,8 @@ export const store = {
     if ("unit" in patch) row.unit = patch.unit ?? null;
     if ("due" in patch) row.due = patch.due ?? null;
     if ("status" in patch) row.status = patch.status;
+    if ("parentId" in patch) row.parent_id = patch.parentId ?? null;
+    if ("projectId" in patch) row.project_id = patch.projectId ?? null;
     if (Object.keys(row).length === 0) return;
     const { error } = await supabase.from("goals").update(row).eq("id", id);
     if (error) throw error;

@@ -1227,7 +1227,7 @@ export default function App() {
       .then((goal) => setGoals((g) => g.map((x) => x.id === tmp.id ? goal : x)))
       .catch((e) => { reportError(e, { op: "createGoal" }); setGoals((g) => g.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the goal: " + (e?.message || e)); });
   }, [toastError]);
-  const updateGoal = useCallback((id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status">>) => {
+  const updateGoal = useCallback((id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>) => {
     setGoals((g) => g.map((x) => x.id === id ? { ...x, ...patch } : x));
     store.updateGoal(id, patch).catch(reportError);
   }, []);
@@ -1484,7 +1484,7 @@ export default function App() {
       case "analytics": return <AnalyticsView tasks={allTasks} customFields={customFields} />;
       case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
-      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
+      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;
       case "automations": return <AutomationsView rules={automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId))} projects={wsProjects} members={assignees} sections={sections} onCreate={createRule} onUpdate={updateRule} onDelete={deleteRule} />;
       case "forms": return <FormsView forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
