@@ -90,6 +90,7 @@ interface TaskRow {
   recurrence?: Recurrence | null;
   position?: number | null;
   parent_id?: string | null;
+  my_section_id?: string | null;
   followers?: string[] | null;
   collaborators?: string[] | null;
   reactions?: Record<string, string[]> | null;
@@ -115,6 +116,7 @@ function rowToTask(r: TaskRow): Task {
     collaborators: r.collaborators ?? [],
     reactions: (r.reactions as Record<string, string[]>) ?? {},
     sectionId: r.section_id ?? undefined,
+    mySectionId: r.my_section_id ?? undefined,
     custom: (r.custom as Record<string, CustomValue>) ?? {},
     effortHours: r.effort_hours ?? undefined,
     dueDate: r.due_date ?? undefined,
@@ -155,9 +157,9 @@ function rowToComment(r: CommentRow): Comment {
   return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [], reactions: r.reactions ?? {} };
 }
 
-interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; }
+interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; read_at?: string | null; }
 function rowToActivity(r: ActivityRow): Activity {
-  return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at };
+  return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined };
 }
 
 interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; }
@@ -249,6 +251,7 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("collaborators" in patch) row.collaborators = patch.collaborators ?? [];
   if ("reactions" in patch) row.reactions = patch.reactions ?? {};
   if ("sectionId" in patch) row.section_id = patch.sectionId ?? null;
+  if ("mySectionId" in patch) row.my_section_id = patch.mySectionId ?? null;
   if ("custom" in patch) row.custom = patch.custom ?? {};
   if ("effortHours" in patch) row.effort_hours = patch.effortHours ?? null;
   return row;
@@ -304,6 +307,7 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
   if (t.collaborators && t.collaborators.length) row.collaborators = t.collaborators;
   if (t.reactions && Object.keys(t.reactions).length) row.reactions = t.reactions;
   if (t.sectionId) row.section_id = t.sectionId;
+  if (t.mySectionId) row.my_section_id = t.mySectionId;
   if (t.custom && Object.keys(t.custom).length) row.custom = t.custom;
   if (t.effortHours != null) row.effort_hours = t.effortHours;
   return row;
@@ -1031,6 +1035,12 @@ export const store = {
     }
     if (res.error) throw res.error;
     return (res.data as ActivityRow[]).map(rowToActivity);
+  },
+  // mark all of the user's unread activity as read (best-effort; tolerates the
+  // read_at column not existing yet)
+  async markActivityRead(): Promise<void> {
+    if (!supabase) return;
+    try { await supabase.from("activity").update({ read_at: new Date().toISOString() }).is("read_at", null); } catch { /* column not present yet */ }
   },
 
   // Archive a single inbox item — hides it from the feed, keeps the history.

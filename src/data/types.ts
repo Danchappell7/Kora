@@ -120,6 +120,7 @@ export interface Task {
   collaborators?: string[];        // extra assignees beyond the owner
   reactions?: Record<string, string[]>; // emoji -> user ids
   sectionId?: string;              // section within its project
+  mySectionId?: string;            // personal section in My Tasks
   custom?: Record<string, CustomValue>; // custom field values, keyed by field def id
   effortHours?: number;            // estimate for workload planning
 }
@@ -228,6 +229,7 @@ export interface Activity {
   kind: ActivityKind;
   detail: string;
   createdAt: string;
+  readAt?: string;
 }
 
 export interface CalEvent {

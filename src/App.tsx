@@ -189,7 +189,7 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [] }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -216,6 +216,8 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onRenameSection?: (id: string, name: string) => void;
   onDeleteSection?: (id: string) => void;
   customFields?: CustomFieldDef[];
+  sectionField?: "sectionId" | "mySectionId";
+  sectionProjectId?: string;
 }) {
   const { success: toastImport } = useToast();
   const [filterOpen, setFilterOpen] = useState(false);
@@ -423,7 +425,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         )}
         </div>
       </div>
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} />}
@@ -526,6 +528,10 @@ export default function App() {
     const now = Date.now();
     setInboxSeenAt(now);
     try { localStorage.setItem("kanbo-inbox-seen", String(now)); } catch { /* private mode */ }
+    // mark every item read (optimistic + server, best-effort)
+    const stamp = new Date().toISOString();
+    setActivity((xs) => xs.map((a) => a.readAt ? a : { ...a, readAt: stamp }));
+    store.markActivityRead().catch(reportError);
   }, [route.view]);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -1170,9 +1176,9 @@ export default function App() {
   }, []);
   const deleteSection = useCallback((id: string) => {
     setSections((s) => s.filter((x) => x.id !== id));
-    const affected = (tasksRef.current ?? []).filter((t) => t.sectionId === id);
-    setTasks((ts) => ts && ts.map((t) => t.sectionId === id ? { ...t, sectionId: undefined } : t));
-    affected.forEach((t) => { noteWrite(t.id, { sectionId: undefined }); store.updateTask(t.id, { sectionId: undefined }).catch(reportError); });
+    const affected = (tasksRef.current ?? []).filter((t) => t.sectionId === id || t.mySectionId === id);
+    setTasks((ts) => ts && ts.map((t) => t.sectionId === id ? { ...t, sectionId: undefined } : t.mySectionId === id ? { ...t, mySectionId: undefined } : t));
+    affected.forEach((t) => { const patch = t.sectionId === id ? { sectionId: undefined } : { mySectionId: undefined }; noteWrite(t.id, patch); store.updateTask(t.id, patch).catch(reportError); });
     store.deleteSection(id).catch(reportError);
   }, [noteWrite]);
 
@@ -1441,7 +1447,7 @@ export default function App() {
     return active.length > 0 ? active : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   })();
 
-  const inboxCount = activity.filter((a) => new Date(a.createdAt).getTime() > inboxSeenAt).length;
+  const inboxCount = activity.filter((a) => !a.readAt && new Date(a.createdAt).getTime() > inboxSeenAt).length;
   const currentUser = getMember(currentUserId);
   const firstName = currentUser?.name?.trim().split(/\s+/)[0] || "there";
   const hour = new Date().getHours();
@@ -1470,8 +1476,10 @@ export default function App() {
           patchTask(id, patch);
         }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags}
           archivedTasks={archivedTasks}
-          sections={route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections}
+          sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
+          sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
+          sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
           header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} /> : undefined} />;
       default: return null;

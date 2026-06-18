@@ -233,7 +233,7 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete }: { label:
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [] }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
@@ -246,6 +246,8 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   onRenameSection?: (id: string, name: string) => void;
   onDeleteSection?: (id: string) => void;
   customFields?: CustomFieldDef[];
+  sectionField?: "sectionId" | "mySectionId";
+  sectionProjectId?: string;
 }) {
   const bulkEnabled = !!onBulkPatch;
   const [addingKey, setAddingKey] = useState<string | null>(null);
@@ -256,7 +258,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
     if (groupBy === "status") partial.status = groupKey as Task["status"];
     else if (groupBy === "priority") partial.priority = groupKey as Priority;
     else if (groupBy === "project") partial.projectId = groupKey;
-    else if (groupBy === "section") partial.sectionId = groupKey === "__none" ? undefined : groupKey;
+    else if (groupBy === "section") { const v = groupKey === "__none" ? undefined : groupKey; if (sectionField === "mySectionId") partial.mySectionId = v; else partial.sectionId = v; }
     onQuickAdd?.(partial);
     setAddDraft("");
   };
@@ -276,7 +278,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   const PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
 
   // which group a task sits in for the current grouping
-  const groupKeyOf = (t: Task): string => groupBy === "status" ? t.status : groupBy === "priority" ? t.priority : groupBy === "project" ? t.projectId : groupBy === "section" ? (t.sectionId ?? "__none") : "all";
+  const groupKeyOf = (t: Task): string => groupBy === "status" ? t.status : groupBy === "priority" ? t.priority : groupBy === "project" ? t.projectId : groupBy === "section" ? (t[sectionField] ?? "__none") : "all";
   // drop a dragged task next to a target row: change its group field if needed, and reposition
   const onRowDrop = (draggedId: string, targetId: string, half: "top" | "bottom") => {
     setDragId(null); setHover(null);
@@ -289,7 +291,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       patch.completedAt = target.status === "done" ? toLocalISO(new Date()) : undefined;
     } else if (groupBy === "priority" && dragged.priority !== target.priority) patch.priority = target.priority;
     else if (groupBy === "project" && dragged.projectId !== target.projectId) patch.projectId = target.projectId;
-    else if (groupBy === "section" && (dragged.sectionId ?? "") !== (target.sectionId ?? "")) patch.sectionId = target.sectionId;
+    else if (groupBy === "section" && (dragged[sectionField] ?? "") !== (target[sectionField] ?? "")) { if (sectionField === "mySectionId") patch.mySectionId = target.mySectionId; else patch.sectionId = target.sectionId; }
     const groupItems = tasks.filter((t) => t.id !== draggedId && groupKeyOf(t) === groupKeyOf(target)).sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.id.localeCompare(b.id));
     const ti = groupItems.findIndex((t) => t.id === targetId);
     const at = half === "top" ? ti : ti + 1;
@@ -337,8 +339,8 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   } else if (groupBy === "section") {
     // named sections (kept even when empty, so you can add into them) + a "No section" bucket
     const ordered = [...sections].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-    groups = ordered.map((s) => ({ key: s.id, label: s.name, color: "var(--accent)", icon: "layers" as IconName, items: topLevel.filter((t) => t.sectionId === s.id).sort(sortFn) }));
-    const none = topLevel.filter((t) => !t.sectionId || !ordered.some((s) => s.id === t.sectionId)).sort(sortFn);
+    groups = ordered.map((s) => ({ key: s.id, label: s.name, color: "var(--accent)", icon: "layers" as IconName, items: topLevel.filter((t) => t[sectionField] === s.id).sort(sortFn) }));
+    const none = topLevel.filter((t) => !t[sectionField] || !ordered.some((s) => s.id === t[sectionField])).sort(sortFn);
     if (none.length || ordered.length === 0) groups.push({ key: "__none", label: "No section", color: "var(--ink-4)", icon: "layers" as IconName, items: none });
   } else if (groupBy === "due") {
     // the "My Tasks" planner: bucket by when work is due
@@ -404,8 +406,8 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
           ))}
         </div>
       ))}
-      {groupBy === "section" && onCreateSection && (sections[0]?.projectId || tasks[0]?.projectId) && (
-        <button onClick={() => { const n = window.prompt("New section name"); if (n?.trim()) onCreateSection(sections[0]?.projectId ?? tasks[0]!.projectId, n.trim()); }}
+      {groupBy === "section" && onCreateSection && (sectionProjectId || sections[0]?.projectId || tasks[0]?.projectId) && (
+        <button onClick={() => { const n = window.prompt("New section name"); if (n?.trim()) onCreateSection(sectionProjectId ?? sections[0]?.projectId ?? tasks[0]!.projectId, n.trim()); }}
           style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 18px", padding: "9px 13px", border: "1px dashed var(--hairline-strong)", borderRadius: 10, background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13 }}>
           <Icon name="plus" size={15} /> Add section
         </button>
