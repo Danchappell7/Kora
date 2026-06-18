@@ -44,7 +44,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
   const hasSubs = (task.subtasks?.length ?? 0) > 0;
 
   return (
-    <div style={{ borderBottom: "1px solid var(--hairline)" }}>
+    <div className="krow-cv" style={{ borderBottom: "1px solid var(--hairline)" }}>
       <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="task-row lift-row"
         draggable={draggable}
         onDragStart={draggable ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}

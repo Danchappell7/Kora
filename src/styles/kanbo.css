@@ -259,6 +259,9 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .lift:hover { transform: translateY(-2px); border-color: var(--hairline-strong); }
 .lift-row { transition: background .14s; }
 .lift-row:hover { background: var(--surface); }
+/* skip layout/paint for off-screen rows so large lists stay smooth
+   (the `auto` intrinsic size self-corrects to the real rendered height) */
+.krow-cv { content-visibility: auto; contain-intrinsic-size: auto 58px; }
 
 /* segmented control — CSS-driven active state */
 .kseg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--surface); border: 1px solid var(--hairline); }

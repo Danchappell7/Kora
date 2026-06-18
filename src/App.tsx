@@ -471,7 +471,13 @@ export default function App() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); }
-      if (e.key === "Escape") { setCmdOpen(false); setDetailId(null); }
+      if (e.key === "Escape") {
+        // close whatever transient overlay is open (idempotent; modals also
+        // handle their own Escape via the focus trap)
+        setCmdOpen(false); setDetailId(null); setSidebarOpen(false); setFocusOpen(false);
+        setUpgradeOpen(false); setNewTaskOpen(false); setNewProjectOpen(false);
+        setNewWorkspaceOpen(false); setDeleteProjectId(null);
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -1144,8 +1150,8 @@ export default function App() {
       <GlobalTipStyles />
       {isMobile ? (
         <>
-          {sidebarOpen && <div onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 49, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(2px)" }} />}
-          <div style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 50, transform: sidebarOpen ? "none" : "translateX(-100%)", transition: "transform .25s var(--ease)", boxShadow: sidebarOpen ? "var(--shadow-lg)" : "none" }}>
+          {sidebarOpen && <div aria-hidden="true" onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 49, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(2px)" }} />}
+          <div role="dialog" aria-modal="true" aria-label="Menu" aria-hidden={!sidebarOpen} style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 50, transform: sidebarOpen ? "none" : "translateX(-100%)", transition: "transform .25s var(--ease)", boxShadow: sidebarOpen ? "var(--shadow-lg)" : "none" }}>
             {sidebar}
           </div>
         </>
