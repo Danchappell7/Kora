@@ -512,6 +512,19 @@ export default function App() {
   });
   useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
   useEffect(() => { try { localStorage.setItem("kanbo-groupby", groupBy); } catch { /* private mode */ } }, [groupBy]);
+  // saved views per project: remember each project's view + grouping
+  const pviewKey = route.view === "project" && route.projectId ? `kanbo-pview-${route.projectId}` : null;
+  const skipPviewSave = useRef(false);
+  useEffect(() => {
+    if (!pviewKey) return;
+    try { const s = localStorage.getItem(pviewKey); if (s) { const c = JSON.parse(s); skipPviewSave.current = true; if (c.view) setView(c.view); if (c.groupBy) setGroupBy(c.groupBy); } } catch { /* private mode */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pviewKey]);
+  useEffect(() => {
+    if (!pviewKey) return;
+    if (skipPviewSave.current) { skipPviewSave.current = false; return; }
+    try { localStorage.setItem(pviewKey, JSON.stringify({ view, groupBy })); } catch { /* private mode */ }
+  }, [view, groupBy, pviewKey]);
   const [smart, setSmart] = useState(false);
   // unread inbox badge: count activity newer than the last time you opened the
   // inbox (persisted). New accounts start "caught up" rather than flooded.
