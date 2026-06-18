@@ -824,6 +824,11 @@ export default function App() {
 
   const patchTask = useCallback((id: string, patch: Partial<Task>) => {
     const prev = tasksRef.current?.find((t) => t.id === id);
+    // a task lives in its project's workspace — when the project changes, move
+    // the task's workspace with it so it doesn't vanish from the active view
+    if (patch.projectId !== undefined && patch.workspaceId === undefined) {
+      patch = { ...patch, workspaceId: getProject(patch.projectId)?.workspaceId ?? null };
+    }
     setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...patch } : t));
     noteWrite(id, patch);
     store.updateTask(id, patch).catch(reportError);
@@ -1185,7 +1190,7 @@ export default function App() {
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />

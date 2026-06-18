@@ -24,7 +24,7 @@ import {
   getProject, getMember, blockingTasks, dueState, fmtDue, timeAgo, DUE_PRESETS, presetDate,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
-import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName } from "../data/types";
+import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project } from "../data/types";
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
 
@@ -39,7 +39,7 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [] }: {
   taskId: string;
   tasks: Task[];
   /** open another task in this panel (used to drill into a sub-task) */
@@ -59,6 +59,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onRemoveDependency?: (taskId: string, dependsOn: string) => void;
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAddSubtask: (taskId: string, title: string) => void;
+  projects?: Project[];
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
   onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
@@ -259,6 +260,16 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                   }}><Icon name="flag" size={12} fill={p === "urgent" || p === "high" ? PRIORITY_META[p].color : "none"} style={{ color: PRIORITY_META[p].color }} />{PRIORITY_META[p].label}</button>
                 ))}
               </div>
+            </MetaRow>
+            <MetaRow icon="grid" label="Project">
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {proj && <span style={{ width: 9, height: 9, borderRadius: 3, background: proj.color, flexShrink: 0 }} />}
+                <select value={task.projectId} onChange={(e) => onPatch(task.id, { projectId: e.target.value })}
+                  style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", maxWidth: 220 }}>
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {!projects.some((p) => p.id === task.projectId) && <option value={task.projectId}>{proj?.name || "Project"}</option>}
+                </select>
+              </span>
             </MetaRow>
             <MetaRow icon="user" label="Assignee">
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
