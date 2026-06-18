@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -27,6 +27,7 @@ export interface Bootstrap {
   goals: Goal[];
   portfolios: Portfolio[];
   statusUpdates: StatusUpdate[];
+  automationRules: AutomationRule[];
 }
 
 export interface AuthedUser {
@@ -323,6 +324,8 @@ interface PortfolioRow { id: string; workspace_id: string | null; name: string; 
 const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [] });
 interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string }
 const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at });
+interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
+const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: "task_created", actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string }
 export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
@@ -348,7 +351,7 @@ export const store = {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
-        sections: [], customFields: [], savedSearches: [], goals: [], portfolios: [], statusUpdates: [],
+        sections: [], customFields: [], savedSearches: [], goals: [], portfolios: [], statusUpdates: [], automationRules: [],
       };
     }
     // resolve the REAL authenticated user from the live session — robust to a
@@ -456,6 +459,11 @@ export const store = {
       const { data: suData } = await supabase.from("status_updates").select("*").order("created_at", { ascending: false });
       statusUpdates = ((suData as StatusUpdateRow[] | null) ?? []).map(rowToStatusUpdate);
     } catch { /* table not present yet */ }
+    let automationRules: AutomationRule[] = [];
+    try {
+      const { data: arData } = await supabase.from("automation_rules").select("*");
+      automationRules = ((arData as AutomationRuleRow[] | null) ?? []).map(rowToRule);
+    } catch { /* table not present yet */ }
 
     setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
     return {
@@ -473,6 +481,7 @@ export const store = {
       goals,
       portfolios,
       statusUpdates,
+      automationRules,
     };
   },
 
@@ -728,6 +737,30 @@ export const store = {
     const { data, error } = await supabase.from("status_updates").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, summary: input.summary, status: input.status }).select("*").single();
     if (error) throw error;
     return rowToStatusUpdate(data as StatusUpdateRow);
+  },
+
+  /* ---------- automation rules ---------- */
+  async createRule(input: { workspaceId: string | null; projectId: string; name: string; actions: AutomationAction[] }, userId: string): Promise<AutomationRule> {
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, name: input.name, trigger: "task_created", actions: input.actions, enabled: true };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("automation_rules").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, trigger: "task_created", actions: input.actions, enabled: true }).select("*").single();
+    if (error) throw error;
+    return rowToRule(data as AutomationRuleRow);
+  },
+  async updateRule(id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("name" in patch) row.name = patch.name;
+    if ("actions" in patch) row.actions = patch.actions;
+    if ("enabled" in patch) row.enabled = patch.enabled;
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("automation_rules").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  async deleteRule(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("automation_rules").delete().eq("id", id);
+    if (error) throw error;
   },
 
   // every attachment across a set of tasks (for the Files view)

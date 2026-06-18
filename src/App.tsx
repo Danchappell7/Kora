@@ -21,7 +21,7 @@ import { PlanView } from "./components/views/PlanView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
 import { SearchView } from "./components/views/SearchView";
-import { WorkloadView, GoalsView, PortfoliosView, STATUS_KIND_META } from "./components/views/ManagerViews";
+import { WorkloadView, GoalsView, PortfoliosView, AutomationsView, STATUS_KIND_META } from "./components/views/ManagerViews";
 import { InboxView, TeamView } from "./components/views/InboxTeam";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
@@ -36,7 +36,7 @@ import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, AutomationActionType } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -423,6 +423,7 @@ export default function App() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [statusUpdates, setStatusUpdates] = useState<StatusUpdate[]>([]);
+  const [automationRules, setAutomationRules] = useState<AutomationRule[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([{ id: null, name: "Personal", kind: "personal" }]);
   const [wsMembers, setWsMembers] = useState<WorkspaceMember[]>([]);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
@@ -506,6 +507,7 @@ export default function App() {
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
+  const rulesRef = useRef<AutomationRule[]>([]); rulesRef.current = automationRules;
   const tagsRef = useRef<Record<string, TagDef>>({}); tagsRef.current = tags;
   const workspacesRef = useRef<Workspace[]>([]); workspacesRef.current = workspaces;
   const workspaceRef = useRef<string | null>(null); workspaceRef.current = workspace;
@@ -562,7 +564,7 @@ export default function App() {
     (async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches); setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates); }
+        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches); setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates); setAutomationRules(b.automationRules); }
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
         const subn = await store.getSubscription();
@@ -596,7 +598,7 @@ export default function App() {
         setTasks(pending.length ? [...pending, ...merged] : merged);
         applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
         setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches);
-        setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates);
+        setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates); setAutomationRules(b.automationRules);
         setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
     };
@@ -777,6 +779,22 @@ export default function App() {
       });
   }, [log, toastError]);
 
+  // automation: apply enabled "task created" rules for the task's project,
+  // folded into the new task BEFORE it's created (no hot-path mutation, no loops)
+  const applyAutomation = useCallback((t: Task): Task => {
+    const rules = rulesRef.current.filter((r) => r.enabled && r.trigger === "task_created" && r.projectId === t.projectId);
+    if (rules.length === 0) return t;
+    let next = { ...t };
+    for (const r of rules) for (const a of r.actions) {
+      if (!a.value) continue;
+      if (a.type === "set_priority") next = { ...next, priority: a.value as Task["priority"] };
+      else if (a.type === "set_assignee") next = { ...next, assigneeId: a.value };
+      else if (a.type === "set_section") next = { ...next, sectionId: a.value };
+      else if (a.type === "add_tag") next = { ...next, tags: [...new Set([...(next.tags ?? []), a.value])] };
+    }
+    return next;
+  }, []);
+
   // inline quick-add: build a full task from a small partial (group context)
   const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {
     const r = routeRef.current;
@@ -786,14 +804,14 @@ export default function App() {
     const wsId = workspaceRef.current;
     const wsFallback = projectsRef.current.find((p) => (p.workspaceId ?? null) === wsId)?.id || "p-personal";
     const projectId = partial.projectId || (r.view === "project" ? r.projectId : undefined) || wsFallback;
-    persistTask({
+    persistTask(applyAutomation({
       id: "t-new-" + Date.now() + "-" + Math.round(Math.random() * 1e6),
       title: partial.title, description: "", status: partial.status || "todo", priority: partial.priority || "medium",
       projectId, assigneeId: partial.assigneeId || userIdRef.current, tags: [], dependencies: [], subtasks: [],
       comments: 0, aiScore: 50, aiReason: undefined, focusMin: 30, dur: 30, scheduled: null, planToday: true,
       recurrence: "none", dueDate: partial.dueDate, position: Date.now(),
-    });
-  }, [persistTask]);
+    }));
+  }, [persistTask, applyAutomation]);
 
   // task dependencies (blocked-by)
   const addDependency = useCallback((taskId: string, dependsOn: string) => {
@@ -926,7 +944,9 @@ export default function App() {
     patchTask(id, { collaborators: next });
   }, [patchTask]);
 
-  const createTask = persistTask;
+  // genuine "new task" entry points (modal, capture) run automation rules;
+  // duplicate / recurrence / sub-tasks call persistTask directly (no rules)
+  const createTask = useCallback((t: Task) => persistTask(applyAutomation(t)), [persistTask, applyAutomation]);
 
   const deleteTask = useCallback((id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id);
@@ -1152,6 +1172,24 @@ export default function App() {
       .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update."); });
   }, [toastError]);
 
+  // ---- automation rules ----
+  const createRule = useCallback((projectId: string, name: string, actions: AutomationAction[]) => {
+    const wsId = getProject(projectId)?.workspaceId ?? null;
+    const tmp: AutomationRule = { id: "tmp-rule-" + Date.now(), workspaceId: wsId, projectId, name, trigger: "task_created", actions, enabled: true };
+    setAutomationRules((rs) => [...rs, tmp]);
+    store.createRule({ workspaceId: wsId, projectId, name, actions }, userIdRef.current)
+      .then((rule) => setAutomationRules((rs) => rs.map((x) => x.id === tmp.id ? rule : x)))
+      .catch((e) => { reportError(e, { op: "createRule" }); setAutomationRules((rs) => rs.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the rule: " + (e?.message || e)); });
+  }, [toastError]);
+  const updateRule = useCallback((id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean }) => {
+    setAutomationRules((rs) => rs.map((x) => x.id === id ? { ...x, ...patch } : x));
+    store.updateRule(id, patch).catch(reportError);
+  }, []);
+  const deleteRule = useCallback((id: string) => {
+    setAutomationRules((rs) => rs.filter((x) => x.id !== id));
+    store.deleteRule(id).catch(reportError);
+  }, []);
+
   // ---- custom fields (per-project definitions) ----
   const createCustomField = useCallback((projectId: string, name: string, type: CustomFieldDef["type"], options: string[] = []) => {
     const wsId = getProject(projectId)?.workspaceId ?? null;
@@ -1329,6 +1367,7 @@ export default function App() {
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;
+      case "automations": return <AutomationsView rules={automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId))} projects={wsProjects} members={assignees} sections={sections} onCreate={createRule} onUpdate={updateRule} onDelete={deleteRule} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
@@ -1359,6 +1398,7 @@ export default function App() {
     workload: { title: "Workload", subtitle: "Capacity across your team.", breadcrumb: "Reporting" },
     goals: { title: "Goals", subtitle: "Objectives and their progress.", breadcrumb: "Reporting" },
     portfolios: { title: "Portfolios", subtitle: "Projects, rolled up.", breadcrumb: "Reporting" },
+    automations: { title: "Automations", subtitle: "Rules that run on new tasks.", breadcrumb: "Reporting" },
     tasks: { title, subtitle, breadcrumb },
     project: { title, subtitle, breadcrumb },
   };

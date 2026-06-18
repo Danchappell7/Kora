@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Icon, Avatar } from "../primitives";
 import { getProject, getMember, projectProgress } from "../../data/data";
-import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind } from "../../data/types";
+import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, Section, AutomationRule, AutomationAction, AutomationActionType } from "../../data/types";
 
 const inp: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" };
 
@@ -211,6 +211,91 @@ export function PortfoliosView({ portfolios, projects, tasks, onCreate, onUpdate
                     </div>
                   );
                 })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- AUTOMATIONS ---------------- */
+const PRIORITIES = ["low", "medium", "high", "urgent"];
+const ACTION_LABEL: Record<AutomationActionType, string> = {
+  set_priority: "Set priority to",
+  set_assignee: "Assign to",
+  set_section: "Move to section",
+  add_tag: "Add tag",
+};
+export function AutomationsView({ rules, projects, members, sections, onCreate, onUpdate, onDelete }: {
+  rules: AutomationRule[];
+  projects: Project[];
+  members: { id: string; name: string }[];
+  sections: Section[];
+  onCreate: (projectId: string, name: string, actions: AutomationAction[]) => void;
+  onUpdate: (id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean }) => void;
+  onDelete: (id: string) => void;
+}) {
+  const realProjects = projects.filter((p) => p.id !== "p-personal");
+  const [adding, setAdding] = useState(false);
+  const [pid, setPid] = useState(realProjects[0]?.id ?? "");
+  const [name, setName] = useState("");
+  const add = () => { const n = name.trim(); const proj = pid || realProjects[0]?.id; if (n && proj) { onCreate(proj, n, []); setName(""); setAdding(false); } };
+  const defaultValue = (type: AutomationActionType): string =>
+    type === "set_priority" ? "medium" : type === "set_assignee" ? (members[0]?.id ?? "") : "";
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
+        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>When a task is created in a project, automatically apply these actions.</p>
+        {realProjects.length > 0 && <button onClick={() => setAdding(true)} className="btn btn-accent" style={{ marginLeft: "auto", padding: "7px 13px", fontSize: 13 }}><Icon name="plus" size={15} /> New rule</button>}
+      </div>
+      {realProjects.length === 0 ? <EmptyState icon="chart" title="No projects yet" sub="Create a project first — rules run on its new tasks." /> : adding && (
+        <div className="glass" style={{ borderRadius: 12, padding: 12, marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select value={pid} onChange={(e) => setPid(e.target.value)} style={inp}>{realProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); else if (e.key === "Escape") setAdding(false); }} placeholder="Rule name, e.g. Triage inbound" style={{ ...inp, flex: 1, minWidth: 160 }} />
+          <button onClick={add} className="btn btn-accent" style={{ padding: "5px 12px", fontSize: 12.5 }}>Add</button>
+          <button onClick={() => setAdding(false)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}>Cancel</button>
+        </div>
+      )}
+      {rules.length === 0 && !adding && realProjects.length > 0 ? <EmptyState icon="chart" title="No rules yet" sub="Create a rule to auto-assign, prioritise or file new tasks." /> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {rules.map((rule) => {
+            const proj = getProject(rule.projectId);
+            const projSections = sections.filter((s) => s.projectId === rule.projectId);
+            const setActions = (actions: AutomationAction[]) => onUpdate(rule.id, { actions });
+            return (
+              <div key={rule.id} className="glass" style={{ borderRadius: 14, padding: "15px 17px", opacity: rule.enabled ? 1 : 0.6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  {proj && <span style={{ width: 9, height: 9, borderRadius: 2, background: proj.color, flexShrink: 0 }} />}
+                  <input value={rule.name} onChange={(e) => onUpdate(rule.id, { name: e.target.value })} style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }} />
+                  <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{proj?.name}</span>
+                  <button onClick={() => onUpdate(rule.id, { enabled: !rule.enabled })} title={rule.enabled ? "Enabled" : "Disabled"} aria-pressed={rule.enabled} style={{ width: 40, height: 22, borderRadius: 999, border: "none", cursor: "pointer", background: rule.enabled ? "var(--accent)" : "var(--surface-2)", position: "relative", transition: "background .15s" }}>
+                    <span style={{ position: "absolute", top: 2, left: rule.enabled ? 20 : 2, width: 18, height: 18, borderRadius: 99, background: "#fff", transition: "left .15s" }} />
+                  </button>
+                  <button onClick={() => onDelete(rule.id)} aria-label="Delete rule" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 8 }}>When a task is created →</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                  {rule.actions.map((a, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12.5, color: "var(--ink-3)", width: 120, flexShrink: 0 }}>{ACTION_LABEL[a.type]}</span>
+                      {a.type === "set_priority" && <select value={a.value} onChange={(e) => setActions(rule.actions.map((x, j) => j === i ? { ...x, value: e.target.value } : x))} style={inp}>{PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}</select>}
+                      {a.type === "set_assignee" && <select value={a.value} onChange={(e) => setActions(rule.actions.map((x, j) => j === i ? { ...x, value: e.target.value } : x))} style={inp}>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>}
+                      {a.type === "set_section" && <select value={a.value} onChange={(e) => setActions(rule.actions.map((x, j) => j === i ? { ...x, value: e.target.value } : x))} style={inp}><option value="">—</option>{projSections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}
+                      {a.type === "add_tag" && <input value={a.value} onChange={(e) => setActions(rule.actions.map((x, j) => j === i ? { ...x, value: e.target.value } : x))} placeholder="tag" style={inp} />}
+                      <button onClick={() => setActions(rule.actions.filter((_, j) => j !== i))} aria-label="Remove action" style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 14 }}>×</button>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                  {(Object.keys(ACTION_LABEL) as AutomationActionType[]).map((type) => (
+                    <button key={type} onClick={() => setActions([...rule.actions, { type, value: defaultValue(type) }])} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, border: "1px solid var(--hairline)", background: "transparent", cursor: "pointer", fontSize: 12, color: "var(--ink-3)", fontFamily: "var(--font-display)" }}>
+                      <Icon name="plus" size={12} /> {ACTION_LABEL[type]}
+                    </button>
+                  ))}
+                </div>
               </div>
             );
           })}

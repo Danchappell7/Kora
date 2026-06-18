@@ -166,6 +166,17 @@ export interface Portfolio {
   projectIds: string[];
   workspaceId?: string | null;
 }
+export type AutomationActionType = "set_priority" | "set_assignee" | "set_section" | "add_tag";
+export interface AutomationAction { type: AutomationActionType; value: string }
+export interface AutomationRule {
+  id: string;
+  projectId: string;
+  workspaceId?: string | null;
+  name: string;
+  trigger: "task_created";
+  actions: AutomationAction[];
+  enabled: boolean;
+}
 export type StatusKind = "on_track" | "at_risk" | "off_track";
 export interface StatusUpdate {
   id: string;
