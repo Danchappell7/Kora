@@ -41,6 +41,36 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
 
 const fieldInputStyle: React.CSSProperties = { height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", maxWidth: 220 };
 
+type MdKind = "bold" | "italic" | "code" | "link" | "bullet";
+function applyMd(el: HTMLTextAreaElement, value: string, setValue: (v: string) => void, kind: MdKind) {
+  const start = el.selectionStart ?? value.length, end = el.selectionEnd ?? value.length;
+  const sel = value.slice(start, end);
+  let insert = sel;
+  if (kind === "bold") insert = `**${sel || "bold"}**`;
+  else if (kind === "italic") insert = `*${sel || "italic"}*`;
+  else if (kind === "code") insert = `\`${sel || "code"}\``;
+  else if (kind === "link") insert = `[${sel || "text"}](url)`;
+  else if (kind === "bullet") insert = (sel || "item").split("\n").map((l) => `- ${l}`).join("\n");
+  setValue(value.slice(0, start) + insert + value.slice(end));
+  requestAnimationFrame(() => { el.focus(); const p = start + insert.length; try { el.setSelectionRange(p, p); } catch { /* ignore */ } });
+}
+function MdToolbar({ getEl, value, setValue }: { getEl: () => HTMLTextAreaElement | null; value: string; setValue: (v: string) => void }) {
+  const tbtn = (label: React.ReactNode, kind: MdKind, title: string, style: React.CSSProperties = {}) => (
+    <button type="button" title={title} aria-label={title}
+      onMouseDown={(e) => { e.preventDefault(); const el = getEl(); if (el) applyMd(el, value, setValue, kind); }}
+      style={{ minWidth: 26, height: 26, padding: "0 6px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 13, display: "inline-flex", alignItems: "center", justifyContent: "center", ...style }}>{label}</button>
+  );
+  return (
+    <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+      {tbtn("B", "bold", "Bold", { fontWeight: 700 })}
+      {tbtn("I", "italic", "Italic", { fontStyle: "italic" })}
+      {tbtn(<Icon name="link" size={13} />, "link", "Link")}
+      {tbtn(<Icon name="list" size={13} />, "bullet", "Bullet list")}
+      {tbtn(<span className="mono" style={{ fontSize: 12 }}>{"<>"}</span>, "code", "Code")}
+    </div>
+  );
+}
+
 function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete }: {
   task: Task;
   fields: CustomFieldDef[];
@@ -159,6 +189,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [depQuery, setDepQuery] = useState("");
   const commentRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
+  const descRef = useRef<HTMLTextAreaElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
@@ -456,8 +487,10 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <div style={{ marginBottom: 20 }}>
             <div className="kicker" style={{ marginBottom: 8 }}>Description</div>
             {descEditing ? (
-              // eslint-disable-next-line jsx-a11y/no-autofocus
-              <textarea autoFocus
+              <>
+              <MdToolbar getEl={() => descRef.current} value={desc} setValue={setDesc} />
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+              <textarea autoFocus ref={descRef}
                 value={desc}
                 onChange={(e) => setDesc(e.target.value)}
                 onBlur={() => { setDescEditing(false); if (desc !== task.description) onPatch(task.id, { description: desc }); }}
@@ -465,6 +498,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 rows={Math.max(3, Math.min(10, (desc.match(/\n/g)?.length ?? 0) + 2))}
                 style={{ width: "100%", resize: "vertical", padding: "10px 12px", borderRadius: 11, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 14, lineHeight: 1.6, outline: "none" }}
               />
+              </>
             ) : (
               <div onClick={() => setDescEditing(true)} style={{ padding: "10px 12px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: desc ? "var(--ink-2)" : "var(--ink-4)", fontSize: 14, lineHeight: 1.6, cursor: "text", minHeight: 24 }}>
                 {desc ? renderRich(desc) : "Add a description…"}
