@@ -472,6 +472,15 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>hours</span>
               </span>
             </MetaRow>
+            <MetaRow icon="clock" label="Logged">
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                <input type="number" min={0} step={0.5} value={task.loggedHours ?? ""} onChange={(e) => onPatch(task.id, { loggedHours: e.target.value === "" ? undefined : Number(e.target.value) })}
+                  style={{ width: 80, height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+                <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>hours</span>
+                {[0.5, 1].map((h) => <button key={h} onClick={() => onPatch(task.id, { loggedHours: Math.round(((task.loggedHours ?? 0) + h) * 2) / 2 })} title={`Log ${h}h`} style={{ padding: "3px 8px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 11.5, fontFamily: "var(--font-display)" }}>+{h}h</button>)}
+                {task.effortHours != null && task.loggedHours != null && task.loggedHours > task.effortHours && <span style={{ fontSize: 11, color: "var(--prio-urgent)" }}>over estimate</span>}
+              </span>
+            </MetaRow>
             <MetaRow icon="grid" label="Tags">
               <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={onDeleteTag} small />
             </MetaRow>

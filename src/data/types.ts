@@ -123,6 +123,7 @@ export interface Task {
   mySectionId?: string;            // personal section in My Tasks
   custom?: Record<string, CustomValue>; // custom field values, keyed by field def id
   effortHours?: number;            // estimate for workload planning
+  loggedHours?: number;            // actual time logged
 }
 
 export type CustomValue = string | number | boolean | string[] | null;

@@ -97,6 +97,7 @@ interface TaskRow {
   section_id?: string | null;
   custom?: Record<string, unknown> | null;
   effort_hours?: number | null;
+  logged_hours?: number | null;
   subtasks?: { id: string; title: string; done: boolean; position?: number }[] | null;
   task_dependencies?: { depends_on: string }[] | null;
 }
@@ -119,6 +120,7 @@ function rowToTask(r: TaskRow): Task {
     mySectionId: r.my_section_id ?? undefined,
     custom: (r.custom as Record<string, CustomValue>) ?? {},
     effortHours: r.effort_hours ?? undefined,
+    loggedHours: r.logged_hours ?? undefined,
     dueDate: r.due_date ?? undefined,
     dueTime: r.due_time ?? undefined,
     startDate: r.start_date ?? undefined,
@@ -254,6 +256,7 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("mySectionId" in patch) row.my_section_id = patch.mySectionId ?? null;
   if ("custom" in patch) row.custom = patch.custom ?? {};
   if ("effortHours" in patch) row.effort_hours = patch.effortHours ?? null;
+  if ("loggedHours" in patch) row.logged_hours = patch.loggedHours ?? null;
   return row;
 }
 
@@ -310,6 +313,7 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
   if (t.mySectionId) row.my_section_id = t.mySectionId;
   if (t.custom && Object.keys(t.custom).length) row.custom = t.custom;
   if (t.effortHours != null) row.effort_hours = t.effortHours;
+  if (t.loggedHours != null) row.logged_hours = t.loggedHours;
   return row;
 }
 
