@@ -302,6 +302,34 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
     .filter((g): g is { project: Project; items: Task[] } => !!g.project && g.items.length > 0);
   const todayIdx = -START;
 
+  // bar geometry: span from start_date (if set) to due_date, else a focus-based lead-in
+  const geom = (t: Task) => {
+    const di = dayIndex(t.dueDate);
+    if (di == null) return { di: null as number | null, start: 0, span: 1 };
+    const sdi = t.startDate ? dayIndex(t.startDate) : null;
+    const start = (sdi != null && sdi <= di) ? Math.max(0, sdi) : Math.max(0, di - Math.ceil(t.focusMin / 60 / 2) - 1);
+    return { di, start, span: Math.max(1, di - start + 1) };
+  };
+  // pre-compute each bar's pixel position (fixed header/row heights) for dependency lines
+  const HEADER_H = 34;
+  const layout = new Map<string, { y: number; barL: number | null; barR: number | null }>();
+  let yAcc = 0;
+  byProject.forEach((g) => {
+    yAcc += HEADER_H;
+    g.items.forEach((t) => {
+      const gm = geom(t);
+      const inRange = gm.di != null && gm.di >= 0 && gm.di < DAYS;
+      layout.set(t.id, { y: yAcc + rowH / 2, barL: inRange ? labelW + gm.start * colW + 6 : null, barR: inRange ? labelW + (gm.start + gm.span) * colW - 6 : null });
+      yAcc += rowH;
+    });
+  });
+  const totalH = yAcc;
+  const depLines = tasks.flatMap((t) => (t.dependencies || []).map((dep) => {
+    const A = layout.get(dep), B = layout.get(t.id);
+    if (!A || !B || A.barR == null || B.barL == null) return null;
+    return { key: dep + ">" + t.id, x1: A.barR, y1: A.y, x2: B.barL, y2: B.y };
+  })).filter((l): l is { key: string; x1: number; y1: number; x2: number; y2: number } => !!l);
+
   if (byProject.length === 0) {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "grid", placeItems: "center" }}>
@@ -336,16 +364,21 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
         <div style={{ position: "relative" }}>
           {/* today line */}
           <div style={{ position: "absolute", top: 0, bottom: 0, left: labelW + todayIdx * colW + colW / 2, width: 2, background: "var(--accent)", opacity: 0.4, zIndex: 1, boxShadow: "0 0 12px var(--accent)" }} />
+          {/* dependency connectors */}
+          {depLines.length > 0 && (
+            <svg width={labelW + DAYS * colW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 3, overflow: "visible" }}>
+              <defs><marker id="tl-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--ink-4)" /></marker></defs>
+              {depLines.map((l) => { const mx = (l.x1 + l.x2) / 2; return <path key={l.key} d={`M${l.x1},${l.y1} C${mx},${l.y1} ${mx},${l.y2} ${l.x2},${l.y2}`} fill="none" stroke="var(--ink-4)" strokeWidth="1.5" opacity="0.45" markerEnd="url(#tl-arrow)" />; })}
+            </svg>
+          )}
           {byProject.map((g) => (
             <div key={g.project.id}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 18px 6px", position: "sticky", left: 0, width: labelW }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, height: 34, padding: "0 18px", position: "sticky", left: 0, width: labelW }}>
                 <span style={{ width: 8, height: 8, borderRadius: 2, background: g.project.color }} />
                 <span style={{ fontSize: 12.5, fontWeight: 600 }}>{g.project.name}</span>
               </div>
               {g.items.map((t) => {
-                const di = dayIndex(t.dueDate);
-                const start = Math.max(0, (di ?? 0) - Math.ceil(t.focusMin / 60 / 2) - 1);
-                const span = Math.max(1, (di ?? 0) - start + 1);
+                const { di, start, span } = geom(t);
                 const done = t.status === "done";
                 return (
                   <div key={t.id} style={{ display: "flex", height: rowH, alignItems: "center", position: "relative" }}>
@@ -353,14 +386,15 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
                       <StatusDot status={t.status} size={7} />{t.title}
                     </div>
                     <div style={{ position: "absolute", left: labelW, right: 0, top: 0, bottom: 0 }}
-                      onDragOver={onPatch ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-timeline")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } } : undefined}
+                      onDragOver={onPatch ? (e) => { const ty = e.dataTransfer.types; if (ty.includes("text/kanbo-timeline") || ty.includes("text/kanbo-tl-start")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } } : undefined}
                       onDrop={onPatch ? (e) => {
-                        if (!e.dataTransfer.types.includes("text/kanbo-timeline")) return;
-                        e.preventDefault();
-                        const id = e.dataTransfer.getData("text/kanbo-timeline"); if (!id) return;
                         const rect = e.currentTarget.getBoundingClientRect();
                         const idx = Math.max(0, Math.min(DAYS - 1, Math.floor((e.clientX - rect.left) / colW)));
-                        onPatch(id, { dueDate: toLocalISO(dates[idx]) });
+                        const dropIso = toLocalISO(dates[idx]);
+                        const moveId = e.dataTransfer.getData("text/kanbo-timeline");
+                        const startId = e.dataTransfer.getData("text/kanbo-tl-start");
+                        if (moveId) { e.preventDefault(); onPatch(moveId, { dueDate: dropIso }); }
+                        else if (startId) { e.preventDefault(); onPatch(startId, { startDate: dropIso }); }
                       } : undefined}>
                       {di != null && di >= 0 && di < DAYS && (
                         <div onClick={() => onOpen(t.id)} className="clickable" draggable={!!onPatch}
@@ -375,6 +409,7 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
                           }}
                           onMouseEnter={(e) => (e.currentTarget.style.transform = "translateY(-1px)")}
                           onMouseLeave={(e) => (e.currentTarget.style.transform = "none")}>
+                          {onPatch && <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/kanbo-tl-start", t.id); e.dataTransfer.effectAllowed = "move"; }} title="Drag to set the start date" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 7, cursor: "ew-resize", borderTopLeftRadius: 8, borderBottomLeftRadius: 8, background: "color-mix(in oklch, var(--ink) 12%, transparent)" }} />}
                           <span style={{ width: 6, height: 6, borderRadius: 99, background: done ? "var(--st-done)" : g.project.color, flexShrink: 0 }} />
                           <span className="truncate" style={{ fontSize: 11.5, color: "var(--ink)" }}>{t.title}</span>
                           <Avatar id={t.assigneeId} size={16} />
