@@ -454,15 +454,17 @@ function ConnectCalendarMenu({ connections, onConnect, onDisconnect, syncing }: 
   );
 }
 
-export function CalendarView({ tasks, onOpen, connections = [], externalEvents = [], onConnect, onDisconnect, syncing }: {
+export function CalendarView({ tasks, onOpen, onPatch, connections = [], externalEvents = [], onConnect, onDisconnect, syncing }: {
   tasks: Task[];
   onOpen: (id: string) => void;
+  onPatch?: (id: string, patch: Partial<Task>) => void;
   connections?: CalendarConnection[];
   externalEvents?: ExternalEvent[];
   onConnect?: (p: CalProvider) => void;
   onDisconnect?: (p: CalProvider) => void;
   syncing?: boolean;
 }) {
+  const [mode, setMode] = useState<"month" | "week">("month");
   // month navigation (0 = current month)
   const [monthOffset, setMonthOffset] = useState(0);
   const viewMonth = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth() + monthOffset, 1);
@@ -558,30 +560,49 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
     );
   }
 
+  // unified date grid for month OR current week (full Date per cell)
+  const weekStartDate = (() => { const t = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()); const dow = (t.getDay() + 6) % 7; t.setDate(t.getDate() - dow); return t; })();
+  const gridDates: (Date | null)[] = mode === "week"
+    ? Array.from({ length: 7 }, (_, i) => { const d = new Date(weekStartDate); d.setDate(weekStartDate.getDate() + i); return d; })
+    : (() => { const arr: (Date | null)[] = []; for (let i = 0; i < startDow; i++) arr.push(null); for (let d = 1; d <= daysInMonth; d++) arr.push(new Date(year, month, d)); while (arr.length % 7) arr.push(null); return arr; })();
+  const todayIso = toLocalISO(new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()));
+  const modeToggle = (
+    <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
+      {(["month", "week"] as const).map((m) => (
+        <button key={m} onClick={() => setMode(m)} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, textTransform: "capitalize", background: mode === m ? "var(--accent)" : "transparent", color: mode === m ? "var(--on-accent)" : "var(--ink-3)" }}>{m}</button>
+      ))}
+    </div>
+  );
+
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "18px 24px 28px" }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-        <MonthNav />
+        {mode === "month" ? <MonthNav /> : <span style={{ fontSize: 14, fontWeight: 600 }}>This week</span>}
+        {modeToggle}
         <div style={{ flex: 1 }} />
         {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 8 }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="kicker" style={{ textAlign: "center", padding: "4px 0" }}>{d}</div>)}
       </div>
-      <div className="glass" style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: "minmax(118px,1fr)", gap: 1, padding: 1, borderRadius: 16, overflow: "hidden", background: "var(--hairline)" }}>
-        {cells.map((d, i) => {
-          const dayIso = d ? iso(d) : "";
-          const dayTasks = d ? tasks.filter((t) => t.dueDate === dayIso) : [];
-          const dayEvents = d ? (evByDate[dayIso] ?? []) : [];
-          const isToday = d === todayD;
-          const overflow = Math.max(0, dayTasks.length - 3) + Math.max(0, dayEvents.length - 2);
+      <div className="glass" style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: mode === "week" ? "minmax(320px,1fr)" : "minmax(118px,1fr)", gap: 1, padding: 1, borderRadius: 16, overflow: "hidden", background: "var(--hairline)" }}>
+        {gridDates.map((date, i) => {
+          const dayIso = date ? toLocalISO(date) : "";
+          const dayTasks = date ? tasks.filter((t) => t.dueDate === dayIso) : [];
+          const dayEvents = date ? (evByDate[dayIso] ?? []) : [];
+          const isToday = !!date && dayIso === todayIso;
+          const taskCap = mode === "week" ? 99 : 3;
+          const overflow = mode === "week" ? 0 : Math.max(0, dayTasks.length - 3) + Math.max(0, dayEvents.length - 2);
           return (
-            <div key={i} style={{ background: d ? "var(--surface)" : "color-mix(in oklch, var(--bg-deep) 30%, transparent)", padding: 9, minHeight: 0, display: "flex", flexDirection: "column", gap: 5 }}>
-              {d && (
+            <div key={i}
+              onDragOver={onPatch && date ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-cal")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } } : undefined}
+              onDrop={onPatch && date ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-cal")) return; e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-cal"); if (id) onPatch(id, { dueDate: dayIso }); } : undefined}
+              style={{ background: date ? "var(--surface)" : "color-mix(in oklch, var(--bg-deep) 30%, transparent)", padding: 9, minHeight: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+              {date && (
                 <>
-                  <span className="mono tnum" style={{ fontSize: 12, fontWeight: 600, alignSelf: "flex-start", color: isToday ? "var(--on-accent)" : "var(--ink-3)", background: isToday ? "var(--accent)" : "transparent", borderRadius: 7, padding: isToday ? "1px 7px" : "1px 2px", boxShadow: isToday ? "0 0 12px var(--accent-glow)" : "none" }}>{d}</span>
+                  <span className="mono tnum" style={{ fontSize: 12, fontWeight: 600, alignSelf: "flex-start", color: isToday ? "var(--on-accent)" : "var(--ink-3)", background: isToday ? "var(--accent)" : "transparent", borderRadius: 7, padding: isToday ? "1px 7px" : "1px 2px", boxShadow: isToday ? "0 0 12px var(--accent-glow)" : "none" }}>{date.getDate()}</span>
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, overflow: "hidden" }}>
-                    {dayEvents.slice(0, 2).map((e) => {
+                    {dayEvents.slice(0, mode === "week" ? 99 : 2).map((e) => {
                       const color = PROVIDER_META[(e.provider as CalProvider)]?.color || "var(--ink-3)";
                       const time = fmtTime(e);
                       return (
@@ -594,16 +615,19 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
                         </span>
                       );
                     })}
-                    {dayTasks.slice(0, 3).map((t) => {
+                    {dayTasks.slice(0, taskCap).map((t) => {
                       const proj = getProject(t.projectId);
                       return (
-                        <button key={t.id} onClick={() => onOpen(t.id)} className="truncate" style={{
-                          display: "flex", alignItems: "center", gap: 5, fontSize: 11, padding: "3px 6px", borderRadius: 6, cursor: "pointer",
-                          border: "none", textAlign: "left", color: t.status === "done" ? "var(--ink-4)" : "var(--ink-2)",
-                          textDecoration: t.status === "done" ? "line-through" : "none",
-                          background: `color-mix(in oklch, ${proj?.color || "var(--accent)"} 14%, transparent)`,
-                          borderLeft: `2px solid ${proj?.color || "var(--accent)"}`,
-                        }}>
+                        <button key={t.id} onClick={() => onOpen(t.id)} className="truncate" draggable={!!onPatch}
+                          onDragStart={onPatch ? (e) => { e.dataTransfer.setData("text/kanbo-cal", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
+                          title={onPatch ? "Drag to another day to reschedule" : undefined}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 5, fontSize: 11, padding: "3px 6px", borderRadius: 6, cursor: onPatch ? "grab" : "pointer",
+                            border: "none", textAlign: "left", color: t.status === "done" ? "var(--ink-4)" : "var(--ink-2)",
+                            textDecoration: t.status === "done" ? "line-through" : "none",
+                            background: `color-mix(in oklch, ${proj?.color || "var(--accent)"} 14%, transparent)`,
+                            borderLeft: `2px solid ${proj?.color || "var(--accent)"}`,
+                          }}>
                           <span className="truncate">{t.title}</span>
                         </button>
                       );
