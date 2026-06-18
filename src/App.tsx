@@ -1144,11 +1144,10 @@ export default function App() {
       </main>
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={allTasks} onOpenTask={setDetailId} onAction={(s) => {
-        if (s.label.includes("New task")) openNewTask();
-        else if (s.label.includes("prioritize") || s.label.includes("focus on next")) autoPrioritize();
-        else if (s.label.includes("focus")) openFocus();
-        else if (s.label.includes("board")) { setRoute({ view: "tasks" }); setView("board"); }
-        else if (s.label.includes("analytics")) setRoute({ view: "analytics" });
+        if (s.id === "new-task") openNewTask();
+        else if (s.id === "prioritize") autoPrioritize();
+        else if (s.id === "focus") openFocus();
+        else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
       {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}

@@ -9,6 +9,7 @@ import { getProject, getMember } from "../data/data";
 import type { IconName, Task, Status } from "../data/types";
 
 export interface Suggestion {
+  id: string;
   icon: IconName;
   label: string;
   hint: string;
@@ -16,11 +17,20 @@ export interface Suggestion {
 }
 
 const ACTIONS: Suggestion[] = [
-  { icon: "sparkles", label: "Auto-prioritize my day", hint: "AI", accent: true },
-  { icon: "plus", label: "New task", hint: "" },
-  { icon: "play", label: "Start a focus block", hint: "" },
-  { icon: "grid", label: "Switch to board view", hint: "" },
+  { id: "prioritize", icon: "sparkles", label: "Auto-prioritize my day", hint: "AI", accent: true },
+  { id: "new-task", icon: "plus", label: "New task", hint: "" },
+  { id: "focus", icon: "play", label: "Start a focus block", hint: "" },
+  { id: "board", icon: "grid", label: "Switch to board view", hint: "" },
 ];
+
+// subsequence fuzzy match — "bd" matches "board", "anl" matches "analytics"
+const fuzzy = (text: string, q: string): boolean => {
+  if (!q) return true;
+  const t = text.toLowerCase();
+  let i = 0;
+  for (const ch of q) { i = t.indexOf(ch, i); if (i === -1) return false; i += 1; }
+  return true;
+};
 
 const NAV: { view: string; label: string; icon: IconName }[] = [
   { view: "home", label: "Go to Home", icon: "home" },
@@ -48,9 +58,12 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   useEffect(() => { if (open) { setQ(""); setSel(0); setTimeout(() => inputRef.current?.focus(), 30); } }, [open]);
   useEffect(() => { setSel(0); }, [q]);
+  // keep the highlighted row visible when navigating by keyboard
+  useEffect(() => { listRef.current?.querySelector<HTMLElement>(`[data-idx="${sel}"]`)?.scrollIntoView({ block: "nearest" }); }, [sel]);
   if (!open) return null;
 
   const query = q.trim().toLowerCase();
@@ -62,8 +75,8 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
     return (t.tags || []).some((tg) => tg.toLowerCase().includes(query));
   };
   const taskItems: Item[] = (query ? tasks.filter(matchTask).slice(0, 8) : []).map((t) => ({ kind: "task", id: t.id, label: t.title, status: t.status }));
-  const actionItems: Item[] = ACTIONS.filter((a) => !query || a.label.toLowerCase().includes(query)).map((s) => ({ kind: "action", s }));
-  const navItems: Item[] = NAV.filter((n) => !query || n.label.toLowerCase().includes(query)).map((n) => ({ kind: "nav", view: n.view, label: n.label, icon: n.icon }));
+  const actionItems: Item[] = ACTIONS.filter((a) => fuzzy(a.label, query)).map((s) => ({ kind: "action", s }));
+  const navItems: Item[] = NAV.filter((n) => fuzzy(n.label, query) || fuzzy(n.view, query)).map((n) => ({ kind: "nav", view: n.view, label: n.label, icon: n.icon }));
   const items: Item[] = [...taskItems, ...actionItems, ...navItems];
   const asking = query.length > 0 && items.length === 0;
 
@@ -74,8 +87,8 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
     onClose();
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(items.length - 1, s + 1)); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(0, s - 1)); }
+    if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => items.length ? (s + 1) % items.length : 0); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => items.length ? (s - 1 + items.length) % items.length : 0); }
     else if (e.key === "Enter") { e.preventDefault(); if (items[sel]) activate(items[sel]); }
   };
 
@@ -84,7 +97,7 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
   const row = (it: Item, label: string, left: React.ReactNode, hint?: string, accent?: boolean) => {
     idx += 1; const i = idx; const active = i === sel;
     return (
-      <button key={it.kind + i} onMouseEnter={() => setSel(i)} onClick={() => activate(it)} style={{
+      <button key={it.kind + i} data-idx={i} onMouseEnter={() => setSel(i)} onClick={() => activate(it)} style={{
         display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "10px 11px", borderRadius: 10,
         border: "none", cursor: "pointer", textAlign: "left", background: active ? "var(--surface-2)" : "transparent",
         color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14,
@@ -106,7 +119,7 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
             style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 16 }} />
           <kbd className="mono" style={{ fontSize: 11, padding: "3px 7px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-4)" }}>ESC</kbd>
         </div>
-        <div style={{ padding: 8, maxHeight: 380, overflowY: "auto" }}>
+        <div ref={listRef} style={{ padding: 8, maxHeight: 380, overflowY: "auto" }}>
           {asking ? (
             <div style={{ padding: "16px 14px" }}>
               <div className="kicker" style={{ marginBottom: 10, color: "var(--accent)" }}>Kanbo AI</div>
