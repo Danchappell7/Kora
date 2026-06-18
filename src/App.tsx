@@ -189,7 +189,7 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [] }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -215,6 +215,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   onCreateSection?: (projectId: string, name: string) => void;
   onRenameSection?: (id: string, name: string) => void;
   onDeleteSection?: (id: string) => void;
+  customFields?: CustomFieldDef[];
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
@@ -222,15 +223,16 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   useEffect(() => { try { localStorage.setItem("kanbo-sort", sort); } catch { /* ignore */ } }, [sort]);
   const [search, setSearch] = useState("");
   // filters persist across sessions (key shared app-wide)
-  const [filters, setFilters] = useState<{ priority: string; assignee: string; tag: string; due: string; hideDone: boolean; showArchived: boolean }>(() => {
-    try { const s = localStorage.getItem("kanbo-filters"); if (s) return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, ...JSON.parse(s), showArchived: false }; } catch { /* ignore */ }
-    return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false };
+  const [filters, setFilters] = useState<{ priority: string; assignee: string; tag: string; due: string; hideDone: boolean; showArchived: boolean; custom: Record<string, string> }>(() => {
+    try { const s = localStorage.getItem("kanbo-filters"); if (s) return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, custom: {}, ...JSON.parse(s), showArchived: false }; } catch { /* ignore */ }
+    return { priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false, custom: {} };
   });
   useEffect(() => { try { localStorage.setItem("kanbo-filters", JSON.stringify(filters)); } catch { /* ignore */ } }, [filters]);
   const setFilter = (patch: Partial<typeof filters>) => setFilters((f) => ({ ...f, ...patch }));
   const isMobile = useMediaQuery("(max-width: 860px)");
-  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone, showArchived } = filters;
-  const filterActive = priorityFilter !== "all" || assigneeFilter !== "all" || tagFilter !== "all" || dueFilter !== "all" || hideDone;
+  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone, showArchived, custom: customFilter } = filters;
+  const cfActive = Object.values(customFilter ?? {}).some((v) => v && v !== "all");
+  const filterActive = priorityFilter !== "all" || assigneeFilter !== "all" || tagFilter !== "all" || dueFilter !== "all" || hideDone || cfActive;
   const dueOk = (t: Task) => {
     if (dueFilter === "all") return true;
     const ds = dueState(t.dueDate, t.status);
@@ -250,6 +252,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
     (assigneeFilter === "all" || t.assigneeId === assigneeFilter) &&
     (tagFilter === "all" || (t.tags || []).includes(tagFilter)) &&
     dueOk(t) &&
+    Object.entries(customFilter ?? {}).every(([fid, v]) => !v || v === "all" || String((t.custom ?? {})[fid] ?? "") === v) &&
     (q === "" || t.title.toLowerCase().includes(q)));
 
   return (
@@ -300,7 +303,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
               <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 224, maxHeight: 420, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "2px 6px 8px" }}>
                   <span className="kicker">Filters</span>
-                  {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
+                  {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false, custom: {} })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
                 </div>
 
                 <FilterSection label="Priority">
@@ -324,6 +327,18 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
                     {Object.entries(allTags).map(([id, t]) => <FilterOption key={id} label={t.label} dot={t.color} active={tagFilter === id} onClick={() => setFilter({ tag: id })} />)}
                   </FilterSection>
                 )}
+
+                {/* custom-field filters (dropdown / people fields) */}
+                {customFields.filter((f) => f.type === "dropdown" || f.type === "people").map((f) => {
+                  const cur = customFilter?.[f.id] ?? "all";
+                  const opts = f.type === "people" ? members.map((m) => ({ v: m.id, l: m.name })) : f.options.map((o) => ({ v: o, l: o }));
+                  return (
+                    <FilterSection key={f.id} label={f.name}>
+                      <FilterOption label="Any" active={cur === "all"} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: "all" } })} />
+                      {opts.map((o) => <FilterOption key={o.v} label={o.l} active={cur === o.v} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: o.v } })} />)}
+                    </FilterSection>
+                  );
+                })}
 
                 <div className="divider" style={{ margin: "6px 4px" }} />
                 <button onClick={() => setFilter({ hideDone: !hideDone })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
@@ -1327,6 +1342,7 @@ export default function App() {
           archivedTasks={archivedTasks}
           sections={route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
+          customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
           header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} /> : undefined} />;
       default: return null;
     }
