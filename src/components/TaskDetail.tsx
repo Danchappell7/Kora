@@ -24,7 +24,7 @@ import {
   getProject, getMember, blockingTasks, dueState, fmtDue, timeAgo, DUE_PRESETS, presetDate,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
-import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project } from "../data/types";
+import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue } from "../data/types";
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
 
@@ -39,7 +39,7 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [] }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [] }: {
   taskId: string;
   tasks: Task[];
   /** open another task in this panel (used to drill into a sub-task) */
@@ -60,6 +60,10 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onToggleSubtask: (taskId: string, subId: string) => void;
   onAddSubtask: (taskId: string, title: string) => void;
   projects?: Project[];
+  onToggleFollow?: (id: string) => void;
+  onToggleTaskReaction?: (id: string, emoji: string) => void;
+  onToggleCollaborator?: (id: string, memberId: string) => void;
+  customFields?: CustomFieldDef[];
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
   onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
@@ -118,6 +122,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const dependents = tasks.filter((t) => t.dependencies?.includes(task.id));
   const children = tasks.filter((t) => t.parentId === task.id);
   const parent = task.parentId ? tasks.find((t) => t.id === task.parentId) : undefined;
+  const following = (task.followers ?? []).includes(currentUserId);
+  const taskReactions = task.reactions ?? {};
   const done = task.status === "done";
   const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
   const activeMembers = members.filter((m) => m.status === "active" && m.userId);
@@ -201,6 +207,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <button className="btn-icon" onClick={onClose} style={{ border: "none" }}><Icon name="x" size={18} /></button>
           <div style={{ flex: 1 }} />
           {proj && <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--ink-3)" }}><span style={{ width: 8, height: 8, borderRadius: 2, background: proj.color }} />{proj.name}</span>}
+          {onToggleFollow && <button className="btn-icon" onClick={() => onToggleFollow(task.id)} title={following ? "Following — click to unfollow" : "Follow for updates"} aria-pressed={following} style={{ border: "none", color: following ? "var(--accent)" : "var(--ink-3)" }}><Icon name="bell" size={16} /></button>}
           <button className="btn-icon" onClick={() => { try { navigator.clipboard?.writeText(`${location.origin}/?task=${task.id}`); } catch { /* ignore */ } setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Copy link to task" style={{ border: "none", color: copied ? "var(--accent)" : "var(--ink-3)" }}><Icon name={copied ? "check" : "link"} size={16} /></button>
           {onDuplicate && <button className="btn-icon" onClick={() => { onDuplicate(task.id); onClose(); }} title="Duplicate task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="layers" size={16} /></button>}
           <button className="btn-icon" onClick={() => { saveTemplate({ name: task.title, title: task.title, priority: task.priority, tags: task.tags, focusMin: task.focusMin, recurrence: task.recurrence ?? "none", description: desc }); setTmplSaved(true); setTimeout(() => setTmplSaved(false), 1500); }} title="Save as template" style={{ border: "none", color: tmplSaved ? "var(--accent)" : "var(--ink-3)" }}><Icon name={tmplSaved ? "check" : "briefcase"} size={16} /></button>
@@ -223,6 +230,23 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               style={{ flex: 1, resize: "none", border: "none", outline: "none", background: "transparent", fontFamily: "var(--font-display)", fontSize: 21, fontWeight: 600, lineHeight: 1.25, letterSpacing: "-0.02em", color: done ? "var(--ink-3)" : "var(--ink)", textDecoration: done ? "line-through" : "none", overflow: "hidden" }}
             />
           </div>
+
+          {/* task reactions */}
+          {onToggleTaskReaction && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "10px 0 2px", paddingLeft: 34 }}>
+              {REACTION_EMOJIS.map((emoji) => {
+                const uids = taskReactions[emoji] ?? [];
+                const mine = uids.includes(currentUserId);
+                return (
+                  <button key={emoji} onClick={() => onToggleTaskReaction(task.id, emoji)} title={uids.length ? `${uids.length} reacted` : "React"}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, cursor: "pointer", fontSize: 13,
+                      border: `1px solid ${mine ? "var(--accent)" : "var(--hairline)"}`, background: mine ? "var(--accent-dim)" : "transparent", opacity: uids.length || mine ? 1 : 0.55 }}>
+                    {emoji}{uids.length > 0 && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{uids.length}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* AI recommendation */}
           {task.aiReason && !done && (
@@ -281,6 +305,22 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 </select>
               </span>
             </MetaRow>
+            {onToggleCollaborator && assignable.length > 1 && (
+              <MetaRow icon="users" label="Collaborators">
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {assignable.filter((p) => p.id !== task.assigneeId).map((p) => {
+                    const on = (task.collaborators ?? []).includes(p.id);
+                    return (
+                      <button key={p.id} onClick={() => onToggleCollaborator(task.id, p.id)} aria-pressed={on}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 9px 3px 4px", borderRadius: 999, cursor: "pointer", fontSize: 12.5,
+                          border: `1px solid ${on ? "var(--accent)" : "var(--hairline)"}`, background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--ink)" : "var(--ink-3)" }}>
+                        <Avatar id={p.id} size={18} /> {p.name}{on && <Icon name="check" size={12} style={{ color: "var(--accent)" }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </MetaRow>
+            )}
             <MetaRow icon="calendar" label="Start">
               <input type="date" value={task.startDate || ""} max={task.dueDate || undefined} onChange={(e) => onPatch(task.id, { startDate: e.target.value || undefined })}
                 style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />

@@ -34,7 +34,7 @@ import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -365,6 +365,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tags, setTags] = useState<Record<string, TagDef>>({});
   const [activity, setActivity] = useState<Activity[]>([]);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [customFields, setCustomFields] = useState<CustomFieldDef[]>([]);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([{ id: null, name: "Personal", kind: "personal" }]);
   const [wsMembers, setWsMembers] = useState<WorkspaceMember[]>([]);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
@@ -504,7 +507,7 @@ export default function App() {
     (async () => {
       try {
         const b = await store.bootstrap(auth.user);
-        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); }
+        if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches); }
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
         const subn = await store.getSubscription();
@@ -537,6 +540,7 @@ export default function App() {
         const pending = pendingTasksRef.current.filter((p) => !b.tasks.some((d) => d.id === p.id));
         setTasks(pending.length ? [...pending, ...merged] : merged);
         applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
+        setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches);
         setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
     };
@@ -768,6 +772,34 @@ export default function App() {
     noteWrite(id, { archivedAt: undefined });
     store.updateTask(id, { archivedAt: undefined }).catch(reportError);
   }, [noteWrite]);
+
+  // follow/unfollow a task (followers get its activity in their inbox)
+  const toggleFollow = useCallback((id: string) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    const uid = userIdRef.current;
+    const cur = t.followers ?? [];
+    const next = cur.includes(uid) ? cur.filter((f) => f !== uid) : [...cur, uid];
+    patchTask(id, { followers: next });
+  }, [patchTask]);
+
+  // toggle the signed-in user's emoji reaction on a task itself
+  const toggleTaskReaction = useCallback((id: string, emoji: string) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    const uid = userIdRef.current;
+    const r: Record<string, string[]> = { ...(t.reactions ?? {}) };
+    const list = r[emoji] ?? [];
+    r[emoji] = list.includes(uid) ? list.filter((x) => x !== uid) : [...list, uid];
+    if (r[emoji].length === 0) delete r[emoji];
+    patchTask(id, { reactions: r });
+  }, [patchTask]);
+
+  // add/remove a collaborator (extra assignee) on a task
+  const toggleCollaborator = useCallback((id: string, memberId: string) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    const cur = t.collaborators ?? [];
+    const next = cur.includes(memberId) ? cur.filter((c) => c !== memberId) : [...cur, memberId];
+    patchTask(id, { collaborators: next });
+  }, [patchTask]);
 
   // duplicate a task (fresh copy, not done, no comments/deps carried over)
   const duplicateTask = useCallback((id: string) => {
@@ -1116,7 +1148,7 @@ export default function App() {
   let newProj = getProject("");
   // "My tasks" spans every workspace — anything assigned to you, including tasks
   // someone assigned you in a shared workspace you're not currently viewing.
-  if (route.view === "tasks") { scoped = tasks.filter((t) => t.assigneeId === currentUserId && !t.archivedAt); }
+  if (route.view === "tasks") { scoped = tasks.filter((t) => (t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)) && !t.archivedAt); }
   else if (route.view === "project" && route.projectId) {
     const p = getProject(route.projectId); newProj = p;
     scoped = allTasks.filter((t) => t.projectId === route.projectId);
@@ -1211,7 +1243,7 @@ export default function App() {
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
