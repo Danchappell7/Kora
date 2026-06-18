@@ -24,7 +24,7 @@ import {
   getProject, getMember, blockingTasks, dueState, fmtDue, timeAgo, DUE_PRESETS, presetDate,
   STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
 } from "../data/data";
-import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue } from "../data/types";
+import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue, Section } from "../data/types";
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
 
@@ -114,7 +114,7 @@ function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection }: {
   taskId: string;
   tasks: Task[];
   /** open another task in this panel (used to drill into a sub-task) */
@@ -141,6 +141,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   customFields?: CustomFieldDef[];
   onCreateCustomField?: (projectId: string, name: string, type: CustomFieldDef["type"], options: string[]) => void;
   onDeleteCustomField?: (id: string) => void;
+  sections?: Section[];
+  onCreateSection?: (projectId: string, name: string) => void;
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
   onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
@@ -372,6 +374,18 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 </select>
               </span>
             </MetaRow>
+            {(sections.length > 0 || onCreateSection) && (
+              <MetaRow icon="layers" label="Section">
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <select value={task.sectionId ?? ""} onChange={(e) => onPatch(task.id, { sectionId: e.target.value || undefined })} style={fieldInputStyle}>
+                    <option value="">No section</option>
+                    {sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {task.sectionId && !sections.some((s) => s.id === task.sectionId) && <option value={task.sectionId}>(section)</option>}
+                  </select>
+                  {onCreateSection && <button onClick={() => { const n = window.prompt("New section name"); if (n?.trim()) onCreateSection(task.projectId, n.trim()); }} className="btn-icon" title="New section" aria-label="New section" style={{ border: "none", color: "var(--ink-4)", width: 28, height: 28 }}><Icon name="plus" size={15} /></button>}
+                </span>
+              </MetaRow>
+            )}
             <MetaRow icon="user" label="Assignee">
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                 <Avatar id={task.assigneeId} size={22} />

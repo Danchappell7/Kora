@@ -8,7 +8,7 @@ import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
-import type { Task, Subtask, IconName, Priority } from "../../data/types";
+import type { Task, Subtask, IconName, Priority, Section } from "../../data/types";
 import type { GroupBy } from "../../app-types";
 
 export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
@@ -204,19 +204,21 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
   );
 }
 
-function GroupHeader({ label, color, count, icon }: { label: string; color: string; count: number; icon?: IconName }) {
+function GroupHeader({ label, color, count, icon, onRename, onDelete }: { label: string; color: string; count: number; icon?: IconName; onRename?: () => void; onDelete?: () => void }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 18px 9px", position: "sticky", top: 0, zIndex: 2, background: "color-mix(in oklch, var(--bg) 86%, transparent)", backdropFilter: "blur(8px)" }}>
+    <div className="kgrouphdr" style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 18px 9px", position: "sticky", top: 0, zIndex: 2, background: "color-mix(in oklch, var(--bg) 86%, transparent)", backdropFilter: "blur(8px)" }}>
       {icon ? <Icon name={icon} size={14} style={{ color }} /> : <span style={{ width: 9, height: 9, borderRadius: 99, background: color, boxShadow: `0 0 8px color-mix(in oklch, ${color} 70%, transparent)` }} />}
-      <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em" }}>{label}</span>
+      <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em", cursor: onRename ? "text" : "default" }} onDoubleClick={onRename}>{label}</span>
       <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{count}</span>
+      {onRename && <button onClick={onRename} title="Rename section" aria-label="Rename section" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 2, display: "inline-flex" }}><Icon name="settings" size={13} /></button>}
+      {onDelete && <button onClick={onDelete} title="Delete section" aria-label="Delete section" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 2, fontSize: 15, lineHeight: 1 }}>×</button>}
     </div>
   );
 }
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [] }: {
+export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
@@ -224,6 +226,10 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   onQuickAdd?: (partial: Partial<Task> & { title: string }) => void;
   sort?: string;
   members?: { id: string; name: string }[];
+  sections?: Section[];
+  onCreateSection?: (projectId: string, name: string) => void;
+  onRenameSection?: (id: string, name: string) => void;
+  onDeleteSection?: (id: string) => void;
 }) {
   const bulkEnabled = !!onBulkPatch;
   const [addingKey, setAddingKey] = useState<string | null>(null);
@@ -234,6 +240,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
     if (groupBy === "status") partial.status = groupKey as Task["status"];
     else if (groupBy === "priority") partial.priority = groupKey as Priority;
     else if (groupBy === "project") partial.projectId = groupKey;
+    else if (groupBy === "section") partial.sectionId = groupKey === "__none" ? undefined : groupKey;
     onQuickAdd?.(partial);
     setAddDraft("");
   };
@@ -253,7 +260,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   const PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
 
   // which group a task sits in for the current grouping
-  const groupKeyOf = (t: Task): string => groupBy === "status" ? t.status : groupBy === "priority" ? t.priority : groupBy === "project" ? t.projectId : "all";
+  const groupKeyOf = (t: Task): string => groupBy === "status" ? t.status : groupBy === "priority" ? t.priority : groupBy === "project" ? t.projectId : groupBy === "section" ? (t.sectionId ?? "__none") : "all";
   // drop a dragged task next to a target row: change its group field if needed, and reposition
   const onRowDrop = (draggedId: string, targetId: string, half: "top" | "bottom") => {
     setDragId(null); setHover(null);
@@ -266,6 +273,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       patch.completedAt = target.status === "done" ? toLocalISO(new Date()) : undefined;
     } else if (groupBy === "priority" && dragged.priority !== target.priority) patch.priority = target.priority;
     else if (groupBy === "project" && dragged.projectId !== target.projectId) patch.projectId = target.projectId;
+    else if (groupBy === "section" && (dragged.sectionId ?? "") !== (target.sectionId ?? "")) patch.sectionId = target.sectionId;
     const groupItems = tasks.filter((t) => t.id !== draggedId && groupKeyOf(t) === groupKeyOf(target)).sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.id.localeCompare(b.id));
     const ti = groupItems.findIndex((t) => t.id === targetId);
     const at = half === "top" ? ti : ti + 1;
@@ -310,6 +318,12 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       .filter((x) => !!x.p)
       .map(({ pid, p }) => ({ key: pid, label: p!.name, color: p!.color, items: topLevel.filter((t) => t.projectId === pid).sort(sortFn) }))
       .filter((g) => g.items.length);
+  } else if (groupBy === "section") {
+    // named sections (kept even when empty, so you can add into them) + a "No section" bucket
+    const ordered = [...sections].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    groups = ordered.map((s) => ({ key: s.id, label: s.name, color: "var(--accent)", icon: "layers" as IconName, items: topLevel.filter((t) => t.sectionId === s.id).sort(sortFn) }));
+    const none = topLevel.filter((t) => !t.sectionId || !ordered.some((s) => s.id === t.sectionId)).sort(sortFn);
+    if (none.length || ordered.length === 0) groups.push({ key: "__none", label: "No section", color: "var(--ink-4)", icon: "layers" as IconName, items: none });
   } else if (groupBy === "due") {
     // the "My Tasks" planner: bucket by when work is due
     const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
@@ -351,7 +365,9 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
         </div>
       ) : groups.map((g) => (
         <div key={g.key}>
-          <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon} />
+          <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon}
+            onRename={groupBy === "section" && g.key !== "__none" && onRenameSection ? () => { const n = window.prompt("Rename section", g.label); if (n?.trim()) onRenameSection(g.key, n.trim()); } : undefined}
+            onDelete={groupBy === "section" && g.key !== "__none" && onDeleteSection ? () => { if (window.confirm(`Delete section "${g.label}"? Its tasks move to No section.`)) onDeleteSection(g.key); } : undefined} />
           <div>{g.items.map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
             selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
             draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
@@ -372,6 +388,12 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
           ))}
         </div>
       ))}
+      {groupBy === "section" && onCreateSection && (sections[0]?.projectId || tasks[0]?.projectId) && (
+        <button onClick={() => { const n = window.prompt("New section name"); if (n?.trim()) onCreateSection(sections[0]?.projectId ?? tasks[0]!.projectId, n.trim()); }}
+          style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 18px", padding: "9px 13px", border: "1px dashed var(--hairline-strong)", borderRadius: 10, background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13 }}>
+          <Icon name="plus" size={15} /> Add section
+        </button>
+      )}
       <div style={{ height: selectionActive ? 90 : 40 }} />
 
       {selectionActive && (

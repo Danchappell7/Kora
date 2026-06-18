@@ -49,6 +49,7 @@ const VIEW_OPTS: SegmentedOption<TaskView>[] = [
 
 const GROUP_OPTS: SegmentedOption<GroupBy>[] = [
   { value: "status", label: "Status" },
+  { value: "section", label: "Section" },
   { value: "due", label: "Due" },
   { value: "priority", label: "Priority" },
   { value: "project", label: "Project" },
@@ -159,7 +160,7 @@ function ProjectOverview({ project, tasks, onUpdate }: { project: Project; tasks
   );
 }
 
-function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header }: {
+function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection }: {
   tasks: Task[];
   allTasks: Task[];
   view: TaskView;
@@ -181,6 +182,10 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
   allTags: Record<string, TagDef>;
   archivedTasks?: Task[];
   header?: React.ReactNode;
+  sections?: Section[];
+  onCreateSection?: (projectId: string, name: string) => void;
+  onRenameSection?: (id: string, name: string) => void;
+  onDeleteSection?: (id: string) => void;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
@@ -314,7 +319,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         </button>
         </div>
       </div>
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
@@ -391,7 +396,7 @@ export default function App() {
     return "list";
   });
   const [groupBy, setGroupBy] = useState<GroupBy>(() => {
-    try { const s = localStorage.getItem("kanbo-groupby") as GroupBy | null; if (s && ["status", "due", "priority", "project", "none"].includes(s)) return s; } catch { /* private mode */ }
+    try { const s = localStorage.getItem("kanbo-groupby") as GroupBy | null; if (s && ["status", "section", "due", "priority", "project", "none"].includes(s)) return s; } catch { /* private mode */ }
     return "status";
   });
   useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
@@ -1020,6 +1025,28 @@ export default function App() {
     setDeleteProjectId(null);
   }, [applyProjects, noteWrite, noteDelete]);
 
+  // ---- sections (ordered groupings within a project) ----
+  const createSection = useCallback((projectId: string, name: string) => {
+    const wsId = getProject(projectId)?.workspaceId ?? null;
+    const pos = Date.now();
+    const tmp: Section = { id: "tmp-sec-" + Date.now(), projectId, workspaceId: wsId, name, position: pos };
+    setSections((s) => [...s, tmp]);
+    store.createSection({ projectId, workspaceId: wsId, name, position: pos }, userIdRef.current)
+      .then((sec) => setSections((s) => s.map((x) => x.id === tmp.id ? sec : x)))
+      .catch((e) => { reportError(e, { op: "createSection" }); setSections((s) => s.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the section: " + (e?.message || e)); });
+  }, [toastError]);
+  const renameSection = useCallback((id: string, name: string) => {
+    setSections((s) => s.map((x) => x.id === id ? { ...x, name } : x));
+    store.updateSection(id, { name }).catch(reportError);
+  }, []);
+  const deleteSection = useCallback((id: string) => {
+    setSections((s) => s.filter((x) => x.id !== id));
+    const affected = (tasksRef.current ?? []).filter((t) => t.sectionId === id);
+    setTasks((ts) => ts && ts.map((t) => t.sectionId === id ? { ...t, sectionId: undefined } : t));
+    affected.forEach((t) => { noteWrite(t.id, { sectionId: undefined }); store.updateTask(t.id, { sectionId: undefined }).catch(reportError); });
+    store.deleteSection(id).catch(reportError);
+  }, [noteWrite]);
+
   // ---- saved searches ----
   const saveSearch = useCallback((name: string, query: Record<string, unknown>) => {
     const tmp: SavedSearch = { id: "tmp-ss-" + Date.now(), name, query };
@@ -1218,6 +1245,8 @@ export default function App() {
           patchTask(id, patch);
         }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags}
           archivedTasks={archivedTasks}
+          sections={route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections}
+          onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
           header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} /> : undefined} />;
       default: return null;
     }
@@ -1274,7 +1303,7 @@ export default function App() {
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} onCreateSection={createSection} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
