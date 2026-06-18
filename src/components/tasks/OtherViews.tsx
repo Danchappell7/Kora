@@ -364,7 +364,7 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
       <div style={{ minWidth: labelW + DAYS * colW, padding: "8px 0 40px" }}>
         {/* axis */}
         <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "color-mix(in oklch, var(--bg) 88%, transparent)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--hairline)" }}>
-          <div style={{ width: labelW, flexShrink: 0, padding: "12px 18px", display: "flex", alignItems: "center", gap: 8 }}><span className="kicker">Task</span>{criticalSet.size > 0 && <span style={{ fontSize: 10.5, color: "var(--prio-urgent)", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--prio-urgent)" }} />critical path</span>}
+          <div style={{ width: labelW, flexShrink: 0, padding: "12px 18px", display: "flex", alignItems: "center", gap: 8 }}><span className="kicker">Task</span>{criticalSet.size > 0 && <span style={{ fontSize: 10.5, color: "var(--prio-urgent)", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--prio-urgent)" }} />critical path</span>}</div>
           {dates.map((d, i) => {
             const isToday = i === todayIdx;
             const weekend = d.getDay() === 0 || d.getDay() === 6;
