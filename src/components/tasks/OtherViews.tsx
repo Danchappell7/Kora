@@ -9,7 +9,9 @@ import {
   getProject, blockingTasks, dueState, fmtDue,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
-import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent } from "../../data/types";
+import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent, Attachment } from "../../data/types";
+import { store } from "../../data/store";
+import { reportError } from "../../lib/monitoring";
 
 type BoardGroup = "status" | "priority" | "project" | "assignee";
 
@@ -576,6 +578,60 @@ export function CalendarView({ tasks, onOpen, connections = [], externalEvents =
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- FILES (all attachments across the current scope) ---------------- */
+function bytes(n: number): string {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[]; onOpen: (id: string) => void }) {
+  const [files, setFiles] = useState<{ att: Attachment; task?: Task }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const ids = tasks.map((t) => t.id).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    store.listProjectAttachments(tasks.map((t) => t.id))
+      .then((atts) => { if (!cancelled) setFiles(atts.map((a) => ({ att: a, task: tasks.find((t) => t.id === a.taskId) }))); })
+      .catch(reportError)
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids]);
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px 40px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
+      {loading ? (
+        <div style={{ textAlign: "center", padding: "60px 24px", color: "var(--ink-4)", fontSize: 13 }}>Loading files…</div>
+      ) : files.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "70px 24px", color: "var(--ink-4)" }}>
+          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="folder" size={24} style={{ color: "var(--ink-4)" }} /></div>
+          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No files yet</p>
+          <p style={{ fontSize: 13, margin: "5px 0 0" }}>Attachments added to tasks here will appear in one place.</p>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+          {files.map(({ att, task }) => {
+            const img = att.mime?.startsWith("image/") && att.url;
+            return (
+              <div key={att.id} className="glass lift" onClick={() => task && onOpen(task.id)} style={{ borderRadius: 14, overflow: "hidden", cursor: task ? "pointer" : "default", display: "flex", flexDirection: "column" }}>
+                <div style={{ height: 110, background: "var(--surface-2)", display: "grid", placeItems: "center", overflow: "hidden" }}>
+                  {img ? <img src={att.url} alt={att.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Icon name="folder" size={26} style={{ color: "var(--ink-4)" }} />}
+                </div>
+                <div style={{ padding: "10px 12px" }}>
+                  <div className="truncate" style={{ fontSize: 13, fontWeight: 500 }}>{att.name}</div>
+                  <div className="truncate" style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 2 }}>{bytes(att.size)}{task ? " · " + task.title : ""}</div>
+                  {att.url && <a href={att.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ fontSize: 11.5, color: "var(--accent)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6 }}><Icon name="arrowUpRight" size={12} /> Open</a>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

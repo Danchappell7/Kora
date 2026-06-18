@@ -7,5 +7,5 @@ export interface Route {
   smart?: boolean;
 }
 
-export type TaskView = "list" | "board" | "timeline" | "calendar";
+export type TaskView = "list" | "board" | "timeline" | "calendar" | "files";
 export type GroupBy = "status" | "priority" | "project" | "due" | "none";

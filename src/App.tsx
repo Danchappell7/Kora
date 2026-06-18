@@ -16,7 +16,7 @@ import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
-import { BoardView, TimelineView, CalendarView } from "./components/tasks/OtherViews";
+import { BoardView, TimelineView, CalendarView, FilesView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
@@ -43,6 +43,7 @@ const VIEW_OPTS: SegmentedOption<TaskView>[] = [
   { value: "board", label: "Board", icon: "board" },
   { value: "timeline", label: "Timeline", icon: "timeline" },
   { value: "calendar", label: "Calendar", icon: "calendar" },
+  { value: "files", label: "Files", icon: "folder" },
 ];
 
 const GROUP_OPTS: SegmentedOption<GroupBy>[] = [
@@ -316,6 +317,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} />}
+      {view === "files" && <FilesView tasks={filtered} onOpen={onOpen} />}
     </>
   );
 }
@@ -384,7 +386,7 @@ export default function App() {
   const [route, setRouteRaw] = useState<Route>({ view: "plan" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
-    try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar"].includes(s)) return s; } catch { /* private mode */ }
+    try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar", "files"].includes(s)) return s; } catch { /* private mode */ }
     return "list";
   });
   const [groupBy, setGroupBy] = useState<GroupBy>(() => {
