@@ -369,6 +369,22 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
   useEffect(() => { try { localStorage.setItem("kanbo-groupby", groupBy); } catch { /* private mode */ } }, [groupBy]);
   const [smart, setSmart] = useState(false);
+  // unread inbox badge: count activity newer than the last time you opened the
+  // inbox (persisted). New accounts start "caught up" rather than flooded.
+  const [inboxSeenAt, setInboxSeenAt] = useState<number>(() => {
+    try { const s = localStorage.getItem("kanbo-inbox-seen"); if (s) return Number(s) || 0; } catch { /* private mode */ }
+    return Date.now();
+  });
+  useEffect(() => {
+    try { if (!localStorage.getItem("kanbo-inbox-seen")) localStorage.setItem("kanbo-inbox-seen", String(inboxSeenAt)); } catch { /* private mode */ }
+  }, [inboxSeenAt]);
+  // opening the inbox marks everything seen and clears the badge
+  useEffect(() => {
+    if (route.view !== "inbox") return;
+    const now = Date.now();
+    setInboxSeenAt(now);
+    try { localStorage.setItem("kanbo-inbox-seen", String(now)); } catch { /* private mode */ }
+  }, [route.view]);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [focusOpen, setFocusOpen] = useState(false);
@@ -385,6 +401,28 @@ export default function App() {
   // tasks created locally but not yet confirmed saved — kept through realtime
   // reloads so a refetch can never wipe a task you just added
   const pendingTasksRef = useRef<Task[]>([]);
+  // recent local edits/deletes, applied on top of a realtime refetch so a
+  // background reload can never revert a change you just made (the DB may not
+  // have propagated your own write yet). Each entry self-expires.
+  const recentWritesRef = useRef<Map<string, { deleted: boolean; patch: Partial<Task>; until: number }>>(new Map());
+  const WRITE_TTL = 8000;
+  const noteWrite = useCallback((ids: string | string[], patch: Partial<Task>) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    const until = Date.now() + WRITE_TTL;
+    arr.forEach((id) => {
+      const ex = recentWritesRef.current.get(id);
+      recentWritesRef.current.set(id, { deleted: false, patch: { ...(ex?.patch ?? {}), ...patch }, until });
+    });
+  }, []);
+  const noteDelete = useCallback((ids: string | string[]) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    const until = Date.now() + WRITE_TTL;
+    arr.forEach((id) => recentWritesRef.current.set(id, { deleted: true, patch: {}, until }));
+  }, []);
+  const clearWrite = useCallback((ids: string | string[]) => {
+    const arr = Array.isArray(ids) ? ids : [ids];
+    arr.forEach((id) => recentWritesRef.current.delete(id));
+  }, []);
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
@@ -459,9 +497,17 @@ export default function App() {
     const reload = async () => {
       try {
         const b = await store.bootstrap(auth.user);
+        // apply recent local edits/deletes on top of the refetch so a reload
+        // can't revert a change whose write hasn't propagated yet
+        const now = Date.now();
+        const m = recentWritesRef.current;
+        for (const [id, w] of m) if (w.until < now) m.delete(id);
+        const merged = b.tasks
+          .filter((d) => !m.get(d.id)?.deleted)
+          .map((d) => { const w = m.get(d.id); return w && !w.deleted ? { ...d, ...w.patch } : d; });
         // never drop a locally-created task that hasn't been confirmed in the DB yet
         const pending = pendingTasksRef.current.filter((p) => !b.tasks.some((d) => d.id === p.id));
-        setTasks(pending.length ? [...pending, ...b.tasks] : b.tasks);
+        setTasks(pending.length ? [...pending, ...merged] : merged);
         applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
         setActivity(await store.listActivity());
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
@@ -664,23 +710,36 @@ export default function App() {
   // task dependencies (blocked-by)
   const addDependency = useCallback((taskId: string, dependsOn: string) => {
     if (taskId === dependsOn) return;
-    setTasks((ts) => ts && ts.map((t) => t.id === taskId ? { ...t, dependencies: [...new Set([...t.dependencies, dependsOn])] } : t));
+    const cur = tasksRef.current?.find((t) => t.id === taskId);
+    const deps = [...new Set([...(cur?.dependencies ?? []), dependsOn])];
+    setTasks((ts) => ts && ts.map((t) => t.id === taskId ? { ...t, dependencies: deps } : t));
+    noteWrite(taskId, { dependencies: deps });
     store.addDependency(taskId, dependsOn).catch(reportError);
-  }, []);
+  }, [noteWrite]);
   const removeDependency = useCallback((taskId: string, dependsOn: string) => {
-    setTasks((ts) => ts && ts.map((t) => t.id === taskId ? { ...t, dependencies: t.dependencies.filter((d) => d !== dependsOn) } : t));
+    const cur = tasksRef.current?.find((t) => t.id === taskId);
+    const deps = (cur?.dependencies ?? []).filter((d) => d !== dependsOn);
+    setTasks((ts) => ts && ts.map((t) => t.id === taskId ? { ...t, dependencies: deps } : t));
+    noteWrite(taskId, { dependencies: deps });
     store.removeDependency(taskId, dependsOn).catch(reportError);
-  }, []);
+  }, [noteWrite]);
 
   const archiveTask = useCallback((id: string) => {
-    setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, archivedAt: new Date().toISOString() } : t));
-    store.updateTask(id, { archivedAt: new Date().toISOString() }).catch(reportError);
-    toastSuccess("Task archived");
-  }, [toastSuccess]);
+    const at = new Date().toISOString();
+    setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, archivedAt: at } : t));
+    noteWrite(id, { archivedAt: at });
+    store.updateTask(id, { archivedAt: at }).catch(reportError);
+    toastAction("Task archived", "Undo", () => {
+      setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, archivedAt: undefined } : t));
+      noteWrite(id, { archivedAt: undefined });
+      store.updateTask(id, { archivedAt: undefined }).catch(reportError);
+    });
+  }, [toastAction, noteWrite]);
   const unarchiveTask = useCallback((id: string) => {
     setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, archivedAt: undefined } : t));
+    noteWrite(id, { archivedAt: undefined });
     store.updateTask(id, { archivedAt: undefined }).catch(reportError);
-  }, []);
+  }, [noteWrite]);
 
   // duplicate a task (fresh copy, not done, no comments/deps carried over)
   const duplicateTask = useCallback((id: string) => {
@@ -718,27 +777,33 @@ export default function App() {
     const status: Status = becomingDone ? "done" : "todo";
     const completedAt = becomingDone ? toLocalISO(new Date()) : undefined;
     setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status, completedAt } : x));
+    noteWrite(id, { status, completedAt });
     store.updateTask(id, { status, completedAt }).catch(reportError);
     log(becomingDone ? "completed" : "reopened", t, becomingDone ? "Marked complete" : "Reopened");
     if (becomingDone) {
-      spawnRecurrence(t);
-      // offer to undo the completion (restore its previous status)
+      // spawn the next occurrence only if the completion sticks (isn't undone),
+      // so toggling done/undone can't multiply phantom recurrences
+      let undone = false;
+      const recTimer = setTimeout(() => { if (!undone) spawnRecurrence(t); }, 6000);
       toastAction(`Completed “${t.title}”`, "Undo", () => {
+        undone = true; clearTimeout(recTimer);
         setTasks((ts) => ts && ts.map((x) => x.id === id ? { ...x, status: t.status, completedAt: t.completedAt } : x));
+        noteWrite(id, { status: t.status, completedAt: t.completedAt });
         store.updateTask(id, { status: t.status, completedAt: t.completedAt }).catch(reportError);
       });
     }
-  }, [log, spawnRecurrence, toastAction]);
+  }, [log, spawnRecurrence, toastAction, noteWrite]);
 
   const patchTask = useCallback((id: string, patch: Partial<Task>) => {
     const prev = tasksRef.current?.find((t) => t.id === id);
     setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...patch } : t));
+    noteWrite(id, patch);
     store.updateTask(id, patch).catch(reportError);
     if (prev && patch.status && patch.status !== prev.status) {
       if (patch.status === "done") { log("completed", prev, "Marked complete"); spawnRecurrence(prev); }
       else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
     }
-  }, [log, spawnRecurrence]);
+  }, [log, spawnRecurrence, noteWrite]);
 
   const createTask = persistTask;
 
@@ -747,6 +812,7 @@ export default function App() {
     if (!t) return;
     // optimistically remove, but defer the real delete so it can be undone
     setTasks((ts) => ts && ts.filter((x) => x.id !== id));
+    noteDelete(id);
     let undone = false;
     const timer = setTimeout(() => {
       if (undone) return;
@@ -754,30 +820,32 @@ export default function App() {
       log("deleted", { id: null, title: t.title }, "Task deleted");
     }, 6000);
     toastAction(`Deleted “${t.title}”`, "Undo", () => {
-      undone = true; clearTimeout(timer);
+      undone = true; clearTimeout(timer); clearWrite(id);
       setTasks((ts) => ts ? [t, ...ts] : [t]);
     });
-  }, [log, toastAction]);
+  }, [log, toastAction, noteDelete, clearWrite]);
 
   // ---- bulk actions (multi-select) ----
   const bulkPatch = useCallback((ids: string[], patch: Partial<Task>) => {
     if (!ids.length) return;
     setTasks((ts) => ts && ts.map((t) => ids.includes(t.id) ? { ...t, ...patch } : t));
+    noteWrite(ids, patch);
     ids.forEach((id) => store.updateTask(id, patch).catch(reportError));
     toastSuccess(`Updated ${ids.length} task${ids.length > 1 ? "s" : ""}`);
-  }, [toastSuccess]);
+  }, [toastSuccess, noteWrite]);
 
   const bulkDelete = useCallback((ids: string[]) => {
     if (!ids.length) return;
     const removed = (tasksRef.current ?? []).filter((t) => ids.includes(t.id));
     setTasks((ts) => ts && ts.filter((t) => !ids.includes(t.id)));
+    noteDelete(ids);
     let undone = false;
     const timer = setTimeout(() => { if (undone) return; ids.forEach((id) => store.deleteTask(id).catch(reportError)); }, 6000);
     toastAction(`Deleted ${ids.length} task${ids.length > 1 ? "s" : ""}`, "Undo", () => {
-      undone = true; clearTimeout(timer);
+      undone = true; clearTimeout(timer); clearWrite(ids);
       setTasks((ts) => ts ? [...removed, ...ts] : removed);
     });
-  }, [toastAction]);
+  }, [toastAction, noteDelete, clearWrite]);
 
   const addComment = useCallback(async (taskId: string, body: string, mentions: string[] = []): Promise<Comment | null> => {
     const t = tasksRef.current?.find((x) => x.id === taskId);
@@ -787,6 +855,7 @@ export default function App() {
       if (t) {
         const count = t.comments + 1;
         setTasks((ts) => ts && ts.map((x) => x.id === taskId ? { ...x, comments: count } : x));
+        noteWrite(taskId, { comments: count });
         store.updateTask(taskId, { comments: count }).catch(reportError);
         log("comment", t, body.length > 80 ? body.slice(0, 77) + "…" : body);
       }
@@ -796,7 +865,7 @@ export default function App() {
       toastError("Couldn't post the comment.");
       return null;
     }
-  }, [log, toastError]);
+  }, [log, toastError, noteWrite]);
 
   const toggleSubtask = useCallback((taskId: string, subId: string) => {
     const cur = tasksRef.current; if (!cur) return;
@@ -839,17 +908,22 @@ export default function App() {
     const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
     if (mode === "reassign") {
       const target = targetId || "p-personal";
-      setTasks((ts) => ts && ts.map((t) => t.projectId === id ? { ...t, projectId: target } : t));
-      affected.forEach((t) => store.updateTask(t.id, { projectId: target }).catch(reportError));
+      // tasks live in their project's workspace — carry the target's workspace
+      // so reassigned tasks don't keep a stale workspace and vanish from view
+      const targetWs = getProject(target)?.workspaceId ?? null;
+      setTasks((ts) => ts && ts.map((t) => t.projectId === id ? { ...t, projectId: target, workspaceId: targetWs } : t));
+      noteWrite(affected.map((t) => t.id), { projectId: target, workspaceId: targetWs });
+      affected.forEach((t) => store.updateTask(t.id, { projectId: target, workspaceId: targetWs }).catch(reportError));
     } else {
       setTasks((ts) => ts && ts.filter((t) => t.projectId !== id));
+      noteDelete(affected.map((t) => t.id));
       affected.forEach((t) => store.deleteTask(t.id).catch(reportError));
     }
     applyProjects(projectsRef.current.filter((p) => p.id !== id));
     store.deleteProject(id).catch(reportError);
     setRouteRaw((r) => r.view === "project" && r.projectId === id ? { view: "tasks" } : r);
     setDeleteProjectId(null);
-  }, [applyProjects]);
+  }, [applyProjects, noteWrite, noteDelete]);
 
   const createTag = useCallback((label: string, color: string) => {
     const tmpId = "tmp-tag-" + Date.now();
@@ -996,7 +1070,7 @@ export default function App() {
     return active.length > 0 ? active : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   })();
 
-  const inboxCount = activity.filter((a) => Date.now() - new Date(a.createdAt).getTime() < 86400000).length;
+  const inboxCount = activity.filter((a) => new Date(a.createdAt).getTime() > inboxSeenAt).length;
   const currentUser = getMember(currentUserId);
   const firstName = currentUser?.name?.trim().split(/\s+/)[0] || "there";
   const hour = new Date().getHours();
