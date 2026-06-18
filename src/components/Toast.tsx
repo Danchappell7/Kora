@@ -1,7 +1,7 @@
 /* ============================================================
    KANBO — toast notifications (replaces alert())
    ============================================================ */
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 type ToastType = "error" | "success" | "info";
 interface ToastAction { label: string; run: () => void }
@@ -21,20 +21,28 @@ let _id = 0;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
+  const timers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
-  const remove = useCallback((id: number) => setItems((xs) => xs.filter((x) => x.id !== id)), []);
+  const remove = useCallback((id: number) => {
+    const t = timers.current.get(id);
+    if (t) { clearTimeout(t); timers.current.delete(id); }
+    setItems((xs) => xs.filter((x) => x.id !== id));
+  }, []);
 
   const toast = useCallback((message: string, type: ToastType = "info") => {
     const id = ++_id;
     setItems((xs) => [...xs, { id, message, type }]);
-    setTimeout(() => remove(id), type === "error" ? 7000 : 4000);
+    timers.current.set(id, setTimeout(() => remove(id), type === "error" ? 7000 : 4000));
   }, [remove]);
 
   const action = useCallback((message: string, label: string, run: () => void, ms = 6000) => {
     const id = ++_id;
     setItems((xs) => [...xs, { id, message, type: "info", action: { label, run } }]);
-    setTimeout(() => remove(id), ms);
+    timers.current.set(id, setTimeout(() => remove(id), ms));
   }, [remove]);
+
+  // clear any pending timers on unmount
+  useEffect(() => { const map = timers.current; return () => { map.forEach(clearTimeout); map.clear(); }; }, []);
 
   const api: ToastApi = {
     toast,

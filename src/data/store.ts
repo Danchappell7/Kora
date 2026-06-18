@@ -388,7 +388,7 @@ export const store = {
 
     setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
     return {
-      tasks: (taskData as TaskRow[]).map(rowToTask),
+      tasks: ((taskData as TaskRow[] | null) ?? []).map(rowToTask),
       projects,
       tags,
       workspaces,
@@ -569,9 +569,12 @@ export const store = {
     if (error) throw error;
     const rows = data as AttachmentRow[];
     // sign each path for download (best-effort)
+    // sign each independently — one bad/missing object can't break the whole list
     const signed = await Promise.all(rows.map(async (r) => {
-      const { data: s } = await supabase!.storage.from(ATTACH_BUCKET).createSignedUrl(r.path, 3600);
-      return rowToAttachment(r, s?.signedUrl);
+      try {
+        const { data: s } = await supabase!.storage.from(ATTACH_BUCKET).createSignedUrl(r.path, 3600);
+        return rowToAttachment(r, s?.signedUrl);
+      } catch { return rowToAttachment(r, undefined); }
     }));
     return signed;
   },

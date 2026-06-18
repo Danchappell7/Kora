@@ -844,28 +844,47 @@ export default function App() {
     const t = tasksRef.current?.find((x) => x.id === id);
     if (!t) return;
     // optimistically remove, but defer the real delete so it can be undone
-    setTasks((ts) => ts && ts.filter((x) => x.id !== id));
-    noteDelete(id);
+    // deleting a parent removes its sub-tasks too (the DB cascades on delete);
+    // mirror that locally so children don't linger as orphans, and restore
+    // them all on undo
+    const kids = (tasksRef.current ?? []).filter((x) => x.parentId === id);
+    const removedIds = [id, ...kids.map((k) => k.id)];
+    setTasks((ts) => ts && ts.filter((x) => !removedIds.includes(x.id)));
+    noteDelete(removedIds);
     let undone = false;
     const timer = setTimeout(() => {
       if (undone) return;
-      store.deleteTask(id).catch(reportError);
+      store.deleteTask(id).catch(reportError); // cascade removes children
       log("deleted", { id: null, title: t.title }, "Task deleted");
     }, 6000);
-    toastAction(`Deleted “${t.title}”`, "Undo", () => {
-      undone = true; clearTimeout(timer); clearWrite(id);
-      setTasks((ts) => ts ? [t, ...ts] : [t]);
+    const label = kids.length ? `Deleted “${t.title}” and ${kids.length} subtask${kids.length > 1 ? "s" : ""}` : `Deleted “${t.title}”`;
+    toastAction(label, "Undo", () => {
+      undone = true; clearTimeout(timer); clearWrite(removedIds);
+      setTasks((ts) => ts ? [t, ...kids, ...ts] : [t, ...kids]);
     });
   }, [log, toastAction, noteDelete, clearWrite]);
 
   // ---- bulk actions (multi-select) ----
   const bulkPatch = useCallback((ids: string[], patch: Partial<Task>) => {
     if (!ids.length) return;
-    setTasks((ts) => ts && ts.map((t) => ids.includes(t.id) ? { ...t, ...patch } : t));
-    noteWrite(ids, patch);
-    ids.forEach((id) => store.updateTask(id, patch).catch(reportError));
+    const cur = tasksRef.current ?? [];
+    const settingDone = patch.status === "done";
+    // mark a completion time when bulk-completing, mirroring single complete
+    const full = settingDone ? { ...patch, completedAt: toLocalISO(new Date()) } : patch;
+    setTasks((ts) => ts && ts.map((t) => ids.includes(t.id) ? { ...t, ...full } : t));
+    noteWrite(ids, full);
+    ids.forEach((id) => store.updateTask(id, full).catch(reportError));
+    // keep activity + recurrence consistent with a single status change
+    if (patch.status) {
+      ids.forEach((id) => {
+        const prev = cur.find((t) => t.id === id);
+        if (!prev || prev.status === patch.status) return;
+        if (settingDone) { log("completed", prev, "Marked complete"); spawnRecurrence(prev); }
+        else log("status", prev, `Moved to ${STATUS_META[patch.status!].label}`);
+      });
+    }
     toastSuccess(`Updated ${ids.length} task${ids.length > 1 ? "s" : ""}`);
-  }, [toastSuccess, noteWrite]);
+  }, [toastSuccess, noteWrite, log, spawnRecurrence]);
 
   const bulkDelete = useCallback((ids: string[]) => {
     if (!ids.length) return;
@@ -1101,7 +1120,9 @@ export default function App() {
   else if (route.view === "project" && route.projectId) {
     const p = getProject(route.projectId); newProj = p;
     scoped = allTasks.filter((t) => t.projectId === route.projectId);
-    title = p?.name || "Project"; subtitle = scoped.length + " tasks · " + projectProgress(allTasks, route.projectId) + "% complete";
+    // count top-level tasks (sub-tasks nest under them) so the number matches the rows
+    const topCount = scoped.filter((t) => !t.parentId).length;
+    title = p?.name || "Project"; subtitle = topCount + " task" + (topCount === 1 ? "" : "s") + " · " + projectProgress(allTasks, route.projectId) + "% complete";
     breadcrumb = workspaces.find((w) => w.id === (p?.workspaceId ?? null))?.name || "Personal";
   }
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);

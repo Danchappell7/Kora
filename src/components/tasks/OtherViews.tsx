@@ -4,7 +4,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { SubtaskProgress, bulkItemStyle, BulkMenuButton } from "./ListView";
+import { bulkItemStyle, BulkMenuButton } from "./ListView";
 import {
   getProject, blockingTasks, dueState, fmtDue,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
@@ -29,6 +29,10 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const ds = dueState(task.dueDate, task.status);
+  // sub-task progress (child tasks + any legacy checklist items)
+  const kids = allTasks.filter((c) => c.parentId === task.id);
+  const subTotal = kids.length + (task.subtasks?.length ?? 0);
+  const subDone = kids.filter((c) => c.status === "done").length + (task.subtasks ?? []).filter((s) => s.done).length;
   const [moveOpen, setMoveOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const halfFrom = (e: React.DragEvent): Half => {
@@ -64,7 +68,11 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 11 }}>
         {proj && <span style={{ width: 7, height: 7, borderRadius: 2, background: proj.color }} />}
-        <SubtaskProgress subtasks={task.subtasks} />
+        {subTotal > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>
+            <Icon name="layers" size={12} /> {subDone}/{subTotal}
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         {task.dueDate && <span className="mono" style={{ fontSize: 11, color: ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(task.dueDate)}</span>}
         <Avatar id={task.assigneeId} size={22} />
