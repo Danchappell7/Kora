@@ -28,7 +28,7 @@ Deno.serve(async (req) => {
   const token = Deno.env.get("METRICS_TOKEN");
   if (!token) return json({ error: "not configured" }, 503);
   const auth = req.headers.get("Authorization") || "";
-  if (auth !== `Bearer ${token}`) return json({ error: "unauthorized" }, 401);
+  if (!timingSafeEqual(auth, `Bearer ${token}`)) return json({ error: "unauthorized" }, 401);
 
   try {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -74,4 +74,12 @@ Deno.serve(async (req) => {
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
+}
+
+// constant-time string compare — avoids leaking the token via response timing
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
 }

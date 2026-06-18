@@ -39,13 +39,25 @@ Deno.serve(async (req) => {
   const mapStatus = (s: string): string =>
     s === "active" || s === "trialing" ? "active" : s === "past_due" || s === "unpaid" ? "past_due" : "canceled";
 
+  // Resolve the plan from metadata first, then from the actual purchased price.
+  // Returns undefined if it can't be determined — callers then OMIT plan from the
+  // upsert so an existing plan is never silently clobbered to "personal".
+  const planFor = (sub: Stripe.Subscription): string | undefined => {
+    if (sub.metadata?.plan) return sub.metadata.plan;
+    const priceId = sub.items?.data?.[0]?.price?.id;
+    if (priceId && priceId === Deno.env.get("STRIPE_PRICE_TEAM")) return "team";
+    if (priceId && priceId === Deno.env.get("STRIPE_PRICE_PERSONAL")) return "personal";
+    return undefined;
+  };
+
   try {
     if (event.type === "checkout.session.completed") {
       const s = event.data.object as Stripe.Checkout.Session;
       const subId = s.subscription as string;
       const sub = await stripe.subscriptions.retrieve(subId);
+      const plan = s.metadata?.plan ?? planFor(sub);
       await upsert(s.customer as string, {
-        plan: (s.metadata?.plan ?? sub.metadata?.plan ?? "personal"),
+        ...(plan ? { plan } : {}),
         status: mapStatus(sub.status),
         stripe_subscription_id: subId,
         current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
@@ -53,8 +65,9 @@ Deno.serve(async (req) => {
       });
     } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
       const sub = event.data.object as Stripe.Subscription;
+      const plan = planFor(sub);
       await upsert(sub.customer as string, {
-        plan: sub.metadata?.plan ?? "personal",
+        ...(plan ? { plan } : {}),
         status: event.type === "customer.subscription.deleted" ? "canceled" : mapStatus(sub.status),
         stripe_subscription_id: sub.id,
         current_period_end: new Date(sub.current_period_end * 1000).toISOString(),

@@ -610,19 +610,15 @@ export const store = {
     }
   },
 
-  // toggle the signed-in user's reaction (emoji) on a comment
-  async toggleReaction(commentId: string, emoji: string, userId: string): Promise<Record<string, string[]>> {
+  // toggle the signed-in user's reaction (emoji) on a comment.
+  // Goes through a SECURITY DEFINER RPC so any teammate who can see the comment
+  // may add/remove *their own* reaction — without granting write access to
+  // other people's comments (the comments UPDATE policy stays author-only).
+  async toggleReaction(commentId: string, emoji: string, _userId: string): Promise<Record<string, string[]>> {
     if (!supabase) return {};
-    const uid = await authUid(userId);
-    const { data, error } = await supabase.from("comments").select("reactions").eq("id", commentId).single();
+    const { data, error } = await supabase.rpc("toggle_comment_reaction", { p_comment: commentId, p_emoji: emoji });
     if (error) throw error;
-    const reactions: Record<string, string[]> = (data?.reactions as Record<string, string[]>) || {};
-    const list = reactions[emoji] || [];
-    reactions[emoji] = list.includes(uid) ? list.filter((x) => x !== uid) : [...list, uid];
-    if (reactions[emoji].length === 0) delete reactions[emoji];
-    const { error: uErr } = await supabase.from("comments").update({ reactions }).eq("id", commentId);
-    if (uErr) throw uErr;
-    return reactions;
+    return (data as Record<string, string[]>) ?? {};
   },
 
   async deleteProject(id: string): Promise<void> {
