@@ -20,6 +20,7 @@ import { BoardView, TimelineView, CalendarView, FilesView } from "./components/t
 import { PlanView } from "./components/views/PlanView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
+import { SearchView } from "./components/views/SearchView";
 import { InboxView, TeamView } from "./components/views/InboxTeam";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
@@ -1019,6 +1020,19 @@ export default function App() {
     setDeleteProjectId(null);
   }, [applyProjects, noteWrite, noteDelete]);
 
+  // ---- saved searches ----
+  const saveSearch = useCallback((name: string, query: Record<string, unknown>) => {
+    const tmp: SavedSearch = { id: "tmp-ss-" + Date.now(), name, query };
+    setSavedSearches((s) => [...s, tmp]);
+    store.createSavedSearch(name, query, userIdRef.current)
+      .then((ss) => setSavedSearches((s) => s.map((x) => x.id === tmp.id ? ss : x)))
+      .catch((e) => { reportError(e, { op: "saveSearch" }); setSavedSearches((s) => s.filter((x) => x.id !== tmp.id)); toastError("Couldn't save the search."); });
+  }, [toastError]);
+  const removeSavedSearch = useCallback((id: string) => {
+    setSavedSearches((s) => s.filter((x) => x.id !== id));
+    store.deleteSavedSearch(id).catch(reportError);
+  }, []);
+
   // ---- custom fields (per-project definitions) ----
   const createCustomField = useCallback((projectId: string, name: string, type: CustomFieldDef["type"], options: string[] = []) => {
     const wsId = getProject(projectId)?.workspaceId ?? null;
@@ -1192,6 +1206,7 @@ export default function App() {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} />;
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} />;
       case "analytics": return <AnalyticsView tasks={allTasks} />;
+      case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;

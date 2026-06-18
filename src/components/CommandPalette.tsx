@@ -36,6 +36,7 @@ const NAV: { view: string; label: string; icon: IconName }[] = [
   { view: "home", label: "Go to Home", icon: "home" },
   { view: "plan", label: "Go to Plan my day", icon: "calendarPlus" },
   { view: "tasks", label: "Go to My tasks", icon: "tasks" },
+  { view: "search", label: "Go to Search", icon: "search" },
   { view: "inbox", label: "Go to Inbox", icon: "inbox" },
   { view: "calendar", label: "Go to Calendar", icon: "calendar" },
   { view: "team", label: "Go to Team", icon: "user" },

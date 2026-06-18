@@ -78,6 +78,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     { id: "inbox", icon: "inbox", label: "Inbox", badge: inboxCount },
     { id: "tasks", icon: "tasks", label: "My tasks", badge: myOpen },
     { id: "calendar", icon: "calendar", label: "Calendar" },
+    { id: "search", icon: "search", label: "Search" },
     { id: "team", icon: "users", label: "Team" },
     { id: "analytics", icon: "chart", label: "Analytics" },
   ];
