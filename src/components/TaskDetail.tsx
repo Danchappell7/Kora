@@ -72,6 +72,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depQuery, setDepQuery] = useState("");
   const commentRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
@@ -96,6 +97,18 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
+
+  // if the open task disappears (deleted here or by a realtime sync), close the
+  // panel cleanly instead of leaving a blank ghost overlay mounted
+  useEffect(() => {
+    if (!tasks.find((t) => t.id === taskId)) onClose();
+  }, [tasks, taskId, onClose]);
+
+  // auto-grow the title textarea to fit long titles instead of clipping them
+  useEffect(() => {
+    const el = titleRef.current;
+    if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
+  }, [titleBuf]);
 
   if (!task) return null;
   const proj = getProject(task.projectId);
@@ -197,6 +210,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
             <div style={{ marginTop: 3 }}><Check done={done} size={22} onToggle={() => onToggle(task.id)} /></div>
             <textarea
+              ref={titleRef}
               value={titleBuf}
               onChange={(e) => setTitleBuf(e.target.value)}
               onBlur={() => { const v = titleBuf.trim(); if (v && v !== task.title) onPatch(task.id, { title: v }); else setTitleBuf(task.title); }}

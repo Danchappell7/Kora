@@ -217,7 +217,9 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
     setAddDraft("");
   };
   const sortMode = sort || "manual";
-  const dragEnabled = !!onPatch && !smart && sortMode === "manual"; // manual reorder only when in manual order
+  // manual reorder only in manual order; not under Due grouping (dragging
+  // across due buckets has no well-defined date, so it would just snap back)
+  const dragEnabled = !!onPatch && !smart && sortMode === "manual" && groupBy !== "due";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -243,7 +245,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
       patch.completedAt = target.status === "done" ? toLocalISO(new Date()) : undefined;
     } else if (groupBy === "priority" && dragged.priority !== target.priority) patch.priority = target.priority;
     else if (groupBy === "project" && dragged.projectId !== target.projectId) patch.projectId = target.projectId;
-    const groupItems = tasks.filter((t) => t.id !== draggedId && groupKeyOf(t) === groupKeyOf(target)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const groupItems = tasks.filter((t) => t.id !== draggedId && groupKeyOf(t) === groupKeyOf(target)).sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.id.localeCompare(b.id));
     const ti = groupItems.findIndex((t) => t.id === targetId);
     const at = half === "top" ? ti : ti + 1;
     onPatch?.(draggedId, { ...patch, position: between(groupItems[at - 1], groupItems[at]) });

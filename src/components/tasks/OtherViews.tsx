@@ -181,7 +181,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
       </div>
       <div style={{ display: "flex", gap: 16, padding: "16px 24px 28px", minHeight: "100%" }}>
         {columns.map((col) => {
-          const items = tasks.filter((t) => keyOf(t) === col.key).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+          const items = tasks.filter((t) => keyOf(t) === col.key).slice().sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.id.localeCompare(b.id));
           colItems.current[col.key] = items;
           const isCollapsed = collapsed.has(col.key);
           const dot = col.status ? null : <span style={{ width: 9, height: 9, borderRadius: 99, background: col.dot || "var(--ink-4)", flexShrink: 0 }} />;
