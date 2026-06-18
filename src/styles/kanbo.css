@@ -219,8 +219,12 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .anim-scalein { animation: scaleIn 0.32s var(--ease); }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+
+/* tactile press feedback on all buttons (subtle, respects reduced-motion) */
+.btn:active, .btn-icon:active { transform: translateY(0.5px) scale(0.985); }
 
 /* ---- misc ---- */
 .divider { height: 1px; background: var(--hairline); border: 0; }

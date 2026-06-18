@@ -25,3 +25,11 @@ createRoot(document.getElementById("root")!).render(
     </ErrorBoundary>
   </StrictMode>,
 );
+
+// PWA: register the service worker in production for instant loads + offline
+// shell. Network-first for HTML means new deploys are picked up immediately.
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* non-fatal */ });
+  });
+}

@@ -1,0 +1,15 @@
+{
+  "name": "Kanbo",
+  "short_name": "Kanbo",
+  "description": "The to-do list that plans your day.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f1f3f7",
+  "theme_color": "#8B5CF6",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
