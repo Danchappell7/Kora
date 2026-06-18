@@ -8,6 +8,7 @@
 // Deploy:  supabase functions deploy ai-assist
 // Secret:  supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
 // ============================================================
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -28,6 +29,18 @@ interface TaskIn {
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  // Require a real signed-in user — NOT just the public anon key (which is
+  // a valid JWT and so passes Supabase's platform verify_jwt). Without this,
+  // anyone who knows the URL could burn our Anthropic credits as a free proxy.
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
+    global: { headers: { Authorization: authHeader } },
+  });
+  const { data: ures } = await supa.auth.getUser();
+  if (!ures?.user) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...CORS, "Content-Type": "application/json" } });
+  }
 
   const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
   if (!apiKey) {
