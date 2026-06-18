@@ -39,7 +39,82 @@ function MetaRow({ icon, label, children }: { icon: IconName; label: string; chi
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [] }: {
+const fieldInputStyle: React.CSSProperties = { height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", maxWidth: 220 };
+
+function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete }: {
+  task: Task;
+  fields: CustomFieldDef[];
+  people: { id: string; name: string }[];
+  onPatch: (id: string, patch: Partial<Task>) => void;
+  onCreate?: (projectId: string, name: string, type: CustomFieldDef["type"], options: string[]) => void;
+  onDelete?: (id: string) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [type, setType] = useState<CustomFieldDef["type"]>("text");
+  const [opts, setOpts] = useState("");
+  const values = task.custom ?? {};
+  const setValue = (fid: string, v: CustomValue) => onPatch(task.id, { custom: { ...(task.custom ?? {}), [fid]: v } });
+  const add = () => {
+    const n = name.trim(); if (!n || !onCreate) return;
+    onCreate(task.projectId, n, type, type === "dropdown" ? opts.split(",").map((o) => o.trim()).filter(Boolean) : []);
+    setName(""); setOpts(""); setType("text"); setAdding(false);
+  };
+  if (fields.length === 0 && !onCreate) return null;
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+        <span className="kicker">Custom fields</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {fields.map((f) => {
+          const v = values[f.id];
+          return (
+            <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 12, minHeight: 30 }}>
+              <span className="truncate" style={{ width: 104, flexShrink: 0, fontSize: 12.5, color: "var(--ink-4)" }}>{f.name}</span>
+              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                {f.type === "text" && <input value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value)} style={{ ...fieldInputStyle, maxWidth: 280, width: "100%" }} />}
+                {f.type === "number" && <input type="number" value={v == null ? "" : (v as number)} onChange={(e) => setValue(f.id, e.target.value === "" ? null : Number(e.target.value))} style={fieldInputStyle} />}
+                {f.type === "date" && <input type="date" value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value || null)} style={{ ...fieldInputStyle, fontFamily: "var(--font-mono)", fontSize: 12.5 }} />}
+                {f.type === "checkbox" && <Check done={!!v} size={18} onToggle={() => setValue(f.id, !v)} />}
+                {f.type === "dropdown" && (
+                  <select value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value || null)} style={fieldInputStyle}>
+                    <option value="">—</option>
+                    {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                )}
+                {f.type === "people" && (
+                  <select value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value || null)} style={fieldInputStyle}>
+                    <option value="">—</option>
+                    {people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                )}
+                {onDelete && <button onClick={() => onDelete(f.id)} title="Remove field" aria-label="Remove field" style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 14 }}>×</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {onCreate && (adding ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} placeholder="Field name" style={{ ...fieldInputStyle, maxWidth: 150 }} />
+          <select value={type} onChange={(e) => setType(e.target.value as CustomFieldDef["type"])} style={fieldInputStyle}>
+            <option value="text">Text</option><option value="number">Number</option><option value="dropdown">Dropdown</option><option value="date">Date</option><option value="people">People</option><option value="checkbox">Checkbox</option>
+          </select>
+          {type === "dropdown" && <input value={opts} onChange={(e) => setOpts(e.target.value)} placeholder="Option A, Option B" style={{ ...fieldInputStyle, maxWidth: 180 }} />}
+          <button onClick={add} className="btn btn-accent" style={{ padding: "5px 12px", fontSize: 12.5 }}>Add</button>
+          <button onClick={() => setAdding(false)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}>Cancel</button>
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 10, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>
+          <Icon name="plus" size={15} /> Add custom field
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField }: {
   taskId: string;
   tasks: Task[];
   /** open another task in this panel (used to drill into a sub-task) */
@@ -64,6 +139,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onToggleTaskReaction?: (id: string, emoji: string) => void;
   onToggleCollaborator?: (id: string, memberId: string) => void;
   customFields?: CustomFieldDef[];
+  onCreateCustomField?: (projectId: string, name: string, type: CustomFieldDef["type"], options: string[]) => void;
+  onDeleteCustomField?: (id: string) => void;
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
   onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
@@ -424,6 +501,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               </div>
             );
           })()}
+
+          {/* custom fields */}
+          <CustomFieldsSection task={task} fields={customFields} people={assignable} onPatch={onPatch} onCreate={onCreateCustomField} onDelete={onDeleteCustomField} />
 
           {/* parent breadcrumb (when this task is itself a sub-task) */}
           {parent && (

@@ -1019,6 +1019,20 @@ export default function App() {
     setDeleteProjectId(null);
   }, [applyProjects, noteWrite, noteDelete]);
 
+  // ---- custom fields (per-project definitions) ----
+  const createCustomField = useCallback((projectId: string, name: string, type: CustomFieldDef["type"], options: string[] = []) => {
+    const wsId = getProject(projectId)?.workspaceId ?? null;
+    const tmp: CustomFieldDef = { id: "tmp-cf-" + Date.now(), projectId, workspaceId: wsId, name, type, options };
+    setCustomFields((cs) => [...cs, tmp]);
+    store.createCustomField({ projectId, workspaceId: wsId, name, type, options }, userIdRef.current)
+      .then((def) => setCustomFields((cs) => cs.map((c) => c.id === tmp.id ? def : c)))
+      .catch((e) => { reportError(e, { op: "createCustomField" }); setCustomFields((cs) => cs.filter((c) => c.id !== tmp.id)); toastError("Couldn't add the field: " + (e?.message || e)); });
+  }, [toastError]);
+  const deleteCustomField = useCallback((id: string) => {
+    setCustomFields((cs) => cs.filter((c) => c.id !== id));
+    store.deleteCustomField(id).catch(reportError);
+  }, []);
+
   const createTag = useCallback((label: string, color: string) => {
     const tmpId = "tmp-tag-" + Date.now();
     applyTags({ ...tagsRef.current, [tmpId]: { label, color } });
@@ -1245,7 +1259,7 @@ export default function App() {
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
-      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} />}
+      {detailId && <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === (tasks.find((t) => t.id === detailId)?.projectId))} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} />}
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
