@@ -115,6 +115,37 @@ export interface Task {
   recurrence?: Recurrence;
   /* manual board ordering — fractional index; lower sorts first within a column */
   position?: number;
+  /* Asana-parity wave */
+  followers?: string[];            // user ids following this task
+  collaborators?: string[];        // extra assignees beyond the owner
+  reactions?: Record<string, string[]>; // emoji -> user ids
+  sectionId?: string;              // section within its project
+  custom?: Record<string, CustomValue>; // custom field values, keyed by field def id
+  effortHours?: number;            // estimate for workload planning
+}
+
+export type CustomValue = string | number | boolean | string[] | null;
+export type CustomFieldType = "text" | "number" | "dropdown" | "date" | "people" | "checkbox";
+export interface CustomFieldDef {
+  id: string;
+  projectId: string;
+  workspaceId?: string | null;
+  name: string;
+  type: CustomFieldType;
+  options: string[];   // choices for dropdown
+  position?: number;
+}
+export interface Section {
+  id: string;
+  projectId: string;
+  workspaceId?: string | null;
+  name: string;
+  position?: number;
+}
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: Record<string, unknown>;
 }
 
 export interface Comment {

@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -21,6 +21,9 @@ export interface Bootstrap {
   currentUserId: string;
   defaultWorkspace: string | null;
   profile: Profile | null;
+  sections: Section[];
+  customFields: CustomFieldDef[];
+  savedSearches: SavedSearch[];
 }
 
 export interface AuthedUser {
@@ -82,6 +85,12 @@ interface TaskRow {
   recurrence?: Recurrence | null;
   position?: number | null;
   parent_id?: string | null;
+  followers?: string[] | null;
+  collaborators?: string[] | null;
+  reactions?: Record<string, string[]> | null;
+  section_id?: string | null;
+  custom?: Record<string, unknown> | null;
+  effort_hours?: number | null;
   subtasks?: { id: string; title: string; done: boolean; position?: number }[] | null;
   task_dependencies?: { depends_on: string }[] | null;
 }
@@ -97,6 +106,12 @@ function rowToTask(r: TaskRow): Task {
     projectId: r.project_id,
     assigneeId: r.assignee_id,
     parentId: r.parent_id ?? undefined,
+    followers: r.followers ?? [],
+    collaborators: r.collaborators ?? [],
+    reactions: (r.reactions as Record<string, string[]>) ?? {},
+    sectionId: r.section_id ?? undefined,
+    custom: (r.custom as Record<string, CustomValue>) ?? {},
+    effortHours: r.effort_hours ?? undefined,
     dueDate: r.due_date ?? undefined,
     dueTime: r.due_time ?? undefined,
     startDate: r.start_date ?? undefined,
@@ -225,6 +240,12 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("archivedAt" in patch) row.archived_at = patch.archivedAt ?? null;
   if ("isMilestone" in patch) row.is_milestone = patch.isMilestone ?? false;
   if ("parentId" in patch) row.parent_id = patch.parentId ?? null;
+  if ("followers" in patch) row.followers = patch.followers ?? [];
+  if ("collaborators" in patch) row.collaborators = patch.collaborators ?? [];
+  if ("reactions" in patch) row.reactions = patch.reactions ?? {};
+  if ("sectionId" in patch) row.section_id = patch.sectionId ?? null;
+  if ("custom" in patch) row.custom = patch.custom ?? {};
+  if ("effortHours" in patch) row.effort_hours = patch.effortHours ?? null;
   return row;
 }
 
@@ -274,6 +295,12 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
   if (t.startDate) row.start_date = t.startDate;
   if (t.isMilestone) row.is_milestone = true;
   if (t.parentId) row.parent_id = t.parentId;
+  if (t.followers && t.followers.length) row.followers = t.followers;
+  if (t.collaborators && t.collaborators.length) row.collaborators = t.collaborators;
+  if (t.reactions && Object.keys(t.reactions).length) row.reactions = t.reactions;
+  if (t.sectionId) row.section_id = t.sectionId;
+  if (t.custom && Object.keys(t.custom).length) row.custom = t.custom;
+  if (t.effortHours != null) row.effort_hours = t.effortHours;
   return row;
 }
 
@@ -281,6 +308,12 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
 // the embed MUST name the FK or PostgREST returns 300 PGRST201 and the whole
 // query fails. We want this task's own dependency rows (task_id = id).
 const TASK_SELECT = "*, subtasks(*), task_dependencies!task_dependencies_task_id_fkey(depends_on)";
+
+interface SectionRow { id: string; project_id: string; workspace_id: string | null; name: string; position: number | null }
+const rowToSection = (r: SectionRow): Section => ({ id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, name: r.name, position: r.position ?? undefined });
+interface CustomFieldRow { id: string; project_id: string; workspace_id: string | null; name: string; type: string; options: string[] | null; position: number | null }
+const rowToCustomField = (r: CustomFieldRow): CustomFieldDef => ({ id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, name: r.name, type: r.type as CustomFieldDef["type"], options: r.options ?? [], position: r.position ?? undefined });
+interface SavedSearchRow { id: string; name: string; query: unknown }
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string }
 export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
@@ -306,6 +339,7 @@ export const store = {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
+        sections: [], customFields: [], savedSearches: [],
       };
     }
     // resolve the REAL authenticated user from the live session — robust to a
@@ -386,6 +420,21 @@ export const store = {
       } catch { /* profiles table not present yet */ }
     }
 
+    // Asana-parity tables (best-effort — tolerate migration 0019 not applied)
+    let sections: Section[] = [], customFields: CustomFieldDef[] = [], savedSearches: SavedSearch[] = [];
+    try {
+      const { data: secData } = await supabase.from("sections").select("*");
+      sections = ((secData as SectionRow[] | null) ?? []).map(rowToSection);
+    } catch { /* table not present yet */ }
+    try {
+      const { data: cfData } = await supabase.from("custom_field_defs").select("*");
+      customFields = ((cfData as CustomFieldRow[] | null) ?? []).map(rowToCustomField);
+    } catch { /* table not present yet */ }
+    try {
+      const { data: ssData } = await supabase.from("saved_searches").select("*");
+      savedSearches = ((ssData as SavedSearchRow[] | null) ?? []).map((s) => ({ id: s.id, name: s.name, query: (s.query as Record<string, unknown>) ?? {} }));
+    } catch { /* table not present yet */ }
+
     setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
     return {
       tasks: ((taskData as TaskRow[] | null) ?? []).map(rowToTask),
@@ -396,6 +445,9 @@ export const store = {
       currentUserId: uid,
       defaultWorkspace: null,
       profile: myProfile,
+      sections,
+      customFields,
+      savedSearches,
     };
   },
 
@@ -526,6 +578,86 @@ export const store = {
     if (!supabase) return;
     const { error } = await supabase.from("projects").delete().eq("id", id);
     if (error) throw error;
+  },
+
+  /* ---------- sections ---------- */
+  async createSection(input: { projectId: string; workspaceId: string | null; name: string; position?: number }, userId: string): Promise<Section> {
+    if (!supabase) return { id: newId(), projectId: input.projectId, workspaceId: input.workspaceId, name: input.name, position: input.position };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("sections")
+      .insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, position: input.position ?? null })
+      .select("*").single();
+    if (error) throw error;
+    return rowToSection(data as SectionRow);
+  },
+  async updateSection(id: string, patch: { name?: string; position?: number }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("name" in patch) row.name = patch.name;
+    if ("position" in patch) row.position = patch.position;
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("sections").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  async deleteSection(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("sections").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  /* ---------- custom field definitions ---------- */
+  async createCustomField(input: { projectId: string; workspaceId: string | null; name: string; type: CustomFieldDef["type"]; options?: string[]; position?: number }, userId: string): Promise<CustomFieldDef> {
+    if (!supabase) return { id: newId(), projectId: input.projectId, workspaceId: input.workspaceId, name: input.name, type: input.type, options: input.options ?? [], position: input.position };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("custom_field_defs")
+      .insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, type: input.type, options: input.options ?? [], position: input.position ?? null })
+      .select("*").single();
+    if (error) throw error;
+    return rowToCustomField(data as CustomFieldRow);
+  },
+  async updateCustomField(id: string, patch: { name?: string; options?: string[]; position?: number }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if ("name" in patch) row.name = patch.name;
+    if ("options" in patch) row.options = patch.options ?? [];
+    if ("position" in patch) row.position = patch.position;
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("custom_field_defs").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  async deleteCustomField(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("custom_field_defs").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  /* ---------- saved searches ---------- */
+  async createSavedSearch(name: string, query: Record<string, unknown>, userId: string): Promise<SavedSearch> {
+    if (!supabase) return { id: newId(), name, query };
+    const uid = await authUid(userId);
+    const { data, error } = await supabase.from("saved_searches").insert({ user_id: uid, name, query }).select("*").single();
+    if (error) throw error;
+    const s = data as SavedSearchRow;
+    return { id: s.id, name: s.name, query: (s.query as Record<string, unknown>) ?? {} };
+  },
+  async deleteSavedSearch(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("saved_searches").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  // every attachment across a set of tasks (for the Files view)
+  async listProjectAttachments(taskIds: string[]): Promise<Attachment[]> {
+    if (!supabase || taskIds.length === 0) return [];
+    const { data, error } = await supabase.from("attachments").select("*").in("task_id", taskIds).order("created_at", { ascending: false });
+    if (error) throw error;
+    const rows = (data as AttachmentRow[] | null) ?? [];
+    return Promise.all(rows.map(async (r) => {
+      try {
+        const { data: s } = await supabase!.storage.from(ATTACH_BUCKET).createSignedUrl(r.path, 3600);
+        return rowToAttachment(r, s?.signedUrl);
+      } catch { return rowToAttachment(r, undefined); }
+    }));
   },
 
   async createTag(label: string, color: string, userId: string): Promise<CreatedTag> {
