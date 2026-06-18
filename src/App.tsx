@@ -255,7 +255,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
     (assigneeFilter === "all" || t.assigneeId === assigneeFilter) &&
     (tagFilter === "all" || (t.tags || []).includes(tagFilter)) &&
     dueOk(t) &&
-    Object.entries(customFilter ?? {}).every(([fid, v]) => !v || v === "all" || String((t.custom ?? {})[fid] ?? "") === v) &&
+    Object.entries(customFilter ?? {}).every(([fid, v]) => { if (!v || v === "all") return true; const cv = (t.custom ?? {})[fid]; return Array.isArray(cv) ? cv.includes(v) : String(cv ?? "") === v; }) &&
     (q === "" || t.title.toLowerCase().includes(q)));
 
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -384,7 +384,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
                 )}
 
                 {/* custom-field filters (dropdown / people fields) */}
-                {customFields.filter((f) => f.type === "dropdown" || f.type === "people").map((f) => {
+                {customFields.filter((f) => f.type === "dropdown" || f.type === "people" || f.type === "multiselect").map((f) => {
                   const cur = customFilter?.[f.id] ?? "all";
                   const opts = f.type === "people" ? members.map((m) => ({ v: m.id, l: m.name })) : f.options.map((o) => ({ v: o, l: o }));
                   return (

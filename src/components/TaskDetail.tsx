@@ -87,7 +87,7 @@ function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete
   const setValue = (fid: string, v: CustomValue) => onPatch(task.id, { custom: { ...(task.custom ?? {}), [fid]: v } });
   const add = () => {
     const n = name.trim(); if (!n || !onCreate) return;
-    onCreate(task.projectId, n, type, type === "dropdown" ? opts.split(",").map((o) => o.trim()).filter(Boolean) : []);
+    onCreate(task.projectId, n, type, (type === "dropdown" || type === "multiselect") ? opts.split(",").map((o) => o.trim()).filter(Boolean) : []);
     setName(""); setOpts(""); setType("text"); setAdding(false);
   };
   if (fields.length === 0 && !onCreate) return null;
@@ -105,6 +105,12 @@ function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete
               <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
                 {f.type === "text" && <input value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value)} style={{ ...fieldInputStyle, maxWidth: 280, width: "100%" }} />}
                 {f.type === "number" && <input type="number" value={v == null ? "" : (v as number)} onChange={(e) => setValue(f.id, e.target.value === "" ? null : Number(e.target.value))} style={fieldInputStyle} />}
+                {f.type === "currency" && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ color: "var(--ink-4)", fontSize: 13 }}>£</span><input type="number" value={v == null ? "" : (v as number)} onChange={(e) => setValue(f.id, e.target.value === "" ? null : Number(e.target.value))} style={fieldInputStyle} /></span>}
+                {f.type === "multiselect" && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {f.options.map((o) => { const arr = Array.isArray(v) ? v as string[] : []; const on = arr.includes(o); return <button key={o} onClick={() => setValue(f.id, on ? arr.filter((x) => x !== o) : [...arr, o])} style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 12, border: `1px solid ${on ? "var(--accent)" : "var(--hairline)"}`, background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--ink)" : "var(--ink-3)", fontFamily: "var(--font-display)" }}>{o}</button>; })}
+                  </div>
+                )}
                 {f.type === "date" && <input type="date" value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value || null)} style={{ ...fieldInputStyle, fontFamily: "var(--font-mono)", fontSize: 12.5 }} />}
                 {f.type === "checkbox" && <Check done={!!v} size={18} onToggle={() => setValue(f.id, !v)} />}
                 {f.type === "dropdown" && (
@@ -129,9 +135,9 @@ function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} placeholder="Field name" style={{ ...fieldInputStyle, maxWidth: 150 }} />
           <select value={type} onChange={(e) => setType(e.target.value as CustomFieldDef["type"])} style={fieldInputStyle}>
-            <option value="text">Text</option><option value="number">Number</option><option value="dropdown">Dropdown</option><option value="date">Date</option><option value="people">People</option><option value="checkbox">Checkbox</option>
+            <option value="text">Text</option><option value="number">Number</option><option value="currency">Currency (£)</option><option value="dropdown">Dropdown</option><option value="multiselect">Multi-select</option><option value="date">Date</option><option value="people">People</option><option value="checkbox">Checkbox</option>
           </select>
-          {type === "dropdown" && <input value={opts} onChange={(e) => setOpts(e.target.value)} placeholder="Option A, Option B" style={{ ...fieldInputStyle, maxWidth: 180 }} />}
+          {(type === "dropdown" || type === "multiselect") && <input value={opts} onChange={(e) => setOpts(e.target.value)} placeholder="Option A, Option B" style={{ ...fieldInputStyle, maxWidth: 180 }} />}
           <button onClick={add} className="btn btn-accent" style={{ padding: "5px 12px", fontSize: 12.5 }}>Add</button>
           <button onClick={() => setAdding(false)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}>Cancel</button>
         </div>

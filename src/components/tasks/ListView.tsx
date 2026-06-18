@@ -17,6 +17,8 @@ export function CustomChips({ task, fields, members = [] }: { task: Task; fields
     const v = vals[f.id];
     if (v == null || v === "" || v === false) return null;
     if (f.type === "checkbox") return { id: f.id, label: f.name };
+    if (f.type === "multiselect") { const arr = Array.isArray(v) ? v as string[] : []; return arr.length ? { id: f.id, label: arr.join(", ") } : null; }
+    if (f.type === "currency") return { id: f.id, label: "£" + v };
     const label = f.type === "people" ? (members.find((m) => m.id === v)?.name ?? String(v)) : String(v);
     return { id: f.id, label };
   }).filter((c): c is { id: string; label: string } => !!c).slice(0, 3);

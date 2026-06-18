@@ -127,7 +127,7 @@ export interface Task {
 }
 
 export type CustomValue = string | number | boolean | string[] | null;
-export type CustomFieldType = "text" | "number" | "dropdown" | "date" | "people" | "checkbox";
+export type CustomFieldType = "text" | "number" | "dropdown" | "multiselect" | "currency" | "date" | "people" | "checkbox";
 export interface CustomFieldDef {
   id: string;
   projectId: string;
