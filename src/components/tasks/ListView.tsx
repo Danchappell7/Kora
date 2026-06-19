@@ -274,7 +274,8 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   // across due buckets has no well-defined date, so it would just snap back)
   const dragEnabled = !!onPatch && !smart && sortMode === "manual" && groupBy !== "due";
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
+  const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee" | "due">(null);
+  const isoDay = (n: number) => { const d = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const [dragId, setDragId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: string; half: "top" | "bottom" } | null>(null);
   const selectionActive = selected.size > 0;
@@ -440,6 +441,12 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
                 <PriorityFlag priority={p} size={13} /> {PRIORITY_META[p].label}
               </button>
             ))}
+          </BulkMenuButton>
+          <BulkMenuButton label="Due" icon="calendar" open={bulkMenu === "due"} onToggle={() => setBulkMenu((m) => m === "due" ? null : "due")}>
+            <button onClick={() => applyPatch({ dueDate: isoDay(0) })} style={bulkItemStyle}><Icon name="calendar" size={13} /> Today</button>
+            <button onClick={() => applyPatch({ dueDate: isoDay(1) })} style={bulkItemStyle}><Icon name="calendar" size={13} /> Tomorrow</button>
+            <button onClick={() => applyPatch({ dueDate: isoDay(7) })} style={bulkItemStyle}><Icon name="calendar" size={13} /> Next week</button>
+            <button onClick={() => applyPatch({ dueDate: undefined })} style={bulkItemStyle}><Icon name="x" size={13} /> Clear due date</button>
           </BulkMenuButton>
           {members.length > 0 && (
             <BulkMenuButton label="Assign" icon="user" open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
