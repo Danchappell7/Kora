@@ -255,9 +255,10 @@ export function blockingTasks(task: Task, all: Task[]): Task[] {
 /* ============================================================
    PLAN MY DAY — time-native scheduling layer
    ============================================================ */
-export const DAY_START = 8 * 60;
-export const DAY_END = 19 * 60;
-export const NOW_MIN = 10 * 60 + 12;
+export const DAY_START = 7 * 60;
+export const DAY_END = 22 * 60;
+// real current time (minutes from midnight), computed at load — not a fixed demo value
+export const NOW_MIN = (() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); })();
 
 export const ENERGY: Record<EnergyKind, EnergyMeta> = {
   deep:   { label: "Deep work",     color: "var(--accent)",      icon: "zap" },

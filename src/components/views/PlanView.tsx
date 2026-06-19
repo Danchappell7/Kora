@@ -143,8 +143,15 @@ function DayCanvas({ tasks, events, onStartDrag, onOpen, dragId, previewStart, p
   const hours: number[] = [];
   for (let m = DAY_START; m <= DAY_END; m += 60) hours.push(m);
   const scheduled = tasks.filter((t) => t.scheduled != null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // on open, scroll so the current time sits near the top (don't strand the user at 7am)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = Math.max(0, (NOW_MIN - DAY_START) * PXM - 90);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "6px 0 70px" }}>
+    <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "6px 0 70px" }}>
       <div ref={onCanvasRef} style={{ position: "relative", height: totalH, margin: "0 20px 0 24px" }}>
         {hours.map((m) => (
           <div key={m} style={{ position: "absolute", left: 0, right: 0, top: (m - DAY_START) * PXM }}>
@@ -363,7 +370,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: 0 }}>
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative" }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
         <div style={{ padding: "16px 24px 12px" }}><PlanCapture onCapture={onCreate} /></div>
         <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "0 24px 8px" }}>
           <h2 style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.02em" }}>Your day</h2>
