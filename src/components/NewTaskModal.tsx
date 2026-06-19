@@ -1,12 +1,13 @@
 /* ============================================================
    KANBO — create-task modal (real, persisted task creation)
    ============================================================ */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
-import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate } from "../data/data";
+import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate, parseTaskTokens } from "../data/data";
+import { fmtDue } from "../data/data";
 import { getTemplates, type TaskTemplate } from "../lib/templates";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
 
@@ -53,6 +54,15 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const projWs = projects.find((p) => p.id === projectId)?.workspaceId ?? null;
   const assignable = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === projWs);
   const people = assignable.length > 0 ? assignable.map((m) => ({ id: m.userId!, name: m.name || m.email })) : [{ id: currentUserId, name: "You" }];
+  // natural-language tokens in the title (e.g. "… tomorrow 90m #Foundrise !high @dan")
+  const parsed = useMemo(() => parseTaskTokens(title, projects, people), [title, projects, people]);
+  const tokenChips = [
+    parsed.dueDate ? { k: "due", label: fmtDue(parsed.dueDate) } : null,
+    parsed.priority ? { k: "prio", label: PRIORITY_META[parsed.priority].label } : null,
+    parsed.projectId ? { k: "proj", label: projects.find((p) => p.id === parsed.projectId)?.name ?? "Project" } : null,
+    parsed.assigneeId ? { k: "asgn", label: people.find((p) => p.id === parsed.assigneeId)?.name ?? "Assignee" } : null,
+    parsed.focusMin != null ? { k: "dur", label: `${parsed.focusMin}m` } : null,
+  ].filter(Boolean) as { k: string; label: string }[];
 
   // when the project (and thus workspace) changes, keep the assignee valid
   useEffect(() => {
@@ -77,11 +87,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     const trimmed = title.trim();
     if (!trimmed) return;
     const t: Task = {
-      id: newId(), title: trimmed, description: "",
-      status: defaultStatus, priority, projectId,
-      assigneeId, dueDate: dueDate || undefined, startDate: startDate || undefined, dueTime: dueTime || undefined,
+      id: newId(), title: parsed.title || trimmed, description: "",
+      status: defaultStatus, priority: parsed.priority ?? priority, projectId: parsed.projectId ?? projectId,
+      assigneeId: parsed.assigneeId ?? assigneeId, dueDate: parsed.dueDate ?? (dueDate || undefined), startDate: startDate || undefined, dueTime: dueTime || undefined,
       tags, dependencies: [], subtasks: [], comments: 0,
-      focusMin, dur: focusMin, energy: energyOf({ tags } as Task),
+      focusMin: parsed.focusMin ?? focusMin, dur: parsed.focusMin ?? focusMin, energy: energyOf({ tags } as Task),
       scheduled: null, planToday: true, aiScore: 50, recurrence,
     };
     onCreate(t);
@@ -110,8 +120,16 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
           )}
           <input ref={inputRef} value={title} onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-            placeholder="Task title…"
+            placeholder="Task title…  try “tomorrow 90m #project !high”"
             style={{ width: "100%", height: 44, padding: "0 14px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 15.5, fontWeight: 500, outline: "none" }} />
+          {tokenChips.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: -6 }}>
+              <span style={{ fontSize: 11, color: "var(--ink-4)", alignSelf: "center" }}>Detected:</span>
+              {tokenChips.map((c) => (
+                <span key={c.k} className="pchip" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>{c.label}</span>
+              ))}
+            </div>
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
             <label style={fieldLabel}>Project

@@ -369,3 +369,25 @@ export function parseCapture(text: string): Task | null {
     aiReason: "Captured just now — drag it onto your day or hit Auto-plan.", planToday: true,
   };
 }
+
+/* Natural-language tokens for the New-task quick add:
+   "Email Sara tomorrow 90m #Foundrise !high @dan" → fields + cleaned title. */
+export interface ParsedTokens { title: string; dueDate?: string; priority?: Priority; projectId?: string; assigneeId?: string; focusMin?: number }
+export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = []): ParsedTokens {
+  let s = text;
+  const out: ParsedTokens = { title: "" };
+  const dm = s.match(/(\d+(?:\.\d+)?)\s*(h|hr|hours?|m|min|mins?)\b/i);
+  if (dm) { const n = parseFloat(dm[1]); out.focusMin = /h/i.test(dm[2]) ? Math.round(n * 60) : Math.round(n); s = s.replace(dm[0], " "); }
+  const pw = s.match(/(^|\s)!(urgent|high|medium|med|low)\b/i);
+  if (pw) { const w = pw[2].toLowerCase(); out.priority = (w === "med" ? "medium" : w) as Priority; s = s.replace(pw[0], " "); }
+  else { const bang = s.match(/(^|\s)(!{1,3})(?=\s|$)/); if (bang) { out.priority = bang[2].length >= 3 ? "urgent" : bang[2].length === 2 ? "high" : "medium"; s = s.replace(bang[0], " "); } }
+  if (/\btoday\b/i.test(s)) { out.dueDate = dayOffset(0); s = s.replace(/\btoday\b/i, " "); }
+  else if (/\btomorrow\b/i.test(s)) { out.dueDate = dayOffset(1); s = s.replace(/\btomorrow\b/i, " "); }
+  else if (/\bnext week\b/i.test(s)) { out.dueDate = dayOffset(7); s = s.replace(/\bnext week\b/i, " "); }
+  const projM = s.match(/(^|\s)#([\w-]+)/);
+  if (projM) { const q = projM[2].toLowerCase(); const p = projects.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || projects.find((x) => x.name.toLowerCase().includes(q)); if (p) { out.projectId = p.id; s = s.replace(projM[0], " "); } }
+  const asM = s.match(/(^|\s)@([\w-]+)/);
+  if (asM) { const q = asM[2].toLowerCase(); const m = members.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || members.find((x) => x.name.toLowerCase().includes(q)); if (m) { out.assigneeId = m.id; s = s.replace(asM[0], " "); } }
+  out.title = s.replace(/\s{2,}/g, " ").trim();
+  return out;
+}
