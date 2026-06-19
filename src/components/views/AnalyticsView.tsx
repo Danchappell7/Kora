@@ -19,6 +19,17 @@ export function AnalyticsView({ tasks, customFields = [] }: { tasks: Task[]; cus
   const open = tasks.length - done;
   const completion = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
   const finishedEarly = tasks.filter((t) => t.status === "done" && t.completedAt && t.dueDate && t.completedAt < t.dueDate).length;
+  // on-time completion rate (of done tasks that had a due date)
+  const doneWithDue = tasks.filter((t) => t.status === "done" && t.dueDate && t.completedAt);
+  const onTimeCount = doneWithDue.filter((t) => t.completedAt!.slice(0, 10) <= t.dueDate!).length;
+  const onTimePct = doneWithDue.length ? Math.round((onTimeCount / doneWithDue.length) * 100) : null;
+  // focus minutes logged today (from the Pomodoro/Deep-work tracker)
+  const focusToday = (() => { try { const v = JSON.parse(localStorage.getItem("kanbo-focus-stat") || "{}"); const d = new Date(); return v && v.date === `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}` ? (v.min as number) : 0; } catch { return 0; } })();
+  // estimate vs actual (tasks that have both an estimate and logged time)
+  const tracked = tasks.filter((t) => t.effortHours != null && t.loggedHours != null);
+  const totalEst = tracked.reduce((a, t) => a + (t.effortHours || 0), 0);
+  const totalAct = tracked.reduce((a, t) => a + (t.loggedHours || 0), 0);
+  const overruns = [...tracked].map((t) => ({ t, diff: (t.loggedHours || 0) - (t.effortHours || 0) })).filter((x) => x.diff !== 0).sort((a, b) => b.diff - a.diff).slice(0, 5);
 
   // real completions per day over the last 7 days
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
@@ -89,6 +100,8 @@ export function AnalyticsView({ tasks, customFields = [] }: { tasks: Task[]; cus
         <StatTile kicker="Done this week" value={doneThisWeek} icon="check" sub="last 7 days" />
         <StatTile kicker="Finished early" value={finishedEarly} icon="trendingUp" sub="before due date" />
         <StatTile kicker="Open tasks" value={open} icon="clock" accent sub="not yet done" />
+        <StatTile kicker="On-time rate" value={onTimePct == null ? "—" : onTimePct + "%"} icon="check" sub="done by due date" />
+        <StatTile kicker="Focus today" value={focusToday >= 60 ? `${Math.floor(focusToday / 60)}h ${focusToday % 60}m` : `${focusToday}m`} icon="zap" accent sub="deep-work logged" />
       </div>
 
       {/* configurable breakdown */}
@@ -122,6 +135,32 @@ export function AnalyticsView({ tasks, customFields = [] }: { tasks: Task[]; cus
           </div>
         ))}
       </Card>
+
+      {tracked.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <h3 style={{ fontSize: 14.5, fontWeight: 600 }}>Estimate vs actual</h3>
+            <span style={{ marginLeft: "auto", fontSize: 12.5, color: "var(--ink-4)" }}>{tracked.length} tracked task{tracked.length === 1 ? "" : "s"}</span>
+          </div>
+          <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: overruns.length ? 18 : 0 }}>
+            <div><div className="kicker">Estimated</div><div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>{Math.round(totalEst * 10) / 10}h</div></div>
+            <div><div className="kicker">Logged</div><div className="mono" style={{ fontSize: 22, fontWeight: 600, color: totalAct > totalEst ? "var(--prio-urgent)" : "var(--st-done)" }}>{Math.round(totalAct * 10) / 10}h</div></div>
+            <div><div className="kicker">Variance</div><div className="mono" style={{ fontSize: 22, fontWeight: 600, color: totalAct > totalEst ? "var(--prio-urgent)" : "var(--st-done)" }}>{totalAct - totalEst > 0 ? "+" : ""}{Math.round((totalAct - totalEst) * 10) / 10}h</div></div>
+          </div>
+          {overruns.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div className="kicker" style={{ marginBottom: 2 }}>Biggest differences</div>
+              {overruns.map(({ t, diff }) => (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                  <span className="truncate" style={{ flex: 1, color: "var(--ink-2)" }}>{t.title}</span>
+                  <span className="mono" style={{ color: "var(--ink-4)" }}>{t.effortHours}h → {t.loggedHours}h</span>
+                  <span className="mono" style={{ width: 52, textAlign: "right", color: diff > 0 ? "var(--prio-urgent)" : "var(--st-done)" }}>{diff > 0 ? "+" : ""}{Math.round(diff * 10) / 10}h</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.5fr 1fr", gap: 16, marginBottom: 16 }}>
         <Card>
