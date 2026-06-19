@@ -508,7 +508,7 @@ export default function App() {
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
-  const [route, setRouteRaw] = useState<Route>({ view: "plan" });
+  const [route, setRouteRaw] = useState<Route>({ view: "home" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
     try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar", "files"].includes(s)) return s; } catch { /* private mode */ }
