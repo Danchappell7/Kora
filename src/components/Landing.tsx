@@ -7,26 +7,27 @@ import { Icon, KanboLogo } from "./primitives";
 import type { IconName } from "../data/types";
 
 const FEATURES: { icon: IconName; title: string; body: string }[] = [
-  { icon: "sparkles", title: "Capture in plain English", body: "Type “Draft deck 90m deep work today” and Kanbo files it with the right duration, energy, and due date — no forms." },
-  { icon: "calendarPlus", title: "Auto-plan your day", body: "Kanbo lays your tasks around the meetings already on your calendar, putting deep work where you’re sharpest." },
-  { icon: "zap", title: "AI prioritization", body: "It ranks what to do next and tells you why — so you open the app and just start, instead of deciding." },
-  { icon: "layers", title: "A board that flows", body: "Drag work from To-do to Done, group by status or project, and see what’s moving at a glance." },
-  { icon: "clock", title: "Focus mode", body: "Start a timed deep-work block on a single task and let the rest of the noise fall away." },
-  { icon: "user", title: "Built for teams", body: "Shared workspaces, assignments, comments, and live workload — everyone sees who’s on what, in real time." },
+  { icon: "sparkles", title: "Type like you think", body: "Write “Draft the deck, 90 mins, today” the way you’d say it out loud. Kanbo reads the time, the energy, and the deadline, and files it for you. No forms. No fiddly fields." },
+  { icon: "calendarPlus", title: "A day that builds itself", body: "Kanbo drops your tasks around the meetings already on your calendar. Deep work when you’re sharp, the small stuff when you’re not. A real plan, ready in seconds." },
+  { icon: "zap", title: "It already knows what’s next", body: "Kanbo ranks your queue and tells you why this one, right now. Open the app and go, instead of losing ten minutes deciding where to start." },
+  { icon: "layers", title: "Projects that actually move", body: "Drag work from to-do to done, group by project or status, and see what’s live at a glance. Your whole team reads the same board the same way." },
+  { icon: "clock", title: "Deep focus on tap", body: "Pick one task, hit start, and everything else goes quiet. Timed focus blocks that turn a loud list into finished work." },
+  { icon: "user", title: "Made for teams", body: "Shared spaces, assignments, comments, and mentions. Live workload across every project shows who’s slammed, who’s free, and what to move — all in real time." },
 ];
 
 const STEPS: { n: string; title: string; body: string }[] = [
-  { n: "01", title: "Capture", body: "Brain-dump everything on your plate in seconds, in your own words." },
-  { n: "02", title: "Plan", body: "Auto-plan builds a realistic, time-blocked day around your real schedule." },
-  { n: "03", title: "Focus", body: "Work the queue one block at a time and watch it get done." },
+  { n: "01", title: "Capture", body: "Empty your head in seconds. Your words, not a form." },
+  { n: "02", title: "Plan", body: "Kanbo builds a real, time-blocked day around your calendar and your priorities." },
+  { n: "03", title: "Focus", body: "Work one block at a time and watch the list clear itself." },
 ];
 
 const FAQS: { q: string; a: string }[] = [
-  { q: "Is it free?", a: "Yes — Kanbo is completely free while we're in early access. No credit card, no trial countdown. When paid plans arrive later, you'll get plenty of notice." },
-  { q: "Can I use it with my team?", a: "Absolutely. Create a shared workspace, invite teammates by email, assign tasks, comment, @mention, and see everyone's workload live." },
-  { q: "Does it work on my phone?", a: "Yes. Kanbo is fully responsive — capture, plan, and check things off from your phone, tablet, or desktop." },
-  { q: "Is my data private?", a: "Your data is yours. Every workspace is isolated and access-controlled, and you can export everything or delete your account and all its data at any time." },
-  { q: "Do I need to set anything up?", a: "No. Sign up, add your name, and start typing tasks — Kanbo plans your day around them automatically." },
+  { q: "Is Kanbo really free?", a: "Totally, while we’re in early access. No card, no trial counting down. When paid plans land, you’ll know well before they do." },
+  { q: "Does it work for my whole team?", a: "That’s the whole idea. Spin up a shared space, invite people by email, assign work, drop comments, and watch everyone’s workload update live." },
+  { q: "Can it run my projects, not just my day?", a: "Yes. Kanbo handles the projects, boards, and workloads you’d expect from a serious work tool, then adds the part most of them skip: an AI that plans your actual day around them." },
+  { q: "Does it work on my phone?", a: "Capture, plan, and check things off from your phone, tablet, or laptop. Kanbo goes where you go." },
+  { q: "Is my data private?", a: "Your data is yours. Every space is isolated and access controlled, and you can export it all, or delete it, whenever you want." },
+  { q: "Do I need to set anything up?", a: "Nope. Sign up, add your name, start typing. Kanbo plans around you automatically." },
 ];
 
 const sectionPad: React.CSSProperties = { maxWidth: 1080, margin: "0 auto", padding: "0 24px" };
@@ -36,7 +37,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
   onSignIn: () => void;
   signupDisabled?: boolean;
 }) {
-  const primaryLabel = signupDisabled ? "Sign in" : "Get started — free";
+  const primaryLabel = signupDisabled ? "Sign in" : "Start free";
   const onPrimary = signupDisabled ? onSignIn : onGetStarted;
 
   return (
@@ -57,21 +58,20 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
         {/* ---- hero ---- */}
         <header style={{ ...sectionPad, textAlign: "center", padding: "64px 24px 40px" }}>
           <div className="anim-fadeup" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 13px", borderRadius: 99, background: "var(--accent-dim)", color: "var(--accent)", fontSize: 12.5, fontWeight: 600, marginBottom: 26, border: "1px solid color-mix(in oklch, var(--accent) 22%, transparent)" }}>
-            <Icon name="sparkles" size={14} /> Your AI-planned workday
+            <Icon name="sparkles" size={14} /> Meet your AI day planner
           </div>
           <h1 className="anim-fadeup" style={{ fontSize: "clamp(34px, 6vw, 60px)", fontWeight: 700, lineHeight: 1.05, letterSpacing: "-0.03em", margin: "0 auto 20px", maxWidth: 760 }}>
-            The to-do list that{" "}
-            <span style={{ background: "var(--brand-grad)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>plans your day</span>{" "}
-            for you.
+            Plan less.{" "}
+            <span style={{ background: "var(--brand-grad)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>Finish more.</span>
           </h1>
-          <p className="anim-fadeup" style={{ fontSize: "clamp(16px, 2vw, 19px)", lineHeight: 1.6, color: "var(--ink-3)", margin: "0 auto 30px", maxWidth: 600 }}>
-            Kanbo turns scattered tasks into a realistic, time-blocked day. Capture in plain English, let AI prioritize, and focus on what actually matters.
+          <p className="anim-fadeup" style={{ fontSize: "clamp(16px, 2vw, 19px)", lineHeight: 1.6, color: "var(--ink-3)", margin: "0 auto 30px", maxWidth: 620 }}>
+            Kanbo is where your tasks, projects, and team live together. Tell it what’s on your plate and the AI builds a real, time-blocked day around the meetings you already have. You just show up and do the work.
           </p>
           <div className="anim-fadeup" style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <button className="btn btn-accent" onClick={onPrimary} style={{ padding: "13px 24px", fontSize: 15 }}>{primaryLabel} <Icon name="arrowRight" size={16} /></button>
             <button className="btn btn-ghost" onClick={onSignIn} style={{ padding: "13px 24px", fontSize: 15 }}>Sign in</button>
           </div>
-          {!signupDisabled && <p style={{ fontSize: 12.5, color: "var(--ink-4)", marginTop: 16 }}>No credit card needed · Free during early access</p>}
+          {!signupDisabled && <p style={{ fontSize: 12.5, color: "var(--ink-4)", marginTop: 16 }}>Free while we’re in early access. You’ll be planning in under a minute.</p>}
 
           {/* ---- product preview mock ---- */}
           <div className="glass anim-fadeup" style={{ marginTop: 52, padding: 16, borderRadius: 22, maxWidth: 880, marginInline: "auto", boxShadow: "var(--shadow-lg)", textAlign: "left" }}>
@@ -109,9 +109,9 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
 
         {/* ---- features ---- */}
         <section style={{ ...sectionPad, padding: "60px 24px" }}>
-          <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Everything you need to actually finish</h2>
+          <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Everything in one place. Nothing in your way.</h2>
           <p style={{ textAlign: "center", fontSize: 16, color: "var(--ink-3)", margin: "0 auto 44px", maxWidth: 540, lineHeight: 1.55 }}>
-            Capture, plan, prioritize, and focus — in one calm, fast workspace.
+            Capture, plan, prioritize, and focus. For you, and for the whole team.
           </p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 18 }}>
             {FEATURES.map((f) => (
@@ -127,7 +127,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
         {/* ---- how it works ---- */}
         <section style={{ ...sectionPad, padding: "40px 24px 60px" }}>
           <div className="glass" style={{ padding: "clamp(28px, 5vw, 52px)", borderRadius: 24 }}>
-            <h2 style={{ textAlign: "center", fontSize: "clamp(24px, 3.5vw, 32px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 40 }}>How it works</h2>
+            <h2 style={{ textAlign: "center", fontSize: "clamp(24px, 3.5vw, 32px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 40 }}>Three steps to a finished day.</h2>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 28 }}>
               {STEPS.map((s) => (
                 <div key={s.n}>
@@ -142,9 +142,9 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
 
         {/* ---- pricing ---- */}
         <section style={{ ...sectionPad, padding: "40px 24px 20px" }}>
-          <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Simple pricing</h2>
+          <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Pricing? Not yet.</h2>
           <p style={{ textAlign: "center", fontSize: 16, color: "var(--ink-3)", margin: "0 auto 36px", maxWidth: 460, lineHeight: 1.55 }}>
-            Free while we're in early access. No card, no countdown.
+            Free while we’re in early access. No card. No countdown. No catch.
           </p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18, maxWidth: 720, margin: "0 auto" }}>
             <div className="glass" style={{ padding: 26, borderRadius: 20, border: "1px solid color-mix(in oklch, var(--accent) 45%, transparent)", boxShadow: "0 0 0 1px color-mix(in oklch, var(--accent) 30%, transparent), 0 14px 36px -16px var(--accent-glow)" }}>
@@ -154,8 +154,8 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
               <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
                 <span style={{ fontSize: 38, fontWeight: 700, letterSpacing: "-0.02em" }}>Free</span>
               </div>
-              <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>Everything in Kanbo, for individuals and teams, while we're in early access.</p>
-              {["Unlimited tasks & projects", "Shared team workspaces", "AI planning & prioritization", "Export your data anytime"].map((f) => (
+              <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>The full Kanbo. Every feature, solo or with your team, while we’re in early access.</p>
+              {["Unlimited tasks and projects", "Shared team spaces", "AI planning and prioritization", "Workload and calendar view", "Export your data anytime"].map((f) => (
                 <div key={f} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, color: "var(--ink-2)", padding: "5px 0" }}>
                   <Icon name="check" size={15} style={{ color: "var(--accent)" }} /> {f}
                 </div>
@@ -169,13 +169,13 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
               <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
                 <span style={{ fontSize: 38, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--ink-3)" }}>Paid plans</span>
               </div>
-              <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>Down the line we'll add affordable Personal and per-seat Team plans. Early users get plenty of notice — and a thank-you.</p>
+              <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>One day we’ll add fair Personal and per-seat Team plans. Early users get a heads up well in advance, plus a thank you for showing up first.</p>
               {["Everything in early access", "Priority support", "Advanced team controls"].map((f) => (
                 <div key={f} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, color: "var(--ink-4)", padding: "5px 0" }}>
                   <Icon name="check" size={15} style={{ color: "var(--ink-4)" }} /> {f}
                 </div>
               ))}
-              <button className="btn btn-ghost" onClick={onPrimary} style={{ width: "100%", justifyContent: "center", padding: "12px 15px", marginTop: 18 }}>Start free today</button>
+              <button className="btn btn-ghost" onClick={onPrimary} style={{ width: "100%", justifyContent: "center", padding: "12px 15px", marginTop: 18 }}>You’re early. It’s on us.</button>
             </div>
           </div>
         </section>
@@ -198,9 +198,9 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
         {/* ---- closing CTA ---- */}
         <section style={{ ...sectionPad, padding: "30px 24px 70px" }}>
           <div className="anim-fadeup" style={{ position: "relative", overflow: "hidden", borderRadius: 26, padding: "clamp(36px, 6vw, 64px) 24px", textAlign: "center", background: "var(--brand-grad)", boxShadow: "var(--shadow-lg)" }}>
-            <h2 style={{ fontSize: "clamp(26px, 4vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", color: "#fff", margin: "0 0 14px" }}>Start running your day with Kanbo</h2>
+            <h2 style={{ fontSize: "clamp(26px, 4vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", color: "#fff", margin: "0 0 14px" }}>Plan today. Finish today.</h2>
             <p style={{ fontSize: 16.5, lineHeight: 1.55, color: "rgba(255,255,255,0.92)", margin: "0 auto 28px", maxWidth: 480 }}>
-              Set up your workspace in under a minute. Plan today, finish today.
+              Set up your space in under a minute and let Kanbo run the rest of your day.
             </p>
             <button onClick={onPrimary} style={{ border: "none", cursor: "pointer", background: "#fff", color: "var(--accent-strong)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 15.5, padding: "14px 28px", borderRadius: 13, display: "inline-flex", alignItems: "center", gap: 8, boxShadow: "0 10px 30px -8px rgba(0,0,0,0.3)" }}>
               {primaryLabel} <Icon name="arrowRight" size={17} />
