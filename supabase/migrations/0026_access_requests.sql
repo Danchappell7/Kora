@@ -31,6 +31,11 @@ drop policy if exists "admin updates requests" on public.access_requests;
 create policy "admin updates requests" on public.access_requests for update
   using ((auth.jwt() ->> 'email') = 'danchappell7@gmail.com');
 
+-- the landing form runs signed-out, so the anon role must be able to insert
+-- (RLS still governs what — the "submit access request" policy above)
+grant insert on public.access_requests to anon, authenticated;
+grant select, update on public.access_requests to authenticated;
+
 -- ---------- 2. profiles.approved (the gate) ----------
 alter table public.profiles add column if not exists approved boolean not null default false;
 -- grandfather every existing account so nobody currently using Kanbo is locked out
