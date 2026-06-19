@@ -10,45 +10,105 @@ import { store, type AdminSeries, type AdminDay, type AdminAccount } from "../..
 import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 
-/* Early-access requests — approve people before their account works. */
+/* Early-access requests — review, approve (with email), decline. */
+type ReqTab = "pending" | "approved" | "declined" | "all";
+const REQ_BADGE: Record<string, { label: string; color: string }> = {
+  pending: { label: "Pending", color: "var(--st-review)" },
+  approved: { label: "Approved", color: "var(--st-done)" },
+  declined: { label: "Declined", color: "var(--ink-4)" },
+};
 function AccessRequestsPanel() {
   const [reqs, setReqs] = useState<AccessRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [tab, setTab] = useState<ReqTab>("pending");
+  const [q, setQ] = useState("");
+  const [flash, setFlash] = useState<{ id: string; text: string; ok: boolean } | null>(null);
   const load = () => { setLoading(true); store.listAccessRequests().then(setReqs).catch(reportError).finally(() => setLoading(false)); };
   useEffect(load, []);
-  const pending = reqs.filter((r) => r.status === "pending");
+
+  const counts = {
+    pending: reqs.filter((r) => r.status === "pending").length,
+    approved: reqs.filter((r) => r.status === "approved").length,
+    declined: reqs.filter((r) => r.status === "declined").length,
+    all: reqs.length,
+  };
+  const needle = q.trim().toLowerCase();
+  const shown = reqs
+    .filter((r) => tab === "all" || r.status === tab)
+    .filter((r) => !needle || r.name.toLowerCase().includes(needle) || r.email.toLowerCase().includes(needle));
+
   const act = async (id: string, kind: "approve" | "decline") => {
     setBusy(id);
-    try { if (kind === "approve") await store.approveAccessRequest(id); else await store.declineAccessRequest(id); load(); }
-    catch (e) { reportError(e); } finally { setBusy(null); }
+    try {
+      if (kind === "approve") {
+        const emailed = await store.approveAccessRequest(id);
+        setFlash({ id, text: emailed ? "Approved · email sent" : "Approved · email not sent", ok: emailed });
+      } else {
+        await store.declineAccessRequest(id);
+        setFlash({ id, text: "Declined", ok: true });
+      }
+      load();
+      setTimeout(() => setFlash((f) => (f?.id === id ? null : f)), 4500);
+    } catch (e) { reportError(e); setFlash({ id, text: "Something went wrong", ok: false }); }
+    finally { setBusy(null); }
   };
+
   if (!loading && reqs.length === 0) return null;
+  const tabs: { k: ReqTab; label: string }[] = [
+    { k: "pending", label: "Pending" }, { k: "approved", label: "Approved" }, { k: "declined", label: "Declined" }, { k: "all", label: "All" },
+  ];
   return (
     <div className="glass" style={{ borderRadius: 16, padding: "16px 20px", marginBottom: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 13, flexWrap: "wrap" }}>
         <Icon name="inbox" size={16} style={{ color: "var(--accent)" }} />
         <h2 style={{ fontSize: 15, fontWeight: 600 }}>Early-access requests</h2>
-        {pending.length > 0 && <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--on-accent)", background: "var(--accent)", borderRadius: 99, padding: "1px 8px" }}>{pending.length} pending</span>}
+        {counts.pending > 0 && <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--on-accent)", background: "var(--accent)", borderRadius: 99, padding: "1px 8px" }}>{counts.pending} pending</span>}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or email…" aria-label="Search requests"
+          style={{ marginLeft: "auto", height: 30, width: 200, maxWidth: "40vw", padding: "0 11px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" }} />
       </div>
-      {loading ? <span style={{ fontSize: 13, color: "var(--ink-4)" }}>Loading…</span> : (
+
+      {/* status tabs */}
+      <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 13 }}>
+        {tabs.map((t) => (
+          <button key={t.k} onClick={() => setTab(t.k)} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500,
+            background: tab === t.k ? "var(--accent)" : "transparent", color: tab === t.k ? "var(--on-accent)" : "var(--ink-3)" }}>
+            {t.label}<span className="mono" style={{ fontSize: 10.5, opacity: 0.8 }}>{counts[t.k]}</span>
+          </button>
+        ))}
+      </div>
+
+      {loading ? <span style={{ fontSize: 13, color: "var(--ink-4)" }}>Loading…</span> : shown.length === 0 ? (
+        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: "6px 2px" }}>No {tab === "all" ? "" : tab + " "}requests{needle ? " match your search" : ""}.</p>
+      ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {reqs.slice(0, 40).map((r) => (
-            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 500 }}>{r.name || "—"}</div>
-                <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{r.email}</div>
+          {shown.slice(0, 100).map((r) => {
+            const badge = REQ_BADGE[r.status] ?? REQ_BADGE.pending;
+            const f = flash?.id === r.id ? flash : null;
+            return (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)" }}>
+                <span style={{ width: 32, height: 32, borderRadius: 99, background: "var(--accent-dim)", color: "var(--accent)", display: "grid", placeItems: "center", fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
+                  {(r.name || r.email || "?").trim().charAt(0).toUpperCase()}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 500 }}>{r.name || "—"}</div>
+                  <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{r.email}</div>
+                </div>
+                <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }} title={r.createdAt}>{fmtAgo(r.createdAt)}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: badge.color, background: `color-mix(in oklch, ${badge.color} 14%, transparent)`, borderRadius: 99, padding: "3px 9px", flexShrink: 0 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: 99, background: badge.color }} />{badge.label}
+                </span>
+                {f ? (
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: f.ok ? "var(--st-done)" : "var(--prio-urgent)", flexShrink: 0 }}>{f.text}</span>
+                ) : (
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    {r.status !== "approved" && <button disabled={busy === r.id} onClick={() => act(r.id, "approve")} className="btn btn-accent" style={{ padding: "6px 12px", fontSize: 12.5 }}>{r.status === "declined" ? "Approve anyway" : "Approve"}</button>}
+                    {r.status === "pending" && <button disabled={busy === r.id} onClick={() => act(r.id, "decline")} className="btn btn-ghost" style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--ink-4)" }}>Decline</button>}
+                  </div>
+                )}
               </div>
-              {r.status === "pending" ? (
-                <>
-                  <button disabled={busy === r.id} onClick={() => act(r.id, "approve")} className="btn btn-accent" style={{ padding: "6px 12px", fontSize: 12.5 }}>Approve</button>
-                  <button disabled={busy === r.id} onClick={() => act(r.id, "decline")} className="btn btn-ghost" style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--ink-4)" }}>Decline</button>
-                </>
-              ) : (
-                <span style={{ fontSize: 12, fontWeight: 600, color: r.status === "approved" ? "var(--st-done)" : "var(--ink-4)" }}>{r.status === "approved" ? "Approved" : "Declined"}</span>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
