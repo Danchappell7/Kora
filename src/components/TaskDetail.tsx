@@ -193,6 +193,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [reactPickerFor, setReactPickerFor] = useState<string | null>(null);
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depQuery, setDepQuery] = useState("");
+  const [reactsOpen, setReactsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const commentRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const descRef = useRef<HTMLTextAreaElement>(null);
@@ -351,22 +353,35 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             />
           </div>
 
-          {/* task reactions */}
-          {onToggleTaskReaction && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "10px 0 2px", paddingLeft: 34 }}>
-              {REACTION_EMOJIS.map((emoji) => {
-                const uids = taskReactions[emoji] ?? [];
-                const mine = uids.includes(currentUserId);
-                return (
-                  <button key={emoji} onClick={() => onToggleTaskReaction(task.id, emoji)} title={uids.length ? `${uids.length} reacted` : "React"}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, cursor: "pointer", fontSize: 13,
-                      border: `1px solid ${mine ? "var(--accent)" : "var(--hairline)"}`, background: mine ? "var(--accent-dim)" : "transparent", opacity: uids.length || mine ? 1 : 0.55 }}>
-                    {emoji}{uids.length > 0 && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{uids.length}</span>}
+          {/* task reactions — tucked behind a button so the panel opens on fields */}
+          {onToggleTaskReaction && (() => {
+            const totalReacts = Object.values(taskReactions).reduce((n, u) => n + (u?.length ?? 0), 0);
+            return (
+              <div style={{ margin: "10px 0 2px", paddingLeft: 34 }}>
+                {!reactsOpen ? (
+                  <button onClick={() => setReactsOpen(true)} title="React to this task"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px", borderRadius: 999, cursor: "pointer", fontSize: 12.5,
+                      border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-3)" }}>
+                    🙂 React{totalReacts > 0 && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{totalReacts}</span>}
                   </button>
-                );
-              })}
-            </div>
-          )}
+                ) : (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {REACTION_EMOJIS.map((emoji) => {
+                      const uids = taskReactions[emoji] ?? [];
+                      const mine = uids.includes(currentUserId);
+                      return (
+                        <button key={emoji} onClick={() => onToggleTaskReaction(task.id, emoji)} title={uids.length ? `${uids.length} reacted` : "React"}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, cursor: "pointer", fontSize: 13,
+                            border: `1px solid ${mine ? "var(--accent)" : "var(--hairline)"}`, background: mine ? "var(--accent-dim)" : "transparent", opacity: uids.length || mine ? 1 : 0.55 }}>
+                          {emoji}{uids.length > 0 && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{uids.length}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* AI recommendation */}
           {task.aiReason && !done && (
@@ -384,26 +399,22 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           {/* meta */}
           <div style={{ display: "flex", flexDirection: "column", gap: 4, margin: "20px 0", paddingTop: 4 }}>
             <MetaRow icon="circle" label="Status">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {STATUS_ORDER.map((s) => (
-                  <button key={s} onClick={() => onPatch(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })} style={{
-                    display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 9px", borderRadius: 7, cursor: "pointer", fontSize: 12,
-                    border: `1px solid ${task.status === s ? "var(--hairline-strong)" : "transparent"}`,
-                    background: task.status === s ? "var(--surface-2)" : "transparent", color: task.status === s ? "var(--ink)" : "var(--ink-4)",
-                  }}><StatusDot status={s} size={7} />{STATUS_META[s].label}</button>
-                ))}
-              </div>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <StatusDot status={task.status} size={8} />
+                <select value={task.status} onChange={(e) => { const s = e.target.value as Status; onPatch(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined }); }}
+                  style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+                  {STATUS_ORDER.map((s) => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
+                </select>
+              </span>
             </MetaRow>
             <MetaRow icon="flag" label="Priority">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {(Object.keys(PRIORITY_META) as Priority[]).map((p) => (
-                  <button key={p} onClick={() => onPatch(task.id, { priority: p })} style={{
-                    display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 9px", borderRadius: 7, cursor: "pointer", fontSize: 12,
-                    border: `1px solid ${task.priority === p ? "var(--hairline-strong)" : "transparent"}`,
-                    background: task.priority === p ? "var(--surface-2)" : "transparent", color: task.priority === p ? "var(--ink)" : "var(--ink-4)",
-                  }}><Icon name="flag" size={12} fill={p === "urgent" || p === "high" ? PRIORITY_META[p].color : "none"} style={{ color: PRIORITY_META[p].color }} />{PRIORITY_META[p].label}</button>
-                ))}
-              </div>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <Icon name="flag" size={13} fill={task.priority === "urgent" || task.priority === "high" ? PRIORITY_META[task.priority].color : "none"} style={{ color: PRIORITY_META[task.priority].color }} />
+                <select value={task.priority} onChange={(e) => onPatch(task.id, { priority: e.target.value as Priority })}
+                  style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+                  {(Object.keys(PRIORITY_META) as Priority[]).map((p) => <option key={p} value={p}>{PRIORITY_META[p].label}</option>)}
+                </select>
+              </span>
             </MetaRow>
             <MetaRow icon="grid" label="Project">
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -482,6 +493,11 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 {task.dueDate && <button onClick={() => onPatch(task.id, { dueDate: undefined })} title="Clear due date" style={{ padding: "4px 7px", borderRadius: 7, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13 }}>×</button>}
               </div>
             </MetaRow>
+            <button onClick={() => setMoreOpen((v) => !v)}
+              style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 5, marginTop: 6, padding: "4px 2px", border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, color: "var(--ink-3)" }}>
+              <Icon name={moreOpen ? "chevronDown" : "chevronRight"} size={14} /> {moreOpen ? "Fewer options" : "More options"}
+            </button>
+            {moreOpen && (<>
             <MetaRow icon="refresh" label="Repeat">
               <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}
                 style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
@@ -513,6 +529,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 Mark as milestone
               </button>
             </MetaRow>
+            </>)}
           </div>
 
           {/* description — markdown, click to edit */}
