@@ -150,7 +150,7 @@ function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete
   );
 }
 
-export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection }: {
+export function TaskDetail({ taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onOpenTask, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment }: {
   taskId: string;
   tasks: Task[];
   /** open another task in this panel (used to drill into a sub-task) */
@@ -182,6 +182,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
   onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
+  onConvertComment?: (body: string, projectId: string) => void;
   onFocus: (id: string) => void;
 }) {
   const task = tasks.find((t) => t.id === taskId);
@@ -705,6 +706,12 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     <button onClick={() => setReactPickerFor((v) => v === c.id ? null : c.id)} aria-label="Add reaction" style={{ width: 24, height: 22, borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, display: "grid", placeItems: "center" }}>
                       <Icon name="message" size={12} />
                     </button>
+                    {onConvertComment && c.body.trim() && (
+                      <button onClick={() => onConvertComment(c.body.trim(), task.projectId)} title="Turn this comment into a task"
+                        style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <Icon name="plus" size={11} /> Task
+                      </button>
+                    )}
                     {reactPickerFor === c.id && (
                       <>
                         <div onClick={() => setReactPickerFor(null)} style={{ position: "fixed", inset: 0, zIndex: 10 }} />
