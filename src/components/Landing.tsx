@@ -213,7 +213,11 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
           <div style={{ ...sectionPad, display: "flex", alignItems: "center", gap: 12, padding: "24px", flexWrap: "wrap" }}>
             <KanboLogo size={22} />
             <span style={{ fontSize: 13, color: "var(--ink-4)" }}>© 2026 Kanbo. Plan today, finish today.</span>
-            <button onClick={onSignIn} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--ink-3)", cursor: "pointer", fontSize: 13.5, fontWeight: 600, fontFamily: "var(--font-display)" }}>Sign in →</button>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 18 }}>
+              <a href="/privacy" style={{ color: "var(--ink-3)", fontSize: 13.5, fontWeight: 600, fontFamily: "var(--font-display)", textDecoration: "none" }}>Privacy</a>
+              <a href="/terms" style={{ color: "var(--ink-3)", fontSize: 13.5, fontWeight: 600, fontFamily: "var(--font-display)", textDecoration: "none" }}>Terms</a>
+              <button onClick={onSignIn} style={{ border: "none", background: "transparent", color: "var(--ink-3)", cursor: "pointer", fontSize: 13.5, fontWeight: 600, fontFamily: "var(--font-display)" }}>Sign in →</button>
+            </div>
           </div>
         </footer>
       </div>
