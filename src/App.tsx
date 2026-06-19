@@ -1495,9 +1495,10 @@ export default function App() {
   // scope tasks by route
   let scoped = allTasks, title = "My tasks", subtitle = "Everything assigned to you", breadcrumb = activeWsName;
   let newProj = getProject("");
-  // "My tasks" spans every workspace — anything assigned to you, including tasks
-  // someone assigned you in a shared workspace you're not currently viewing.
-  if (route.view === "tasks") { scoped = tasks.filter((t) => (t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)) && !t.archivedAt); }
+  // "My tasks" stays within the workspace you're viewing — your personal tasks
+  // never mix with a team workspace's, and vice versa. (allTasks is already
+  // scoped to the active workspace + non-archived.)
+  if (route.view === "tasks") { scoped = allTasks.filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)); }
   else if (route.view === "project" && route.projectId) {
     const p = getProject(route.projectId); newProj = p;
     scoped = allTasks.filter((t) => t.projectId === route.projectId);
@@ -1507,9 +1508,11 @@ export default function App() {
     breadcrumb = workspaces.find((w) => w.id === (p?.workspaceId ?? null))?.name || "Personal";
   }
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
-  // people you can bulk-assign to: active members of the workspace (always includes you)
+  // people you can assign/tag: active members of the ACTIVE workspace only.
+  // Personal (workspace === null) has no member rows, so it resolves to just you —
+  // you can never tag someone from another workspace.
   const assignees = (() => {
-    const active = wsMembers.filter((m) => m.status === "active" && m.userId).map((m) => ({ id: m.userId!, name: m.name || m.email }));
+    const active = wsMembers.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === workspace).map((m) => ({ id: m.userId!, name: m.name || m.email }));
     return active.length > 0 ? active : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   })();
 
