@@ -75,6 +75,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const navGroups: { label?: string; items: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] }[] = [
     { items: [
       { id: "plan", icon: "calendarPlus", label: "Plan my day" },
+      { id: "myweek", icon: "sun", label: "My week" },
       { id: "home", icon: "home", label: "Home" },
       { id: "inbox", icon: "inbox", label: "Inbox", badge: inboxCount },
       { id: "tasks", icon: "tasks", label: "My tasks", badge: myOpen },
