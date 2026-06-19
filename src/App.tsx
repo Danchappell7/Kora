@@ -1533,7 +1533,7 @@ export default function App() {
     switch (route.view) {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} externalEvents={calEvents} calendarConnected={calConnections.length > 0} />;
       case "myweek": return <MyWeekView tasks={allTasks.filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId))} onOpen={setDetailId} onPatch={patchTask} />;
-      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} />;
+      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
       case "analytics": return <AnalyticsView tasks={allTasks} customFields={customFields} />;
       case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;

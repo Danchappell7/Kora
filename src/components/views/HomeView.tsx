@@ -1,11 +1,43 @@
 /* ============================================================
    KANBO — Home dashboard
    ============================================================ */
+import { useState } from "react";
 import { Icon, Avatar, StatusDot, AiScore } from "../primitives";
 import { Sparkline } from "../charts";
 import { getProject, projectProgress, dueState, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, IconName } from "../../data/types";
 import type { Route } from "../../app-types";
+
+/* First-run getting-started checklist — tracks real progress, dismissible. */
+function GettingStarted({ steps }: { steps: { label: string; done: boolean; action: () => void; cta: string }[] }) {
+  const [dismissed, setDismissed] = useState(() => { try { return localStorage.getItem("kanbo-gs-dismissed") === "1"; } catch { return false; } });
+  const doneN = steps.filter((s) => s.done).length;
+  if (dismissed || doneN === steps.length) return null;
+  const dismiss = () => { try { localStorage.setItem("kanbo-gs-dismissed", "1"); } catch { /* private mode */ } setDismissed(true); };
+  return (
+    <div className="glass anim-fadeup" style={{ padding: 18, borderRadius: 16, marginBottom: 18, border: "1px solid color-mix(in oklch, var(--accent) 30%, transparent)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+        <Icon name="sparkles" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 14.5, fontWeight: 600 }}>Getting started</span>
+        <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-4)" }}>{doneN}/{steps.length}</span>
+        <button onClick={dismiss} aria-label="Dismiss getting started" style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", display: "inline-flex" }}><Icon name="x" size={15} /></button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+        {steps.map((s) => (
+          <button key={s.label} onClick={s.done ? undefined : s.action} disabled={s.done} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, border: "1px solid var(--hairline)", background: s.done ? "var(--surface-2)" : "var(--surface)", cursor: s.done ? "default" : "pointer", textAlign: "left" }}>
+            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)", color: s.done ? "var(--bg-deep)" : "var(--accent)" }}>
+              {s.done ? <Icon name="check" size={13} sw={3} /> : <Icon name="arrowRight" size={13} />}
+            </span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 13.5, fontWeight: 500, textDecoration: s.done ? "line-through" : "none", color: s.done ? "var(--ink-4)" : "var(--ink)" }}>{s.label}</span>
+              {!s.done && <span style={{ display: "block", fontSize: 11.5, color: "var(--accent)" }}>{s.cta}</span>}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   kicker: string; value: string | number; icon: IconName; accent?: boolean; delta?: string; sub?: string;
@@ -25,8 +57,8 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy }: {
-  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean;
+export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam }: {
+  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
 }) {
   const open = tasks.filter((t) => t.status !== "done");
   const counts = {
@@ -90,8 +122,15 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
     );
   }
 
+  const gsSteps = [
+    { label: "Add your first task", done: tasks.length > 0, action: onNewTask, cta: "Capture one" },
+    { label: "Plan your day", done: tasks.some((t) => t.scheduled != null || t.planToday), action: () => setRoute({ view: "plan" }), cta: "Open Plan my day" },
+    { label: "Connect your calendar", done: !!calendarConnected, action: () => setRoute({ view: "calendar" }), cta: "Connect Google" },
+    { label: "Invite your team", done: !!hasTeam, action: () => setRoute({ view: "team" }), cta: "Create a workspace" },
+  ];
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px" }}>
+      <GettingStarted steps={gsSteps} />
       {/* AI daily brief */}
       <div className="glass anim-fadeup" style={{ padding: 22, borderRadius: 18, marginBottom: 22, overflow: "hidden", position: "relative" }}>
         <div style={{ position: "absolute", top: -40, right: -20, width: 220, height: 220, background: "radial-gradient(circle, var(--accent-glow), transparent 70%)", opacity: 0.5, pointerEvents: "none" }} />
