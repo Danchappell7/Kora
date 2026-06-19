@@ -48,9 +48,19 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   const isMobile = useMediaQuery("(max-width: 860px)");
 
-  // assignable people: active workspace members (always includes you)
-  const assignable = members.filter((m) => m.status === "active" && m.userId);
+  // assignable people = active members of the SELECTED project's workspace only
+  // (a personal project has no team members, so it's just you).
+  const projWs = projects.find((p) => p.id === projectId)?.workspaceId ?? null;
+  const assignable = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === projWs);
   const people = assignable.length > 0 ? assignable.map((m) => ({ id: m.userId!, name: m.name || m.email })) : [{ id: currentUserId, name: "You" }];
+
+  // when the project (and thus workspace) changes, keep the assignee valid
+  useEffect(() => {
+    if (!people.some((p) => p.id === assigneeId)) {
+      setAssigneeId(people.some((p) => p.id === currentUserId) ? currentUserId : (people[0]?.id ?? currentUserId));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   useEffect(() => {
     if (open) {

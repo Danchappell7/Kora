@@ -242,7 +242,11 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const taskReactions = task.reactions ?? {};
   const done = task.status === "done";
   const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
-  const activeMembers = members.filter((m) => m.status === "active" && m.userId);
+  // Only people who belong to THIS task's workspace can be assigned/collaborate.
+  // A personal-project task (no workspace) is therefore just you — never members
+  // pulled in from your other team workspaces.
+  const taskWs = task.workspaceId ?? null;
+  const activeMembers = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === taskWs);
   const assignable = activeMembers.length > 0
     ? activeMembers.map((m) => ({ id: m.userId!, name: m.name || m.email }))
     : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
@@ -433,22 +437,35 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 </select>
               </span>
             </MetaRow>
-            {onToggleCollaborator && assignable.length > 1 && (
-              <MetaRow icon="users" label="Collaborators">
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {assignable.filter((p) => p.id !== task.assigneeId).map((p) => {
-                    const on = (task.collaborators ?? []).includes(p.id);
-                    return (
-                      <button key={p.id} onClick={() => onToggleCollaborator(task.id, p.id)} aria-pressed={on}
-                        style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 9px 3px 4px", borderRadius: 999, cursor: "pointer", fontSize: 12.5,
-                          border: `1px solid ${on ? "var(--accent)" : "var(--hairline)"}`, background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--ink)" : "var(--ink-3)" }}>
-                        <Avatar id={p.id} size={18} /> {p.name}{on && <Icon name="check" size={12} style={{ color: "var(--accent)" }} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </MetaRow>
-            )}
+            {onToggleCollaborator && assignable.length > 1 && (() => {
+              const chosen = (task.collaborators ?? []).filter((id) => id !== task.assigneeId);
+              const addable = assignable.filter((p) => p.id !== task.assigneeId && !chosen.includes(p.id));
+              return (
+                <MetaRow icon="users" label="Collaborators">
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                    {chosen.map((id) => {
+                      const name = assignable.find((p) => p.id === id)?.name || getMember(id)?.name || "Member";
+                      return (
+                        <span key={id} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 4px 3px 4px", borderRadius: 999, fontSize: 12.5, border: "1px solid var(--accent)", background: "var(--accent-dim)", color: "var(--ink)" }}>
+                          <Avatar id={id} size={18} /> {name}
+                          <button onClick={() => onToggleCollaborator(task.id, id)} aria-label={`Remove ${name}`}
+                            style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-4)", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
+                        </span>
+                      );
+                    })}
+                    {addable.length > 0 && (
+                      <select value="" onChange={(e) => { if (e.target.value) onToggleCollaborator(task.id, e.target.value); }}
+                        aria-label="Add collaborator"
+                        style={{ height: 28, padding: "0 8px", borderRadius: 999, border: "1px dashed var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none", cursor: "pointer" }}>
+                        <option value="">+ Add collaborator</option>
+                        {addable.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    )}
+                    {chosen.length === 0 && addable.length === 0 && <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>No one else in this workspace</span>}
+                  </div>
+                </MetaRow>
+              );
+            })()}
             <MetaRow icon="calendar" label="Start">
               <input type="date" value={task.startDate || ""} max={task.dueDate || undefined} onChange={(e) => onPatch(task.id, { startDate: e.target.value || undefined })}
                 style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
