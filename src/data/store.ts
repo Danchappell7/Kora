@@ -958,6 +958,12 @@ export const store = {
   // ---------- early-access requests ----------
   async createAccessRequest(name: string, email: string, note?: string): Promise<void> {
     if (!supabase) return;
+    // Prefer the edge function (records the request AND emails the admin). Fall
+    // back to a direct insert if it isn't deployed (request still recorded).
+    try {
+      const { error } = await supabase.functions.invoke("request-access", { body: { name, email, note: note || null } });
+      if (!error) return;
+    } catch { /* not deployed — fall back */ }
     const { error } = await supabase.from("access_requests").insert({ name, email, note: note || null });
     if (error) throw error;
   },
@@ -981,10 +987,17 @@ export const store = {
     if (error) throw error;
     return false;
   },
-  async declineAccessRequest(id: string): Promise<void> {
-    if (!supabase) return;
+  // Returns true if a decline email was sent. Edge function first, RPC-less
+  // direct update as fallback.
+  async declineAccessRequest(id: string): Promise<boolean> {
+    if (!supabase) return false;
+    try {
+      const { data, error } = await supabase.functions.invoke("approve-access", { body: { id, action: "decline" } });
+      if (!error && data) return !!(data as { emailed?: boolean }).emailed;
+    } catch { /* not deployed — fall back */ }
     const { error } = await supabase.from("access_requests").update({ status: "declined" }).eq("id", id);
     if (error) throw error;
+    return false;
   },
 
   // account list/count with no extra setup.

@@ -24,8 +24,11 @@ function AccessRequestsPanel() {
   const [tab, setTab] = useState<ReqTab>("pending");
   const [q, setQ] = useState("");
   const [flash, setFlash] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
   const load = () => { setLoading(true); store.listAccessRequests().then(setReqs).catch(reportError).finally(() => setLoading(false)); };
   useEffect(load, []);
+  const toggleSel = (id: string) => setSel((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const counts = {
     pending: reqs.filter((r) => r.status === "pending").length,
@@ -45,8 +48,8 @@ function AccessRequestsPanel() {
         const emailed = await store.approveAccessRequest(id);
         setFlash({ id, text: emailed ? "Approved · email sent" : "Approved · email not sent", ok: emailed });
       } else {
-        await store.declineAccessRequest(id);
-        setFlash({ id, text: "Declined", ok: true });
+        const sent = await store.declineAccessRequest(id);
+        setFlash({ id, text: sent ? "Declined · email sent" : "Declined", ok: true });
       }
       load();
       setTimeout(() => setFlash((f) => (f?.id === id ? null : f)), 4500);
@@ -54,7 +57,24 @@ function AccessRequestsPanel() {
     finally { setBusy(null); }
   };
 
+  const bulkApprove = async () => {
+    const ids = [...sel];
+    if (!ids.length) return;
+    setBusy("bulk"); setBulkNote(null);
+    let ok = 0, emailed = 0;
+    for (const id of ids) {
+      try { const sent = await store.approveAccessRequest(id); ok++; if (sent) emailed++; }
+      catch (e) { reportError(e); }
+    }
+    setSel(new Set()); load();
+    setBulkNote(`Approved ${ok} request${ok === 1 ? "" : "s"}${emailed ? ` · ${emailed} email${emailed === 1 ? "" : "s"} sent` : ""}.`);
+    setTimeout(() => setBulkNote(null), 5000);
+    setBusy(null);
+  };
+
   if (!loading && reqs.length === 0) return null;
+  const selectablePending = shown.filter((r) => r.status === "pending");
+  const allSelected = selectablePending.length > 0 && selectablePending.every((r) => sel.has(r.id));
   const tabs: { k: ReqTab; label: string }[] = [
     { k: "pending", label: "Pending" }, { k: "approved", label: "Approved" }, { k: "declined", label: "Declined" }, { k: "all", label: "All" },
   ];
@@ -78,6 +98,23 @@ function AccessRequestsPanel() {
         ))}
       </div>
 
+      {(selectablePending.length > 0 || bulkNote) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 11, flexWrap: "wrap" }}>
+          {selectablePending.length > 0 && (
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--ink-3)", cursor: "pointer" }}>
+              <input type="checkbox" checked={allSelected} onChange={() => setSel(allSelected ? new Set() : new Set(selectablePending.map((r) => r.id)))} /> Select all pending
+            </label>
+          )}
+          {sel.size > 0 && (
+            <>
+              <button disabled={busy === "bulk"} onClick={bulkApprove} className="btn btn-accent" style={{ padding: "6px 12px", fontSize: 12.5 }}>{busy === "bulk" ? "Approving…" : `Approve ${sel.size} selected`}</button>
+              <button onClick={() => setSel(new Set())} className="btn btn-ghost" style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--ink-4)" }}>Clear</button>
+            </>
+          )}
+          {bulkNote && <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--st-done)" }}>{bulkNote}</span>}
+        </div>
+      )}
+
       {loading ? <span style={{ fontSize: 13, color: "var(--ink-4)" }}>Loading…</span> : shown.length === 0 ? (
         <p style={{ fontSize: 13, color: "var(--ink-4)", margin: "6px 2px" }}>No {tab === "all" ? "" : tab + " "}requests{needle ? " match your search" : ""}.</p>
       ) : (
@@ -86,7 +123,8 @@ function AccessRequestsPanel() {
             const badge = REQ_BADGE[r.status] ?? REQ_BADGE.pending;
             const f = flash?.id === r.id ? flash : null;
             return (
-              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)" }}>
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 10, border: `1px solid ${sel.has(r.id) ? "var(--accent)" : "var(--hairline)"}`, background: sel.has(r.id) ? "var(--accent-dim)" : "var(--surface)" }}>
+                {r.status === "pending" && <input type="checkbox" checked={sel.has(r.id)} onChange={() => toggleSel(r.id)} aria-label={`Select ${r.email}`} style={{ flexShrink: 0, cursor: "pointer" }} />}
                 <span style={{ width: 32, height: 32, borderRadius: 99, background: "var(--accent-dim)", color: "var(--accent)", display: "grid", placeItems: "center", fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
                   {(r.name || r.email || "?").trim().charAt(0).toUpperCase()}
                 </span>
