@@ -10,10 +10,34 @@ import {
   getProject, dueState, fmtDue, fmtClock, fmtClockRange, fmtDurMin,
   parseCapture, planDay, ENERGY, EVENTS, DAY_START, DAY_END, NOW_MIN,
 } from "../../data/data";
-import type { Task, CalEvent, EnergyKind } from "../../data/types";
+import type { Task, CalEvent, EnergyKind, ExternalEvent } from "../../data/types";
 
 const PXM = 1.0; // px per minute
 const SNAP = 5;
+
+// Convert connected-calendar events (ISO datetimes) into today's day-blocks
+// (minutes-from-midnight) that the canvas + auto-planner understand. All-day
+// events are skipped so they don't block the timeline; times are clamped to
+// the visible day window.
+function todaysEvents(ext: ExternalEvent[]): CalEvent[] {
+  const now = new Date();
+  const y = now.getFullYear(), mo = now.getMonth(), d = now.getDate();
+  const out: CalEvent[] = [];
+  for (const e of ext) {
+    if (e.allDay) continue;
+    const s = new Date(e.start), en = new Date(e.end);
+    if (isNaN(s.getTime()) || isNaN(en.getTime())) continue;
+    if (s.getFullYear() !== y || s.getMonth() !== mo || s.getDate() !== d) continue;
+    let startMin = s.getHours() * 60 + s.getMinutes();
+    let endMin = en.getHours() * 60 + en.getMinutes();
+    if (endMin <= startMin) endMin = startMin + 30;          // guard zero/negative
+    startMin = Math.max(DAY_START, Math.min(DAY_END, startMin));
+    endMin = Math.max(DAY_START, Math.min(DAY_END, endMin));
+    if (endMin <= startMin) continue;
+    out.push({ id: e.id, title: e.title, start: startMin, end: endMin, kind: "meeting" });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
 
 type DragSource = "intake" | "canvas";
 interface DragState {
@@ -104,8 +128,9 @@ function PlanDropPreview({ start, dur }: { start: number | null; dur: number }) 
   );
 }
 
-function DayCanvas({ tasks, onStartDrag, onOpen, dragId, previewStart, previewDur, onCanvasRef, justPlacedId }: {
+function DayCanvas({ tasks, events, onStartDrag, onOpen, dragId, previewStart, previewDur, onCanvasRef, justPlacedId }: {
   tasks: Task[];
+  events: CalEvent[];
   onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void;
   onOpen: (id: string) => void;
   dragId?: string;
@@ -128,7 +153,7 @@ function DayCanvas({ tasks, onStartDrag, onOpen, dragId, previewStart, previewDu
           </div>
         ))}
         {hours.slice(0, -1).map((m) => <div key={"h" + m} style={{ position: "absolute", left: 54, right: 12, top: (m + 30 - DAY_START) * PXM, height: 1, background: "var(--hairline)", opacity: 0.4 }} />)}
-        {EVENTS.map((ev) => <PlanEventBlock key={ev.id} ev={ev} />)}
+        {events.map((ev) => <PlanEventBlock key={ev.id} ev={ev} />)}
         {scheduled.map((t) => <PlanTaskBlock key={t.id} task={t} onStartDrag={onStartDrag} onOpen={onOpen} dragging={dragId === t.id} justPlaced={justPlacedId === t.id} />)}
         <PlanDropPreview start={previewStart} dur={previewDur} />
         <PlanNowLine />
@@ -253,12 +278,20 @@ function PlanToast({ msg, onClose }: { msg: string | null; onClose: () => void }
 }
 
 /* ---------- the view ---------- */
-export function PlanView({ tasks, onUpdate, onCreate, onOpen }: {
+export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false }: {
   tasks: Task[];
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onCreate: (t: Task) => void;
   onOpen: (id: string) => void;
+  externalEvents?: ExternalEvent[];
+  calendarConnected?: boolean;
 }) {
+  // Once a real calendar is connected, plan around its events (today's, timed).
+  // Before that, fall back to the illustrative demo day so the view isn't empty.
+  const dayEvents = useMemo(
+    () => (calendarConnected ? todaysEvents(externalEvents) : EVENTS),
+    [calendarConnected, externalEvents],
+  );
   const [planning, setPlanning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [justPlacedId, setJustPlaced] = useState<string | null>(null);
@@ -310,15 +343,15 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen }: {
     const cur = tasksRef.current;
     const others = cur.filter((t) => t.scheduled != null && t.id !== id).map((t) => ({ id: "busy-" + t.id, title: t.title, start: t.scheduled!, end: t.scheduled! + (t.dur || t.focusMin), kind: "meeting" as const }));
     const target = cur.find((t) => t.id === id); if (!target) return;
-    const placed = planDay([target], [...EVENTS, ...others]);
+    const placed = planDay([target], [...dayEvents, ...others]);
     if (placed[id] != null) { onUpdate(id, { scheduled: placed[id] }); setJustPlaced(id); setTimeout(() => setJustPlaced(null), 500); }
-  }, [onUpdate]);
+  }, [onUpdate, dayEvents]);
 
   const doAutoPlan = useCallback(() => {
     setPlanning(true);
     setTimeout(() => {
       const cur = tasksRef.current.filter((t) => t.planToday && t.status !== "done");
-      const placed = planDay(cur, EVENTS);
+      const placed = planDay(cur, dayEvents);
       const n = Object.keys(placed).length;
       const leftover = cur.filter((t) => t.scheduled == null && placed[t.id] == null).length;
       Object.keys(placed).forEach((id) => onUpdate(id, { scheduled: placed[id] }));
@@ -326,7 +359,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen }: {
       setToast(`Planned ${n} task${n === 1 ? "" : "s"} around your meetings — deep work up front, lighter work after lunch.${leftover ? ` ${leftover} didn’t fit today, so I’ll carry ${leftover === 1 ? "it" : "them"} to tomorrow.` : ""}`);
       setTimeout(() => setToast(null), 9000);
     }, 850);
-  }, [onUpdate]);
+  }, [onUpdate, dayEvents]);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: 0 }}>
@@ -339,7 +372,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen }: {
           <div style={{ flex: 1 }} />
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)" }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent-glow)" }} /> now {fmtClock(NOW_MIN)}</span>
         </div>
-        <DayCanvas tasks={planTasks} onStartDrag={startDrag} onOpen={onOpen} dragId={drag?.taskId} previewStart={previewStart} previewDur={drag?.dur || 30} onCanvasRef={(el) => (canvasRef.current = el)} justPlacedId={justPlacedId} />
+        <DayCanvas tasks={planTasks} events={dayEvents} onStartDrag={startDrag} onOpen={onOpen} dragId={drag?.taskId} previewStart={previewStart} previewDur={drag?.dur || 30} onCanvasRef={(el) => (canvasRef.current = el)} justPlacedId={justPlacedId} />
         <PlanToast msg={toast} onClose={() => setToast(null)} />
         {planning && (
           <div style={{ position: "absolute", inset: 0, zIndex: 50, display: "grid", placeItems: "center", background: "color-mix(in oklch, var(--bg) 35%, transparent)", backdropFilter: "blur(2px)" }}>
