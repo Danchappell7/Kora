@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -166,9 +166,9 @@ function rowToActivity(r: ActivityRow): Activity {
   return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined };
 }
 
-interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; }
+interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; }
 function rowToProfile(r: ProfileRow): Profile {
-  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url };
+  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined };
 }
 function fullName(p: { firstName: string; lastName: string }): string {
   return [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
@@ -955,6 +955,30 @@ export const store = {
 
   /* ---------- admin metrics (hidden /admin dashboard) ---------- */
   // Every signed-in user can read profiles (RLS policy), so this gives a real
+  // ---------- early-access requests ----------
+  async createAccessRequest(name: string, email: string, note?: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("access_requests").insert({ name, email, note: note || null });
+    if (error) throw error;
+  },
+  async listAccessRequests(): Promise<AccessRequest[]> {
+    if (!supabase) return [];
+    const { data, error } = await supabase.from("access_requests").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    type R = { id: string; name: string | null; email: string; note: string | null; status: string; created_at: string };
+    return ((data as R[] | null) ?? []).map((r) => ({ id: r.id, name: r.name || "", email: r.email, note: r.note || undefined, status: (r.status as AccessRequest["status"]) || "pending", createdAt: r.created_at }));
+  },
+  async approveAccessRequest(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("approve_access_request", { p_id: id });
+    if (error) throw error;
+  },
+  async declineAccessRequest(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("access_requests").update({ status: "declined" }).eq("id", id);
+    if (error) throw error;
+  },
+
   // account list/count with no extra setup.
   async adminProfiles(): Promise<AdminAccount[]> {
     if (!supabase) {

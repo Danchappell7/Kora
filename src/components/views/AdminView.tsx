@@ -7,7 +7,53 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../primitives";
 import { store, type AdminSeries, type AdminDay, type AdminAccount } from "../../data/store";
+import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
+
+/* Early-access requests — approve people before their account works. */
+function AccessRequestsPanel() {
+  const [reqs, setReqs] = useState<AccessRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = () => { setLoading(true); store.listAccessRequests().then(setReqs).catch(reportError).finally(() => setLoading(false)); };
+  useEffect(load, []);
+  const pending = reqs.filter((r) => r.status === "pending");
+  const act = async (id: string, kind: "approve" | "decline") => {
+    setBusy(id);
+    try { if (kind === "approve") await store.approveAccessRequest(id); else await store.declineAccessRequest(id); load(); }
+    catch (e) { reportError(e); } finally { setBusy(null); }
+  };
+  if (!loading && reqs.length === 0) return null;
+  return (
+    <div className="glass" style={{ borderRadius: 16, padding: "16px 20px", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+        <Icon name="inbox" size={16} style={{ color: "var(--accent)" }} />
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Early-access requests</h2>
+        {pending.length > 0 && <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--on-accent)", background: "var(--accent)", borderRadius: 99, padding: "1px 8px" }}>{pending.length} pending</span>}
+      </div>
+      {loading ? <span style={{ fontSize: 13, color: "var(--ink-4)" }}>Loading…</span> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {reqs.slice(0, 40).map((r) => (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 500 }}>{r.name || "—"}</div>
+                <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{r.email}</div>
+              </div>
+              {r.status === "pending" ? (
+                <>
+                  <button disabled={busy === r.id} onClick={() => act(r.id, "approve")} className="btn btn-accent" style={{ padding: "6px 12px", fontSize: 12.5 }}>Approve</button>
+                  <button disabled={busy === r.id} onClick={() => act(r.id, "decline")} className="btn btn-ghost" style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--ink-4)" }}>Decline</button>
+                </>
+              ) : (
+                <span style={{ fontSize: 12, fontWeight: 600, color: r.status === "approved" ? "var(--st-done)" : "var(--ink-4)" }}>{r.status === "approved" ? "Approved" : "Declined"}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function fmtAgo(iso: string): string {
   if (!iso) return "—";
@@ -224,6 +270,8 @@ export function AdminView() {
       </div>
 
       <Ribbon items={ribbon} />
+
+      <AccessRequestsPanel />
 
       {!series && !loading && (
         <div className="glass" style={{ padding: "13px 16px", borderRadius: 12, marginBottom: 18, display: "flex", alignItems: "center", gap: 11, border: "1px solid color-mix(in oklch, var(--accent) 26%, transparent)", background: "var(--accent-dim)" }}>

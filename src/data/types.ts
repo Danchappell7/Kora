@@ -27,6 +27,16 @@ export interface Profile {
   pronouns: string;
   email: string;
   avatarUrl: string | null;
+  approved?: boolean;          // early-access gate (undefined when unknown → treated as allowed)
+}
+
+export interface AccessRequest {
+  id: string;
+  name: string;
+  email: string;
+  note?: string;
+  status: "pending" | "approved" | "declined";
+  createdAt: string;
 }
 
 export interface Workspace {

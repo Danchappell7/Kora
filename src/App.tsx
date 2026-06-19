@@ -26,7 +26,7 @@ import { WorkloadView, GoalsView, PortfoliosView, AutomationsView, FormsView, ty
 import { InboxView, TeamView } from "./components/views/InboxTeam";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
-import { PublicSite, UpdatePasswordScreen } from "./auth/LoginScreen";
+import { PublicSite, UpdatePasswordScreen, PendingApproval } from "./auth/LoginScreen";
 import { useAuth } from "./auth/AuthProvider";
 import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
@@ -1481,6 +1481,12 @@ export default function App() {
   if (auth.recovery) return <UpdatePasswordScreen />;
   if (auth.configured && !auth.user) return <PublicSite />;
   if (auth.loading || tasks === null) return <FullLoader />;
+  // Early-access gate: a brand-new account stays in a waiting room until an admin
+  // approves it. Fail-open — only blocks when we KNOW approved === false, never on
+  // a load hiccup, and the admin is always let through.
+  if (auth.configured && profile && profile.approved === false && (auth.user?.email ?? "") !== "danchappell7@gmail.com") {
+    return <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} />;
+  }
   if (subscription && !hasAccess(subscription)) {
     const seats = Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1);
     return <Paywall sub={subscription} seats={seats} busyPlan={checkoutBusy} onChoose={startCheckout} onSignOut={auth.configured ? auth.signOut : undefined} />;

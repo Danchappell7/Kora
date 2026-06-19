@@ -37,7 +37,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
   onSignIn: () => void;
   signupDisabled?: boolean;
 }) {
-  const primaryLabel = signupDisabled ? "Sign in" : "Start free";
+  const primaryLabel = signupDisabled ? "Sign in" : "Request early access";
   const onPrimary = signupDisabled ? onSignIn : onGetStarted;
 
   return (
@@ -51,7 +51,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
           <span style={{ fontFamily: "var(--font-head)", fontSize: 19, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }}>Kanbo</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
             <button className="btn btn-ghost hide-sm" onClick={onSignIn} style={{ padding: "9px 16px" }}>Sign in</button>
-            <button className="btn btn-accent" onClick={onPrimary} style={{ padding: "9px 16px", whiteSpace: "nowrap" }}>{signupDisabled ? "Sign in" : "Get started"}</button>
+            <button className="btn btn-accent" onClick={onPrimary} style={{ padding: "9px 16px", whiteSpace: "nowrap" }}>{signupDisabled ? "Sign in" : "Request access"}</button>
           </div>
         </nav>
 
