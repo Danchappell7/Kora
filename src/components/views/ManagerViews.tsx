@@ -47,15 +47,33 @@ export function WorkloadView({ tasks, members, onOpen }: {
   // include known members even with no load, then sort by hours
   members.forEach((m) => { if (!byPerson.has(m.id)) byPerson.set(m.id, { hours: 0, tasks: [] }); });
   const rows = [...byPerson.entries()].map(([id, v]) => ({ id, ...v })).sort((a, b) => b.hours - a.hours);
+  const HEAVY = 12; // open-task count that signals overload even without hour estimates
+  const overloaded = rows.filter((r) => r.hours > CAP || r.tasks.length >= HEAVY);
+  // rebalance hint: the busiest person + a teammate who clearly has room
+  const freeest = [...rows].filter((r) => members.some((m) => m.id === r.id)).sort((a, b) => (a.hours - b.hours) || (a.tasks.length - b.tasks.length))[0];
+  const rebalance = overloaded.length && freeest && freeest.id !== overloaded[0].id && freeest.hours < CAP * 0.6 && freeest.tasks.length < HEAVY
+    ? { from: getMember(overloaded[0].id)?.name || "Someone", to: getMember(freeest.id)?.name || "a teammate" }
+    : null;
   const [expanded, setExpanded] = useState<string | null>(null);
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 920, width: "100%", margin: "0 auto" }}>
       <p style={{ fontSize: 13, color: "var(--ink-4)", margin: "0 0 16px" }}>Estimated open work per person (assumes ~{CAP}h capacity). Set an estimate on a task to feed this.</p>
+      {overloaded.length > 0 && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", marginBottom: 14, borderRadius: 12, background: "color-mix(in oklch, var(--prio-urgent) 10%, transparent)", border: "1px solid color-mix(in oklch, var(--prio-urgent) 28%, transparent)" }}>
+          <Icon name="zap" size={16} style={{ color: "var(--prio-urgent)", flexShrink: 0, marginTop: 1 }} />
+          <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5 }}>
+            <strong style={{ color: "var(--prio-urgent)" }}>{overloaded.length} {overloaded.length === 1 ? "person looks" : "people look"} overloaded.</strong>{" "}
+            {overloaded.map((r) => getMember(r.id)?.name || "Unassigned").slice(0, 3).join(", ")}{overloaded.length > 3 ? ` +${overloaded.length - 3} more` : ""} {overloaded.length === 1 ? "is" : "are"} over capacity or carrying a lot of open work.
+            {rebalance && <> Consider moving a task or two from <strong>{rebalance.from}</strong> to <strong>{rebalance.to}</strong>, who has room.</>}
+          </div>
+        </div>
+      )}
       {rows.length === 0 ? <EmptyState icon="chart" title="No workload yet" sub="Assign tasks and give them an hours estimate to see capacity." /> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {rows.map((r) => {
             const over = r.hours > CAP;
+            const heavy = !over && r.tasks.length >= HEAVY;
             const pct = Math.min(100, CAP ? (r.hours / CAP) * 100 : 0);
             const name = getMember(r.id)?.name || "Unassigned";
             return (
@@ -63,12 +81,13 @@ export function WorkloadView({ tasks, members, onOpen }: {
                 <div style={{ display: "flex", alignItems: "center", gap: 11, cursor: r.tasks.length ? "pointer" : "default" }} onClick={() => setExpanded((e) => e === r.id ? null : r.id)}>
                   <Avatar id={r.id} size={26} />
                   <span style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>{name}</span>
-                  <span className="mono tnum" style={{ fontSize: 12.5, color: over ? "var(--prio-urgent)" : "var(--ink-3)" }}>{r.hours}h · {r.tasks.length} task{r.tasks.length === 1 ? "" : "s"}</span>
+                  <span className="mono tnum" style={{ fontSize: 12.5, color: over || heavy ? "var(--prio-urgent)" : "var(--ink-3)" }}>{r.hours}h · {r.tasks.length} task{r.tasks.length === 1 ? "" : "s"}</span>
                 </div>
                 <div style={{ marginTop: 9, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
-                  <div style={{ width: `${pct}%`, height: "100%", borderRadius: 6, background: over ? "var(--prio-urgent)" : "var(--accent)", transition: "width .6s var(--ease)" }} />
+                  <div style={{ width: `${heavy ? 100 : pct}%`, height: "100%", borderRadius: 6, background: over || heavy ? "var(--prio-urgent)" : "var(--accent)", transition: "width .6s var(--ease)" }} />
                 </div>
                 {over && <div style={{ fontSize: 11.5, color: "var(--prio-urgent)", marginTop: 6 }}>Over capacity by {r.hours - CAP}h</div>}
+                {heavy && <div style={{ fontSize: 11.5, color: "var(--prio-urgent)", marginTop: 6 }}>Heavy load — {r.tasks.length} open tasks</div>}
                 {expanded === r.id && r.tasks.length > 0 && (
                   <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
                     {r.tasks.map((t) => (
