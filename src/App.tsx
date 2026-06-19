@@ -105,6 +105,20 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
   const contributors = [...new Set(tasks.map((t) => t.assigneeId))].slice(0, 6);
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
   const dueSoon = tasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
+  // auto-computed RAG health — complements the manually-set project phase
+  const overdue = tasks.filter((t) => t.status !== "done" && t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() < todayMid).length;
+  const blockedCount = tasks.filter((t) => t.status === "blocked").length;
+  const health = (() => {
+    if (total === 0) return null;
+    const bits: string[] = [];
+    if (overdue) bits.push(`${overdue} overdue`);
+    if (blockedCount) bits.push(`${blockedCount} blocked`);
+    const detail = bits.length ? bits.join(" · ") : "nothing overdue or blocked";
+    if (prog === 100) return { label: "Complete", color: "var(--st-done)", detail: "all tasks done" };
+    if (overdue >= 3 || overdue / total > 0.25 || (overdue >= 1 && blockedCount >= 2)) return { label: "Off track", color: "var(--prio-urgent)", detail };
+    if (overdue >= 1 || blockedCount >= 1) return { label: "At risk", color: "var(--st-review)", detail };
+    return { label: "On track", color: "var(--st-done)", detail };
+  })();
   const byStatus = (["todo", "progress", "review", "blocked", "done"] as Status[]).map((s) => ({ s, n: tasks.filter((t) => t.status === s).length })).filter((x) => x.n > 0);
   const printReport = () => {
     const w = window.open("", "_blank"); if (!w) return;
@@ -139,6 +153,11 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
                 </>
               )}
             </div>
+            {health && (
+              <span title={`Auto health: ${health.detail}`} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 99, fontSize: 11.5, fontFamily: "var(--font-display)", color: health.color, background: `color-mix(in oklch, ${health.color} 14%, transparent)`, border: `1px solid color-mix(in oklch, ${health.color} 30%, transparent)` }}>
+                <span style={{ width: 7, height: 7, borderRadius: 99, background: health.color }} />{health.label}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-4)" }}>{total} task{total === 1 ? "" : "s"}{dueSoon > 0 ? ` · ${dueSoon} due soon` : ""}</div>
         </div>
