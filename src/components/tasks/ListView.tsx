@@ -130,6 +130,11 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
             <CustomChips task={task} fields={customFields} members={members} />
             {task.recurrence && task.recurrence !== "none" && <span title={`Repeats ${task.recurrence}`} style={{ display: "inline-flex", color: "var(--ink-4)" }}><Icon name="refresh" size={12} /></span>}
             {task.comments > 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}><Icon name="message" size={12} /> {task.comments}</span>}
+            {!done && !task.dueDate && task.createdAt && (() => {
+              const ageDays = Math.floor((Date.now() - new Date(task.createdAt).getTime()) / 86400000);
+              if (ageDays < 14 || isNaN(ageDays)) return null;
+              return <span title={`Open ${ageDays} days with no due date — review, schedule, or archive`} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)", opacity: 0.8 }}><Icon name="clock" size={12} /> stale · {ageDays}d</span>;
+            })()}
           </div>
         </div>
 

@@ -70,6 +70,7 @@ interface TaskRow {
   priority: Priority;
   project_id: string;
   assignee_id: string;
+  created_at?: string | null;
   due_date: string | null;
   due_time?: string | null;
   start_date?: string | null;
@@ -127,6 +128,7 @@ function rowToTask(r: TaskRow): Task {
     originalDueDate: r.original_due_date ?? undefined,
     completedAt: r.completed_at ?? undefined,
     archivedAt: r.archived_at ?? undefined,
+    createdAt: r.created_at ?? undefined,
     isMilestone: r.is_milestone ?? false,
     tags: r.tags ?? [],
     dependencies: (r.task_dependencies ?? []).map((d) => d.depends_on),

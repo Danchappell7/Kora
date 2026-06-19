@@ -104,6 +104,7 @@ export interface Task {
   originalDueDate?: string;
   completedAt?: string;
   archivedAt?: string;
+  createdAt?: string;          // row creation time (for staleness surfacing)
   isMilestone?: boolean;
   /* "Plan my day" fields */
   energy?: EnergyKind;
