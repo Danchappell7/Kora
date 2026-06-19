@@ -16,7 +16,7 @@ import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ListView } from "./components/tasks/ListView";
-import { BoardView, TimelineView, CalendarView, FilesView } from "./components/tasks/OtherViews";
+import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
@@ -46,6 +46,7 @@ const VIEW_OPTS: SegmentedOption<TaskView>[] = [
   { value: "timeline", label: "Timeline", icon: "timeline" },
   { value: "calendar", label: "Calendar", icon: "calendar" },
   { value: "files", label: "Files", icon: "folder" },
+  { value: "matrix", label: "Matrix", icon: "grid" },
 ];
 
 const GROUP_OPTS: SegmentedOption<GroupBy>[] = [
@@ -457,6 +458,7 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} />}
       {view === "files" && <FilesView tasks={filtered} onOpen={onOpen} />}
+      {view === "matrix" && <MatrixView tasks={filtered} onOpen={onOpen} />}
     </>
   );
 }
@@ -530,7 +532,7 @@ export default function App() {
   const [route, setRouteRaw] = useState<Route>({ view: "home" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
-    try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar", "files"].includes(s)) return s; } catch { /* private mode */ }
+    try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar", "files", "matrix"].includes(s)) return s; } catch { /* private mode */ }
     return "list";
   });
   const [groupBy, setGroupBy] = useState<GroupBy>(() => {

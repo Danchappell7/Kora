@@ -700,6 +700,49 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
   );
 }
 
+/* ---------------- EISENHOWER MATRIX (urgent × important) ---------------- */
+export function MatrixView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: string) => void }) {
+  const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
+  const open = tasks.filter((t) => t.status !== "done" && !t.parentId && !t.archivedAt);
+  const isUrgent = (t: Task) => !!t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() <= todayMid + 2 * 86400000;
+  const isImportant = (t: Task) => t.priority === "urgent" || t.priority === "high";
+  const quads = [
+    { key: "do", title: "Do first", sub: "Important & urgent", color: "var(--prio-urgent)", items: open.filter((t) => isImportant(t) && isUrgent(t)) },
+    { key: "schedule", title: "Schedule", sub: "Important, not urgent", color: "var(--accent)", items: open.filter((t) => isImportant(t) && !isUrgent(t)) },
+    { key: "delegate", title: "Delegate", sub: "Urgent, not important", color: "var(--st-review)", items: open.filter((t) => !isImportant(t) && isUrgent(t)) },
+    { key: "later", title: "Later", sub: "Neither — trim or defer", color: "var(--ink-4)", items: open.filter((t) => !isImportant(t) && !isUrgent(t)) },
+  ];
+  return (
+    <div style={{ flex: 1, overflow: "auto", padding: "16px 24px 28px" }}>
+      <p style={{ fontSize: 12.5, color: "var(--ink-4)", margin: "0 0 14px" }}>Urgency from due date, importance from priority. Focus on “Do first”, protect time for “Schedule”.</p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        {quads.map((q) => (
+          <div key={q.key} className="glass" style={{ borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", minHeight: 240, borderTop: `3px solid ${q.color}` }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: q.color }}>{q.title}</span>
+              <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{q.sub}</span>
+              <span className="mono tnum" style={{ marginLeft: "auto", fontSize: 12, color: "var(--ink-4)" }}>{q.items.length}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7, overflowY: "auto", flex: 1 }}>
+              {q.items.length === 0 ? <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Nothing here.</span> : q.items.map((t) => {
+                const proj = getProject(t.projectId);
+                return (
+                  <button key={t.id} onClick={() => onOpen(t.id)} className="lift" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer", textAlign: "left" }}>
+                    <StatusDot status={t.status} size={7} />
+                    <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink)" }}>{t.title}</span>
+                    {proj && <span style={{ width: 7, height: 7, borderRadius: 2, background: proj.color, flexShrink: 0 }} />}
+                    {t.dueDate && <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{fmtDue(t.dueDate)}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- FILES (all attachments across the current scope) ---------------- */
 function bytes(n: number): string {
   if (n < 1024) return n + " B";
