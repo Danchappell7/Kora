@@ -325,14 +325,40 @@ export function planDay(tasks: Task[], events: CalEvent[]): Record<string, numbe
   const order = [...tasks].sort(
     (a, b) => (dueOffset(a.dueDate) - dueOffset(b.dueDate)) || (rank[a.priority] - rank[b.priority]),
   );
+  // The brain can't hold deep focus much past ~90 minutes. Rather than packing
+  // the day wall-to-wall, we reserve a short comfort break whenever a continuous
+  // run of work reaches the cap — so focus stays sustainable. A single task that
+  // legitimately runs longer than the cap is allowed through (we just add the
+  // break afterwards).
+  const FOCUS_CAP = 90; // minutes of continuous work before a break is due
+  const BREAK = 12;     // comfort/reset break, minutes
+  const runStartOf = (end: number): number => {
+    let start = end;
+    for (;;) {
+      const prev = busy.find((b) => Math.abs(b.end - start) < 1 && b.start < start);
+      if (!prev) return start;
+      start = prev.start;
+    }
+  };
   const out: Record<string, number> = {};
   for (const task of order) {
     if (task.scheduled != null) {
       busy.push({ start: task.scheduled, end: task.scheduled + (task.dur || task.focusMin) });
+      busy.sort((a, b) => a.start - b.start);
       continue;
     }
-    const s = place(task.dur || task.focusMin, task.energy === "deep" || task.energy === "create");
-    if (s != null) out[task.id] = s;
+    const dur = task.dur || task.focusMin;
+    const s = place(dur, task.energy === "deep" || task.energy === "create");
+    if (s != null) {
+      out[task.id] = s;
+      const end = s + dur;
+      // if this placement caps off a continuous work run of 90m+, hold the next
+      // slot open with a break so the day isn't a relentless block of work
+      if (end - runStartOf(s) >= FOCUS_CAP && end + BREAK <= DAY_END) {
+        busy.push({ start: end, end: end + BREAK });
+        busy.sort((a, b) => a.start - b.start);
+      }
+    }
   }
   return out;
 }
