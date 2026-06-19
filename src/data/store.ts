@@ -968,10 +968,18 @@ export const store = {
     type R = { id: string; name: string | null; email: string; note: string | null; status: string; created_at: string };
     return ((data as R[] | null) ?? []).map((r) => ({ id: r.id, name: r.name || "", email: r.email, note: r.note || undefined, status: (r.status as AccessRequest["status"]) || "pending", createdAt: r.created_at }));
   },
-  async approveAccessRequest(id: string): Promise<void> {
-    if (!supabase) return;
+  // Prefer the edge function (approves AND emails the person). If it isn't
+  // deployed yet, fall back to the SQL RPC so approval still works (no email).
+  // Returns true if a confirmation email was sent.
+  async approveAccessRequest(id: string): Promise<boolean> {
+    if (!supabase) return false;
+    try {
+      const { data, error } = await supabase.functions.invoke("approve-access", { body: { id } });
+      if (!error && data) return !!(data as { emailed?: boolean }).emailed;
+    } catch { /* function not deployed — fall back below */ }
     const { error } = await supabase.rpc("approve_access_request", { p_id: id });
     if (error) throw error;
+    return false;
   },
   async declineAccessRequest(id: string): Promise<void> {
     if (!supabase) return;
