@@ -2,8 +2,8 @@
    KANBO — Inbox (real activity feed) & Team views
    ============================================================ */
 import { useState } from "react";
-import { Icon, Avatar } from "../primitives";
-import { timeAgo } from "../../data/data";
+import { Icon, Avatar, StatusDot } from "../primitives";
+import { timeAgo, getProject } from "../../data/data";
 import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
 import type { Task, WorkspaceMember, Role, Activity, ActivityKind, IconName } from "../../data/types";
 
@@ -120,10 +120,12 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   onRemoveMember: (memberId: string) => void;
   onSetRole?: (memberId: string, role: Role) => void;
   onTransferOwnership?: (workspaceId: string, memberId: string) => void;
+  onOpen?: (taskId: string) => void;
   onNewWorkspace: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("member");
+  const [selected, setSelected] = useState<WorkspaceMember | null>(null);
   const ws = workspaces.find((w) => w.id === workspace);
   const wsMembers = members.filter((m) => m.workspaceId === workspace);
   const active = wsMembers.filter((m) => m.status === "active");
@@ -154,58 +156,121 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
     setEmail("");
   };
 
+  const roleBadge = (m: WorkspaceMember) => m.status === "invited"
+    ? <span className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: "var(--st-review)", background: "color-mix(in oklch, var(--st-review) 12%, transparent)" }}>Invited</span>
+    : <span title={ROLE_META[m.role]?.blurb} className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: m.role === "owner" ? "var(--accent)" : "var(--ink-3)", background: "var(--surface-2)" }}>{ROLE_META[m.role]?.label}</span>;
+
+  // clean, clickable card — opens the profile drawer
   const MemberCard = ({ m }: { m: WorkspaceMember }) => {
     const memberId = m.userId ?? "";
-    const assigned = tasks.filter((t) => t.assigneeId === memberId);
-    const openN = assigned.filter((t) => t.status !== "done").length;
-    const load = Math.min(100, openN * 25);
+    const openN = tasks.filter((t) => t.assigneeId === memberId && t.status !== "done" && !t.archivedAt).length;
+    const load = Math.min(100, openN * 20);
     const isSelf = m.userId === currentUserId;
     return (
-      <div className="glass" style={{ padding: 18, borderRadius: 16, position: "relative" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-          {m.userId ? <Avatar id={m.userId} size={42} /> : (
-            <span style={{ width: 42, height: 42, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={19} /></span>
+      <button onClick={() => setSelected(m)} className="glass lift" style={{ padding: 16, borderRadius: 16, textAlign: "left", cursor: "pointer", border: "1px solid var(--hairline)", display: "flex", flexDirection: "column", gap: 13, width: "100%" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
+          {m.userId ? <Avatar id={m.userId} size={40} /> : (
+            <span style={{ width: 40, height: 40, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={18} /></span>
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14.5, fontWeight: 600 }}>
-              {m.name || m.email}
-              {isSelf && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}
-            </div>
+            <div className="truncate" style={{ fontSize: 14.5, fontWeight: 600 }}>{m.name || m.email}{isSelf && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
             <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{m.email}</div>
           </div>
-          {m.status === "invited" ? (
-            <span className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: "var(--st-review)", background: "color-mix(in oklch, var(--st-review) 12%, transparent)" }}>Invited</span>
-          ) : (onSetRole && canManageMember(role, m.role) && !isSelf) ? (
-            <select value={m.role} onChange={(e) => onSetRole(m.id, e.target.value as Role)} aria-label={`Role for ${m.email}`}
-              style={{ height: 28, padding: "0 6px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12, outline: "none", cursor: "pointer" }}>
-              {[...new Set<Role>([m.role, ...inviteOptions])].map((r) => <option key={r} value={r}>{ROLE_META[r].label}</option>)}
-            </select>
-          ) : (
-            <span title={ROLE_META[m.role].blurb} className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: m.role === "owner" ? "var(--accent)" : "var(--ink-3)", background: "var(--surface-2)" }}>{ROLE_META[m.role].label}</span>
-          )}
-          {role === "owner" && onTransferOwnership && workspace && m.status === "active" && m.role !== "owner" && (
-            <button className="btn-icon" title="Make owner" aria-label={`Make ${m.email} the owner`} onClick={() => { if (window.confirm(`Make ${m.name || m.email} the owner? You'll become an admin.`)) onTransferOwnership(workspace, m.id); }}
-              style={{ border: "none", width: 28, height: 28, color: "var(--ink-3)" }}><Icon name="target" size={14} /></button>
-          )}
-          {((canManageMember(role, m.role) && !isSelf) || (isSelf && m.role !== "owner")) && (
-            <button className="btn-icon" title={isSelf ? "Leave workspace" : "Remove"} aria-label={`Remove ${m.email}`} onClick={() => { if (window.confirm(isSelf ? "Leave this workspace?" : `Remove ${m.name || m.email} from this workspace?`)) onRemoveMember(m.id); }}
-              style={{ border: "none", width: 28, height: 28, color: "var(--ink-3)" }}><Icon name="x" size={15} /></button>
-          )}
+          {roleBadge(m)}
         </div>
         {m.status === "active" ? (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 7 }}>
+          <div style={{ width: "100%" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 6 }}>
               <span className="kicker">Workload</span>
               <span className="mono tnum" style={{ color: load > 60 ? "var(--prio-high)" : "var(--ink-3)" }}>{openN} open</span>
             </div>
             <div style={{ height: 6, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}>
               <div style={{ width: load + "%", height: "100%", borderRadius: 99, background: load > 60 ? "var(--prio-high)" : "var(--accent)", transition: "width .8s var(--ease)" }} />
             </div>
-          </>
+          </div>
         ) : (
-          <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5 }}>Will join when they sign in to Kanbo with this email.</p>
+          <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5 }}>Will join when they sign in with this email.</p>
         )}
-      </div>
+      </button>
+    );
+  };
+
+  // slide-over profile — role controls + role-gated task list
+  const MemberProfile = ({ m, onClose }: { m: WorkspaceMember; onClose: () => void }) => {
+    const isSelf = m.userId === currentUserId;
+    const memberId = m.userId ?? "";
+    const assigned = tasks.filter((t) => t.assigneeId === memberId && !t.archivedAt);
+    const openTasks = assigned.filter((t) => t.status !== "done").sort((a, b) => b.aiScore - a.aiScore);
+    const doneN = assigned.length - openTasks.length;
+    const canSeeTasks = can(role, "manageMembers") || isSelf;   // managers, or yourself
+    const manageRole = m.status === "active" && !!onSetRole && canManageMember(role, m.role) && !isSelf;
+    return (
+      <>
+        <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(2px)" }} />
+        <div role="dialog" aria-modal="true" aria-label={`${m.name || m.email} profile`} className="anim-fadein" style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 420, maxWidth: "92vw", zIndex: 71, background: "var(--surface-raised)", borderLeft: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "18px 20px", borderBottom: "1px solid var(--hairline)" }}>
+            {m.userId ? <Avatar id={m.userId} size={44} /> : <span style={{ width: 44, height: 44, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={20} /></span>}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="truncate" style={{ fontSize: 16, fontWeight: 600 }}>{m.name || m.email}{isSelf && <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
+              <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{m.email}</div>
+            </div>
+            <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ border: "none" }}><Icon name="x" size={18} /></button>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span className="kicker">Role</span>
+              {manageRole ? (
+                <select value={m.role} onChange={(e) => onSetRole!(m.id, e.target.value as Role)} aria-label="Role" style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", cursor: "pointer" }}>
+                  {[...new Set<Role>([m.role, ...inviteOptions])].map((r) => <option key={r} value={r}>{ROLE_META[r].label}</option>)}
+                </select>
+              ) : roleBadge(m)}
+              <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{ROLE_META[m.role]?.blurb}</span>
+            </div>
+
+            {m.status === "active" && (
+              <div style={{ display: "flex", gap: 24 }}>
+                <div><div className="kicker">Open</div><div className="mono tnum" style={{ fontSize: 22, fontWeight: 600 }}>{openTasks.length}</div></div>
+                <div><div className="kicker">Completed</div><div className="mono tnum" style={{ fontSize: 22, fontWeight: 600, color: "var(--st-done)" }}>{doneN}</div></div>
+              </div>
+            )}
+
+            <div>
+              <div className="kicker" style={{ marginBottom: 8 }}>{isSelf ? "Your tasks" : "Assigned tasks"}</div>
+              {m.status !== "active" ? (
+                <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>They haven't joined the workspace yet.</p>
+              ) : !canSeeTasks ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 14px", borderRadius: 12, background: "var(--surface)", border: "1px solid var(--hairline)", color: "var(--ink-4)", fontSize: 12.5 }}>
+                  <Icon name="lock" size={14} /> Only admins can view a teammate's tasks.
+                </div>
+              ) : openTasks.length === 0 ? (
+                <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>No open tasks.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {openTasks.slice(0, 30).map((t) => {
+                    const proj = getProject(t.projectId);
+                    return (
+                      <button key={t.id} onClick={() => { onOpen?.(t.id); onClose(); }} className="lift" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer", textAlign: "left" }}>
+                        <StatusDot status={t.status} size={7} />
+                        <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink)" }}>{t.title}</span>
+                        {proj && <span title={proj.name} style={{ width: 7, height: 7, borderRadius: 2, background: proj.color, flexShrink: 0 }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+              {m.status === "active" && role === "owner" && onTransferOwnership && workspace && m.role !== "owner" && (
+                <button className="btn btn-ghost" onClick={() => { if (window.confirm(`Make ${m.name || m.email} the owner? You'll become an admin.`)) { onTransferOwnership(workspace, m.id); onClose(); } }} style={{ justifyContent: "center" }}><Icon name="target" size={15} /> Make owner</button>
+              )}
+              {((canManageMember(role, m.role) && !isSelf) || (isSelf && m.role !== "owner")) && (
+                <button className="btn btn-ghost" onClick={() => { if (window.confirm(isSelf ? "Leave this workspace?" : `Remove ${m.name || m.email} from this workspace?`)) { onRemoveMember(m.id); onClose(); } }} style={{ justifyContent: "center", color: "var(--prio-urgent)" }}><Icon name="x" size={15} /> {isSelf ? "Leave workspace" : "Remove from workspace"}</button>
+              )}
+            </div>
+          </div>
+        </div>
+      </>
     );
   };
 
@@ -241,6 +306,11 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
           </div>
         </>
       )}
+
+      {selected && (() => {
+        const live = wsMembers.find((x) => x.id === selected.id);
+        return live ? <MemberProfile m={live} onClose={() => setSelected(null)} /> : null;
+      })()}
     </div>
   );
 }
