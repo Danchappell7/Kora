@@ -10,7 +10,7 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -183,7 +183,7 @@ export interface NewActivity {
 }
 
 interface WorkspaceRow { id: string; name: string; owner_id: string; }
-interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: "owner" | "member"; status: "invited" | "active"; }
+interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
   return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status };
 }
@@ -523,22 +523,40 @@ export const store = {
     return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id };
   },
 
-  async inviteMember(workspaceId: string, email: string): Promise<WorkspaceMember> {
+  async inviteMember(workspaceId: string, email: string, role: Role = "member", name = ""): Promise<WorkspaceMember> {
     if (!supabase) {
-      const m: WorkspaceMember = { id: newId(), workspaceId, userId: null, email, name: "", role: "member", status: "invited" };
+      const m: WorkspaceMember = { id: newId(), workspaceId, userId: null, email, name, role, status: "invited" };
       demoMembers = [...demoMembers, m];
       return m;
     }
-    const { data, error } = await supabase.from("workspace_members")
-      .insert({ workspace_id: workspaceId, email: email.trim().toLowerCase(), role: "member", status: "invited" })
-      .select("*").single();
+    // guarded server-side: only owner/admin can invite, only owner can add admins
+    const { data, error } = await supabase.rpc("invite_member", { p_ws: workspaceId, p_email: email.trim().toLowerCase(), p_name: name, p_role: role });
     if (error) throw error;
     return rowToWsMember(data as MemberRow);
   },
 
+  async listWorkspaceMembers(): Promise<WorkspaceMember[]> {
+    if (!supabase) return demoMembers;
+    const { data, error } = await supabase.from("workspace_members").select("*");
+    if (error) throw error;
+    return ((data as MemberRow[] | null) ?? []).map(rowToWsMember);
+  },
+
+  async setMemberRole(memberId: string, role: Role): Promise<void> {
+    if (!supabase) { demoMembers = demoMembers.map((m) => m.id === memberId ? { ...m, role } : m); return; }
+    const { error } = await supabase.rpc("set_member_role", { p_member: memberId, p_role: role });
+    if (error) throw error;
+  },
+
+  async transferOwnership(workspaceId: string, memberId: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("transfer_ownership", { p_ws: workspaceId, p_member: memberId });
+    if (error) throw error;
+  },
+
   async removeMember(memberId: string): Promise<void> {
     if (!supabase) { demoMembers = demoMembers.filter((m) => m.id !== memberId); return; }
-    const { error } = await supabase.from("workspace_members").delete().eq("id", memberId);
+    const { error } = await supabase.rpc("remove_member", { p_member: memberId });
     if (error) throw error;
   },
 

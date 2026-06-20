@@ -4,7 +4,8 @@
 import { useState } from "react";
 import { Icon, Avatar } from "../primitives";
 import { timeAgo } from "../../data/data";
-import type { Task, WorkspaceMember, Activity, ActivityKind, IconName } from "../../data/types";
+import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
+import type { Task, WorkspaceMember, Role, Activity, ActivityKind, IconName } from "../../data/types";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
   created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
@@ -108,22 +109,29 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   );
 }
 
-export function TeamView({ tasks, workspace, workspaces, members, currentUserId, onInvite, onRemoveMember, onNewWorkspace }: {
+export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onNewWorkspace }: {
   tasks: Task[];
   workspace: string | null;
   workspaces: { id: string | null; name: string; ownerId?: string }[];
   members: WorkspaceMember[];
   currentUserId: string;
-  onInvite: (workspaceId: string, email: string) => void;
+  myRole?: Role;
+  onInvite: (workspaceId: string, email: string, role: Role) => void;
   onRemoveMember: (memberId: string) => void;
+  onSetRole?: (memberId: string, role: Role) => void;
+  onTransferOwnership?: (workspaceId: string, memberId: string) => void;
   onNewWorkspace: () => void;
 }) {
   const [email, setEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<Role>("member");
   const ws = workspaces.find((w) => w.id === workspace);
   const wsMembers = members.filter((m) => m.workspaceId === workspace);
   const active = wsMembers.filter((m) => m.status === "active");
   const invited = wsMembers.filter((m) => m.status === "invited");
-  const isOwner = ws?.ownerId === currentUserId || active.some((m) => m.userId === currentUserId && m.role === "owner");
+  // fall back to owner if my row hasn't loaded but I own the workspace
+  const role: Role | undefined = myRole ?? (ws?.ownerId === currentUserId ? "owner" : undefined);
+  const canManage = can(role, "manageMembers");
+  const inviteOptions = assignableRoles(role);
 
   // Personal workspace → prompt to create a team
   if (workspace === null) {
@@ -142,7 +150,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   const submitInvite = () => {
     const v = email.trim();
     if (!v || !/.+@.+\..+/.test(v) || !workspace) return;
-    onInvite(workspace, v);
+    onInvite(workspace, v, inviteRole);
     setEmail("");
   };
 
@@ -165,13 +173,22 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
             </div>
             <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{m.email}</div>
           </div>
-          <span className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
-            color: m.status === "invited" ? "var(--st-review)" : m.role === "owner" ? "var(--accent)" : "var(--ink-3)",
-            background: m.status === "invited" ? "color-mix(in oklch, var(--st-review) 12%, transparent)" : "var(--surface-2)" }}>
-            {m.status === "invited" ? "Invited" : m.role}
-          </span>
-          {isOwner && !isSelf && (
-            <button className="btn-icon" title="Remove" aria-label={`Remove ${m.email}`} onClick={() => { if (window.confirm(`Remove ${m.name || m.email} from this workspace?`)) onRemoveMember(m.id); }}
+          {m.status === "invited" ? (
+            <span className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: "var(--st-review)", background: "color-mix(in oklch, var(--st-review) 12%, transparent)" }}>Invited</span>
+          ) : (onSetRole && canManageMember(role, m.role) && !isSelf) ? (
+            <select value={m.role} onChange={(e) => onSetRole(m.id, e.target.value as Role)} aria-label={`Role for ${m.email}`}
+              style={{ height: 28, padding: "0 6px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12, outline: "none", cursor: "pointer" }}>
+              {[...new Set<Role>([m.role, ...inviteOptions])].map((r) => <option key={r} value={r}>{ROLE_META[r].label}</option>)}
+            </select>
+          ) : (
+            <span title={ROLE_META[m.role].blurb} className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: m.role === "owner" ? "var(--accent)" : "var(--ink-3)", background: "var(--surface-2)" }}>{ROLE_META[m.role].label}</span>
+          )}
+          {role === "owner" && onTransferOwnership && workspace && m.status === "active" && m.role !== "owner" && (
+            <button className="btn-icon" title="Make owner" aria-label={`Make ${m.email} the owner`} onClick={() => { if (window.confirm(`Make ${m.name || m.email} the owner? You'll become an admin.`)) onTransferOwnership(workspace, m.id); }}
+              style={{ border: "none", width: 28, height: 28, color: "var(--ink-3)" }}><Icon name="target" size={14} /></button>
+          )}
+          {((canManageMember(role, m.role) && !isSelf) || (isSelf && m.role !== "owner")) && (
+            <button className="btn-icon" title={isSelf ? "Leave workspace" : "Remove"} aria-label={`Remove ${m.email}`} onClick={() => { if (window.confirm(isSelf ? "Leave this workspace?" : `Remove ${m.name || m.email} from this workspace?`)) onRemoveMember(m.id); }}
               style={{ border: "none", width: 28, height: 28, color: "var(--ink-3)" }}><Icon name="x" size={15} /></button>
           )}
         </div>
@@ -195,13 +212,17 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px" }}>
       {/* invite */}
-      {isOwner && (
+      {canManage && (
         <div className="glass" style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderRadius: 16, marginBottom: 24, flexWrap: "wrap" }}>
           <Icon name="users" size={17} style={{ color: "var(--accent)" }} />
           <span style={{ fontSize: 13.5, fontWeight: 600 }}>Invite to {ws?.name}</span>
           <input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitInvite(); }}
             type="email" placeholder="teammate@company.com" aria-label="Invite email"
-            style={{ flex: 1, minWidth: 200, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+            style={{ flex: 1, minWidth: 180, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+          <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as Role)} aria-label="Invite as role"
+            style={{ height: 38, padding: "0 9px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", cursor: "pointer" }}>
+            {inviteOptions.map((r) => <option key={r} value={r}>{ROLE_META[r].label}</option>)}
+          </select>
           <button className="btn btn-accent" onClick={submitInvite} disabled={!/.+@.+\..+/.test(email)} style={{ opacity: /.+@.+\..+/.test(email) ? 1 : 0.5 }}>
             <Icon name="plus" size={15} /> Invite
           </button>

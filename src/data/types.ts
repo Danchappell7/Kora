@@ -46,13 +46,14 @@ export interface Workspace {
   ownerId?: string;
 }
 
+export type Role = "owner" | "admin" | "member" | "guest";
 export interface WorkspaceMember {
   id: string;
   workspaceId: string;
   userId: string | null;
   email: string;
   name: string;
-  role: "owner" | "member";
+  role: Role;
   status: "invited" | "active";
 }
 

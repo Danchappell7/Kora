@@ -37,7 +37,7 @@ import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Project, Workspace, WorkspaceMember, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey } from "./data/types";
+import type { Task, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 
 /* ---- tasks page with view switcher ---- */
@@ -1408,16 +1408,31 @@ export default function App() {
       .catch((e) => { reportError(e, { op: "createWorkspace" }); toastError("Couldn't create the workspace: " + (e?.message || e)); });
   }, [toastError]);
 
-  const inviteMember = useCallback((workspaceId: string, email: string) => {
-    store.inviteMember(workspaceId, email)
-      .then((m) => setWsMembers((xs) => [...xs, m]))
+  const refreshWorkspaceMembers = useCallback(() => {
+    store.listWorkspaceMembers().then(setWsMembers).catch((e) => reportError(e, { op: "refreshWorkspaceMembers" }));
+  }, []);
+
+  const inviteMember = useCallback((workspaceId: string, email: string, role: Role = "member") => {
+    store.inviteMember(workspaceId, email, role)
+      .then((m) => setWsMembers((xs) => [...xs.filter((x) => x.id !== m.id), m]))
       .catch((e) => { reportError(e, { op: "inviteMember" }); toastError("Couldn't send the invite: " + (e?.message || e)); });
   }, [toastError]);
 
   const removeMember = useCallback((memberId: string) => {
     setWsMembers((xs) => xs.filter((m) => m.id !== memberId));
-    store.removeMember(memberId).catch(reportError);
-  }, []);
+    store.removeMember(memberId).catch((e) => { reportError(e, { op: "removeMember" }); toastError("Couldn't remove them: " + (e?.message || e)); refreshWorkspaceMembers(); });
+  }, [toastError]);
+
+  const setMemberRole = useCallback((memberId: string, role: Role) => {
+    setWsMembers((xs) => xs.map((m) => m.id === memberId ? { ...m, role } : m));
+    store.setMemberRole(memberId, role).catch((e) => { reportError(e, { op: "setMemberRole" }); toastError("Couldn't change the role: " + (e?.message || e)); refreshWorkspaceMembers(); });
+  }, [toastError]);
+
+  const transferOwnership = useCallback((workspaceId: string, memberId: string) => {
+    store.transferOwnership(workspaceId, memberId)
+      .then(() => { toastSuccess("Ownership transferred"); refreshWorkspaceMembers(); })
+      .catch((e) => { reportError(e, { op: "transferOwnership" }); toastError("Couldn't transfer ownership: " + (e?.message || e)); });
+  }, [toastError, toastSuccess]);
 
   // returning from Stripe checkout → refresh subscription + toast, clean the URL
   useEffect(() => {
@@ -1543,7 +1558,7 @@ export default function App() {
       case "forms": return <FormsView forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} onInvite={inviteMember} onRemoveMember={removeMember} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onTransferOwnership={transferOwnership} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "tasks":
       case "project":
         return <TasksPage tasks={scoped} allTasks={allTasks} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
