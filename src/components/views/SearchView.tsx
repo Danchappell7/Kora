@@ -12,10 +12,11 @@ const EMPTY: Query = { text: "", status: "all", priority: "all", assignee: "all"
 
 const selStyle: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
 
-export function SearchView({ tasks, projects, members, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch }: {
+export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch }: {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
+  currentUserId?: string;
   onOpen: (id: string) => void;
   savedSearches: SavedSearch[];
   onSaveSearch: (name: string, query: Record<string, unknown>) => void;
@@ -24,6 +25,14 @@ export function SearchView({ tasks, projects, members, onOpen, savedSearches, on
   const [q, setQ] = useState<Query>(EMPTY);
   const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
   const allTags = useMemo(() => [...new Set(tasks.flatMap((t) => t.tags || []))], [tasks]);
+  // one-click cross-project presets (combine + save your own)
+  const presets: { label: string; q: Partial<Query> }[] = [
+    ...(currentUserId ? [{ label: "Assigned to me", q: { assignee: currentUserId } as Partial<Query> }] : []),
+    { label: "Due this week", q: { due: "week" } },
+    ...(currentUserId ? [{ label: "My work this week", q: { assignee: currentUserId, due: "week" } as Partial<Query> }] : []),
+    { label: "Overdue", q: { due: "overdue" } },
+    { label: "Urgent", q: { priority: "urgent" } },
+  ];
 
   const results = useMemo(() => {
     const text = q.text.trim().toLowerCase();
@@ -40,6 +49,13 @@ export function SearchView({ tasks, projects, members, onOpen, savedSearches, on
       if (q.tag !== "all" && !(t.tags || []).includes(q.tag)) return false;
       if (q.due === "has" && !t.dueDate) return false;
       if (q.due === "overdue" && dueState(t.dueDate, t.status) !== "overdue") return false;
+      if (q.due === "today" && dueState(t.dueDate, t.status) !== "today") return false;
+      if (q.due === "week") {
+        if (!t.dueDate) return false;
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const diff = (new Date(t.dueDate + "T00:00:00").getTime() - today.getTime()) / 86400000;
+        if (!(diff >= 0 && diff <= 7)) return false;
+      }
       if (q.due === "none" && t.dueDate) return false;
       return true;
     }).slice(0, 200);
@@ -55,13 +71,19 @@ export function SearchView({ tasks, projects, members, onOpen, savedSearches, on
           style={{ flex: 1, height: 40, padding: "0 12px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 15, outline: "none" }} />
       </div>
 
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 }}>
+        {presets.map((p) => (
+          <button key={p.label} onClick={() => setQ({ ...EMPTY, ...p.q })} className="lift" style={{ padding: "5px 12px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer", fontSize: 12.5, color: "var(--ink-2)", fontFamily: "var(--font-display)" }}>{p.label}</button>
+        ))}
+      </div>
+
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
         <select value={q.status} onChange={(e) => set({ status: e.target.value })} style={selStyle}><option value="all">Any status</option>{(Object.keys(STATUS_META) as Status[]).map((s) => <option key={s} value={s}>{STATUS_META[s].label}</option>)}</select>
         <select value={q.priority} onChange={(e) => set({ priority: e.target.value })} style={selStyle}><option value="all">Any priority</option>{(["urgent", "high", "medium", "low"] as Priority[]).map((p) => <option key={p} value={p}>{p}</option>)}</select>
         <select value={q.assignee} onChange={(e) => set({ assignee: e.target.value })} style={selStyle}><option value="all">Anyone</option>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
         <select value={q.projectId} onChange={(e) => set({ projectId: e.target.value })} style={selStyle}><option value="all">Any project</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
         {allTags.length > 0 && <select value={q.tag} onChange={(e) => set({ tag: e.target.value })} style={selStyle}><option value="all">Any tag</option>{allTags.map((t) => <option key={t} value={t}>{t}</option>)}</select>}
-        <select value={q.due} onChange={(e) => set({ due: e.target.value })} style={selStyle}><option value="all">Any due date</option><option value="has">Has a due date</option><option value="overdue">Overdue</option><option value="none">No due date</option></select>
+        <select value={q.due} onChange={(e) => set({ due: e.target.value })} style={selStyle}><option value="all">Any due date</option><option value="today">Due today</option><option value="week">Due this week</option><option value="overdue">Overdue</option><option value="has">Has a due date</option><option value="none">No due date</option></select>
         {active && (
           <>
             <button onClick={() => { const name = window.prompt("Name this search"); if (name?.trim()) onSaveSearch(name.trim(), q as unknown as Record<string, unknown>); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="filter" size={14} /> Save</button>
