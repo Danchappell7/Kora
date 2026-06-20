@@ -260,6 +260,9 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
   const bulkEnabled = !!onBulkPatch;
   const [addingKey, setAddingKey] = useState<string | null>(null);
   const [addDraft, setAddDraft] = useState("");
+  // cheap windowing: very large groups render a capped slice with a "show all"
+  const ROW_CAP = 100;
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const quickAdd = (groupKey: string) => {
     const v = addDraft.trim(); if (!v) { setAddingKey(null); return; }
     const partial: Partial<Task> & { title: string } = { title: v };
@@ -408,11 +411,16 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
           <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon}
             onRename={groupBy === "section" && g.key !== "__none" && onRenameSection ? () => { const n = window.prompt("Rename section", g.label); if (n?.trim()) onRenameSection(g.key, n.trim()); } : undefined}
             onDelete={groupBy === "section" && g.key !== "__none" && onDeleteSection ? () => { if (window.confirm(`Delete section "${g.label}"? Its tasks move to No section.`)) onDeleteSection(g.key); } : undefined} />
-          <div>{g.items.map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
+          <div>{(expandedGroups.has(g.key) ? g.items : g.items.slice(0, ROW_CAP)).map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
             selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
             draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
             onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop}
             onPatch={onPatch} members={members} customFields={customFields} />)}</div>
+          {!expandedGroups.has(g.key) && g.items.length > ROW_CAP && (
+            <button onClick={() => setExpandedGroups((s) => new Set(s).add(g.key))} className="lift-row" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%", padding: "9px 18px", border: "none", borderBottom: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-3)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13 }}>
+              <Icon name="chevronDown" size={14} /> Show all {g.items.length}
+            </button>
+          )}
           {onQuickAdd && (addingKey === g.key ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px 8px 30px", borderBottom: "1px solid var(--hairline)" }}>
               {/* eslint-disable-next-line jsx-a11y/no-autofocus */}

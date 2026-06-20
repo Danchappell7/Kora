@@ -556,9 +556,18 @@ export default function App() {
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
   const [banner, setBanner] = useState<AppBanner | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
   useEffect(() => { store.activeBanner().then(setBanner).catch(() => {}); }, []);
+  // connection awareness — be honest that edits may not save while offline
+  useEffect(() => {
+    const goOnline = () => { setOnline(true); toastSuccess("Back online"); };
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
+  }, [toastSuccess]);
   const [route, setRouteRaw] = useState<Route>({ view: "home" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
@@ -1729,6 +1738,12 @@ export default function App() {
         </>
       ) : sidebar}
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
+        {!online && (
+          <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 18px", background: "color-mix(in oklch, #f0a93b 16%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, #f0a93b 30%, transparent)" }}>
+            <Icon name="refresh" size={14} style={{ color: "#f0a93b", flexShrink: 0 }} />
+            <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>You're offline — recent edits may not be saved until you reconnect.</span>
+          </div>
+        )}
         {banner && banner.id !== bannerDismissed && (() => {
           const c = banner.kind === "warning" ? "#f0a93b" : banner.kind === "success" ? "#37c6a8" : "var(--accent)";
           return (
