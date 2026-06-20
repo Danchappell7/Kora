@@ -32,7 +32,7 @@ import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
 import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { store, type NewProject } from "./data/store";
+import { store, type NewProject, type AppBanner } from "./data/store";
 import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
@@ -554,6 +554,9 @@ export default function App() {
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
+  const [banner, setBanner] = useState<AppBanner | null>(null);
+  const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
+  useEffect(() => { store.activeBanner().then(setBanner).catch(() => {}); }, []);
   const [route, setRouteRaw] = useState<Route>({ view: "home" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
@@ -1668,6 +1671,16 @@ export default function App() {
         </>
       ) : sidebar}
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
+        {banner && banner.id !== bannerDismissed && (() => {
+          const c = banner.kind === "warning" ? "#f0a93b" : banner.kind === "success" ? "#37c6a8" : "var(--accent)";
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 18px", background: `color-mix(in oklch, ${c} 14%, var(--surface-raised))`, borderBottom: `1px solid color-mix(in oklch, ${c} 30%, transparent)` }}>
+              <Icon name="bell" size={15} style={{ color: c, flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)", fontWeight: 500 }}>{banner.message}</span>
+              <button onClick={() => { setBannerDismissed(banner.id); try { localStorage.setItem("kanbo-banner-dismissed", banner.id); } catch { /* ignore */ } }} aria-label="Dismiss" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 2, flexShrink: 0 }}><Icon name="x" size={16} /></button>
+            </div>
+          );
+        })()}
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
         <Topbar {...headerProps} theme={theme} toggleTheme={() => setTheme((t) => t === "dark" ? "light" : "dark")}
           hasUnread={inboxCount > 0} onMenu={isMobile ? () => setSidebarOpen(true) : undefined}

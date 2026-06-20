@@ -342,6 +342,9 @@ const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string; approved?: boolean; isAdmin?: boolean; suspended?: boolean }
 export interface AdminFunnel { signups: number; approved: number; activated: number; active_30d: number }
+export interface AdminWorkspace { id: string; name: string; logo_url: string | null; created_at: string; owner_email: string | null; owner_name: string; members: number; tasks: number }
+export interface AdminAuditEntry { id: string; actor_email: string | null; action: string; target: string | null; detail: string | null; created_at: string }
+export interface AppBanner { id: string; message: string; kind: "info" | "warning" | "success" }
 export interface AdminTrial { email: string; name: string; trial_ends_at: string; plan: string | null }
 export interface AdminBilling {
   trialing: number; active: number; past_due: number; canceled: number;
@@ -1177,6 +1180,55 @@ export const store = {
       if (error || !data) return store.adminSeries();
       return data as AdminSeries;
     } catch { return store.adminSeries(); }
+  },
+
+  // All workspaces with owner/member/task counts (admins only).
+  async adminWorkspaces(): Promise<AdminWorkspace[] | null> {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase.rpc("admin_workspaces");
+      if (error || !data) return null;
+      return data as AdminWorkspace[];
+    } catch { return null; }
+  },
+  async adminCloseWorkspace(workspaceId: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_close_workspace", { p_ws: workspaceId });
+    if (error) throw error;
+  },
+
+  // Audit trail — list + append (best-effort; admins only).
+  async adminAuditList(): Promise<AdminAuditEntry[] | null> {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase.rpc("admin_audit_list");
+      if (error || !data) return null;
+      return data as AdminAuditEntry[];
+    } catch { return null; }
+  },
+  async adminLog(action: string, target: string, detail: string): Promise<void> {
+    if (!supabase) return;
+    try { await supabase.rpc("admin_log", { p_action: action, p_target: target, p_detail: detail }); } catch { /* non-fatal */ }
+  },
+
+  // Broadcast banner — admin set/clear + everyone reads the active one.
+  async activeBanner(): Promise<AppBanner | null> {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase.from("banners").select("id, message, kind").eq("active", true).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (error || !data) return null;
+      return data as AppBanner;
+    } catch { return null; }
+  },
+  async adminSetBanner(message: string, kind: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_set_banner", { p_message: message, p_kind: kind });
+    if (error) throw error;
+  },
+  async adminClearBanner(): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_clear_banner");
+    if (error) throw error;
   },
 
   // Conversion funnel (signup → approved → activated → active). null if not installed.

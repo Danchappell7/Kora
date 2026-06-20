@@ -6,7 +6,7 @@
    ============================================================ */
 import { useEffect, useState, useCallback } from "react";
 import { Icon } from "../primitives";
-import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail, type AdminBilling, type AdminFunnel } from "../../data/store";
+import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail, type AdminBilling, type AdminFunnel, type AdminWorkspace, type AdminAuditEntry } from "../../data/store";
 import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 
@@ -373,12 +373,13 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
   const adm = detail?.isAdmin ?? account.isAdmin ?? false;
   const susp = detail?.suspended ?? account.suspended ?? false;
 
-  const run = async (key: string, fn: () => Promise<void>, close = false) => {
+  const run = async (key: string, fn: () => Promise<void>, opts: { close?: boolean; log?: string } = {}) => {
     setBusy(key); setErr(null);
     try {
       await fn();
+      if (opts.log) await store.adminLog(key, account.email || account.id, opts.log);
       await onReload();
-      if (close) { onClose(); return; }
+      if (opts.close) { onClose(); return; }
       const d = await store.adminAccountDetail(account.id); setDetail(d);
     } catch (e) { setErr((e as Error)?.message || "Action failed"); reportError(e); }
     finally { setBusy(null); }
@@ -426,14 +427,14 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
 
           <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
             <div className="kicker">Actions</div>
-            <button disabled={busy != null} onClick={() => run("approve", () => store.adminSetApproved(account.id, !appr))} className="btn btn-ghost" style={{ justifyContent: "center" }}>
+            <button disabled={busy != null} onClick={() => run("approve", () => store.adminSetApproved(account.id, !appr), { log: appr ? "Revoked access" : "Approved access" })} className="btn btn-ghost" style={{ justifyContent: "center" }}>
               <Icon name={appr ? "lock" : "check"} size={15} /> {busy === "approve" ? "Saving…" : appr ? "Revoke access" : "Approve access"}
             </button>
-            <button disabled={busy != null || (isSelf && adm)} onClick={() => run("admin", () => store.adminSetAdmin(account.id, !adm))} className="btn btn-ghost" style={{ justifyContent: "center" }} title={isSelf && adm ? "You can't remove your own admin" : undefined}>
+            <button disabled={busy != null || (isSelf && adm)} onClick={() => run("admin", () => store.adminSetAdmin(account.id, !adm), { log: adm ? "Revoked admin" : "Granted admin" })} className="btn btn-ghost" style={{ justifyContent: "center" }} title={isSelf && adm ? "You can't remove your own admin" : undefined}>
               <Icon name="sparkles" size={15} /> {busy === "admin" ? "Saving…" : adm ? "Revoke admin" : "Make admin"}
             </button>
             {!isSelf && (
-              <button disabled={busy != null} onClick={() => run("suspend", () => store.adminSetSuspended(account.id, !susp))} className="btn btn-ghost" style={{ justifyContent: "center", color: susp ? "var(--st-done)" : "var(--prio-high)" }}>
+              <button disabled={busy != null} onClick={() => run("suspend", () => store.adminSetSuspended(account.id, !susp), { log: susp ? "Unsuspended" : "Suspended" })} className="btn btn-ghost" style={{ justifyContent: "center", color: susp ? "var(--st-done)" : "var(--prio-high)" }}>
                 <Icon name={susp ? "refresh" : "pause"} size={15} /> {busy === "suspend" ? "Saving…" : susp ? "Unsuspend" : "Suspend account"}
               </button>
             )}
@@ -441,7 +442,7 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
               <button disabled={busy != null} className="btn btn-ghost" style={{ justifyContent: "center", color: "var(--prio-urgent)" }}
                 onClick={() => {
                   const typed = window.prompt(`This permanently deletes ${account.email} and ALL their data. This cannot be undone.\n\nType the email to confirm:`);
-                  if (typed != null && typed.trim().toLowerCase() === (account.email || "").toLowerCase()) run("delete", () => store.adminDeleteUser(account.id), true);
+                  if (typed != null && typed.trim().toLowerCase() === (account.email || "").toLowerCase()) run("delete", () => store.adminDeleteUser(account.id), { close: true, log: "Deleted account" });
                   else if (typed != null) window.alert("Email didn't match — nothing was deleted.");
                 }}>
                 <Icon name="trash" size={15} /> {busy === "delete" ? "Deleting…" : "Delete account"}
@@ -654,6 +655,128 @@ function FunnelCard({ funnel }: { funnel: AdminFunnel }) {
   );
 }
 
+/* ---- broadcast banner composer ---- */
+const BANNER_KINDS: { k: "info" | "warning" | "success"; label: string; color: string }[] = [
+  { k: "info", label: "Info", color: "var(--accent)" },
+  { k: "warning", label: "Warning", color: "#f0a93b" },
+  { k: "success", label: "Success", color: "#37c6a8" },
+];
+function BannerComposer() {
+  const [msg, setMsg] = useState("");
+  const [kind, setKind] = useState<"info" | "warning" | "success">("info");
+  const [current, setCurrent] = useState<{ message: string; kind: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => store.activeBanner().then((b) => setCurrent(b ? { message: b.message, kind: b.kind } : null)).catch(reportError);
+  useEffect(() => { load(); }, []);
+  const publish = async () => {
+    if (!msg.trim()) return;
+    setBusy(true);
+    try { await store.adminSetBanner(msg.trim(), kind); await store.adminLog("banner", "all users", `Set ${kind} banner: ${msg.trim().slice(0, 80)}`); setMsg(""); await load(); }
+    catch (e) { reportError(e); } finally { setBusy(false); }
+  };
+  const clear = async () => {
+    setBusy(true);
+    try { await store.adminClearBanner(); await store.adminLog("banner", "all users", "Cleared banner"); await load(); }
+    catch (e) { reportError(e); } finally { setBusy(false); }
+  };
+  return (
+    <div className="glass" style={{ borderRadius: 18, padding: "16px 20px", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 13 }}>
+        <Icon name="bell" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 15, fontWeight: 600 }}>Broadcast banner</span>
+        <span style={{ fontSize: 12, color: "var(--ink-4)" }}>· shown to everyone in-app</span>
+      </div>
+      {current && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, marginBottom: 12, background: `color-mix(in oklch, ${BANNER_KINDS.find((b) => b.k === current.kind)?.color || "var(--accent)"} 12%, transparent)`, border: `1px solid color-mix(in oklch, ${BANNER_KINDS.find((b) => b.k === current.kind)?.color || "var(--accent)"} 30%, transparent)` }}>
+          <span style={{ fontSize: 13, color: "var(--ink-2)", flex: 1 }}>{current.message}</span>
+          <button onClick={clear} disabled={busy} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>Clear</button>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center" }}>
+        <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Message to show all users…" aria-label="Banner message"
+          style={{ flex: 1, minWidth: 220, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+        <select value={kind} onChange={(e) => setKind(e.target.value as "info" | "warning" | "success")} aria-label="Banner type" style={{ height: 38, padding: "0 9px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", cursor: "pointer" }}>
+          {BANNER_KINDS.map((b) => <option key={b.k} value={b.k}>{b.label}</option>)}
+        </select>
+        <button onClick={publish} disabled={busy || !msg.trim()} className="btn btn-accent" style={{ opacity: msg.trim() ? 1 : 0.5 }}>{busy ? "Saving…" : current ? "Replace" : "Publish"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- all-workspaces oversight table ---- */
+function WorkspacesPanel() {
+  const [rows, setRows] = useState<AdminWorkspace[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  const load = () => store.adminWorkspaces().then(setRows).catch(reportError);
+  useEffect(() => { load(); }, []);
+  if (rows == null) return null;
+  const needle = q.trim().toLowerCase();
+  const shown = rows.filter((w) => !needle || w.name.toLowerCase().includes(needle) || (w.owner_email || "").toLowerCase().includes(needle));
+  const close = async (w: AdminWorkspace) => {
+    const typed = window.prompt(`Close "${w.name}" (owner ${w.owner_email})? This deletes all its projects, tasks and members.\n\nType the workspace name to confirm:`);
+    if (typed == null) return;
+    if (typed.trim() !== w.name) { window.alert("Name didn't match — nothing was closed."); return; }
+    setBusy(w.id);
+    try { await store.adminCloseWorkspace(w.id); await store.adminLog("close_workspace", w.name, `Closed workspace owned by ${w.owner_email}`); await load(); }
+    catch (e) { reportError(e); } finally { setBusy(null); }
+  };
+  return (
+    <div className="glass" style={{ borderRadius: 18, overflow: "hidden", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 18px", borderBottom: "1px solid var(--hairline)", flexWrap: "wrap" }}>
+        <Icon name="briefcase" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 14.5, fontWeight: 600 }}>Workspaces</span>
+        <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{rows.length}</span>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" aria-label="Search workspaces"
+          style={{ marginLeft: "auto", height: 30, width: 180, maxWidth: "40vw", padding: "0 11px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" }} />
+      </div>
+      {shown.length === 0 ? (
+        <div style={{ padding: "24px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>No workspaces{needle ? " match" : ""}.</div>
+      ) : shown.map((w, i) => (
+        <div key={w.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 18px", borderTop: i ? "1px solid var(--hairline)" : "none" }}>
+          {w.logo_url
+            ? <img src={w.logo_url} alt="" style={{ width: 30, height: 30, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+            : <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: "grid", placeItems: "center", background: "var(--surface-2)", color: "var(--ink-4)", fontSize: 13, fontWeight: 700 }}>{(w.name || "?").charAt(0).toUpperCase()}</span>}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="truncate" style={{ fontSize: 13.5, fontWeight: 500 }}>{w.name}</div>
+            <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{w.owner_name || w.owner_email || "—"}</div>
+          </div>
+          <span className="mono hide-sm" style={{ fontSize: 11.5, color: "var(--ink-3)", width: 70, textAlign: "right", flexShrink: 0 }}>{w.members} mem</span>
+          <span className="mono hide-sm" style={{ fontSize: 11.5, color: "var(--ink-3)", width: 70, textAlign: "right", flexShrink: 0 }}>{w.tasks} tasks</span>
+          <span className="mono hide-sm" style={{ fontSize: 11.5, color: "var(--ink-4)", width: 110, textAlign: "right", flexShrink: 0 }}>{fmtDate(w.created_at)}</span>
+          <button onClick={() => close(w)} disabled={busy === w.id} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12, color: "var(--prio-urgent)", flexShrink: 0 }}>{busy === w.id ? "…" : <><Icon name="trash" size={13} /> Close</>}</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---- admin audit log ---- */
+function AuditPanel() {
+  const [rows, setRows] = useState<AdminAuditEntry[] | null>(null);
+  useEffect(() => { store.adminAuditList().then(setRows).catch(reportError); }, []);
+  if (rows == null || rows.length === 0) return null;
+  return (
+    <div className="glass" style={{ borderRadius: 18, overflow: "hidden", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 18px", borderBottom: "1px solid var(--hairline)" }}>
+        <Icon name="clock" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 14.5, fontWeight: 600 }}>Audit log</span>
+        <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{rows.length}</span>
+      </div>
+      {rows.slice(0, 50).map((r, i) => (
+        <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderTop: i ? "1px solid var(--hairline)" : "none" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="truncate" style={{ fontSize: 13, color: "var(--ink-2)" }}>{r.detail || r.action}{r.target ? <span style={{ color: "var(--ink-4)" }}> · {r.target}</span> : null}</div>
+            <div className="truncate" style={{ fontSize: 11.5, color: "var(--ink-4)" }}>{r.actor_email || "—"}</div>
+          </div>
+          <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }} title={r.created_at}>{fmtAgo(r.created_at)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const STATUS_COLORS: Record<string, string> = { todo: "#8a8f98", progress: "var(--accent)", review: "#f0a93b", blocked: "#e5544b", done: "#37c6a8" };
 const PRIORITY_COLORS: Record<string, string> = { low: "#6aa3ff", medium: "#37c6a8", high: "#f0a93b", urgent: "#e5544b" };
 
@@ -714,6 +837,8 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
 
       <AccessRequestsPanel />
 
+      <BannerComposer />
+
       {!series && !loading && (
         <div className="glass" style={{ padding: "13px 16px", borderRadius: 12, marginBottom: 18, display: "flex", alignItems: "center", gap: 11, border: "1px solid color-mix(in oklch, var(--accent) 26%, transparent)", background: "var(--accent-dim)" }}>
           <Icon name="sparkles" size={16} style={{ color: "var(--accent)" }} />
@@ -736,6 +861,10 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
       {billing && <BillingPanel billing={billing} />}
 
       <AccountsPanel accounts={accounts} loading={loading} currentEmail={currentEmail} onReload={reloadAccounts} />
+
+      <div style={{ height: 18 }} />
+      <WorkspacesPanel />
+      <AuditPanel />
     </div>
   );
 }
