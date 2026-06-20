@@ -144,6 +144,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         )}
       </div>
 
+      {/* scrollable middle: nav + focus timer + projects all scroll together */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
       {/* nav */}
       <nav style={{ padding: "4px 12px", display: "flex", flexDirection: "column", gap: 2 }}>
         {navGroups.map((g, gi) => (
@@ -161,7 +163,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         <span className="kicker">Projects</span>
         <button onClick={onNewProject} className="btn-icon" style={{ width: 24, height: 24, border: "none" }} title="New project"><Icon name="plus" size={15} /></button>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 12px 12px", display: "flex", flexDirection: "column", gap: 1 }}>
+      <div style={{ padding: "0 12px 12px", display: "flex", flexDirection: "column", gap: 1 }}>
         {visibleProjects.length === 0 && <p style={{ fontSize: 12.5, color: "var(--ink-4)", padding: "6px 11px" }}>No projects here yet.</p>}
         {orderedProjects.map((p) => {
           const active = route.view === "project" && route.projectId === p.id;
@@ -189,6 +191,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             </div>
           );
         })}
+      </div>
       </div>
 
       {/* billing */}
