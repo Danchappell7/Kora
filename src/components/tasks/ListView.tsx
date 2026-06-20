@@ -386,7 +386,7 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
           <span style={{ fontSize: 13, color: "var(--ink-2)" }}>Sorted by Kanbo's recommended focus order — urgent, unblocking work first.</span>
         </div>
       )}
-      {tasks.length === 0 ? (
+      {tasks.length === 0 && !(groupBy === "section" && sections.length > 0) ? (
         <div style={{ textAlign: "center", padding: "64px 24px", color: "var(--ink-4)" }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="tasks" size={24} style={{ color: "var(--ink-4)" }} /></div>
           <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No tasks yet</p>
