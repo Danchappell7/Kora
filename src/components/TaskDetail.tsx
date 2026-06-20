@@ -196,6 +196,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [depQuery, setDepQuery] = useState("");
   const [reactsOpen, setReactsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const commentRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const descRef = useRef<HTMLTextAreaElement>(null);
@@ -301,7 +302,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     store.toggleReaction(c.id, emoji, currentUserId).catch(reportError);
   };
   const del = () => { onClose(); onDelete(task.id); };
-  const onPickFiles = async (list: FileList | null) => {
+  const onPickFiles = async (list: FileList | File[] | null) => {
     if (!list || list.length === 0) return;
     setUploading(true);
     for (const f of Array.from(list)) {
@@ -340,7 +341,10 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <button className="btn-icon" onClick={del} title="Delete task" style={{ border: "none", color: "var(--ink-3)" }}><Icon name="trash" size={17} /></button>
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: "20px 22px" }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 22px", position: "relative", outline: dragOver ? "2px dashed var(--accent)" : "none", outlineOffset: "-8px" }}
+          onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
+          onDrop={(e) => { if (e.dataTransfer.files?.length) { e.preventDefault(); setDragOver(false); onPickFiles(e.dataTransfer.files); } }}>
           {/* title — editable */}
           <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
             <div style={{ marginTop: 3 }}><Check done={done} size={22} onToggle={() => onToggle(task.id)} /></div>
