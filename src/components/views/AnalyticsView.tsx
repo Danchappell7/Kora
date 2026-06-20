@@ -11,10 +11,41 @@ import type { Task, Priority, Status, CustomFieldDef } from "../../data/types";
 
 type Dim = "status" | "priority" | "project" | "assignee" | string; // string = custom field id
 
-export function AnalyticsView({ tasks, customFields = [] }: { tasks: Task[]; customFields?: CustomFieldDef[] }) {
+export function AnalyticsView({ tasks, members = [], customFields = [] }: { tasks: Task[]; members?: { id: string; name: string }[]; customFields?: CustomFieldDef[] }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [dim, setDim] = useState<Dim>("status");
   const [scope, setScope] = useState<"all" | "open" | "done">("all");
+  const [billRate, setBillRate] = useState<number>(() => { try { return Number(localStorage.getItem("kanbo-bill-rate")) || 0; } catch { return 0; } });
+  const setRate = (n: number) => { setBillRate(n); try { localStorage.setItem("kanbo-bill-rate", String(n)); } catch { /* private mode */ } };
+
+  // ---- per-member output (team workload) ----
+  const memberStats = members.map((m) => {
+    const mine = tasks.filter((t) => t.assigneeId === m.id);
+    const mdone = mine.filter((t) => t.status === "done").length;
+    const mhours = mine.reduce((a, t) => a + (t.loggedHours || 0), 0);
+    return { id: m.id, name: m.name, done: mdone, open: mine.length - mdone, hours: mhours, total: mine.length };
+  }).sort((a, b) => b.done - a.done || b.total - a.total);
+  const maxMemberDone = Math.max(...memberStats.map((s) => s.total), 1);
+
+  // ---- billable hours (logged time by project = client) ----
+  const billableTasks = tasks.filter((t) => (t.loggedHours || 0) > 0);
+  const billByProject = (() => {
+    const map = new Map<string, { hours: number; n: number }>();
+    billableTasks.forEach((t) => { const cur = map.get(t.projectId) || { hours: 0, n: 0 }; cur.hours += t.loggedHours || 0; cur.n += 1; map.set(t.projectId, cur); });
+    return [...map.entries()].map(([pid, v]) => ({ pid, name: getProject(pid)?.name ?? "—", hours: v.hours, n: v.n })).sort((a, b) => b.hours - a.hours);
+  })();
+  const billableHours = billableTasks.reduce((a, t) => a + (t.loggedHours || 0), 0);
+  const exportBillable = () => {
+    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const head = ["Project", "Task", "Assignee", "Hours"].concat(billRate > 0 ? ["Amount (GBP)"] : []);
+    const body = billableTasks
+      .sort((a, b) => a.projectId.localeCompare(b.projectId))
+      .map((t) => [getProject(t.projectId)?.name ?? "—", t.title, getMember(t.assigneeId)?.name ?? "", (t.loggedHours || 0).toString()].concat(billRate > 0 ? [((t.loggedHours || 0) * billRate).toFixed(2)] : []).map(esc).join(","));
+    const totalRow = ["", "", "TOTAL", billableHours.toString()].concat(billRate > 0 ? [(billableHours * billRate).toFixed(2)] : []).map(esc).join(",");
+    const csv = [head.map(esc).join(","), ...body, totalRow].join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = url; a.download = `kanbo-billable-${toLocalISO(KANBO_TODAY)}.csv`; a.click(); URL.revokeObjectURL(url);
+  };
   const done = tasks.filter((t) => t.status === "done").length;
   const open = tasks.length - done;
   const completion = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
@@ -159,6 +190,68 @@ export function AnalyticsView({ tasks, customFields = [] }: { tasks: Task[]; cus
               ))}
             </div>
           )}
+        </Card>
+      )}
+
+      {/* per-member output (team workload) */}
+      {memberStats.length > 1 && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <h3 style={{ fontSize: 14.5, fontWeight: 600 }}>Team output</h3>
+            <span style={{ marginLeft: "auto", fontSize: 12.5, color: "var(--ink-4)" }}>{memberStats.length} members · completed / open</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {memberStats.map((s) => (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span className="truncate" style={{ width: 130, flexShrink: 0, fontSize: 13, color: "var(--ink-2)" }}>{s.name}</span>
+                <div style={{ flex: 1, display: "flex", height: 10, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }} title={`${s.done} done · ${s.open} open`}>
+                  <div style={{ width: `${(s.done / maxMemberDone) * 100}%`, background: "var(--st-done)", transition: "width .6s var(--ease)" }} />
+                  <div style={{ width: `${(s.open / maxMemberDone) * 100}%`, background: "color-mix(in oklch, var(--accent) 55%, transparent)", transition: "width .6s var(--ease)" }} />
+                </div>
+                <span className="mono tnum" style={{ width: 96, textAlign: "right", flexShrink: 0, fontSize: 12, color: "var(--ink-3)" }}>
+                  <span style={{ color: "var(--st-done)" }}>{s.done}</span> / {s.open}{s.hours > 0 ? <span style={{ color: "var(--ink-4)" }}> · {Math.round(s.hours * 10) / 10}h</span> : null}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 14, marginTop: 12, fontSize: 11, color: "var(--ink-4)" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: "var(--st-done)" }} /> Completed</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: "color-mix(in oklch, var(--accent) 55%, transparent)" }} /> Open</span>
+            <span>· logged hours where tracked</span>
+          </div>
+        </Card>
+      )}
+
+      {/* billable hours report */}
+      {billableTasks.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+            <h3 style={{ fontSize: 14.5, fontWeight: 600 }}>Billable hours</h3>
+            <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>logged time by project</span>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--ink-4)" }}>
+                £/hr
+                <input type="number" min={0} value={billRate || ""} onChange={(e) => setRate(Number(e.target.value) || 0)} placeholder="0" aria-label="Hourly rate"
+                  style={{ width: 64, height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
+              </label>
+              <button onClick={exportBillable} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Export CSV</button>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: 16 }}>
+            <div><div className="kicker">Total hours</div><div className="mono" style={{ fontSize: 22, fontWeight: 600, color: "var(--accent)" }}>{Math.round(billableHours * 10) / 10}h</div></div>
+            {billRate > 0 && <div><div className="kicker">Amount</div><div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>£{(billableHours * billRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>}
+            <div><div className="kicker">Tasks</div><div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>{billableTasks.length}</div></div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {billByProject.map((r) => (
+              <div key={r.pid} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+                <span className="truncate" style={{ flex: 1, color: "var(--ink-2)" }}>{r.name}</span>
+                <span className="mono" style={{ color: "var(--ink-4)", fontSize: 12 }}>{r.n} task{r.n === 1 ? "" : "s"}</span>
+                <span className="mono tnum" style={{ width: 56, textAlign: "right", color: "var(--ink)" }}>{Math.round(r.hours * 10) / 10}h</span>
+                {billRate > 0 && <span className="mono tnum" style={{ width: 80, textAlign: "right", color: "var(--ink-3)" }}>£{(r.hours * billRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>}
+              </div>
+            ))}
+          </div>
         </Card>
       )}
 

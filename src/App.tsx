@@ -93,8 +93,9 @@ const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
 ];
 
-function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void }) {
+function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean }) {
   const [statusOpen, setStatusOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(project.description || "");
   const [updOpen, setUpdOpen] = useState(false);
@@ -105,7 +106,6 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
   const total = tasks.length;
   const done = tasks.filter((t) => t.status === "done").length;
   const prog = total ? Math.round((done / total) * 100) : 0;
-  const contributors = [...new Set(tasks.map((t) => t.assigneeId))].slice(0, 6);
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
   const dueSoon = tasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
   // auto-computed RAG health — complements the manually-set project phase
@@ -174,12 +174,52 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
           ))}
         </div>
       </div>
-      {contributors.length > 0 && (
-        <div>
-          <div className="kicker" style={{ marginBottom: 6 }}>Contributors</div>
-          <div style={{ display: "flex" }}>{contributors.map((id, i) => <span key={id} style={{ marginLeft: i ? -8 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised)" }}><Avatar id={id} size={28} /></span>)}</div>
-        </div>
-      )}
+      {(() => {
+        const ownerId = project.ownerId ?? null;
+        const ownerName = ownerId ? (members.find((m) => m.id === ownerId)?.name || getMember(ownerId)?.name || "Owner") : null;
+        const contribIds = (project.contributorIds ?? []).filter((id) => id !== ownerId);
+        const toggleContrib = (id: string) => {
+          const set = new Set(contribIds);
+          set.has(id) ? set.delete(id) : set.add(id);
+          onUpdate(project.id, { contributorIds: [...set] });
+        };
+        return (
+          <div style={{ position: "relative" }}>
+            <div className="kicker" style={{ marginBottom: 6 }}>Owner & contributors</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {/* owner */}
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }} title={ownerName ? `Owner: ${ownerName}` : "No owner"}>
+                {ownerId ? <Avatar id={ownerId} size={28} /> : <span style={{ width: 28, height: 28, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={14} /></span>}
+                <span style={{ fontSize: 12.5, color: "var(--ink-2)" }} className="truncate">{ownerName || "Set owner"}<span style={{ color: "var(--ink-4)", fontSize: 11 }}> · owner</span></span>
+              </div>
+              {/* contributors stack */}
+              {contribIds.length > 0 && <div style={{ display: "flex", marginLeft: 4 }}>{contribIds.slice(0, 6).map((id, i) => <span key={id} title={members.find((m) => m.id === id)?.name || getMember(id)?.name} style={{ marginLeft: i ? -8 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised)" }}><Avatar id={id} size={28} /></span>)}</div>}
+              {canManagePeople && <button onClick={() => setPeopleOpen((v) => !v)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12 }}><Icon name="users" size={13} /> Manage</button>}
+            </div>
+            {peopleOpen && canManagePeople && (
+              <>
+                <div onClick={() => setPeopleOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
+                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 31, width: 280, maxHeight: 320, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                  <div className="kicker" style={{ padding: "4px 8px 6px" }}>Owner</div>
+                  <select value={ownerId ?? ""} onChange={(e) => onUpdate(project.id, { ownerId: e.target.value || null })} aria-label="Project owner"
+                    style={{ width: "100%", height: 32, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", cursor: "pointer", marginBottom: 8 }}>
+                    {!ownerId && <option value="">Select owner…</option>}
+                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                  <div className="kicker" style={{ padding: "4px 8px 6px" }}>Contributors</div>
+                  {members.filter((m) => m.id !== ownerId).length === 0 && <p style={{ fontSize: 12, color: "var(--ink-4)", padding: "2px 8px" }}>Invite teammates to add contributors.</p>}
+                  {members.filter((m) => m.id !== ownerId).map((m) => (
+                    <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 8px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
+                      <input type="checkbox" checked={contribIds.includes(m.id)} onChange={() => toggleContrib(m.id)} />
+                      <Avatar id={m.id} size={22} /><span className="truncate">{m.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
       <button onClick={printReport} className="btn btn-ghost" title="Print / export a PDF report" style={{ alignSelf: "flex-start", padding: "6px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Report</button>
      </div>
      {descEditing ? (
@@ -1185,7 +1225,7 @@ export default function App() {
       });
   }, [applyProjects, toastError]);
 
-  const updateProject = useCallback((id: string, patch: { description?: string; status?: string }) => {
+  const updateProject = useCallback((id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => {
     applyProjects(projectsRef.current.map((p) => p.id === id ? { ...p, ...patch } : p));
     store.updateProject(id, patch).catch(reportError);
   }, [applyProjects]);
@@ -1569,7 +1609,7 @@ export default function App() {
       case "plan": return <PlanView tasks={allTasks} onUpdate={patchTask} onCreate={createTask} onOpen={setDetailId} externalEvents={calEvents} calendarConnected={calConnections.length > 0} />;
       case "myweek": return <MyWeekView tasks={allTasks.filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId))} onOpen={setDetailId} onPatch={patchTask} />;
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
-      case "analytics": return <AnalyticsView tasks={allTasks} customFields={customFields} />;
+      case "analytics": return <AnalyticsView tasks={allTasks} members={assignees} customFields={customFields} />;
       case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
@@ -1592,7 +1632,7 @@ export default function App() {
           sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
-          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} /> : undefined} />;
+          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} members={assignees} canManagePeople={(() => { const r = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role; return r === "owner" || r === "admin" || newProj.ownerId === currentUserId || !newProj.ownerId; })()} /> : undefined} />;
       default: return null;
     }
   };

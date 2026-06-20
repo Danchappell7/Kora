@@ -147,9 +147,9 @@ function rowToTask(r: TaskRow): Task {
   };
 }
 
-interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; }
+interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; }
 function rowToProject(r: ProjectRow): Project {
-  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined };
+  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined };
 }
 
 interface TagRow { id: string; label: string; color: string; }
@@ -647,20 +647,25 @@ export const store = {
   async createProject(input: NewProject, userId: string): Promise<Project> {
     if (!supabase) return { id: newId(), ...input };
     const uid = await authUid(userId);
-    const { data, error } = await supabase
-      .from("projects")
-      .insert({ user_id: uid, name: input.name, emoji: input.emoji, color: input.color, workspace_id: input.workspaceId })
-      .select("*")
-      .single();
-    if (error) throw error;
-    return rowToProject(data as ProjectRow);
+    // owner defaults to the creator; retry without owner_id if 0035 isn't applied yet
+    let payload: Record<string, unknown> = { user_id: uid, owner_id: uid, name: input.name, emoji: input.emoji, color: input.color, workspace_id: input.workspaceId };
+    for (let i = 0; i < 3; i++) {
+      const { data, error } = await supabase.from("projects").insert(payload).select("*").single();
+      if (!error) return rowToProject(data as ProjectRow);
+      const stripped = withoutMissingColumn(payload, error.message);
+      if (!stripped) throw error;
+      payload = stripped;
+    }
+    throw new Error("createProject failed");
   },
 
-  async updateProject(id: string, patch: { description?: string; status?: string }): Promise<void> {
+  async updateProject(id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }): Promise<void> {
     if (!supabase) return;
     let row: Record<string, unknown> = {};
     if ("description" in patch) row.description = patch.description ?? null;
     if ("status" in patch) row.status = patch.status ?? null;
+    if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
+    if ("contributorIds" in patch) row.contributor_ids = patch.contributorIds ?? [];
     if (Object.keys(row).length === 0) return;
     // Resilient update: projects.description/status arrive in migration 0015. If
     // it isn't applied yet, strip the unknown column and retry so the rest of the

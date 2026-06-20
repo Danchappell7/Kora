@@ -81,6 +81,8 @@ export interface Project {
   workspaceId: string | null;
   description?: string;
   status?: string;
+  ownerId?: string | null;       // exactly one owner (defaults to creator)
+  contributorIds?: string[];     // additional people working on the project
 }
 
 export interface TagDef {
