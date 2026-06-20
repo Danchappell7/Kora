@@ -11,7 +11,7 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
   onClose: () => void;
   onOpenTask: (id: string) => void;
 }) {
-  const { running, seconds, setRunning, reset, targetMin, setTargetMin, taskId, setTaskId, pomodoro, setPomodoro, phase, cyclesToday, focusMinToday } = focus;
+  const { running, seconds, setRunning, reset, endSession, targetMin, setTargetMin, taskId, setTaskId, pomodoro, setPomodoro, phase, cyclesToday, focusMinToday } = focus;
   const task = tasks.find((t) => t.id === taskId);
   const total = targetMin * 60;
   const pct = Math.min(100, (seconds / total) * 100);
@@ -40,7 +40,8 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
             Today: {cyclesToday} 🍅 · {Math.floor(focusMinToday / 60) ? `${Math.floor(focusMinToday / 60)}h ` : ""}{focusMinToday % 60}m focus
           </span>
         )}
-        <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: (cyclesToday > 0 || focusMinToday > 0) ? 0 : "auto" }}><Icon name="x" size={16} /> Exit</button>
+        {seconds > 0 && <button className="btn btn-ghost" onClick={() => endSession()} title="Stop and bank this session" style={{ marginLeft: (cyclesToday > 0 || focusMinToday > 0) ? 0 : "auto", marginRight: 8, color: "var(--accent)" }}><Icon name="check" size={16} /> End session</button>}
+        <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: (seconds > 0 || cyclesToday > 0 || focusMinToday > 0) ? 0 : "auto" }}><Icon name="x" size={16} /> Exit</button>
       </div>
 
       {/* center */}

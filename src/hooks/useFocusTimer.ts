@@ -10,6 +10,8 @@ export interface FocusTimer {
   taskId: string;
   setTaskId: (id: string) => void;
   weekMin: number;
+  /** bank the current elapsed time into today's focus total, then reset. returns minutes banked. */
+  endSession: () => number;
   /* pomodoro */
   pomodoro: boolean;
   setPomodoro: (v: boolean) => void;
@@ -67,8 +69,21 @@ export function useFocusTimer(): FocusTimer {
   };
   const reset = () => { setSeconds(0); setRunning(false); if (pomodoro) setPhase("work"); };
 
+  // Stop & bank: add the elapsed minutes to today's focus total, then reset.
+  // (Pomodoro completed work-phases are already banked; `seconds` only holds
+  // the current unbanked interval, so there's no double-counting.)
+  const endSession = (): number => {
+    const mins = Math.round(seconds / 60);
+    if (mins > 0) {
+      const base = statRef.current.date === todayKey() ? statRef.current : { date: todayKey(), cycles: 0, min: 0 };
+      persist({ date: todayKey(), cycles: base.cycles, min: base.min + mins });
+    }
+    setSeconds(0); setRunning(false); if (pomodoro) setPhase("work");
+    return mins;
+  };
+
   return {
-    running, setRunning, seconds, reset, targetMin, setTargetMin, taskId, setTaskId, weekMin,
+    running, setRunning, seconds, reset, targetMin, setTargetMin, taskId, setTaskId, weekMin, endSession,
     pomodoro, setPomodoro, phase, cyclesToday: stat.cycles, focusMinToday: stat.min,
   };
 }

@@ -9,23 +9,39 @@ import type { Route } from "../app-types";
 import type { FocusTimer } from "../hooks/useFocusTimer";
 
 function DeepWorkMini({ focus, onOpen }: { focus: FocusTimer; onOpen: () => void }) {
-  const { running, seconds } = focus;
+  const { running, setRunning, seconds, endSession, focusMinToday } = focus;
+  const [flash, setFlash] = useState<string | null>(null);
   const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
   const ss = String(seconds % 60).padStart(2, "0");
+  const hasElapsed = seconds > 0;
+  const todayLabel = focusMinToday > 0 ? `${Math.floor(focusMinToday / 60) ? `${Math.floor(focusMinToday / 60)}h ` : ""}${focusMinToday % 60}m banked today` : "Bank focused time as you work";
+  const end = () => { const m = endSession(); setFlash(m > 0 ? `Banked ${m}m of deep work` : "Too short to bank"); window.setTimeout(() => setFlash(null), 2600); };
   return (
     <div className="glass" style={{ margin: "4px 12px 0", padding: 13, borderRadius: 14, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
         <Icon name="clock" size={13} style={{ color: "var(--accent)" }} />
         <span className="kicker" style={{ color: "var(--ink-3)" }}>Deep Work</span>
-        {running && <span style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 8px var(--accent)", animation: "pulseGlow 1.6s infinite" }} />}
+        {running && <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 8px var(--accent)", animation: "pulseGlow 1.6s infinite" }} />}
+        <button onClick={onOpen} className="btn-icon" title="Open focus mode" aria-label="Open focus mode" style={{ marginLeft: "auto", width: 22, height: 22, border: "none", color: "var(--ink-4)" }}><Icon name="arrowUpRight" size={14} /></button>
       </div>
       <div className="mono tnum" style={{ fontSize: 30, fontWeight: 500, letterSpacing: "-0.02em", lineHeight: 1, color: running ? "var(--accent)" : "var(--ink)" }}>
         {mm}:{ss}
       </div>
-      <button className="btn btn-accent" onClick={onOpen} style={{ width: "100%", justifyContent: "center", marginTop: 11 }}>
-        <Icon name={running ? "arrowUpRight" : "play"} size={15} fill={running ? "none" : "currentColor"} />
-        {running ? "Open focus" : "Start focus"}
-      </button>
+      <div className="truncate" style={{ minHeight: 14, marginTop: 5, fontSize: 11, color: flash ? "var(--accent)" : "var(--ink-4)", fontWeight: flash ? 600 : 400 }}>{flash || todayLabel}</div>
+      {!running && !hasElapsed ? (
+        <button className="btn btn-accent" onClick={() => setRunning(true)} style={{ width: "100%", justifyContent: "center", marginTop: 9 }}>
+          <Icon name="play" size={15} fill="currentColor" /> Start focus
+        </button>
+      ) : (
+        <div style={{ display: "flex", gap: 7, marginTop: 9 }}>
+          <button className="btn btn-accent" onClick={() => setRunning((v) => !v)} style={{ flex: 1, justifyContent: "center" }}>
+            <Icon name={running ? "pause" : "play"} size={15} fill="currentColor" /> {running ? "Pause" : "Resume"}
+          </button>
+          <button className="btn btn-ghost" onClick={end} title="Stop and bank this session" style={{ justifyContent: "center" }}>
+            <Icon name="check" size={15} /> End
+          </button>
+        </div>
+      )}
     </div>
   );
 }
