@@ -189,6 +189,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [newSub, setNewSub] = useState("");
   const [comment, setComment] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [descMentionQuery, setDescMentionQuery] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [tmplSaved, setTmplSaved] = useState(false);
   const [reactPickerFor, setReactPickerFor] = useState<string | null>(null);
@@ -283,6 +284,27 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     setMentionQuery(null);
     requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(before.length, before.length); } });
   };
+  // @mention autocomplete for the description editor (mirrors the comment one)
+  const descMatches = descMentionQuery !== null
+    ? mentionable.filter((m) => m.name.toLowerCase().includes(descMentionQuery)).slice(0, 6)
+    : [];
+  const onDescChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setDesc(val);
+    const caret = e.target.selectionStart ?? val.length;
+    const m = val.slice(0, caret).match(/(?:^|\s)@([\w'’.-]*)$/);
+    setDescMentionQuery(m ? m[1].toLowerCase() : null);
+  };
+  const pickDescMention = (name: string) => {
+    const el = descRef.current;
+    const caret = el?.selectionStart ?? desc.length;
+    const before = desc.slice(0, caret).replace(/(^|\s)@[\w'’.-]*$/, `$1@${name} `);
+    const next = before + desc.slice(caret);
+    setDesc(next);
+    setDescMentionQuery(null);
+    requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(before.length, before.length); } });
+  };
+
   const sendComment = async () => {
     const v = comment.trim();
     if (!v || posting) return;
@@ -547,18 +569,31 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           <div style={{ marginBottom: 20 }}>
             <div className="kicker" style={{ marginBottom: 8 }}>Description</div>
             {descEditing ? (
-              <>
+              <div style={{ position: "relative" }}>
               <MdToolbar getEl={() => descRef.current} value={desc} setValue={setDesc} />
               {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
               <textarea autoFocus ref={descRef}
                 value={desc}
-                onChange={(e) => setDesc(e.target.value)}
-                onBlur={() => { setDescEditing(false); if (desc !== task.description) onPatch(task.id, { description: desc }); }}
-                placeholder="Add a description…  **bold**, *italic*, - bullets, [links](url)"
+                onChange={onDescChange}
+                onKeyDown={(e) => {
+                  if (descMatches.length > 0 && (e.key === "Enter" || e.key === "Tab")) { e.preventDefault(); pickDescMention(descMatches[0].name); }
+                  else if (e.key === "Escape" && descMentionQuery !== null) { e.preventDefault(); setDescMentionQuery(null); }
+                }}
+                onBlur={() => { setTimeout(() => { setDescEditing(false); setDescMentionQuery(null); if (desc !== task.description) onPatch(task.id, { description: desc }); }, 120); }}
+                placeholder="Add a description…  @ to mention, **bold**, *italic*, - bullets, [links](url)"
                 rows={Math.max(3, Math.min(10, (desc.match(/\n/g)?.length ?? 0) + 2))}
                 style={{ width: "100%", resize: "vertical", padding: "10px 12px", borderRadius: 11, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 14, lineHeight: 1.6, outline: "none" }}
               />
-              </>
+              {descMatches.length > 0 && (
+                <div className="glass anim-scalein" style={{ position: "absolute", left: 8, bottom: 8, zIndex: 30, minWidth: 200, padding: 5, borderRadius: 11, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", border: "1px solid var(--hairline)" }}>
+                  {descMatches.map((m) => (
+                    <button key={m.id} onMouseDown={(e) => { e.preventDefault(); pickDescMention(m.name); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "var(--font-display)", fontSize: 13, color: "var(--ink-2)" }}>
+                      <Avatar id={m.id} size={22} /><span className="truncate">{m.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              </div>
             ) : (
               <div onClick={() => setDescEditing(true)} style={{ padding: "10px 12px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: desc ? "var(--ink-2)" : "var(--ink-4)", fontSize: 14, lineHeight: 1.6, cursor: "text", minHeight: 24 }}>
                 {desc ? renderRich(desc) : "Add a description…"}
