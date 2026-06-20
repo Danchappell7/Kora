@@ -26,7 +26,7 @@ import {
 } from "../data/data";
 import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue, Section } from "../data/types";
 
-const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
+const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
 
 function MetaRow({ icon, label, children }: { icon: IconName; label: string; children: ReactNode }) {
   return (

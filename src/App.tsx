@@ -93,7 +93,7 @@ const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
 ];
 
-function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean }) {
+function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [descEditing, setDescEditing] = useState(false);
@@ -220,7 +220,10 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
           </div>
         );
       })()}
-      <button onClick={printReport} className="btn btn-ghost" title="Print / export a PDF report" style={{ alignSelf: "flex-start", padding: "6px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Report</button>
+      <div style={{ display: "flex", gap: 8, alignSelf: "flex-start" }}>
+        {onDuplicate && <button onClick={() => onDuplicate(project.id)} className="btn btn-ghost" title="Duplicate this project (as a template)" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="layers" size={14} /> Duplicate</button>}
+        <button onClick={printReport} className="btn btn-ghost" title="Print / export a PDF report" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Report</button>
+      </div>
      </div>
      {descEditing ? (
        // eslint-disable-next-line jsx-a11y/no-autofocus
@@ -645,6 +648,7 @@ export default function App() {
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
+  const sectionsRef = useRef<Section[]>([]); sectionsRef.current = sections;
   const rulesRef = useRef<AutomationRule[]>([]); rulesRef.current = automationRules;
   const tagsRef = useRef<Record<string, TagDef>>({}); tagsRef.current = tags;
   const workspacesRef = useRef<Workspace[]>([]); workspacesRef.current = workspaces;
@@ -1245,6 +1249,41 @@ export default function App() {
     store.updateProject(id, patch).catch(reportError);
   }, [applyProjects]);
 
+  // duplicate a project as a template: clones sections + tasks (statuses reset
+  // to todo, completion/scheduling cleared, section/parent/dependency ids remapped)
+  const duplicateProject = useCallback(async (projectId: string) => {
+    const src = projectsRef.current.find((p) => p.id === projectId);
+    if (!src) return;
+    const wsId = src.workspaceId ?? null;
+    try {
+      const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId }, userIdRef.current);
+      applyProjects([...projectsRef.current, np]);
+      if (src.description || src.status || (src.contributorIds?.length ?? 0)) {
+        store.updateProject(np.id, { description: src.description, status: src.status, contributorIds: src.contributorIds }).catch(reportError);
+      }
+      // clone sections, keeping an old→new id map
+      const secMap = new Map<string, string>();
+      for (const s of sectionsRef.current.filter((x) => x.projectId === projectId).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))) {
+        const ns = await store.createSection({ projectId: np.id, workspaceId: wsId, name: s.name, position: s.position }, userIdRef.current);
+        secMap.set(s.id, ns.id); setSections((cur) => [...cur, ns]);
+      }
+      // clone tasks with remapped ids
+      const srcTasks = (tasksRef.current ?? []).filter((t) => t.projectId === projectId && !t.archivedAt);
+      const idMap = new Map<string, string>();
+      srcTasks.forEach((t, i) => idMap.set(t.id, `t-new-${Date.now()}-${i}-${Math.round(Math.random() * 1e6)}`));
+      srcTasks.forEach((t, i) => persistTask({
+        ...t, id: idMap.get(t.id)!, projectId: np.id, workspaceId: wsId,
+        status: "todo", completedAt: undefined, archivedAt: undefined, scheduled: null, planToday: false,
+        sectionId: t.sectionId ? secMap.get(t.sectionId) : undefined,
+        parentId: t.parentId ? idMap.get(t.parentId) : undefined,
+        dependencies: (t.dependencies ?? []).map((d) => idMap.get(d)).filter((x): x is string => !!x),
+        position: Date.now() + i,
+      }));
+      toastSuccess(`Duplicated “${src.name}”`);
+      setWorkspace(wsId); setRoute({ view: "project", projectId: np.id });
+    } catch (e) { reportError(e, { op: "duplicateProject" }); toastError("Couldn't duplicate the project: " + ((e as Error)?.message || e)); }
+  }, [applyProjects, persistTask, toastSuccess, toastError]);
+
   const confirmDeleteProject = useCallback((id: string, mode: DeleteMode, targetId?: string) => {
     if (id === "p-personal") { setDeleteProjectId(null); return; } // built-in default can't be deleted
     const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
@@ -1647,7 +1686,7 @@ export default function App() {
           sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
-          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} members={assignees} canManagePeople={(() => { const r = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role; return r === "owner" || r === "admin" || newProj.ownerId === currentUserId || !newProj.ownerId; })()} /> : undefined} />;
+          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} members={assignees} onDuplicate={duplicateProject} canManagePeople={(() => { const r = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role; return r === "owner" || r === "admin" || newProj.ownerId === currentUserId || !newProj.ownerId; })()} /> : undefined} />;
       default: return null;
     }
   };

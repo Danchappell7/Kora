@@ -60,7 +60,7 @@ export interface WorkspaceMember {
   title?: string;          // free-text position e.g. "Co-founder" (per workspace)
 }
 
-export type Recurrence = "none" | "daily" | "weekly" | "monthly";
+export type Recurrence = "none" | "daily" | "weekdays" | "weekly" | "biweekly" | "monthly";
 
 export type Plan = "personal" | "team";
 export type SubStatus = "trialing" | "active" | "past_due" | "canceled";

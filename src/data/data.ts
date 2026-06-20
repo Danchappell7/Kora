@@ -41,16 +41,17 @@ export function dayOffset(n: number): string {
 export function nextDueDate(iso: string | undefined, recurrence: import("./types").Recurrence): string {
   const base = iso ? new Date(iso + "T00:00:00") : new Date(KANBO_TODAY);
   const d = new Date(base);
-  if (recurrence === "daily") d.setDate(d.getDate() + 1);
-  else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
-  else if (recurrence === "monthly") d.setMonth(d.getMonth() + 1);
+  const step = () => {
+    if (recurrence === "daily") d.setDate(d.getDate() + 1);
+    else if (recurrence === "weekdays") { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
+    else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
+    else if (recurrence === "biweekly") d.setDate(d.getDate() + 14);
+    else if (recurrence === "monthly") d.setMonth(d.getMonth() + 1);
+  };
+  if (recurrence !== "none") step();
   // if the computed next date is in the past, roll forward to the future
   const todayMid = new Date(KANBO_TODAY);
-  while (d < todayMid && recurrence !== "none") {
-    if (recurrence === "daily") d.setDate(d.getDate() + 1);
-    else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
-    else { d.setMonth(d.getMonth() + 1); }
-  }
+  while (d < todayMid && recurrence !== "none") step();
   return toLocalISO(d);
 }
 
