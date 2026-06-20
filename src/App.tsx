@@ -251,6 +251,8 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
 }) {
   const { success: toastImport } = useToast();
   const [filterOpen, setFilterOpen] = useState(false);
+  const [compact, setCompact] = useState(() => { try { return localStorage.getItem("kanbo-density") === "compact"; } catch { return false; } });
+  const toggleCompact = () => setCompact((c) => { const n = !c; try { localStorage.setItem("kanbo-density", n ? "compact" : "comfortable"); } catch { /* private mode */ } return n; });
   const [sortOpen, setSortOpen] = useState(false);
   const [sort, setSort] = useState<string>(() => { try { return localStorage.getItem("kanbo-sort") || "manual"; } catch { return "manual"; } });
   useEffect(() => { try { localStorage.setItem("kanbo-sort", sort); } catch { /* ignore */ } }, [sort]);
@@ -446,6 +448,11 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
         }}>
           <Icon name="sparkles" size={15} /> AI sort {smart ? "on" : "off"}
         </button>
+        {view === "list" && (
+          <button onClick={toggleCompact} className="btn" title={compact ? "Switch to comfortable rows" : "Switch to compact rows"} style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}>
+            <Icon name={compact ? "list" : "menu"} size={15} /> {compact ? "Comfortable" : "Compact"}
+          </button>
+        )}
         {!isMobile && (
           <>
             <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) importCsv(f); e.target.value = ""; }} />
@@ -471,7 +478,7 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
           {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false, custom: {} })} style={{ marginLeft: 4, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear</button>}
         </div>
       )}
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} />}

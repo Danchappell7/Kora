@@ -72,7 +72,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
         onDrop={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); const r = e.currentTarget.getBoundingClientRect(); onRowDrop?.(id, task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
         onDragEnd={draggable ? () => onPickup?.("") : undefined}
         style={{
-        display: "flex", alignItems: "center", gap: 12, padding: "10px 18px 10px " + (18 + depth * 22) + "px",
+        display: "flex", alignItems: "center", gap: 12, padding: "var(--kanbo-rowpad,10px) 18px var(--kanbo-rowpad,10px) " + (18 + depth * 22) + "px",
         cursor: draggable ? "grab" : "pointer", position: "relative",
         opacity: dragging ? 0.4 : (done ? 0.55 : 1),
         background: selected ? "var(--accent-dim)" : undefined,
@@ -240,8 +240,8 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete }: { label:
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, projects = [], onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
-  tasks: Task[]; allTasks: Task[]; projects?: Project[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
+export function ListView({ tasks, allTasks, projects = [], compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
+  tasks: Task[]; allTasks: Task[]; projects?: Project[]; compact?: boolean; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
@@ -376,7 +376,7 @@ export function ListView({ tasks, allTasks, projects = [], onOpen, onToggle, onT
   }
 
   return (
-    <div style={{ overflowY: "auto", flex: 1 }}>
+    <div style={{ overflowY: "auto", flex: 1, "--kanbo-rowpad": compact ? "5px" : "10px" } as React.CSSProperties}>
       {smart && (
         <div className="anim-fadein" style={{ margin: "16px 18px 0", display: "flex", alignItems: "center", gap: 11, padding: "11px 14px", borderRadius: 12, background: "var(--accent-dim)", border: "1px solid color-mix(in oklch, var(--accent) 28%, transparent)" }}>
           <Icon name="sparkles" size={16} style={{ color: "var(--accent)" }} />
