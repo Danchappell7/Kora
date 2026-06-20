@@ -341,6 +341,12 @@ interface FormRow { id: string; workspace_id: string | null; project_id: string;
 const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string; approved?: boolean; isAdmin?: boolean; suspended?: boolean }
+export interface AdminTrial { email: string; name: string; trial_ends_at: string; plan: string | null }
+export interface AdminBilling {
+  trialing: number; active: number; past_due: number; canceled: number;
+  plan_personal: number; plan_team: number; seats_active: number; mrr_cents: number;
+  trials_ending: AdminTrial[];
+}
 export interface AdminAccountDetail {
   id: string; name: string; email: string; createdAt: string; lastSignInAt: string;
   approved: boolean; isAdmin: boolean; suspended: boolean;
@@ -1066,6 +1072,16 @@ export const store = {
       if (error || !data) return null;
       return (data as { id: string; email: string; name: string; created_at: string; last_sign_in_at: string; approved?: boolean; is_admin?: boolean; suspended?: boolean }[])
         .map((u) => ({ id: u.id, name: u.name || u.email || "Unnamed", email: u.email || "", createdAt: u.created_at || "", updatedAt: u.last_sign_in_at || u.created_at || "", approved: u.approved ?? true, isAdmin: u.is_admin ?? false, suspended: u.suspended ?? false }));
+    } catch { return null; }
+  },
+
+  // Billing aggregate for the admin dashboard (SECURITY DEFINER; admins only).
+  async adminBilling(): Promise<AdminBilling | null> {
+    if (!supabase) return { trialing: 2, active: 3, past_due: 0, canceled: 1, plan_personal: 2, plan_team: 1, seats_active: 5, mrr_cents: 6400, trials_ending: [] };
+    try {
+      const { data, error } = await supabase.rpc("admin_billing");
+      if (error || !data) return null;
+      return data as AdminBilling;
     } catch { return null; }
   },
 

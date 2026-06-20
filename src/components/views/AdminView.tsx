@@ -6,7 +6,7 @@
    ============================================================ */
 import { useEffect, useState, useCallback } from "react";
 import { Icon } from "../primitives";
-import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail } from "../../data/store";
+import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail, type AdminBilling } from "../../data/store";
 import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 
@@ -523,6 +523,87 @@ function AccountsPanel({ accounts, loading, currentEmail, onReload }: {
   );
 }
 
+/* ---- billing & revenue ---- */
+const SUB_COLORS: Record<string, string> = { active: "#37c6a8", trialing: "var(--accent)", past_due: "#f0a93b", canceled: "#8a8f98" };
+function money(cents: number): string {
+  const v = cents / 100;
+  return "$" + (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+}
+function BillingPanel({ billing }: { billing: AdminBilling }) {
+  const subTotal = billing.active + billing.trialing + billing.past_due + billing.canceled;
+  const paying = billing.active + billing.past_due;
+  const mix: { k: string; label: string; v: number }[] = [
+    { k: "active", label: "Active", v: billing.active },
+    { k: "trialing", label: "Trialing", v: billing.trialing },
+    { k: "past_due", label: "Past due", v: billing.past_due },
+    { k: "canceled", label: "Canceled", v: billing.canceled },
+  ];
+  const head = (label: string, value: string, color?: string) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span className="kicker" style={{ fontSize: 9.5 }}>{label}</span>
+      <span className="mono tnum" style={{ fontSize: 22, fontWeight: 600, color: color || "var(--ink)" }}>{value}</span>
+    </div>
+  );
+  return (
+    <div className="glass" style={{ borderRadius: 18, padding: "18px 20px", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 16 }}>
+        <Icon name="zap" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 15, fontWeight: 600 }}>Billing & revenue</span>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "16px 40px", marginBottom: 18 }}>
+        {head("MRR", money(billing.mrr_cents), "var(--accent)")}
+        {head("Paying", String(paying))}
+        {head("Trialing", String(billing.trialing))}
+        {head("Seats", String(billing.seats_active))}
+        {head("Personal / Team", `${billing.plan_personal} / ${billing.plan_team}`)}
+      </div>
+
+      {/* subscription mix */}
+      <div className="kicker" style={{ marginBottom: 9 }}>Subscriptions · {subTotal}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 9, marginBottom: billing.trials_ending.length ? 18 : 0 }}>
+        {mix.map((m) => {
+          const max = Math.max(...mix.map((x) => x.v), 1);
+          return (
+            <div key={m.k} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 74, fontSize: 12, color: "var(--ink-3)", flexShrink: 0 }}>{m.label}</span>
+              <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
+                <div style={{ width: `${(m.v / max) * 100}%`, height: "100%", borderRadius: 6, background: SUB_COLORS[m.k], minWidth: m.v ? 5 : 0, transition: "width .7s var(--ease)" }} />
+              </div>
+              <span className="mono tnum" style={{ width: 28, textAlign: "right", fontSize: 12, color: "var(--ink-2)", flexShrink: 0 }}>{m.v}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* trials ending soon */}
+      {billing.trials_ending.length > 0 && (
+        <>
+          <div className="kicker" style={{ marginBottom: 9 }}>Trials ending soon · {billing.trials_ending.length}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {billing.trials_ending.slice(0, 8).map((t, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="truncate" style={{ fontSize: 13, fontWeight: 500 }}>{t.name || t.email}</div>
+                  <div className="truncate" style={{ fontSize: 11.5, color: "var(--ink-4)" }}>{t.email}{t.plan ? ` · ${t.plan}` : ""}</div>
+                </div>
+                <span className="mono" style={{ fontSize: 11.5, color: "var(--st-review)", flexShrink: 0 }}>ends {fmtAgoFuture(t.trial_ends_at)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+function fmtAgoFuture(iso: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso).getTime() - Date.now();
+  const days = Math.ceil(d / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
+  return `in ${days}d`;
+}
+
 const STATUS_COLORS: Record<string, string> = { todo: "#8a8f98", progress: "var(--accent)", review: "#f0a93b", blocked: "#e5544b", done: "#37c6a8" };
 const PRIORITY_COLORS: Record<string, string> = { low: "#6aa3ff", medium: "#37c6a8", high: "#f0a93b", urgent: "#e5544b" };
 
@@ -530,6 +611,7 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [series, setSeries] = useState<AdminSeries | null>(null);
+  const [billing, setBilling] = useState<AdminBilling | null>(null);
   const [loading, setLoading] = useState(true);
 
   const reloadAccounts = useCallback(async () => {
@@ -544,8 +626,9 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
       store.adminAccounts().then((a) => a ?? store.adminProfiles()),
       store.adminStats(),
       store.adminSeries(),
+      store.adminBilling(),
     ])
-      .then(([list, s, ts]) => { if (!cancelled) { setAccounts(list); setStats(s); setSeries(ts); } })
+      .then(([list, s, ts, b]) => { if (!cancelled) { setAccounts(list); setStats(s); setSeries(ts); setBilling(b); } })
       .catch(reportError)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -564,7 +647,7 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
     { label: "Active today", value: dash ?? num(stats?.dau) },
     { label: "Active · week", value: dash ?? num(stats?.wau) },
     { label: "Avg session", value: dash ?? fmtDur(stats?.avg_session_sec) },
-    { label: "MRR", value: dash ?? (stats?.mrr_cents != null ? `£${(stats.mrr_cents / 100).toLocaleString()}` : "—") },
+    { label: "MRR", value: dash ?? (billing ? money(billing.mrr_cents) : "—") },
   ];
 
   return (
@@ -595,6 +678,8 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
           <Breakdown title="Tasks by priority" icon="target" data={series.by_priority} palette={PRIORITY_COLORS} />
         </div>
       )}
+
+      {billing && <BillingPanel billing={billing} />}
 
       <AccountsPanel accounts={accounts} loading={loading} currentEmail={currentEmail} onReload={reloadAccounts} />
     </div>
