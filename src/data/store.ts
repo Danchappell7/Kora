@@ -1134,6 +1134,17 @@ export const store = {
     const { error } = await supabase.rpc("admin_delete_user", { p_user: userId });
     if (error) throw error;
   },
+  async adminExtendTrial(userId: string, months: number): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_extend_trial", { p_user: userId, p_months: months });
+    if (error) throw error;
+  },
+  async adminExtendAllTrials(months: number): Promise<number> {
+    if (!supabase) return 0;
+    const { data, error } = await supabase.rpc("admin_extend_all_trials", { p_months: months });
+    if (error) throw error;
+    return Number(data) || 0;
+  },
 
   // Richer cross-user aggregates via a SECURITY DEFINER RPC (optional — returns
   // null if the admin_stats() function hasn't been installed yet).

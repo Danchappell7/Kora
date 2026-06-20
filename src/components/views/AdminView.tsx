@@ -155,9 +155,14 @@ function AccessRequestsPanel() {
 
 function fmtAgo(iso: string): string {
   if (!iso) return "—";
-  const d = Date.now() - new Date(iso).getTime();
-  const days = Math.floor(d / 86400000);
-  if (days <= 0) return "today";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return "just now";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
   if (days === 1) return "yesterday";
   if (days < 30) return `${days}d ago`;
   return `${Math.floor(days / 30)}mo ago`;
@@ -427,6 +432,13 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
 
           <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
             <div className="kicker">Actions</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Extend trial</span>
+              {[1, 3, 6].map((m) => (
+                <button key={m} disabled={busy != null} onClick={() => run("extend", () => store.adminExtendTrial(account.id, m), { log: `Extended trial +${m} month${m === 1 ? "" : "s"}` })}
+                  className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>{busy === "extend" ? "…" : `+${m}mo`}</button>
+              ))}
+            </div>
             <button disabled={busy != null} onClick={() => run("approve", () => store.adminSetApproved(account.id, !appr), { log: appr ? "Revoked access" : "Approved access" })} className="btn btn-ghost" style={{ justifyContent: "center" }}>
               <Icon name={appr ? "lock" : "check"} size={15} /> {busy === "approve" ? "Saving…" : appr ? "Revoke access" : "Approve access"}
             </button>
@@ -545,9 +557,23 @@ function AccountsPanel({ accounts, loading, currentEmail, onReload }: {
 const SUB_COLORS: Record<string, string> = { active: "#37c6a8", trialing: "var(--accent)", past_due: "#f0a93b", canceled: "#8a8f98" };
 function money(cents: number): string {
   const v = cents / 100;
-  return "$" + (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  return "£" + (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 }
-function BillingPanel({ billing }: { billing: AdminBilling }) {
+function BillingPanel({ billing, onReload }: { billing: AdminBilling; onReload: () => Promise<void> }) {
+  const [extBusy, setExtBusy] = useState(false);
+  const [extNote, setExtNote] = useState<string | null>(null);
+  const extendAll = async (months: number) => {
+    if (!window.confirm(`Extend every active trial by ${months} month${months === 1 ? "" : "s"}?`)) return;
+    setExtBusy(true); setExtNote(null);
+    try {
+      const n = await store.adminExtendAllTrials(months);
+      await store.adminLog("extend_all_trials", "all trials", `Extended ${n} trial${n === 1 ? "" : "s"} by ${months}mo`);
+      setExtNote(`Extended ${n} trial${n === 1 ? "" : "s"} by ${months} month${months === 1 ? "" : "s"}.`);
+      await onReload();
+      setTimeout(() => setExtNote(null), 5000);
+    } catch (e) { reportError(e); setExtNote("Couldn't extend trials."); }
+    finally { setExtBusy(false); }
+  };
   const subTotal = billing.active + billing.trialing + billing.past_due + billing.canceled;
   const paying = billing.active + billing.past_due;
   const mix: { k: string; label: string; v: number }[] = [
@@ -564,9 +590,16 @@ function BillingPanel({ billing }: { billing: AdminBilling }) {
   );
   return (
     <div className="glass" style={{ borderRadius: 18, padding: "18px 20px", marginBottom: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 16, flexWrap: "wrap" }}>
         <Icon name="zap" size={16} style={{ color: "var(--accent)" }} />
         <span style={{ fontSize: 15, fontWeight: 600 }}>Billing & revenue</span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 7 }}>
+          {extNote && <span style={{ fontSize: 12, fontWeight: 600, color: "var(--st-done)" }}>{extNote}</span>}
+          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Extend all trials</span>
+          {[1, 3, 6].map((m) => (
+            <button key={m} disabled={extBusy} onClick={() => extendAll(m)} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>{extBusy ? "…" : `+${m}mo`}</button>
+          ))}
+        </div>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "16px 40px", marginBottom: 18 }}>
         {head("MRR", money(billing.mrr_cents), "var(--accent)")}
@@ -792,6 +825,7 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
     const a = await store.adminAccounts();
     setAccounts(a ?? await store.adminProfiles());
   }, []);
+  const reloadBilling = useCallback(async () => { setBilling(await store.adminBilling()); }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -850,15 +884,13 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
 
       {series && series.days.length > 0 && <TrendChart days={series.days} />}
 
-      {(series || funnel) && (
+      {funnel && (
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 18 }}>
-          {series && <Breakdown title="Tasks by status" icon="check" data={series.by_status} palette={STATUS_COLORS} />}
-          {series && <Breakdown title="Tasks by priority" icon="target" data={series.by_priority} palette={PRIORITY_COLORS} />}
-          {funnel && <FunnelCard funnel={funnel} />}
+          <FunnelCard funnel={funnel} />
         </div>
       )}
 
-      {billing && <BillingPanel billing={billing} />}
+      {billing && <BillingPanel billing={billing} onReload={reloadBilling} />}
 
       <AccountsPanel accounts={accounts} loading={loading} currentEmail={currentEmail} onReload={reloadAccounts} />
 

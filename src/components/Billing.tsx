@@ -6,8 +6,8 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { Plan, Subscription } from "../data/types";
 
 const PLANS: { id: Plan; name: string; price: string; unit: string; blurb: string; features: string[] }[] = [
-  { id: "personal", name: "Personal", price: "$8", unit: "/month", blurb: "For focused individual work.", features: ["Unlimited tasks & projects", "Plan-my-day & AI prioritize", "All views, files & reminders"] },
-  { id: "team", name: "Team", price: "$12", unit: "/user / month", blurb: "For teams that ship together.", features: ["Everything in Personal", "Shared workspaces & invites", "Assign work & track workload"] },
+  { id: "personal", name: "Personal", price: "£8", unit: "/month", blurb: "For focused individual work.", features: ["Unlimited tasks & projects", "Plan-my-day & AI prioritize", "All views, files & reminders"] },
+  { id: "team", name: "Team", price: "£12", unit: "/user / month", blurb: "For teams that ship together.", features: ["Everything in Personal", "Shared workspaces & invites", "Assign work & track workload"] },
 ];
 
 // Billing is OFF by default (free testing/feedback phase): nobody is asked to
