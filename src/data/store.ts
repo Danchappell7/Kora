@@ -1433,6 +1433,22 @@ export const store = {
     return () => { client.removeChannel(channel); };
   },
 
+  /* Live presence on a single task: announce that I'm viewing it and get the
+     list of everyone else currently viewing. Returns an unsubscribe fn. */
+  subscribeToTaskPresence(taskId: string, me: { id: string; name: string }, onSync: (people: { id: string; name: string }[]) => void): () => void {
+    if (!supabase) return () => {};
+    const client = supabase;
+    const channel = client.channel(`presence-task-${taskId}`, { config: { presence: { key: me.id } } });
+    channel.on("presence", { event: "sync" }, () => {
+      const state = channel.presenceState() as Record<string, { id: string; name: string }[]>;
+      const seen = new Map<string, string>();
+      Object.values(state).flat().forEach((p) => { if (p && p.id) seen.set(p.id, p.name); });
+      onSync([...seen].map(([id, name]) => ({ id, name })));
+    });
+    channel.subscribe((status) => { if (status === "SUBSCRIBED") channel.track({ id: me.id, name: me.name }); });
+    return () => { client.removeChannel(channel); };
+  },
+
   /* ---------- dependencies (blocked-by) ---------- */
   async addDependency(taskId: string, dependsOn: string): Promise<void> {
     if (!supabase) return;

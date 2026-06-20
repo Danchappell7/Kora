@@ -202,6 +202,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const descRef = useRef<HTMLTextAreaElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
+  const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
   const [descEditing, setDescEditing] = useState(false);
@@ -231,6 +232,15 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   useEffect(() => {
     if (!tasks.find((t) => t.id === taskId)) onClose();
   }, [tasks, taskId, onClose]);
+
+  // live presence — who else is viewing this task right now
+  useEffect(() => {
+    const meName = members.find((m) => m.userId === currentUserId)?.name || "Someone";
+    const unsub = store.subscribeToTaskPresence(taskId, { id: currentUserId, name: meName }, (people) => {
+      setViewers(people.filter((p) => p.id !== currentUserId));
+    });
+    return () => { setViewers([]); unsub(); };
+  }, [taskId, currentUserId, members]);
 
   // auto-grow the title textarea to fit long titles instead of clipping them
   useEffect(() => {
@@ -352,6 +362,12 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--hairline)" }}>
           <button className="btn-icon" onClick={onClose} style={{ border: "none" }}><Icon name="x" size={18} /></button>
           <div style={{ flex: 1 }} />
+          {viewers.length > 0 && (
+            <span title={`Also viewing: ${viewers.map((v) => v.name).join(", ")}`} style={{ display: "inline-flex", alignItems: "center", marginRight: 4 }}>
+              {viewers.slice(0, 3).map((v, i) => <span key={v.id} style={{ marginLeft: i ? -7 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised), 0 0 0 3px var(--accent)" }}><Avatar id={v.id} size={24} /></span>)}
+              {viewers.length > 3 && <span style={{ marginLeft: 4, fontSize: 11.5, color: "var(--ink-4)" }}>+{viewers.length - 3}</span>}
+            </span>
+          )}
           {proj && <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--ink-3)" }}><span style={{ width: 8, height: 8, borderRadius: 2, background: proj.color }} />{proj.name}</span>}
           {onToggleFollow && <button className="btn-icon" onClick={() => onToggleFollow(task.id)} title={following ? "Following — click to unfollow" : "Follow for updates"} aria-pressed={following} style={{ border: "none", color: following ? "var(--accent)" : "var(--ink-3)" }}><Icon name="bell" size={16} /></button>}
           <button className="btn-icon" onClick={() => { try { navigator.clipboard?.writeText(`${location.origin}/?task=${task.id}`); } catch { /* ignore */ } setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Copy link to task" style={{ border: "none", color: copied ? "var(--accent)" : "var(--ink-3)" }}><Icon name={copied ? "check" : "link"} size={16} /></button>
