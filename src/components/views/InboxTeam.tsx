@@ -2,6 +2,7 @@
    KANBO — Inbox (real activity feed) & Team views
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { Icon, Avatar, StatusDot } from "../primitives";
 import { timeAgo, getProject } from "../../data/data";
 import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
@@ -109,6 +110,101 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   );
 }
 
+/* ---------- workspace logo cropper — drag to reposition + zoom, outputs a square PNG ---------- */
+function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () => void; onConfirm: (f: File) => void }) {
+  const V = 280;            // viewport (square) in px
+  const [url, setUrl] = useState("");
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [busy, setBusy] = useState(false);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+
+  useEffect(() => { const u = URL.createObjectURL(file); setUrl(u); return () => URL.revokeObjectURL(u); }, [file]);
+
+  const baseScale = nat ? Math.max(V / nat.w, V / nat.h) : 1;   // "cover" baseline so the square is always filled
+  const scale = baseScale * zoom;
+  const dispW = nat ? nat.w * scale : V;
+  const dispH = nat ? nat.h * scale : V;
+
+  // keep the image covering the viewport at all times
+  const clamp = (o: { x: number; y: number }, dW: number, dH: number) => ({
+    x: Math.min(0, Math.max(V - dW, o.x)),
+    y: Math.min(0, Math.max(V - dH, o.y)),
+  });
+
+  const onImgLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const w = e.currentTarget.naturalWidth, h = e.currentTarget.naturalHeight;
+    setNat({ w, h });
+    const bs = Math.max(V / w, V / h);
+    setOffset({ x: (V - w * bs) / 2, y: (V - h * bs) / 2 });   // centered
+  };
+
+  const changeZoom = (z: number) => {
+    if (!nat) { setZoom(z); return; }
+    const oldS = baseScale * zoom, newS = baseScale * z;
+    const cx = (V / 2 - offset.x) / oldS, cy = (V / 2 - offset.y) / oldS;   // hold the viewport centre fixed
+    setZoom(z);
+    setOffset(clamp({ x: V / 2 - cx * newS, y: V / 2 - cy * newS }, nat.w * newS, nat.h * newS));
+  };
+
+  const startDrag = (e: ReactPointerEvent) => {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+    const move = (ev: PointerEvent) => {
+      const d = dragRef.current; if (!d || !nat) return;
+      setOffset(clamp({ x: d.ox + (ev.clientX - d.x), y: d.oy + (ev.clientY - d.y) }, nat.w * scale, nat.h * scale));
+    };
+    const up = () => { dragRef.current = null; window.removeEventListener("pointermove", move); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up, { once: true });
+  };
+
+  const save = () => {
+    const img = imgRef.current; if (!nat || !img) return;
+    setBusy(true);
+    const S = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = S; canvas.height = S;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { setBusy(false); return; }
+    // map the viewport's visible region back to natural-image coordinates
+    const sSize = V / scale;
+    ctx.drawImage(img, -offset.x / scale, -offset.y / scale, sSize, sSize, 0, 0, S, S);
+    canvas.toBlob((blob) => {
+      if (!blob) { setBusy(false); return; }
+      onConfirm(new File([blob], "workspace-logo.png", { type: "image/png" }));
+    }, "image/png", 0.92);
+  };
+
+  return (
+    <>
+      <div onClick={onCancel} style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
+      <div role="dialog" aria-modal="true" aria-label="Adjust logo" className="glass anim-scalein" style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 91, width: 360, maxWidth: "92vw", padding: 22, borderRadius: 20, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Adjust logo</div>
+          <button className="btn-icon" onClick={onCancel} aria-label="Cancel" style={{ border: "none" }}><Icon name="x" size={18} /></button>
+        </div>
+        <div onPointerDown={startDrag} style={{ alignSelf: "center", position: "relative", width: V, height: V, borderRadius: 16, overflow: "hidden", background: "var(--surface-2)", border: "1px solid var(--hairline)", cursor: "grab", touchAction: "none" }}>
+          {url && <img ref={imgRef} src={url} alt="" onLoad={onImgLoad} draggable={false} style={{ position: "absolute", left: offset.x, top: offset.y, width: dispW, height: dispH, maxWidth: "none", userSelect: "none", pointerEvents: "none" }} />}
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none", borderRadius: 16, boxShadow: "inset 0 0 0 1px color-mix(in oklch, var(--ink) 10%, transparent)" }} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          <Icon name="search" size={14} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
+          <input type="range" min={1} max={3} step={0.01} value={zoom} onChange={(e) => changeZoom(parseFloat(e.target.value))} aria-label="Zoom" style={{ flex: 1, accentColor: "var(--accent)" }} />
+        </div>
+        <p style={{ margin: "-4px 0 0", fontSize: 11.5, color: "var(--ink-4)", textAlign: "center" }}>Drag to reposition · slide to zoom</p>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-accent" onClick={save} disabled={busy || !nat}>{busy ? "Saving…" : "Save logo"}</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onOpen, onNewWorkspace, onUpdateWorkspace, onUploadLogo, onDeleteWorkspace }: {
   tasks: Task[];
   workspace: string | null;
@@ -132,6 +228,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   const ws = workspaces.find((w) => w.id === workspace);
   const [wsName, setWsName] = useState(ws?.name ?? "");
   const [savingWs, setSavingWs] = useState(false);
+  const [cropFile, setCropFile] = useState<File | null>(null);
   const logoRef = useRef<HTMLInputElement>(null);
   useEffect(() => { setWsName(ws?.name ?? ""); }, [workspace, ws?.name]);
   const wsMembers = members.filter((m) => m.workspaceId === workspace);
@@ -297,7 +394,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <input ref={logoRef} type="file" accept="image/*" style={{ display: "none" }}
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f && workspace) onUploadLogo?.(workspace, f); if (logoRef.current) logoRef.current.value = ""; }} />
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) setCropFile(f); if (logoRef.current) logoRef.current.value = ""; }} />
                 <div style={{ display: "flex", gap: 8 }}>
                   <button className="btn btn-ghost" onClick={() => logoRef.current?.click()} style={{ fontSize: 12.5 }}><Icon name="plus" size={14} /> {ws.logoUrl ? "Change logo" : "Upload logo"}</button>
                   {ws.logoUrl && <button className="btn btn-ghost" onClick={() => onUpdateWorkspace?.(workspace, ws.name, null)} style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Remove</button>}
@@ -370,6 +467,10 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
         const live = wsMembers.find((x) => x.id === selected.id);
         return live ? <MemberProfile m={live} onClose={() => setSelected(null)} /> : null;
       })()}
+
+      {cropFile && workspace && (
+        <LogoCropper file={cropFile} onCancel={() => setCropFile(null)} onConfirm={(f) => { onUploadLogo?.(workspace, f); setCropFile(null); }} />
+      )}
     </div>
   );
 }
