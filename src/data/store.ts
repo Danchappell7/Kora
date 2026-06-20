@@ -341,6 +341,7 @@ interface FormRow { id: string; workspace_id: string | null; project_id: string;
 const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
 
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string; approved?: boolean; isAdmin?: boolean; suspended?: boolean }
+export interface AdminFunnel { signups: number; approved: number; activated: number; active_30d: number }
 export interface AdminTrial { email: string; name: string; trial_ends_at: string; plan: string | null }
 export interface AdminBilling {
   trialing: number; active: number; past_due: number; canceled: number;
@@ -1157,6 +1158,34 @@ export const store = {
       const { data, error } = await supabase.rpc("admin_series");
       if (error || !data) return null;
       return data as AdminSeries;
+    } catch { return null; }
+  },
+
+  // N-day series for the chart's date-range selector. Falls back to the 30d
+  // admin_series() if the ranged RPC isn't installed yet.
+  async adminSeriesRange(days: number): Promise<AdminSeries | null> {
+    if (!supabase) {
+      const out: AdminDay[] = Array.from({ length: days }, (_, i) => {
+        const d = new Date(Date.now() - (days - 1 - i) * 86400000).toISOString().slice(0, 10);
+        const w = Math.sin(i / 3) + 1.4;
+        return { d, signups: i % 9 === 0 ? 1 : 0, sessions: Math.round(w * 3 + (i % 5)), active: Math.round(w * 2), tasks: Math.round(w * 2 + (i % 4)), actions: Math.round(w * 6 + (i % 7)) };
+      });
+      return { days: out, by_status: { todo: 5, progress: 3, review: 1, blocked: 1, done: 6 }, by_priority: { low: 4, medium: 7, high: 3, urgent: 2 } };
+    }
+    try {
+      const { data, error } = await supabase.rpc("admin_series_range", { p_days: days });
+      if (error || !data) return store.adminSeries();
+      return data as AdminSeries;
+    } catch { return store.adminSeries(); }
+  },
+
+  // Conversion funnel (signup → approved → activated → active). null if not installed.
+  async adminFunnel(): Promise<AdminFunnel | null> {
+    if (!supabase) return { signups: 42, approved: 38, activated: 29, active_30d: 21 };
+    try {
+      const { data, error } = await supabase.rpc("admin_funnel");
+      if (error || !data) return null;
+      return data as AdminFunnel;
     } catch { return null; }
   },
 

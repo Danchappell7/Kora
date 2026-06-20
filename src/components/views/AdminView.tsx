@@ -6,7 +6,7 @@
    ============================================================ */
 import { useEffect, useState, useCallback } from "react";
 import { Icon } from "../primitives";
-import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail, type AdminBilling } from "../../data/store";
+import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail, type AdminBilling, type AdminFunnel } from "../../data/store";
 import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 
@@ -190,30 +190,36 @@ const METRICS: { key: keyof Omit<AdminDay, "d">; label: string; color: string }[
   { key: "actions", label: "Actions", color: "#d77bf0" },
 ];
 
+const RANGES = [7, 30, 90];
 function TrendChart({ days }: { days: AdminDay[] }) {
   const [metric, setMetric] = useState<keyof Omit<AdminDay, "d">>("sessions");
+  const [range, setRange] = useState(30);
   const [hover, setHover] = useState<number | null>(null);
   const active = METRICS.find((m) => m.key === metric)!;
+  const view = days.slice(-range);
+  const prior = days.slice(-range * 2, -range);
   const W = 720, H = 230, padL = 34, padB = 22, padT = 12;
-  const vals = days.map((d) => Number(d[metric]) || 0);
+  const vals = view.map((d) => Number(d[metric]) || 0);
   const max = Math.max(...vals, 1);
   const niceMax = max <= 4 ? 4 : Math.ceil(max / 5) * 5;
   const innerW = W - padL, innerH = H - padB - padT;
-  const x = (i: number) => padL + (i / (days.length - 1 || 1)) * innerW;
+  const x = (i: number) => padL + (i / (view.length - 1 || 1)) * innerW;
   const y = (v: number) => padT + innerH - (v / niceMax) * innerH;
   const line = vals.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1)).join(" ");
   const area = `${line} L${x(vals.length - 1)} ${padT + innerH} L${padL} ${padT + innerH} Z`;
   const total = vals.reduce((a, b) => a + b, 0);
   const peak = Math.max(...vals, 0);
   const avg = (total / (vals.length || 1));
+  const priorTotal = prior.reduce((a, d) => a + (Number(d[metric]) || 0), 0);
+  const delta = prior.length >= range && priorTotal > 0 ? Math.round(((total - priorTotal) / priorTotal) * 100) : null;
   const gid = "trend-grad";
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(niceMax * f));
-  const labelEvery = Math.ceil(days.length / 6);
+  const labelEvery = Math.ceil(view.length / 6);
 
-  const headStat = (label: string, value: string) => (
+  const headStat = (label: string, value: string, extra?: React.ReactNode) => (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       <span className="kicker" style={{ fontSize: 9.5 }}>{label}</span>
-      <span className="mono tnum" style={{ fontSize: 15, fontWeight: 600 }}>{value}</span>
+      <span className="mono tnum" style={{ fontSize: 15, fontWeight: 600, display: "inline-flex", alignItems: "baseline", gap: 6 }}>{value}{extra}</span>
     </div>
   );
 
@@ -223,22 +229,33 @@ function TrendChart({ days }: { days: AdminDay[] }) {
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <span style={{ width: 9, height: 9, borderRadius: 99, background: active.color, boxShadow: `0 0 8px ${active.color}` }} />
           <span style={{ fontSize: 15, fontWeight: 600 }}>{active.label}</span>
-          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>· last 30 days</span>
+          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>· last {range} days</span>
         </div>
         <div style={{ display: "flex", gap: 22, marginLeft: 6 }}>
-          {headStat("Total", total.toLocaleString())}
+          {headStat("Total", total.toLocaleString(), delta != null ? (
+            <span style={{ fontSize: 11, fontWeight: 700, color: delta >= 0 ? "var(--st-done)" : "var(--prio-urgent)" }}>{delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}%</span>
+          ) : undefined)}
           {headStat("Daily avg", avg.toFixed(avg >= 10 ? 0 : 1))}
           {headStat("Peak", peak.toLocaleString())}
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {METRICS.map((m) => (
-            <button key={m.key} onClick={() => setMetric(m.key)} style={{
-              fontSize: 11.5, fontWeight: 600, padding: "5px 11px", borderRadius: 8, cursor: "pointer",
-              border: "1px solid " + (m.key === metric ? "transparent" : "var(--hairline-strong)"),
-              background: m.key === metric ? m.color : "transparent",
-              color: m.key === metric ? "#fff" : "var(--ink-3)", transition: "all .15s var(--ease)",
-            }}>{m.label}</button>
-          ))}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {/* date range */}
+          <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 8, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
+            {RANGES.map((r) => (
+              <button key={r} onClick={() => setRange(r)} style={{ fontSize: 11.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, border: "none", cursor: "pointer",
+                background: r === range ? "var(--accent)" : "transparent", color: r === range ? "var(--on-accent)" : "var(--ink-3)" }}>{r}d</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {METRICS.map((m) => (
+              <button key={m.key} onClick={() => setMetric(m.key)} style={{
+                fontSize: 11.5, fontWeight: 600, padding: "5px 11px", borderRadius: 8, cursor: "pointer",
+                border: "1px solid " + (m.key === metric ? "transparent" : "var(--hairline-strong)"),
+                background: m.key === metric ? m.color : "transparent",
+                color: m.key === metric ? "#fff" : "var(--ink-3)", transition: "all .15s var(--ease)",
+              }}>{m.label}</button>
+            ))}
+          </div>
         </div>
       </div>
       <div style={{ position: "relative" }}>
@@ -247,8 +264,8 @@ function TrendChart({ days }: { days: AdminDay[] }) {
           onMouseMove={(e) => {
             const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
             const px = ((e.clientX - r.left) / r.width) * W;
-            const i = Math.round(((px - padL) / innerW) * (days.length - 1));
-            setHover(Math.max(0, Math.min(days.length - 1, i)));
+            const i = Math.round(((px - padL) / innerW) * (view.length - 1));
+            setHover(Math.max(0, Math.min(view.length - 1, i)));
           }}>
           <defs>
             <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
@@ -267,23 +284,23 @@ function TrendChart({ days }: { days: AdminDay[] }) {
           })}
           <path d={area} fill={`url(#${gid})`} />
           <path d={line} fill="none" stroke={active.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-          {days.map((d, i) => (i % labelEvery === 0 || i === days.length - 1) ? (
+          {view.map((d, i) => (i % labelEvery === 0 || i === view.length - 1) ? (
             <text key={i} x={x(i)} y={H - 4} textAnchor="middle" fontSize="9.5" fill="var(--ink-4)" className="mono">{d.d.slice(5)}</text>
           ) : null)}
-          {hover != null && (
+          {hover != null && hover < view.length && (
             <g>
               <line x1={x(hover)} y1={padT} x2={x(hover)} y2={padT + innerH} stroke={active.color} strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
               <circle cx={x(hover)} cy={y(vals[hover])} r="3.8" fill={active.color} stroke="var(--bg)" strokeWidth="1.5" />
             </g>
           )}
         </svg>
-        {hover != null && (
+        {hover != null && hover < view.length && (
           <div style={{
             position: "absolute", top: 0, left: `${(x(hover) / W) * 100}%`, transform: "translateX(-50%)",
             background: "var(--surface-2)", border: "1px solid var(--hairline-strong)", borderRadius: 8,
             padding: "5px 9px", pointerEvents: "none", whiteSpace: "nowrap", boxShadow: "var(--shadow)",
           }}>
-            <div style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{fmtDate(days[hover].d)}</div>
+            <div style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{fmtDate(view[hover].d)}</div>
             <div className="mono tnum" style={{ fontSize: 14, fontWeight: 600, color: active.color }}>{vals[hover]} {active.label.toLowerCase()}</div>
           </div>
         )}
@@ -604,6 +621,39 @@ function fmtAgoFuture(iso: string): string {
   return `in ${days}d`;
 }
 
+/* ---- conversion funnel ---- */
+function FunnelCard({ funnel }: { funnel: AdminFunnel }) {
+  const base = Math.max(funnel.signups, 1);
+  const steps = [
+    { label: "Signed up", v: funnel.signups, color: "var(--accent)", hint: "" },
+    { label: "Approved", v: funnel.approved, color: "#6aa3ff", hint: "" },
+    { label: "Activated", v: funnel.activated, color: "#37c6a8", hint: "created a task" },
+    { label: "Active 30d", v: funnel.active_30d, color: "#f0a93b", hint: "" },
+  ];
+  return (
+    <div className="glass" style={{ borderRadius: 18, padding: "16px 18px", flex: 1, minWidth: 240 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}>
+        <Icon name="trendingUp" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 14.5, fontWeight: 600 }}>Conversion funnel</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+        {steps.map((s) => {
+          const pct = Math.round((s.v / base) * 100);
+          return (
+            <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 78, fontSize: 12, color: "var(--ink-3)", flexShrink: 0 }} title={s.hint || undefined}>{s.label}</span>
+              <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
+                <div style={{ width: `${pct}%`, height: "100%", borderRadius: 6, background: s.color, minWidth: s.v ? 5 : 0, transition: "width .7s var(--ease)" }} />
+              </div>
+              <span className="mono tnum" style={{ width: 58, textAlign: "right", fontSize: 12, color: "var(--ink-2)", flexShrink: 0 }}>{s.v} · {pct}%</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const STATUS_COLORS: Record<string, string> = { todo: "#8a8f98", progress: "var(--accent)", review: "#f0a93b", blocked: "#e5544b", done: "#37c6a8" };
 const PRIORITY_COLORS: Record<string, string> = { low: "#6aa3ff", medium: "#37c6a8", high: "#f0a93b", urgent: "#e5544b" };
 
@@ -612,6 +662,7 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [series, setSeries] = useState<AdminSeries | null>(null);
   const [billing, setBilling] = useState<AdminBilling | null>(null);
+  const [funnel, setFunnel] = useState<AdminFunnel | null>(null);
   const [loading, setLoading] = useState(true);
 
   const reloadAccounts = useCallback(async () => {
@@ -625,10 +676,11 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
     Promise.all([
       store.adminAccounts().then((a) => a ?? store.adminProfiles()),
       store.adminStats(),
-      store.adminSeries(),
+      store.adminSeriesRange(90),
       store.adminBilling(),
+      store.adminFunnel(),
     ])
-      .then(([list, s, ts, b]) => { if (!cancelled) { setAccounts(list); setStats(s); setSeries(ts); setBilling(b); } })
+      .then(([list, s, ts, b, f]) => { if (!cancelled) { setAccounts(list); setStats(s); setSeries(ts); setBilling(b); setFunnel(f); } })
       .catch(reportError)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -646,6 +698,7 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
     { label: "Accounts", value: dash ?? num(totalUsers) },
     { label: "Active today", value: dash ?? num(stats?.dau) },
     { label: "Active · week", value: dash ?? num(stats?.wau) },
+    { label: "Stickiness", value: dash ?? (stats?.dau != null && stats?.wau ? `${Math.round((stats.dau / stats.wau) * 100)}%` : "—") },
     { label: "Avg session", value: dash ?? fmtDur(stats?.avg_session_sec) },
     { label: "MRR", value: dash ?? (billing ? money(billing.mrr_cents) : "—") },
   ];
@@ -672,10 +725,11 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
 
       {series && series.days.length > 0 && <TrendChart days={series.days} />}
 
-      {series && (
+      {(series || funnel) && (
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 18 }}>
-          <Breakdown title="Tasks by status" icon="check" data={series.by_status} palette={STATUS_COLORS} />
-          <Breakdown title="Tasks by priority" icon="target" data={series.by_priority} palette={PRIORITY_COLORS} />
+          {series && <Breakdown title="Tasks by status" icon="check" data={series.by_status} palette={STATUS_COLORS} />}
+          {series && <Breakdown title="Tasks by priority" icon="target" data={series.by_priority} palette={PRIORITY_COLORS} />}
+          {funnel && <FunnelCard funnel={funnel} />}
         </div>
       )}
 
