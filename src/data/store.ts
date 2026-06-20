@@ -183,9 +183,9 @@ export interface NewActivity {
 }
 
 interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; }
-interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; }
+interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; title?: string | null; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
-  return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status };
+  return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status, title: r.title ?? undefined };
 }
 
 const MEMBER_COLORS = [
@@ -584,6 +584,12 @@ export const store = {
   async setMemberRole(memberId: string, role: Role): Promise<void> {
     if (!supabase) { demoMembers = demoMembers.map((m) => m.id === memberId ? { ...m, role } : m); return; }
     const { error } = await supabase.rpc("set_member_role", { p_member: memberId, p_role: role });
+    if (error) throw error;
+  },
+
+  async setMemberTitle(memberId: string, title: string): Promise<void> {
+    if (!supabase) { demoMembers = demoMembers.map((m) => m.id === memberId ? { ...m, title: title.trim() || undefined } : m); return; }
+    const { error } = await supabase.rpc("set_member_title", { p_member: memberId, p_title: title });
     if (error) throw error;
   },
 

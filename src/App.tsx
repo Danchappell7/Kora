@@ -1440,6 +1440,11 @@ export default function App() {
     store.setMemberRole(memberId, role).catch((e) => { reportError(e, { op: "setMemberRole" }); toastError("Couldn't change the role: " + (e?.message || e)); refreshWorkspaceMembers(); });
   }, [toastError]);
 
+  const setMemberTitle = useCallback((memberId: string, title: string) => {
+    setWsMembers((xs) => xs.map((m) => m.id === memberId ? { ...m, title: title.trim() || undefined } : m));
+    store.setMemberTitle(memberId, title).catch((e) => { reportError(e, { op: "setMemberTitle" }); toastError("Couldn't save the position: " + (e?.message || e)); refreshWorkspaceMembers(); });
+  }, [toastError]);
+
   const transferOwnership = useCallback((workspaceId: string, memberId: string) => {
     store.transferOwnership(workspaceId, memberId)
       .then(() => { toastSuccess("Ownership transferred"); refreshWorkspaceMembers(); })
@@ -1573,7 +1578,7 @@ export default function App() {
       case "forms": return <FormsView forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
       case "tasks":
       case "project":
         return <TasksPage tasks={scoped} allTasks={allTasks} projects={wsProjects} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {

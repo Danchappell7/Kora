@@ -205,7 +205,7 @@ function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () =
   );
 }
 
-export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onOpen, onNewWorkspace, onUpdateWorkspace, onUploadLogo, onDeleteWorkspace }: {
+export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onUpdateWorkspace, onUploadLogo, onDeleteWorkspace }: {
   tasks: Task[];
   workspace: string | null;
   workspaces: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -215,6 +215,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   onInvite: (workspaceId: string, email: string, role: Role) => void;
   onRemoveMember: (memberId: string) => void;
   onSetRole?: (memberId: string, role: Role) => void;
+  onSetTitle?: (memberId: string, title: string) => void;
   onTransferOwnership?: (workspaceId: string, memberId: string) => void;
   onOpen?: (taskId: string) => void;
   onNewWorkspace: () => void;
@@ -278,6 +279,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="truncate" style={{ fontSize: 14.5, fontWeight: 600 }}>{m.name || m.email}{isSelf && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
+            {m.title && <div className="truncate" style={{ fontSize: 12, color: "var(--accent)", fontWeight: 500 }}>{m.title}</div>}
             <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{m.email}</div>
           </div>
           {roleBadge(m)}
@@ -308,6 +310,9 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
     const doneN = assigned.length - openTasks.length;
     const canSeeTasks = can(role, "manageMembers") || isSelf;   // managers, or yourself
     const manageRole = m.status === "active" && !!onSetRole && canManageMember(role, m.role) && !isSelf;
+    // anyone who manages members, or the member themselves, can set the position/title
+    const canEditTitle = !!onSetTitle && m.status === "active" && (can(role, "manageMembers") || isSelf);
+    const [titleDraft, setTitleDraft] = useState(m.title ?? "");
     return (
       <>
         <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(2px)" }} />
@@ -316,6 +321,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
             {m.userId ? <Avatar id={m.userId} size={44} /> : <span style={{ width: 44, height: 44, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={20} /></span>}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="truncate" style={{ fontSize: 16, fontWeight: 600 }}>{m.name || m.email}{isSelf && <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
+              {m.title && <div className="truncate" style={{ fontSize: 12.5, color: "var(--accent)", fontWeight: 500 }}>{m.title}</div>}
               <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{m.email}</div>
             </div>
             <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ border: "none" }}><Icon name="x" size={18} /></button>
@@ -330,6 +336,23 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
               ) : roleBadge(m)}
               <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{ROLE_META[m.role]?.blurb}</span>
             </div>
+
+            {/* position / job title — separate from the permission role */}
+            {(canEditTitle || m.title) && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <span className="kicker">Position</span>
+                {canEditTitle ? (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input value={titleDraft} onChange={(e) => setTitleDraft(e.target.value)} placeholder="e.g. Co-founder, Designer…" aria-label="Position"
+                      onKeyDown={(e) => { if (e.key === "Enter" && titleDraft.trim() !== (m.title ?? "")) onSetTitle!(m.id, titleDraft); }}
+                      style={{ flex: 1, height: 34, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+                    <button className="btn btn-accent" disabled={titleDraft.trim() === (m.title ?? "")} onClick={() => onSetTitle!(m.id, titleDraft)} style={{ opacity: titleDraft.trim() === (m.title ?? "") ? 0.5 : 1 }}>Save</button>
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 13.5, color: "var(--ink-2)" }}>{m.title}</span>
+                )}
+              </div>
+            )}
 
             {m.status === "active" && (
               <div style={{ display: "flex", gap: 24 }}>

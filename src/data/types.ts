@@ -57,6 +57,7 @@ export interface WorkspaceMember {
   name: string;
   role: Role;
   status: "invited" | "active";
+  title?: string;          // free-text position e.g. "Co-founder" (per workspace)
 }
 
 export type Recurrence = "none" | "daily" | "weekly" | "monthly";
