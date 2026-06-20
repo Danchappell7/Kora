@@ -240,12 +240,13 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete }: { label:
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, projects = [], compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
+export function ListView({ tasks, allTasks, projects = [], compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
   tasks: Task[]; allTasks: Task[]; projects?: Project[]; compact?: boolean; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
   onQuickAdd?: (partial: Partial<Task> & { title: string }) => void;
+  onOpenImport?: () => void;
   sort?: string;
   members?: { id: string; name: string }[];
   sections?: Section[];
@@ -269,6 +270,8 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
     onQuickAdd?.(partial);
     setAddDraft("");
   };
+  // sensible group key for the empty-state quick-add (project view falls back to the route's project)
+  const emptyKey = groupBy === "status" ? "todo" : groupBy === "priority" ? "medium" : groupBy === "section" ? "__none" : "";
   const sortMode = sort || "manual";
   // manual reorder only in manual order; not under Due grouping (dragging
   // across due buckets has no well-defined date, so it would just snap back)
@@ -384,10 +387,21 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
         </div>
       )}
       {tasks.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "80px 24px", color: "var(--ink-4)" }}>
+        <div style={{ textAlign: "center", padding: "64px 24px", color: "var(--ink-4)" }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="tasks" size={24} style={{ color: "var(--ink-4)" }} /></div>
           <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No tasks yet</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0" }}>Capture one from <strong style={{ color: "var(--ink-3)" }}>Plan my day</strong> or hit <strong style={{ color: "var(--ink-3)" }}>New task</strong> up top.</p>
+          <p style={{ fontSize: 13, margin: "5px 0 18px" }}>Type your first task below, or import a whole list.</p>
+          {onQuickAdd && (
+            <div style={{ display: "flex", gap: 8, maxWidth: 460, margin: "0 auto", alignItems: "center" }}>
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+              <input autoFocus value={addDraft} onChange={(e) => setAddDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") quickAdd(emptyKey); else if (e.key === "Escape") setAddDraft(""); }}
+                placeholder="Task name, then Enter…"
+                style={{ flex: 1, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
+              <button className="btn btn-accent" onClick={() => quickAdd(emptyKey)} disabled={!addDraft.trim()} style={{ opacity: addDraft.trim() ? 1 : 0.5 }}>Add</button>
+              {onOpenImport && <button className="btn btn-ghost" onClick={onOpenImport} title="Import a list of tasks"><Icon name="plus" size={15} /> Import</button>}
+            </div>
+          )}
         </div>
       ) : groups.map((g) => (
         <div key={g.key}>

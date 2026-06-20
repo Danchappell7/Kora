@@ -15,6 +15,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
+import { ImportTasksModal } from "./components/ImportTasksModal";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
@@ -218,7 +219,7 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
   );
 }
 
-function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
+function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -237,6 +238,7 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
   onBulkDelete: (ids: string[]) => void;
   onPatch: (id: string, patch: Partial<Task>) => void;
   onQuickAdd: (partial: Partial<Task> & { title: string }) => void;
+  onOpenImport?: () => void;
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;
   archivedTasks?: Task[];
@@ -290,7 +292,6 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
     Object.entries(customFilter ?? {}).every(([fid, v]) => { if (!v || v === "all") return true; const cv = (t.custom ?? {})[fid]; return Array.isArray(cv) ? cv.includes(v) : String(cv ?? "") === v; }) &&
     (q === "" || t.title.toLowerCase().includes(q)));
 
-  const csvInputRef = useRef<HTMLInputElement>(null);
   const csvCell = (s: string) => /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   const exportCsv = () => {
     const rows = [["Title", "Status", "Priority", "Assignee", "Due", "Project", "Tags"]];
@@ -300,48 +301,6 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
     const a = document.createElement("a"); a.href = url; a.download = `kanbo-tasks-${toLocalISO(new Date())}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
-  const importCsv = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "");
-      // minimal CSV parse: split rows on newlines, fields on commas (honour quotes)
-      const parseLine = (line: string): string[] => {
-        const out: string[] = []; let cur = "", inQ = false;
-        for (let i = 0; i < line.length; i++) {
-          const ch = line[i];
-          if (inQ) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') inQ = false; else cur += ch; }
-          else if (ch === '"') inQ = true; else if (ch === ",") { out.push(cur); cur = ""; } else cur += ch;
-        }
-        out.push(cur); return out;
-      };
-      const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
-      if (lines.length === 0) return;
-      const first = parseLine(lines[0]).map((h) => h.trim().toLowerCase());
-      const hasHeader = first.includes("title") || first.includes("name");
-      const col = (names: string[]) => first.findIndex((h) => names.includes(h));
-      const ti = hasHeader ? Math.max(0, col(["title", "name", "task"])) : 0;
-      const pi = hasHeader ? col(["priority"]) : -1;
-      const di = hasHeader ? col(["due", "due date", "duedate"]) : -1;
-      const si = hasHeader ? col(["status"]) : -1;
-      const dataLines = hasHeader ? lines.slice(1) : lines;
-      let n = 0;
-      dataLines.forEach((line) => {
-        const cells = parseLine(line);
-        const title = (cells[ti] || "").trim(); if (!title) return;
-        const partial: Partial<Task> & { title: string } = { title };
-        const pr = pi >= 0 ? (cells[pi] || "").trim().toLowerCase() : "";
-        if (["low", "medium", "high", "urgent"].includes(pr)) partial.priority = pr as Task["priority"];
-        const st = si >= 0 ? (cells[si] || "").trim().toLowerCase() : "";
-        if (["todo", "progress", "review", "blocked", "done"].includes(st)) partial.status = st as Task["status"];
-        const dd = di >= 0 ? (cells[di] || "").trim() : "";
-        if (/^\d{4}-\d{2}-\d{2}$/.test(dd)) partial.dueDate = dd;
-        onQuickAdd(partial); n++;
-      });
-      if (n > 0) toastImport(`Imported ${n} task${n > 1 ? "s" : ""}`);
-    };
-    reader.readAsText(file);
-  };
-
   return (
     <>
       {header}
@@ -455,9 +414,8 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
         )}
         {!isMobile && (
           <>
-            <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) importCsv(f); e.target.value = ""; }} />
             <button onClick={exportCsv} className="btn" title="Export current view to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
-            <button onClick={() => csvInputRef.current?.click()} className="btn" title="Import tasks from CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="plus" size={15} /> Import</button>
+            {onOpenImport && <button onClick={onOpenImport} className="btn" title="Import tasks (paste a list or upload a file)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="plus" size={15} /> Import</button>}
           </>
         )}
         </div>
@@ -478,7 +436,7 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
           {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false, custom: {} })} style={{ marginLeft: 4, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear</button>}
         </div>
       )}
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
       {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} />}
@@ -554,6 +512,7 @@ export default function App() {
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [banner, setBanner] = useState<AppBanner | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
   useEffect(() => { store.activeBanner().then(setBanner).catch(() => {}); }, []);
@@ -1621,7 +1580,7 @@ export default function App() {
           const patch: Partial<Task> = { status, completedAt: status === "done" ? toLocalISO(new Date()) : undefined };
           if (position !== undefined) patch.position = position;
           patchTask(id, patch);
-        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} members={assignees} allTags={tags}
+        }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} onOpenImport={() => setImportOpen(true)} members={assignees} allTags={tags}
           archivedTasks={archivedTasks}
           sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
@@ -1694,6 +1653,12 @@ export default function App() {
         {renderMain()}
         {isMobile && <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} />}
       </main>
+
+      <ImportTasksModal open={importOpen} onClose={() => setImportOpen(false)}
+        projects={wsProjects} members={assignees}
+        defaultProjectId={route.view === "project" ? route.projectId : undefined}
+        defaultProjectName={route.view === "project" ? newProj?.name : undefined}
+        onImport={(rows) => { rows.forEach((r) => quickAddTask(r)); toastSuccess(`Imported ${rows.length} task${rows.length === 1 ? "" : "s"}`); }} />
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={allTasks} onOpenTask={setDetailId} onAction={(s) => {
         if (s.id === "new-task") openNewTask();
