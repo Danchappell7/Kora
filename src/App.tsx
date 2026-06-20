@@ -935,8 +935,8 @@ export default function App() {
 
   // automation: apply enabled "task created" rules for the task's project,
   // folded into the new task BEFORE it's created (no hot-path mutation, no loops)
-  const applyAutomation = useCallback((t: Task): Task => {
-    const rules = rulesRef.current.filter((r) => r.enabled && r.trigger === "task_created" && r.projectId === t.projectId);
+  const applyRules = useCallback((t: Task, trigger: AutomationRule["trigger"]): Task => {
+    const rules = rulesRef.current.filter((r) => r.enabled && r.trigger === trigger && r.projectId === t.projectId);
     if (rules.length === 0) return t;
     let next = { ...t };
     for (const r of rules) for (const a of r.actions) {
@@ -948,6 +948,7 @@ export default function App() {
     }
     return next;
   }, []);
+  const applyAutomation = useCallback((t: Task): Task => applyRules(t, "task_created"), [applyRules]);
 
   // inline quick-add: build a full task from a small partial (group context)
   const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {
@@ -1072,8 +1073,22 @@ export default function App() {
     if (prev && patch.status && patch.status !== prev.status) {
       if (patch.status === "done") { log("completed", prev, "Marked complete"); spawnRecurrence(prev); }
       else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
+      // run status-change / completion automations and merge any field changes
+      const base: Task = { ...prev, ...patch };
+      let auto = applyRules(base, "status_changed");
+      if (patch.status === "done") auto = applyRules(auto, "task_completed");
+      const extra: Partial<Task> = {};
+      if (auto.priority !== base.priority) extra.priority = auto.priority;
+      if (auto.assigneeId !== base.assigneeId) extra.assigneeId = auto.assigneeId;
+      if (auto.sectionId !== base.sectionId) extra.sectionId = auto.sectionId;
+      if ((auto.tags ?? []).join() !== (base.tags ?? []).join()) extra.tags = auto.tags;
+      if (Object.keys(extra).length) {
+        setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...extra } : t));
+        noteWrite(id, extra);
+        store.updateTask(id, extra).catch(reportError);
+      }
     }
-  }, [log, spawnRecurrence, noteWrite]);
+  }, [log, spawnRecurrence, noteWrite, applyRules]);
 
   // follow/unfollow a task (followers get its activity in their inbox)
   const toggleFollow = useCallback((id: string) => {
@@ -1332,15 +1347,15 @@ export default function App() {
   }, [toastError]);
 
   // ---- automation rules ----
-  const createRule = useCallback((projectId: string, name: string, actions: AutomationAction[]) => {
+  const createRule = useCallback((projectId: string, name: string, actions: AutomationAction[], trigger: AutomationRule["trigger"] = "task_created") => {
     const wsId = getProject(projectId)?.workspaceId ?? null;
-    const tmp: AutomationRule = { id: "tmp-rule-" + Date.now(), workspaceId: wsId, projectId, name, trigger: "task_created", actions, enabled: true };
+    const tmp: AutomationRule = { id: "tmp-rule-" + Date.now(), workspaceId: wsId, projectId, name, trigger, actions, enabled: true };
     setAutomationRules((rs) => [...rs, tmp]);
-    store.createRule({ workspaceId: wsId, projectId, name, actions }, userIdRef.current)
+    store.createRule({ workspaceId: wsId, projectId, name, actions, trigger }, userIdRef.current)
       .then((rule) => setAutomationRules((rs) => rs.map((x) => x.id === tmp.id ? rule : x)))
       .catch((e) => { reportError(e, { op: "createRule" }); setAutomationRules((rs) => rs.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the rule: " + (e?.message || e)); });
   }, [toastError]);
-  const updateRule = useCallback((id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean }) => {
+  const updateRule = useCallback((id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean; trigger?: AutomationRule["trigger"] }) => {
     setAutomationRules((rs) => rs.map((x) => x.id === id ? { ...x, ...patch } : x));
     store.updateRule(id, patch).catch(reportError);
   }, []);

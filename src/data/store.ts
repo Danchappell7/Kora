@@ -336,7 +336,7 @@ const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId:
 interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string }
 const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at });
 interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
-const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: "task_created", actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
+const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: ((r.trigger as AutomationRule["trigger"]) || "task_created"), actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
 interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown }
 const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
 
@@ -825,19 +825,21 @@ export const store = {
   },
 
   /* ---------- automation rules ---------- */
-  async createRule(input: { workspaceId: string | null; projectId: string; name: string; actions: AutomationAction[] }, userId: string): Promise<AutomationRule> {
-    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, name: input.name, trigger: "task_created", actions: input.actions, enabled: true };
+  async createRule(input: { workspaceId: string | null; projectId: string; name: string; actions: AutomationAction[]; trigger?: AutomationRule["trigger"] }, userId: string): Promise<AutomationRule> {
+    const trigger = input.trigger ?? "task_created";
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, name: input.name, trigger, actions: input.actions, enabled: true };
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("automation_rules").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, trigger: "task_created", actions: input.actions, enabled: true }).select("*").single();
+    const { data, error } = await supabase.from("automation_rules").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, trigger, actions: input.actions, enabled: true }).select("*").single();
     if (error) throw error;
     return rowToRule(data as AutomationRuleRow);
   },
-  async updateRule(id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean }): Promise<void> {
+  async updateRule(id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean; trigger?: AutomationRule["trigger"] }): Promise<void> {
     if (!supabase) return;
     const row: Record<string, unknown> = {};
     if ("name" in patch) row.name = patch.name;
     if ("actions" in patch) row.actions = patch.actions;
     if ("enabled" in patch) row.enabled = patch.enabled;
+    if ("trigger" in patch) row.trigger = patch.trigger;
     if (Object.keys(row).length === 0) return;
     const { error } = await supabase.from("automation_rules").update(row).eq("id", id);
     if (error) throw error;

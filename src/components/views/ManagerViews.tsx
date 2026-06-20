@@ -278,27 +278,36 @@ export function AutomationsView({ rules, projects, members, sections, onCreate, 
   projects: Project[];
   members: { id: string; name: string }[];
   sections: Section[];
-  onCreate: (projectId: string, name: string, actions: AutomationAction[]) => void;
-  onUpdate: (id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean }) => void;
+  onCreate: (projectId: string, name: string, actions: AutomationAction[], trigger: AutomationRule["trigger"]) => void;
+  onUpdate: (id: string, patch: { name?: string; actions?: AutomationAction[]; enabled?: boolean; trigger?: AutomationRule["trigger"] }) => void;
   onDelete: (id: string) => void;
 }) {
   const realProjects = projects.filter((p) => p.id !== "p-personal");
   const [adding, setAdding] = useState(false);
   const [pid, setPid] = useState(realProjects[0]?.id ?? "");
   const [name, setName] = useState("");
-  const add = () => { const n = name.trim(); const proj = pid || realProjects[0]?.id; if (n && proj) { onCreate(proj, n, []); setName(""); setAdding(false); } };
+  const [trigger, setTrigger] = useState<AutomationRule["trigger"]>("task_created");
+  const add = () => { const n = name.trim(); const proj = pid || realProjects[0]?.id; if (n && proj) { onCreate(proj, n, [], trigger); setName(""); setAdding(false); } };
+  const TRIGGER_LABEL: Record<AutomationRule["trigger"], string> = {
+    task_created: "a task is created",
+    status_changed: "a task's status changes",
+    task_completed: "a task is completed",
+  };
   const defaultValue = (type: AutomationActionType): string =>
     type === "set_priority" ? "medium" : type === "set_assignee" ? (members[0]?.id ?? "") : "";
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
-        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>When a task is created in a project, automatically apply these actions.</p>
+        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>Pick a trigger, then the actions to apply automatically when it fires.</p>
         {realProjects.length > 0 && <button onClick={() => setAdding(true)} className="btn btn-accent" style={{ marginLeft: "auto", padding: "7px 13px", fontSize: 13 }}><Icon name="plus" size={15} /> New rule</button>}
       </div>
       {realProjects.length === 0 ? <EmptyState icon="chart" title="No projects yet" sub="Create a project first — rules run on its new tasks." /> : adding && (
         <div className="glass" style={{ borderRadius: 12, padding: 12, marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select value={pid} onChange={(e) => setPid(e.target.value)} style={inp}>{realProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          <select value={trigger} onChange={(e) => setTrigger(e.target.value as AutomationRule["trigger"])} style={inp} aria-label="Trigger">
+            {(Object.keys(TRIGGER_LABEL) as AutomationRule["trigger"][]).map((t) => <option key={t} value={t}>When {TRIGGER_LABEL[t]}</option>)}
+          </select>
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); else if (e.key === "Escape") setAdding(false); }} placeholder="Rule name, e.g. Triage inbound" style={{ ...inp, flex: 1, minWidth: 160 }} />
           <button onClick={add} className="btn btn-accent" style={{ padding: "5px 12px", fontSize: 12.5 }}>Add</button>
           <button onClick={() => setAdding(false)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}>Cancel</button>
@@ -321,7 +330,14 @@ export function AutomationsView({ rules, projects, members, sections, onCreate, 
                   </button>
                   <button onClick={() => onDelete(rule.id)} aria-label="Delete rule" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
-                <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 8 }}>When a task is created →</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--ink-4)", marginBottom: 8 }}>
+                  <span>When</span>
+                  <select value={rule.trigger} onChange={(e) => onUpdate(rule.id, { trigger: e.target.value as AutomationRule["trigger"] })} aria-label="Trigger"
+                    style={{ height: 26, padding: "0 6px", borderRadius: 7, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12, outline: "none", cursor: "pointer" }}>
+                    {(Object.keys(TRIGGER_LABEL) as AutomationRule["trigger"][]).map((t) => <option key={t} value={t}>{TRIGGER_LABEL[t]}</option>)}
+                  </select>
+                  <span>→</span>
+                </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                   {rule.actions.map((a, i) => (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>

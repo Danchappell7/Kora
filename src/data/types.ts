@@ -194,10 +194,11 @@ export interface AutomationRule {
   projectId: string;
   workspaceId?: string | null;
   name: string;
-  trigger: "task_created";
+  trigger: AutomationTrigger;
   actions: AutomationAction[];
   enabled: boolean;
 }
+export type AutomationTrigger = "task_created" | "status_changed" | "task_completed";
 export type FormFieldKey = "description" | "priority" | "dueDate" | "assignee";
 export interface FormDef {
   id: string;
