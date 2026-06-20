@@ -8,7 +8,7 @@ import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
-import type { Task, Subtask, IconName, Priority, Section, CustomFieldDef } from "../../data/types";
+import type { Task, Subtask, IconName, Priority, Section, CustomFieldDef, Project } from "../../data/types";
 
 // small chips showing a task's filled custom-field values (max 3)
 export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
@@ -240,8 +240,8 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete }: { label:
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
-  tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
+export function ListView({ tasks, allTasks, projects = [], onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, members = [], sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId }: {
+  tasks: Task[]; allTasks: Task[]; projects?: Project[]; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
@@ -274,7 +274,7 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
   // across due buckets has no well-defined date, so it would just snap back)
   const dragEnabled = !!onPatch && !smart && sortMode === "manual" && groupBy !== "due";
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee" | "due">(null);
+  const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee" | "due" | "project">(null);
   const isoDay = (n: number) => { const d = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const [dragId, setDragId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: string; half: "top" | "bottom" } | null>(null);
@@ -453,6 +453,15 @@ export function ListView({ tasks, allTasks, onOpen, onToggle, onToggleSubtask, g
               {members.map((m) => (
                 <button key={m.id} onClick={() => applyPatch({ assigneeId: m.id })} style={bulkItemStyle}>
                   <Avatar id={m.id} size={18} /> {m.name}
+                </button>
+              ))}
+            </BulkMenuButton>
+          )}
+          {projects.length > 0 && (
+            <BulkMenuButton label="Project" icon="grid" open={bulkMenu === "project"} onToggle={() => setBulkMenu((m) => m === "project" ? null : "project")}>
+              {projects.map((p) => (
+                <button key={p.id} onClick={() => applyPatch({ projectId: p.id })} style={bulkItemStyle}>
+                  <span style={{ width: 9, height: 9, borderRadius: 3, background: p.color, flexShrink: 0 }} /> {p.name}
                 </button>
               ))}
             </BulkMenuButton>
