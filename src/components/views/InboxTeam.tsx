@@ -1,7 +1,7 @@
 /* ============================================================
    KANBO — Inbox (real activity feed) & Team views
    ============================================================ */
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Icon, Avatar, StatusDot } from "../primitives";
 import { timeAgo, getProject } from "../../data/data";
 import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
@@ -109,10 +109,10 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   );
 }
 
-export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onOpen, onNewWorkspace }: {
+export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onOpen, onNewWorkspace, onUpdateWorkspace, onUploadLogo, onDeleteWorkspace }: {
   tasks: Task[];
   workspace: string | null;
-  workspaces: { id: string | null; name: string; ownerId?: string }[];
+  workspaces: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
   members: WorkspaceMember[];
   currentUserId: string;
   myRole?: Role;
@@ -122,11 +122,18 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   onTransferOwnership?: (workspaceId: string, memberId: string) => void;
   onOpen?: (taskId: string) => void;
   onNewWorkspace: () => void;
+  onUpdateWorkspace?: (workspaceId: string, name: string, logoUrl: string | null) => void;
+  onUploadLogo?: (workspaceId: string, file: File) => void;
+  onDeleteWorkspace?: (workspaceId: string) => void;
 }) {
   const [email, setEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("member");
   const [selected, setSelected] = useState<WorkspaceMember | null>(null);
   const ws = workspaces.find((w) => w.id === workspace);
+  const [wsName, setWsName] = useState(ws?.name ?? "");
+  const [savingWs, setSavingWs] = useState(false);
+  const logoRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { setWsName(ws?.name ?? ""); }, [workspace, ws?.name]);
   const wsMembers = members.filter((m) => m.workspaceId === workspace);
   const active = wsMembers.filter((m) => m.status === "active");
   const invited = wsMembers.filter((m) => m.status === "invited");
@@ -276,6 +283,58 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px" }}>
+      {/* workspace settings — branding + danger zone (owner/admin) */}
+      {can(role, "manageWorkspace") && ws && workspace && (
+        <div className="glass" style={{ padding: 18, borderRadius: 16, marginBottom: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="kicker">Workspace settings</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+            {/* logo */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {ws.logoUrl ? (
+                <img src={ws.logoUrl} alt="Workspace logo" style={{ width: 56, height: 56, borderRadius: 14, objectFit: "cover", border: "1px solid var(--hairline)" }} />
+              ) : (
+                <span style={{ width: 56, height: 56, borderRadius: 14, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)", fontSize: 20, fontWeight: 700 }}>{(ws.name || "?").charAt(0).toUpperCase()}</span>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <input ref={logoRef} type="file" accept="image/*" style={{ display: "none" }}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f && workspace) onUploadLogo?.(workspace, f); if (logoRef.current) logoRef.current.value = ""; }} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-ghost" onClick={() => logoRef.current?.click()} style={{ fontSize: 12.5 }}><Icon name="plus" size={14} /> {ws.logoUrl ? "Change logo" : "Upload logo"}</button>
+                  {ws.logoUrl && <button className="btn btn-ghost" onClick={() => onUpdateWorkspace?.(workspace, ws.name, null)} style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Remove</button>}
+                </div>
+                <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>PNG or JPG, square works best.</span>
+              </div>
+            </div>
+            {/* name */}
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 8, flex: 1, minWidth: 240 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 5, flex: 1 }}>
+                <span className="kicker">Name</span>
+                <input value={wsName} onChange={(e) => setWsName(e.target.value)}
+                  style={{ height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+              </label>
+              <button className="btn btn-accent" disabled={savingWs || !wsName.trim() || wsName.trim() === ws.name}
+                onClick={() => { if (!workspace) return; setSavingWs(true); onUpdateWorkspace?.(workspace, wsName.trim(), ws.logoUrl ?? null); setTimeout(() => setSavingWs(false), 600); }}
+                style={{ opacity: (!wsName.trim() || wsName.trim() === ws.name) ? 0.5 : 1 }}>Save</button>
+            </div>
+          </div>
+          {/* danger zone — owner only */}
+          {can(role, "deleteWorkspace") && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "12px 14px", borderRadius: 12, border: "1px solid color-mix(in oklch, var(--prio-urgent) 35%, var(--hairline))", background: "color-mix(in oklch, var(--prio-urgent) 6%, transparent)" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>Close this workspace</div>
+                <div style={{ fontSize: 12, color: "var(--ink-4)" }}>Permanently deletes the workspace and all its projects, tasks and members. This cannot be undone.</div>
+              </div>
+              <button className="btn btn-ghost" onClick={() => {
+                if (!workspace) return;
+                const typed = window.prompt(`This permanently deletes "${ws.name}" and everything in it.\n\nType the workspace name to confirm:`);
+                if (typed != null && typed.trim() === ws.name) onDeleteWorkspace?.(workspace);
+                else if (typed != null) window.alert("Name didn't match — workspace was not closed.");
+              }} style={{ color: "var(--prio-urgent)", borderColor: "color-mix(in oklch, var(--prio-urgent) 40%, transparent)", flexShrink: 0 }}><Icon name="trash" size={14} /> Close workspace</button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* invite */}
       {canManage && (
         <div className="glass" style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderRadius: 16, marginBottom: 24, flexWrap: "wrap" }}>

@@ -73,7 +73,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const visibleProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
   // pinned projects float to the top (stable within each group)
   const orderedProjects = [...visibleProjects].sort((a, b) => (pinned.has(b.id) ? 1 : 0) - (pinned.has(a.id) ? 1 : 0));
-  const activeWs = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" as const };
+  const activeWs: Workspace = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" };
   const myOpen = tasks.filter((t) => t.assigneeId === currentUserId && t.status !== "done").length;
 
   const navGroups: { label?: string; items: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] }[] = [
@@ -111,7 +111,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "7px 8px",
           borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer",
         }}>
-          <KanboLogo size={26} />
+          {activeWs.logoUrl
+            ? <img src={activeWs.logoUrl} alt="" style={{ width: 26, height: 26, borderRadius: 7, objectFit: "cover", flexShrink: 0 }} />
+            : <KanboLogo size={26} />}
           <span style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
             <span style={{ display: "block", fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 14, letterSpacing: "0.15em", textTransform: "uppercase" }}>Kanbo</span>
             <span className="truncate" style={{ display: "block", fontSize: 11, color: "var(--ink-4)" }}>{activeWs.name}</span>
@@ -127,7 +129,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                 border: "none", cursor: "pointer", fontSize: 13.5, fontFamily: "var(--font-display)", textAlign: "left",
                 color: w.id === workspace ? "var(--ink)" : "var(--ink-3)", background: w.id === workspace ? "var(--surface-2)" : "transparent",
               }}>
-                <Icon name={w.kind === "personal" ? "user" : "briefcase"} size={15} style={{ color: w.id === workspace ? "var(--accent)" : "currentColor" }} />
+                {w.logoUrl
+                  ? <img src={w.logoUrl} alt="" style={{ width: 18, height: 18, borderRadius: 5, objectFit: "cover", flexShrink: 0 }} />
+                  : <Icon name={w.kind === "personal" ? "user" : "briefcase"} size={15} style={{ color: w.id === workspace ? "var(--accent)" : "currentColor" }} />}
                 <span style={{ flex: 1 }}>{w.name}</span>
                 {w.id === workspace && <Icon name="check" size={14} style={{ color: "var(--accent)" }} />}
               </button>

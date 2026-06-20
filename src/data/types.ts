@@ -44,6 +44,7 @@ export interface Workspace {
   name: string;
   kind: "personal" | "team";
   ownerId?: string;
+  logoUrl?: string;
 }
 
 export type Role = "owner" | "admin" | "member" | "guest";

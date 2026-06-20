@@ -1432,6 +1432,32 @@ export default function App() {
       .catch((e) => { reportError(e, { op: "createWorkspace" }); toastError("Couldn't create the workspace: " + (e?.message || e)); });
   }, [toastError]);
 
+  const updateWorkspace = useCallback((workspaceId: string, name: string, logoUrl: string | null) => {
+    const next = workspacesRef.current.map((w) => w.id === workspaceId ? { ...w, name, logoUrl: logoUrl ?? undefined } : w);
+    setWorkspaces(next); setReferenceData({ workspaces: next });
+    store.updateWorkspace(workspaceId, name, logoUrl).catch((e) => { reportError(e, { op: "updateWorkspace" }); toastError("Couldn't save workspace settings: " + (e?.message || e)); });
+  }, [toastError]);
+
+  const uploadWorkspaceLogo = useCallback(async (workspaceId: string, file: File) => {
+    try {
+      const url = await store.uploadWorkspaceLogo(workspaceId, file, userIdRef.current);
+      const ws = workspacesRef.current.find((w) => w.id === workspaceId);
+      updateWorkspace(workspaceId, ws?.name || "Workspace", url);
+    } catch (e) { reportError(e, { op: "uploadWorkspaceLogo" }); toastError("Couldn't upload the logo: " + ((e as Error)?.message || e)); }
+  }, [updateWorkspace, toastError]);
+
+  const deleteWorkspace = useCallback((workspaceId: string) => {
+    store.deleteWorkspace(workspaceId)
+      .then(() => {
+        const next = workspacesRef.current.filter((w) => w.id !== workspaceId);
+        setWorkspaces(next); setReferenceData({ workspaces: next });
+        setWsMembers((m) => m.filter((x) => x.workspaceId !== workspaceId));
+        setWorkspace(null); setRoute({ view: "home" });
+        toastSuccess("Workspace closed");
+      })
+      .catch((e) => { reportError(e, { op: "deleteWorkspace" }); toastError("Couldn't close the workspace: " + (e?.message || e)); });
+  }, [toastError, toastSuccess]);
+
   const refreshWorkspaceMembers = useCallback(() => {
     store.listWorkspaceMembers().then(setWsMembers).catch((e) => reportError(e, { op: "refreshWorkspaceMembers" }));
   }, []);
@@ -1582,7 +1608,7 @@ export default function App() {
       case "forms": return <FormsView forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
       case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
       case "tasks":
       case "project":
         return <TasksPage tasks={scoped} allTasks={allTasks} projects={wsProjects} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {

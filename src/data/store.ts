@@ -182,7 +182,7 @@ export interface NewActivity {
   detail: string;
 }
 
-interface WorkspaceRow { id: string; name: string; owner_id: string; }
+interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; }
 interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
   return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status };
@@ -417,7 +417,7 @@ export const store = {
     const { data: wsData } = await supabase.from("workspaces").select("*");
     const workspaces: Workspace[] = [
       { ...PERSONAL_WORKSPACE },
-      ...((wsData as WorkspaceRow[] | null) ?? []).map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id })),
+      ...((wsData as WorkspaceRow[] | null) ?? []).map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined })),
     ];
     const { data: memData } = await supabase.from("workspace_members").select("*");
     const members = ((memData as MemberRow[] | null) ?? []).map(rowToWsMember);
@@ -520,7 +520,30 @@ export const store = {
     const { error: mErr } = await supabase.from("workspace_members")
       .insert({ workspace_id: ws.id, user_id: uid, email: owner.email, name: owner.name, role: "owner", status: "active" });
     if (mErr) throw mErr;
-    return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id };
+    return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id, logoUrl: ws.logo_url ?? undefined };
+  },
+
+  // upload a workspace logo (reuses the public avatars bucket; uid-scoped path)
+  async uploadWorkspaceLogo(workspaceId: string, file: File, userId: string): Promise<string> {
+    if (!supabase) return URL.createObjectURL(file);
+    const uid = await authUid(userId);
+    const ext = (file.name.split(".").pop() || "png").replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const path = `${uid}/wslogo-${workspaceId}-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from(AVATAR_BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+    if (error) throw error;
+    return supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path).data.publicUrl;
+  },
+
+  async updateWorkspace(workspaceId: string, name: string, logoUrl: string | null): Promise<void> {
+    if (!supabase) { demoWorkspaces = demoWorkspaces.map((w) => w.id === workspaceId ? { ...w, name, logoUrl: logoUrl ?? undefined } : w); return; }
+    const { error } = await supabase.rpc("update_workspace", { p_ws: workspaceId, p_name: name, p_logo: logoUrl });
+    if (error) throw error;
+  },
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    if (!supabase) { demoWorkspaces = demoWorkspaces.filter((w) => w.id !== workspaceId); return; }
+    const { error } = await supabase.rpc("delete_workspace", { p_ws: workspaceId });
+    if (error) throw error;
   },
 
   async inviteMember(workspaceId: string, email: string, role: Role = "member", name = ""): Promise<WorkspaceMember> {
