@@ -109,7 +109,7 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   );
 }
 
-export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onNewWorkspace }: {
+export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onTransferOwnership, onOpen, onNewWorkspace }: {
   tasks: Task[];
   workspace: string | null;
   workspaces: { id: string | null; name: string; ownerId?: string }[];
