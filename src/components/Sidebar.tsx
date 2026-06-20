@@ -68,7 +68,11 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onManageBilling: () => void;
 }) {
   const [wsOpen, setWsOpen] = useState(false);
+  const [pinned, setPinned] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("kanbo-pinned-projects") || "[]")); } catch { return new Set(); } });
+  const togglePin = (id: string) => setPinned((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); try { localStorage.setItem("kanbo-pinned-projects", JSON.stringify([...n])); } catch { /* private mode */ } return n; });
   const visibleProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
+  // pinned projects float to the top (stable within each group)
+  const orderedProjects = [...visibleProjects].sort((a, b) => (pinned.has(b.id) ? 1 : 0) - (pinned.has(a.id) ? 1 : 0));
   const activeWs = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" as const };
   const myOpen = tasks.filter((t) => t.assigneeId === currentUserId && t.status !== "done").length;
 
@@ -155,16 +159,22 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "0 12px 12px", display: "flex", flexDirection: "column", gap: 1 }}>
         {visibleProjects.length === 0 && <p style={{ fontSize: 12.5, color: "var(--ink-4)", padding: "6px 11px" }}>No projects here yet.</p>}
-        {visibleProjects.map((p) => {
+        {orderedProjects.map((p) => {
           const active = route.view === "project" && route.projectId === p.id;
           const count = tasks.filter((t) => t.projectId === p.id && t.status !== "done").length;
           const deletable = p.id !== "p-personal";
+          const isPinned = pinned.has(p.id);
           return (
             <div key={p.id} className="kproj-row" style={{ position: "relative", display: "flex", alignItems: "center" }}>
               <button onClick={() => setRoute({ view: "project", projectId: p.id })} className="kproj" data-active={active} style={{ flex: 1 }}>
                 <span style={{ width: 9, height: 9, borderRadius: 3, background: p.color, flexShrink: 0, boxShadow: `0 0 8px color-mix(in oklch, ${p.color} 60%, transparent)` }} />
                 <span className="truncate" style={{ flex: 1 }}>{p.name}</span>
                 {count > 0 && <span className="mono tnum kproj-count" style={{ fontSize: 11, color: "var(--ink-4)" }}>{count}</span>}
+              </button>
+              <button title={isPinned ? "Unpin project" : "Pin to top"} aria-label={isPinned ? "Unpin project" : "Pin project"}
+                onClick={(e) => { e.stopPropagation(); togglePin(p.id); }}
+                style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 3px", fontSize: 12.5, lineHeight: 1, color: isPinned ? "var(--accent)" : "var(--ink-4)", flexShrink: 0 }}>
+                {isPinned ? "★" : "☆"}
               </button>
               {deletable && (
                 <button className="kproj-del" title="Delete project"
