@@ -242,6 +242,12 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
 .iadd:hover { color: var(--accent) !important; border-color: var(--accent) !important; }
 
+/* Plan-my-day scheduled block — reveal the "remove from day" ✕ on hover/focus */
+.plan-block-x { opacity: 0; transition: opacity .14s var(--ease), background .14s var(--ease), color .14s var(--ease); }
+.plan-block:hover .plan-block-x, .plan-block:focus-within .plan-block-x { opacity: 1; }
+.plan-block-x:hover { background: color-mix(in oklch, var(--prio-urgent) 16%, transparent) !important; color: var(--prio-urgent) !important; }
+@media (hover: none) { .plan-block-x { opacity: 1; } } /* touch: always show, no hover */
+
 /* sidebar nav + project items — CSS-driven hover/active (no JS style mutation) */
 .knav { position: relative; display: flex; align-items: center; gap: 11px; width: 100%; padding: 8px 11px; border-radius: 10px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 14px; color: var(--ink-3); text-align: left; transition: background .16s var(--ease), color .16s var(--ease); }
 .knav:hover { background: var(--surface); color: var(--ink-2); }

@@ -89,8 +89,8 @@ function PlanEventBlock({ ev }: { ev: CalEvent }) {
   );
 }
 
-function PlanTaskBlock({ task, onStartDrag, onOpen, dragging, justPlaced }: {
-  task: Task; onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void; onOpen: (id: string) => void; dragging?: boolean; justPlaced?: boolean;
+function PlanTaskBlock({ task, onStartDrag, onOpen, onRemove, dragging, justPlaced }: {
+  task: Task; onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void; onOpen: (id: string) => void; onRemove: (id: string) => void; dragging?: boolean; justPlaced?: boolean;
 }) {
   const top = (task.scheduled! - DAY_START) * PXM, h = (task.dur || task.focusMin) * PXM;
   const e = ENERGY[task.energy!], proj = getProject(task.projectId);
@@ -98,7 +98,7 @@ function PlanTaskBlock({ task, onStartDrag, onOpen, dragging, justPlaced }: {
   const done = task.status === "done";
   return (
     <div onPointerDown={(ev) => onStartDrag(ev, task, "canvas")} onClick={(ev) => { ev.stopPropagation(); onOpen(task.id); }}
-      className={(justPlaced ? "anim-scalein " : "") + (dragging ? "dragging " : "") + "glass"}
+      className={(justPlaced ? "anim-scalein " : "") + (dragging ? "dragging " : "") + "glass plan-block"}
       style={{ position: "absolute", left: 54, right: 12, top, height: h, minHeight: 26, borderRadius: 14, zIndex: 4,
         borderLeft: `3px solid ${e.color}`, padding: h > 46 ? "9px 13px" : "5px 13px", cursor: "grab", overflow: "hidden",
         display: "flex", flexDirection: "column", gap: 3, touchAction: "none",
@@ -106,6 +106,12 @@ function PlanTaskBlock({ task, onStartDrag, onOpen, dragging, justPlaced }: {
       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
         <span className="truncate" style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)", flex: 1, textDecoration: done ? "line-through" : "none", opacity: done ? 0.5 : 1 }}>{task.title}</span>
         {active && <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "var(--accent)", letterSpacing: ".1em" }}>NOW</span>}
+        <button className="plan-block-x" title="Remove from day" aria-label="Remove from day"
+          onPointerDown={(ev) => ev.stopPropagation()}
+          onClick={(ev) => { ev.stopPropagation(); onRemove(task.id); }}
+          style={{ flexShrink: 0, width: 20, height: 20, borderRadius: 6, border: "none", background: "var(--surface-2)", color: "var(--ink-4)", display: "grid", placeItems: "center", cursor: "pointer" }}>
+          <Icon name="x" size={13} />
+        </button>
       </div>
       {h > 46 && (
         <div style={{ display: "flex", alignItems: "center", gap: 9, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-4)" }}>
@@ -128,11 +134,12 @@ function PlanDropPreview({ start, dur }: { start: number | null; dur: number }) 
   );
 }
 
-function DayCanvas({ tasks, events, onStartDrag, onOpen, dragId, previewStart, previewDur, onCanvasRef, justPlacedId }: {
+function DayCanvas({ tasks, events, onStartDrag, onOpen, onRemove, dragId, previewStart, previewDur, onCanvasRef, justPlacedId }: {
   tasks: Task[];
   events: CalEvent[];
   onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void;
   onOpen: (id: string) => void;
+  onRemove: (id: string) => void;
   dragId?: string;
   previewStart: number | null;
   previewDur: number;
@@ -161,7 +168,7 @@ function DayCanvas({ tasks, events, onStartDrag, onOpen, dragId, previewStart, p
         ))}
         {hours.slice(0, -1).map((m) => <div key={"h" + m} style={{ position: "absolute", left: 54, right: 12, top: (m + 30 - DAY_START) * PXM, height: 1, background: "var(--hairline)", opacity: 0.4 }} />)}
         {events.map((ev) => <PlanEventBlock key={ev.id} ev={ev} />)}
-        {scheduled.map((t) => <PlanTaskBlock key={t.id} task={t} onStartDrag={onStartDrag} onOpen={onOpen} dragging={dragId === t.id} justPlaced={justPlacedId === t.id} />)}
+        {scheduled.map((t) => <PlanTaskBlock key={t.id} task={t} onStartDrag={onStartDrag} onOpen={onOpen} onRemove={onRemove} dragging={dragId === t.id} justPlaced={justPlacedId === t.id} />)}
         <PlanDropPreview start={previewStart} dur={previewDur} />
         <PlanNowLine />
       </div>
@@ -229,7 +236,7 @@ function IntakeCard({ task, onStartDrag, onSchedule, onOpen }: {
   );
 }
 
-function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planning, stacked }: {
+function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planning, stacked, dropActive, railRef }: {
   tasks: Task[];
   onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void;
   onSchedule: (id: string) => void;
@@ -237,11 +244,21 @@ function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planni
   onAutoPlan: () => void;
   planning: boolean;
   stacked?: boolean;
+  dropActive?: boolean;
+  railRef: (el: HTMLElement | null) => void;
 }) {
   const unscheduled = tasks.filter((t) => t.planToday && t.scheduled == null && t.status !== "done");
   const onboarding = tasks.length === 0;
   return (
-    <aside style={{ width: stacked ? "100%" : 340, flexShrink: 0, maxHeight: stacked ? "46vh" : undefined, display: "flex", flexDirection: "column", borderLeft: stacked ? "none" : "1px solid var(--hairline)", borderTop: stacked ? "1px solid var(--hairline)" : "none", background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
+    <aside ref={railRef} style={{ position: "relative", width: stacked ? "100%" : 340, flexShrink: 0, maxHeight: stacked ? "46vh" : undefined, display: "flex", flexDirection: "column", borderLeft: stacked ? "none" : "1px solid var(--hairline)", borderTop: stacked ? "1px solid var(--hairline)" : "none", background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", transition: "box-shadow .15s var(--ease)", boxShadow: dropActive ? "inset 0 0 0 2px var(--accent)" : "none" }}>
+      {dropActive && (
+        <div className="anim-fadein" style={{ position: "absolute", inset: 0, zIndex: 20, display: "grid", placeItems: "center", pointerEvents: "none", background: "color-mix(in oklch, var(--accent) 12%, transparent)", backdropFilter: "blur(2px)" }}>
+          <div className="glass" style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 18px", borderRadius: 14, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", border: "1px dashed var(--accent)" }}>
+            <Icon name="arrowLeft" size={16} style={{ color: "var(--accent)" }} />
+            <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--accent)" }}>Release to remove from day</span>
+          </div>
+        </div>
+      )}
       <div style={{ padding: "18px 18px 14px" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <h3 style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.02em" }}>Intake</h3>
@@ -305,9 +322,16 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   const [drag, setDrag] = useState<DragState | null>(null);
   const [pointer, setPointer] = useState({ x: 0, y: 0 });
   const [previewStart, setPreviewStart] = useState<number | null>(null);
+  const [overRail, setOverRail] = useState(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
   const tasksRef = useRef(tasks); tasksRef.current = tasks;
   const isMobile = useMediaQuery("(max-width: 860px)");
+
+  const isOverRail = useCallback((x: number, y: number) => {
+    const r = railRef.current?.getBoundingClientRect();
+    return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }, []);
 
   const planTasks = tasks.filter((t) => t.planToday);
   const scheduledFocus = planTasks.filter((t) => t.scheduled != null && (t.energy === "deep" || t.energy === "create")).reduce((a, t) => a + (t.dur || t.focusMin), 0);
@@ -334,17 +358,26 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
 
   useEffect(() => {
     if (!drag) return;
-    const move = (e: PointerEvent) => { setPointer({ x: e.clientX, y: e.clientY }); setPreviewStart(computePreview(e.clientX, e.clientY, drag.dur, drag.grab)); };
+    const move = (e: PointerEvent) => {
+      setPointer({ x: e.clientX, y: e.clientY });
+      const onRail = isOverRail(e.clientX, e.clientY);
+      setOverRail(onRail);
+      // while hovering the intake rail, suppress the day preview so it reads as "removing"
+      setPreviewStart(onRail ? null : computePreview(e.clientX, e.clientY, drag.dur, drag.grab));
+    };
     const up = (e: PointerEvent) => {
-      const start = computePreview(e.clientX, e.clientY, drag.dur, drag.grab);
+      const onRail = isOverRail(e.clientX, e.clientY);
+      const start = onRail ? null : computePreview(e.clientX, e.clientY, drag.dur, drag.grab);
       if (start != null) { onUpdate(drag.taskId, { scheduled: start }); setJustPlaced(drag.taskId); setTimeout(() => setJustPlaced(null), 500); }
-      else if (drag.source === "canvas") onUpdate(drag.taskId, { scheduled: null });
-      setDrag(null); setPreviewStart(null);
+      else if (drag.source === "canvas") onUpdate(drag.taskId, { scheduled: null });   // dropped on the rail (or off-canvas) → back to Intake
+      setDrag(null); setPreviewStart(null); setOverRail(false);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up, { once: true });
     return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
-  }, [drag, computePreview, onUpdate]);
+  }, [drag, computePreview, onUpdate, isOverRail]);
+
+  const removeFromDay = useCallback((id: string) => { onUpdate(id, { scheduled: null }); }, [onUpdate]);
 
   const scheduleOne = useCallback((id: string) => {
     const cur = tasksRef.current;
@@ -379,7 +412,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
           <div style={{ flex: 1 }} />
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)" }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent-glow)" }} /> now {fmtClock(NOW_MIN)}</span>
         </div>
-        <DayCanvas tasks={planTasks} events={dayEvents} onStartDrag={startDrag} onOpen={onOpen} dragId={drag?.taskId} previewStart={previewStart} previewDur={drag?.dur || 30} onCanvasRef={(el) => (canvasRef.current = el)} justPlacedId={justPlacedId} />
+        <DayCanvas tasks={planTasks} events={dayEvents} onStartDrag={startDrag} onOpen={onOpen} onRemove={removeFromDay} dragId={drag?.taskId} previewStart={previewStart} previewDur={drag?.dur || 30} onCanvasRef={(el) => (canvasRef.current = el)} justPlacedId={justPlacedId} />
         <PlanToast msg={toast} onClose={() => setToast(null)} />
         {planning && (
           <div style={{ position: "absolute", inset: 0, zIndex: 50, display: "grid", placeItems: "center", background: "color-mix(in oklch, var(--bg) 35%, transparent)", backdropFilter: "blur(2px)" }}>
@@ -390,7 +423,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
           </div>
         )}
       </div>
-      <IntakeRail tasks={tasks} onStartDrag={startDrag} onSchedule={scheduleOne} onOpen={onOpen} onAutoPlan={doAutoPlan} planning={planning} stacked={isMobile} />
+      <IntakeRail tasks={tasks} onStartDrag={startDrag} onSchedule={scheduleOne} onOpen={onOpen} onAutoPlan={doAutoPlan} planning={planning} stacked={isMobile} dropActive={overRail && drag?.source === "canvas"} railRef={(el) => (railRef.current = el)} />
       {drag && (
         <div style={{ position: "fixed", left: pointer.x + 14, top: pointer.y - 10, zIndex: 80, pointerEvents: "none", maxWidth: 240,
           padding: "8px 12px", borderRadius: 12, background: "var(--surface-raised)", border: "1px solid var(--hairline-strong)", borderLeft: `3px solid ${ENERGY[drag.energy].color}`, boxShadow: "var(--shadow-lg)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", transform: "rotate(-1.5deg)" }}>
