@@ -519,7 +519,7 @@ export default function App() {
   const { error: toastError, success: toastSuccess, action: toastAction } = useToast();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try { const s = localStorage.getItem("kanbo-theme"); if (s === "light" || s === "dark") return s; } catch { /* private mode */ }
-    return "light";
+    return "dark"; // dark is the on-brand default; users can toggle to light
   });
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
