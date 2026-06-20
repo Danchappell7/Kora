@@ -3,23 +3,38 @@
    NOT part of the consumer product: its own layout, no sidebar, not linked
    anywhere. Locked to admin-allowlisted logins.
    ============================================================ */
+import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
 import { LoginScreen } from "../auth/LoginScreen";
 import { AdminView } from "../components/views/AdminView";
+import { store } from "../data/store";
 import { KanboLogo, Icon } from "../components/primitives";
 
-// Only these accounts can open the admin dashboard.
+// The founding admin is always allowed; other admins are recognised via the
+// server-side is_admin() flag (so "grant admin" actually opens this dashboard).
 export const ADMIN_EMAILS = ["danchappell7@gmail.com"];
 export const isAdminEmail = (e?: string | null): boolean => !!e && ADMIN_EMAILS.includes(e.trim().toLowerCase());
 
 export function AdminApp() {
   const auth = useAuth();
+  // null = still checking the is_admin() flag; true/false = resolved.
+  const [flagAdmin, setFlagAdmin] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!auth.configured) { setFlagAdmin(true); return; }
+    if (!auth.user) { setFlagAdmin(null); return; }
+    if (isAdminEmail(auth.user.email)) { setFlagAdmin(true); return; }
+    let on = true;
+    store.amIAdmin().then((ok) => on && setFlagAdmin(ok)).catch(() => on && setFlagAdmin(false));
+    return () => { on = false; };
+  }, [auth.configured, auth.user]);
 
   // Demo mode (no backend configured) — show the dashboard for local preview.
   if (auth.configured) {
     if (auth.loading) return <Centered>Loading…</Centered>;
     if (!auth.user) return <LoginScreen />; // must sign in first
-    if (!isAdminEmail(auth.user.email)) return <NotAuthorised onSignOut={auth.signOut} email={auth.user.email} />;
+    if (flagAdmin === null) return <Centered>Loading…</Centered>;
+    if (!flagAdmin) return <NotAuthorised onSignOut={auth.signOut} email={auth.user.email} />;
   }
 
   return (
@@ -38,7 +53,7 @@ export function AdminApp() {
             </>
           )}
         </header>
-        <AdminView />
+        <AdminView currentEmail={auth.user?.email ?? undefined} />
       </div>
     </div>
   );

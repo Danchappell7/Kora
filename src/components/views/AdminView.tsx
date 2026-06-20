@@ -4,9 +4,9 @@
    Cross-user aggregates come from admin_stats(); the charts come from
    admin_series() (both optional SECURITY DEFINER RPCs).
    ============================================================ */
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Icon } from "../primitives";
-import { store, type AdminSeries, type AdminDay, type AdminAccount } from "../../data/store";
+import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail } from "../../data/store";
 import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 
@@ -321,14 +321,221 @@ function Breakdown({ title, icon, data, palette }: { title: string; icon: "check
   );
 }
 
+/* ---- account status chip ---- */
+function StatusChip({ label, color }: { label: string; color: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 600, color, background: `color-mix(in oklch, ${color} 14%, transparent)`, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>
+      <span style={{ width: 5, height: 5, borderRadius: 99, background: color }} />{label}
+    </span>
+  );
+}
+
+/* ---- CSV export ---- */
+function exportAccountsCSV(rows: AdminAccount[]) {
+  const head = ["Name", "Email", "Joined", "Last active", "Approved", "Admin", "Suspended"];
+  const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const body = rows.map((a) => [a.name, a.email, a.createdAt, a.updatedAt, a.approved === false ? "no" : "yes", a.isAdmin ? "yes" : "no", a.suspended ? "yes" : "no"].map(esc).join(","));
+  const csv = [head.join(","), ...body].join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `kanbo-accounts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ---- per-account slide-over: detail + admin actions ---- */
+function AccountDrawer({ account, currentEmail, onClose, onReload }: {
+  account: AdminAccount; currentEmail?: string; onClose: () => void; onReload: () => Promise<void>;
+}) {
+  const [detail, setDetail] = useState<AdminAccountDetail | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { let on = true; store.adminAccountDetail(account.id).then((d) => on && setDetail(d)).catch(reportError); return () => { on = false; }; }, [account.id]);
+
+  const isSelf = (account.email || "").toLowerCase() === (currentEmail || "").toLowerCase();
+  const appr = detail?.approved ?? account.approved ?? true;
+  const adm = detail?.isAdmin ?? account.isAdmin ?? false;
+  const susp = detail?.suspended ?? account.suspended ?? false;
+
+  const run = async (key: string, fn: () => Promise<void>, close = false) => {
+    setBusy(key); setErr(null);
+    try {
+      await fn();
+      await onReload();
+      if (close) { onClose(); return; }
+      const d = await store.adminAccountDetail(account.id); setDetail(d);
+    } catch (e) { setErr((e as Error)?.message || "Action failed"); reportError(e); }
+    finally { setBusy(null); }
+  };
+
+  const stat = (label: string, value: string | number) => (
+    <div><div className="kicker" style={{ fontSize: 9.5 }}>{label}</div><div className="mono tnum" style={{ fontSize: 19, fontWeight: 600 }}>{value}</div></div>
+  );
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(2px)" }} />
+      <div role="dialog" aria-modal="true" aria-label={`${account.name} account`} className="anim-fadein" style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 440, maxWidth: "94vw", zIndex: 71, background: "var(--surface-raised)", borderLeft: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "18px 20px", borderBottom: "1px solid var(--hairline)" }}>
+          <span style={{ width: 42, height: 42, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: "var(--accent-dim)", color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 14, fontWeight: 600 }}>{(account.name || account.email || "?").slice(0, 2).toUpperCase()}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="truncate" style={{ fontSize: 16, fontWeight: 600 }}>{account.name || "Unnamed"}{isSelf && <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
+            <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{account.email}</div>
+          </div>
+          <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ border: "none" }}><Icon name="x" size={18} /></button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+            {adm && <StatusChip label="Admin" color="var(--accent)" />}
+            {susp && <StatusChip label="Suspended" color="var(--prio-urgent)" />}
+            {!appr && <StatusChip label="Pending approval" color="var(--st-review)" />}
+            {appr && !susp && <StatusChip label="Active" color="var(--st-done)" />}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
+            {stat("Owned workspaces", detail?.workspacesOwned ?? "—")}
+            {stat("Member of", detail?.workspacesMember ?? "—")}
+            {stat("Tasks", detail?.tasksTotal ?? "—")}
+            {stat("Completed", detail?.tasksDone ?? "—")}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 7, fontSize: 12.5, color: "var(--ink-3)" }}>
+            <Row k="Joined" v={fmtDate(account.createdAt)} />
+            <Row k="Last sign-in" v={detail ? (detail.lastSignInAt ? fmtAgo(detail.lastSignInAt) : "never") : "…"} />
+            <Row k="Plan" v={detail?.plan ? `${detail.plan}${detail.subStatus ? ` · ${detail.subStatus}` : ""}` : "—"} />
+          </div>
+
+          {err && <div style={{ fontSize: 12.5, color: "var(--prio-urgent)", background: "color-mix(in oklch, var(--prio-urgent) 10%, transparent)", borderRadius: 10, padding: "9px 12px" }}>{err}</div>}
+
+          <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="kicker">Actions</div>
+            <button disabled={busy != null} onClick={() => run("approve", () => store.adminSetApproved(account.id, !appr))} className="btn btn-ghost" style={{ justifyContent: "center" }}>
+              <Icon name={appr ? "lock" : "check"} size={15} /> {busy === "approve" ? "Saving…" : appr ? "Revoke access" : "Approve access"}
+            </button>
+            <button disabled={busy != null || (isSelf && adm)} onClick={() => run("admin", () => store.adminSetAdmin(account.id, !adm))} className="btn btn-ghost" style={{ justifyContent: "center" }} title={isSelf && adm ? "You can't remove your own admin" : undefined}>
+              <Icon name="sparkles" size={15} /> {busy === "admin" ? "Saving…" : adm ? "Revoke admin" : "Make admin"}
+            </button>
+            {!isSelf && (
+              <button disabled={busy != null} onClick={() => run("suspend", () => store.adminSetSuspended(account.id, !susp))} className="btn btn-ghost" style={{ justifyContent: "center", color: susp ? "var(--st-done)" : "var(--prio-high)" }}>
+                <Icon name={susp ? "refresh" : "pause"} size={15} /> {busy === "suspend" ? "Saving…" : susp ? "Unsuspend" : "Suspend account"}
+              </button>
+            )}
+            {!isSelf && (
+              <button disabled={busy != null} className="btn btn-ghost" style={{ justifyContent: "center", color: "var(--prio-urgent)" }}
+                onClick={() => {
+                  const typed = window.prompt(`This permanently deletes ${account.email} and ALL their data. This cannot be undone.\n\nType the email to confirm:`);
+                  if (typed != null && typed.trim().toLowerCase() === (account.email || "").toLowerCase()) run("delete", () => store.adminDeleteUser(account.id), true);
+                  else if (typed != null) window.alert("Email didn't match — nothing was deleted.");
+                }}>
+                <Icon name="trash" size={15} /> {busy === "delete" ? "Deleting…" : "Delete account"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+function Row({ k, v }: { k: string; v: string }) {
+  return <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><span style={{ color: "var(--ink-4)" }}>{k}</span><span className="mono" style={{ color: "var(--ink-2)" }}>{v}</span></div>;
+}
+
+/* ---- accounts table: search / filter / sort / export + drawer ---- */
+type SortKey = "recent" | "joined" | "name";
+type FilterKey = "all" | "admins" | "unapproved" | "suspended" | "inactive";
+const INACTIVE_MS = 30 * 86400000;
+function AccountsPanel({ accounts, loading, currentEmail, onReload }: {
+  accounts: AdminAccount[]; loading: boolean; currentEmail?: string; onReload: () => Promise<void>;
+}) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<SortKey>("recent");
+  const [filter, setFilter] = useState<FilterKey>("all");
+  const [open, setOpen] = useState<AdminAccount | null>(null);
+  const needle = q.trim().toLowerCase();
+
+  const filtered = accounts.filter((a) => {
+    if (needle && !a.name.toLowerCase().includes(needle) && !a.email.toLowerCase().includes(needle)) return false;
+    if (filter === "admins") return a.isAdmin;
+    if (filter === "unapproved") return a.approved === false;
+    if (filter === "suspended") return !!a.suspended;
+    if (filter === "inactive") return !a.updatedAt || (Date.now() - new Date(a.updatedAt).getTime()) > INACTIVE_MS;
+    return true;
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    if (sort === "name") return a.name.localeCompare(b.name);
+    if (sort === "joined") return (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0);
+    return (new Date(b.updatedAt).getTime() || 0) - (new Date(a.updatedAt).getTime() || 0);
+  });
+
+  const selStyle: React.CSSProperties = { height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none", cursor: "pointer" };
+
+  return (
+    <div className="glass" style={{ borderRadius: 18, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 18px", borderBottom: "1px solid var(--hairline)", flexWrap: "wrap" }}>
+        <Icon name="user" size={16} style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 14.5, fontWeight: 600 }}>Accounts</span>
+        <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{filtered.length}{filtered.length !== accounts.length ? ` / ${accounts.length}` : ""}</span>
+        <div style={{ flex: 1 }} />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or email…" aria-label="Search accounts"
+          style={{ height: 30, width: 190, maxWidth: "40vw", padding: "0 11px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" }} />
+        <select value={filter} onChange={(e) => setFilter(e.target.value as FilterKey)} aria-label="Filter accounts" style={selStyle}>
+          <option value="all">All</option><option value="admins">Admins</option><option value="unapproved">Pending</option><option value="suspended">Suspended</option><option value="inactive">Inactive 30d+</option>
+        </select>
+        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} aria-label="Sort accounts" style={selStyle}>
+          <option value="recent">Recently active</option><option value="joined">Newest</option><option value="name">Name</option>
+        </select>
+        <button onClick={() => exportAccountsCSV(sorted)} disabled={!sorted.length} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> CSV</button>
+      </div>
+
+      {!loading && accounts.length > 0 && (
+        <div className="hide-sm" style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 18px", borderBottom: "1px solid var(--hairline)" }}>
+          <span style={{ width: 30, flexShrink: 0 }} />
+          <span className="kicker" style={{ flex: 1 }}>Member</span>
+          <span className="kicker" style={{ width: 130, flexShrink: 0 }}>Joined</span>
+          <span className="kicker" style={{ width: 90, flexShrink: 0, textAlign: "right" }}>Last active</span>
+        </div>
+      )}
+      {loading ? (
+        <div style={{ padding: "28px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>Loading accounts…</div>
+      ) : sorted.length === 0 ? (
+        <div style={{ padding: "28px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>No accounts{needle || filter !== "all" ? " match" : " yet"}.</div>
+      ) : sorted.map((a, i) => {
+        const inactive = !a.updatedAt || (Date.now() - new Date(a.updatedAt).getTime()) > INACTIVE_MS;
+        return (
+          <button key={a.id} onClick={() => setOpen(a)} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 18px", borderTop: i ? "1px solid var(--hairline)" : "none", width: "100%", textAlign: "left", background: "transparent", border: "none", borderTopColor: "var(--hairline)", cursor: "pointer" }}>
+            <span style={{ width: 30, height: 30, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: "var(--accent-dim)", color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600 }}>{(a.name || a.email || "?").slice(0, 2).toUpperCase()}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span className="truncate" style={{ fontSize: 13.5, color: "var(--ink)", fontWeight: 500 }}>{a.name}</span>
+                {a.isAdmin && <StatusChip label="Admin" color="var(--accent)" />}
+                {a.suspended && <StatusChip label="Suspended" color="var(--prio-urgent)" />}
+                {a.approved === false && <StatusChip label="Pending" color="var(--st-review)" />}
+              </div>
+              <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{a.email}</div>
+            </div>
+            <span className="mono hide-sm" style={{ width: 130, flexShrink: 0, fontSize: 12, color: "var(--ink-3)" }}>{fmtDate(a.createdAt)}</span>
+            <span className="mono" style={{ width: 90, flexShrink: 0, textAlign: "right", fontSize: 11.5, color: inactive ? "var(--ink-4)" : "var(--ink-3)" }}>{fmtAgo(a.updatedAt)}</span>
+          </button>
+        );
+      })}
+      {open && <AccountDrawer account={open} currentEmail={currentEmail} onClose={() => setOpen(null)} onReload={onReload} />}
+    </div>
+  );
+}
+
 const STATUS_COLORS: Record<string, string> = { todo: "#8a8f98", progress: "var(--accent)", review: "#f0a93b", blocked: "#e5544b", done: "#37c6a8" };
 const PRIORITY_COLORS: Record<string, string> = { low: "#6aa3ff", medium: "#37c6a8", high: "#f0a93b", urgent: "#e5544b" };
 
-export function AdminView() {
+export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [series, setSeries] = useState<AdminSeries | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const reloadAccounts = useCallback(async () => {
+    const a = await store.adminAccounts();
+    setAccounts(a ?? await store.adminProfiles());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -389,36 +596,7 @@ export function AdminView() {
         </div>
       )}
 
-      <div className="glass" style={{ borderRadius: 18, overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 18px", borderBottom: "1px solid var(--hairline)" }}>
-          <Icon name="user" size={16} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 14.5, fontWeight: 600 }}>Accounts</span>
-          <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{accounts.length}</span>
-        </div>
-        {!loading && accounts.length > 0 && (
-          <div className="hide-sm" style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 18px", borderBottom: "1px solid var(--hairline)" }}>
-            <span style={{ width: 30, flexShrink: 0 }} />
-            <span className="kicker" style={{ flex: 1 }}>Member</span>
-            <span className="kicker" style={{ width: 130, flexShrink: 0 }}>Joined</span>
-            <span className="kicker" style={{ width: 90, flexShrink: 0, textAlign: "right" }}>Last active</span>
-          </div>
-        )}
-        {loading ? (
-          <div style={{ padding: "28px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>Loading accounts…</div>
-        ) : accounts.length === 0 ? (
-          <div style={{ padding: "28px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>No accounts yet.</div>
-        ) : accounts.map((a, i) => (
-          <div key={a.id} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 18px", borderTop: i ? "1px solid var(--hairline)" : "none" }}>
-            <span style={{ width: 30, height: 30, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: "var(--accent-dim)", color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600 }}>{(a.name || a.email || "?").slice(0, 2).toUpperCase()}</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="truncate" style={{ fontSize: 13.5, color: "var(--ink)", fontWeight: 500 }}>{a.name}</div>
-              <div className="truncate" style={{ fontSize: 12, color: "var(--ink-4)" }}>{a.email}</div>
-            </div>
-            <span className="mono hide-sm" style={{ width: 130, flexShrink: 0, fontSize: 12, color: "var(--ink-3)" }}>{fmtDate(a.createdAt)}</span>
-            <span className="mono" style={{ width: 90, flexShrink: 0, textAlign: "right", fontSize: 11.5, color: "var(--ink-4)" }}>{fmtAgo(a.updatedAt)}</span>
-          </div>
-        ))}
-      </div>
+      <AccountsPanel accounts={accounts} loading={loading} currentEmail={currentEmail} onReload={reloadAccounts} />
     </div>
   );
 }

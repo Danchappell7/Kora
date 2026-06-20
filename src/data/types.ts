@@ -28,6 +28,7 @@ export interface Profile {
   email: string;
   avatarUrl: string | null;
   approved?: boolean;          // early-access gate (undefined when unknown → treated as allowed)
+  suspended?: boolean;         // admin-suspended account → blocked at the gate
 }
 
 export interface AccessRequest {

@@ -1549,6 +1549,9 @@ export default function App() {
   // Early-access gate: a brand-new account stays in a waiting room until an admin
   // approves it. Fail-open — only blocks when we KNOW approved === false, never on
   // a load hiccup, and the admin is always let through.
+  if (auth.configured && profile && profile.suspended === true && (auth.user?.email ?? "") !== "danchappell7@gmail.com") {
+    return <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} suspended />;
+  }
   if (auth.configured && profile && profile.approved === false && (auth.user?.email ?? "") !== "danchappell7@gmail.com") {
     return <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} />;
   }

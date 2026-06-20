@@ -166,9 +166,9 @@ function rowToActivity(r: ActivityRow): Activity {
   return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined };
 }
 
-interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; }
+interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; }
 function rowToProfile(r: ProfileRow): Profile {
-  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined };
+  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined };
 }
 function fullName(p: { firstName: string; lastName: string }): string {
   return [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
@@ -340,7 +340,13 @@ const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspa
 interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown }
 const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
 
-export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string }
+export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string; approved?: boolean; isAdmin?: boolean; suspended?: boolean }
+export interface AdminAccountDetail {
+  id: string; name: string; email: string; createdAt: string; lastSignInAt: string;
+  approved: boolean; isAdmin: boolean; suspended: boolean;
+  workspacesOwned: number; workspacesMember: number; tasksTotal: number; tasksDone: number;
+  plan: string | null; subStatus: string | null;
+}
 export interface AdminDay { d: string; signups: number; sessions: number; active: number; tasks: number; actions: number }
 export interface AdminSeries { days: AdminDay[]; by_status: Record<string, number>; by_priority: Record<string, number> }
 
@@ -1058,9 +1064,55 @@ export const store = {
     try {
       const { data, error } = await supabase.rpc("admin_accounts");
       if (error || !data) return null;
-      return (data as { id: string; email: string; name: string; created_at: string; last_sign_in_at: string }[])
-        .map((u) => ({ id: u.id, name: u.name || u.email || "Unnamed", email: u.email || "", createdAt: u.created_at || "", updatedAt: u.last_sign_in_at || u.created_at || "" }));
+      return (data as { id: string; email: string; name: string; created_at: string; last_sign_in_at: string; approved?: boolean; is_admin?: boolean; suspended?: boolean }[])
+        .map((u) => ({ id: u.id, name: u.name || u.email || "Unnamed", email: u.email || "", createdAt: u.created_at || "", updatedAt: u.last_sign_in_at || u.created_at || "", approved: u.approved ?? true, isAdmin: u.is_admin ?? false, suspended: u.suspended ?? false }));
     } catch { return null; }
+  },
+
+  // True if the signed-in user is an admin (founding email OR profiles.is_admin).
+  async amIAdmin(): Promise<boolean> {
+    if (!supabase) return true;
+    try { const { data, error } = await supabase.rpc("is_admin"); return !error && !!data; } catch { return false; }
+  },
+
+  // Per-user detail for the admin drawer (SECURITY DEFINER; admins only).
+  async adminAccountDetail(userId: string): Promise<AdminAccountDetail | null> {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase.rpc("admin_account_detail", { p_user: userId });
+      if (error || !data) return null;
+      const d = data as Record<string, unknown>;
+      return {
+        id: String(d.id), name: (d.name as string) || "", email: (d.email as string) || "",
+        createdAt: (d.created_at as string) || "", lastSignInAt: (d.last_sign_in_at as string) || "",
+        approved: !!d.approved, isAdmin: !!d.is_admin, suspended: !!d.suspended,
+        workspacesOwned: Number(d.workspaces_owned) || 0, workspacesMember: Number(d.workspaces_member) || 0,
+        tasksTotal: Number(d.tasks_total) || 0, tasksDone: Number(d.tasks_done) || 0,
+        plan: (d.plan as string) || null, subStatus: (d.sub_status as string) || null,
+      };
+    } catch { return null; }
+  },
+
+  // Admin account mutations — all guarded server-side by is_admin().
+  async adminSetApproved(userId: string, approved: boolean): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_set_approved", { p_user: userId, p_approved: approved });
+    if (error) throw error;
+  },
+  async adminSetAdmin(userId: string, isAdmin: boolean): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_set_admin", { p_user: userId, p_is_admin: isAdmin });
+    if (error) throw error;
+  },
+  async adminSetSuspended(userId: string, suspended: boolean): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_set_suspended", { p_user: userId, p_suspended: suspended });
+    if (error) throw error;
+  },
+  async adminDeleteUser(userId: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.rpc("admin_delete_user", { p_user: userId });
+    if (error) throw error;
   },
 
   // Richer cross-user aggregates via a SECURITY DEFINER RPC (optional — returns

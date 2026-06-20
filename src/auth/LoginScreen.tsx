@@ -217,14 +217,23 @@ export function UpdatePasswordScreen() {
 }
 
 /* shown to a signed-in but not-yet-approved early-access account */
-export function PendingApproval({ email, onSignOut }: { email?: string | null; onSignOut: () => void }) {
+export function PendingApproval({ email, onSignOut, suspended }: { email?: string | null; onSignOut: () => void; suspended?: boolean }) {
   return (
     <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 16 }}>
       <div className="app-bg" /><div className="app-grid" />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 420, maxWidth: "100%", padding: 30, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", textAlign: "center" }}>
-        <span style={{ display: "inline-grid", placeItems: "center", width: 50, height: 50, borderRadius: 15, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 16 }}><Icon name="clock" size={24} /></span>
-        <h2 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 10px" }}>You’re on the early-access list</h2>
-        <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: "0 0 22px" }}>Your account{email ? ` (${email})` : ""} is waiting for approval. Kanbo is free while we’re in early access and we let people in a batch at a time — you’ll hear from us the moment your spot is ready.</p>
+        <span style={{ display: "inline-grid", placeItems: "center", width: 50, height: 50, borderRadius: 15, background: suspended ? "color-mix(in oklch, var(--prio-urgent) 16%, transparent)" : "var(--accent-dim)", color: suspended ? "var(--prio-urgent)" : "var(--accent)", marginBottom: 16 }}><Icon name={suspended ? "lock" : "clock"} size={24} /></span>
+        {suspended ? (
+          <>
+            <h2 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 10px" }}>Your account is suspended</h2>
+            <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: "0 0 22px" }}>Access to this account{email ? ` (${email})` : ""} has been paused. If you think this is a mistake, get in touch and we’ll take a look.</p>
+          </>
+        ) : (
+          <>
+            <h2 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 10px" }}>You’re on the early-access list</h2>
+            <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: "0 0 22px" }}>Your account{email ? ` (${email})` : ""} is waiting for approval. Kanbo is free while we’re in early access and we let people in a batch at a time — you’ll hear from us the moment your spot is ready.</p>
+          </>
+        )}
         <button onClick={onSignOut} className="btn btn-ghost" style={{ width: "100%", justifyContent: "center", padding: "11px 15px" }}>Sign out</button>
       </div>
     </div>
