@@ -454,6 +454,22 @@ function TasksPage({ tasks, allTasks, view, setView, groupBy, setGroupBy, smart,
         )}
         </div>
       </div>
+      {(view === "list" || view === "board") && (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: isMobile ? "8px 14px" : "8px 24px", flexWrap: "wrap", borderBottom: "1px solid var(--hairline)", flexShrink: 0 }}>
+          <span className="kicker" style={{ marginRight: 2 }}>Quick</span>
+          {[
+            { label: "Overdue", active: dueFilter === "overdue", on: () => setFilter({ due: dueFilter === "overdue" ? "all" : "overdue" }) },
+            { label: "Today", active: dueFilter === "today", on: () => setFilter({ due: dueFilter === "today" ? "all" : "today" }) },
+            { label: "This week", active: dueFilter === "week", on: () => setFilter({ due: dueFilter === "week" ? "all" : "week" }) },
+            { label: "High priority", active: priorityFilter === "high", on: () => setFilter({ priority: priorityFilter === "high" ? "all" : "high" }) },
+            { label: "Urgent", active: priorityFilter === "urgent", on: () => setFilter({ priority: priorityFilter === "urgent" ? "all" : "urgent" }) },
+            { label: "Hide done", active: hideDone, on: () => setFilter({ hideDone: !hideDone }) },
+          ].map((c) => (
+            <button key={c.label} onClick={c.on} style={{ padding: "4px 11px", borderRadius: 99, cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, border: `1px solid ${c.active ? "var(--accent)" : "var(--hairline)"}`, background: c.active ? "var(--accent-dim)" : "transparent", color: c.active ? "var(--accent)" : "var(--ink-3)" }}>{c.label}</button>
+          ))}
+          {filterActive && <button onClick={() => setFilters({ priority: "all", assignee: "all", tag: "all", due: "all", hideDone: false, showArchived: false, custom: {} })} style={{ marginLeft: 4, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear</button>}
+        </div>
+      )}
       {view === "list" && <ListView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
       {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} />}
       {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
