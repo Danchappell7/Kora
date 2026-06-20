@@ -22,7 +22,7 @@ const fmtBytes = (n: number): string => {
 };
 import {
   getProject, getMember, blockingTasks, dueState, fmtDue, timeAgo, DUE_PRESETS, presetDate,
-  STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO,
+  STATUS_META, STATUS_ORDER, PRIORITY_META, toLocalISO, nextDueDate,
 } from "../data/data";
 import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue, Section } from "../data/types";
 
@@ -504,10 +504,16 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
             </button>
             {moreOpen && (<>
             <MetaRow icon="refresh" label="Repeat">
-              <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}
-                style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
-                {(Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => <option key={r} value={r}>{RECUR_LABEL[r]}</option>)}
-              </select>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}
+                  style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+                  {(Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => <option key={r} value={r}>{RECUR_LABEL[r]}</option>)}
+                </select>
+                {task.recurrence && task.recurrence !== "none" && task.dueDate && (
+                  <button onClick={() => onPatch(task.id, { dueDate: nextDueDate(task.dueDate, task.recurrence!) })} title="Move this task to its next occurrence without completing it"
+                    style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 12, fontFamily: "var(--font-display)" }}>Skip →</button>
+                )}
+              </span>
             </MetaRow>
             <MetaRow icon="clock" label="Estimate">
               <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
