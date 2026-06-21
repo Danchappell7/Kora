@@ -21,7 +21,14 @@ const inputStyle: React.CSSProperties = {
 };
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6, letterSpacing: ".01em" };
 
-export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount }: {
+const NOTIF_ROWS: { key: string; label: string }[] = [
+  { key: "assigned", label: "Assigned to me" },
+  { key: "mention", label: "Mentions" },
+  { key: "comment", label: "Comments on my tasks" },
+  { key: "due", label: "Due-date reminders" },
+];
+
+export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -31,7 +38,12 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onSave: (p: ProfileDraft) => Promise<void>;
   onExport: () => void;
   onDeleteAccount: () => Promise<void>;
+  notifyPrefs?: Record<string, boolean>;
+  onSaveNotifyPrefs?: (prefs: Record<string, boolean>) => void;
 }) {
+  // a pref is ON unless explicitly false (in-app key = base; email key = base+"_email")
+  const prefOn = (k: string) => notifyPrefs[k] !== false;
+  const togglePref = (k: string) => onSaveNotifyPrefs?.({ ...notifyPrefs, [k]: !prefOn(k) });
   const [firstName, setFirstName] = useState(initial.firstName);
   const [lastName, setLastName] = useState(initial.lastName);
   const [pronouns, setPronouns] = useState(initial.pronouns);
@@ -156,6 +168,32 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
             <button className="btn btn-ghost" onClick={onExport}><Icon name="archive" size={15} /> Export my data</button>
             <span style={{ fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.4 }}>Download all your tasks and projects as a JSON file.</span>
           </div>
+
+          {/* notifications */}
+          {onSaveNotifyPrefs && (
+            <>
+              <div className="divider" style={{ margin: "22px 0 16px" }} />
+              <label style={labelStyle}>Notifications</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+                <span style={{ flex: 1 }} />
+                <span className="kicker" style={{ width: 56, textAlign: "center" }}>In-app</span>
+                <span className="kicker" style={{ width: 56, textAlign: "center" }}>Email</span>
+              </div>
+              {NOTIF_ROWS.map((r) => (
+                <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 0", borderTop: "1px solid var(--hairline)" }}>
+                  <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)" }}>{r.label}</span>
+                  {/* due reminders are email-only (sent by the daily job) */}
+                  <span style={{ width: 56, display: "grid", placeItems: "center" }}>
+                    {r.key === "due" ? <span style={{ color: "var(--ink-4)", fontSize: 16 }}>—</span>
+                      : <input type="checkbox" checked={prefOn(r.key)} onChange={() => togglePref(r.key)} aria-label={`${r.label} in-app`} style={{ cursor: "pointer" }} />}
+                  </span>
+                  <span style={{ width: 56, display: "grid", placeItems: "center" }}>
+                    <input type="checkbox" checked={prefOn(`${r.key}_email`)} onChange={() => togglePref(`${r.key}_email`)} aria-label={`${r.label} email`} style={{ cursor: "pointer" }} />
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
 
           {/* danger zone */}
           <div className="divider" style={{ margin: "22px 0 16px" }} />

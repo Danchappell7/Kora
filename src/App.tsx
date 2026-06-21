@@ -861,6 +861,11 @@ export default function App() {
     toastSuccess("Profile saved");
   }, [auth.user?.email, toastSuccess]);
 
+  const saveNotifyPrefs = useCallback((prefs: Record<string, boolean>) => {
+    setProfile((p) => p ? { ...p, notifyPrefs: prefs } : p);
+    store.updateNotifyPrefs(userIdRef.current, prefs).catch((e) => { reportError(e, { op: "updateNotifyPrefs" }); toastError("Couldn't save notification preferences."); });
+  }, [toastError]);
+
   // download all of the user's data as JSON (user-initiated, their own data)
   const exportData = useCallback(() => {
     const payload = {
@@ -1127,6 +1132,10 @@ export default function App() {
     setTasks((ts) => ts && ts.map((t) => t.id === id ? { ...t, ...patch } : t));
     noteWrite(id, patch);
     store.updateTask(id, patch).catch(reportError);
+    // email the new assignee (someone else) — in-app handled by the DB trigger
+    if (prev && patch.assigneeId && patch.assigneeId !== prev.assigneeId && patch.assigneeId !== userIdRef.current) {
+      store.notify({ kind: "assigned", taskId: id, taskTitle: prev.title, recipientIds: [patch.assigneeId] });
+    }
     if (prev && patch.status && patch.status !== prev.status) {
       if (patch.status === "done") { log("completed", prev, "Marked complete"); spawnRecurrence(prev); }
       else log("status", prev, `Moved to ${STATUS_META[patch.status].label}`);
@@ -1249,6 +1258,9 @@ export default function App() {
         noteWrite(taskId, { comments: count });
         store.updateTask(taskId, { comments: count }).catch(reportError);
         log("comment", t, body.length > 80 ? body.slice(0, 77) + "…" : body);
+        // transactional emails (best-effort; in-app handled by DB triggers)
+        if (mentions.length) store.notify({ kind: "mention", taskId, taskTitle: t.title, recipientIds: mentions });
+        store.notify({ kind: "comment", taskId, taskTitle: t.title });
       }
       return c;
     } catch (e) {
@@ -1860,7 +1872,8 @@ export default function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
-        onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount} />
+        onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount}
+        notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);

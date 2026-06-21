@@ -166,9 +166,9 @@ function rowToActivity(r: ActivityRow): Activity {
   return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined };
 }
 
-interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; }
+interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; notify_prefs?: Record<string, boolean> | null; }
 function rowToProfile(r: ProfileRow): Profile {
-  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined };
+  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined, notifyPrefs: r.notify_prefs ?? undefined };
 }
 function fullName(p: { firstName: string; lastName: string }): string {
   return [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
@@ -1342,6 +1342,22 @@ export const store = {
     }).select("*").single();
     if (error) throw error;
     return rowToProfile(data as ProfileRow);
+  },
+
+  // Persist this user's notification preferences (jsonb on profiles).
+  async updateNotifyPrefs(userId: string, prefs: Record<string, boolean>): Promise<void> {
+    if (!supabase) { if (demoProfile) demoProfile = { ...demoProfile, notifyPrefs: prefs }; return; }
+    const uid = await authUid(userId);
+    const { error } = await supabase.from("profiles").update({ notify_prefs: prefs }).eq("id", uid);
+    if (error) throw error;
+  },
+
+  // Fire transactional emails for an event (assignment / mention / comment).
+  // The edge function resolves each recipient's email + email pref server-side.
+  // Best-effort: a no-op if the function isn't deployed yet (in-app still works).
+  async notify(payload: { kind: "assigned" | "mention" | "comment"; taskId: string; taskTitle: string; recipientIds?: string[] }): Promise<void> {
+    if (!supabase) return;
+    try { await supabase.functions.invoke("notify", { body: payload }); } catch { /* not deployed — in-app notifications already handled by triggers */ }
   },
 
   // Upload an avatar image to the public "avatars" bucket; returns its URL.
