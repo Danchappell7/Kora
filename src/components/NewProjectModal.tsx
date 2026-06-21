@@ -2,7 +2,7 @@
    KANBO — create-project modal
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
-import { Icon } from "./primitives";
+import { Icon, EmojiPicker } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProjectTemplates, saveProjectTemplate, type ProjectTemplate } from "../lib/templates";
 import type { NewProject } from "../data/store";
@@ -24,11 +24,12 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
   const [color, setColor] = useState(COLORS[0]);
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
   const [saved, setSaved] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
 
   useEffect(() => {
-    if (open) { setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setSaved(false); setTemplates(getProjectTemplates()); setTimeout(() => inputRef.current?.focus(), 30); }
+    if (open) { setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setSaved(false); setPickerOpen(false); setTemplates(getProjectTemplates()); setTimeout(() => inputRef.current?.focus(), 30); }
   }, [open]);
 
   if (!open) return null;
@@ -68,7 +69,9 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
               {EMOJI.map((e) => (
                 <button key={e} onClick={() => setEmoji(e)} style={{ width: 34, height: 34, borderRadius: 9, cursor: "pointer", fontSize: 17, background: emoji === e ? "var(--surface-2)" : "transparent", border: emoji === e ? "1px solid var(--accent)" : "1px solid var(--hairline)" }}>{e}</button>
               ))}
+              <button onClick={() => setPickerOpen((v) => !v)} title="More emojis" style={{ width: 34, height: 34, borderRadius: 9, cursor: "pointer", fontSize: 13, color: "var(--ink-3)", background: pickerOpen ? "var(--surface-2)" : "transparent", border: "1px solid var(--hairline)" }}>{EMOJI.includes(emoji) ? "＋" : emoji}</button>
             </div>
+            {pickerOpen && <div style={{ marginTop: 8 }}><EmojiPicker onPick={(e) => { setEmoji(e); setPickerOpen(false); }} /></div>}
           </div>
           <div>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ink-4)", marginBottom: 8 }}>Color</div>

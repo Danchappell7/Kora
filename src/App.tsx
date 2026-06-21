@@ -3,7 +3,7 @@
    timer, tasks page
    ============================================================ */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Icon, Avatar, StatusDot, Segmented, GlobalTipStyles, type SegmentedOption } from "./components/primitives";
+import { Icon, Avatar, StatusDot, Segmented, GlobalTipStyles, EmojiPicker, type SegmentedOption } from "./components/primitives";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { CommandPalette } from "./components/CommandPalette";
@@ -97,9 +97,10 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
   const [statusOpen, setStatusOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState(project.name);
   const [emojiDraft, setEmojiDraft] = useState(project.emoji);
-  useEffect(() => { setNameDraft(project.name); setEmojiDraft(project.emoji); setEditOpen(false); }, [project.id, project.name, project.emoji]);
+  useEffect(() => { setNameDraft(project.name); setEmojiDraft(project.emoji); setEditOpen(false); setEmojiPickerOpen(false); }, [project.id, project.name, project.emoji]);
   const PROJECT_PALETTE = ["oklch(0.74 0.14 230)", "oklch(0.74 0.16 305)", "oklch(0.75 0.13 155)", "oklch(0.78 0.15 70)", "oklch(0.66 0.2 20)", "oklch(0.78 0.1 45)"];
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(project.description || "");
@@ -149,11 +150,12 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
               <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 31, width: 280, padding: 14, borderRadius: 14, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 12 }}>
                 <div className="kicker">Edit project</div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <input value={emojiDraft} onChange={(e) => setEmojiDraft(e.target.value.slice(0, 2))} onBlur={() => { if (emojiDraft && emojiDraft !== project.emoji) onUpdate(project.id, { emoji: emojiDraft }); }} aria-label="Project emoji"
-                    style={{ width: 46, height: 38, textAlign: "center", fontSize: 19, borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", outline: "none" }} />
+                  <button onClick={() => setEmojiPickerOpen((v) => !v)} title="Choose icon" aria-label="Project icon"
+                    style={{ width: 46, height: 38, textAlign: "center", fontSize: 19, borderRadius: 9, border: emojiPickerOpen ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer" }}>{emojiDraft}</button>
                   <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && nameDraft.trim()) { onUpdate(project.id, { name: nameDraft.trim() }); setEditOpen(false); } }} onBlur={() => { if (nameDraft.trim() && nameDraft.trim() !== project.name) onUpdate(project.id, { name: nameDraft.trim() }); }} aria-label="Project name"
                     style={{ flex: 1, height: 38, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
                 </div>
+                {emojiPickerOpen && <EmojiPicker width={252} height={180} onPick={(e) => { setEmojiDraft(e); onUpdate(project.id, { emoji: e }); setEmojiPickerOpen(false); }} />}
                 <div>
                   <div className="kicker" style={{ marginBottom: 7 }}>Colour</div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>

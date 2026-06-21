@@ -3,7 +3,7 @@
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore } from "./primitives";
+import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore, EmojiPicker } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
@@ -196,6 +196,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depQuery, setDepQuery] = useState("");
   const [reactsOpen, setReactsOpen] = useState(false);
+  const [reactMoreOpen, setReactMoreOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const commentRef = useRef<HTMLInputElement>(null);
@@ -408,8 +409,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     🙂 React{totalReacts > 0 && <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{totalReacts}</span>}
                   </button>
                 ) : (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {REACTION_EMOJIS.map((emoji) => {
+                  <div style={{ position: "relative", display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {[...new Set([...REACTION_EMOJIS, ...Object.keys(taskReactions)])].map((emoji) => {
                       const uids = taskReactions[emoji] ?? [];
                       const mine = uids.includes(currentUserId);
                       return (
@@ -420,6 +421,13 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                         </button>
                       );
                     })}
+                    <button onClick={() => setReactMoreOpen((v) => !v)} title="More reactions" style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 13, border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-3)" }}>＋</button>
+                    {reactMoreOpen && (
+                      <>
+                        <div onClick={() => setReactMoreOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 41 }}><EmojiPicker height={180} onPick={(e) => { onToggleTaskReaction(task.id, e); setReactMoreOpen(false); }} /></div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -776,10 +784,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     {reactPickerFor === c.id && (
                       <>
                         <div onClick={() => setReactPickerFor(null)} style={{ position: "fixed", inset: 0, zIndex: 10 }} />
-                        <div className="anim-scalein" style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 11, display: "flex", gap: 3, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                          {REACTION_EMOJIS.map((e) => (
-                            <button key={e} onClick={() => { toggleReaction(c, e); setReactPickerFor(null); }} style={{ width: 30, height: 30, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 17 }}>{e}</button>
-                          ))}
+                        <div className="anim-scalein" style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 11 }}>
+                          <EmojiPicker height={170} onPick={(e) => { toggleReaction(c, e); setReactPickerFor(null); }} />
                         </div>
                       </>
                     )}

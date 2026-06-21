@@ -10,6 +10,7 @@ import type { Status, Priority, IconName } from "../../data/types";
 
 export { Icon };
 export { KanboLogo } from "./KanboLogo";
+export { EmojiPicker } from "./EmojiPicker";
 
 /* ---------- Avatar ---------- */
 export function Avatar({ id, size = 24, ring }: { id: string; size?: number; ring?: boolean }) {
