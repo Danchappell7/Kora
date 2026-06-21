@@ -166,7 +166,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
         <StatTile kicker="Done this week" value={doneThisWeek} icon="check" sub="Completed in last 7 days" />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16, marginBottom: 26 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 26 }}>
         {/* focus queue */}
         <div className="glass anim-fadeup" style={{ padding: 4, borderRadius: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "15px 16px 12px" }}>

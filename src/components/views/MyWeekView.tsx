@@ -63,7 +63,7 @@ export function MyWeekView({ tasks, onOpen, onPatch }: { tasks: Task[]; onOpen: 
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
         {days.map((d, i) => {
           const iso = weekIsos[i];
           const items = open.filter((t) => t.dueDate === iso);

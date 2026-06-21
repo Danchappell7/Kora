@@ -638,10 +638,11 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
         <div style={{ flex: 1 }} />
         {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 8 }}>
+      <div style={{ overflowX: "auto" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, marginBottom: 8, minWidth: 560 }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="kicker" style={{ textAlign: "center", padding: "4px 0" }}>{d}</div>)}
       </div>
-      <div className="glass" style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: mode === "week" ? "minmax(320px,1fr)" : "minmax(118px,1fr)", gap: 1, padding: 1, borderRadius: 16, overflow: "hidden", background: "var(--hairline)" }}>
+      <div className="glass" style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: mode === "week" ? "minmax(320px,1fr)" : "minmax(118px,1fr)", gap: 1, padding: 1, borderRadius: 16, overflow: "hidden", background: "var(--hairline)", minWidth: 560 }}>
         {gridDates.map((date, i) => {
           const dayIso = date ? toLocalISO(date) : "";
           const dayTasks = date ? tasks.filter((t) => t.dueDate === dayIso) : [];
@@ -695,6 +696,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );
