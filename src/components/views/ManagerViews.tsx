@@ -151,7 +151,7 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
                   <select value={g.status} onChange={(e) => onUpdate(g.id, { status: e.target.value as GoalStatus })} style={{ ...inp, height: 28, color: meta.color }}>
                     {(Object.keys(GOAL_STATUS) as GoalStatus[]).map((s) => <option key={s} value={s}>{GOAL_STATUS[s].label}</option>)}
                   </select>
-                  <button onClick={() => onDelete(g.id)} aria-label="Delete goal" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                  <button onClick={() => { if (window.confirm(`Delete goal “${g.name}”? This can't be undone.`)) onDelete(g.id); }} aria-label="Delete goal" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0", flexWrap: "wrap" }}>
                   <select value={g.projectId ?? ""} onChange={(e) => onUpdate(g.id, { projectId: e.target.value || undefined })} style={{ ...inp, maxWidth: 180 }} aria-label="Linked project">
@@ -227,7 +227,7 @@ export function PortfoliosView({ portfolios, projects, tasks, onCreate, onUpdate
                   <Icon name="briefcase" size={16} style={{ color: "var(--accent)" }} />
                   <input value={pf.name} onChange={(e) => onUpdate(pf.id, { name: e.target.value })} style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }} />
                   <button onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}><Icon name="plus" size={14} /> Project</button>
-                  <button onClick={() => onDelete(pf.id)} aria-label="Delete portfolio" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                  <button onClick={() => { if (window.confirm(`Delete portfolio “${pf.name}”? This can't be undone.`)) onDelete(pf.id); }} aria-label="Delete portfolio" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
                 {pickFor === pf.id && available.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
@@ -328,7 +328,7 @@ export function AutomationsView({ rules, projects, members, sections, onCreate, 
                   <button onClick={() => onUpdate(rule.id, { enabled: !rule.enabled })} title={rule.enabled ? "Enabled" : "Disabled"} aria-pressed={rule.enabled} style={{ width: 40, height: 22, borderRadius: 999, border: "none", cursor: "pointer", background: rule.enabled ? "var(--accent)" : "var(--surface-2)", position: "relative", transition: "background .15s" }}>
                     <span style={{ position: "absolute", top: 2, left: rule.enabled ? 20 : 2, width: 18, height: 18, borderRadius: 99, background: "#fff", transition: "left .15s" }} />
                   </button>
-                  <button onClick={() => onDelete(rule.id)} aria-label="Delete rule" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                  <button onClick={() => { if (window.confirm(`Delete automation “${rule.name}”?`)) onDelete(rule.id); }} aria-label="Delete rule" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--ink-4)", marginBottom: 8 }}>
                   <span>When</span>
@@ -418,7 +418,7 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                   <input value={f.name} onChange={(e) => onUpdate(f.id, { name: e.target.value })} style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }} />
                   <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{proj?.name}</span>
                   <button onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}>{filling ? "Close" : "Open form"}</button>
-                  <button onClick={() => onDelete(f.id)} aria-label="Delete form" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                  <button onClick={() => { if (window.confirm(`Delete form “${f.name}”?`)) onDelete(f.id); }} aria-label="Delete form" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
                 <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
                   {FORM_FIELDS.map((ff) => {

@@ -659,9 +659,12 @@ export const store = {
     throw new Error("createProject failed");
   },
 
-  async updateProject(id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }): Promise<void> {
+  async updateProject(id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }): Promise<void> {
     if (!supabase) return;
     let row: Record<string, unknown> = {};
+    if ("name" in patch && patch.name?.trim()) row.name = patch.name.trim();
+    if ("emoji" in patch) row.emoji = patch.emoji;
+    if ("color" in patch) row.color = patch.color;
     if ("description" in patch) row.description = patch.description ?? null;
     if ("status" in patch) row.status = patch.status ?? null;
     if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;

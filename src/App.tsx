@@ -93,9 +93,14 @@ const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
 ];
 
-function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void }) {
+function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project.name);
+  const [emojiDraft, setEmojiDraft] = useState(project.emoji);
+  useEffect(() => { setNameDraft(project.name); setEmojiDraft(project.emoji); setEditOpen(false); }, [project.id, project.name, project.emoji]);
+  const PROJECT_PALETTE = ["oklch(0.74 0.14 230)", "oklch(0.74 0.16 305)", "oklch(0.75 0.13 155)", "oklch(0.78 0.15 70)", "oklch(0.66 0.2 20)", "oklch(0.78 0.1 45)"];
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(project.description || "");
   const [updOpen, setUpdOpen] = useState(false);
@@ -135,7 +140,33 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
     <div className="glass" style={{ margin: "14px 24px 0", padding: "16px 18px", borderRadius: 16, display: "flex", flexDirection: "column", gap: 12 }}>
      <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 180 }}>
-        <span style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", fontSize: 20, background: `color-mix(in oklch, ${project.color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${project.color} 32%, transparent)` }}>{project.emoji}</span>
+        <div style={{ position: "relative" }}>
+          <button onClick={() => canManagePeople && setEditOpen((v) => !v)} title={canManagePeople ? "Edit project" : undefined}
+            style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", fontSize: 20, background: `color-mix(in oklch, ${project.color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${project.color} 32%, transparent)`, cursor: canManagePeople ? "pointer" : "default", padding: 0 }}>{project.emoji}</button>
+          {editOpen && canManagePeople && (
+            <>
+              <div onClick={() => setEditOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
+              <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 31, width: 280, padding: 14, borderRadius: 14, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 12 }}>
+                <div className="kicker">Edit project</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input value={emojiDraft} onChange={(e) => setEmojiDraft(e.target.value.slice(0, 2))} onBlur={() => { if (emojiDraft && emojiDraft !== project.emoji) onUpdate(project.id, { emoji: emojiDraft }); }} aria-label="Project emoji"
+                    style={{ width: 46, height: 38, textAlign: "center", fontSize: 19, borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", outline: "none" }} />
+                  <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && nameDraft.trim()) { onUpdate(project.id, { name: nameDraft.trim() }); setEditOpen(false); } }} onBlur={() => { if (nameDraft.trim() && nameDraft.trim() !== project.name) onUpdate(project.id, { name: nameDraft.trim() }); }} aria-label="Project name"
+                    style={{ flex: 1, height: 38, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
+                </div>
+                <div>
+                  <div className="kicker" style={{ marginBottom: 7 }}>Colour</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {PROJECT_PALETTE.map((c) => (
+                      <button key={c} onClick={() => onUpdate(project.id, { color: c })} aria-label="Set colour"
+                        style={{ width: 26, height: 26, borderRadius: 8, background: c, border: project.color === c ? "2px solid var(--ink)" : "2px solid transparent", cursor: "pointer" }} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 15, fontWeight: 600 }}>{project.name}</span>
@@ -1253,7 +1284,7 @@ export default function App() {
       });
   }, [applyProjects, toastError]);
 
-  const updateProject = useCallback((id: string, patch: { description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => {
+  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => {
     applyProjects(projectsRef.current.map((p) => p.id === id ? { ...p, ...patch } : p));
     store.updateProject(id, patch).catch(reportError);
   }, [applyProjects]);
@@ -1660,7 +1691,12 @@ export default function App() {
     return active.length > 0 ? active : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   })();
 
-  const inboxCount = activity.filter((a) => !a.readAt && new Date(a.createdAt).getTime() > inboxSeenAt).length;
+  // scope the inbox to the active workspace — a task's activity belongs to the
+  // workspace its task lives in, so personal-account activity never leaks into a
+  // team inbox (or vice versa). Unresolvable (deleted-task) items are dropped.
+  const wsOfTask = new Map(tasks.map((t) => [t.id, t.workspaceId ?? null]));
+  const scopedActivity = activity.filter((a) => a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace);
+  const inboxCount = scopedActivity.filter((a) => !a.readAt && new Date(a.createdAt).getTime() > inboxSeenAt).length;
   const currentUser = getMember(currentUserId);
   const firstName = currentUser?.name?.trim().split(/\s+/)[0] || "there";
   const hour = new Date().getHours();
@@ -1679,7 +1715,7 @@ export default function App() {
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;
       case "automations": return <AutomationsView rules={automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId))} projects={wsProjects} members={assignees} sections={sections} onCreate={createRule} onUpdate={updateRule} onDelete={deleteRule} />;
       case "forms": return <FormsView forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
-      case "inbox": return <InboxView activity={activity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
+      case "inbox": return <InboxView activity={scopedActivity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
       case "tasks":
