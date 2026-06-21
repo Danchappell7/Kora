@@ -220,7 +220,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
             );
           }
           return (
-            <div key={col.key} style={{ width: 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
+            <div key={col.key} style={{ width: isMobile ? 270 : 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
               onDragOver={(e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(col.key); setHover(null); } }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === col.key ? null : d); }}
               onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); if (id) onColumnDrop(id, col); }}>
@@ -285,9 +285,11 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
 
 /* ---------------- TIMELINE (Gantt) ---------------- */
 export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTasks?: Task[]; onOpen: (id: string) => void; onPatch?: (id: string, patch: Partial<Task>) => void }) {
+  const isMobile = useMediaQuery("(max-width: 860px)");
   const DAYS = 16, START = -2; // show -2 .. +13
   const dates = Array.from({ length: DAYS }, (_, i) => { const d = new Date(KANBO_TODAY); d.setDate(d.getDate() + START + i); return d; });
-  const colW = 78, labelW = 230, rowH = 46;
+  // tighter columns + label on phones so more of the chart is visible
+  const colW = isMobile ? 46 : 78, labelW = isMobile ? 124 : 230, rowH = 46;
   const dayIndex = (iso?: string): number | null => {
     if (!iso) return null;
     const d = new Date(iso + "T00:00:00");
