@@ -16,6 +16,7 @@ import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ImportTasksModal } from "./components/ImportTasksModal";
+import { OnboardingModal } from "./components/OnboardingModal";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
@@ -589,6 +590,8 @@ export default function App() {
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [onboardOpen, setOnboardOpen] = useState(false);
+  const onboardCheckedRef = useRef(false);
   const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
   const [banner, setBanner] = useState<AppBanner | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
@@ -601,6 +604,14 @@ export default function App() {
     window.addEventListener("offline", goOffline);
     return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
   }, [toastSuccess]);
+  // first-run onboarding: show once to brand-new accounts (no real projects yet)
+  useEffect(() => {
+    if (tasks === null || onboardCheckedRef.current) return;
+    onboardCheckedRef.current = true;
+    let done = false; try { done = localStorage.getItem("kanbo-onboarded") === "1"; } catch { /* private mode */ }
+    if (!done && projectsRef.current.filter((p) => p.id !== "p-personal").length === 0) setOnboardOpen(true);
+  }, [tasks]);
+  const finishOnboarding = useCallback(() => { try { localStorage.setItem("kanbo-onboarded", "1"); } catch { /* ignore */ } setOnboardOpen(false); }, []);
   const [route, setRouteRaw] = useState<Route>({ view: "home" });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
@@ -1839,6 +1850,7 @@ export default function App() {
       {focusOpen && <FocusMode focus={focus} tasks={allTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
+      <OnboardingModal open={onboardOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}
         canSkip={!!((profile?.firstName?.trim()) || (profile?.lastName?.trim()))}
