@@ -187,6 +187,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
 }) {
   const task = tasks.find((t) => t.id === taskId);
   const [newSub, setNewSub] = useState("");
+  const [aiSubBusy, setAiSubBusy] = useState(false);
+  const [aiSubNote, setAiSubNote] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [descMentionQuery, setDescMentionQuery] = useState<string | null>(null);
@@ -272,6 +274,14 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     onPatch(task.id, { tags: next });
   };
   const addSub = () => { const v = newSub.trim(); if (v) { onAddSubtask(task.id, v); setNewSub(""); } };
+  const aiBreakdown = async () => {
+    if (!task) return;
+    setAiSubBusy(true);
+    const subs = await store.aiBreakdown(task.title, desc);
+    setAiSubBusy(false);
+    if (subs.length) subs.forEach((s) => onAddSubtask(task.id, s));
+    else { setAiSubNote("AI couldn't suggest subtasks — add them manually."); window.setTimeout(() => setAiSubNote(null), 3000); }
+  };
 
   // @mention autocomplete — suggest teammates as you type "@…", and on send
   // resolve "@Name" tokens to user ids so the trigger can notify them.
@@ -697,7 +707,11 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                   {children.filter((c) => c.status === "done").length + (task.subtasks ?? []).filter((s) => s.done).length}/{children.length + (task.subtasks?.length ?? 0)}
                 </span>
               )}
+              <button onClick={aiBreakdown} disabled={aiSubBusy} title="Let Kanbo break this into subtasks" style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "transparent", color: "var(--accent)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12 }}>
+                <Icon name="sparkles" size={13} /> {aiSubBusy ? "Thinking…" : "Suggest"}
+              </button>
             </div>
+            {aiSubNote && <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 8 }}>{aiSubNote}</div>}
             {children.map((c) => {
               const cdone = c.status === "done";
               const cds = dueState(c.dueDate, c.status);

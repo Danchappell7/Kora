@@ -7,6 +7,7 @@ import { Bars, Ring, type BarDatum } from "../charts";
 import { StatTile } from "./HomeView";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO, getProject, getMember } from "../../data/data";
+import { store } from "../../data/store";
 import type { Task, Priority, Status, CustomFieldDef } from "../../data/types";
 
 type Dim = "status" | "priority" | "project" | "assignee" | string; // string = custom field id
@@ -16,6 +17,15 @@ export function AnalyticsView({ tasks, members = [], customFields = [] }: { task
   const [dim, setDim] = useState<Dim>("status");
   const [scope, setScope] = useState<"all" | "open" | "done">("all");
   const [billRate, setBillRate] = useState<number>(() => { try { return Number(localStorage.getItem("kanbo-bill-rate")) || 0; } catch { return 0; } });
+  // Kanbo AI: weekly summary + ask
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [askBusy, setAskBusy] = useState(false);
+  const today = toLocalISO(KANBO_TODAY);
+  const genSummary = async () => { setSummaryBusy(true); setAiSummary(null); const s = await store.aiSummary(tasks, today); setSummaryBusy(false); setAiSummary(s ?? "AI is unavailable right now. Try again shortly."); };
+  const ask = async () => { const q = question.trim(); if (!q) return; setAskBusy(true); setAnswer(null); const a = await store.aiAsk(q, tasks, today); setAskBusy(false); setAnswer(a ?? "AI is unavailable right now. Try again shortly."); };
   const setRate = (n: number) => { setBillRate(n); try { localStorage.setItem("kanbo-bill-rate", String(n)); } catch { /* private mode */ } };
 
   // ---- per-member output (team workload) ----
@@ -125,6 +135,23 @@ export function AnalyticsView({ tasks, members = [], customFields = [] }: { task
           {" "}{open > 0 ? <><strong>{open}</strong> still open.</> : <>Everything's done — nice work.</>}
         </p>
       </div>
+
+      {/* Kanbo AI — weekly summary + ask */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12, flexWrap: "wrap" }}>
+          <Icon name="sparkles" size={16} style={{ color: "var(--accent)" }} />
+          <h3 style={{ fontSize: 14.5, fontWeight: 600 }}>Kanbo AI</h3>
+          <button onClick={genSummary} disabled={summaryBusy} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "5px 11px", fontSize: 12.5 }}>{summaryBusy ? "Writing…" : "Weekly summary"}</button>
+        </div>
+        {aiSummary && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: 14, padding: "12px 14px", borderRadius: 12, background: "var(--surface)", border: "1px solid var(--hairline)" }}>{aiSummary}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }}
+            placeholder="Ask Kanbo… e.g. what's overdue and who owns it?" aria-label="Ask Kanbo"
+            style={{ flex: 1, height: 38, padding: "0 13px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+          <button onClick={ask} disabled={askBusy || !question.trim()} className="btn btn-accent" style={{ opacity: question.trim() ? 1 : 0.5 }}>{askBusy ? "Thinking…" : "Ask"}</button>
+        </div>
+        {answer && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.7, whiteSpace: "pre-wrap", marginTop: 12, padding: "12px 14px", borderRadius: 12, background: "var(--surface)", border: "1px solid var(--hairline)" }}>{answer}</div>}
+      </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
         <StatTile kicker="Completion rate" value={completion + "%"} icon="target" accent sub="of all tasks" />

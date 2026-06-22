@@ -1289,6 +1289,38 @@ export const store = {
     }
   },
 
+  // AI: break a task into concrete subtasks. Returns [] if AI is unavailable.
+  async aiBreakdown(title: string, description: string): Promise<string[]> {
+    if (!supabase) return [];
+    try {
+      const { data, error } = await supabase.functions.invoke("ai-assist", { body: { mode: "breakdown", title, description } });
+      if (error || !data || !Array.isArray(data.subtasks)) return [];
+      return (data.subtasks as unknown[]).map((s) => String(s)).filter(Boolean).slice(0, 12);
+    } catch { return []; }
+  },
+
+  // AI: weekly status summary (markdown). null if unavailable.
+  async aiSummary(tasks: Task[], today: string): Promise<string | null> {
+    if (!supabase) return null;
+    try {
+      const payload = tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate ?? null, completedAt: t.completedAt ?? null }));
+      const { data, error } = await supabase.functions.invoke("ai-assist", { body: { mode: "summary", tasks: payload, today } });
+      if (error || !data?.summary) return null;
+      return String(data.summary);
+    } catch { return null; }
+  },
+
+  // AI: answer a question about the user's tasks (read-only). null if unavailable.
+  async aiAsk(question: string, tasks: Task[], today: string): Promise<string | null> {
+    if (!supabase) return null;
+    try {
+      const payload = tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate ?? null, project: t.projectId }));
+      const { data, error } = await supabase.functions.invoke("ai-assist", { body: { mode: "ask", question, tasks: payload, today } });
+      if (error || !data?.answer) return null;
+      return String(data.answer);
+    } catch { return null; }
+  },
+
   /* ---------- activity feed (Inbox) ---------- */
   async listActivity(limit = 100): Promise<Activity[]> {
     if (!supabase) return demoActivity.slice(0, limit);

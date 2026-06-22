@@ -48,27 +48,54 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { tasks, today } = await req.json() as { tasks: TaskIn[]; today?: string };
-    const open = (tasks ?? []).filter((t) => t.status !== "done").slice(0, 60);
-    if (open.length === 0) {
-      return new Response(JSON.stringify({ items: [], summary: "Nothing open to prioritize." }), { headers: { ...CORS, "Content-Type": "application/json" } });
-    }
+    const body = await req.json() as { mode?: string; tasks?: TaskIn[]; today?: string; title?: string; description?: string; question?: string };
+    const mode = body.mode ?? "prioritize";
 
-    const prompt =
-      `You are Kanbo, a sharp productivity assistant. Today is ${today ?? "today"}.\n` +
-      `Given this JSON list of the user's open tasks, return STRICT JSON (no prose, no markdown) of the form ` +
-      `{"items":[{"id":"...","score":0-100,"reason":"one short sentence"}],"summary":"one sentence on how to approach the day"}. ` +
-      `Score by urgency: due/overdue today, things that unblock other work, and high priority rank highest. ` +
-      `Keep reasons under 12 words.\n\nTASKS:\n${JSON.stringify(open)}`;
+    // build a prompt + max_tokens per mode
+    let prompt = "";
+    let maxTokens = 1500;
+    if (mode === "breakdown") {
+      // split a task into concrete subtasks
+      prompt =
+        `You are Kanbo, a productivity assistant. Break the following task into 3–7 concrete, actionable subtasks. ` +
+        `Return STRICT JSON (no prose, no markdown): {"subtasks":["...","..."]}. Each subtask is a short imperative phrase under 10 words.\n\n` +
+        `TASK: ${body.title ?? ""}\nDETAILS: ${body.description ?? ""}`;
+      maxTokens = 600;
+    } else if (mode === "summary") {
+      // weekly summary / standup from the user's tasks
+      const list = (body.tasks ?? []).slice(0, 120);
+      prompt =
+        `You are Kanbo. Write a concise weekly status summary from this JSON of the user's tasks (note completedAt, status, dueDate). ` +
+        `Return STRICT JSON: {"summary":"..."} where summary is 3–6 short markdown bullet lines covering: what was completed, what's in progress, what's blocked or overdue, and the focus for next week. Use "- " bullets.\n\n` +
+        `TODAY: ${body.today ?? "today"}\nTASKS:\n${JSON.stringify(list)}`;
+      maxTokens = 700;
+    } else if (mode === "ask") {
+      // answer a question about the user's tasks (read-only; no actions)
+      const list = (body.tasks ?? []).slice(0, 120);
+      prompt =
+        `You are Kanbo, a helpful assistant with access to the user's task list (JSON below). ` +
+        `Answer their question concisely and specifically, citing task titles where useful. Do not invent tasks. ` +
+        `Return STRICT JSON: {"answer":"..."} (markdown allowed in answer).\n\n` +
+        `QUESTION: ${body.question ?? ""}\nTODAY: ${body.today ?? "today"}\nTASKS:\n${JSON.stringify(list)}`;
+      maxTokens = 800;
+    } else {
+      // default: prioritize (existing behaviour)
+      const open = (body.tasks ?? []).filter((t) => t.status !== "done").slice(0, 60);
+      if (open.length === 0) {
+        return new Response(JSON.stringify({ items: [], summary: "Nothing open to prioritize." }), { headers: { ...CORS, "Content-Type": "application/json" } });
+      }
+      prompt =
+        `You are Kanbo, a sharp productivity assistant. Today is ${body.today ?? "today"}.\n` +
+        `Given this JSON list of the user's open tasks, return STRICT JSON (no prose, no markdown) of the form ` +
+        `{"items":[{"id":"...","score":0-100,"reason":"one short sentence"}],"summary":"one sentence on how to approach the day"}. ` +
+        `Score by urgency: due/overdue today, things that unblock other work, and high priority rank highest. ` +
+        `Keep reasons under 12 words.\n\nTASKS:\n${JSON.stringify(open)}`;
+    }
 
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1500,
-        messages: [{ role: "user", content: prompt }],
-      }),
+      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
     });
 
     if (!resp.ok) {
