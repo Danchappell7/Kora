@@ -28,10 +28,10 @@ import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Stat
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
 
-function MetaRow({ icon, label, children }: { icon: IconName; label: string; children: ReactNode }) {
+function MetaRow({ icon, label, children, topAlign }: { icon: IconName; label: string; children: ReactNode; topAlign?: boolean }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, minHeight: 32 }}>
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, width: 104, flexShrink: 0, fontSize: 12.5, color: "var(--ink-4)" }}>
+    <div style={{ display: "flex", alignItems: topAlign ? "flex-start" : "center", gap: 12, minHeight: 32 }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, width: 104, flexShrink: 0, fontSize: 12.5, color: "var(--ink-4)", height: topAlign ? 32 : undefined }}>
         <Icon name={icon} size={14} /> {label}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
@@ -538,7 +538,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 </MetaRow>
               );
             })()}
-            <MetaRow icon="calendar" label="Due">
+            <MetaRow icon="calendar" label="Due" topAlign>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })}
                   style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: dueState(task.dueDate, task.status) === "overdue" ? "var(--prio-urgent)" : "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
