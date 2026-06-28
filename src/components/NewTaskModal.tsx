@@ -39,7 +39,6 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [priority, setPriority] = useState<Priority>("medium");
   const [assigneeId, setAssigneeId] = useState(currentUserId);
   const [dueDate, setDueDate] = useState("");
-  const [startDate, setStartDate] = useState("");
   const [dueTime, setDueTime] = useState("");
   const [recurrence, setRecurrence] = useState<Recurrence>("none");
   const [focusMin, setFocusMin] = useState(30);
@@ -75,7 +74,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   useEffect(() => {
     if (open) {
       setTitle(""); setProjectId(defaultProject);
-      setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setStartDate(""); setDueTime(""); setRecurrence("none"); setFocusMin(30); setTags([]);
+      setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setDueTime(""); setRecurrence("none"); setFocusMin(30); setTags([]);
       setTemplates(getTemplates());
       setTimeout(() => inputRef.current?.focus(), 30);
     }
@@ -89,7 +88,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     const t: Task = {
       id: newId(), title: parsed.title || trimmed, description: "",
       status: defaultStatus, priority: parsed.priority ?? priority, projectId: parsed.projectId ?? projectId,
-      assigneeId: parsed.assigneeId ?? assigneeId, dueDate: parsed.dueDate ?? (dueDate || undefined), startDate: startDate || undefined, dueTime: dueTime || undefined,
+      assigneeId: parsed.assigneeId ?? assigneeId, dueDate: parsed.dueDate ?? (dueDate || undefined), dueTime: dueTime || undefined,
       tags, dependencies: [], subtasks: [], comments: 0,
       focusMin: parsed.focusMin ?? focusMin, dur: parsed.focusMin ?? focusMin, energy: energyOf({ tags } as Task),
       scheduled: null, planToday: true, aiScore: 50, recurrence,
@@ -146,9 +145,6 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
               <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={selectStyle}>
                 {people.map((p) => <option key={p.id} value={p.id}>{p.id === currentUserId ? `${p.name} (you)` : p.name}</option>)}
               </select>
-            </label>
-            <label style={fieldLabel}>Start date
-              <input type="date" value={startDate} max={dueDate || undefined} onChange={(e) => setStartDate(e.target.value)} style={selectStyle} />
             </label>
             <label style={fieldLabel}>Due date
               <div style={{ display: "flex", gap: 8 }}>
