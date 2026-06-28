@@ -538,10 +538,6 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 </MetaRow>
               );
             })()}
-            <MetaRow icon="calendar" label="Start">
-              <input type="date" value={task.startDate || ""} max={task.dueDate || undefined} onChange={(e) => onPatch(task.id, { startDate: e.target.value || undefined })}
-                style={{ height: 30, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5, outline: "none" }} />
-            </MetaRow>
             <MetaRow icon="calendar" label="Due">
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })}
