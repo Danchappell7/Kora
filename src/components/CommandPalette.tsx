@@ -21,6 +21,7 @@ const ACTIONS: Suggestion[] = [
   { id: "new-task", icon: "plus", label: "New task", hint: "" },
   { id: "focus", icon: "play", label: "Start a focus block", hint: "" },
   { id: "board", icon: "grid", label: "Switch to board view", hint: "" },
+  { id: "manage-tags", icon: "tasks", label: "Manage tags", hint: "" },
 ];
 
 // subsequence fuzzy match — "bd" matches "board", "anl" matches "analytics"

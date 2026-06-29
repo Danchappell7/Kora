@@ -906,6 +906,16 @@ export const store = {
     if (error) throw error;
   },
 
+  async updateTag(id: string, patch: { label?: string; color?: string }): Promise<void> {
+    if (!supabase) return;
+    const row: Record<string, unknown> = {};
+    if (patch.label != null) row.label = patch.label;
+    if (patch.color != null) row.color = patch.color;
+    if (Object.keys(row).length === 0) return;
+    const { error } = await supabase.from("tags").update(row).eq("id", id);
+    if (error) throw error;
+  },
+
   /* ---------- comments ---------- */
   async listComments(taskId: string): Promise<Comment[]> {
     if (!supabase) return demoComments[taskId] ?? [];

@@ -17,6 +17,7 @@ import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ImportTasksModal } from "./components/ImportTasksModal";
 import { OnboardingModal } from "./components/OnboardingModal";
+import { TagManagerModal } from "./components/TagManagerModal";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
@@ -591,6 +592,7 @@ export default function App() {
   const [calSyncing, setCalSyncing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const onboardCheckedRef = useRef(false);
   const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
   const [banner, setBanner] = useState<AppBanner | null>(null);
@@ -1540,6 +1542,27 @@ export default function App() {
     store.deleteTag(id).catch(reportError);
   }, [applyTags]);
 
+  const updateTag = useCallback((id: string, patch: { label?: string; color?: string }) => {
+    const cur = tagsRef.current[id]; if (!cur) return;
+    applyTags({ ...tagsRef.current, [id]: { ...cur, ...patch } });
+    store.updateTag(id, patch).catch((e) => { reportError(e, { op: "updateTag" }); toastError("Couldn't update the tag."); });
+  }, [applyTags, toastError]);
+
+  // merge tag `fromId` into `intoId`: re-tag every task, then drop fromId
+  const mergeTags = useCallback((fromId: string, intoId: string) => {
+    if (fromId === intoId) return;
+    const cur = tasksRef.current || [];
+    const affected = cur.filter((t) => t.tags.includes(fromId));
+    affected.forEach((t) => {
+      const nextTags = [...new Set(t.tags.map((x) => x === fromId ? intoId : x))];
+      setTasks((ts) => ts && ts.map((x) => x.id === t.id ? { ...x, tags: nextTags } : x));
+      store.updateTask(t.id, { tags: nextTags }).catch(reportError);
+    });
+    const next = { ...tagsRef.current }; delete next[fromId]; applyTags(next);
+    store.deleteTag(fromId).catch(reportError);
+    toastSuccess("Tags merged");
+  }, [applyTags, toastSuccess]);
+
   const createWorkspace = useCallback((name: string) => {
     const me = getMember(userIdRef.current);
     store.createWorkspace(name, { id: userIdRef.current, email: me?.email || "", name: me?.name || "You" })
@@ -1840,7 +1863,12 @@ export default function App() {
         else if (s.id === "prioritize") autoPrioritize();
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
+        else if (s.id === "manage-tags") setTagManagerOpen(true);
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
+
+      <TagManagerModal open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} tags={tags}
+        taskCounts={(() => { const c: Record<string, number> = {}; (tasks ?? []).forEach((t) => (t.tags || []).forEach((tg) => { c[tg] = (c[tg] || 0) + 1; })); return c; })()}
+        onUpdate={updateTag} onDelete={deleteTag} onMerge={mergeTags} />
       {shortcutsOpen && (
         <div onClick={() => setShortcutsOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 200, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
           <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" className="glass anim-scalein" style={{ width: 440, maxWidth: "94vw", borderRadius: 18, padding: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
