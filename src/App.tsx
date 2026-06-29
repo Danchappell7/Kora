@@ -95,7 +95,7 @@ const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
 ];
 
-function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void }) {
+function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate, onArchive }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void; onArchive?: (projectId: string) => void }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -257,6 +257,7 @@ function ProjectOverview({ project, tasks, onUpdate, statusUpdates = [], onPostS
       })()}
       <div style={{ display: "flex", gap: 8, alignSelf: "flex-start" }}>
         {onDuplicate && <button onClick={() => onDuplicate(project.id)} className="btn btn-ghost" title="Duplicate this project (as a template)" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="layers" size={14} /> Duplicate</button>}
+        {onArchive && <button onClick={() => { if (window.confirm(`Archive "${project.name}"? It's hidden but kept, and you can restore it from the sidebar.`)) onArchive(project.id); }} className="btn btn-ghost" title="Archive this project" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="archive" size={14} /> Archive</button>}
         <button onClick={printReport} className="btn btn-ghost" title="Print / export a PDF report" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Report</button>
       </div>
      </div>
@@ -1316,6 +1317,13 @@ export default function App() {
     store.updateProject(id, patch).catch(reportError);
   }, [applyProjects]);
 
+  const setProjectArchived = useCallback((id: string, archived: boolean) => {
+    applyProjects(projectsRef.current.map((p) => p.id === id ? { ...p, archivedAt: archived ? new Date().toISOString() : null } : p));
+    store.setProjectArchived(id, archived).catch((e) => { reportError(e, { op: "archiveProject" }); toastError("Couldn't update the project."); });
+    if (archived) { toastSuccess("Project archived"); if (routeRef.current.view === "project" && routeRef.current.projectId === id) setRoute({ view: "home" }); }
+    else toastSuccess("Project restored");
+  }, [applyProjects, toastError, toastSuccess]);
+
   // duplicate a project as a template: clones sections + tasks (statuses reset
   // to todo, completion/scheduling cleared, section/parent/dependency ids remapped)
   const duplicateProject = useCallback(async (projectId: string) => {
@@ -1710,7 +1718,8 @@ export default function App() {
   }
 
   // scope everything to the active workspace
-  const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt);
+  const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
+  const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
   const archivedTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
 
   const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
@@ -1730,7 +1739,7 @@ export default function App() {
     title = p?.name || "Project"; subtitle = topCount + " task" + (topCount === 1 ? "" : "s") + " · " + projectProgress(allTasks, route.projectId) + "% complete";
     breadcrumb = workspaces.find((w) => w.id === (p?.workspaceId ?? null))?.name || "Personal";
   }
-  const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
+  const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt);
   // people you can assign/tag: active members of the ACTIVE workspace only.
   // Personal (workspace === null) has no member rows, so it resolves to just you —
   // you can never tag someone from another workspace.
@@ -1779,7 +1788,7 @@ export default function App() {
           sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
-          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} members={assignees} onDuplicate={duplicateProject} canManagePeople={(() => { const r = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role; return r === "owner" || r === "admin" || newProj.ownerId === currentUserId || !newProj.ownerId; })()} /> : undefined} />;
+          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={postStatusUpdate} members={assignees} onDuplicate={duplicateProject} onArchive={(id) => setProjectArchived(id, true)} canManagePeople={(() => { const r = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role; return r === "owner" || r === "admin" || newProj.ownerId === currentUserId || !newProj.ownerId; })()} /> : undefined} />;
       default: return null;
     }
   };
@@ -1805,7 +1814,7 @@ export default function App() {
 
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
-      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)}
+      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} />
   );
 

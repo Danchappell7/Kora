@@ -84,6 +84,7 @@ export interface Project {
   status?: string;
   ownerId?: string | null;       // exactly one owner (defaults to creator)
   contributorIds?: string[];     // additional people working on the project
+  archivedAt?: string | null;    // soft-archive: hidden but kept + restorable
 }
 
 export interface TagDef {

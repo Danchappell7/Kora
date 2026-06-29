@@ -61,7 +61,7 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onNewWorkspace, subscription, onUpgrade, onManageBilling }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -79,6 +79,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onOpenSettings?: () => void;
   onNewProject: () => void;
   onDeleteProject: (id: string) => void;
+  onArchiveProject?: (id: string) => void;
+  onRestoreProject?: (id: string) => void;
   subscription?: Subscription | null;
   onUpgrade: () => void;
   onManageBilling: () => void;
@@ -86,7 +88,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const [wsOpen, setWsOpen] = useState(false);
   const [pinned, setPinned] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("kanbo-pinned-projects") || "[]")); } catch { return new Set(); } });
   const togglePin = (id: string) => setPinned((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); try { localStorage.setItem("kanbo-pinned-projects", JSON.stringify([...n])); } catch { /* private mode */ } return n; });
-  const visibleProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const visibleProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt);
+  const archivedProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && p.archivedAt);
   // pinned projects float to the top (stable within each group)
   const orderedProjects = [...visibleProjects].sort((a, b) => (pinned.has(b.id) ? 1 : 0) - (pinned.has(a.id) ? 1 : 0));
   const activeWs: Workspace = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" };
@@ -198,6 +202,12 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                 style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 3px", fontSize: 12.5, lineHeight: 1, color: isPinned ? "var(--accent)" : "var(--ink-4)", flexShrink: 0 }}>
                 {isPinned ? "★" : "☆"}
               </button>
+              {deletable && onArchiveProject && (
+                <button className="kproj-del" title="Archive project"
+                  onClick={(e) => { e.stopPropagation(); onArchiveProject(p.id); }}>
+                  <Icon name="archive" size={14} />
+                </button>
+              )}
               {deletable && (
                 <button className="kproj-del" title="Delete project"
                   onClick={(e) => { e.stopPropagation(); onDeleteProject(p.id); }}>
@@ -208,6 +218,25 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           );
         })}
       </div>
+
+      {/* archived projects */}
+      {archivedProjects.length > 0 && (
+        <div style={{ padding: "0 12px 12px" }}>
+          <button onClick={() => setArchivedOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "6px 11px", border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-4)" }}>
+            <Icon name="chevronRight" size={13} style={{ transform: archivedOpen ? "rotate(90deg)" : "none", transition: "transform .18s" }} />
+            <Icon name="archive" size={13} />
+            <span className="kicker" style={{ flex: 1, textAlign: "left" }}>Archived</span>
+            <span className="mono" style={{ fontSize: 11 }}>{archivedProjects.length}</span>
+          </button>
+          {archivedOpen && archivedProjects.map((p) => (
+            <div key={p.id} className="kproj-row" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 11px", opacity: 0.75 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 3, background: p.color, flexShrink: 0 }} />
+              <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-3)" }}>{p.name}</span>
+              {onRestoreProject && <button onClick={(e) => { e.stopPropagation(); onRestoreProject(p.id); }} title="Restore project" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-4)", padding: 2, display: "inline-flex" }}><Icon name="refresh" size={13} /></button>}
+            </div>
+          ))}
+        </div>
+      )}
       </div>
 
       {/* billing */}

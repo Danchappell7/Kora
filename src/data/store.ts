@@ -147,9 +147,9 @@ function rowToTask(r: TaskRow): Task {
   };
 }
 
-interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; }
+interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; archived_at?: string | null; }
 function rowToProject(r: ProjectRow): Project {
-  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined };
+  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined, archivedAt: r.archived_at ?? null };
 }
 
 interface TagRow { id: string; label: string; color: string; }
@@ -658,6 +658,12 @@ export const store = {
       payload = stripped;
     }
     throw new Error("createProject failed");
+  },
+
+  async setProjectArchived(id: string, archived: boolean): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("projects").update({ archived_at: archived ? new Date().toISOString() : null }).eq("id", id);
+    if (error && !/archived_at/.test(error.message)) throw error;  // ignore until 0039 is applied
   },
 
   async updateProject(id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }): Promise<void> {
