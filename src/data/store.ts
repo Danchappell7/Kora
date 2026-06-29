@@ -924,6 +924,17 @@ export const store = {
     if (error) throw error;
     return rowToComment(data as CommentRow);
   },
+  // edit/delete your own comment (RLS enforces author-only).
+  async updateComment(id: string, body: string): Promise<void> {
+    if (!supabase) { for (const k in demoComments) demoComments[k] = demoComments[k].map((c) => c.id === id ? { ...c, body } : c); return; }
+    const { error } = await supabase.from("comments").update({ body }).eq("id", id);
+    if (error) throw error;
+  },
+  async deleteComment(id: string): Promise<void> {
+    if (!supabase) { for (const k in demoComments) demoComments[k] = demoComments[k].filter((c) => c.id !== id); return; }
+    const { error } = await supabase.from("comments").delete().eq("id", id);
+    if (error) throw error;
+  },
 
   /* ---------- attachments ---------- */
   async listAttachments(taskId: string): Promise<Attachment[]> {

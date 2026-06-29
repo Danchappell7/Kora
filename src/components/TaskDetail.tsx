@@ -205,6 +205,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const descRef = useRef<HTMLTextAreaElement>(null);
   const [thread, setThread] = useState<Comment[]>([]);
+  const [editingComment, setEditingComment] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
@@ -343,6 +345,19 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     if (reactions[emoji].length === 0) delete reactions[emoji];
     setThread((t) => t.map((x) => x.id === c.id ? { ...x, reactions } : x));
     store.toggleReaction(c.id, emoji, currentUserId).catch(reportError);
+  };
+  const saveCommentEdit = (c: Comment) => {
+    const v = editDraft.trim();
+    setEditingComment(null);
+    if (!v || v === c.body) return;
+    setThread((t) => t.map((x) => x.id === c.id ? { ...x, body: v } : x));
+    store.updateComment(c.id, v).catch(reportError);
+  };
+  const removeComment = (c: Comment) => {
+    if (!window.confirm("Delete this comment?")) return;
+    setThread((t) => t.filter((x) => x.id !== c.id));
+    if (task) onPatch(task.id, { comments: Math.max(0, (task.comments || 0) - 1) });
+    store.deleteComment(c.id).catch(reportError);
   };
   const del = () => { onClose(); onDelete(task.id); };
   const onPickFiles = async (list: FileList | File[] | null) => {
@@ -773,7 +788,22 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     <strong style={{ fontSize: 13, color: "var(--ink)" }}>{c.authorName || "You"}</strong>
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)" }}>{timeAgo(c.createdAt)}</span>
                   </div>
-                  <div style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", wordBreak: "break-word" }}>{renderRich(c.body, mentionable.map((m) => m.name))}</div>
+                  {editingComment === c.id ? (
+                    <div style={{ marginTop: 4 }}>
+                      {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                      <textarea autoFocus value={editDraft} onChange={(e) => setEditDraft(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveCommentEdit(c); else if (e.key === "Escape") setEditingComment(null); }}
+                        rows={Math.max(2, Math.min(8, (editDraft.match(/\n/g)?.length ?? 0) + 1))}
+                        style={{ width: "100%", resize: "vertical", padding: "8px 10px", borderRadius: 9, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, lineHeight: 1.5, outline: "none" }} />
+                      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                        <button className="btn btn-accent" onClick={() => saveCommentEdit(c)} style={{ padding: "4px 12px", fontSize: 12.5 }}>Save</button>
+                        <button className="btn btn-ghost" onClick={() => setEditingComment(null)} style={{ padding: "4px 10px", fontSize: 12.5 }}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ margin: "3px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink-2)", wordBreak: "break-word" }}>{renderRich(c.body, mentionable.map((m) => m.name))}</div>
+                  )}
+                  {editingComment !== c.id && (
                   <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, position: "relative", flexWrap: "wrap" }}>
                     {Object.entries(c.reactions || {}).map(([emoji, uids]) => (
                       <button key={emoji} onClick={() => toggleReaction(c, emoji)} title={`${uids.length}`}
@@ -799,7 +829,14 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                         </div>
                       </>
                     )}
+                    {c.authorId === currentUserId && (
+                      <>
+                        <button onClick={() => { setEditDraft(c.body); setEditingComment(c.id); }} title="Edit comment" style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>Edit</button>
+                        <button onClick={() => removeComment(c)} title="Delete comment" style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--prio-urgent)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>Delete</button>
+                      </>
+                    )}
                   </div>
+                  )}
                 </div>
               </div>
             ))}
