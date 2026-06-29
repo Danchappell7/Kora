@@ -16,6 +16,7 @@ import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ImportTasksModal } from "./components/ImportTasksModal";
+import { exportTasksCsv, printTasks } from "./lib/exportTasks";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { TagManagerModal } from "./components/TagManagerModal";
 import { ListView } from "./components/tasks/ListView";
@@ -371,15 +372,6 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
     Object.entries(customFilter ?? {}).every(([fid, v]) => { if (!v || v === "all") return true; const cv = (t.custom ?? {})[fid]; return Array.isArray(cv) ? cv.includes(v) : String(cv ?? "") === v; }) &&
     (q === "" || t.title.toLowerCase().includes(q)));
 
-  const csvCell = (s: string) => /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  const exportCsv = () => {
-    const rows = [["Title", "Status", "Priority", "Assignee", "Due", "Project", "Tags"]];
-    filtered.forEach((t) => rows.push([t.title, t.status, t.priority, getMember(t.assigneeId)?.name || "", t.dueDate || "", getProject(t.projectId)?.name || "", (t.tags || []).join("; ")]));
-    const csv = rows.map((r) => r.map((c) => csvCell(String(c))).join(",")).join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    const a = document.createElement("a"); a.href = url; a.download = `kanbo-tasks-${toLocalISO(new Date())}.csv`;
-    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  };
   return (
     <>
       {header}
@@ -493,7 +485,8 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
         )}
         {!isMobile && (
           <>
-            <button onClick={exportCsv} className="btn" title="Export current view to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
+            <button onClick={() => exportTasksCsv(filtered, "tasks")} className="btn" title="Export these tasks to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
+            <button onClick={() => printTasks(filtered, "Tasks export")} className="btn" title="Export these tasks to PDF (print)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> PDF</button>
             {onOpenImport && <button onClick={onOpenImport} className="btn" title="Import tasks (paste a list or upload a file)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="plus" size={15} /> Import</button>}
           </>
         )}

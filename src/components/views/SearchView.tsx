@@ -5,6 +5,7 @@
 import { useMemo, useState } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag } from "../primitives";
 import { getProject, getMember, fmtDue, dueState, STATUS_META } from "../../data/data";
+import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
 
 interface Query { text: string; status: string; priority: string; assignee: string; projectId: string; tag: string; due: string }
@@ -104,7 +105,15 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
         </div>
       )}
 
-      <div className="kicker" style={{ marginBottom: 10 }}>{active ? `${results.length} result${results.length === 1 ? "" : "s"}` : "Type or pick a filter to search"}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span className="kicker">{active ? `${results.length} result${results.length === 1 ? "" : "s"}` : "Type or pick a filter to search"}</span>
+        {active && results.length > 0 && (
+          <span style={{ marginLeft: "auto", display: "flex", gap: 7 }}>
+            <button onClick={() => exportTasksCsv(results, "search")} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
+            <button onClick={() => printTasks(results, "Search results")} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> PDF</button>
+          </span>
+        )}
+      </div>
       <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
         {active && results.map((t, i) => {
           const proj = getProject(t.projectId);
