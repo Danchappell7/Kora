@@ -6,7 +6,7 @@ import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
-import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate, parseTaskTokens } from "../data/data";
+import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate, parseTaskTokens, nextDueDate } from "../data/data";
 import { fmtDue } from "../data/data";
 import { getTemplates, type TaskTemplate } from "../lib/templates";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
@@ -161,6 +161,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
               <select value={recurrence} onChange={(e) => setRecurrence(e.target.value as Recurrence)} style={selectStyle}>
                 {RECUR_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
               </select>
+              {recurrence !== "none" && (
+                <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400, textTransform: "none", letterSpacing: 0, marginTop: 4 }}>
+                  Next: {[1, 2, 3].reduce<string[]>((acc) => { const last = acc[acc.length - 1] || (dueDate || undefined); acc.push(nextDueDate(last, recurrence)); return acc; }, []).map((d) => { try { return new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }); } catch { return d; } }).join(" · ")}
+                </span>
+              )}
             </label>
             <label style={fieldLabel}>Focus estimate (min)
               <input type="number" min={5} step={5} value={focusMin} onChange={(e) => setFocusMin(Math.max(5, parseInt(e.target.value) || 5))} style={selectStyle} />

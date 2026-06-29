@@ -28,6 +28,16 @@ import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Stat
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
 
+function nextOccurrences(iso: string | undefined, recurrence: Recurrence, n = 3): string[] {
+  const out: string[] = [];
+  let cur = iso;
+  for (let i = 0; i < n; i++) { cur = nextDueDate(cur, recurrence); out.push(cur); }
+  return out;
+}
+function shortDate(iso: string): string {
+  try { return new Date(iso + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }); } catch { return iso; }
+}
+
 function describeEvent(e: TaskEvent): string {
   if (e.field === "status") return `changed status to ${STATUS_META[e.newValue as Status]?.label ?? e.newValue}`;
   if (e.field === "priority") return `set priority to ${PRIORITY_META[e.newValue as Priority]?.label ?? e.newValue}`;
@@ -581,17 +591,22 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               <Icon name={moreOpen ? "chevronDown" : "chevronRight"} size={14} /> {moreOpen ? "Fewer options" : "More options"}
             </button>
             {moreOpen && (<>
-            <MetaRow icon="refresh" label="Repeat">
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}
-                  style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
-                  {(Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => <option key={r} value={r}>{RECUR_LABEL[r]}</option>)}
-                </select>
-                {task.recurrence && task.recurrence !== "none" && task.dueDate && (
-                  <button onClick={() => onPatch(task.id, { dueDate: nextDueDate(task.dueDate, task.recurrence!) })} title="Move this task to its next occurrence without completing it"
-                    style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 12, fontFamily: "var(--font-display)" }}>Skip →</button>
+            <MetaRow icon="refresh" label="Repeat" topAlign={!!task.recurrence && task.recurrence !== "none"}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <select value={task.recurrence || "none"} onChange={(e) => onPatch(task.id, { recurrence: e.target.value as Recurrence })}
+                    style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
+                    {(Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => <option key={r} value={r}>{RECUR_LABEL[r]}</option>)}
+                  </select>
+                  {task.recurrence && task.recurrence !== "none" && task.dueDate && (
+                    <button onClick={() => onPatch(task.id, { dueDate: nextDueDate(task.dueDate, task.recurrence!) })} title="Move this task to its next occurrence without completing it"
+                      style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 12, fontFamily: "var(--font-display)" }}>Skip →</button>
+                  )}
+                </span>
+                {task.recurrence && task.recurrence !== "none" && (
+                  <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Next: {nextOccurrences(task.dueDate, task.recurrence, 3).map(shortDate).join(" · ")}</span>
                 )}
-              </span>
+              </div>
             </MetaRow>
             <MetaRow icon="clock" label="Estimate">
               <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
