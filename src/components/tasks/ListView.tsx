@@ -48,7 +48,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
   const [hovered, setHovered] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
-  const [menu, setMenu] = useState<null | "priority" | "assignee">(null);
+  const [menu, setMenu] = useState<null | "priority" | "assignee" | "status">(null);
   const isMobile = useMediaQuery("(max-width: 860px)");
   const PRIORITIES_INLINE: Priority[] = ["urgent", "high", "medium", "low"];
   const saveTitle = () => { const v = titleDraft.trim(); setEditingTitle(false); if (v && v !== task.title) onPatch?.(task.id, { title: v }); else setTitleDraft(task.title); };
@@ -94,10 +94,29 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
 
         <Check done={done} onToggle={() => onToggle(task.id)} />
 
-        {hasSubs ? (
+        {hasSubs && (
           <button onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }} className="btn-icon" style={{ width: 20, height: 20, border: "none", background: "transparent", color: "var(--ink-4)" }}>
             <Icon name="chevronRight" size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform .18s" }} />
           </button>
+        )}
+        {onPatch ? (
+          <div style={{ position: "relative", display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setMenu((m) => m === "status" ? null : "status")} aria-label="Set status" title={STATUS_META[task.status].label} style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "inline-flex" }}>
+              <StatusDot status={task.status} />
+            </button>
+            {menu === "status" && (
+              <>
+                <div onClick={() => setMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 41, minWidth: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                  {STATUS_ORDER.map((s) => (
+                    <button key={s} onClick={() => { setMenu(null); onPatch?.(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined }); }} style={bulkItemStyle}>
+                      <StatusDot status={s} size={9} /> {STATUS_META[s].label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         ) : <StatusDot status={task.status} />}
 
         <div style={{ flex: 1, minWidth: 0 }}>
