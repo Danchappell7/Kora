@@ -340,6 +340,7 @@ const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspa
 interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown }
 const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
 
+export interface TaskEvent { id: string; actorName: string; field: string; oldValue: string | null; newValue: string | null; createdAt: string }
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string; approved?: boolean; isAdmin?: boolean; suspended?: boolean }
 export interface AdminFunnel { signups: number; approved: number; activated: number; active_30d: number }
 export interface AdminWorkspace { id: string; name: string; logo_url: string | null; created_at: string; owner_email: string | null; owner_name: string; members: number; tasks: number }
@@ -924,6 +925,17 @@ export const store = {
     if (error) throw error;
     return rowToComment(data as CommentRow);
   },
+  // per-task change history (status/assignee/due/priority). [] if not installed.
+  async listTaskEvents(taskId: string): Promise<TaskEvent[]> {
+    if (!supabase) return [];
+    try {
+      const { data, error } = await supabase.from("task_events").select("*").eq("task_id", taskId).order("created_at", { ascending: false }).limit(80);
+      if (error || !data) return [];
+      return (data as { id: string; actor_name: string | null; field: string; old_value: string | null; new_value: string | null; created_at: string }[])
+        .map((r) => ({ id: r.id, actorName: r.actor_name || "Someone", field: r.field, oldValue: r.old_value, newValue: r.new_value, createdAt: r.created_at }));
+    } catch { return []; }
+  },
+
   // edit/delete your own comment (RLS enforces author-only).
   async updateComment(id: string, body: string): Promise<void> {
     if (!supabase) { for (const k in demoComments) demoComments[k] = demoComments[k].map((c) => c.id === id ? { ...c, body } : c); return; }

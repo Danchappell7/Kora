@@ -7,7 +7,7 @@ import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore, EmojiPicker } fr
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
-import { store } from "../data/store";
+import { store, type TaskEvent } from "../data/store";
 import { renderRich } from "../lib/richtext";
 import { saveTemplate } from "../lib/templates";
 import { reportError } from "../lib/monitoring";
@@ -27,6 +27,14 @@ import {
 import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue, Section } from "../data/types";
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
+
+function describeEvent(e: TaskEvent): string {
+  if (e.field === "status") return `changed status to ${STATUS_META[e.newValue as Status]?.label ?? e.newValue}`;
+  if (e.field === "priority") return `set priority to ${PRIORITY_META[e.newValue as Priority]?.label ?? e.newValue}`;
+  if (e.field === "assignee") return e.newValue ? `assigned ${getMember(e.newValue)?.name ?? "someone"}` : "unassigned the task";
+  if (e.field === "due") return e.newValue ? `set the due date to ${fmtDue(e.newValue)}` : "cleared the due date";
+  return `updated ${e.field}`;
+}
 
 function MetaRow({ icon, label, children, topAlign }: { icon: IconName; label: string; children: ReactNode; topAlign?: boolean }) {
   return (
@@ -207,6 +215,8 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [thread, setThread] = useState<Comment[]>([]);
   const [editingComment, setEditingComment] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [events, setEvents] = useState<TaskEvent[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
   const [posting, setPosting] = useState(false);
   const [desc, setDesc] = useState("");
@@ -228,6 +238,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     setFiles([]);
     store.listComments(taskId).then((cs) => { if (!cancelled) setThread(cs); }).catch(reportError);
     store.listAttachments(taskId).then((fs) => { if (!cancelled) setFiles(fs); }).catch(reportError);
+    setEvents([]); store.listTaskEvents(taskId).then((es) => { if (!cancelled) setEvents(es); }).catch(reportError);
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
@@ -773,6 +784,28 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               </div>
             ))}
           </div>
+
+          {/* change history */}
+          {events.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <button onClick={() => setHistoryOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 7, border: "none", background: "transparent", padding: 0, cursor: "pointer" }}>
+                <Icon name="chevronRight" size={13} style={{ color: "var(--ink-4)", transform: historyOpen ? "rotate(90deg)" : "none", transition: "transform .18s" }} />
+                <span className="kicker">History</span>
+                <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)" }}>{events.length}</span>
+              </button>
+              {historyOpen && (
+                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8, paddingLeft: 4 }}>
+                  {events.map((e) => (
+                    <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12.5, color: "var(--ink-3)" }}>
+                      <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--hairline-strong)", flexShrink: 0, transform: "translateY(-1px)" }} />
+                      <span style={{ flex: 1 }}><strong style={{ color: "var(--ink-2)", fontWeight: 600 }}>{e.actorName}</strong> {describeEvent(e)}</span>
+                      <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", flexShrink: 0 }}>{timeAgo(e.createdAt)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* comments thread */}
           <div style={{ marginBottom: 20 }}>
