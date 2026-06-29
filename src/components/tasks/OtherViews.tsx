@@ -22,8 +22,9 @@ const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
 
 /* ---------------- KANBAN ---------------- */
 type Half = "top" | "bottom";
-function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop, selected = false, selectionActive = false, onSelect, customFields = [], members = [] }: {
+function KanbanCard({ task, allTasks, onOpen, onMove, onPatch, isMobile, dragging, dropHint, onPickup, onHoverCard, onCardDrop, selected = false, selectionActive = false, onSelect, customFields = [], members = [] }: {
   task: Task; allTasks: Task[]; onOpen: (id: string) => void; onMove: (id: string, status: Status) => void;
+  onPatch?: (id: string, patch: Partial<Task>) => void;
   isMobile: boolean; dragging: boolean; dropHint: Half | null;
   onPickup: (id: string) => void; onHoverCard: (id: string, half: Half) => void; onCardDrop: (draggedId: string, targetId: string, half: Half) => void;
   selected?: boolean; selectionActive?: boolean; onSelect?: (id: string) => void;
@@ -32,6 +33,8 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const ds = dueState(task.dueDate, task.status);
+  const [menu, setMenu] = useState<null | "priority" | "assignee" | "status">(null);
+  const PRIORITIES_INLINE: Priority[] = ["urgent", "high", "medium", "low"];
   // sub-task progress (child tasks + any legacy checklist items)
   const kids = allTasks.filter((c) => c.parentId === task.id);
   const subTotal = kids.length + (task.subtasks?.length ?? 0);
@@ -59,7 +62,32 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
             {selected && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}
           </button>
         )}
-        <PriorityFlag priority={task.priority} size={13} />
+        {onPatch ? (
+          <span style={{ position: "relative", display: "inline-flex", marginTop: 2 }} onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setMenu((m) => m === "status" ? null : "status")} aria-label="Set status" title={STATUS_META[task.status].label} style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "inline-flex" }}><StatusDot status={task.status} size={9} /></button>
+            {menu === "status" && (
+              <>
+                <div onClick={() => setMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 41, minWidth: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                  {STATUS_ORDER.map((s) => <button key={s} onClick={() => { setMenu(null); onPatch?.(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined }); }} style={bulkItemStyle}><StatusDot status={s} size={9} /> {STATUS_META[s].label}</button>)}
+                </div>
+              </>
+            )}
+          </span>
+        ) : null}
+        {onPatch ? (
+          <span style={{ position: "relative", display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setMenu((m) => m === "priority" ? null : "priority")} aria-label="Set priority" style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "inline-flex" }}><PriorityFlag priority={task.priority} size={13} /></button>
+            {menu === "priority" && (
+              <>
+                <div onClick={() => setMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 41, minWidth: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                  {PRIORITIES_INLINE.map((p) => <button key={p} onClick={() => { setMenu(null); onPatch?.(task.id, { priority: p }); }} style={bulkItemStyle}><PriorityFlag priority={p} size={13} /> {PRIORITY_META[p].label}</button>)}
+                </div>
+              </>
+            )}
+          </span>
+        ) : <PriorityFlag priority={task.priority} size={13} />}
         {task.isMilestone && <span title="Milestone" style={{ width: 9, height: 9, transform: "rotate(45deg)", background: "var(--st-review)", borderRadius: 2, flexShrink: 0, marginTop: 3 }} />}
         <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450 }}>{task.title}</span>
       </div>
@@ -78,8 +106,25 @@ function KanbanCard({ task, allTasks, onOpen, onMove, isMobile, dragging, dropHi
           </span>
         )}
         <div style={{ flex: 1 }} />
-        {task.dueDate && <span className="mono" style={{ fontSize: 11, color: ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(task.dueDate)}</span>}
-        <Avatar id={task.assigneeId} size={22} />
+        {onPatch ? (
+          <label onClick={(e) => e.stopPropagation()} style={{ position: "relative", display: "inline-flex", alignItems: "center" }} title="Set due date">
+            <span className="mono" style={{ fontSize: 11, color: task.dueDate ? (ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)") : "var(--ink-4)", cursor: "pointer" }}>{task.dueDate ? fmtDue(task.dueDate) : "—"}</span>
+            <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch?.(task.id, { dueDate: e.target.value || undefined })} aria-label="Due date" style={{ position: "absolute", inset: 0, width: "100%", opacity: 0, cursor: "pointer" }} />
+          </label>
+        ) : (task.dueDate && <span className="mono" style={{ fontSize: 11, color: ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(task.dueDate)}</span>)}
+        {onPatch && members && members.length > 0 ? (
+          <span style={{ position: "relative", display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setMenu((m) => m === "assignee" ? null : "assignee")} aria-label="Assign" style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "inline-flex" }}><Avatar id={task.assigneeId} size={22} /></button>
+            {menu === "assignee" && (
+              <>
+                <div onClick={() => setMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 41, minWidth: 170, maxHeight: 240, overflowY: "auto", padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+                  {members.map((m) => <button key={m.id} onClick={() => { setMenu(null); onPatch?.(task.id, { assigneeId: m.id }); }} style={bulkItemStyle}><Avatar id={m.id} size={18} /> {m.name}</button>)}
+                </div>
+              </>
+            )}
+          </span>
+        ) : <Avatar id={task.assigneeId} size={22} />}
         {/* touch devices can't drag between columns — give a tap-to-move menu */}
         {isMobile && (
           <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
@@ -237,7 +282,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
                 background: dragOver === col.key ? "var(--accent-dim)" : "color-mix(in oklch, var(--bg-deep) 28%, transparent)",
                 boxShadow: dragOver === col.key && !hover ? "inset 0 0 0 2px var(--accent)" : "none" }}>
                 {items.map((t) => (
-                  <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onMove={onMove}
+                  <KanbanCard key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onMove={onMove} onPatch={onPatch}
                     isMobile={isMobile} dragging={dragId === t.id}
                     dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
                     onPickup={setDragId}
