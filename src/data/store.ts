@@ -6,6 +6,8 @@
    Components depend only on the domain types, never the adapter.
    ============================================================ */
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
+import { offlineQueue } from "../lib/offlineQueue";
+import { reportError } from "../lib/monitoring";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
@@ -362,6 +364,33 @@ export interface AdminDay { d: string; signups: number; sessions: number; active
 export interface AdminSeries { days: AdminDay[]; by_status: Record<string, number>; by_priority: Record<string, number> }
 
 /* ============================================================
+   Offline read cache — the last successful bootstrap snapshot, so a
+   reload while offline restores the workspace instead of an error
+   screen. Paired with offlineQueue (the write half).
+   ============================================================ */
+type RefData = Parameters<typeof setReferenceData>[0];
+interface Snapshot { boot: Bootstrap; ref: RefData; uid: string; savedAt: number }
+const SNAP_KEY = "kanbo-offline-snapshot";
+function cacheSnapshot(snap: Snapshot) {
+  try { localStorage.setItem(SNAP_KEY, JSON.stringify(snap)); } catch { /* quota / private mode */ }
+}
+function readSnapshot(uid: string | undefined): Snapshot | null {
+  try {
+    const raw = localStorage.getItem(SNAP_KEY);
+    if (!raw) return null;
+    const snap = JSON.parse(raw) as Snapshot;
+    return !uid || snap.uid === uid ? snap : null;
+  } catch { return null; }
+}
+const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false;
+// set true only while flushQueue replays, so the task methods below run their
+// RAW supabase path (throw on failure) instead of re-enqueuing the op.
+let replaying = false;
+/** True for fetch/network failures (offline), so we fall back to cache instead of erroring. */
+const isNetworkError = (e: unknown) =>
+  isOffline() || (e instanceof TypeError) || /fetch|network|Failed to fetch|load failed/i.test(String((e as Error)?.message ?? e));
+
+/* ============================================================
    Public store API
    ============================================================ */
 export const store = {
@@ -391,6 +420,13 @@ export const store = {
     const uid = sUser?.id ?? (user && user.id !== "m-self" ? user.id : undefined);
     if (!uid) throw new Error("Not authenticated");
 
+    // Offline reload: restore the cached snapshot instead of failing. The
+    // session above is read from local storage, so it resolves offline too.
+    if (isOffline()) {
+      const snap = readSnapshot(uid);
+      if (snap) { setReferenceData(snap.ref); return snap.boot; }
+    }
+
     // load this user's profile (best-effort: tolerates the profiles migration
     // not being applied yet). Drives the display name / avatar / pronouns.
     let myProfile: Profile | null = null;
@@ -419,8 +455,18 @@ export const store = {
     // tasks are required; everything else is best-effort so a missing table
     // (e.g. a migration not yet applied) can never break boot or leak demo data.
     // Visibility (own + shared-workspace rows) is enforced by RLS — no user filter.
-    const { data: taskData, error: tErr } = await supabase.from("tasks").select(TASK_SELECT);
-    if (tErr) throw tErr;
+    let taskData: unknown;
+    try {
+      const res = await supabase.from("tasks").select(TASK_SELECT);
+      if (res.error) throw res.error;
+      taskData = res.data;
+    } catch (e) {
+      // connection dropped after we thought we were online — fall back to the
+      // last good snapshot rather than wiping the screen.
+      const snap = readSnapshot(uid);
+      if (snap && isNetworkError(e)) { setReferenceData(snap.ref); return snap.boot; }
+      throw e;
+    }
 
     const { data: projData } = await supabase.from("projects").select("*");
     const projects = [PERSONAL_PROJECT, ...((projData as ProjectRow[] | null) ?? []).map(rowToProject)];
@@ -500,8 +546,9 @@ export const store = {
       forms = ((fmData as FormRow[] | null) ?? []).map(rowToForm);
     } catch { /* table not present yet */ }
 
-    setReferenceData({ members: [self, ...teammates], projects, workspaces, events: [], tags });
-    return {
+    const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
+    setReferenceData(ref);
+    const boot: Bootstrap = {
       tasks: ((taskData as TaskRow[] | null) ?? []).map(rowToTask),
       projects,
       tags,
@@ -519,6 +566,39 @@ export const store = {
       automationRules,
       forms,
     };
+    // cache for offline reads (write-half handled by offlineQueue)
+    cacheSnapshot({ boot, ref, uid, savedAt: Date.now() });
+    return boot;
+  },
+
+  /** Replay queued offline task mutations, in order, when back online.
+   *  onRemap(clientId, serverId) lets the caller swap optimistic ids in
+   *  state once a queued create lands a server id. Returns count synced. */
+  async flushQueue(onRemap?: (clientId: string, serverId: string) => void): Promise<number> {
+    if (!supabase || isOffline() || replaying) return 0;
+    let synced = 0;
+    replaying = true;
+    try {
+    for (const m of offlineQueue.all()) {
+      try {
+        if (m.kind === "create") {
+          const saved = await this.createTask(m.task, m.userId);
+          if (saved.id !== m.task.id) { offlineQueue.remapId(m.task.id, saved.id); onRemap?.(m.task.id, saved.id); }
+        } else if (m.kind === "update") {
+          await this.updateTask(m.taskId, m.patch);
+        } else {
+          await this.deleteTask(m.taskId);
+        }
+        offlineQueue.remove(m.id);
+        synced++;
+      } catch (e) {
+        if (isNetworkError(e)) break;       // still offline — stop, keep the rest
+        offlineQueue.remove(m.id);          // poison op (e.g. permissions) — drop so it can't block the queue
+        reportError(e, { op: "flushQueue", kind: m.kind });
+      }
+    }
+    } finally { replaying = false; }
+    return synced;
   },
 
   /* ---------- workspaces & membership ---------- */
@@ -608,41 +688,59 @@ export const store = {
 
   async createTask(t: Task, userId: string): Promise<Task> {
     if (!supabase) return t; // demo mode keeps the optimistic copy
-    const uid = await authUid(userId);
-    // Resilient insert: if the DB is missing a newer column (a migration not
-    // applied yet), strip that column and retry so the task ALWAYS saves —
-    // losing a field is acceptable, losing the whole task is not.
-    let row = taskToInsertRow(t, uid);
-    for (let i = 0; i < 8; i++) {
-      // select only "id" — a brand-new task has no subtasks/deps, so we avoid
-      // the heavier embed (a frequent silent failure point) and just adopt the id
-      const { data, error } = await supabase.from("tasks").insert(row).select("id").single();
-      if (!error) return { ...t, id: (data as { id: string }).id };
-      const stripped = withoutMissingColumn(row, error.message);
-      if (!stripped) throw error;
-      row = stripped;
+    if (!replaying && isOffline()) { offlineQueue.enqueueCreate(t, userId); return t; } // queue + keep client id
+    try {
+      const uid = await authUid(userId);
+      // Resilient insert: if the DB is missing a newer column (a migration not
+      // applied yet), strip that column and retry so the task ALWAYS saves —
+      // losing a field is acceptable, losing the whole task is not.
+      let row = taskToInsertRow(t, uid);
+      for (let i = 0; i < 8; i++) {
+        // select only "id" — a brand-new task has no subtasks/deps, so we avoid
+        // the heavier embed (a frequent silent failure point) and just adopt the id
+        const { data, error } = await supabase.from("tasks").insert(row).select("id").single();
+        if (!error) return { ...t, id: (data as { id: string }).id };
+        const stripped = withoutMissingColumn(row, error.message);
+        if (!stripped) throw error;
+        row = stripped;
+      }
+      throw new Error("createTask: could not persist after stripping unknown columns");
+    } catch (e) {
+      if (!replaying && isNetworkError(e)) { offlineQueue.enqueueCreate(t, userId); return t; } // dropped mid-flight — queue, keep client id
+      throw e;
     }
-    throw new Error("createTask: could not persist after stripping unknown columns");
   },
 
   async updateTask(id: string, patch: Partial<Task>): Promise<void> {
     if (!supabase) return;
+    if (!replaying && isOffline()) { offlineQueue.enqueueUpdate(id, patch); return; }
     let row = patchToRow(patch);
     if (Object.keys(row).length === 0) return;
-    for (let i = 0; i < 8; i++) {
-      const { error } = await supabase.from("tasks").update(row).eq("id", id);
-      if (!error) return;
-      const stripped = withoutMissingColumn(row, error.message);
-      if (!stripped) throw error;
-      if (Object.keys(stripped).length === 0) return; // nothing left to write
-      row = stripped;
+    try {
+      for (let i = 0; i < 8; i++) {
+        const { error } = await supabase.from("tasks").update(row).eq("id", id);
+        if (!error) return;
+        const stripped = withoutMissingColumn(row, error.message);
+        if (!stripped) throw error;
+        if (Object.keys(stripped).length === 0) return; // nothing left to write
+        row = stripped;
+      }
+    } catch (e) {
+      if (!replaying && isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch); return; } // dropped mid-flight — queue it
+      throw e;
     }
   },
 
   async deleteTask(id: string): Promise<void> {
     if (!supabase) return;
-    const { error } = await supabase.from("tasks").delete().eq("id", id);
-    if (error) throw error;
+    if (!replaying && isOffline()) { offlineQueue.enqueueDelete(id); return; }
+    try {
+      const { error } = await supabase.from("tasks").delete().eq("id", id);
+      if (error) throw error;
+    } catch (e) {
+      if (!replaying && isNetworkError(e)) { offlineQueue.enqueueDelete(id); return; }
+      throw e;
+    }
   },
 
   async createProject(input: NewProject, userId: string): Promise<Project> {

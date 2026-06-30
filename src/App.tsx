@@ -37,6 +37,7 @@ import { reportError } from "./lib/monitoring";
 import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, type NewProject, type AppBanner } from "./data/store";
+import { offlineQueue } from "./lib/offlineQueue";
 import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
@@ -589,17 +590,34 @@ export default function App() {
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const onboardCheckedRef = useRef(false);
   const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
+  const [pendingSync, setPendingSync] = useState(0); // queued offline task writes awaiting replay
+  const [syncing, setSyncing] = useState(false);
   const [banner, setBanner] = useState<AppBanner | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
   useEffect(() => { store.activeBanner().then(setBanner).catch(() => {}); }, []);
-  // connection awareness — be honest that edits may not save while offline
+  // offline write-replay queue: surface how many changes are waiting to sync
+  useEffect(() => offlineQueue.subscribe(setPendingSync), []);
+  // replay queued task writes; swap any optimistic ids the server reassigned
+  const flushOffline = useCallback(async () => {
+    if (offlineQueue.size() === 0 || typeof navigator !== "undefined" && navigator.onLine === false) return;
+    setSyncing(true);
+    try {
+      const n = await store.flushQueue((clientId, serverId) => {
+        setTasks((ts) => ts && ts.map((t) => t.id === clientId ? { ...t, id: serverId } : t));
+        pendingTasksRef.current = pendingTasksRef.current.map((p) => p.id === clientId ? { ...p, id: serverId } : p);
+      });
+      if (n > 0) toastSuccess(`Synced ${n} offline change${n === 1 ? "" : "s"}`);
+    } catch (e) { reportError(e, { op: "flushOffline" }); }
+    finally { setSyncing(false); }
+  }, [toastSuccess]);
+  // connection awareness — honest about offline, and drain the queue on reconnect
   useEffect(() => {
-    const goOnline = () => { setOnline(true); toastSuccess("Back online"); };
+    const goOnline = () => { setOnline(true); toastSuccess("Back online"); flushOffline(); };
     const goOffline = () => setOnline(false);
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
     return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
-  }, [toastSuccess]);
+  }, [toastSuccess, flushOffline]);
   // first-run onboarding: show once to brand-new accounts (no real projects yet)
   useEffect(() => {
     if (tasks === null || onboardCheckedRef.current) return;
@@ -772,6 +790,7 @@ export default function App() {
       try {
         const b = await store.bootstrap(auth.user);
         if (!cancelled) { setTasks(b.tasks); applyProjects(b.projects); applyTags(b.tags); setWorkspaces(b.workspaces); setWsMembers(b.members); setCurrentUserId(b.currentUserId); setWorkspace(b.defaultWorkspace); setProfile(b.profile); setSections(b.sections); setCustomFields(b.customFields); setSavedSearches(b.savedSearches); setGoals(b.goals); setPortfolios(b.portfolios); setStatusUpdates(b.statusUpdates); setAutomationRules(b.automationRules); setForms(b.forms); }
+        flushOffline(); // app reopened online after offline edits — drain the queue
         const feed = await store.listActivity();
         if (!cancelled) setActivity(feed);
         const subn = await store.getSubscription();
@@ -1827,7 +1846,16 @@ export default function App() {
         {!online && (
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 18px", background: "color-mix(in oklch, #f0a93b 16%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, #f0a93b 30%, transparent)" }}>
             <Icon name="refresh" size={14} style={{ color: "#f0a93b", flexShrink: 0 }} />
-            <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>You're offline — recent edits may not be saved until you reconnect.</span>
+            <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>
+              You're offline — changes are saved on this device{pendingSync > 0 ? ` (${pendingSync} queued)` : ""} and will sync when you reconnect.
+            </span>
+          </div>
+        )}
+        {online && (syncing || pendingSync > 0) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 18px", background: "color-mix(in oklch, var(--accent) 12%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--accent) 26%, transparent)" }}>
+            <Icon name="refresh" size={14} style={{ color: "var(--accent)", flexShrink: 0 }} className={syncing ? "spin" : undefined} />
+            <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>{syncing ? `Syncing ${pendingSync || ""} offline change${pendingSync === 1 ? "" : "s"}…` : `${pendingSync} change${pendingSync === 1 ? "" : "s"} waiting to sync`}</span>
+            {!syncing && <button onClick={flushOffline} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "3px 10px", fontSize: 12 }}>Retry now</button>}
           </div>
         )}
         {banner && banner.id !== bannerDismissed && (() => {
