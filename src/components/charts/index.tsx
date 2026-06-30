@@ -59,6 +59,79 @@ export function Bars({ data, h = 130, color = "var(--accent)" }: { data: BarDatu
   );
 }
 
+/* Multi-series line chart with gridlines + axis labels (trends over time). */
+export interface LineSeries { label: string; color: string; values: number[]; }
+export function LineChart({ series, labels, h = 170, yMax }: { series: LineSeries[]; labels: string[]; h?: number; yMax?: number }) {
+  const w = 560, padL = 30, padB = 22, padT = 8, padR = 8;
+  const n = labels.length;
+  const max = Math.max(yMax ?? 0, ...series.flatMap((s) => s.values), 1);
+  const x = (i: number) => padL + (n <= 1 ? 0 : (i / (n - 1)) * (w - padL - padR));
+  const y = (v: number) => padT + (1 - v / max) * (h - padT - padB);
+  const ticks = 4;
+  return (
+    <div>
+      <svg width="100%" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
+        {Array.from({ length: ticks + 1 }, (_, t) => {
+          const v = (max / ticks) * t, yy = y(v);
+          return (
+            <g key={t}>
+              <line x1={padL} y1={yy} x2={w - padR} y2={yy} stroke="var(--hairline)" strokeWidth="1" />
+              <text x={padL - 5} y={yy + 3} textAnchor="end" fontSize="9" fill="var(--ink-4)" className="mono">{Math.round(v)}</text>
+            </g>
+          );
+        })}
+        {labels.map((lb, i) => ((n <= 8 || i % 2 === 0) && (
+          <text key={i} x={x(i)} y={h - 6} textAnchor="middle" fontSize="9" fill="var(--ink-4)">{lb}</text>
+        )))}
+        {series.map((s) => {
+          const d = s.values.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1)).join(" ");
+          return (
+            <g key={s.label}>
+              <path d={d} fill="none" stroke={s.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+              {s.values.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r="2.6" fill={s.color} />)}
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
+        {series.map((s) => (
+          <span key={s.label} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ink-3)" }}>
+            <span style={{ width: 14, height: 3, borderRadius: 2, background: s.color }} /> {s.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* Two-or-more series grouped bars (e.g. created vs completed per week). */
+export function GroupedBars({ groups, series, h = 150 }: { groups: string[]; series: { label: string; color: string; values: number[] }[]; h?: number }) {
+  const max = Math.max(...series.flatMap((s) => s.values), 1);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: h }}>
+        {groups.map((g, gi) => (
+          <div key={gi} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, height: "100%", justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: "100%", width: "100%", justifyContent: "center" }}>
+              {series.map((s) => (
+                <div key={s.label} title={`${s.label}: ${s.values[gi]}`} style={{ width: 10, maxWidth: 14, height: `${(s.values[gi] / max) * 100}%`, minHeight: s.values[gi] > 0 ? 3 : 0, borderRadius: 4, background: s.color, transition: "height .7s var(--ease)" }} />
+              ))}
+            </div>
+            <span className="kicker" style={{ fontSize: 9 }}>{g}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+        {series.map((s) => (
+          <span key={s.label} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ink-3)" }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color }} /> {s.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* GitHub-style focus heatmap (weeks x days) */
 export function Heatmap({ weeks = 14 }: { weeks?: number }) {
   const cells: { w: number; d: number; v: number }[] = [];

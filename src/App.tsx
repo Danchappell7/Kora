@@ -25,6 +25,7 @@ import { PlanView } from "./components/views/PlanView";
 import { MyWeekView } from "./components/views/MyWeekView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
+import { ReportsView } from "./components/views/ReportsView";
 import { SearchView } from "./components/views/SearchView";
 import { WorkloadView, GoalsView, PortfoliosView, AutomationsView, FormsView, type FormValues, STATUS_KIND_META } from "./components/views/ManagerViews";
 import { InboxView, TeamView } from "./components/views/InboxTeam";
@@ -1778,6 +1779,7 @@ export default function App() {
       case "myweek": return <MyWeekView tasks={allTasks.filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId))} onOpen={setDetailId} onPatch={patchTask} />;
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
       case "analytics": return <AnalyticsView tasks={allTasks} members={assignees} customFields={customFields} />;
+      case "reports": return <ReportsView tasks={allTasks} projects={wsProjects} members={assignees} />;
       case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
@@ -1810,6 +1812,7 @@ export default function App() {
     myweek: { title: "My week", subtitle: "Plan the week and clear what slipped.", breadcrumb: "Plan" },
     home: { title: "Home", subtitle: "A focused look at what's moving today.", breadcrumb: "Today" },
     analytics: { title: "Analytics", subtitle: "Your throughput, measured.", breadcrumb: "Insights" },
+    reports: { title: "Reports", subtitle: "Trends, velocity, and cycle time.", breadcrumb: "Reporting" },
     inbox: { title: "Inbox", subtitle: "Mentions, assignments, and updates.", breadcrumb: "Notifications" },
     calendar: { title: "Calendar", subtitle: monthLabel, breadcrumb: "Schedule" },
     team: { title: "Team", subtitle: "Who's working on what.", breadcrumb: "People" },

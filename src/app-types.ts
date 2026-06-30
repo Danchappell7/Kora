@@ -1,5 +1,5 @@
 export type ViewId =
-  | "plan" | "home" | "inbox" | "tasks" | "calendar" | "team" | "analytics" | "project" | "search"
+  | "plan" | "home" | "inbox" | "tasks" | "calendar" | "team" | "analytics" | "reports" | "project" | "search"
   | "goals" | "portfolios" | "workload" | "automations" | "forms" | "myweek";
 
 export interface Route {

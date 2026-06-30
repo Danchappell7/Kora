@@ -42,6 +42,7 @@ const NAV: { view: string; label: string; icon: IconName }[] = [
   { view: "calendar", label: "Go to Calendar", icon: "calendar" },
   { view: "team", label: "Go to Team", icon: "user" },
   { view: "analytics", label: "Go to Analytics", icon: "chart" },
+  { view: "reports", label: "Go to Reports", icon: "trendingUp" },
 ];
 
 type Item =

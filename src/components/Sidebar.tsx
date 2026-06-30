@@ -109,6 +109,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     ] },
     { label: "Reporting", items: [
       { id: "analytics", icon: "chart", label: "Analytics" },
+      { id: "reports", icon: "trendingUp", label: "Reports" },
       { id: "workload", icon: "users", label: "Workload" },
       { id: "goals", icon: "target", label: "Goals" },
       { id: "portfolios", icon: "briefcase", label: "Portfolios" },
