@@ -17,7 +17,13 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
   const pct = Math.min(100, (seconds / total) * 100);
   const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
   const ss = String(seconds % 60).padStart(2, "0");
-  const candidates = tasks.filter((t) => t.status !== "done").sort((a, b) => b.aiScore - a.aiScore).slice(0, 5);
+  // surface today's time-blocked work first (ties Focus to Plan-my-day), then
+  // fill with the highest-priority remaining tasks.
+  const open = tasks.filter((t) => t.status !== "done");
+  const todaysPlanned = open.filter((t) => t.planToday && t.scheduled != null).sort((a, b) => (a.scheduled! - b.scheduled!));
+  const rest = open.filter((t) => !todaysPlanned.some((p) => p.id === t.id)).sort((a, b) => b.aiScore - a.aiScore);
+  const candidates = [...todaysPlanned, ...rest].slice(0, 6);
+  const pickerLabel = todaysPlanned.length > 0 ? "On your day" : "Suggested focus";
   const onBreak = pomodoro && phase === "break";
   const ringColor = onBreak ? "var(--st-progress)" : "var(--accent)";
 
@@ -89,7 +95,7 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
 
       {/* task picker */}
       <div style={{ position: "relative", zIndex: 2, padding: "0 24px 28px", maxWidth: 720, width: "100%", margin: "0 auto" }}>
-        <div className="kicker" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}><Icon name="sparkles" size={13} style={{ color: "var(--accent)" }} /> Suggested focus</div>
+        <div className="kicker" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}><Icon name={todaysPlanned.length > 0 ? "calendarPlus" : "sparkles"} size={13} style={{ color: "var(--accent)" }} /> {pickerLabel}</div>
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4 }}>
           {candidates.map((t) => (
             <button key={t.id} onClick={() => setTaskId(t.id)} className="glass" style={{ padding: "9px 13px", borderRadius: 11, display: "flex", alignItems: "center", gap: 9, flexShrink: 0, cursor: "pointer", border: t.id === taskId ? "1px solid var(--accent)" : "1px solid var(--hairline)" }}>
