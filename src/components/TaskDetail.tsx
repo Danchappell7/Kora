@@ -676,13 +676,29 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           {(() => {
             const deps = task.dependencies.map((id) => tasks.find((t) => t.id === id)).filter((t): t is Task => !!t);
             const candidates = tasks.filter((t) => t.id !== task.id && !task.dependencies.includes(t.id) && (!depQuery.trim() || t.title.toLowerCase().includes(depQuery.trim().toLowerCase()))).slice(0, 6);
+            const openBlockers = deps.filter((d) => d.status !== "done").length;
+            const relNode = (label: string, tone: "accent" | "blocked" | "muted") => (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 8, whiteSpace: "nowrap", fontSize: 12, fontWeight: 500,
+                background: tone === "accent" ? "var(--accent-dim)" : tone === "blocked" ? "color-mix(in oklch, var(--st-blocked) 12%, transparent)" : "var(--surface-2)",
+                color: tone === "accent" ? "var(--accent)" : tone === "blocked" ? "var(--st-blocked)" : "var(--ink-3)",
+                border: `1px solid ${tone === "accent" ? "var(--accent)" : tone === "blocked" ? "color-mix(in oklch, var(--st-blocked) 30%, transparent)" : "var(--hairline)"}` }}>{label}</span>
+            );
             return (
               <div style={{ marginBottom: 20 }}>
+                {(deps.length > 0 || dependents.length > 0) && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 14, padding: "10px 12px", borderRadius: 10, background: "var(--surface)", border: "1px solid var(--hairline)", overflowX: "auto" }}>
+                    {relNode(deps.length ? `${deps.length} blocker${deps.length === 1 ? "" : "s"}${openBlockers ? "" : " ✓"}` : "Unblocked", openBlockers ? "blocked" : "muted")}
+                    <Icon name="arrowRight" size={13} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
+                    {relNode("This task", "accent")}
+                    <Icon name="arrowRight" size={13} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
+                    {relNode(dependents.length ? `blocks ${dependents.length}` : "blocks nothing", "muted")}
+                  </div>
+                )}
                 <div className="kicker" style={{ marginBottom: 10 }}>Blocked by</div>
                 {deps.map((b) => (
                   <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 11px", borderRadius: 9, background: b.status !== "done" ? "color-mix(in oklch, var(--st-blocked) 9%, transparent)" : "var(--surface)", border: `1px solid ${b.status !== "done" ? "color-mix(in oklch, var(--st-blocked) 24%, transparent)" : "var(--hairline)"}`, marginBottom: 6 }}>
                     <StatusDot status={b.status} size={8} />
-                    <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)", textDecoration: b.status === "done" ? "line-through" : "none" }}>{b.title}</span>
+                    <span onClick={() => onOpenTask?.(b.id)} className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)", textDecoration: b.status === "done" ? "line-through" : "none", cursor: onOpenTask ? "pointer" : "default" }}>{b.title}</span>
                     {b.status !== "done" && <Icon name="lock" size={13} style={{ color: "var(--st-blocked)" }} />}
                     {onRemoveDependency && <button onClick={() => onRemoveDependency(task.id, b.id)} aria-label="Remove dependency" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>}
                   </div>
@@ -712,10 +728,11 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                   <div style={{ marginTop: 8 }}>
                     <div className="kicker" style={{ marginBottom: 6 }}>Blocks</div>
                     {dependents.map((d) => (
-                      <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6 }}>
-                        <Icon name="arrowUpRight" size={13} style={{ color: "var(--ink-4)" }} />
+                      <button key={d.id} onClick={() => onOpenTask?.(d.id)} style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "7px 11px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6, cursor: onOpenTask ? "pointer" : "default", fontFamily: "var(--font-display)" }}>
+                        <StatusDot status={d.status} size={8} />
                         <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)" }}>{d.title}</span>
-                      </div>
+                        {onOpenTask && <Icon name="arrowUpRight" size={13} style={{ color: "var(--ink-4)" }} />}
+                      </button>
                     ))}
                   </div>
                 )}
