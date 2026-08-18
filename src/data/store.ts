@@ -158,9 +158,9 @@ interface TagRow { id: string; label: string; color: string; }
 
 export interface CreatedTag { id: string; label: string; color: string; }
 
-interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; mentions?: string[] | null; reactions?: Record<string, string[]> | null; }
+interface CommentRow { id: string; task_id: string; user_id: string; author_name: string; body: string; created_at: string; mentions?: string[] | null; reactions?: Record<string, string[]> | null; parent_id?: string | null; }
 function rowToComment(r: CommentRow): Comment {
-  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [], reactions: r.reactions ?? {} };
+  return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [], reactions: r.reactions ?? {}, parentId: r.parent_id ?? undefined };
 }
 
 interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; read_at?: string | null; }
@@ -1028,14 +1028,21 @@ export const store = {
     return (data as CommentRow[]).map(rowToComment);
   },
 
-  async addComment(taskId: string, body: string, userId: string, authorName: string, mentions: string[] = []): Promise<Comment> {
+  async addComment(taskId: string, body: string, userId: string, authorName: string, mentions: string[] = [], parentId?: string): Promise<Comment> {
     if (!supabase) {
-      const c: Comment = { id: newId(), taskId, authorId: userId, authorName, body, createdAt: new Date().toISOString(), mentions };
+      const c: Comment = { id: newId(), taskId, authorId: userId, authorName, body, createdAt: new Date().toISOString(), mentions, parentId };
       (demoComments[taskId] ??= []).push(c);
       return c;
     }
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("comments").insert({ task_id: taskId, user_id: uid, author_name: authorName, body, mentions }).select("*").single();
+    const insert: Record<string, unknown> = { task_id: taskId, user_id: uid, author_name: authorName, body, mentions };
+    if (parentId) insert.parent_id = parentId;
+    // resilient insert: if parent_id column isn't migrated yet, retry without it
+    let { data, error } = await supabase.from("comments").insert(insert).select("*").single();
+    if (error && parentId && /parent_id/.test(error.message)) {
+      delete insert.parent_id;
+      ({ data, error } = await supabase.from("comments").insert(insert).select("*").single());
+    }
     if (error) throw error;
     return rowToComment(data as CommentRow);
   },

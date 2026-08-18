@@ -1271,11 +1271,11 @@ export default function App() {
     });
   }, [toastAction, noteDelete, clearWrite]);
 
-  const addComment = useCallback(async (taskId: string, body: string, mentions: string[] = []): Promise<Comment | null> => {
+  const addComment = useCallback(async (taskId: string, body: string, mentions: string[] = [], parentId?: string): Promise<Comment | null> => {
     const t = tasksRef.current?.find((x) => x.id === taskId);
     const authorName = getMember(userIdRef.current)?.name || "You";
     try {
-      const c = await store.addComment(taskId, body, userIdRef.current, authorName, mentions);
+      const c = await store.addComment(taskId, body, userIdRef.current, authorName, mentions, parentId);
       if (t) {
         const count = t.comments + 1;
         setTasks((ts) => ts && ts.map((x) => x.id === taskId ? { ...x, comments: count } : x));

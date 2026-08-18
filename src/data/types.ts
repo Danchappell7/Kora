@@ -230,6 +230,7 @@ export interface Comment {
   mentions?: string[];
   /* emoji -> list of user ids who reacted with it */
   reactions?: Record<string, string[]>;
+  parentId?: string;   // set when this comment is a reply to another
 }
 
 export interface Attachment {

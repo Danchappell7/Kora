@@ -199,7 +199,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   onCreateSection?: (projectId: string, name: string) => void;
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
-  onAddComment: (taskId: string, body: string, mentions?: string[]) => Promise<Comment | null>;
+  onAddComment: (taskId: string, body: string, mentions?: string[], parentId?: string) => Promise<Comment | null>;
   onConvertComment?: (body: string, projectId: string) => void;
   onFocus: (id: string) => void;
 }) {
@@ -225,6 +225,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const [thread, setThread] = useState<Comment[]>([]);
   const [editingComment, setEditingComment] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
@@ -291,6 +292,12 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const parent = task.parentId ? tasks.find((t) => t.id === task.parentId) : undefined;
   const following = (task.followers ?? []).includes(currentUserId);
   const taskReactions = task.reactions ?? {};
+  // thread as top-level comments each followed by its (one-level) replies
+  const orderedComments = thread.filter((c) => !c.parentId).flatMap((c) => [
+    { c, depth: 0 },
+    ...thread.filter((r) => r.parentId === c.id).map((r) => ({ c: r, depth: 1 })),
+  ]);
+  const replyingToComment = replyingTo ? thread.find((c) => c.id === replyingTo) : null;
   const done = task.status === "done";
   const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
   // Only people who belong to THIS task's workspace can be assigned/collaborate.
@@ -365,9 +372,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     const lower = v.toLowerCase();
     const mentions = [...new Set(mentionable.filter((m) => lower.includes("@" + m.name.toLowerCase())).map((m) => m.id))];
     setPosting(true);
-    const c = await onAddComment(task.id, v, mentions);
+    const c = await onAddComment(task.id, v, mentions, replyingTo ?? undefined);
     setPosting(false);
-    if (c) { setThread((t) => [...t, c]); setComment(""); setMentionQuery(null); }
+    if (c) { setThread((t) => [...t, c]); setComment(""); setMentionQuery(null); setReplyingTo(null); }
   };
   const toggleReaction = (c: Comment, emoji: string) => {
     const reactions: Record<string, string[]> = { ...(c.reactions || {}) };
@@ -876,9 +883,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               Comments{thread.length > 0 && <span className="mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink-4)" }}>{thread.length}</span>}
             </div>
             {thread.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>No comments yet — start the thread below.</p>}
-            {thread.map((c) => (
-              <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                <Avatar id={c.authorId} size={26} />
+            {orderedComments.map(({ c, depth }) => (
+              <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 12, marginLeft: depth ? 34 : 0, paddingLeft: depth ? 12 : 0, borderLeft: depth ? "2px solid var(--hairline)" : "none" }}>
+                <Avatar id={c.authorId} size={depth ? 22 : 26} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                     <strong style={{ fontSize: 13, color: "var(--ink)" }}>{c.authorName || "You"}</strong>
@@ -910,6 +917,10 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     ))}
                     <button onClick={() => setReactPickerFor((v) => v === c.id ? null : c.id)} aria-label="Add reaction" style={{ width: 24, height: 22, borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, display: "grid", placeItems: "center" }}>
                       <Icon name="message" size={12} />
+                    </button>
+                    <button onClick={() => { setReplyingTo(c.parentId ?? c.id); commentRef.current?.focus(); }} title="Reply"
+                      style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <Icon name="arrowRight" size={11} /> Reply
                     </button>
                     {onConvertComment && c.body.trim() && (
                       <button onClick={() => onConvertComment(c.body.trim(), task.projectId)} title="Turn this comment into a task"
@@ -956,6 +967,13 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
         </div>
 
         {/* comment box */}
+        {replyingToComment && (
+          <div style={{ padding: "8px 14px 0", display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink-3)" }}>
+            <Icon name="arrowRight" size={13} style={{ color: "var(--accent)" }} />
+            <span className="truncate" style={{ flex: 1 }}>Replying to <strong style={{ color: "var(--ink-2)" }}>{replyingToComment.authorName || "comment"}</strong></span>
+            <button onClick={() => setReplyingTo(null)} aria-label="Cancel reply" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}>×</button>
+          </div>
+        )}
         <div style={{ padding: 14, borderTop: "1px solid var(--hairline)", display: "flex", gap: 10, alignItems: "center" }}>
           <Avatar id={currentUserId} size={28} />
           <div style={{ position: "relative", flex: 1 }}>
