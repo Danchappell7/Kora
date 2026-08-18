@@ -2,7 +2,7 @@
    KANBO — global search: query across every task with field filters,
    plus saved searches. Reads tasks already in memory (instant).
    ============================================================ */
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag } from "../primitives";
 import { getProject, getMember, fmtDue, dueState, STATUS_META } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
@@ -13,7 +13,7 @@ const EMPTY: Query = { text: "", status: "all", priority: "all", assignee: "all"
 
 const selStyle: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
 
-export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch }: {
+export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey }: {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -22,8 +22,12 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   savedSearches: SavedSearch[];
   onSaveSearch: (name: string, query: Record<string, unknown>) => void;
   onDeleteSavedSearch: (id: string) => void;
+  preset?: Record<string, string>;
+  presetKey?: string; // changes whenever a smart list is (re-)selected
 }) {
-  const [q, setQ] = useState<Query>(EMPTY);
+  const [q, setQ] = useState<Query>(preset ? { ...EMPTY, ...preset } : EMPTY);
+  // apply a smart-list preset whenever one is selected from the sidebar
+  useEffect(() => { if (preset) setQ({ ...EMPTY, ...preset }); }, [presetKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
   const allTags = useMemo(() => [...new Set(tasks.flatMap((t) => t.tags || []))], [tasks]);
   // one-click cross-project presets (combine + save your own)

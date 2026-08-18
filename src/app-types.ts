@@ -6,6 +6,7 @@ export interface Route {
   view: ViewId;
   projectId?: string;
   smart?: boolean;
+  list?: string; // active smart-list id when view === "search"
 }
 
 export type TaskView = "list" | "board" | "timeline" | "calendar" | "files" | "matrix";

@@ -41,6 +41,7 @@ import { store, type NewProject, type AppBanner } from "./data/store";
 import { offlineQueue } from "./lib/offlineQueue";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { QuickCapture } from "./components/QuickCapture";
+import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
 import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
@@ -1787,7 +1788,7 @@ export default function App() {
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
       case "analytics": return <AnalyticsView tasks={allTasks} members={assignees} customFields={customFields} />;
       case "reports": return <ReportsView tasks={allTasks} projects={wsProjects} members={assignees} />;
-      case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} />;
+      case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} preset={smartListQuery(route.list, currentUserId)} presetKey={route.list} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;

@@ -6,6 +6,7 @@ import { Icon, Avatar, KanboLogo } from "./primitives";
 import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
 import type { Task, Project, Member, Workspace, Subscription, IconName } from "../data/types";
 import type { Route } from "../app-types";
+import { SMART_LISTS } from "../lib/smartLists";
 import type { FocusTimer } from "../hooks/useFocusTimer";
 
 function DeepWorkMini({ focus, onOpen }: { focus: FocusTimer; onOpen: () => void }) {
@@ -95,6 +96,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const orderedProjects = [...visibleProjects].sort((a, b) => (pinned.has(b.id) ? 1 : 0) - (pinned.has(a.id) ? 1 : 0));
   const activeWs: Workspace = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" };
   const myOpen = tasks.filter((t) => t.assigneeId === currentUserId && t.status !== "done").length;
+  const smartCounts = SMART_LISTS.map((s) => ({ ...s, count: tasks.filter((t) => s.match(t, currentUserId)).length }));
 
   const navGroups: { label?: string; items: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] }[] = [
     { items: [
@@ -172,7 +174,15 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         {navGroups.map((g, gi) => (
           <div key={gi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {g.label && <div className="kicker" style={{ padding: "10px 10px 4px" }}>{g.label}</div>}
-            {g.items.map((n) => <NavItem key={n.id} icon={n.icon} label={n.label} badge={n.badge} active={route.view === n.id} onClick={() => setRoute({ view: n.id })} />)}
+            {g.items.map((n) => <NavItem key={n.id} icon={n.icon} label={n.label} badge={n.badge} active={route.view === n.id && (n.id !== "search" || !route.list)} onClick={() => setRoute({ view: n.id })} />)}
+            {gi === 0 && (
+              <>
+                <div className="kicker" style={{ padding: "10px 10px 4px" }}>Smart lists</div>
+                {smartCounts.map((s) => (
+                  <NavItem key={s.id} icon={s.icon} label={s.label} badge={s.count} active={route.view === "search" && route.list === s.id} onClick={() => setRoute({ view: "search", list: s.id })} />
+                ))}
+              </>
+            )}
           </div>
         ))}
       </nav>
