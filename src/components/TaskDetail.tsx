@@ -817,14 +817,35 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               <input ref={fileRef} type="file" multiple onChange={(e) => onPickFiles(e.target.files)} style={{ display: "none" }} />
             </div>
             {files.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-4)", margin: 0 }}>No files attached.</p>}
-            {files.map((a) => (
-              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6 }}>
-                <Icon name="folder" size={15} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
-                <a href={a.url} target="_blank" rel="noreferrer" className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)", textDecoration: "none" }} title={a.name}>{a.name}</a>
-                <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", flexShrink: 0 }}>{fmtBytes(a.size)}</span>
-                <button onClick={() => removeFile(a)} className="btn-icon" aria-label={`Remove ${a.name}`} style={{ border: "none", width: 26, height: 26, color: "var(--ink-4)" }}><Icon name="x" size={14} /></button>
-              </div>
-            ))}
+            {(() => {
+              const isImg = (a: Attachment) => a.mime?.startsWith("image/") || /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(a.name);
+              const images = files.filter(isImg);
+              const others = files.filter((a) => !isImg(a));
+              return (
+                <>
+                  {images.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 8, marginBottom: others.length ? 10 : 0 }}>
+                      {images.map((a) => (
+                        <div key={a.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 10, overflow: "hidden", border: "1px solid var(--hairline)", background: "var(--surface)" }}>
+                          <a href={a.url} target="_blank" rel="noreferrer" title={a.name}>
+                            <img src={a.url} alt={a.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                          </a>
+                          <button onClick={() => removeFile(a)} aria-label={`Remove ${a.name}`} style={{ position: "absolute", top: 4, right: 4, width: 22, height: 22, borderRadius: 6, border: "none", background: "color-mix(in oklch, var(--ink) 55%, transparent)", color: "#fff", display: "grid", placeItems: "center", cursor: "pointer" }}><Icon name="x" size={13} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {others.map((a) => (
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 6 }}>
+                      <Icon name="folder" size={15} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
+                      <a href={a.url} target="_blank" rel="noreferrer" className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-2)", textDecoration: "none" }} title={a.name}>{a.name}</a>
+                      <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", flexShrink: 0 }}>{fmtBytes(a.size)}</span>
+                      <button onClick={() => removeFile(a)} className="btn-icon" aria-label={`Remove ${a.name}`} style={{ border: "none", width: 26, height: 26, color: "var(--ink-4)" }}><Icon name="x" size={14} /></button>
+                    </div>
+                  ))}
+                </>
+              );
+            })()}
           </div>
 
           {/* change history */}
