@@ -62,7 +62,7 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, smartCounts }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -85,6 +85,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   subscription?: Subscription | null;
   onUpgrade: () => void;
   onManageBilling: () => void;
+  smartCounts?: Record<string, number>;
 }) {
   const [wsOpen, setWsOpen] = useState(false);
   const [pinned, setPinned] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("kanbo-pinned-projects") || "[]")); } catch { return new Set(); } });
@@ -96,7 +97,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const orderedProjects = [...visibleProjects].sort((a, b) => (pinned.has(b.id) ? 1 : 0) - (pinned.has(a.id) ? 1 : 0));
   const activeWs: Workspace = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" };
   const myOpen = tasks.filter((t) => t.assigneeId === currentUserId && t.status !== "done").length;
-  const smartCounts = SMART_LISTS.map((s) => ({ ...s, count: tasks.filter((t) => s.match(t, currentUserId)).length }));
+  // count over the caller-provided global set (matches the global Search view);
+  // fall back to the local (workspace-scoped) list only if not supplied.
+  const smartRows = SMART_LISTS.map((s) => ({ ...s, count: smartCounts ? (smartCounts[s.id] ?? 0) : tasks.filter((t) => s.match(t, currentUserId)).length }));
 
   const navGroups: { label?: string; items: { id: Route["view"]; icon: IconName; label: string; badge?: number }[] }[] = [
     { items: [
@@ -178,7 +181,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             {gi === 0 && (
               <>
                 <div className="kicker" style={{ padding: "10px 10px 4px" }}>Smart lists</div>
-                {smartCounts.map((s) => (
+                {smartRows.map((s) => (
                   <NavItem key={s.id} icon={s.icon} label={s.label} badge={s.count} active={route.view === "search" && route.list === s.id} onClick={() => setRoute({ view: "search", list: s.id })} />
                 ))}
               </>

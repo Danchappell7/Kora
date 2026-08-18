@@ -383,6 +383,18 @@ function readSnapshot(uid: string | undefined): Snapshot | null {
   } catch { return null; }
 }
 const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false;
+/** Fold pending offline mutations onto a task list so an offline reload shows
+ *  the user's un-synced edits (not a pre-offline snapshot) — which also stops
+ *  them re-creating a task they can't see and producing a duplicate on sync. */
+function applyQueue(tasks: Task[]): Task[] {
+  let out = tasks.slice();
+  for (const m of offlineQueue.all()) {
+    if (m.kind === "create") { if (!out.some((t) => t.id === m.task.id)) out = [m.task, ...out]; }
+    else if (m.kind === "update") out = out.map((t) => t.id === m.taskId ? { ...t, ...m.patch } : t);
+    else out = out.filter((t) => t.id !== m.taskId);
+  }
+  return out;
+}
 // set true only while flushQueue replays, so the task methods below run their
 // RAW supabase path (throw on failure) instead of re-enqueuing the op.
 let replaying = false;
@@ -424,7 +436,7 @@ export const store = {
     // session above is read from local storage, so it resolves offline too.
     if (isOffline()) {
       const snap = readSnapshot(uid);
-      if (snap) { setReferenceData(snap.ref); return snap.boot; }
+      if (snap) { setReferenceData(snap.ref); return { ...snap.boot, tasks: applyQueue(snap.boot.tasks) }; }
     }
 
     // load this user's profile (best-effort: tolerates the profiles migration
@@ -464,7 +476,7 @@ export const store = {
       // connection dropped after we thought we were online — fall back to the
       // last good snapshot rather than wiping the screen.
       const snap = readSnapshot(uid);
-      if (snap && isNetworkError(e)) { setReferenceData(snap.ref); return snap.boot; }
+      if (snap && isNetworkError(e)) { setReferenceData(snap.ref); return { ...snap.boot, tasks: applyQueue(snap.boot.tasks) }; }
       throw e;
     }
 
@@ -572,9 +584,11 @@ export const store = {
   },
 
   /** Replay queued offline task mutations, in order, when back online.
-   *  onRemap(clientId, serverId) lets the caller swap optimistic ids in
-   *  state once a queued create lands a server id. Returns count synced. */
-  async flushQueue(onRemap?: (clientId: string, serverId: string) => void): Promise<number> {
+   *  onRemap(clientId, serverId, saved) lets the caller swap the optimistic id
+   *  in state — or INSERT the task if it isn't in state (e.g. after an online
+   *  reopen where the offline-created task only ever lived in the queue).
+   *  Returns count synced. */
+  async flushQueue(onRemap?: (clientId: string, serverId: string, saved: Task) => void): Promise<number> {
     if (!supabase || isOffline() || replaying) return 0;
     let synced = 0;
     replaying = true;
@@ -583,7 +597,8 @@ export const store = {
       try {
         if (m.kind === "create") {
           const saved = await this.createTask(m.task, m.userId);
-          if (saved.id !== m.task.id) { offlineQueue.remapId(m.task.id, saved.id); onRemap?.(m.task.id, saved.id); }
+          if (saved.id !== m.task.id) offlineQueue.remapId(m.task.id, saved.id);
+          onRemap?.(m.task.id, saved.id, saved);
         } else if (m.kind === "update") {
           await this.updateTask(m.taskId, m.patch);
         } else {
@@ -593,8 +608,10 @@ export const store = {
         synced++;
       } catch (e) {
         if (isNetworkError(e)) break;       // still offline — stop, keep the rest
-        offlineQueue.remove(m.id);          // poison op (e.g. permissions) — drop so it can't block the queue
-        reportError(e, { op: "flushQueue", kind: m.kind });
+        // transient server error (500/timeout) shouldn't discard a user's task
+        // on the first miss — retry up to 5 times, then dead-letter.
+        if (offlineQueue.bumpAttempts(m.id) >= 5) { offlineQueue.remove(m.id); reportError(e, { op: "flushQueue-drop", kind: m.kind }); }
+        else { reportError(e, { op: "flushQueue-retry", kind: m.kind }); }
       }
     }
     } finally { replaying = false; }

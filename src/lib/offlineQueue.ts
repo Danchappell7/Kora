@@ -12,9 +12,9 @@
 import type { Task } from "../data/types";
 
 export type QueuedMutation =
-  | { id: string; ts: number; kind: "create"; task: Task; userId: string }
-  | { id: string; ts: number; kind: "update"; taskId: string; patch: Partial<Task> }
-  | { id: string; ts: number; kind: "delete"; taskId: string };
+  | { id: string; ts: number; attempts?: number; kind: "create"; task: Task; userId: string }
+  | { id: string; ts: number; attempts?: number; kind: "update"; taskId: string; patch: Partial<Task> }
+  | { id: string; ts: number; attempts?: number; kind: "delete"; taskId: string };
 
 const KEY = "kanbo-offline-queue";
 let mem: QueuedMutation[] = load();
@@ -61,6 +61,17 @@ export const offlineQueue = {
   },
 
   remove(id: string) { mem = mem.filter((m) => m.id !== id); persist(); },
+
+  /** Record a failed replay attempt; returns the new attempt count so the
+   *  caller can dead-letter an op only after it has failed several times
+   *  (a transient 500 shouldn't discard a user's task on the first miss). */
+  bumpAttempts(id: string): number {
+    const m = mem.find((x) => x.id === id);
+    if (!m) return 0;
+    m.attempts = (m.attempts ?? 0) + 1;
+    persist();
+    return m.attempts;
+  },
 
   /** A queued create synced and the server assigned a new id — rewrite later ops. */
   remapId(clientId: string, serverId: string) {

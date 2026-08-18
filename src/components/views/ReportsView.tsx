@@ -124,9 +124,12 @@ export function ReportsView({ tasks, projects, members = [] }: {
   };
   const exportPdf = () => {
     const w = window.open("", "_blank"); if (!w) return;
-    const scopeLabel = `${projectId === "all" ? "All projects" : getProject(projectId)?.name ?? ""}${assignee === "all" ? "" : " · " + (getMember(assignee)?.name ?? "")} · last ${weeks} weeks`;
-    const trendRow = report.labels.map((lb, i) => `<tr><td>${lb}</td><td>${report.created[i]}</td><td>${report.completed[i]}</td></tr>`).join("");
-    const projRows = projComparison.map((p) => `<tr><td>${p.name}</td><td>${p.total}</td><td>${p.done}</td><td>${p.open}</td><td>${p.overdue}</td><td>${p.completion}%</td><td>${p.avgCycle == null ? "—" : p.avgCycle + "d"}</td></tr>`).join("");
+    // escape any user-controlled text (project / member names) before it goes
+    // into the popup's HTML — names can contain <, >, &, quotes.
+    const h = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c));
+    const scopeLabel = `${projectId === "all" ? "All projects" : h(getProject(projectId)?.name ?? "")}${assignee === "all" ? "" : " · " + h(getMember(assignee)?.name ?? "")} · last ${weeks} weeks`;
+    const trendRow = report.labels.map((lb, i) => `<tr><td>${h(lb)}</td><td>${report.created[i]}</td><td>${report.completed[i]}</td></tr>`).join("");
+    const projRows = projComparison.map((p) => `<tr><td>${h(p.name)}</td><td>${p.total}</td><td>${p.done}</td><td>${p.open}</td><td>${p.overdue}</td><td>${p.completion}%</td><td>${p.avgCycle == null ? "—" : p.avgCycle + "d"}</td></tr>`).join("");
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Kanbo report</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;color:#1a1a1a;padding:32px;max-width:880px;margin:0 auto}h1{font-size:22px;margin:0 0 2px}.sub{color:#666;font-size:13px;margin:0 0 20px}h2{font-size:15px;margin:24px 0 8px}.kpis{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 4px}.kpi b{display:block;font-size:22px}.kpi span{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.05em}table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee}th{color:#888;font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}@media print{.noprint{display:none}}</style></head><body>
       <h1>Kanbo — activity report</h1><p class="sub">${scopeLabel} · generated ${new Date().toLocaleDateString()}</p>
       <div class="kpis">

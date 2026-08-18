@@ -247,7 +247,9 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     setDesc(cur?.description ?? "");
     setTitleBuf(cur?.title ?? "");
     setFiles([]);
-    store.listComments(taskId).then((cs) => { if (!cancelled) setThread(cs); }).catch(reportError);
+    // merge, not replace: a live comment may arrive via the realtime channel
+    // before this initial query resolves — keep any such rows not already in cs.
+    store.listComments(taskId).then((cs) => { if (!cancelled) setThread((prev) => { const ids = new Set(cs.map((c) => c.id)); return [...cs, ...prev.filter((p) => !ids.has(p.id))]; }); }).catch(reportError);
     store.listAttachments(taskId).then((fs) => { if (!cancelled) setFiles(fs); }).catch(reportError);
     setEvents([]); store.listTaskEvents(taskId).then((es) => { if (!cancelled) setEvents(es); }).catch(reportError);
     return () => { cancelled = true; };
@@ -292,10 +294,14 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   const parent = task.parentId ? tasks.find((t) => t.id === task.parentId) : undefined;
   const following = (task.followers ?? []).includes(currentUserId);
   const taskReactions = task.reactions ?? {};
-  // thread as top-level comments each followed by its (one-level) replies
-  const orderedComments = thread.filter((c) => !c.parentId).flatMap((c) => [
+  // thread as top-level comments each followed by its (one-level) replies.
+  // A reply whose parent is gone (deleted) is promoted to top-level so it can
+  // never silently disappear from the panel.
+  const topLevelIds = new Set(thread.filter((c) => !c.parentId).map((c) => c.id));
+  const isTop = (c: Comment) => !c.parentId || !topLevelIds.has(c.parentId);
+  const orderedComments = thread.filter(isTop).flatMap((c) => [
     { c, depth: 0 },
-    ...thread.filter((r) => r.parentId === c.id).map((r) => ({ c: r, depth: 1 })),
+    ...thread.filter((r) => r.parentId === c.id && !isTop(r)).map((r) => ({ c: r, depth: 1 })),
   ]);
   const replyingToComment = replyingTo ? thread.find((c) => c.id === replyingTo) : null;
   const done = task.status === "done";
@@ -393,8 +399,11 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   };
   const removeComment = (c: Comment) => {
     if (!window.confirm("Delete this comment?")) return;
-    setThread((t) => t.filter((x) => x.id !== c.id));
-    if (task) onPatch(task.id, { comments: Math.max(0, (task.comments || 0) - 1) });
+    // drop the comment AND its replies locally, mirroring the DB's parent_id
+    // ON DELETE CASCADE so no orphaned reply lingers in the panel.
+    const removedIds = new Set([c.id, ...thread.filter((x) => x.parentId === c.id).map((x) => x.id)]);
+    setThread((t) => t.filter((x) => !removedIds.has(x.id)));
+    if (task) onPatch(task.id, { comments: Math.max(0, (task.comments || 0) - removedIds.size) });
     store.deleteComment(c.id).catch(reportError);
   };
   const del = () => { onClose(); onDelete(task.id); };

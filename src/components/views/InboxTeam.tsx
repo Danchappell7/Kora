@@ -52,10 +52,14 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   // group by recency so the feed reads as "what just happened" vs "earlier"
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
   const weekAgo = now - 7 * 86400000;
+  const today = shown.filter((a) => new Date(a.createdAt).getTime() >= startOfToday.getTime());
+  const earlier = shown.filter((a) => { const t = new Date(a.createdAt).getTime(); return t < startOfToday.getTime() && t >= weekAgo; });
+  const grouped = new Set([...today, ...earlier]);
   const buckets: { label: string; items: Activity[] }[] = [
-    { label: "Today", items: shown.filter((a) => new Date(a.createdAt).getTime() >= startOfToday.getTime()) },
-    { label: "Earlier this week", items: shown.filter((a) => { const t = new Date(a.createdAt).getTime(); return t < startOfToday.getTime() && t >= weekAgo; }) },
-    { label: "Older", items: shown.filter((a) => new Date(a.createdAt).getTime() < weekAgo) },
+    { label: "Today", items: today },
+    { label: "Earlier this week", items: earlier },
+    // catch-all: anything older — and anything with an unparseable date, so no item is ever dropped
+    { label: "Older", items: shown.filter((a) => !grouped.has(a)) },
   ].filter((b) => b.items.length > 0);
   const snoozedCount = activity.filter((a) => snoozed[a.id] && snoozed[a.id] > now).length;
   if (activity.length === 0) {

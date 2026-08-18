@@ -47,7 +47,8 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
         const hay = [t.title, t.description, getProject(t.projectId)?.name, getMember(t.assigneeId)?.name, ...(t.tags || [])].join(" ").toLowerCase();
         if (!hay.includes(text)) return false;
       }
-      if (q.status !== "all" && t.status !== q.status) return false;
+      if (q.status === "open") { if (t.status === "done") return false; }
+      else if (q.status !== "all" && t.status !== q.status) return false;
       if (q.priority !== "all" && t.priority !== q.priority) return false;
       if (q.assignee !== "all" && t.assigneeId !== q.assignee && !(t.collaborators ?? []).includes(q.assignee)) return false;
       if (q.projectId !== "all" && t.projectId !== q.projectId) return false;

@@ -607,8 +607,14 @@ export default function App() {
     if (offlineQueue.size() === 0 || typeof navigator !== "undefined" && navigator.onLine === false) return;
     setSyncing(true);
     try {
-      const n = await store.flushQueue((clientId, serverId) => {
-        setTasks((ts) => ts && ts.map((t) => t.id === clientId ? { ...t, id: serverId } : t));
+      const n = await store.flushQueue((clientId, serverId, saved) => {
+        // map the optimistic id if the task is on screen, otherwise INSERT it —
+        // after an online reopen a queued-create task isn't in state yet.
+        setTasks((ts) => {
+          if (!ts) return ts;
+          if (ts.some((t) => t.id === clientId || t.id === serverId)) return ts.map((t) => t.id === clientId ? { ...t, id: serverId } : t);
+          return [{ ...saved, id: serverId }, ...ts];
+        });
         pendingTasksRef.current = pendingTasksRef.current.map((p) => p.id === clientId ? { ...p, id: serverId } : p);
       });
       if (n > 0) toastSuccess(`Synced ${n} offline change${n === 1 ? "" : "s"}`);
@@ -1742,6 +1748,11 @@ export default function App() {
   const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
   const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
   const archivedTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
+  // Smart-list counts are computed over the SAME global task set the Search
+  // view filters (search spans every workspace), so the sidebar badge and the
+  // results it opens always agree.
+  const smartCounts: Record<string, number> = {};
+  for (const s of SMART_LISTS) smartCounts[s.id] = tasks.filter((t) => s.match(t, currentUserId)).length;
 
   const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
 
@@ -1838,7 +1849,7 @@ export default function App() {
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
-      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} />
+      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} smartCounts={smartCounts} />
   );
 
   return (

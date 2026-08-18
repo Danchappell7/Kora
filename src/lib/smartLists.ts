@@ -26,7 +26,7 @@ const withinWeek = (iso?: string) => {
 export const SMART_LISTS: SmartList[] = [
   { id: "mine", label: "Assigned to me", icon: "user",
     match: (t, me) => !t.archivedAt && t.status !== "done" && (t.assigneeId === me || (t.collaborators ?? []).includes(me)),
-    preset: { assignee: "@me" } },
+    preset: { assignee: "@me", status: "open" } },
   { id: "today", label: "Due today", icon: "calendar",
     match: (t) => !t.archivedAt && dueState(t.dueDate, t.status) === "today",
     preset: { due: "today" } },
@@ -35,7 +35,7 @@ export const SMART_LISTS: SmartList[] = [
     preset: { due: "overdue" } },
   { id: "week", label: "Due this week", icon: "calendarPlus",
     match: (t) => !t.archivedAt && t.status !== "done" && withinWeek(t.dueDate),
-    preset: { due: "week" } },
+    preset: { due: "week", status: "open" } },
 ];
 
 export const smartListById = (id?: string) => SMART_LISTS.find((s) => s.id === id);
