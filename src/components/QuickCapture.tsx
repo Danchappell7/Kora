@@ -54,7 +54,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
       <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Quick capture" className="glass anim-scalein" style={{ width: 560, maxWidth: "94vw", borderRadius: 16, padding: 16, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
           <Icon name="zap" size={18} style={{ color: "var(--accent)", flexShrink: 0 }} />
-          <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)}
+          <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)} aria-label="Quick capture a task"
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } else if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
             placeholder="Add a task…  e.g. Pay invoice tomorrow #finance @maya !high"
             style={{ flex: 1, height: 30, border: "none", background: "transparent", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 17, outline: "none" }} />

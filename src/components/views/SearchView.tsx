@@ -4,14 +4,14 @@
    ============================================================ */
 import { useMemo, useState, useEffect } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag } from "../primitives";
-import { getProject, fmtDue, dueState, STATUS_META } from "../../data/data";
+import { getProject, fmtDue, dueState, STATUS_META, toLocalISO } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
 
 const selStyle: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
 
-export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey }: {
+export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete }: {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -22,10 +22,17 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   onDeleteSavedSearch: (id: string) => void;
   preset?: Record<string, string>;
   presetKey?: string; // changes whenever a smart list is (re-)selected
+  onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
+  onBulkDelete?: (ids: string[]) => void;
 }) {
   const [q, setQ] = useState<Query>(preset ? { ...EMPTY, ...preset } : EMPTY);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleSel = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const clearSel = () => setSelected(new Set());
   // apply a smart-list preset whenever one is selected from the sidebar
   useEffect(() => { if (preset) setQ({ ...EMPTY, ...preset }); }, [presetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // dropping a selected task out of the current results shouldn't keep it selected
+  useEffect(() => { clearSel(); }, [presetKey, q]);
   const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
   const allTags = useMemo(() => [...new Set(tasks.flatMap((t) => t.tags || []))], [tasks]);
   // one-click cross-project presets (combine + save your own)
@@ -87,18 +94,37 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <span className="kicker">{active ? `${results.length} result${results.length === 1 ? "" : "s"}` : "Type or pick a filter to search"}</span>
         {active && results.length > 0 && (
-          <span style={{ marginLeft: "auto", display: "flex", gap: 7 }}>
+          <span style={{ marginLeft: "auto", display: "flex", gap: 7, alignItems: "center" }}>
+            {(onBulkPatch || onBulkDelete) && (
+              <button onClick={() => setSelected(selected.size === results.length ? new Set() : new Set(results.map((t) => t.id)))} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>
+                {selected.size === results.length ? "Clear" : "Select all"}
+              </button>
+            )}
             <button onClick={() => exportTasksCsv(results, "search")} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
             <button onClick={() => printTasks(results, "Search results")} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> PDF</button>
           </span>
         )}
       </div>
+      {selected.size > 0 && (onBulkPatch || onBulkDelete) && (
+        <div className="glass anim-fadeup" style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderRadius: 12, marginBottom: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{selected.size} selected</span>
+          <div style={{ flex: 1 }} />
+          {onBulkPatch && <button onClick={() => { onBulkPatch([...selected], { status: "done", completedAt: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="check" size={14} /> Complete</button>}
+          {onBulkPatch && <button onClick={() => { onBulkPatch([...selected], { dueDate: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendar" size={14} /> Due today</button>}
+          {onBulkDelete && <button onClick={() => { if (window.confirm(`Delete ${selected.size} task${selected.size === 1 ? "" : "s"}?`)) { onBulkDelete([...selected]); clearSel(); } }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5, color: "var(--prio-urgent)" }}><Icon name="trash" size={14} /> Delete</button>}
+          <button onClick={clearSel} className="btn btn-ghost" style={{ padding: "5px 9px", fontSize: 12.5 }}>Cancel</button>
+        </div>
+      )}
       <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
         {active && results.map((t, i) => {
           const proj = getProject(t.projectId);
           const ds = dueState(t.dueDate, t.status);
+          const sel = selected.has(t.id);
           return (
-            <div key={t.id} className="lift-row" onClick={() => onOpen(t.id)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", borderTop: i ? "1px solid var(--hairline)" : "none" }}>
+            <div key={t.id} className="lift-row" onClick={() => onOpen(t.id)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", borderTop: i ? "1px solid var(--hairline)" : "none", background: sel ? "var(--accent-dim)" : undefined }}>
+              {(onBulkPatch || onBulkDelete) && (
+                <input type="checkbox" checked={sel} onClick={(e) => e.stopPropagation()} onChange={() => toggleSel(t.id)} aria-label={`Select ${t.title}`} style={{ cursor: "pointer", flexShrink: 0 }} />
+              )}
               <StatusDot status={t.status} size={8} />
               <span className="truncate" style={{ flex: 1, fontSize: 14, color: t.status === "done" ? "var(--ink-4)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
               {t.priority !== "medium" && <PriorityFlag priority={t.priority} size={13} />}
