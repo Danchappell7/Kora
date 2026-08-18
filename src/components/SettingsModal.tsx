@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from "react";
 import { Icon } from "./primitives";
 import { memberInitials } from "../data/data";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { ACCENTS, accentSwatch, type Appearance, type TextSize } from "../lib/appearance";
 
 const PRONOUN_SUGGESTIONS = ["she/her", "he/him", "they/them", "she/they", "he/they", "ze/zir"];
 
@@ -28,7 +29,7 @@ const NOTIF_ROWS: { key: string; label: string }[] = [
   { key: "due", label: "Due-date reminders" },
 ];
 
-export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs }: {
+export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -40,6 +41,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onDeleteAccount: () => Promise<void>;
   notifyPrefs?: Record<string, boolean>;
   onSaveNotifyPrefs?: (prefs: Record<string, boolean>) => void;
+  appearance?: Appearance;
+  onChangeAppearance?: (a: Appearance) => void;
 }) {
   // a pref is ON unless explicitly false (in-app key = base; email key = base+"_email")
   const prefOn = (k: string) => notifyPrefs[k] !== false;
@@ -162,6 +165,42 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
           {error && <div role="alert" style={{ marginTop: 14, fontSize: 12.5, color: "var(--prio-urgent)" }}>{error}</div>}
 
           {/* your data */}
+          {/* appearance */}
+          {appearance && onChangeAppearance && (
+            <>
+              <div className="divider" style={{ margin: "22px 0 16px" }} />
+              <label style={labelStyle}>Appearance</label>
+              <div style={{ marginBottom: 14 }}>
+                <span style={{ fontSize: 12, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>Accent colour</span>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {ACCENTS.map((a) => {
+                    const active = appearance.accent === a.id;
+                    return (
+                      <button key={a.id} onClick={() => onChangeAppearance({ ...appearance, accent: a.id })} title={a.label} aria-label={a.label}
+                        style={{ width: 30, height: 30, borderRadius: 9, background: accentSwatch(a.id), cursor: "pointer", border: active ? "2px solid var(--ink)" : "2px solid transparent", boxShadow: active ? "0 0 0 2px var(--surface-raised), 0 0 12px " + accentSwatch(a.id) : "none", display: "grid", placeItems: "center" }}>
+                        {active && <Icon name="check" size={15} style={{ color: "#fff" }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: 12, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>Text size</span>
+                <div style={{ display: "inline-flex", borderRadius: 10, border: "1px solid var(--hairline)", overflow: "hidden" }}>
+                  {(["small", "normal", "large"] as TextSize[]).map((s) => {
+                    const active = appearance.textSize === s;
+                    return (
+                      <button key={s} onClick={() => onChangeAppearance({ ...appearance, textSize: s })}
+                        style={{ padding: "7px 16px", border: "none", background: active ? "var(--accent)" : "transparent", color: active ? "var(--on-accent)" : "var(--ink-2)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: s === "small" ? 12 : s === "large" ? 15 : 13.5, fontWeight: 500, textTransform: "capitalize" }}>
+                        {s}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+
           <div className="divider" style={{ margin: "22px 0 16px" }} />
           <label style={labelStyle}>Your data</label>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
