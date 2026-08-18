@@ -212,6 +212,8 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 @keyframes pulseGlow { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 @keyframes spinSlow { to { transform: rotate(360deg); } }
 .spin { animation: spinSlow 1s linear infinite; }
+.ksaved-del { opacity: 0; transition: opacity .12s; }
+.ksaved-row:hover .ksaved-del { opacity: 1; }
 @keyframes dash { to { stroke-dashoffset: 0; } }
 /* Base state is VISIBLE — animation is enhancement only, never gates content.
    No `both`/backwards fill, so a paused/backgrounded frame still shows content. */

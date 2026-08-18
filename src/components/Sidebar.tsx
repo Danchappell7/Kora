@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Icon, Avatar, KanboLogo } from "./primitives";
 import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
-import type { Task, Project, Member, Workspace, Subscription, IconName } from "../data/types";
+import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch } from "../data/types";
 import type { Route } from "../app-types";
 import { SMART_LISTS } from "../lib/smartLists";
 import type { FocusTimer } from "../hooks/useFocusTimer";
@@ -62,7 +62,7 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, smartCounts }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, smartCounts, savedSearches = [], savedSearchCounts, onDeleteSavedSearch }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -86,6 +86,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onUpgrade: () => void;
   onManageBilling: () => void;
   smartCounts?: Record<string, number>;
+  savedSearches?: SavedSearch[];
+  savedSearchCounts?: Record<string, number>;
+  onDeleteSavedSearch?: (id: string) => void;
 }) {
   const [wsOpen, setWsOpen] = useState(false);
   const [pinned, setPinned] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("kanbo-pinned-projects") || "[]")); } catch { return new Set(); } });
@@ -183,6 +186,15 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                 <div className="kicker" style={{ padding: "10px 10px 4px" }}>Smart lists</div>
                 {smartRows.map((s) => (
                   <NavItem key={s.id} icon={s.icon} label={s.label} badge={s.count} active={route.view === "search" && route.list === s.id} onClick={() => setRoute({ view: "search", list: s.id })} />
+                ))}
+                {savedSearches.map((s) => (
+                  <div key={s.id} className="ksaved-row" style={{ position: "relative" }}>
+                    <NavItem icon="filter" label={s.name} badge={savedSearchCounts?.[s.id]} active={route.view === "search" && route.list === s.id} onClick={() => setRoute({ view: "search", list: s.id })} />
+                    {onDeleteSavedSearch && (
+                      <button onClick={(e) => { e.stopPropagation(); onDeleteSavedSearch(s.id); }} aria-label={`Delete ${s.name}`} title="Remove saved list"
+                        className="ksaved-del" style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "var(--surface-2)", color: "var(--ink-4)", cursor: "pointer", width: 20, height: 20, borderRadius: 6, display: "grid", placeItems: "center", fontSize: 13, lineHeight: 1 }}>×</button>
+                    )}
+                  </div>
                 ))}
               </>
             )}

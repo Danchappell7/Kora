@@ -42,6 +42,7 @@ import { offlineQueue } from "./lib/offlineQueue";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { QuickCapture } from "./components/QuickCapture";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
+import { taskMatchesQuery, toQuery } from "./lib/searchQuery";
 import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
@@ -1753,6 +1754,12 @@ export default function App() {
   // results it opens always agree.
   const smartCounts: Record<string, number> = {};
   for (const s of SMART_LISTS) smartCounts[s.id] = tasks.filter((t) => s.match(t, currentUserId)).length;
+  // saved searches become user-defined smart lists in the sidebar, with live
+  // counts computed over the same global set (one predicate, always in sync).
+  const savedSearchCounts: Record<string, number> = {};
+  for (const s of savedSearches) savedSearchCounts[s.id] = tasks.filter((t) => taskMatchesQuery(t, toQuery(s.query))).length;
+  const savedActive = route.list ? savedSearches.find((s) => s.id === route.list) : undefined;
+  const searchPreset = smartListQuery(route.list, currentUserId) ?? (savedActive ? (toQuery(savedActive.query) as unknown as Record<string, string>) : undefined);
 
   const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
 
@@ -1799,7 +1806,7 @@ export default function App() {
       case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
       case "analytics": return <AnalyticsView tasks={allTasks} members={assignees} customFields={customFields} />;
       case "reports": return <ReportsView tasks={allTasks} projects={wsProjects} members={assignees} />;
-      case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} preset={smartListQuery(route.list, currentUserId)} presetKey={route.list} />;
+      case "search": return <SearchView tasks={tasks} projects={projects} members={assignees} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} preset={searchPreset} presetKey={route.list} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;
@@ -1849,7 +1856,8 @@ export default function App() {
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
-      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} smartCounts={smartCounts} />
+      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} smartCounts={smartCounts}
+      savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch} />
   );
 
   return (

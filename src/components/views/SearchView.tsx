@@ -4,12 +4,10 @@
    ============================================================ */
 import { useMemo, useState, useEffect } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag } from "../primitives";
-import { getProject, getMember, fmtDue, dueState, STATUS_META } from "../../data/data";
+import { getProject, fmtDue, dueState, STATUS_META } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
+import { taskMatchesQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
-
-interface Query { text: string; status: string; priority: string; assignee: string; projectId: string; tag: string; due: string }
-const EMPTY: Query = { text: "", status: "all", priority: "all", assignee: "all", projectId: "all", tag: "all", due: "all" };
 
 const selStyle: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
 
@@ -40,31 +38,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   ];
 
   const results = useMemo(() => {
-    const text = q.text.trim().toLowerCase();
-    return tasks.filter((t) => {
-      if (t.archivedAt) return false;
-      if (text) {
-        const hay = [t.title, t.description, getProject(t.projectId)?.name, getMember(t.assigneeId)?.name, ...(t.tags || [])].join(" ").toLowerCase();
-        if (!hay.includes(text)) return false;
-      }
-      if (q.status === "open") { if (t.status === "done") return false; }
-      else if (q.status !== "all" && t.status !== q.status) return false;
-      if (q.priority !== "all" && t.priority !== q.priority) return false;
-      if (q.assignee !== "all" && t.assigneeId !== q.assignee && !(t.collaborators ?? []).includes(q.assignee)) return false;
-      if (q.projectId !== "all" && t.projectId !== q.projectId) return false;
-      if (q.tag !== "all" && !(t.tags || []).includes(q.tag)) return false;
-      if (q.due === "has" && !t.dueDate) return false;
-      if (q.due === "overdue" && dueState(t.dueDate, t.status) !== "overdue") return false;
-      if (q.due === "today" && dueState(t.dueDate, t.status) !== "today") return false;
-      if (q.due === "week") {
-        if (!t.dueDate) return false;
-        const today = new Date(); today.setHours(0, 0, 0, 0);
-        const diff = (new Date(t.dueDate + "T00:00:00").getTime() - today.getTime()) / 86400000;
-        if (!(diff >= 0 && diff <= 7)) return false;
-      }
-      if (q.due === "none" && t.dueDate) return false;
-      return true;
-    }).slice(0, 200);
+    return tasks.filter((t) => taskMatchesQuery(t, q)).slice(0, 200);
   }, [tasks, q]);
 
   const active = q.text.trim() !== "" || Object.entries(q).some(([k, v]) => k !== "text" && v !== "all");
