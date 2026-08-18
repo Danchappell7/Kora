@@ -1920,10 +1920,14 @@ export default function App() {
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={allTasks} onOpenTask={setDetailId} onAction={(s) => {
         if (s.id === "new-task") openNewTask();
+        else if (s.id === "quick-capture") setQuickCaptureOpen(true);
+        else if (s.id === "new-project") setNewProjectOpen(true);
         else if (s.id === "prioritize") autoPrioritize();
         else if (s.id === "focus") openFocus();
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.id === "manage-tags") setTagManagerOpen(true);
+        else if (s.id === "toggle-theme") setTheme((t) => t === "dark" ? "light" : "dark");
+        else if (s.id === "settings") setSettingsOpen(true);
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
 
       <TagManagerModal open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} tags={tags}

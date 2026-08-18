@@ -18,10 +18,14 @@ export interface Suggestion {
 
 const ACTIONS: Suggestion[] = [
   { id: "prioritize", icon: "sparkles", label: "Auto-prioritize my day", hint: "AI", accent: true },
-  { id: "new-task", icon: "plus", label: "New task", hint: "" },
+  { id: "new-task", icon: "plus", label: "New task", hint: "c" },
+  { id: "quick-capture", icon: "zap", label: "Quick capture", hint: "q" },
+  { id: "new-project", icon: "briefcase", label: "New project", hint: "" },
   { id: "focus", icon: "play", label: "Start a focus block", hint: "" },
   { id: "board", icon: "grid", label: "Switch to board view", hint: "" },
   { id: "manage-tags", icon: "tasks", label: "Manage tags", hint: "" },
+  { id: "toggle-theme", icon: "sun", label: "Toggle light / dark theme", hint: "" },
+  { id: "settings", icon: "settings", label: "Open settings", hint: "" },
 ];
 
 // subsequence fuzzy match — "bd" matches "board", "anl" matches "analytics"
