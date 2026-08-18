@@ -27,8 +27,15 @@ export function MyWeekView({ tasks, onOpen, onPatch }: { tasks: Task[]; onOpen: 
   const open = tasks.filter((t) => t.status !== "done" && !t.archivedAt && !t.parentId);
   const overdue = open.filter((t) => t.dueDate && t.dueDate < todayIso);
   const noDate = open.filter((t) => !t.dueDate);
-  const doneThisWeek = tasks.filter((t) => t.status === "done" && t.completedAt && t.completedAt.slice(0, 10) >= weekIsos[0] && t.completedAt.slice(0, 10) <= weekIsos[6]).length;
+  const completedThisWeek = tasks.filter((t) => t.status === "done" && t.completedAt && weekIsos.includes(t.completedAt.slice(0, 10)));
+  const doneThisWeek = completedThisWeek.length;
   const dueThisWeek = open.filter((t) => t.dueDate && weekIsos.includes(t.dueDate)).length;
+  // week-over-week: how many I finished last week, for a trend read
+  const lastMonday = new Date(monday); lastMonday.setDate(monday.getDate() - 7);
+  const lastWeekIsos = Array.from({ length: 7 }, (_, i) => { const d = new Date(lastMonday); d.setDate(lastMonday.getDate() + i); return isoOf(d); });
+  const doneLastWeek = tasks.filter((t) => t.status === "done" && t.completedAt && lastWeekIsos.includes(t.completedAt.slice(0, 10))).length;
+  const trend = doneThisWeek - doneLastWeek;
+  const trendLabel = doneLastWeek === 0 ? (doneThisWeek > 0 ? "first wins this week" : "nothing yet") : `${trend >= 0 ? "+" : ""}${trend} vs last week`;
 
   const TaskChip = ({ t }: { t: Task }) => {
     const proj = getProject(t.projectId);
@@ -43,12 +50,30 @@ export function MyWeekView({ tasks, onOpen, onPatch }: { tasks: Task[]; onOpen: 
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px 44px", maxWidth: 1100, width: "100%", margin: "0 auto" }}>
-      <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: 18 }}>
+      <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: 18, alignItems: "flex-end" }}>
         <Stat label="Due this week" value={dueThisWeek} color="var(--accent)" />
-        <Stat label="Done this week" value={doneThisWeek} color="var(--st-done)" />
+        <div>
+          <div className="kicker">Done this week</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <div className="mono tnum" style={{ fontSize: 24, fontWeight: 600, color: "var(--st-done)" }}>{doneThisWeek}</div>
+            <span style={{ fontSize: 11.5, color: trend > 0 ? "var(--st-done)" : trend < 0 ? "var(--prio-urgent)" : "var(--ink-4)", fontWeight: 500 }}>{trendLabel}</span>
+          </div>
+        </div>
         <Stat label="Carried over" value={overdue.length} color={overdue.length ? "var(--prio-urgent)" : undefined} />
         <Stat label="Unscheduled" value={noDate.length} />
       </div>
+
+      {completedThisWeek.length > 0 && (
+        <div className="glass" style={{ borderRadius: 14, padding: 14, marginBottom: 16, borderLeft: "3px solid var(--st-done)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <Icon name="check" size={15} style={{ color: "var(--st-done)" }} />
+            <span style={{ fontSize: 13.5, fontWeight: 600 }}>This week's wins — {completedThisWeek.length} completed</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 7 }}>
+            {completedThisWeek.slice(0, 15).map((t) => <TaskChip key={t.id} t={t} />)}
+          </div>
+        </div>
+      )}
 
       {overdue.length > 0 && (
         <div className="glass" style={{ borderRadius: 14, padding: 14, marginBottom: 16, borderLeft: "3px solid var(--prio-urgent)" }}>
