@@ -107,6 +107,29 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
           </div>
         </header>
 
+        {/* ---- why Kanbo (differentiator) ---- */}
+        <section style={{ ...sectionPad, padding: "50px 24px 20px" }}>
+          <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>
+            A to-do list tells you <span style={{ color: "var(--ink-4)" }}>what</span>. Kanbo tells you <span style={{ background: "var(--brand-grad)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>when</span>.
+          </h2>
+          <p style={{ textAlign: "center", fontSize: 16, color: "var(--ink-3)", margin: "0 auto 40px", maxWidth: 560, lineHeight: 1.55 }}>
+            Lists pile up until they’re just a wall of guilt. Kanbo turns the pile into a plan you can actually finish.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18, maxWidth: 900, margin: "0 auto" }}>
+            {[
+              { was: "A bottomless list", now: "A finite, time-blocked day", icon: "calendarPlus" as IconName },
+              { was: "“What should I do now?”", now: "Kanbo already ranked it — just start", icon: "zap" as IconName },
+              { was: "Tasks that ignore your calendar", now: "Work planned around your real meetings", icon: "clock" as IconName },
+            ].map((r) => (
+              <div key={r.now} className="glass" style={{ padding: 20, borderRadius: 18 }}>
+                <span style={{ display: "inline-grid", placeItems: "center", width: 38, height: 38, borderRadius: 11, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 14 }}><Icon name={r.icon} size={18} /></span>
+                <p style={{ margin: "0 0 6px", fontSize: 13, color: "var(--ink-4)", textDecoration: "line-through" }}>{r.was}</p>
+                <p style={{ margin: 0, fontSize: 15.5, fontWeight: 600, color: "var(--ink)", lineHeight: 1.4 }}>{r.now}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* ---- features ---- */}
         <section style={{ ...sectionPad, padding: "60px 24px" }}>
           <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Everything in one place. Nothing in your way.</h2>
