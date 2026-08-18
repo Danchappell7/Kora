@@ -40,6 +40,7 @@ import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, type NewProject, type AppBanner } from "./data/store";
 import { offlineQueue } from "./lib/offlineQueue";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
+import { QuickCapture } from "./components/QuickCapture";
 import {
   STATUS_META, getProject, projectProgress, getMember, setReferenceData, toLocalISO, nextDueDate, MEMBERS, dueState, KANBO_TODAY,
 } from "./data/data";
@@ -677,6 +678,7 @@ export default function App() {
   }, [route.view]);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const gPrefixRef = useRef(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [focusOpen, setFocusOpen] = useState(false);
@@ -750,6 +752,7 @@ export default function App() {
         setCmdOpen(false); setDetailId(null); setSidebarOpen(false); setFocusOpen(false);
         setUpgradeOpen(false); setNewTaskOpen(false); setNewProjectOpen(false);
         setNewWorkspaceOpen(false); setDeleteProjectId(null); setShortcutsOpen(false);
+        setQuickCaptureOpen(false);
         return;
       }
       // single-key shortcuts — ignore while typing or with modifiers held
@@ -765,6 +768,7 @@ export default function App() {
       }
       if (e.key === "g") { gPrefixRef.current = true; window.setTimeout(() => { gPrefixRef.current = false; }, 800); return; }
       if (e.key === "c") { e.preventDefault(); const r = routeRef.current; setNewTaskProjectId(r.view === "project" ? r.projectId : undefined); setNewTaskStatus("todo"); setNewTaskOpen(true); return; }
+      if (e.key === "q") { e.preventDefault(); setQuickCaptureOpen(true); return; }
       if (e.key === "/") { e.preventDefault(); setCmdOpen(true); return; }
       if (e.key === "?") { e.preventDefault(); setShortcutsOpen(true); return; }
     };
@@ -1913,7 +1917,7 @@ export default function App() {
               <h2 style={{ fontSize: 17, fontWeight: 600 }}>Keyboard shortcuts</h2>
               <button onClick={() => setShortcutsOpen(false)} className="btn-icon" aria-label="Close" style={{ marginLeft: "auto", border: "none" }}><Icon name="x" size={16} /></button>
             </div>
-            {([["⌘K · Ctrl+K", "Command palette"], ["c", "New task"], ["/", "Search"], ["g then h", "Home"], ["g then p", "Plan my day"], ["g then i", "Inbox"], ["g then t", "My tasks"], ["g then c", "Calendar"], ["g then s", "Search"], ["g then a", "Analytics"], ["?", "This help"], ["Esc", "Close / dismiss"]] as [string, string][]).map(([k, d]) => (
+            {([["⌘K · Ctrl+K", "Command palette"], ["c", "New task"], ["q", "Quick capture"], ["/", "Search"], ["g then h", "Home"], ["g then p", "Plan my day"], ["g then i", "Inbox"], ["g then t", "My tasks"], ["g then c", "Calendar"], ["g then s", "Search"], ["g then a", "Analytics"], ["?", "This help"], ["Esc", "Close / dismiss"]] as [string, string][]).map(([k, d]) => (
               <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--hairline)" }}>
                 <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)" }}>{d}</span>
                 <kbd className="mono" style={{ fontSize: 11.5, padding: "2px 8px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-3)" }}>{k}</kbd>
@@ -1939,6 +1943,8 @@ export default function App() {
         onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount}
         notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs}
         appearance={appearance} onChangeAppearance={setAppearance} />
+      <QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsProjects} members={assignees}
+        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);
