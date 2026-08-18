@@ -1639,6 +1639,19 @@ export const store = {
     return () => { client.removeChannel(channel); };
   },
 
+  /* Live comment stream for one task: fires onInsert with each new comment as
+     collaborators post them, so the thread updates without a refresh. */
+  subscribeToTaskComments(taskId: string, onInsert: (c: Comment) => void): () => void {
+    if (!supabase) return () => {};
+    const client = supabase;
+    const channel = client
+      .channel(`comments-${taskId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "comments", filter: `task_id=eq.${taskId}` },
+        (payload) => { try { onInsert(rowToComment(payload.new as CommentRow)); } catch { /* malformed row */ } })
+      .subscribe();
+    return () => { client.removeChannel(channel); };
+  },
+
   /* ---------- dependencies (blocked-by) ---------- */
   async addDependency(taskId: string, dependsOn: string): Promise<void> {
     if (!supabase) return;

@@ -268,6 +268,16 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
     return () => { setViewers([]); unsub(); };
   }, [taskId, currentUserId, members]);
 
+  // live comments — append comments teammates post while the panel is open
+  // (skip my own, which are already added optimistically by sendComment)
+  useEffect(() => {
+    const unsub = store.subscribeToTaskComments(taskId, (c) => {
+      if (c.authorId === currentUserId) return;
+      setThread((t) => t.some((x) => x.id === c.id) ? t : [...t, c]);
+    });
+    return unsub;
+  }, [taskId, currentUserId]);
+
   // auto-grow the title textarea to fit long titles instead of clipping them
   useEffect(() => {
     const el = titleRef.current;
