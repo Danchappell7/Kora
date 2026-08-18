@@ -35,8 +35,29 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   onClearAll: () => void;
 }) {
   const [filter, setFilter] = useState("all");
+  const [snoozeFor, setSnoozeFor] = useState<string | null>(null);
+  const [snoozed, setSnoozed] = useState<Record<string, number>>(() => { try { return JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}"); } catch { return {}; } });
+  const now = Date.now();
+  const snooze = (id: string, ms: number) => {
+    const next: Record<string, number> = {};
+    // keep only still-future snoozes + the new one (self-pruning)
+    for (const [k, v] of Object.entries({ ...snoozed, [id]: now + ms })) if (v > now) next[k] = v;
+    setSnoozed(next); setSnoozeFor(null);
+    try { localStorage.setItem("kanbo-inbox-snooze", JSON.stringify(next)); } catch { /* private mode */ }
+  };
+  const msUntilTomorrow9 = () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d.getTime() - now; };
   const activeFilter = INBOX_FILTERS.find((f) => f.v === filter) || INBOX_FILTERS[0];
-  const shown = activeFilter.kinds ? activity.filter((a) => activeFilter.kinds!.includes(a.kind)) : activity;
+  const notSnoozed = (a: Activity) => !(snoozed[a.id] && snoozed[a.id] > now);
+  const shown = (activeFilter.kinds ? activity.filter((a) => activeFilter.kinds!.includes(a.kind)) : activity).filter(notSnoozed);
+  // group by recency so the feed reads as "what just happened" vs "earlier"
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const weekAgo = now - 7 * 86400000;
+  const buckets: { label: string; items: Activity[] }[] = [
+    { label: "Today", items: shown.filter((a) => new Date(a.createdAt).getTime() >= startOfToday.getTime()) },
+    { label: "Earlier this week", items: shown.filter((a) => { const t = new Date(a.createdAt).getTime(); return t < startOfToday.getTime() && t >= weekAgo; }) },
+    { label: "Older", items: shown.filter((a) => new Date(a.createdAt).getTime() < weekAgo) },
+  ].filter((b) => b.items.length > 0);
+  const snoozedCount = activity.filter((a) => snoozed[a.id] && snoozed[a.id] > now).length;
   if (activity.length === 0) {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
@@ -63,16 +84,23 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
           <Icon name="archive" size={15} /> Archive all
         </button>
       </div>
+      {snoozedCount > 0 && (
+        <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="clock" size={13} /> {snoozedCount} snoozed · they'll return here when their time is up
+        </div>
+      )}
       {shown.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 24px", color: "var(--ink-4)", fontSize: 13 }}>No {activeFilter.label.toLowerCase()} updates.</div>
-      ) : (
-      <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
-        {shown.map((a, i) => {
+      ) : buckets.map((bucket) => (
+      <div key={bucket.label} style={{ marginBottom: 16 }}>
+        <div className="kicker" style={{ marginBottom: 8, paddingLeft: 2 }}>{bucket.label}</div>
+        <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
+        {bucket.items.map((a, i) => {
           const meta = KIND_META[a.kind] ?? KIND_META.status;
           const taskStillExists = a.taskId && tasks.some((t) => t.id === a.taskId);
           return (
             <div key={a.id} className="kinbox-row" style={{
-              display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "13px 18px",
+              position: "relative", display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "13px 18px",
               borderTop: i ? "1px solid var(--hairline)" : "none", transition: "background .14s",
             }}
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
@@ -96,16 +124,32 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
                 )}
               </button>
               <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{timeAgo(a.createdAt)}</span>
+              <button className="btn-icon kinbox-archive" title="Snooze" aria-label="Snooze this update"
+                onClick={() => setSnoozeFor(snoozeFor === a.id ? null : a.id)}
+                style={{ border: "none", width: 30, height: 30, flexShrink: 0, color: snoozeFor === a.id ? "var(--accent)" : "var(--ink-4)" }}>
+                <Icon name="clock" size={16} />
+              </button>
               <button className="btn-icon kinbox-archive" title="Archive" aria-label="Archive this update"
                 onClick={() => onArchive(a.id)}
                 style={{ border: "none", width: 30, height: 30, flexShrink: 0, color: "var(--ink-4)" }}>
                 <Icon name="archive" size={16} />
               </button>
+              {snoozeFor === a.id && (
+                <>
+                  <div onClick={() => setSnoozeFor(null)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
+                  <div className="glass anim-scalein" style={{ position: "absolute", right: 14, top: "calc(100% - 6px)", zIndex: 21, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", minWidth: 150 }}>
+                    {[["3 hours", 3 * 3600000], ["Tomorrow 9am", msUntilTomorrow9()], ["Next week", 7 * 86400000]].map(([label, ms]) => (
+                      <button key={label as string} onClick={() => snooze(a.id, ms as number)} style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 11px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, color: "var(--ink-2)" }}>{label}</button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           );
         })}
+        </div>
       </div>
-      )}
+      ))}
     </div>
   );
 }
