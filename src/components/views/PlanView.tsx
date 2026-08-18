@@ -236,7 +236,7 @@ function IntakeCard({ task, onStartDrag, onSchedule, onOpen }: {
   );
 }
 
-function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planning, stacked, dropActive, railRef }: {
+function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planning, stacked, dropActive, railRef, slippedCount, onPullSlipped }: {
   tasks: Task[];
   onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void;
   onSchedule: (id: string) => void;
@@ -246,6 +246,8 @@ function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planni
   stacked?: boolean;
   dropActive?: boolean;
   railRef: (el: HTMLElement | null) => void;
+  slippedCount: number;
+  onPullSlipped: () => void;
 }) {
   const unscheduled = tasks.filter((t) => t.planToday && t.scheduled == null && t.status !== "done");
   const onboarding = tasks.length === 0;
@@ -269,6 +271,11 @@ function IntakeRail({ tasks, onStartDrag, onSchedule, onOpen, onAutoPlan, planni
           style={{ width: "100%", justifyContent: "center", marginTop: 13, opacity: unscheduled.length === 0 ? 0.5 : 1 }}>
           <Icon name="sparkles" size={16} /> {planning ? "Planning your day…" : "Auto-plan my day"}
         </button>
+        {slippedCount > 0 && (
+          <button onClick={onPullSlipped} className="btn btn-ghost" style={{ width: "100%", justifyContent: "center", marginTop: 8 }}>
+            <Icon name="arrowRight" size={15} /> Bring in {slippedCount} due &amp; overdue
+          </button>
+        )}
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "2px 14px 24px", display: "flex", flexDirection: "column", gap: 9 }}>
         {onboarding ? (
@@ -336,6 +343,19 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   const planTasks = tasks.filter((t) => t.planToday);
   const scheduledFocus = planTasks.filter((t) => t.scheduled != null && (t.energy === "deep" || t.energy === "create")).reduce((a, t) => a + (t.dur || t.focusMin), 0);
   const snap = (m: number) => Math.round(m / SNAP) * SNAP;
+
+  // capacity: how much of the working day is already committed (meetings +
+  // scheduled tasks) vs still free — the "can I actually fit this?" gut-check.
+  const scheduledMin = planTasks.filter((t) => t.scheduled != null).reduce((a, t) => a + (t.dur || t.focusMin), 0);
+  const meetingMin = dayEvents.reduce((a, e) => a + (e.end - e.start), 0);
+  const workMin = DAY_END - DAY_START;
+  const freeMin = Math.max(0, workMin - meetingMin - scheduledMin);
+  const pctBusy = Math.min(100, Math.round(((meetingMin + scheduledMin) / workMin) * 100));
+  const overCapacity = meetingMin + scheduledMin > workMin;
+  // carry-over ritual: tasks that slipped (overdue) or are due today but aren't
+  // on the day yet — one click pulls them into Intake to plan.
+  const slipped = tasks.filter((t) => t.status !== "done" && !t.planToday && (dueState(t.dueDate, t.status) === "overdue" || dueState(t.dueDate, t.status) === "today"));
+  const pullSlipped = useCallback(() => { slipped.forEach((t) => onUpdate(t.id, { planToday: true })); }, [slipped, onUpdate]);
 
   const computePreview = useCallback((x: number, y: number, dur: number, grab: number): number | null => {
     const c = canvasRef.current; if (!c) return null;
@@ -412,6 +432,16 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
           <div style={{ flex: 1 }} />
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)" }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent-glow)" }} /> now {fmtClock(NOW_MIN)}</span>
         </div>
+        {/* capacity meter */}
+        <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "0 24px 12px" }}>
+          <div style={{ flex: 1, maxWidth: 340, height: 8, borderRadius: 5, background: "var(--surface-2)", overflow: "hidden", display: "flex" }} title={`${fmtDurMin(meetingMin)} meetings · ${fmtDurMin(scheduledMin)} tasks · ${fmtDurMin(freeMin)} free`}>
+            <div style={{ width: `${(meetingMin / workMin) * 100}%`, background: "var(--ink-4)" }} />
+            <div style={{ width: `${(scheduledMin / workMin) * 100}%`, background: overCapacity ? "var(--prio-urgent)" : "var(--accent)", transition: "width .5s var(--ease)" }} />
+          </div>
+          <span style={{ fontSize: 12, color: overCapacity ? "var(--prio-urgent)" : "var(--ink-3)", fontWeight: 500, whiteSpace: "nowrap" }}>
+            {overCapacity ? "Over capacity" : `${fmtDurMin(freeMin)} free`} · {pctBusy}% booked
+          </span>
+        </div>
         <DayCanvas tasks={planTasks} events={dayEvents} onStartDrag={startDrag} onOpen={onOpen} onRemove={removeFromDay} dragId={drag?.taskId} previewStart={previewStart} previewDur={drag?.dur || 30} onCanvasRef={(el) => (canvasRef.current = el)} justPlacedId={justPlacedId} />
         <PlanToast msg={toast} onClose={() => setToast(null)} />
         {planning && (
@@ -423,7 +453,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
           </div>
         )}
       </div>
-      <IntakeRail tasks={tasks} onStartDrag={startDrag} onSchedule={scheduleOne} onOpen={onOpen} onAutoPlan={doAutoPlan} planning={planning} stacked={isMobile} dropActive={overRail && drag?.source === "canvas"} railRef={(el) => (railRef.current = el)} />
+      <IntakeRail tasks={tasks} onStartDrag={startDrag} onSchedule={scheduleOne} onOpen={onOpen} onAutoPlan={doAutoPlan} planning={planning} stacked={isMobile} dropActive={overRail && drag?.source === "canvas"} railRef={(el) => (railRef.current = el)} slippedCount={slipped.length} onPullSlipped={pullSlipped} />
       {drag && (
         <div style={{ position: "fixed", left: pointer.x + 14, top: pointer.y - 10, zIndex: 80, pointerEvents: "none", maxWidth: 240,
           padding: "8px 12px", borderRadius: 12, background: "var(--surface-raised)", border: "1px solid var(--hairline-strong)", borderLeft: `3px solid ${ENERGY[drag.energy].color}`, boxShadow: "var(--shadow-lg)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", transform: "rotate(-1.5deg)" }}>
