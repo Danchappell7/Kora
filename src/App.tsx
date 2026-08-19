@@ -769,7 +769,7 @@ export default function App() {
       if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)) return;
       if (gPrefixRef.current) {
         gPrefixRef.current = false;
-        const nav: Record<string, Route["view"]> = { h: "home", p: "plan", i: "inbox", t: "tasks", c: "calendar", s: "search", a: "analytics" };
+        const nav: Record<string, Route["view"]> = { h: "home", p: "plan", i: "inbox", t: "tasks", c: "calendar", s: "search", a: "analytics", r: "reports", w: "myweek" };
         const v = nav[e.key.toLowerCase()];
         if (v) { e.preventDefault(); setRouteRaw({ view: v }); setDetailId(null); setSidebarOpen(false); }
         return;
@@ -1941,7 +1941,7 @@ export default function App() {
               <h2 style={{ fontSize: 17, fontWeight: 600 }}>Keyboard shortcuts</h2>
               <button onClick={() => setShortcutsOpen(false)} className="btn-icon" aria-label="Close" style={{ marginLeft: "auto", border: "none" }}><Icon name="x" size={16} /></button>
             </div>
-            {([["⌘K · Ctrl+K", "Command palette"], ["c", "New task"], ["q", "Quick capture"], ["/", "Search"], ["g then h", "Home"], ["g then p", "Plan my day"], ["g then i", "Inbox"], ["g then t", "My tasks"], ["g then c", "Calendar"], ["g then s", "Search"], ["g then a", "Analytics"], ["?", "This help"], ["Esc", "Close / dismiss"]] as [string, string][]).map(([k, d]) => (
+            {([["⌘K · Ctrl+K", "Command palette"], ["c", "New task"], ["q", "Quick capture"], ["/", "Search"], ["g then h", "Home"], ["g then p", "Plan my day"], ["g then i", "Inbox"], ["g then t", "My tasks"], ["g then c", "Calendar"], ["g then s", "Search"], ["g then a", "Analytics"], ["g then r", "Reports"], ["g then w", "My week"], ["?", "This help"], ["Esc", "Close / dismiss"]] as [string, string][]).map(([k, d]) => (
               <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--hairline)" }}>
                 <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)" }}>{d}</span>
                 <kbd className="mono" style={{ fontSize: 11.5, padding: "2px 8px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-3)" }}>{k}</kbd>
