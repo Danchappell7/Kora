@@ -8,10 +8,15 @@ import type { Task } from "../data/types";
 export interface Query { text: string; status: string; priority: string; assignee: string; projectId: string; tag: string; due: string }
 export const EMPTY_QUERY: Query = { text: "", status: "all", priority: "all", assignee: "all", projectId: "all", tag: "all", due: "all" };
 
-/** Coerce a stored/partial query (e.g. a saved search's JSON) into a full Query. */
+/** Coerce a stored/partial query (e.g. a saved search's JSON) into a full Query.
+ *  Only string field values are accepted; anything else (null, number, a
+ *  migrated/garbage row) falls back to the EMPTY default so the predicate can
+ *  never throw on q.<field>.trim(). */
 export function toQuery(partial: Record<string, unknown> | undefined | null): Query {
-  const p = (partial ?? {}) as Partial<Record<keyof Query, string>>;
-  return { ...EMPTY_QUERY, ...p };
+  const p = (partial ?? {}) as Record<string, unknown>;
+  const out: Query = { ...EMPTY_QUERY };
+  (Object.keys(EMPTY_QUERY) as (keyof Query)[]).forEach((k) => { if (typeof p[k] === "string") out[k] = p[k] as string; });
+  return out;
 }
 
 export function taskMatchesQuery(t: Task, q: Query): boolean {

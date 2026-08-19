@@ -19,7 +19,7 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
   const ss = String(seconds % 60).padStart(2, "0");
   // surface today's time-blocked work first (ties Focus to Plan-my-day), then
   // fill with the highest-priority remaining tasks.
-  const open = tasks.filter((t) => t.status !== "done");
+  const open = tasks.filter((t) => t.status !== "done" && !t.archivedAt && !t.parentId);
   const todaysPlanned = open.filter((t) => t.planToday && t.scheduled != null).sort((a, b) => (a.scheduled! - b.scheduled!));
   const rest = open.filter((t) => !todaysPlanned.some((p) => p.id === t.id)).sort((a, b) => b.aiScore - a.aiScore);
   const candidates = [...todaysPlanned, ...rest].slice(0, 6);

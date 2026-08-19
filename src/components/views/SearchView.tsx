@@ -29,8 +29,9 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const toggleSel = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const clearSel = () => setSelected(new Set());
-  // apply a smart-list preset whenever one is selected from the sidebar
-  useEffect(() => { if (preset) setQ({ ...EMPTY, ...preset }); }, [presetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // apply a smart-list preset when selected; reset to EMPTY on plain Search so
+  // a stale smart-list filter doesn't linger when you leave it.
+  useEffect(() => { setQ(preset ? { ...EMPTY, ...preset } : EMPTY); }, [presetKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // dropping a selected task out of the current results shouldn't keep it selected
   useEffect(() => { clearSel(); }, [presetKey, q]);
   const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
@@ -44,9 +45,14 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
     { label: "Urgent", q: { priority: "urgent" } },
   ];
 
-  const results = useMemo(() => {
-    return tasks.filter((t) => taskMatchesQuery(t, q)).slice(0, 200);
+  const matched = useMemo(() => {
+    return tasks.filter((t) => taskMatchesQuery(t, q));
   }, [tasks, q]);
+  const results = matched.slice(0, 200);          // rows rendered (capped)
+  const capped = matched.length > results.length; // more matched than shown
+  // only tasks still in the current results count as selected — a selection
+  // that left the view (bulk action, external update) is ignored.
+  const selectedVisible = results.filter((t) => selected.has(t.id));
 
   const active = q.text.trim() !== "" || Object.entries(q).some(([k, v]) => k !== "text" && v !== "all");
 
@@ -92,12 +98,12 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <span className="kicker">{active ? `${results.length} result${results.length === 1 ? "" : "s"}` : "Type or pick a filter to search"}</span>
+        <span className="kicker">{active ? `${matched.length} result${matched.length === 1 ? "" : "s"}${capped ? ` · showing first ${results.length}` : ""}` : "Type or pick a filter to search"}</span>
         {active && results.length > 0 && (
           <span style={{ marginLeft: "auto", display: "flex", gap: 7, alignItems: "center" }}>
             {(onBulkPatch || onBulkDelete) && (
-              <button onClick={() => setSelected(selected.size === results.length ? new Set() : new Set(results.map((t) => t.id)))} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>
-                {selected.size === results.length ? "Clear" : "Select all"}
+              <button onClick={() => setSelected(selectedVisible.length === results.length ? new Set() : new Set(results.map((t) => t.id)))} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>
+                {selectedVisible.length === results.length ? "Clear" : "Select all"}
               </button>
             )}
             <button onClick={() => exportTasksCsv(results, "search")} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
@@ -105,16 +111,19 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
           </span>
         )}
       </div>
-      {selected.size > 0 && (onBulkPatch || onBulkDelete) && (
+      {selectedVisible.length > 0 && (onBulkPatch || onBulkDelete) && (() => {
+        const ids = selectedVisible.map((t) => t.id);
+        return (
         <div className="glass anim-fadeup" style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderRadius: 12, marginBottom: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{selected.size} selected</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{ids.length} selected</span>
           <div style={{ flex: 1 }} />
-          {onBulkPatch && <button onClick={() => { onBulkPatch([...selected], { status: "done", completedAt: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="check" size={14} /> Complete</button>}
-          {onBulkPatch && <button onClick={() => { onBulkPatch([...selected], { dueDate: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendar" size={14} /> Due today</button>}
-          {onBulkDelete && <button onClick={() => { if (window.confirm(`Delete ${selected.size} task${selected.size === 1 ? "" : "s"}?`)) { onBulkDelete([...selected]); clearSel(); } }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5, color: "var(--prio-urgent)" }}><Icon name="trash" size={14} /> Delete</button>}
+          {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { status: "done", completedAt: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="check" size={14} /> Complete</button>}
+          {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { dueDate: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendar" size={14} /> Due today</button>}
+          {onBulkDelete && <button onClick={() => { if (window.confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"}?`)) { onBulkDelete(ids); clearSel(); } }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5, color: "var(--prio-urgent)" }}><Icon name="trash" size={14} /> Delete</button>}
           <button onClick={clearSel} className="btn btn-ghost" style={{ padding: "5px 9px", fontSize: 12.5 }}>Cancel</button>
         </div>
-      )}
+        );
+      })()}
       <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
         {active && results.map((t, i) => {
           const proj = getProject(t.projectId);
