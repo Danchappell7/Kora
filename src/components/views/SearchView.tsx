@@ -4,7 +4,7 @@
    ============================================================ */
 import { useMemo, useState, useEffect } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag } from "../primitives";
-import { getProject, fmtDue, dueState, STATUS_META, toLocalISO } from "../../data/data";
+import { getProject, fmtDue, dueState, STATUS_META, toLocalISO, presetDate } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
@@ -119,6 +119,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
           <div style={{ flex: 1 }} />
           {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { status: "done", completedAt: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="check" size={14} /> Complete</button>}
           {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { dueDate: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendar" size={14} /> Due today</button>}
+          {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { dueDate: presetDate("nextweek") }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendarPlus" size={14} /> Next week</button>}
           {onBulkDelete && <button onClick={() => { if (window.confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"}?`)) { onBulkDelete(ids); clearSel(); } }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5, color: "var(--prio-urgent)" }}><Icon name="trash" size={14} /> Delete</button>}
           <button onClick={clearSel} className="btn btn-ghost" style={{ padding: "5px 9px", fontSize: 12.5 }}>Cancel</button>
         </div>
