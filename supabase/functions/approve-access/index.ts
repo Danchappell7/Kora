@@ -13,6 +13,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+const esc = (s: string) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c));
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
@@ -36,7 +37,12 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get("Authorization") ?? "";
   const asUser = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: authHeader } } });
   const { data: ures } = await asUser.auth.getUser();
-  if (!ures?.user || (ures.user.email ?? "") !== ADMIN_EMAIL) return json({ error: "unauthorized" }, 401);
+  if (!ures?.user) return json({ error: "unauthorized" }, 401);
+  // founding admin, or anyone granted platform admin (profiles.is_admin)
+  if ((ures.user.email ?? "").toLowerCase() !== ADMIN_EMAIL) {
+    const { data: isAdmin } = await asUser.rpc("is_admin");
+    if (!isAdmin) return json({ error: "unauthorized" }, 401);
+  }
 
   try {
     const { id, action = "approve" } = await req.json() as { id: string; action?: "approve" | "decline" };
@@ -45,7 +51,7 @@ Deno.serve(async (req) => {
     const admin = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data: reqRow } = await admin.from("access_requests").select("*").eq("id", id).maybeSingle();
     if (!reqRow) return json({ error: "request not found" }, 404);
-    const first = (reqRow.name || "").trim().split(/\s+/)[0] || "there";
+    const first = esc((reqRow.name || "").trim().split(/\s+/)[0] || "there");
     const appUrl = Deno.env.get("APP_URL") ?? "https://www.kanbo.co.uk";
 
     if (action === "decline") {
@@ -72,7 +78,10 @@ Deno.serve(async (req) => {
     if (createErr && !/already|registered|exists/i.test(createErr.message)) console.error("createUser", createErr.message);
 
     // approve their profile by email (covers a pre-existing, unapproved account)
-    await admin.from("profiles").update({ approved: true }).ilike("email", email);
+    // (exact match — ilike would treat _ and % in the address as wildcards)
+    const { data: au } = await admin.from("profiles").select("id,email").eq("email", email);
+    const ids = (au ?? []).map((r) => r.id);
+    if (ids.length) await admin.from("profiles").update({ approved: true }).in("id", ids);
 
     // one-time recovery link → set a password and sign in immediately,
     // delivered via Resend (independent of project SMTP).
@@ -90,7 +99,7 @@ Deno.serve(async (req) => {
       `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:auto;color:#1a1a1a">` +
       `<h2 style="font-weight:700;font-size:22px;margin:0 0 6px">You’re in, ${first} 🎉</h2>` +
       `<p style="color:#555;line-height:1.55">Your Kanbo early access has been approved. Set your password below and you’ll be signed straight in — Kanbo will plan your day from the first task.</p>` +
-      `<p style="margin:22px 0"><a href="${cta}" style="background:#8B5CF6;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Set your password &amp; sign in</a></p>` +
+      `<p style="margin:22px 0"><a href="${esc(cta)}" style="background:#8B5CF6;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Set your password &amp; sign in</a></p>` +
       `<p style="color:#999;font-size:12px">This link expires in an hour. If you didn’t request this, you can ignore this email.</p>` +
       `</div>`;
     const emailed = await sendEmail(reqRow.email, "You’re in — set your Kanbo password", html);

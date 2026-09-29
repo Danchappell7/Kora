@@ -4,11 +4,12 @@
 // Secrets: (none beyond the auto-injected SUPABASE_URL / keys)
 //
 // Verifies the caller from their JWT, then uses the service-role key to
-// delete that auth user. Every user-owned table references auth.users with
-// ON DELETE CASCADE (tasks, subtasks, comments, activity, profiles,
-// attachments, subscriptions, workspace_members…), so removing the auth
-// user wipes all of their data in one shot. A user can only ever delete
-// themselves — the id comes from the verified token, never the request body.
+// delete that auth user. Their personal data goes with them (ON DELETE
+// CASCADE); their work in team workspaces stays with the team — the
+// before-delete trigger from migration 0041 hands any workspace they own to
+// the next admin/member and re-attributes their tasks/projects/comments.
+// A user can only ever delete themselves — the id comes from the verified
+// token, never the request body.
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 

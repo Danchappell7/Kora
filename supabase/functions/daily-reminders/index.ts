@@ -1,83 +1,147 @@
 // ============================================================
 // KANBO — daily reminder emails (Deno / Supabase Edge Function)
-// Finds tasks due today or overdue (not done) and emails each
-// assignee a digest. Meant to be run once a day by a cron.
+// Finds open tasks due today or overdue and emails each assignee one digest.
+// Meant to be run once a day by a cron.
+//
+// Only the scheduler may run it: the request must carry the service-role key
+// (Authorization: Bearer <service-role-key>) or the CRON_SECRET secret
+// (x-cron-secret header). Anyone else gets 401.
 //
 // Deploy:  supabase functions deploy daily-reminders --no-verify-jwt
-// Secrets: supabase secrets set RESEND_API_KEY=re_...   (resend.com)
-//          supabase secrets set REMINDER_FROM="Kanbo <no-reply@yourdomain.com>"
-//          supabase secrets set APP_URL=https://your-app.vercel.app
-// Schedule (Supabase Dashboard → Database → Cron, or pg_cron):
-//   select cron.schedule('kanbo-daily-reminders','0 13 * * *',
-//     $$ select net.http_post(
-//          url := 'https://<project>.supabase.co/functions/v1/daily-reminders',
-//          headers := jsonb_build_object('Authorization','Bearer <service-role-key>')) $$);
+// Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL
+//          optional: CRON_SECRET, REMINDER_TZ (default Europe/London)
+// Schedule (Supabase Dashboard → Integrations → Cron → new job, HTTP request):
+//   POST https://<project>.supabase.co/functions/v1/daily-reminders
+//   header x-cron-secret: <CRON_SECRET>      (daily, e.g. 07:30)
 // ============================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-interface TaskRow { id: string; title: string; due_date: string; status: string; assignee_id: string; priority: string; }
+interface TaskRow {
+  id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
+  workspace_id: string | null; project_id: string | null; archived_at: string | null;
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PAGE = 1000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
   const url = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const cronSecret = Deno.env.get("CRON_SECRET") ?? "";
   const resendKey = Deno.env.get("RESEND_API_KEY");
   const from = Deno.env.get("REMINDER_FROM") ?? "Kanbo <onboarding@resend.dev>";
-  const appUrl = Deno.env.get("APP_URL") ?? "";
+  const appUrl = (Deno.env.get("APP_URL") ?? "").replace(/\/+$/, "");
+  const tz = Deno.env.get("REMINDER_TZ") ?? "Europe/London";
 
-  if (!resendKey) return new Response(JSON.stringify({ error: "no RESEND_API_KEY" }), { status: 400 });
+  // ---- scheduler-only ----
+  const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const secret = req.headers.get("x-cron-secret") ?? "";
+  const authed = (!!serviceKey && safeEq(bearer, serviceKey)) || (!!cronSecret && safeEq(secret, cronSecret));
+  if (!authed) return json({ error: "unauthorized" }, 401);
+  if (!resendKey) return json({ error: "no RESEND_API_KEY" }, 400);
 
   const supa = createClient(url, serviceKey);
-  const today = new Date().toISOString().slice(0, 10);
+  // "today" in the team's timezone, not UTC (YYYY-MM-DD)
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 
-  // tasks due today or earlier, not done
-  const { data, error } = await supa
-    .from("tasks")
-    .select("id,title,due_date,status,assignee_id,priority")
-    .lte("due_date", today)
-    .neq("status", "done");
-  if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+  // ---- open, unarchived tasks due today or earlier (paged — no silent 1000 cap) ----
+  const tasks: TaskRow[] = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
+    const { data, error } = await supa.from("tasks")
+      .select("id,title,due_date,status,assignee_id,workspace_id,project_id,archived_at")
+      .lte("due_date", today).neq("status", "done").is("archived_at", null)
+      .not("assignee_id", "is", null)
+      .order("id").range(fromRow, fromRow + PAGE - 1);
+    if (error) return json({ error: error.message }, 500);
+    tasks.push(...((data ?? []) as TaskRow[]));
+    if (!data || data.length < PAGE) break;
+  }
+  if (tasks.length === 0) return json({ sent: 0, note: "nothing due" });
 
-  const tasks = (data ?? []) as TaskRow[];
-  if (tasks.length === 0) return new Response(JSON.stringify({ sent: 0, note: "nothing due" }), { status: 200 });
+  // skip tasks in archived projects
+  const projIds = [...new Set(tasks.map((t) => t.project_id).filter((p): p is string => !!p && UUID.test(p)))];
+  const archivedProjects = new Set<string>();
+  for (let i = 0; i < projIds.length; i += 200) {
+    const { data } = await supa.from("projects").select("id").in("id", projIds.slice(i, i + 200)).not("archived_at", "is", null);
+    for (const p of data ?? []) archivedProjects.add(p.id);
+  }
 
-  // map assignee ids → email (auth.users via admin API)
+  // team tasks: only remind people who are still active members of that workspace
+  const wsIds = [...new Set(tasks.map((t) => t.workspace_id).filter((w): w is string => !!w))];
+  const activeIn = new Map<string, Set<string>>();
+  for (let i = 0; i < wsIds.length; i += 200) {
+    const { data } = await supa.from("workspace_members").select("workspace_id,user_id")
+      .in("workspace_id", wsIds.slice(i, i + 200)).eq("status", "active");
+    for (const m of data ?? []) {
+      if (!m.user_id) continue;
+      (activeIn.get(m.workspace_id) ?? activeIn.set(m.workspace_id, new Set()).get(m.workspace_id)!).add(m.user_id);
+    }
+    const { data: owners } = await supa.from("workspaces").select("id,owner_id").in("id", wsIds.slice(i, i + 200));
+    for (const w of owners ?? []) (activeIn.get(w.id) ?? activeIn.set(w.id, new Set()).get(w.id)!).add(w.owner_id);
+  }
+
   const byAssignee = new Map<string, TaskRow[]>();
   for (const t of tasks) {
-    if (!t.assignee_id) continue;
-    (byAssignee.get(t.assignee_id) ?? byAssignee.set(t.assignee_id, []).get(t.assignee_id)!).push(t);
+    const a = t.assignee_id ?? "";
+    if (!UUID.test(a)) continue;
+    if (t.project_id && archivedProjects.has(t.project_id)) continue;
+    if (t.workspace_id && !activeIn.get(t.workspace_id)?.has(a)) continue;
+    (byAssignee.get(a) ?? byAssignee.set(a, []).get(a)!).push(t);
   }
 
-  let sent = 0;
+  let sent = 0, skipped = 0, failed = 0;
   for (const [userId, list] of byAssignee) {
+    // respect Settings → Notifications → "Due-date reminders" email toggle; skip locked accounts
+    const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended,approved").eq("id", userId).maybeSingle();
+    const prefs = (prof?.notify_prefs ?? {}) as Record<string, boolean>;
+    if (prefs["due_email"] === false || prof?.suspended || prof?.approved === false) { skipped++; continue; }
     const { data: u } = await supa.auth.admin.getUserById(userId);
     const email = u?.user?.email;
-    if (!email) continue;
+    if (!email) { skipped++; continue; }
 
-    const rows = list
-      .sort((a, b) => a.due_date.localeCompare(b.due_date))
-      .map((t) => {
-        const overdue = t.due_date < today;
-        return `<tr><td style="padding:8px 0;border-bottom:1px solid #eee">${t.title}</td>` +
-          `<td style="padding:8px 0;border-bottom:1px solid #eee;color:${overdue ? "#c0392b" : "#555"};text-align:right">${overdue ? "Overdue" : "Today"}</td></tr>`;
-      })
-      .join("");
+    const sorted = list.sort((a, b) => a.due_date.localeCompare(b.due_date));
+    const rows = sorted.slice(0, 50).map((t) => {
+      const overdue = t.due_date < today;
+      const title = esc(oneLine(t.title || "Untitled task"));
+      const cell = appUrl ? `<a href="${esc(`${appUrl}/?task=${encodeURIComponent(t.id)}`)}" style="color:#1a1a1a;text-decoration:none">${title}</a>` : title;
+      return `<tr><td style="padding:8px 0;border-bottom:1px solid #eee">${cell}</td>` +
+        `<td style="padding:8px 0;border-bottom:1px solid #eee;color:${overdue ? "#c0392b" : "#555"};text-align:right;white-space:nowrap">${overdue ? "Overdue" : "Today"}</td></tr>`;
+    }).join("");
+    const more = sorted.length > 50 ? `<p style="color:#555;font-size:13px">…and ${sorted.length - 50} more.</p>` : "";
 
     const html =
-      `<div style="font-family:-apple-system,sans-serif;max-width:520px;margin:auto">` +
+      `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:auto;color:#1a1a1a">` +
       `<h2 style="font-weight:600">Your day on Kanbo</h2>` +
-      `<p style="color:#555">You have <strong>${list.length}</strong> task${list.length === 1 ? "" : "s"} due today or overdue.</p>` +
-      `<table style="width:100%;border-collapse:collapse;font-size:14px">${rows}</table>` +
-      (appUrl ? `<p style="margin-top:20px"><a href="${appUrl}" style="background:#3b5bff;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Open Kanbo</a></p>` : "") +
+      `<p style="color:#555">You have <strong>${sorted.length}</strong> task${sorted.length === 1 ? "" : "s"} due today or overdue.</p>` +
+      `<table style="width:100%;border-collapse:collapse;font-size:14px">${rows}</table>${more}` +
+      (appUrl ? `<p style="margin-top:20px"><a href="${esc(appUrl)}" style="background:#6a5cff;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Open Kanbo</a></p>` : "") +
+      `<p style="font-size:12px;color:#888;margin-top:18px">Turn these off in Kanbo → Settings → Notifications.</p>` +
       `</div>`;
 
-    const r = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: email, subject: `${list.length} task${list.length === 1 ? "" : "s"} due on Kanbo`, html }),
-    });
-    if (r.ok) sent++;
+    // Resend allows ~2 requests/second on the default plan — pace + one retry on 429
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to: email, subject: `${sorted.length} task${sorted.length === 1 ? "" : "s"} due on Kanbo`, html }),
+      });
+      if (r.ok) { sent++; break; }
+      if (r.status === 429 && attempt === 0) { await sleep(1500); continue; }
+      failed++; console.error("resend", r.status, await r.text().catch(() => "")); break;
+    }
+    await sleep(550);
   }
 
-  return new Response(JSON.stringify({ sent }), { status: 200, headers: { "Content-Type": "application/json" } });
+  return json({ sent, skipped, failed, people: byAssignee.size, tasks: tasks.length });
 });
+
+function safeEq(a: string, b: string) {
+  if (!a || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+function oneLine(s: string) { return String(s).replace(/[\r\n]+/g, " ").slice(0, 160); }
+function esc(s: string) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c)); }
+function json(b: unknown, status = 200) { return new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } }); }

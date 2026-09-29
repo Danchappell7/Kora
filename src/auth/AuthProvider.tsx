@@ -88,8 +88,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // so delivery doesn't depend on project SMTP). Fall back to Supabase's
       // built-in reset if it isn't deployed.
       try {
-        const { error } = await supabase.functions.invoke("reset-password", { body: { email } });
-        if (!error) return {};
+        const { data, error } = await supabase.functions.invoke("reset-password", { body: { email } });
+        if (!error && !(data as { fallback?: boolean } | null)?.fallback) return {};
       } catch { /* not deployed — fall back below */ }
       const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
       return { error: error?.message };

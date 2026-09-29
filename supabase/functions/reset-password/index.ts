@@ -38,8 +38,12 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
-    const { email } = await req.json() as { email?: string };
-    if (!email || !email.includes("@")) return json({ ok: true }); // never reveal validity
+    const body = await req.json().catch(() => ({})) as { email?: string };
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ ok: true }); // never reveal validity
+    // no mail provider configured → tell the app to use Supabase's built-in
+    // reset email instead (says nothing about whether the account exists)
+    if (!Deno.env.get("RESEND_API_KEY")) return json({ ok: true, fallback: true });
 
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const appUrl = Deno.env.get("APP_URL") ?? "https://www.kanbo.co.uk";
@@ -48,7 +52,7 @@ Deno.serve(async (req) => {
     try {
       const { data, error } = await admin.auth.admin.generateLink({
         type: "recovery",
-        email: email.trim().toLowerCase(),
+        email,
         options: { redirectTo: appUrl },
       });
       const link = data?.properties?.action_link;
@@ -57,7 +61,7 @@ Deno.serve(async (req) => {
           `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:auto;color:#1a1a1a">` +
           `<h2 style="font-weight:700;font-size:21px;margin:0 0 6px">Reset your Kanbo password</h2>` +
           `<p style="color:#555;line-height:1.55">Click below to choose a new password. This link expires in an hour and can only be used once.</p>` +
-          `<p style="margin:22px 0"><a href="${link}" style="background:#8B5CF6;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Set a new password</a></p>` +
+          `<p style="margin:22px 0"><a href="${link.replace(/"/g, "&quot;")}" style="background:#8B5CF6;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Set a new password</a></p>` +
           `<p style="color:#999;font-size:12px">If you didn’t request this, you can safely ignore this email — your password won’t change.</p>` +
           `</div>`;
         await sendEmail(email, "Reset your Kanbo password", html);
