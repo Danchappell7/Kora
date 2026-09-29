@@ -83,6 +83,19 @@ export function wasJustCompleted(key?: string): boolean {
   const t = key ? recentlyCompleted.get(key) : undefined;
   return !!t && Date.now() - t < CELEBRATE_MS;
 }
+// Same idea for drag-and-drop: a dropped card/row often re-mounts in its new
+// column/group, so the "landed" settle is looked up by id on mount.
+const recentlyLanded = new Map<string, number>();
+export function markJustLanded(key?: string) {
+  if (!key) return;
+  const now = Date.now();
+  recentlyLanded.forEach((t, k) => { if (now - t > 5000) recentlyLanded.delete(k); });
+  recentlyLanded.set(key, now);
+}
+export function wasJustLanded(key?: string): boolean {
+  const t = key ? recentlyLanded.get(key) : undefined;
+  return !!t && Date.now() - t < CELEBRATE_MS;
+}
 
 // The signature completion moment: when the user checks something off, the box
 // springs, a ring bursts outward, the tick draws itself, and phones get a light

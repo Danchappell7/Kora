@@ -2,7 +2,7 @@
    KANBO — Board (Kanban), Timeline (Gantt), Calendar views
    ============================================================ */
 import { useState, useRef, useEffect } from "react";
-import { Icon, Avatar, StatusDot, Tag, PriorityFlag, EmptyArt } from "../primitives";
+import { Icon, Avatar, StatusDot, Tag, PriorityFlag, EmptyArt, wasJustLanded, markJustLanded } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { bulkItemStyle, BulkMenuButton, CustomChips } from "./ListView";
 import {
@@ -41,12 +41,16 @@ function KanbanCard({ task, allTasks, onOpen, onMove, onPatch, isMobile, draggin
   const subDone = kids.filter((c) => c.status === "done").length + (task.subtasks ?? []).filter((s) => s.done).length;
   const [moveOpen, setMoveOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
+  // spring "settle" when this card was just dropped (survives a re-mount into a new column)
+  const [landed, setLanded] = useState(() => wasJustLanded(task.id));
+  useEffect(() => { if (wasJustLanded(task.id)) setLanded(true); }, [task.id, task.position]);
+  useEffect(() => { if (!landed) return; const t = window.setTimeout(() => setLanded(false), 520); return () => window.clearTimeout(t); }, [landed]);
   const halfFrom = (e: React.DragEvent): Half => {
     const r = e.currentTarget.getBoundingClientRect();
     return e.clientY < r.top + r.height / 2 ? "top" : "bottom";
   };
   return (
-    <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="glass clickable lift" draggable={!isMobile}
+    <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className={"glass clickable lift" + (landed ? " kland" : "")} draggable={!isMobile}
       onDragStart={(e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup(task.id); }}
       onDragOver={!isMobile ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); onHoverCard(task.id, halfFrom(e)); } : undefined}
       onDrop={!isMobile ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); onCardDrop(id, task.id, halfFrom(e)); } : undefined}
@@ -214,6 +218,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
 
   const endHover = () => { setDragId(null); setHover(null); setDragOver(null); };
   const applyDrop = (draggedId: string, col: BoardCol, pos: number) => {
+    markJustLanded(draggedId);
     if (group === "status") { onMove(draggedId, col.key as Status, pos); return; }
     const field: Partial<Task> = group === "priority" ? { priority: col.key as Priority } : group === "project" ? { projectId: col.key } : { assigneeId: col.key };
     onPatch?.(draggedId, { ...field, position: pos });

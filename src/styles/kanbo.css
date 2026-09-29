@@ -294,11 +294,20 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
   background-repeat: no-repeat; background-position: 0 56%; background-size: 100% 1.5px;
   animation: kstrike 0.42s var(--ease-out);
 }
+/* drag-and-drop landing: cards spring into place; wide rows get a glow instead */
+@keyframes kland { 0% { transform: scale(0.94) translateY(-3px); box-shadow: var(--shadow-lg); } 60% { transform: scale(1.015); } 100% { transform: none; } }
+.kland { animation: kland 0.5s var(--ease-spring); }
+@keyframes klandRow { from { background-color: var(--accent-dim); box-shadow: inset 3px 0 0 var(--accent); } }
+.kland-row { animation: klandRow 1s var(--ease-out); }
+/* tactile press on cards and rows */
+.lift:active { transform: translateY(-1px) scale(0.985); transition-duration: .08s; }
+.lift-row:active { background: var(--surface-2); }
+
 /* empty-state illustrations: gentle float + a soft arrival */
 @keyframes kfloat { 50% { transform: translateY(-4px); } }
 .kempty-art { animation: scaleIn 0.5s var(--ease-spring), kfloat 6s ease-in-out 0.5s infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .kstagger > *, .kbackdrop, .kempty-art, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
+  .kstagger > *, .kbackdrop, .kempty-art, .kland, .kland-row, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
   .kcheck-draw { stroke-dashoffset: 0; animation: none !important; }
 }
 

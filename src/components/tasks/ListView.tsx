@@ -2,7 +2,7 @@
    KANBO — List view (the showpiece) + TaskRow
    ============================================================ */
 import { useState, useRef, useEffect } from "react";
-import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted, EmptyArt } from "../primitives";
+import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted, EmptyArt, wasJustLanded, markJustLanded } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
@@ -72,6 +72,10 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
     const t = window.setTimeout(() => setJustDone(false), 600);
     return () => window.clearTimeout(t);
   }, [justDone]);
+  // soft accent glow when this row was just dropped (drag-reorder)
+  const [landed, setLanded] = useState(() => wasJustLanded(task.id));
+  useEffect(() => { if (wasJustLanded(task.id)) setLanded(true); }, [task.id, task.position]);
+  useEffect(() => { if (!landed) return; const t = window.setTimeout(() => setLanded(false), 1000); return () => window.clearTimeout(t); }, [landed]);
   const ds = dueState(task.dueDate, task.status);
   const dueColor = ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-3)";
   // sub-tasks are full tasks with parentId; legacy checklist items live on task.subtasks
@@ -82,7 +86,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
 
   return (
     <div className="krow-cv" style={{ borderBottom: "1px solid var(--hairline)" }}>
-      <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className="task-row lift-row"
+      <div onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className={"task-row lift-row" + (landed ? " kland-row" : "")}
         draggable={draggable}
         onDragStart={draggable ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}
         onDragOver={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); onHover?.(task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
@@ -346,6 +350,7 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
     const groupItems = tasks.filter((t) => t.id !== draggedId && groupKeyOf(t) === groupKeyOf(target)).sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.id.localeCompare(b.id));
     const ti = groupItems.findIndex((t) => t.id === targetId);
     const at = half === "top" ? ti : ti + 1;
+    markJustLanded(draggedId);
     onPatch?.(draggedId, { ...patch, position: between(groupItems[at - 1], groupItems[at]) });
   };
 
