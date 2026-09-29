@@ -2,7 +2,7 @@
    KANBO — workspace role capabilities (single source of truth).
    Mirrors the server-side guards (0027 RPCs, 0041 row-level security).
    ============================================================ */
-import type { Role } from "../data/types";
+import type { Role, Project } from "../data/types";
 
 export interface Caps {
   manageMembers: boolean;    // invite, remove, change roles
@@ -40,6 +40,29 @@ export function canManageMember(actor: Role | null | undefined, target: Role): b
   if (target === "owner") return false;            // owner is managed only via transfer
   if (target === "admin") return actor === "owner"; // only the owner touches admins
   return actor === "owner" || actor === "admin";
+}
+
+/**
+ * Can the current user delete (or archive) this project? Mirrors 0041's
+ * projects DELETE policy: a personal project belongs to its creator (only they
+ * can see it); a team project needs write access (guests are view + comment
+ * only) AND being its owner, or a workspace owner/admin. The built-in Personal
+ * project can never be deleted.
+ *
+ * `myRole` is the caller's role in the project's workspace. When it isn't known
+ * (undefined) this errs on the side of caution: only the project owner or the
+ * workspace owner may delete — never "anyone".
+ */
+export function canDeleteProject(
+  project: Pick<Project, "id" | "workspaceId" | "ownerId">,
+  ctx: { currentUserId: string; myRole?: Role | null; workspaceOwnerId?: string | null },
+): boolean {
+  if (project.id === "p-personal") return false;
+  if ((project.workspaceId ?? null) === null) return true;
+  if (ctx.myRole === "guest") return false;
+  if (ctx.myRole === "owner" || ctx.myRole === "admin") return true;
+  if (ctx.workspaceOwnerId && ctx.workspaceOwnerId === ctx.currentUserId) return true;
+  return !!project.ownerId && project.ownerId === ctx.currentUserId;
 }
 
 /** Roles `actor` is allowed to assign (for the role dropdown / invite). */
