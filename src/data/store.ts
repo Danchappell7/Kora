@@ -703,6 +703,13 @@ export const store = {
     if (error) throw error;
   },
 
+  // Create many tasks at once (CSV import). Returns the saved rows in order.
+  async createTasksBatch(tasks: Task[], userId: string): Promise<Task[]> {
+    const out: Task[] = [];
+    for (const t of tasks) out.push(await this.createTask(t, userId));
+    return out;
+  },
+
   async createTask(t: Task, userId: string): Promise<Task> {
     if (!supabase) return t; // demo mode keeps the optimistic copy
     if (!replaying && isOffline()) { offlineQueue.enqueueCreate(t, userId); return t; } // queue + keep client id
@@ -1013,7 +1020,7 @@ export const store = {
     }));
   },
 
-  async createTag(label: string, color: string, userId: string): Promise<CreatedTag> {
+  async createTag(label: string, color: string, userId: string, _workspaceId?: string | null): Promise<CreatedTag> {
     if (!supabase) return { id: newId(), label, color };
     const uid = await authUid(userId);
     const { data, error } = await supabase.from("tags").insert({ user_id: uid, label, color }).select("*").single();
@@ -1514,9 +1521,13 @@ export const store = {
   },
   // mark all of the user's unread activity as read (best-effort; tolerates the
   // read_at column not existing yet)
-  async markActivityRead(): Promise<void> {
+  async markActivityRead(ids?: string[]): Promise<void> {
     if (!supabase) return;
-    try { await supabase.from("activity").update({ read_at: new Date().toISOString() }).is("read_at", null); } catch { /* column not present yet */ }
+    if (ids && ids.length === 0) return;
+    try {
+      const q = supabase.from("activity").update({ read_at: new Date().toISOString() }).is("read_at", null);
+      await (ids ? q.in("id", ids) : q);
+    } catch { /* column not present yet */ }
   },
 
   // Archive a single inbox item — hides it from the feed, keeps the history.
@@ -1527,10 +1538,12 @@ export const store = {
   },
 
   // "Clear whole inbox" — archive every still-active item for this user.
-  async clearInbox(): Promise<void> {
-    if (!supabase) { demoActivity = []; return; }
-    const { error } = await supabase.from("activity")
-      .update({ archived_at: new Date().toISOString() }).is("archived_at", null);
+  // Pass ids to archive only those (e.g. what the inbox is currently showing).
+  async clearInbox(ids?: string[]): Promise<void> {
+    if (!supabase) { demoActivity = ids ? demoActivity.filter((a) => !ids.includes(a.id)) : []; return; }
+    if (ids && ids.length === 0) return;
+    const q = supabase.from("activity").update({ archived_at: new Date().toISOString() }).is("archived_at", null);
+    const { error } = await (ids ? q.in("id", ids) : q);
     if (error) throw error;
   },
 
