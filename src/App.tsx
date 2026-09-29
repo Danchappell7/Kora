@@ -1390,8 +1390,9 @@ export default function App() {
   const confirmDeleteProject = useCallback((id: string, mode: DeleteMode, targetId?: string) => {
     if (id === "p-personal") { setDeleteProjectId(null); return; } // built-in default can't be deleted
     const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
-    if (mode === "reassign") {
-      const target = targetId || "p-personal";
+    if (mode === "reassign" && !targetId) { setDeleteProjectId(null); return; } // never fall through to deleting
+    if (mode === "reassign" && targetId) {
+      const target = targetId;
       // tasks live in their project's workspace — carry the target's workspace
       // so reassigned tasks don't keep a stale workspace and vanish from view
       const targetWs = getProject(target)?.workspaceId ?? null;

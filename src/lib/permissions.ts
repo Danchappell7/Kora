@@ -1,6 +1,6 @@
 /* ============================================================
    KANBO — workspace role capabilities (single source of truth).
-   Mirrors the server-side RPC guards in 0027_roles_permissions.sql.
+   Mirrors the server-side guards (0027 RPCs, 0041 row-level security).
    ============================================================ */
 import type { Role } from "../data/types";
 
@@ -10,15 +10,15 @@ export interface Caps {
   manageWorkspace: boolean;  // rename / settings
   deleteWorkspace: boolean;  // delete or transfer ownership (owner only)
   createProjects: boolean;
-  editContent: boolean;      // create/edit tasks in projects you can see
-  seeAllProjects: boolean;   // false for guests (project-scoped — enforced server-side later)
+  editContent: boolean;      // create/edit/delete tasks & projects (guests: view + comment only)
+  seeAllProjects: boolean;
 }
 
 const CAPS: Record<Role, Caps> = {
   owner:  { manageMembers: true,  manageAdmins: true,  manageWorkspace: true,  deleteWorkspace: true,  createProjects: true,  editContent: true,  seeAllProjects: true },
   admin:  { manageMembers: true,  manageAdmins: false, manageWorkspace: true,  deleteWorkspace: false, createProjects: true,  editContent: true,  seeAllProjects: true },
   member: { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: true,  editContent: true,  seeAllProjects: true },
-  guest:  { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: false, editContent: true,  seeAllProjects: false },
+  guest:  { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: false, editContent: false, seeAllProjects: true },
 };
 
 /** Personal workspace (no role) behaves like a solo owner of your own space. */
@@ -31,7 +31,7 @@ export const ROLE_META: Record<Role, { label: string; blurb: string }> = {
   owner:  { label: "Owner",  blurb: "Full control, billing & ownership" },
   admin:  { label: "Admin",  blurb: "Manage members & settings" },
   member: { label: "Member", blurb: "Create and edit work" },
-  guest:  { label: "Guest",  blurb: "Limited to invited projects" },
+  guest:  { label: "Guest",  blurb: "Can view and comment" },
 };
 
 /** Can `actor` (the current user's role) change `target`'s role / remove them? */

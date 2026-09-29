@@ -153,6 +153,81 @@ function AccessRequestsPanel() {
   );
 }
 
+/* Company domains — anyone signing up with one of these email domains is
+   approved automatically, so a team can roll out without manual approvals. */
+const normDomain = (raw: string): string => raw.trim().toLowerCase().replace(/^.*@/, "").replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^www\./, "");
+const DOMAIN_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+const PUBLIC_DOMAINS = new Set(["gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com"]);
+
+function ApprovedDomainsPanel() {
+  const [domains, setDomains] = useState<{ domain: string; createdAt: string }[] | null>(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const load = useCallback(() => { store.listApprovedDomains().then(setDomains).catch((e) => { reportError(e); setDomains([]); }); }, []);
+  useEffect(load, [load]);
+
+  const d = normDomain(draft);
+  const invalid = !!draft.trim() && !DOMAIN_RE.test(d);
+  const isPublic = PUBLIC_DOMAINS.has(d);
+
+  const add = async () => {
+    if (!d || invalid || isPublic || busy) return;
+    setBusy(true); setNote(null);
+    try {
+      await store.addApprovedDomain(d);
+      // approve anyone from this domain who's already waiting
+      const accts = (await store.adminAccounts().catch(() => null)) ?? [];
+      const waiting = accts.filter((a) => a.approved === false && !a.suspended && a.email.toLowerCase().endsWith("@" + d));
+      for (const a of waiting) await store.adminSetApproved(a.id, true).catch(reportError);
+      store.adminLog("approved_domain_add", d, waiting.length ? `approved ${waiting.length} waiting` : "");
+      setDraft("");
+      setNote({ ok: true, text: waiting.length ? `Added — ${waiting.length} waiting ${waiting.length === 1 ? "person" : "people"} approved` : "Added" });
+      load();
+    } catch (e) { reportError(e); setNote({ ok: false, text: (e as Error)?.message || "Couldn't add — has 0041 been run?" }); }
+    finally { setBusy(false); }
+  };
+  const remove = async (dom: string) => {
+    if (!window.confirm(`Stop auto-approving @${dom}? People already approved keep their access.`)) return;
+    try { await store.removeApprovedDomain(dom); store.adminLog("approved_domain_remove", dom, ""); load(); }
+    catch (e) { reportError(e); setNote({ ok: false, text: (e as Error)?.message || "Couldn't remove" }); }
+  };
+
+  return (
+    <div className="glass" style={{ borderRadius: 16, padding: "16px 20px", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 6 }}>
+        <Icon name="check" size={16} style={{ color: "var(--accent)" }} />
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Auto-approved company domains</h2>
+      </div>
+      <p style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5, margin: "0 0 12px" }}>
+        Anyone who signs up with an email on one of these domains gets in straight away — no request to approve. Everyone else still waits for you.
+      </p>
+      <form onSubmit={(e) => { e.preventDefault(); add(); }} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        <input value={draft} onChange={(e) => { setDraft(e.target.value); setNote(null); }} placeholder="yourcompany.com" aria-label="Company email domain" aria-invalid={invalid || isPublic}
+          style={{ flex: "1 1 220px", height: 34, padding: "0 12px", borderRadius: 9, border: `1px solid ${invalid || isPublic ? "var(--prio-urgent)" : "var(--hairline)"}`, background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }} />
+        <button type="submit" disabled={!d || invalid || isPublic || busy} className="btn btn-accent" style={{ padding: "7px 14px", fontSize: 13 }}>{busy ? "Adding…" : "Add domain"}</button>
+      </form>
+      {(invalid || isPublic || note) && (
+        <div role="status" style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 10, color: invalid || isPublic || (note && !note.ok) ? "var(--prio-urgent)" : "var(--st-done)" }}>
+          {invalid ? "That doesn't look like a domain — e.g. acme.co.uk" : isPublic ? `@${d} is a public email provider — that would let anyone in.` : note?.text}
+        </div>
+      )}
+      {domains === null ? <span style={{ fontSize: 13, color: "var(--ink-4)" }}>Loading…</span> : domains.length === 0 ? (
+        <p style={{ fontSize: 13, color: "var(--ink-4)", margin: "4px 2px" }}>No domains yet — every new sign-up needs your approval.</p>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {domains.map((x) => (
+            <span key={x.domain} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 6px 5px 11px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", fontSize: 13 }}>
+              <span className="mono" style={{ color: "var(--ink-2)" }}>@{x.domain}</span>
+              <button onClick={() => remove(x.domain)} className="btn-icon" aria-label={`Remove ${x.domain}`} title="Remove" style={{ width: 22, height: 22, border: "none" }}><Icon name="x" size={13} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function fmtAgo(iso: string): string {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
@@ -870,6 +945,8 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
       <Ribbon items={ribbon} />
 
       <AccessRequestsPanel />
+
+      <ApprovedDomainsPanel />
 
       <BannerComposer />
 

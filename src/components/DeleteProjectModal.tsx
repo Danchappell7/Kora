@@ -16,12 +16,15 @@ export function DeleteProjectModal({ project, taskCount, projects, onConfirm, on
   onConfirm: (mode: DeleteMode, targetProjectId?: string) => void;
   onClose: () => void;
 }) {
-  const others = projects.filter((p) => p.id !== project.id);
-  const [mode, setMode] = useState<DeleteMode>("reassign");
-  const [target, setTarget] = useState(others[0]?.id || "p-personal");
+  // tasks can only move within the same workspace — team work never leaks
+  // into someone's Personal space (and the server would refuse it anyway)
+  const others = projects.filter((p) => p.id !== project.id && !p.archivedAt && (p.workspaceId ?? null) === (project.workspaceId ?? null));
+  const canMove = others.length > 0;
+  const [mode, setMode] = useState<DeleteMode>(canMove ? "reassign" : "delete");
+  const [target, setTarget] = useState(others[0]?.id || "");
   const trapRef = useFocusTrap<HTMLDivElement>(true, onClose);
 
-  useEffect(() => { setMode("reassign"); setTarget(others[0]?.id || "p-personal"); /* eslint-disable-next-line */ }, [project.id]);
+  useEffect(() => { setMode(canMove ? "reassign" : "delete"); setTarget(others[0]?.id || ""); /* eslint-disable-next-line */ }, [project.id]);
 
   const plural = `${taskCount} task${taskCount === 1 ? "" : "s"}`;
 
@@ -48,7 +51,7 @@ export function DeleteProjectModal({ project, taskCount, projects, onConfirm, on
 
           {taskCount > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <button style={optionStyle(mode === "reassign")} onClick={() => setMode("reassign")}>
+              {canMove ? <button style={optionStyle(mode === "reassign")} onClick={() => setMode("reassign")}>
                 <Icon name="arrowUpRight" size={17} style={{ color: mode === "reassign" ? "var(--accent)" : "var(--ink-3)" }} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 600 }}>Move {plural} to another project</div>
@@ -59,7 +62,11 @@ export function DeleteProjectModal({ project, taskCount, projects, onConfirm, on
                     </select>
                   </div>
                 </div>
-              </button>
+              </button> : (
+                <div style={{ fontSize: 12.5, color: "var(--ink-3)", padding: "2px 2px 4px" }}>
+                  There's no other project in this {project.workspaceId ? "workspace" : "space"} to move them to.
+                </div>
+              )}
               <button style={optionStyle(mode === "delete")} onClick={() => setMode("delete")}>
                 <Icon name="trash" size={17} style={{ color: mode === "delete" ? "var(--st-blocked)" : "var(--ink-3)" }} />
                 <div style={{ flex: 1 }}>
@@ -73,7 +80,7 @@ export function DeleteProjectModal({ project, taskCount, projects, onConfirm, on
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn" onClick={() => onConfirm(taskCount === 0 ? "delete" : mode, mode === "reassign" ? target : undefined)}
+          <button className="btn" onClick={() => onConfirm(taskCount === 0 || !canMove ? "delete" : mode, mode === "reassign" && canMove ? target : undefined)}
             style={{ background: "var(--st-blocked)", color: "oklch(0.99 0.01 20)", fontWeight: 650 }}>
             <Icon name="trash" size={15} /> Delete project
           </button>

@@ -1291,6 +1291,23 @@ export const store = {
   },
 
   // Admin account mutations — all guarded server-side by is_admin().
+  // company email domains whose sign-ups are auto-approved (0041)
+  async listApprovedDomains(): Promise<{ domain: string; createdAt: string }[]> {
+    if (!supabase) return [];
+    const { data, error } = await supabase.from("approved_domains").select("domain, created_at").order("domain");
+    if (error) throw error;
+    return ((data as { domain: string; created_at: string }[] | null) ?? []).map((r) => ({ domain: r.domain, createdAt: r.created_at }));
+  },
+  async addApprovedDomain(domain: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("approved_domains").insert({ domain });
+    if (error && error.code !== "23505") throw error; // already on the list is fine
+  },
+  async removeApprovedDomain(domain: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("approved_domains").delete().eq("domain", domain);
+    if (error) throw error;
+  },
   async adminSetApproved(userId: string, approved: boolean): Promise<void> {
     if (!supabase) return;
     const { error } = await supabase.rpc("admin_set_approved", { p_user: userId, p_approved: approved });
