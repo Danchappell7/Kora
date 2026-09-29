@@ -7,7 +7,9 @@
 --   3. trigger: auto-approve the admin + anyone whose request was approved.
 --   4. approve_access_request(): admin action — approves a request and
 --      flips any existing profile with that email.
--- Idempotent.
+-- Idempotent. NOTE: 0041 and 0042 replace the policies and functions below
+-- (is_admin() instead of one email, approved domains, invite approval). If you
+-- ever re-run this file, run 0041 and then 0042 again afterwards.
 -- ============================================================
 
 -- ---------- 1. access_requests ----------
@@ -37,9 +39,17 @@ grant insert on public.access_requests to anon, authenticated;
 grant select, update on public.access_requests to authenticated;
 
 -- ---------- 2. profiles.approved (the gate) ----------
-alter table public.profiles add column if not exists approved boolean not null default false;
--- grandfather every existing account so nobody currently using Kanbo is locked out
-update public.profiles set approved = true where approved = false;
+-- Add the column and grandfather every existing account (so nobody using Kanbo
+-- at the time was locked out) ONLY when the column is first created. Re-running
+-- this file used to approve every pending or revoked account.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                  where table_schema = 'public' and table_name = 'profiles' and column_name = 'approved') then
+    alter table public.profiles add column approved boolean not null default false;
+    update public.profiles set approved = true;
+  end if;
+end $$;
 
 -- ---------- 3. auto-approve admin + pre-approved emails at signup ----------
 create or replace function public.profile_auto_approve() returns trigger
