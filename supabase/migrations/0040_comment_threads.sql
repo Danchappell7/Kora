@@ -6,6 +6,6 @@
 -- Idempotent.
 -- ============================================================
 alter table public.comments
-  add column if not exists parent_id uuid references public.comments (id) on delete cascade;
+  add column if not exists parent_id uuid references public.comments (id) on delete set null;
 
 create index if not exists comments_parent_idx on public.comments (parent_id);
