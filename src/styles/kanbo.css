@@ -46,34 +46,44 @@
   --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1); /* small, tasteful overshoot */
 }
 
-/* ===================== WHITE GLASS (default) ===================== */
+/* ===================== LIGHT — "porcelain" (default) =====================
+   Three clear layers instead of one lavender wash:
+     canvas  (--bg)       cool near-white, barely tinted
+     panel   (--bg-deep)  a step darker — sidebar, board lanes, wells
+     card    (--surface*) near-opaque white with a crisp hairline + soft shadow
+   Ink scale meets WCAG AA for small text on both canvas and cards
+   (--ink-4 ~4.7:1). The aurora is an ambient top-light, not a tint on
+   every card, and glass saturation is low so it can't colour-cast cards. */
 :root, [data-theme="light"] {
-  --bg: oklch(0.955 0.008 255);
-  --bg-deep: oklch(0.925 0.011 258);
-  --ink: oklch(0.24 0.014 264);
-  --ink-2: oklch(0.40 0.013 264);
-  --ink-3: oklch(0.54 0.011 264);
-  --ink-4: oklch(0.66 0.009 264);
+  --bg: oklch(0.972 0.004 265);
+  --bg-deep: oklch(0.935 0.008 266);
+  --ink: oklch(0.21 0.016 266);
+  --ink-2: oklch(0.36 0.014 266);
+  --ink-3: oklch(0.47 0.012 266);
+  --ink-4: oklch(0.555 0.011 266);
 
-  /* frosted translucent white surfaces */
-  --surface: oklch(1 0 0 / 0.55);
-  --surface-2: oklch(1 0 0 / 0.72);
-  --surface-solid: oklch(0.995 0.002 255);
-  --surface-raised: oklch(1 0 0 / 0.88);
+  /* near-opaque porcelain surfaces */
+  --surface: oklch(1 0 0 / 0.80);
+  --surface-2: oklch(1 0 0 / 0.92);
+  --surface-solid: oklch(1 0 0);
+  --surface-raised: oklch(1 0 0 / 0.97);
 
-  --hairline: oklch(0.32 0.03 264 / 0.10);
-  --hairline-strong: oklch(0.32 0.03 264 / 0.18);
-  --edge-light: oklch(1 0 0 / 0.9);
+  --hairline: oklch(0.28 0.02 266 / 0.11);
+  --hairline-strong: oklch(0.28 0.02 266 / 0.20);
+  --edge-light: oklch(1 0 0 / 0.95);
 
-  --glass-blur: 32px;
-  --shadow: 0 1px 1px oklch(0.3 0.04 264 / 0.04), 0 8px 24px -8px oklch(0.3 0.05 264 / 0.13);
-  --shadow-lg: 0 2px 6px oklch(0.3 0.04 264 / 0.06), 0 34px 70px -22px oklch(0.3 0.05 264 / 0.28);
+  --glass-blur: 24px;
+  --glass-sat: 1.15;
+  /* layered, neutral shadows: a tight contact shadow + a soft ambient one */
+  --shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.05), 0 6px 16px -6px oklch(0.25 0.03 266 / 0.10);
+  --shadow-lg: 0 2px 4px oklch(0.25 0.02 266 / 0.05), 0 16px 36px -10px oklch(0.25 0.03 266 / 0.14), 0 44px 90px -30px oklch(0.25 0.04 266 / 0.18);
 
-  /* soft vibrancy bleeding behind the glass */
-  --aurora-1: oklch(0.82 0.13 var(--aurora-h, 262) / 0.50); /* tinted by the chosen accent */
-  --aurora-2: oklch(0.84 0.11 320 / 0.42);
-  --aurora-3: oklch(0.90 0.10 200 / 0.40);
+  /* ambient top-light, not a wash */
+  --aurora-1: oklch(0.86 0.10 var(--aurora-h, 262) / 0.34); /* tinted by the chosen accent */
+  --aurora-2: oklch(0.88 0.08 320 / 0.20);
+  --aurora-3: oklch(0.93 0.06 200 / 0.16);
   --grid-line: transparent;
+  --grain-opacity: 0.035;
 
   color-scheme: light;
 }
@@ -97,6 +107,7 @@
   --edge-light: oklch(1 0 0 / 0.10);
 
   --glass-blur: 30px;
+  --glass-sat: 1.9;
   --shadow: 0 1px 0 oklch(1 0 0 / 0.05) inset, 0 12px 32px -12px oklch(0 0 0 / 0.6);
   --shadow-lg: 0 1px 0 oklch(1 0 0 / 0.06) inset, 0 34px 70px -22px oklch(0 0 0 / 0.7);
 
@@ -180,8 +191,8 @@ p { text-wrap: pretty; }
   background: var(--surface);
   border: 1px solid var(--hairline);
   border-radius: var(--radius);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.9);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.9);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 1.9));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 1.9));
   box-shadow: var(--shadow);
   position: relative;
 }
@@ -373,6 +384,35 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .kseg-btn[data-active="true"] { color: var(--ink); background: var(--surface-raised); box-shadow: var(--shadow), 0 0 0 1px var(--hairline); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-tip] { position: relative; }
+
+/* ---- light-theme refinements ----
+   On a near-white canvas a white hover is invisible, so light hovers use a
+   faint ink tint instead; the top bar gets a frosted band so content scrolls
+   under a defined edge. Dark theme is untouched. */
+[data-theme="light"] .lift-row:hover { background: oklch(0.28 0.02 266 / 0.035); }
+[data-theme="light"] .knav:hover, [data-theme="light"] .kproj:hover { background: oklch(0.28 0.02 266 / 0.045); }
+[data-theme="light"] .knav[data-active="true"], [data-theme="light"] .kproj[data-active="true"] {
+  background: var(--surface-solid); box-shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.06), 0 0 0 1px var(--hairline);
+}
+[data-theme="light"] .topbar { background: color-mix(in oklch, var(--bg) 78%, transparent); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+[data-theme="light"] .btn-ghost { background: var(--surface-solid); }
+[data-theme="light"] .btn-ghost:hover { background: var(--surface-solid); border-color: var(--hairline-strong); }
+[data-theme="light"] .kicker { color: var(--ink-3); }
+
+/* ---- premium selects (both themes): custom chevron instead of the OS widget.
+   !important is needed because components set the \`background\` shorthand
+   inline, which would otherwise wipe the chevron image. */
+select {
+  -webkit-appearance: none; -moz-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6f7b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important; background-position: right 9px center !important; background-size: 12px 12px !important;
+  padding-right: 28px !important; cursor: pointer;
+}
+[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3a7b4' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+}
+select:hover { border-color: var(--hairline-strong) !important; }
+select[multiple] { background-image: none !important; padding-right: 8px !important; }
 
 /* ---- focus-visible ring for keyboard users (accessibility) ---- */
 /* outline follows each element's own radius (no forced border-radius, which
