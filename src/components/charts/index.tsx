@@ -1,18 +1,29 @@
 /* ============================================================
    KANBO — lightweight SVG charts (Ring, Sparkline, Bars, Heatmap)
    ============================================================ */
+import { useEffect, useState } from "react";
+
+/* Charts grow in on mount: bars rise, rings fill, lines draw. Flips on a
+   short timer (not rAF) so it still resolves in a background tab — a chart
+   is never left stuck at zero. Reduced-motion collapses the transition. */
+function useGrow(): boolean {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => { const t = window.setTimeout(() => setGrown(true), 30); return () => window.clearTimeout(t); }, []);
+  return grown;
+}
 
 export function Ring({ value, size = 96, stroke = 9, color = "var(--accent)", label, sub }: {
   value: number; size?: number; stroke?: number; color?: string; label?: string; sub?: string;
 }) {
+  const grown = useGrow();
   const r = (size - stroke) / 2, c = 2 * Math.PI * r;
-  const off = c * (1 - value / 100);
+  const off = grown ? c * (1 - value / 100) : c;
   return (
     <div style={{ position: "relative", width: size, height: size }}>
       <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--hairline-strong)" strokeWidth={stroke} />
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={off} style={{ transition: "stroke-dashoffset 1s var(--ease)", filter: `drop-shadow(0 0 6px ${color})` }} />
+          strokeDasharray={c} strokeDashoffset={off} style={{ transition: "stroke-dashoffset 1.1s var(--ease-out)", filter: `drop-shadow(0 0 6px ${color})` }} />
       </svg>
       <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", textAlign: "center" }}>
         <div>
@@ -27,6 +38,7 @@ export function Ring({ value, size = 96, stroke = 9, color = "var(--accent)", la
 export function Sparkline({ data, w = 220, h = 56, color = "var(--accent)", fill = true }: {
   data: number[]; w?: number; h?: number; color?: string; fill?: boolean;
 }) {
+  const grown = useGrow();
   if (data.length < 2) return <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block" }} />;
   const max = Math.max(...data, 1), min = Math.min(...data, 0);
   const pts = data.map((v, i) => [(i / (data.length - 1)) * w, h - ((v - min) / (max - min || 1)) * (h - 8) - 4]);
@@ -37,7 +49,8 @@ export function Sparkline({ data, w = 220, h = 56, color = "var(--accent)", fill
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block" }}>
       <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.28" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs>
       {fill && <path d={area} fill={`url(#${gid})`} />}
-      <path d={d} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter: `drop-shadow(0 0 4px ${color})` }} />
+      <path d={d} pathLength={1} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        style={{ strokeDasharray: 1, strokeDashoffset: grown ? 0 : 1, transition: "stroke-dashoffset 1s var(--ease-out)", filter: `drop-shadow(0 0 4px ${color})` }} />
       {pts.length > 0 && <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="3.2" fill={color} style={{ filter: `drop-shadow(0 0 5px ${color})` }} />}
     </svg>
   );
@@ -45,13 +58,14 @@ export function Sparkline({ data, w = 220, h = 56, color = "var(--accent)", fill
 
 export interface BarDatum { label: string; value: number; highlight?: boolean; }
 export function Bars({ data, h = 130, color = "var(--accent)" }: { data: BarDatum[]; h?: number; color?: string }) {
+  const grown = useGrow();
   const max = Math.max(...data.map((d) => d.value), 1);
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: h }}>
       {data.map((d, i) => (
         <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 8, height: "100%", justifyContent: "flex-end" }}>
           <div className="mono tnum" style={{ fontSize: 11, color: "var(--ink-3)" }}>{d.value}</div>
-          <div style={{ width: "100%", maxWidth: 30, height: `${(d.value / max) * 100}%`, minHeight: 4, borderRadius: 7, background: d.highlight ? color : "var(--surface-2)", border: d.highlight ? "none" : "1px solid var(--hairline-strong)", boxShadow: d.highlight ? `0 0 16px ${color}` : "none", transition: "height .8s var(--ease)" }} />
+          <div style={{ width: "100%", maxWidth: 30, height: grown ? `${(d.value / max) * 100}%` : "0%", minHeight: 4, borderRadius: 7, background: d.highlight ? color : "var(--surface-2)", border: d.highlight ? "none" : "1px solid var(--hairline-strong)", boxShadow: d.highlight ? `0 0 16px ${color}` : "none", transition: `height .8s var(--ease-out) ${i * 45}ms` }} />
           <span className="kicker" style={{ fontSize: 9.5 }}>{d.label}</span>
         </div>
       ))}
@@ -62,6 +76,7 @@ export function Bars({ data, h = 130, color = "var(--accent)" }: { data: BarDatu
 /* Multi-series line chart with gridlines + axis labels (trends over time). */
 export interface LineSeries { label: string; color: string; values: number[]; }
 export function LineChart({ series, labels, h = 170, yMax }: { series: LineSeries[]; labels: string[]; h?: number; yMax?: number }) {
+  const grown = useGrow();
   const w = 560, padL = 30, padB = 22, padT = 8, padR = 8;
   const n = labels.length;
   const max = Math.max(yMax ?? 0, ...series.flatMap((s) => s.values), 1);
@@ -87,8 +102,9 @@ export function LineChart({ series, labels, h = 170, yMax }: { series: LineSerie
           const d = s.values.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1)).join(" ");
           return (
             <g key={s.label}>
-              <path d={d} fill="none" stroke={s.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-              {s.values.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r="2.6" fill={s.color} />)}
+              <path d={d} pathLength={1} fill="none" stroke={s.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ strokeDasharray: 1, strokeDashoffset: grown ? 0 : 1, transition: "stroke-dashoffset 1.1s var(--ease-out)" }} />
+              {s.values.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r="2.6" fill={s.color} style={{ opacity: grown ? 1 : 0, transition: `opacity .3s var(--ease) ${0.5 + (i / Math.max(1, n - 1)) * 0.6}s` }} />)}
             </g>
           );
         })}
@@ -106,6 +122,7 @@ export function LineChart({ series, labels, h = 170, yMax }: { series: LineSerie
 
 /* Two-or-more series grouped bars (e.g. created vs completed per week). */
 export function GroupedBars({ groups, series, h = 150 }: { groups: string[]; series: { label: string; color: string; values: number[] }[]; h?: number }) {
+  const grown = useGrow();
   const max = Math.max(...series.flatMap((s) => s.values), 1);
   return (
     <div>
@@ -114,7 +131,7 @@ export function GroupedBars({ groups, series, h = 150 }: { groups: string[]; ser
           <div key={gi} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, height: "100%", justifyContent: "flex-end" }}>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: "100%", width: "100%", justifyContent: "center" }}>
               {series.map((s) => (
-                <div key={s.label} title={`${s.label}: ${s.values[gi]}`} style={{ width: 10, maxWidth: 14, height: `${(s.values[gi] / max) * 100}%`, minHeight: s.values[gi] > 0 ? 3 : 0, borderRadius: 4, background: s.color, transition: "height .7s var(--ease)" }} />
+                <div key={s.label} title={`${s.label}: ${s.values[gi]}`} style={{ width: 10, maxWidth: 14, height: grown ? `${(s.values[gi] / max) * 100}%` : "0%", minHeight: grown && s.values[gi] > 0 ? 3 : 0, borderRadius: 4, background: s.color, transition: `height .75s var(--ease-out) ${gi * 40}ms` }} />
               ))}
             </div>
             <span className="kicker" style={{ fontSize: 9 }}>{g}</span>

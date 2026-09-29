@@ -2,7 +2,7 @@
    KANBO — Home dashboard
    ============================================================ */
 import { useState } from "react";
-import { Icon, Avatar, StatusDot, AiScore } from "../primitives";
+import { Icon, Avatar, StatusDot, AiScore, CountUp } from "../primitives";
 import { Sparkline } from "../charts";
 import { getProject, projectProgress, dueState, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, IconName } from "../../data/types";
@@ -49,7 +49,7 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
         <span style={{ marginLeft: "auto", color: accent ? "var(--accent)" : "var(--ink-4)" }}><Icon name={icon} size={16} /></span>
       </div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-        <span className="mono tnum" style={{ fontSize: 34, fontWeight: 600, lineHeight: 1, color: accent ? "var(--accent)" : "var(--ink)" }}>{value}</span>
+        <span className="mono tnum" style={{ fontSize: 34, fontWeight: 600, lineHeight: 1, color: accent ? "var(--accent)" : "var(--ink)" }}><CountUp value={value} /></span>
         {delta && <span className="mono" style={{ fontSize: 12, color: delta.startsWith("+") ? "var(--st-done)" : "var(--ink-4)" }}>{delta}</span>}
       </div>
       {sub && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{sub}</span>}

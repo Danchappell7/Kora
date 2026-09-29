@@ -2,7 +2,7 @@
    KANBO — shared primitives (Avatar, StatusDot, Checkbox, Tag,
    PriorityFlag, Segmented, Tooltip, AiScore)
    ============================================================ */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Icon } from "./Icon";
 import {
   getMember, memberInitials, STATUS_META, TAGS, PRIORITY_META,
@@ -122,6 +122,47 @@ export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: bool
         </svg>
       )}
     </button>
+  );
+}
+
+/* ---------- CountUp ----------
+   Animates a KPI value from its previous number to the new one (from 0 on
+   mount). Only values with exactly ONE number animate ("67%", "0.4/wk",
+   "£1,200" is left alone because of the comma grouping); multi-number values
+   like "12h 3m" or "—" render as-is. Screen readers get the final value
+   straight away via a visually-hidden copy. Reduced-motion jumps to the end. */
+export function CountUp({ value, ms = 750 }: { value: string | number; ms?: number }) {
+  const str = String(value);
+  const nums = str.match(/\d+(?:\.\d+)?/g);
+  const m = nums && nums.length === 1 && !/\d,\d/.test(str) ? str.match(/^(.*?)(\d+(?:\.\d+)?)(.*)$/) : null;
+  const target = m ? parseFloat(m[2]) : 0;
+  const decimals = m && m[2].includes(".") ? m[2].split(".")[1].length : 0;
+  const [shown, setShown] = useState(0);
+  const fromRef = useRef(0);
+  useEffect(() => {
+    if (!m) return;
+    const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) { fromRef.current = target; setShown(target); return; }
+    const from = fromRef.current, start = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / ms);
+      const v = from + (target - from) * (1 - Math.pow(1 - p, 3)); // ease-out cubic
+      fromRef.current = v; setShown(v);
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    // if rAF never runs (background tab), land on the true value anyway
+    const safety = window.setTimeout(() => { cancelAnimationFrame(raf); fromRef.current = target; setShown(target); }, ms + 400);
+    return () => { cancelAnimationFrame(raf); window.clearTimeout(safety); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, ms, !!m]);
+  if (!m) return <>{str}</>;
+  return (
+    <>
+      <span className="sr-only">{str}</span>
+      <span aria-hidden="true">{m[1]}{shown.toFixed(decimals)}{m[3]}</span>
+    </>
   );
 }
 
