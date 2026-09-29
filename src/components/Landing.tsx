@@ -5,6 +5,8 @@
    ============================================================ */
 import { Icon, KanboLogo, AppBg } from "./primitives";
 import type { IconName } from "../data/types";
+import { FULL_HEIGHT } from "../lib/viewport";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 const FEATURES: { icon: IconName; title: string; body: string }[] = [
   { icon: "sparkles", title: "Type like you think", body: "Write “Draft the deck, 90 mins, today” the way you’d say it out loud. Kanbo reads the time, the energy, and the deadline, and files it for you. No forms. No fiddly fields." },
@@ -39,19 +41,30 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
 }) {
   const primaryLabel = signupDisabled ? "Sign in" : "Request early access";
   const onPrimary = signupDisabled ? onSignIn : onGetStarted;
+  // the smallest phones can't fit the wordmark and both nav buttons
+  const tiny = useMediaQuery("(max-width: 379px)");
 
   return (
-    <div style={{ position: "relative", minHeight: "100vh", overflowX: "hidden" }}>
+    // its own scroll container: body is overflow:hidden for the app shell
+    <div style={{ position: "relative", height: FULL_HEIGHT, overflowY: "auto", overflowX: "hidden" }}>
       <AppBg grid />
 
       <div style={{ position: "relative", zIndex: 1 }}>
         {/* ---- nav ---- */}
-        <nav style={{ ...sectionPad, display: "flex", alignItems: "center", gap: 12, padding: "20px 24px" }}>
+        <nav aria-label="Kanbo" style={{ ...sectionPad, display: "flex", alignItems: "center", gap: 12, padding: "20px clamp(16px, 4vw, 24px)" }}>
           <KanboLogo size={30} />
-          <span style={{ fontFamily: "var(--font-head)", fontSize: 19, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }}>Kanbo</span>
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-            <button className="btn btn-ghost hide-sm" onClick={onSignIn} style={{ padding: "9px 16px" }}>Sign in</button>
-            <button className="btn btn-accent" onClick={onPrimary} style={{ padding: "9px 16px", whiteSpace: "nowrap" }}>{signupDisabled ? "Sign in" : "Request access"}</button>
+          {!tiny && <span style={{ fontFamily: "var(--font-head)", fontSize: 19, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }}>Kanbo</span>}
+          {/* "Sign in" stays in the nav at every width — on a phone it's the
+              only sign-in entry above the fold */}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            {signupDisabled ? (
+              <button className="btn btn-accent" onClick={onSignIn} style={{ padding: "9px 16px", whiteSpace: "nowrap" }}>Sign in</button>
+            ) : (
+              <>
+                <button className="btn btn-ghost" onClick={onSignIn} style={{ padding: "9px clamp(11px, 3vw, 16px)", whiteSpace: "nowrap" }}>Sign in</button>
+                <button className="btn btn-accent" onClick={onPrimary} style={{ padding: "9px clamp(11px, 3vw, 16px)", whiteSpace: "nowrap" }}>Request access</button>
+              </>
+            )}
           </div>
         </nav>
 
@@ -69,7 +82,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
           </p>
           <div className="anim-fadeup" style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <button className="btn btn-accent" onClick={onPrimary} style={{ padding: "13px 24px", fontSize: 15 }}>{primaryLabel} <Icon name="arrowRight" size={16} /></button>
-            <button className="btn btn-ghost" onClick={onSignIn} style={{ padding: "13px 24px", fontSize: 15 }}>Sign in</button>
+            {!signupDisabled && <button className="btn btn-ghost" onClick={onSignIn} style={{ padding: "13px 24px", fontSize: 15 }}>Sign in</button>}
           </div>
           {!signupDisabled && <p style={{ fontSize: 12.5, color: "var(--ink-4)", marginTop: 16 }}>Free while we’re in early access. You’ll be planning in under a minute.</p>}
 

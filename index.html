@@ -1,14 +1,18 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en-GB" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <!-- apply the saved theme before paint so there's no flash (dark is the default) -->
-    <script>try{var t=localStorage.getItem('kanbo-theme');document.documentElement.setAttribute('data-theme',t==='light'?'light':'dark')}catch(e){}</script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- browser chrome / status bar colour; theme-init.js keeps it in step with the theme -->
+    <meta name="theme-color" content="#1b1d24" />
+    <!-- apply the saved theme before first paint so there's no flash (dark is the
+         default). A same-origin file, not an inline script: the CSP (script-src
+         'self') blocks inline scripts. -->
+    <script src="/theme-init.js"></script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <!-- iOS ignores SVG touch icons; a full-bleed PNG (iOS rounds the corners itself) -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#8B5CF6" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Kanbo" />

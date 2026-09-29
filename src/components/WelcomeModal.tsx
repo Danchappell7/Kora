@@ -4,9 +4,10 @@
    account is more than an email and teammates/assignment notifications
    show a real person; (2) the rhythm tour.
    ============================================================ */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Icon, KanboLogo } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { TextField } from "../auth/AuthFields";
 import type { IconName } from "./../data/types";
 
 const STEPS: { icon: IconName; title: string; body: string }[] = [
@@ -15,10 +16,6 @@ const STEPS: { icon: IconName; title: string; body: string }[] = [
   { icon: "clock", title: "Focus & finish", body: "Start a focus block and watch the work get done." },
 ];
 
-const inputStyle: React.CSSProperties = {
-  width: "100%", height: 44, padding: "0 13px", borderRadius: 11, border: "1px solid var(--hairline)",
-  background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none",
-};
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6, letterSpacing: ".01em", textAlign: "left" };
 
 export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst, initialLast, canSkip = false }: {
@@ -31,23 +28,46 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
   /** allow dismissing the profile step without entering a name (only when one already exists) */
   canSkip?: boolean;
 }) {
-  const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   const [phase, setPhase] = useState<"profile" | "tour">("profile");
   const [firstName, setFirstName] = useState(initialFirst ?? "");
   const [lastName, setLastName] = useState(initialLast ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const firstRef = useRef<HTMLInputElement>(null);
+  // The name step is required: Escape (or any close) with no name must not
+  // dismiss it — App persists a close as "welcomed" and would never ask again.
+  // Once a name exists (canSkip) or has been saved (tour), Escape closes.
+  const onEscape = () => {
+    if (phase === "tour" || canSkip) { onClose(); return; }
+    setError("Add your first name so we can continue.");
+    firstRef.current?.focus();
+  };
+  const trapRef = useFocusTrap<HTMLDivElement>(open, onEscape);
 
+  const edited = useRef(false);
+  const wasOpen = useRef(false);
+
+  // reset only when the modal (re)opens — NOT when the profile changes, or
+  // saving the name (which updates the profile) would bounce the person from
+  // the tour back to the name step
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpen.current) {
       // a returning, name-less account jumps straight in; a prefilled one is welcome to confirm
       setPhase("profile");
       setFirstName(initialFirst ?? "");
       setLastName(initialLast ?? "");
       setError(null);
       setSaving(false);
+      edited.current = false;
     }
+    wasOpen.current = open;
   }, [open, initialFirst, initialLast]);
+  // the profile often loads after the modal opens: fill the name in until they type
+  useEffect(() => {
+    if (!open || phase !== "profile" || edited.current) return;
+    setFirstName(initialFirst ?? "");
+    setLastName(initialLast ?? "");
+  }, [open, phase, initialFirst, initialLast]);
 
   if (!open) return null;
 
@@ -86,15 +106,15 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
                 <div>
                   <label htmlFor="kanbo-onb-first" style={labelStyle}>First name</label>
                   {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                  <input id="kanbo-onb-first" autoFocus value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Daniel" style={inputStyle} />
+                  <TextField ref={firstRef} id="kanbo-onb-first" autoFocus value={firstName} onChange={(e) => { edited.current = true; setFirstName(e.target.value); if (error) setError(null); }} placeholder="Daniel" autoComplete="given-name" invalid={!!error && !firstName.trim()} aria-describedby={error ? "kanbo-onb-error" : undefined} />
                 </div>
                 <div>
                   <label htmlFor="kanbo-onb-last" style={labelStyle}>Surname</label>
-                  <input id="kanbo-onb-last" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Chappell" style={inputStyle} />
+                  <TextField id="kanbo-onb-last" value={lastName} onChange={(e) => { edited.current = true; setLastName(e.target.value); }} placeholder="Chappell" autoComplete="family-name" />
                 </div>
               </div>
 
-              {error && <div role="alert" style={{ fontSize: 12.5, color: "var(--prio-urgent)", textAlign: "left", margin: "4px 2px 0" }}>{error}</div>}
+              {error && <div id="kanbo-onb-error" role="alert" style={{ fontSize: 12.5, color: "var(--prio-urgent)", textAlign: "left", margin: "4px 2px 0" }}>{error}</div>}
 
               <button type="submit" className="btn btn-accent" disabled={saving || !firstName.trim()} style={{ width: "100%", justifyContent: "center", padding: "12px 15px", marginTop: 18, opacity: saving || !firstName.trim() ? 0.6 : 1 }}>
                 {saving ? "Saving…" : <>Continue <Icon name="arrowRight" size={16} /></>}
