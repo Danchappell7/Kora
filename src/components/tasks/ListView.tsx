@@ -2,7 +2,7 @@
    KANBO — List view (the showpiece) + TaskRow
    ============================================================ */
 import { useState, useRef, useEffect } from "react";
-import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted, EmptyArt, wasJustLanded, markJustLanded } from "../primitives";
+import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted, EmptyArt, wasJustLanded, markJustLanded, Collapse } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
@@ -239,8 +239,8 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
       </div>
 
       {/* sub-tasks (full tasks) + any legacy checklist items */}
-      {expanded && hasSubs && (
-        <div className="anim-fadein" style={{ background: "color-mix(in oklch, var(--bg-deep) 30%, transparent)" }}>
+      {hasSubs && (<Collapse open={expanded}>
+        <div style={{ background: "color-mix(in oklch, var(--bg-deep) 30%, transparent)" }}>
           {childTasks.map((c) => {
             const cdone = c.status === "done";
             const cds = dueState(c.dueDate, c.status);
@@ -261,7 +261,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
             </div>
           ))}
         </div>
-      )}
+      </Collapse>)}
     </div>
   );
 }

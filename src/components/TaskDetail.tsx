@@ -3,7 +3,7 @@
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore, EmojiPicker } from "./primitives";
+import { Icon, Avatar, Check, StatusDot, PriorityFlag, AiScore, EmojiPicker, Collapse } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
@@ -872,7 +872,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                 <span className="kicker">History</span>
                 <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)" }}>{events.length}</span>
               </button>
-              {historyOpen && (
+              <Collapse open={historyOpen}>
                 <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8, paddingLeft: 4 }}>
                   {events.map((e) => (
                     <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12.5, color: "var(--ink-3)" }}>
@@ -882,7 +882,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
                     </div>
                   ))}
                 </div>
-              )}
+              </Collapse>
             </div>
           )}
 

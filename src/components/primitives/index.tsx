@@ -2,7 +2,7 @@
    KANBO — shared primitives (Avatar, StatusDot, Checkbox, Tag,
    PriorityFlag, Segmented, Tooltip, AiScore)
    ============================================================ */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "./Icon";
 import {
   getMember, memberInitials, STATUS_META, TAGS, PRIORITY_META,
@@ -136,6 +136,36 @@ export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: bool
         </svg>
       )}
     </button>
+  );
+}
+
+/* ---------- Collapse ----------
+   Smooth height expand/collapse without measuring: animates grid rows
+   0fr <-> 1fr. Content mounts on open and unmounts after the close
+   transition; overflow is only clipped while moving, so popovers inside
+   an open section aren't cut off. Reduced-motion makes it instant. */
+export function Collapse({ open, children, ms = 280 }: { open: boolean; children: ReactNode; ms?: number }) {
+  const [mounted, setMounted] = useState(open);
+  const [expanded, setExpanded] = useState(open);
+  const [settled, setSettled] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      const a = window.setTimeout(() => setExpanded(true), 16);
+      const b = window.setTimeout(() => setSettled(true), ms + 30);
+      return () => { window.clearTimeout(a); window.clearTimeout(b); };
+    }
+    setSettled(false);
+    setExpanded(false);
+    const t = window.setTimeout(() => setMounted(false), ms);
+    return () => window.clearTimeout(t);
+  }, [open, ms]);
+  if (!mounted) return null;
+  return (
+    <div style={{ display: "grid", gridTemplateRows: expanded ? "1fr" : "0fr", opacity: expanded ? 1 : 0,
+      transition: `grid-template-rows ${ms}ms var(--ease-out), opacity ${ms}ms var(--ease-out)` }}>
+      <div style={{ minHeight: 0, overflow: settled ? "visible" : "hidden" }}>{children}</div>
+    </div>
   );
 }
 

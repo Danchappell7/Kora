@@ -2,7 +2,7 @@
    KANBO — Sidebar (nav, workspace switcher, projects, deep-work mini)
    ============================================================ */
 import { useState } from "react";
-import { Icon, Avatar, KanboLogo } from "./primitives";
+import { Icon, Avatar, KanboLogo, Collapse } from "./primitives";
 import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
 import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch } from "../data/types";
 import type { Route } from "../app-types";
@@ -254,13 +254,13 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             <span className="kicker" style={{ flex: 1, textAlign: "left" }}>Archived</span>
             <span className="mono" style={{ fontSize: 11 }}>{archivedProjects.length}</span>
           </button>
-          {archivedOpen && archivedProjects.map((p) => (
+          <Collapse open={archivedOpen}>{archivedProjects.map((p) => (
             <div key={p.id} className="kproj-row" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 11px", opacity: 0.75 }}>
               <span style={{ width: 8, height: 8, borderRadius: 3, background: p.color, flexShrink: 0 }} />
               <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-3)" }}>{p.name}</span>
               {onRestoreProject && <button onClick={(e) => { e.stopPropagation(); onRestoreProject(p.id); }} title="Restore project" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-4)", padding: 2, display: "inline-flex" }}><Icon name="refresh" size={13} /></button>}
             </div>
-          ))}
+          ))}</Collapse>
         </div>
       )}
       </div>
