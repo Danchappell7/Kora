@@ -296,6 +296,8 @@ create trigger trg_before_user_delete before delete on auth.users
   for each row execute function public.before_user_delete();
 
 -- ---------- 7. internal helpers are not public endpoints ----------
-revoke execute on function public.seed_demo_data(uuid) from public, anon, authenticated;
+do $$ begin
+  revoke execute on function public.seed_demo_data(uuid) from public, anon, authenticated;
+exception when undefined_function then null; end $$;
 revoke execute on function public.before_user_delete() from public, anon, authenticated;
 revoke execute on function public.ensure_profile_for_new_user() from public, anon, authenticated;
