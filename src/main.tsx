@@ -7,6 +7,7 @@ import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initMonitoring } from "./lib/monitoring";
+import { startLiveClock } from "./lib/liveClock";
 import "./styles/kanbo.css";
 
 initMonitoring();
@@ -19,19 +20,33 @@ const isAdminRoute = path === "/admin";
 // OAuth verification and footer links.
 const legal = path === "/privacy" ? "privacy" : path === "/terms" ? "terms" : null;
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <ToastProvider>
-        {legal === "privacy" ? <PrivacyPolicy /> : legal === "terms" ? <Terms /> : (
-          <AuthProvider>
-            {isAdminRoute ? <AdminApp /> : <App />}
-          </AuthProvider>
-        )}
-      </ToastProvider>
-    </ErrorBoundary>
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+// Each call builds a fresh element tree, so React re-renders every
+// (unmemoised) component — which is how views pick up a new "today" / "now"
+// from the live clock below without threading a prop through the whole app.
+// State is untouched: same component types in the same places.
+function renderApp(): void {
+  root.render(
+    <StrictMode>
+      <ErrorBoundary>
+        <ToastProvider>
+          {legal === "privacy" ? <PrivacyPolicy /> : legal === "terms" ? <Terms /> : (
+            <AuthProvider>
+              {isAdminRoute ? <AdminApp /> : <App />}
+            </AuthProvider>
+          )}
+        </ToastProvider>
+      </ErrorBoundary>
+    </StrictMode>,
+  );
+}
+renderApp();
+
+// Live clock: KANBO_TODAY / NOW_MIN are refreshed every minute and when the
+// tab wakes, then the app re-renders — so a tab left open overnight shows the
+// right "Today", overdue flags and date presets the next morning.
+if (!legal) startLiveClock(renderApp);
 
 // PWA: register the service worker in production for instant loads + offline
 // shell. Network-first for HTML means new deploys are picked up immediately.

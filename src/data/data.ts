@@ -5,11 +5,16 @@
 
 import type {
   Member, Workspace, Project, TagDef, Task, CalEvent,
-  Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta,
+  Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
 } from "./types";
+import { isSupabaseConfigured } from "../lib/supabase";
 
-// Real "today" (midnight, local) — drives all relative due-date math.
-export const KANBO_TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
+/* Real "today" (midnight, local) — drives all relative due-date math.
+   It is ONE Date object that refreshClock() (below, next to NOW_MIN) moves
+   forward IN PLACE, so every importer holding this reference sees the new day
+   in a tab left open overnight. Never mutate it anywhere else — copy it
+   (`new Date(KANBO_TODAY)`) before doing date arithmetic. */
+export const KANBO_TODAY: Date = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
 
 /* Local "YYYY-MM-DD" — avoids the UTC off-by-one that toISOString() causes in
    timezones ahead of UTC. All due-date math below parses dates as local. */
@@ -17,6 +22,9 @@ export function toLocalISO(d: Date): string {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+/* today's local "YYYY-MM-DD" — handy as a memo dependency so derived date
+   buckets recompute when the day rolls over */
+export function todayISO(): string { return toLocalISO(KANBO_TODAY); }
 
 export type DuePreset = "today" | "tomorrow" | "weekend" | "nextweek";
 export const DUE_PRESETS: { kind: DuePreset; label: string }[] = [
@@ -37,22 +45,114 @@ export function dayOffset(n: number): string {
   return toLocalISO(d);
 }
 
-/* advance a due date by one recurrence step (from the due date, or today) */
-export function nextDueDate(iso: string | undefined, recurrence: import("./types").Recurrence): string {
-  const base = iso ? new Date(iso + "T00:00:00") : new Date(KANBO_TODAY);
+const DAY_MS = 86400000;
+const daysInMonth = (y: number, m: number): number => new Date(y, m + 1, 0).getDate();
+/* local midnight of a "YYYY-MM-DD" (tolerates a trailing time part); null if unparseable */
+function parseLocalDay(iso: string): Date | null {
+  const d = new Date(iso.slice(0, 10) + "T00:00:00");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+/* whole days from one local date to another (DST-safe: rounds the 23/25h days) */
+function daysBetweenISO(from: string, to: string): number {
+  const a = parseLocalDay(from), b = parseLocalDay(to);
+  return a && b ? Math.round((b.getTime() - a.getTime()) / DAY_MS) : 0;
+}
+function shiftISO(iso: string, days: number): string {
+  const d = parseLocalDay(iso);
+  if (!d || !days) return iso;
+  d.setDate(d.getDate() + days);
+  return toLocalISO(d);
+}
+
+/* Advance a due date by one recurrence step (from the due date, or today).
+   Monthly keeps to its day of the month and clamps to the last day of shorter
+   months (31 Jan → 28/29 Feb, 31 Aug → 30 Sep) instead of overflowing into the
+   next month. Pass `anchorDay` — the day the series was set up on — so a series
+   that was clamped finds its way back (28 Feb → 31 Mar); without it the anchor
+   is the base date's own day. */
+export function nextDueDate(iso: string | undefined, recurrence: Recurrence, anchorDay?: number): string {
+  const base = (iso && parseLocalDay(iso)) || new Date(KANBO_TODAY);
   const d = new Date(base);
+  const anchor = Math.min(31, Math.max(1, Math.round(anchorDay ?? base.getDate())));
   const step = () => {
     if (recurrence === "daily") d.setDate(d.getDate() + 1);
     else if (recurrence === "weekdays") { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
     else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
     else if (recurrence === "biweekly") d.setDate(d.getDate() + 14);
-    else if (recurrence === "monthly") d.setMonth(d.getMonth() + 1);
+    else if (recurrence === "monthly") {
+      // go via the 1st so setMonth can't overflow (31 Jan + 1 month = 3 Mar)
+      d.setDate(1);
+      d.setMonth(d.getMonth() + 1);
+      d.setDate(Math.min(anchor, daysInMonth(d.getFullYear(), d.getMonth())));
+    }
   };
-  if (recurrence !== "none") step();
+  if (recurrence === "none") return toLocalISO(d);
+  step();
   // if the computed next date is in the past, roll forward to the future
+  // (bounded, so a decades-old daily date can't spin the tab)
   const todayMid = new Date(KANBO_TODAY);
-  while (d < todayMid && recurrence !== "none") step();
+  for (let i = 0; d < todayMid && i < 20000; i++) step();
   return toLocalISO(d);
+}
+
+/* The next instance of a recurring task: same work and people, fresh state.
+   Everything that belonged to the finished occurrence is reset — time logged
+   (so timesheets and billable totals don't double count), reactions, comment
+   count, the plan slot, completion/archive stamps and dependencies (they point
+   at this occurrence's blockers and aren't persisted on insert). startDate
+   moves by the same number of days as the due date, so a Timeline bar keeps
+   its length instead of stretching back to the first occurrence. */
+export function nextOccurrence(t: Task, id: string, anchorDay?: number): Task {
+  const dueDate = nextDueDate(t.dueDate, t.recurrence ?? "none", anchorDay);
+  const shift = daysBetweenISO(t.dueDate ?? toLocalISO(KANBO_TODAY), dueDate);
+  return {
+    ...t,
+    id,
+    status: "todo",
+    dueDate,
+    startDate: t.startDate ? shiftISO(t.startDate, shift) : undefined,
+    originalDueDate: undefined,
+    completedAt: undefined,
+    archivedAt: undefined,
+    createdAt: undefined,
+    scheduled: null,
+    planToday: false,
+    comments: 0,
+    reactions: undefined,
+    loggedHours: undefined,
+    dependencies: [],
+    subtasks: t.subtasks.map((s) => ({ ...s, done: false })),
+  };
+}
+
+/* Carry a recurring task's sub-tasks (child tasks) to its next occurrence:
+   fresh ids, back to to-do, re-parented onto `next`, and their dates moved by
+   the same number of days as the parent's due date. Archived children stay
+   behind. `next.id` must be the new parent's SAVED id. */
+export function nextOccurrenceChildren(children: Task[], prev: Task, next: Task, makeId: () => string): Task[] {
+  const shift = daysBetweenISO(prev.dueDate ?? toLocalISO(KANBO_TODAY), next.dueDate ?? toLocalISO(KANBO_TODAY));
+  return children
+    .filter((c) => c.parentId === prev.id && !c.archivedAt)
+    .map((c) => ({
+      ...c,
+      id: makeId(),
+      parentId: next.id,
+      projectId: next.projectId,
+      workspaceId: next.workspaceId,
+      status: "todo" as Status,
+      dueDate: c.dueDate ? shiftISO(c.dueDate, shift) : undefined,
+      startDate: c.startDate ? shiftISO(c.startDate, shift) : undefined,
+      originalDueDate: undefined,
+      completedAt: undefined,
+      createdAt: undefined,
+      scheduled: null,
+      planToday: false,
+      comments: 0,
+      reactions: undefined,
+      loggedHours: undefined,
+      dependencies: [],
+      subtasks: c.subtasks.map((s) => ({ ...s, done: false })),
+    }));
 }
 
 /* `let` (not `const`) so the authenticated user can replace the demo "self"
@@ -258,8 +358,23 @@ export function blockingTasks(task: Task, all: Task[]): Task[] {
    ============================================================ */
 export const DAY_START = 7 * 60;
 export const DAY_END = 22 * 60;
-// real current time (minutes from midnight), computed at load — not a fixed demo value
-export const NOW_MIN = (() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); })();
+const minutesOf = (d: Date): number => d.getHours() * 60 + d.getMinutes();
+/* real current time (minutes from local midnight). `let` so refreshClock() can
+   move it — ES-module live bindings mean every importer reads the new value. */
+export let NOW_MIN = minutesOf(new Date());
+
+/* Bring KANBO_TODAY and NOW_MIN up to date with the wall clock. KANBO_TODAY is
+   moved in place (importers hold the same Date), so after a call every date
+   helper here — dayOffset, presetDate, dueState, fmtDue, nextDueDate… —
+   answers for the real today. Returns true when the day changed. main.tsx runs
+   this every minute and when the tab wakes, then re-renders the app. */
+export function refreshClock(now: Date = new Date()): boolean {
+  NOW_MIN = minutesOf(now);
+  const mid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (mid.getTime() === KANBO_TODAY.getTime()) return false;
+  KANBO_TODAY.setTime(mid.getTime());
+  return true;
+}
 
 export const ENERGY: Record<EnergyKind, EnergyMeta> = {
   deep:   { label: "Deep work",     color: "var(--accent)",      icon: "zap" },
@@ -303,16 +418,30 @@ export function dueOffset(iso?: string): number {
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
-/* AUTO-PLAN: place tasks into open gaps. deep/create → morning; admin → afternoon. */
-export function planDay(tasks: Task[], events: CalEvent[]): Record<string, number> {
-  const busy = events.map((e) => ({ start: e.start, end: e.end })).sort((a, b) => a.start - b.start);
+/* AUTO-PLAN: place tasks into open gaps. deep/create → morning; admin → afternoon.
+   Never places anything before "now" (rounded up to the next 5 minutes), never
+   on top of a calendar event or a block that's already on the day, and never
+   past DAY_END — tasks that don't fit come back in `unplaced`. Tasks already
+   marked done are never placed (their existing blocks still count as busy). */
+export interface DayPlan { placed: Record<string, number>; unplaced: Task[] }
+const SLOT_MIN = 5;
+const ceilSlot = (m: number): number => Math.ceil(m / SLOT_MIN) * SLOT_MIN;
+export function planDayDetailed(tasks: Task[], events: CalEvent[], opts: { nowMin?: number } = {}): DayPlan {
+  // the live time at the moment of planning, not the page-load time
+  const earliest = Math.max(DAY_START, ceilSlot(opts.nowMin ?? minutesOf(new Date())));
+  const lenOf = (t: Task): number => t.dur || t.focusMin || SLOT_MIN;
+  // everything already on the day is busy BEFORE anything is placed — whatever
+  // order the tasks arrive in — so a new block can't land on an existing one
+  const busy = [
+    ...events.map((e) => ({ start: e.start, end: e.end })),
+    ...tasks.filter((t) => t.scheduled != null).map((t) => ({ start: t.scheduled!, end: t.scheduled! + lenOf(t) })),
+  ].sort((a, b) => a.start - b.start);
   const place = (dur: number, morning: boolean): number | null => {
-    const step = 5;
-    const ranges = morning
-      ? [[Math.max(DAY_START, NOW_MIN), 12 * 60], [13 * 60, DAY_END]]
-      : [[13 * 60, DAY_END], [Math.max(DAY_START, NOW_MIN), 12 * 60]];
-    for (const [lo, hi] of ranges) {
-      for (let s = lo; s + dur <= hi; s += step) {
+    const am: [number, number] = [earliest, 12 * 60];
+    const pm: [number, number] = [Math.max(earliest, 13 * 60), DAY_END];
+    for (const [lo, hi] of morning ? [am, pm] : [pm, am]) {
+      // lo is always on the 5-minute grid, so every placement is too
+      for (let s = ceilSlot(lo); s + dur <= hi; s += SLOT_MIN) {
         if (!busy.some((b) => s < b.end && s + dur > b.start)) {
           busy.push({ start: s, end: s + dur });
           busy.sort((a, b) => a.start - b.start);
@@ -323,9 +452,9 @@ export function planDay(tasks: Task[], events: CalEvent[]): Record<string, numbe
     return null;
   };
   const rank: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
-  const order = [...tasks].sort(
-    (a, b) => (dueOffset(a.dueDate) - dueOffset(b.dueDate)) || (rank[a.priority] - rank[b.priority]),
-  );
+  const order = tasks
+    .filter((t) => t.scheduled == null && t.status !== "done")
+    .sort((a, b) => (dueOffset(a.dueDate) - dueOffset(b.dueDate)) || (rank[a.priority] - rank[b.priority]));
   // The brain can't hold deep focus much past ~90 minutes. Rather than packing
   // the day wall-to-wall, we reserve a short comfort break whenever a continuous
   // run of work reaches the cap — so focus stays sustainable. A single task that
@@ -341,57 +470,101 @@ export function planDay(tasks: Task[], events: CalEvent[]): Record<string, numbe
       start = prev.start;
     }
   };
-  const out: Record<string, number> = {};
+  const placed: Record<string, number> = {};
+  const unplaced: Task[] = [];
   for (const task of order) {
-    if (task.scheduled != null) {
-      busy.push({ start: task.scheduled, end: task.scheduled + (task.dur || task.focusMin) });
-      busy.sort((a, b) => a.start - b.start);
-      continue;
-    }
-    const dur = task.dur || task.focusMin;
+    const dur = lenOf(task);
     const s = place(dur, task.energy === "deep" || task.energy === "create");
-    if (s != null) {
-      out[task.id] = s;
-      const end = s + dur;
-      // if this placement caps off a continuous work run of 90m+, hold the next
-      // slot open with a break so the day isn't a relentless block of work
-      if (end - runStartOf(s) >= FOCUS_CAP && end + BREAK <= DAY_END) {
-        busy.push({ start: end, end: end + BREAK });
-        busy.sort((a, b) => a.start - b.start);
-      }
+    if (s == null) { unplaced.push(task); continue; }
+    placed[task.id] = s;
+    const end = s + dur;
+    // if this placement caps off a continuous work run of 90m+, hold the next
+    // slot open with a break so the day isn't a relentless block of work
+    if (end - runStartOf(s) >= FOCUS_CAP && end + BREAK <= DAY_END) {
+      busy.push({ start: end, end: end + BREAK });
+      busy.sort((a, b) => a.start - b.start);
     }
   }
-  return out;
+  return { placed, unplaced };
+}
+/* start minute per placed task id (see planDayDetailed for the rules and the
+   tasks that didn't fit) */
+export function planDay(tasks: Task[], events: CalEvent[], opts: { nowMin?: number } = {}): Record<string, number> {
+  return planDayDetailed(tasks, events, opts).placed;
 }
 
-/* natural-language capture → a task compatible with the schema */
+/* ---- natural-language tokens shared by both parsers ----
+   Each token must stand on its own: preceded by start/space, and not followed
+   by a letter, digit or apostrophe — so "Q3", "3pm" and "today's numbers" are
+   left alone. Removing a token keeps its leading space so words don't fuse. */
+const HOURS_RE = /(^|\s)(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)(?:(\d{1,2})(?:m|mins?|minutes?)?|\s+(\d{1,2})\s*(?:m|mins?|minutes?))?(?![\w'’])/i;
+const MINS_RE = /(^|\s)(\d+)\s*(?:m|mins?|minutes?)(?![\w'’])/i;
+/* "90m", "45 mins", "1.5h", "3 hrs", "2 hours", "1h30", "1h 30m" → minutes */
+function takeDuration(s: string): { min: number; rest: string } | null {
+  const h = s.match(HOURS_RE);
+  if (h) {
+    const min = Math.round(parseFloat(h[2]) * 60) + parseInt(h[3] ?? h[4] ?? "0", 10);
+    return { min, rest: s.replace(h[0], h[1] + " ") };
+  }
+  const m = s.match(MINS_RE);
+  if (m) return { min: parseInt(m[2], 10), rest: s.replace(m[0], m[1] + " ") };
+  return null;
+}
+/* "today" / "tomorrow" / "next week", with an optional lead-in ("by", "due",
+   "for") that goes with it: "Send invoice by tomorrow" → "Send invoice". */
+const DUE_WORD_RE = /(^|\s)(?:(?:by|due|for)\s+)?(today|tomorrow|next\s+week)(?![\w'’])/i;
+function takeDueWord(s: string): { offset: number; rest: string } | null {
+  const m = s.match(DUE_WORD_RE);
+  if (!m) return null;
+  const w = m[2].toLowerCase();
+  return { offset: w === "today" ? 0 : w === "tomorrow" ? 1 : 7, rest: s.replace(m[0], m[1] + " ") };
+}
+/* energy words: "deep work" / "focus time" / "focus block" anywhere, or a bare
+   "deep" / "focus" as the last word. "Focus group prep" or "Deep dive into
+   churn" are titles, not energy. */
+const DEEP_RE = /(^|\s)(deep|focus)(?:[\s-]+(?:work|time|block)(?![\w'’])|(?=[\s.,;:!?]*$))/i;
+const tidyTitle = (s: string): string => s.replace(/\s{2,}/g, " ").replace(/^[\s,;:–—-]+|[\s,;:–—-]+$/g, "").trim();
+/* the signed-in user (demo: "m-self") — the store maps it on insert anyway,
+   but using the real id keeps the task in My Week before the next reload */
+const selfMemberId = (): string => MEMBERS.find((m) => m.type === "self")?.id ?? "m-self";
+
+/* natural-language capture → a task compatible with the schema.
+   opts.projectId / opts.assigneeId let the caller file it where the user is
+   working (e.g. the active team workspace) instead of Personal / "me". */
+export interface CaptureOptions { projectId?: string; assigneeId?: string }
 let _capId = 1000;
-export function parseCapture(text: string): Task | null {
+export function parseCapture(text: string, opts: CaptureOptions = {}): Task | null {
   let s = text.trim();
   if (!s) return null;
   let dur = 30;
   let energy: EnergyKind = "admin";
-  let tags: string[] = [];
-  let due = 1;
+  let tag: string | null = null;
+  let dueDate: string | undefined;       // no date unless the text says so
   let priority: Priority = "medium";
-  const dm = s.match(/(\d+(?:\.\d+)?)\s*(h|hr|hours?|m|min|mins?)\b/i);
-  if (dm) {
-    const n = parseFloat(dm[1]);
-    dur = /h/i.test(dm[2]) ? Math.round(n * 60) : Math.round(n);
-    s = s.replace(dm[0], "").trim();
+  const d = takeDuration(s);
+  if (d) { dur = Math.max(SLOT_MIN, d.min); s = d.rest; }
+  const due = takeDueWord(s);
+  if (due) { dueDate = dayOffset(due.offset); s = due.rest; }
+  const pm = s.match(/(^|\s)(?:urgent|asap)(?![\w'’])|!{2,}/i);
+  if (pm) { priority = "high"; s = s.replace(pm[0], (pm[1] ?? "") + " "); }
+  const deep = s.match(DEEP_RE);
+  if (deep) {
+    energy = "deep"; tag = "writing";
+    const at = (deep.index ?? 0) + deep[1].length;
+    // a leading "Deep work on the pricing model" IS the title — keep it;
+    // elsewhere it's an annotation ("Draft deck deep work") — drop it
+    if (at > 0 && s.slice(0, at).trim()) s = s.replace(deep[0], deep[1] + " ");
   }
-  if (/\bdeep\b|\bfocus\b/i.test(s)) { energy = "deep"; tags = ["writing"]; s = s.replace(/\bdeep( work)?\b|\bfocus\b/i, "").trim(); }
-  else if (/\bdesign|creativ/i.test(s)) { energy = "create"; tags = ["design"]; }
-  else if (/\bcall\b|\bmeet|\binterview/i.test(s)) { energy = "collab"; tags = ["research"]; }
-  if (/\btoday\b/i.test(s)) { due = 0; s = s.replace(/\btoday\b/i, "").trim(); }
-  else if (/\btomorrow\b/i.test(s)) { due = 1; s = s.replace(/\btomorrow\b/i, "").trim(); }
-  if (/\b(urgent|asap|!!)\b/i.test(s)) { priority = "high"; s = s.replace(/\b(urgent|asap|!!)\b/i, "").trim(); }
-  s = s.replace(/\bby\b\s*$/i, "").replace(/\s{2,}/g, " ").trim();
+  else if (/\bdesign|creativ/i.test(s)) { energy = "create"; tag = "design"; }
+  else if (/\bcall\b|\bmeet|\binterview/i.test(s)) { energy = "collab"; tag = "research"; }
+  s = tidyTitle(s);
   if (!s) s = "New task";
+  // built-in tag ids only exist in demo mode — real accounts have their own tags
+  const tags = tag && !isSupabaseConfigured && TAGS[tag] ? [tag] : [];
   return {
     id: "t-cap" + (++_capId), title: s.charAt(0).toUpperCase() + s.slice(1), description: "",
-    status: "todo", priority, projectId: "p-personal", assigneeId: "m-self",
-    dueDate: dayOffset(due), tags, dependencies: [], subtasks: [], comments: 0,
+    status: "todo", priority, projectId: opts.projectId || "p-personal", assigneeId: opts.assigneeId || selfMemberId(),
+    dueDate, tags, dependencies: [], subtasks: [], comments: 0,
     focusMin: dur, dur, energy, scheduled: null, aiScore: 60,
     aiReason: "Captured just now — drag it onto your day or hit Auto-plan.", planToday: true,
   };
@@ -403,14 +576,13 @@ export interface ParsedTokens { title: string; dueDate?: string; priority?: Prio
 export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = []): ParsedTokens {
   let s = text;
   const out: ParsedTokens = { title: "" };
-  const dm = s.match(/(\d+(?:\.\d+)?)\s*(h|hr|hours?|m|min|mins?)\b/i);
-  if (dm) { const n = parseFloat(dm[1]); out.focusMin = /h/i.test(dm[2]) ? Math.round(n * 60) : Math.round(n); s = s.replace(dm[0], " "); }
+  const dur = takeDuration(s);
+  if (dur) { out.focusMin = dur.min; s = dur.rest; }
   const pw = s.match(/(^|\s)!(urgent|high|medium|med|low)\b/i);
   if (pw) { const w = pw[2].toLowerCase(); out.priority = (w === "med" ? "medium" : w) as Priority; s = s.replace(pw[0], " "); }
   else { const bang = s.match(/(^|\s)(!{1,3})(?=\s|$)/); if (bang) { out.priority = bang[2].length >= 3 ? "urgent" : bang[2].length === 2 ? "high" : "medium"; s = s.replace(bang[0], " "); } }
-  if (/\btoday\b/i.test(s)) { out.dueDate = dayOffset(0); s = s.replace(/\btoday\b/i, " "); }
-  else if (/\btomorrow\b/i.test(s)) { out.dueDate = dayOffset(1); s = s.replace(/\btomorrow\b/i, " "); }
-  else if (/\bnext week\b/i.test(s)) { out.dueDate = dayOffset(7); s = s.replace(/\bnext week\b/i, " "); }
+  const due = takeDueWord(s);
+  if (due) { out.dueDate = dayOffset(due.offset); s = due.rest; }
   const projM = s.match(/(^|\s)#([\w-]+)/);
   if (projM) { const q = projM[2].toLowerCase(); const p = projects.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || projects.find((x) => x.name.toLowerCase().includes(q)); if (p) { out.projectId = p.id; s = s.replace(projM[0], " "); } }
   const asM = s.match(/(^|\s)@([\w-]+)/);
