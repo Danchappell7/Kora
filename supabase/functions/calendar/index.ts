@@ -3,14 +3,24 @@
 // One function, action-routed. Keeps OAuth client secrets server-side.
 //
 //   GET  /calendar?action=connect&provider=google|microsoft   (JWT)  -> { url }
-//   GET  /calendar/callback?code=..&state=..                   (open) -> 302 to app
+//   GET  /calendar/callback?code=..&state=..                   (open) -> 302 to
+//        APP_URL/?calendar=finish&calendar_state=..&calendar_code=..
+//   GET  /calendar?action=finish&state=..&code=..              (JWT)  -> { ok, provider, accountEmail }
 //   GET  /calendar?action=list                                 (JWT)  -> { connections }
 //   GET  /calendar?action=events&start=ISO&end=ISO             (JWT)  -> { events }
 //   POST /calendar  { action:"disconnect", provider }          (JWT)  -> { ok }
 //
+// Why "finish": the callback used to swap the code for tokens and save them
+// under whoever STARTED the flow. Someone could start "connect", send the
+// Google consent link to a colleague, and get the colleague's calendar saved
+// on their own account. Now the callback only bounces the code back to the
+// app, and the app (signed in as whoever actually approved) calls
+// action=finish with its own JWT — which must match the user who started the
+// flow. States expire after 10 minutes and are single-use.
+//
 // Deploy:  supabase functions deploy calendar --no-verify-jwt
 //   (we verify the JWT ourselves for the authed actions; the OAuth callback
-//    is reached by the provider's redirect and authenticates via `state`.)
+//    is reached by the provider's redirect and carries no JWT.)
 // Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 //          MS_CLIENT_ID, MS_CLIENT_SECRET, APP_URL
 // ============================================================
@@ -27,8 +37,9 @@ const json = (b: unknown, status = 200) =>
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const APP_URL = Deno.env.get("APP_URL") || "https://kanbo.co.uk";
+const APP_URL = (Deno.env.get("APP_URL") || "https://www.kanbo.co.uk").replace(/\/+$/, "");
 const REDIRECT_URI = `${SUPABASE_URL}/functions/v1/calendar/callback`;
+const STATE_TTL_MS = 10 * 60 * 1000;
 
 const admin = createClient(SUPABASE_URL, SERVICE_KEY);
 
@@ -128,38 +139,22 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   const url = new URL(req.url);
 
-  // ---- OAuth callback (provider redirect; authenticated via state) ----
+  // ---- OAuth callback (provider redirect, no JWT) ----
+  // Never exchanges the code here: it hands it back to the app, which calls
+  // action=finish as the signed-in person (see the header comment).
   if (url.pathname.endsWith("/callback")) {
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     const back = (msg: string) => Response.redirect(`${APP_URL}/?calendar=${msg}`, 302);
     try {
-      if (!code || !state) return back("error");
-      const { data: st } = await admin.from("oauth_states").select("*").eq("state", state).maybeSingle();
-      if (!st) return back("error");
-      await admin.from("oauth_states").delete().eq("state", state);
-      const p = st.provider as ProviderKey;
-      const tok = await exchangeToken(p, {
-        grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI,
-      });
-      // best-effort: identify the connected account's email
-      let email = "";
-      try {
-        if (p === "google") {
-          const ui = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", { headers: { Authorization: `Bearer ${tok.access_token}` } }).then((r) => r.json());
-          email = ui.email || "";
-        } else {
-          const ui = await fetch("https://graph.microsoft.com/v1.0/me", { headers: { Authorization: `Bearer ${tok.access_token}` } }).then((r) => r.json());
-          email = ui.mail || ui.userPrincipalName || "";
-        }
-      } catch { /* non-fatal */ }
-      const expires_at = tok.expires_in ? new Date(Date.now() + tok.expires_in * 1000).toISOString() : null;
-      await admin.from("calendar_connections").upsert({
-        user_id: st.user_id, provider: p, account_email: email,
-        access_token: tok.access_token, refresh_token: tok.refresh_token ?? null,
-        expires_at, scope: tok.scope ?? PROVIDERS[p].scope, updated_at: new Date().toISOString(),
-      }, { onConflict: "user_id,provider" });
-      return back("connected");
+      if (!code || !state) {
+        if (state) await admin.from("oauth_states").delete().eq("state", state); // cancelled at the consent screen
+        return back("error");
+      }
+      const { data: st } = await admin.from("oauth_states").select("state,created_at").eq("state", state).maybeSingle();
+      if (!st || Date.now() - new Date(st.created_at).getTime() > STATE_TTL_MS) return back("error");
+      const qs = new URLSearchParams({ calendar: "finish", calendar_state: state, calendar_code: code });
+      return Response.redirect(`${APP_URL}/?${qs}`, 302);
     } catch (e) {
       console.error("calendar callback error", e);
       return back("error");
@@ -178,6 +173,8 @@ Deno.serve(async (req) => {
       if (!cfg) return json({ error: "unknown provider" }, 400);
       if (!cfg.clientId()) return json({ error: `${provider} is not configured yet` }, 400);
       const state = crypto.randomUUID();
+      // tidy abandoned handshakes, then start this one
+      await admin.from("oauth_states").delete().lt("created_at", new Date(Date.now() - STATE_TTL_MS).toISOString());
       await admin.from("oauth_states").insert({ state, user_id: user.id, provider });
       const auth = new URL(cfg.authUrl);
       auth.searchParams.set("client_id", cfg.clientId());
@@ -187,6 +184,52 @@ Deno.serve(async (req) => {
       auth.searchParams.set("state", state);
       for (const [k, v] of Object.entries(cfg.extraAuth)) auth.searchParams.set(k, v as string);
       return json({ url: auth.toString() });
+    }
+
+    if (action === "finish") {
+      const q = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+      const state = String(url.searchParams.get("state") || q?.state || "");
+      const code = String(url.searchParams.get("code") || q?.code || "");
+      if (!state || !code) return json({ error: "missing state or code" }, 400);
+      const { data: st } = await admin.from("oauth_states").select("*").eq("state", state).maybeSingle();
+      if (!st) return json({ error: "This calendar link has expired. Please connect again." }, 400);
+      // single-use, whoever presents it
+      await admin.from("oauth_states").delete().eq("state", state);
+      if (st.user_id !== user.id) {
+        console.warn("calendar finish: state belongs to a different user — refused");
+        return json({ error: "This calendar connection was started from a different Kanbo account. Please connect again from your own account." }, 403);
+      }
+      if (Date.now() - new Date(st.created_at).getTime() > STATE_TTL_MS) {
+        return json({ error: "This calendar link has expired. Please connect again." }, 400);
+      }
+      const p = st.provider as ProviderKey;
+      if (!PROVIDERS[p]) return json({ error: "unknown provider" }, 400);
+      let tok: Awaited<ReturnType<typeof exchangeToken>>;
+      try {
+        tok = await exchangeToken(p, { grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI });
+      } catch (e) {
+        console.error("calendar finish: token exchange failed", e);
+        return json({ error: "Couldn't finish connecting that calendar. Please try again." }, 502);
+      }
+      // best-effort: identify the connected account's email
+      let email = "";
+      try {
+        if (p === "google") {
+          const ui = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", { headers: { Authorization: `Bearer ${tok.access_token}` } }).then((r) => r.json());
+          email = ui.email || "";
+        } else {
+          const ui = await fetch("https://graph.microsoft.com/v1.0/me", { headers: { Authorization: `Bearer ${tok.access_token}` } }).then((r) => r.json());
+          email = ui.mail || ui.userPrincipalName || "";
+        }
+      } catch { /* non-fatal */ }
+      const expires_at = tok.expires_in ? new Date(Date.now() + tok.expires_in * 1000).toISOString() : null;
+      const { error: saveErr } = await admin.from("calendar_connections").upsert({
+        user_id: user.id, provider: p, account_email: email,
+        access_token: tok.access_token, refresh_token: tok.refresh_token ?? null,
+        expires_at, scope: tok.scope ?? PROVIDERS[p].scope, updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id,provider" });
+      if (saveErr) throw new Error(saveErr.message);
+      return json({ ok: true, provider: p, accountEmail: email });
     }
 
     if (action === "list") {
