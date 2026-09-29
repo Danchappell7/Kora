@@ -8,6 +8,8 @@ import { getProject, projectProgress, dueState, KANBO_TODAY, toLocalISO } from "
 import type { Task, Project, IconName } from "../../data/types";
 import type { Route } from "../../app-types";
 
+const kbdStyle = { fontSize: 11.5, padding: "1px 6px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-2)" } as const;
+
 /* First-run getting-started checklist — tracks real progress, dismissible. */
 function GettingStarted({ steps }: { steps: { label: string; done: boolean; action: () => void; cta: string }[] }) {
   const [dismissed, setDismissed] = useState(() => { try { return localStorage.getItem("kanbo-gs-dismissed") === "1"; } catch { return false; } });
@@ -25,7 +27,7 @@ function GettingStarted({ steps }: { steps: { label: string; done: boolean; acti
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
         {steps.map((s) => (
           <button key={s.label} onClick={s.done ? undefined : s.action} disabled={s.done} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, border: "1px solid var(--hairline)", background: s.done ? "var(--surface-2)" : "var(--surface)", cursor: s.done ? "default" : "pointer", textAlign: "left" }}>
-            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)", color: s.done ? "var(--bg-deep)" : "var(--accent)" }}>
+            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)", color: s.done ? "var(--avatar-ink, var(--bg-deep))" : "var(--accent)" }}>
               {s.done ? <Icon name="check" size={13} sw={3} /> : <Icon name="arrowRight" size={13} />}
             </span>
             <span style={{ flex: 1, minWidth: 0 }}>
@@ -68,8 +70,13 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
     blocked: tasks.filter((t) => t.status === "blocked").length,
     done: tasks.filter((t) => t.status === "done").length,
   };
-  const today = open.filter((t) => dueState(t.dueDate, t.status) === "today" || dueState(t.dueDate, t.status) === "overdue")
-    .sort((a, b) => b.aiScore - a.aiScore);
+  // "due today" means due today; anything past due is counted (and labelled) separately
+  const dueToday = open.filter((t) => dueState(t.dueDate, t.status) === "today");
+  const overdue = open.filter((t) => dueState(t.dueDate, t.status) === "overdue");
+  // the focus queue works through both, highest priority first
+  const today = [...dueToday, ...overdue].sort((a, b) => b.aiScore - a.aiScore);
+  const overdueIds = new Set(overdue.map((t) => t.id));
+  const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
   // real "this week" metrics from completedAt
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
@@ -97,7 +104,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 16 }}><Icon name="sparkles" size={24} /></div>
           <h2 style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 8 }}>Welcome to Kanbo{firstName !== "there" ? `, ${firstName}` : ""} 👋</h2>
           <p style={{ fontSize: 15, lineHeight: 1.55, color: "var(--ink-3)", margin: "0 auto 28px", maxWidth: 460 }}>
-            Your workspace is a clean slate. Pick a starting point — or just type a task in the capture bar up top.
+            Your workspace is a clean slate. Pick a starting point below, or press <kbd className="mono" style={kbdStyle}>q</kbd> to capture a task.
           </p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, textAlign: "left" }}>
             {starters.map((s) => (
@@ -115,7 +122,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
             ))}
           </div>
           <p style={{ fontSize: 12.5, color: "var(--ink-4)", marginTop: 22 }}>
-            Tip: try typing <span className="mono" style={{ color: "var(--ink-3)" }}>“Draft deck 90m deep work today”</span> in the bar at the top.
+            Tip: press <kbd className="mono" style={kbdStyle}>q</kbd> anywhere to capture — try <span className="mono" style={{ color: "var(--ink-3)" }}>“Pay invoice tomorrow 30m !high”</span>.
           </p>
         </div>
       </div>
@@ -140,16 +147,19 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
           <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--ink-4)" }}>{dateLabel}</span>
         </div>
         <p style={{ margin: "0 0 18px", fontSize: 19, lineHeight: 1.5, letterSpacing: "-0.01em", maxWidth: 720 }}>
-          {greeting}, {firstName}. {today.length > 0
-            ? <>You have <strong>{today.length} {today.length === 1 ? "task" : "tasks"}</strong> due today</>
+          {greeting}, {firstName}. {dueToday.length > 0
+            ? <>You have <strong>{plural(dueToday.length, "task")}</strong> due today</>
             : <>Nothing's due today</>}
+          {overdue.length > 0 && <>{dueToday.length > 0 ? " and " : ", but "}<strong style={{ color: "var(--prio-urgent)" }}>{overdue.length} overdue</strong></>}
           {counts.progress > 0 && <>, <strong>{counts.progress}</strong> in progress</>}
           {counts.blocked > 0
             ? <>, and <strong style={{ color: "var(--st-blocked)" }}>{counts.blocked} blocked</strong>.</>
             : <>.</>}
-          {" "}{today.length > 0
-            ? "Start with the highest-priority items below."
-            : "A good moment to plan ahead or clear your backlog."}
+          {" "}{overdue.length > 0 && dueToday.length === 0
+            ? `Start by clearing ${overdue.length === 1 ? "the overdue one" : "the overdue ones"}.`
+            : today.length > 0
+              ? "Start with the highest-priority items below."
+              : "A good moment to plan ahead or clear your backlog."}
         </p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button className="btn btn-accent" onClick={onAutoPrioritize} disabled={aiBusy} style={{ opacity: aiBusy ? 0.6 : 1 }}><Icon name="sparkles" size={15} /> {aiBusy ? "Prioritizing…" : "Auto-prioritize my day"}</button>
@@ -160,7 +170,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
 
       {/* stat tiles */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 26 }}>
-        <StatTile kicker="Due today" value={today.length} icon="clock" accent sub={today.length > 0 ? "Sorted by priority" : "Nothing due today"} />
+        <StatTile kicker="Due today" value={dueToday.length} icon="clock" accent sub={overdue.length > 0 ? `Plus ${overdue.length} overdue` : dueToday.length > 0 ? "Sorted by priority" : "Nothing due today"} />
         <StatTile kicker="In progress" value={counts.progress} icon="refresh" sub={counts.progress > 0 ? `Across ${inProgressProjects} project${inProgressProjects === 1 ? "" : "s"}` : "Nothing in progress"} />
         <StatTile kicker="Blocked" value={counts.blocked} icon="lock" sub={counts.blocked > 0 ? "Waiting on a dependency" : "Nothing blocked"} />
         <StatTile kicker="Done this week" value={doneThisWeek} icon="check" sub="Completed in last 7 days" />
@@ -177,7 +187,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
           <div>
             {today.length === 0 && (
               <div style={{ padding: "20px 16px", borderTop: "1px solid var(--hairline)", fontSize: 13, color: "var(--ink-4)" }}>
-                Nothing due today — you're clear. Plan ahead or pull from your backlog.
+                Nothing due or overdue — you're clear. Plan ahead or pull from your backlog.
               </div>
             )}
             {today.slice(0, 4).map((t, i) => {
@@ -187,6 +197,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
                   <span className="mono tnum" style={{ fontSize: 13, color: "var(--ink-4)", width: 16 }}>{i + 1}</span>
                   <StatusDot status={t.status} size={8} />
                   <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink)" }} className="truncate">{t.title}</span>
+                  {overdueIds.has(t.id) && <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--prio-urgent)", flexShrink: 0 }}>Overdue</span>}
                   {proj && <span style={{ width: 7, height: 7, borderRadius: 2, background: proj.color }} />}
                   <AiScore score={t.aiScore} reason={t.aiReason} />
                   <Avatar id={t.assigneeId} size={22} />

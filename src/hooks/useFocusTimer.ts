@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+
+export type FocusEvent = "goal" | "break" | "breakOver";
 
 export interface FocusTimer {
   running: boolean;
@@ -18,72 +20,322 @@ export interface FocusTimer {
   phase: "work" | "break";
   cyclesToday: number;
   focusMinToday: number;
+  /** the last interval that finished on its own (cleared when the timer is started, reset or ended) */
+  notice: { kind: FocusEvent; min: number; at: number } | null;
+  /** browser notification permission — "unsupported" where the API doesn't exist */
+  notifyPermission: NotificationPermission | "unsupported";
+  /** ask for notification permission (call from a click handler) */
+  requestNotify: () => void;
 }
 
-const WORK_DEFAULT = 25;
-const BREAK_MIN = 5;
-const todayKey = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+export const WORK_DEFAULT = 25;
+export const BREAK_MIN = 5;
+const FLOW_DEFAULT = 90;
+const SESSION_KEY = "kanbo-focus-session";
+const STALE_ALERT_MS = 15 * 60_000;
+const STAT_KEY = "kanbo-focus-stat";
+
+export const todayKey = (d: Date = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 function loadStat(): { date: string; cycles: number; min: number } {
-  try { const v = JSON.parse(localStorage.getItem("kanbo-focus-stat") || "{}"); if (v && v.date === todayKey()) return v; } catch { /* private mode */ }
+  try { const v = JSON.parse(localStorage.getItem(STAT_KEY) || "{}"); if (v && v.date === todayKey()) return v; } catch { /* private mode */ }
   return { date: todayKey(), cycles: 0, min: 0 };
 }
 
+/* ---- the session: wall-clock based, so a hidden (throttled) tab or a reload
+   never loses time. `seconds` is always derived from timestamps. ---- */
+export interface FocusSession {
+  v: 1;
+  running: boolean;
+  /** wall-clock ms when the current run started; null while paused */
+  startedAt: number | null;
+  /** ms already elapsed in this interval before `startedAt` (earlier runs, before a pause) */
+  accMs: number;
+  targetMin: number;
+  phase: "work" | "break";
+  pomodoro: boolean;
+  taskId: string;
+}
+
+export const freshSession = (): FocusSession => ({ v: 1, running: false, startedAt: null, accMs: 0, targetMin: FLOW_DEFAULT, phase: "work", pomodoro: false, taskId: "" });
+
+export function elapsedMs(s: FocusSession, now: number): number {
+  const live = s.running && s.startedAt != null ? Math.max(0, now - s.startedAt) : 0;
+  return Math.max(0, s.accMs + live);
+}
+
+export interface Advance {
+  session: FocusSession;
+  /** focus minutes completed by this transition (only ever from a work interval) */
+  bankedMin: number;
+  bankedCycles: number;
+  /** wall-clock ms when the banked interval actually ended — decides which day it counts for */
+  bankedAt: number | null;
+  /** wall-clock ms of the last boundary crossed — an alert for one long past is just noise */
+  lastAt: number | null;
+  events: FocusEvent[];
+}
+
+/**
+ * Moves a running session past any boundary its wall-clock time has crossed.
+ *  - Flow mode (no Pomodoro): at the goal the block completes — its minutes are
+ *    banked and the timer rests at zero, so a laptop left asleep can never bank
+ *    more than the goal.
+ *  - Pomodoro: when a focus interval ends it is banked and the break starts from
+ *    the moment it ended (not when a throttled tab noticed). When the break ends
+ *    the next focus interval waits for the user to press play.
+ */
+export function advanceSession(s: FocusSession, now: number): Advance {
+  const out: Advance = { session: s, bankedMin: 0, bankedCycles: 0, bankedAt: null, lastAt: null, events: [] };
+  if (!s.running) return out;
+  let cur = s;
+  for (let guard = 0; guard < 3; guard++) {
+    const target = Math.max(1, cur.targetMin) * 60_000;
+    if (elapsedMs(cur, now) < target) break;
+    const endedAt = cur.running && cur.startedAt != null ? cur.startedAt + (target - cur.accMs) : now;
+    out.lastAt = endedAt;
+    if (!cur.pomodoro) {
+      if (cur.phase === "work") { out.bankedMin += cur.targetMin; out.bankedAt = endedAt; }
+      cur = { ...cur, running: false, startedAt: null, accMs: 0, phase: "work" };
+      out.events.push("goal");
+      break;
+    }
+    if (cur.phase === "work") {
+      out.bankedMin += cur.targetMin; out.bankedCycles += 1; out.bankedAt = endedAt;
+      cur = { ...cur, phase: "break", targetMin: BREAK_MIN, accMs: 0, startedAt: endedAt };
+      out.events.push("break");
+      continue;
+    }
+    cur = { ...cur, phase: "work", targetMin: WORK_DEFAULT, accMs: 0, startedAt: null, running: false };
+    out.events.push("breakOver");
+    break;
+  }
+  out.session = cur;
+  return out;
+}
+
+function loadSession(): FocusSession {
+  try {
+    const v = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if (v && v.v === 1 && typeof v.accMs === "number" && typeof v.targetMin === "number") return { ...freshSession(), ...v };
+  } catch { /* private mode / corrupt */ }
+  return freshSession();
+}
+function saveSession(s: FocusSession) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch { /* private mode */ }
+}
+const sameRun = (a: FocusSession, b: FocusSession) =>
+  a.running === b.running && a.startedAt === b.startedAt && a.accMs === b.accMs && a.phase === b.phase && a.targetMin === b.targetMin;
+
+/* ---- alerts: title badge, notification and a soft chime ---- */
+const DONE_TITLE = "(Done) Kanbo";
+let savedTitle: string | null = null;
+function badgeTitle() {
+  if (typeof document === "undefined") return;
+  if (document.title !== DONE_TITLE) savedTitle = document.title;
+  document.title = DONE_TITLE;
+}
+function restoreTitle() {
+  if (typeof document === "undefined") return;
+  if (document.title === DONE_TITLE && savedTitle != null) document.title = savedTitle;
+  savedTitle = null;
+}
+const notifySupported = () => typeof window !== "undefined" && "Notification" in window;
+function currentPermission(): NotificationPermission | "unsupported" {
+  try { return notifySupported() ? Notification.permission : "unsupported"; } catch { return "unsupported"; }
+}
+function notify(title: string, body: string) {
+  try {
+    if (!notifySupported() || Notification.permission !== "granted") return;
+    const n = new Notification(title, { body, tag: "kanbo-focus" });
+    n.onclick = () => { try { window.focus(); n.close(); } catch { /* ignore */ } };
+  } catch { /* e.g. Android Chrome needs a service worker for notifications */ }
+}
+let audioCtx: AudioContext | null = null;
+// created on a user gesture (starting the timer) so the chime is allowed to play later
+function primeAudio() {
+  try {
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state === "suspended") void audioCtx.resume();
+  } catch { /* no audio */ }
+}
+function chime() {
+  try {
+    const ctx = audioCtx;
+    if (!ctx || ctx.state !== "running") return;
+    const t0 = ctx.currentTime;
+    [659.25, 987.77].forEach((f, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain(), at = t0 + i * 0.16;
+      o.type = "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.07, at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.9);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(at); o.stop(at + 1);
+    });
+  } catch { /* no audio */ }
+}
+function alertFor(kind: FocusEvent, min: number) {
+  badgeTitle();
+  // someone watching the tab has seen it — the badge only needs to outlast a glance
+  if (typeof document !== "undefined" && document.visibilityState === "visible") window.setTimeout(restoreTitle, 8000);
+  chime();
+  if (kind === "goal") notify("Focus block complete", min > 0 ? `Nice work — ${min}m of deep work banked.` : "Nice work — that's a full focus block.");
+  else if (kind === "break") notify("Time for a break", `${min > 0 ? `${min}m banked. ` : ""}Step away for ${BREAK_MIN} minutes — Kanbo will tell you when it's over.`);
+  else notify("Break's over", "Press play when you're ready for the next focus block.");
+}
+
+// leaving a break (reset/end) goes back to a full focus interval — never a 5-minute "focus"
+export const restState = (cur: FocusSession): FocusSession => ({
+  ...cur, running: false, startedAt: null, accMs: 0,
+  ...(cur.phase === "break" ? { phase: "work" as const, targetMin: WORK_DEFAULT } : {}),
+});
+
 /* ---- deep-work timer hook (with optional Pomodoro cycles) ---- */
 export function useFocusTimer(): FocusTimer {
-  const [running, setRunning] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [targetMin, setTargetMin] = useState(90);
-  const [taskId, setTaskId] = useState("");
-  const [pomodoro, setPomodoroState] = useState(false);
-  const [phase, setPhase] = useState<"work" | "break">("work");
+  const [session, setSessionState] = useState<FocusSession>(loadSession);
+  const sessionRef = useRef(session);
+  const [now, setNow] = useState(() => Date.now());
   const [stat, setStat] = useState(loadStat);
   const statRef = useRef(stat); statRef.current = stat;
+  const [notice, setNotice] = useState<FocusTimer["notice"]>(null);
+  const [notifyPermission, setPerm] = useState(currentPermission);
   const weekMin = 0;
 
-  const persist = (s: { date: string; cycles: number; min: number }) => {
+  const commit = useCallback((next: FocusSession) => {
+    sessionRef.current = next; setSessionState(next); saveSession(next);
+  }, []);
+
+  const persistStat = (s: { date: string; cycles: number; min: number }) => {
     statRef.current = s; setStat(s);
-    try { localStorage.setItem("kanbo-focus-stat", JSON.stringify(s)); } catch { /* private mode */ }
+    try { localStorage.setItem(STAT_KEY, JSON.stringify(s)); } catch { /* private mode */ }
   };
+  // re-read the stored total first, so banking in one tab never overwrites another tab's
+  const bank = useCallback((min: number, cycles: number) => {
+    const base = loadStat();
+    persistStat({ date: todayKey(), cycles: base.cycles + cycles, min: base.min + min });
+  }, []);
 
-  // tick
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => setSeconds((s) => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [running]);
+  // Advance the session to "now": catches up on anything that finished while
+  // the tab was hidden, asleep or throttled.
+  const process = useCallback(() => {
+    const t = Date.now();
+    if (statRef.current.date !== todayKey()) { const s = loadStat(); statRef.current = s; setStat(s); }
+    const cur = sessionRef.current;
+    if (!cur.running) return;
+    setNow(t);
+    const adv = advanceSession(cur, t);
+    if (!adv.events.length) return;
+    // another tab sharing this session may already have applied this boundary
+    const stored = loadSession();
+    if (!sameRun(stored, cur)) { sessionRef.current = stored; setSessionState(stored); return; }
+    commit(adv.session);
+    // the date check: minutes count for the day the interval ended (a block that
+    // finished before midnight doesn't land on today's total)
+    const counts = adv.bankedMin > 0 && adv.bankedAt != null && todayKey(new Date(adv.bankedAt)) === todayKey(new Date(t));
+    if (counts) bank(adv.bankedMin, adv.bankedCycles);
+    // a boundary that passed long ago (the laptop was asleep, the tab was closed)
+    // resets quietly — no stale "complete" alert hours later
+    if (adv.lastAt == null || t - adv.lastAt > STALE_ALERT_MS) { setNotice(null); return; }
+    const kind = adv.events[adv.events.length - 1];
+    const min = counts ? adv.bankedMin : 0;
+    setNotice({ kind, min, at: t });
+    alertFor(kind, min);
+  }, [bank, commit]);
 
-  // pomodoro phase transitions — fire when the current interval elapses
+  // tick while running; also wake exactly at the boundary (a throttled background
+  // tab still gets this one timer, and visibilitychange catches up the rest)
   useEffect(() => {
-    if (!pomodoro || !running) return;
-    if (seconds < targetMin * 60) return;
-    if (phase === "work") {
-      persist({ date: todayKey(), cycles: statRef.current.cycles + 1, min: statRef.current.min + targetMin });
-      setPhase("break"); setTargetMin(BREAK_MIN); setSeconds(0);
+    if (!session.running) return;
+    process();
+    const id = window.setInterval(process, 1000);
+    const remaining = session.targetMin * 60_000 - elapsedMs(session, Date.now());
+    const to = remaining > 0 ? window.setTimeout(process, remaining + 30) : 0;
+    return () => { window.clearInterval(id); window.clearTimeout(to); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.running, session.startedAt, session.accMs, session.targetMin, session.phase, process]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      process();
+      if (document.visibilityState === "visible") window.setTimeout(restoreTitle, 4000);
+    };
+    // keep tabs in step: one shared session, one shared total
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SESSION_KEY) { const s = loadSession(); sessionRef.current = s; setSessionState(s); setNow(Date.now()); }
+      else if (e.key === STAT_KEY) { const s = loadStat(); statRef.current = s; setStat(s); }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [process]);
+
+  const setRunning = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((v) => {
+    const cur = sessionRef.current;
+    const next = typeof v === "function" ? v(cur.running) : v;
+    if (next === cur.running) return;
+    const t = Date.now();
+    if (next) {
+      primeAudio(); restoreTitle(); setNotice(null);
+      commit({ ...cur, running: true, startedAt: t });
     } else {
-      setPhase("work"); setTargetMin(WORK_DEFAULT); setSeconds(0);
+      commit({ ...cur, running: false, startedAt: null, accMs: elapsedMs(cur, t) });
     }
-  }, [seconds, pomodoro, running, targetMin, phase]);
+    setNow(t);
+  }, [commit]);
 
-  const setPomodoro = (v: boolean) => {
-    setPomodoroState(v); setSeconds(0); setPhase("work"); setTargetMin(v ? WORK_DEFAULT : 90);
-  };
-  const reset = () => { setSeconds(0); setRunning(false); if (pomodoro) setPhase("work"); };
+  const reset = useCallback(() => {
+    commit(restState(sessionRef.current));
+    setNotice(null); restoreTitle(); setNow(Date.now());
+  }, [commit]);
 
-  // Stop & bank: add the elapsed minutes to today's focus total, then reset.
-  // (Pomodoro completed work-phases are already banked; `seconds` only holds
-  // the current unbanked interval, so there's no double-counting.)
-  const endSession = (): number => {
-    const mins = Math.round(seconds / 60);
-    if (mins > 0) {
-      const base = statRef.current.date === todayKey() ? statRef.current : { date: todayKey(), cycles: 0, min: 0 };
-      persist({ date: todayKey(), cycles: base.cycles, min: base.min + mins });
-    }
-    setSeconds(0); setRunning(false); if (pomodoro) setPhase("work");
+  // Stop & bank: add the elapsed focus minutes to today's total, then reset.
+  // (Completed Pomodoro work phases are already banked, and break time is never
+  // deep work, so there's no double-counting.)
+  const endSession = useCallback((): number => {
+    const cur = sessionRef.current;
+    const mins = cur.phase === "work" ? Math.round(elapsedMs(cur, Date.now()) / 60_000) : 0;
+    if (mins > 0) bank(mins, 0);
+    commit(restState(cur));
+    setNotice(null); restoreTitle(); setNow(Date.now());
     return mins;
-  };
+  }, [bank, commit]);
 
+  const setPomodoro = useCallback((v: boolean) => {
+    const cur = sessionRef.current, t = Date.now();
+    // switching modes starts a fresh interval — keep the focus time already spent
+    const mins = cur.phase === "work" ? Math.round(elapsedMs(cur, t) / 60_000) : 0;
+    if (mins > 0) bank(mins, 0);
+    commit({ ...cur, pomodoro: v, phase: "work", targetMin: v ? WORK_DEFAULT : FLOW_DEFAULT, accMs: 0, startedAt: cur.running ? t : null });
+    setNotice(null); setNow(t);
+  }, [bank, commit]);
+
+  const setTargetMin = useCallback((m: number) => {
+    commit({ ...sessionRef.current, targetMin: m });
+    setNow(Date.now());
+  }, [commit]);
+
+  const setTaskId = useCallback((id: string) => { commit({ ...sessionRef.current, taskId: id }); }, [commit]);
+
+  const requestNotify = useCallback(() => {
+    try {
+      if (!notifySupported() || Notification.permission !== "default") return;
+      const p = Notification.requestPermission((r) => setPerm(r)); // callback form for older Safari
+      if (p && typeof p.then === "function") void p.then((r) => setPerm(r));
+    } catch { /* unsupported */ }
+  }, []);
+
+  const seconds = Math.floor(elapsedMs(session, session.running ? now : 0) / 1000);
   return {
-    running, setRunning, seconds, reset, targetMin, setTargetMin, taskId, setTaskId, weekMin, endSession,
-    pomodoro, setPomodoro, phase, cyclesToday: stat.cycles, focusMinToday: stat.min,
+    running: session.running, setRunning, seconds, reset, targetMin: session.targetMin, setTargetMin,
+    taskId: session.taskId, setTaskId, weekMin, endSession,
+    pomodoro: session.pomodoro, setPomodoro, phase: session.phase, cyclesToday: stat.cycles, focusMinToday: stat.min,
+    notice, notifyPermission, requestNotify,
   };
 }
