@@ -112,7 +112,9 @@ export function EmptyArt({ kind, size = 132 }: { kind: EmptyArtKind | string; si
   return (
     <svg className="kempty-art" width={size} height={Math.round((size * 96) / 132)} viewBox="0 0 132 96" aria-hidden="true" style={{ display: "block", margin: "0 auto", overflow: "visible" }}>
       <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+        {/* userSpaceOnUse: with the default objectBoundingBox units a perfectly
+            horizontal/vertical stroke has a zero-size box and isn't painted */}
+        <linearGradient id={gid} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="132" y2="96">
           <stop offset="0" style={{ stopColor: "color-mix(in oklch, var(--accent), #5b8cff 40%)" }} />
           <stop offset="0.55" style={{ stopColor: "var(--accent)" }} />
           <stop offset="1" style={{ stopColor: "color-mix(in oklch, var(--accent), #e05cc8 45%)" }} />

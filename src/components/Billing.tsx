@@ -1,7 +1,7 @@
 /* ============================================================
    KANBO — billing UI: trial banner, plan picker, paywall
    ============================================================ */
-import { Icon, KanboLogo } from "./primitives";
+import { Icon, KanboLogo, AppBg } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { Plan, Subscription } from "../data/types";
 
@@ -103,7 +103,7 @@ export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut }: {
   const ended = sub.status !== "trialing";
   return (
     <div style={{ position: "relative", minHeight: "100vh", overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }}>
-      <div className="app-bg" />
+      <AppBg />
       <div style={{ position: "relative", zIndex: 1, width: 680, maxWidth: "100%", textAlign: "center" }}>
         <span style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={42} /></span>
         <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>

@@ -103,19 +103,28 @@ export function wasJustLanded(key?: string): boolean {
 // Pass `celebrateKey` (the task id) so the moment survives a row re-mount.
 export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: boolean; onToggle?: () => void; size?: number; celebrateKey?: string }) {
   const [pop, setPop] = useState(() => !!done && wasJustCompleted(celebrateKey));
+  // A complete-click only ARMS the celebration; it plays when `done` actually
+  // flips. So if completion is cancelled (e.g. "this task is blocked — mark it
+  // complete anyway?" → Cancel) nothing pops or vibrates.
+  const armedAt = useRef(0);
   useEffect(() => {
     if (!pop) return;
+    try { navigator.vibrate?.(10); } catch { /* unsupported (iOS) — no-op */ }
     const t = window.setTimeout(() => setPop(false), 650);
     return () => window.clearTimeout(t);
   }, [pop]);
+  useEffect(() => {
+    if (done && armedAt.current && Date.now() - armedAt.current < 1500) setPop(true);
+    armedAt.current = 0;
+  }, [done]);
   const click = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!done) {
-      setPop(true);
-      markJustCompleted(celebrateKey);
-      try { navigator.vibrate?.(10); } catch { /* unsupported (iOS) — no-op */ }
+    const wasDone = !!done;
+    onToggle?.(); // may block on a confirm dialog; state updates commit after this handler
+    if (!wasDone) {
+      armedAt.current = Date.now();
+      markJustCompleted(celebrateKey); // lets a re-mounted row (moved to "Done") pick it up
     }
-    onToggle?.();
   };
   const tick = size * 0.7;
   return (
@@ -136,6 +145,28 @@ export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: bool
         </svg>
       )}
     </button>
+  );
+}
+
+/* ---------- AppBg ----------
+   The shared aurora background. Its breathe-in plays ONCE per page load: the
+   first AppBg starts the clock; any AppBg mounted later (e.g. the loader
+   swapping for the app shell) continues the same intro via a negative delay
+   instead of restarting it, and after the intro window none animate. */
+let bgIntroStart: number | null = null;
+const BG_INTRO_MS = 1600;
+export function AppBg({ grid }: { grid?: boolean }) {
+  const [introDelay] = useState<number | null>(() => {
+    const now = performance.now();
+    if (bgIntroStart === null) { bgIntroStart = now; return 0; }
+    const elapsed = now - bgIntroStart;
+    return elapsed < BG_INTRO_MS ? -elapsed : null;
+  });
+  return (
+    <>
+      <div className={"app-bg" + (introDelay !== null ? " app-bg-intro" : "")} style={introDelay ? { animationDelay: `${Math.round(introDelay)}ms` } : undefined} />
+      {grid && <div className="app-grid" />}
+    </>
   );
 }
 

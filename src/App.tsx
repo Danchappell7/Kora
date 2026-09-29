@@ -3,7 +3,7 @@
    timer, tasks page
    ============================================================ */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Icon, Avatar, StatusDot, Segmented, GlobalTipStyles, EmojiPicker, type SegmentedOption } from "./components/primitives";
+import { Icon, Avatar, StatusDot, Segmented, GlobalTipStyles, EmojiPicker, type SegmentedOption, AppBg } from "./components/primitives";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { CommandPalette } from "./components/CommandPalette";
@@ -529,7 +529,7 @@ function FullLoader() {
   const bar = (w: number | string, h = 12, style: React.CSSProperties = {}) => <div className="skel" style={{ width: w, height: h, ...style }} />;
   return (
     <div style={{ position: "relative", height: "100vh", overflow: "hidden", display: "flex" }}>
-      <div className="app-bg" />
+      <AppBg />
       {/* sidebar rail */}
       {!isMobile && (
         <div style={{ position: "relative", zIndex: 1, width: 248, flexShrink: 0, borderRight: "1px solid var(--hairline)", padding: "18px 16px", display: "flex", flexDirection: "column", gap: 22 }}>
@@ -1862,7 +1862,7 @@ export default function App() {
 
   return (
     <div style={{ position: "relative", height: "100vh", display: "flex", overflow: "hidden" }}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
       <GlobalTipStyles />
       {isMobile ? (
         <>

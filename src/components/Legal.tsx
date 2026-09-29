@@ -3,7 +3,7 @@
    accessible (loaded directly at /privacy and /terms from main.tsx) so the
    URLs are stable for Google OAuth verification and footer links.
    ============================================================ */
-import { KanboLogo } from "./primitives";
+import { KanboLogo, AppBg } from "./primitives";
 
 const UPDATED = "20 June 2026";
 const CONTACT = "hello@kanbo.co.uk";
@@ -24,7 +24,7 @@ function LI({ children }: { children: React.ReactNode }) {
 function Shell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={wrap}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
       <div style={{ position: "relative", zIndex: 1 }}>
         <nav style={{ maxWidth: 760, margin: "0 auto", display: "flex", alignItems: "center", gap: 12, padding: "20px 24px" }}>
           <a href="/" style={{ display: "inline-flex", alignItems: "center", gap: 11, textDecoration: "none", color: "inherit" }}>

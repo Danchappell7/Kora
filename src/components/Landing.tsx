@@ -3,7 +3,7 @@
    On-brand with the design system: brand gradient, Sora/Manrope, glass.
    Self-contained; CTAs hand off to the auth screen via props.
    ============================================================ */
-import { Icon, KanboLogo } from "./primitives";
+import { Icon, KanboLogo, AppBg } from "./primitives";
 import type { IconName } from "../data/types";
 
 const FEATURES: { icon: IconName; title: string; body: string }[] = [
@@ -42,7 +42,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
 
   return (
     <div style={{ position: "relative", minHeight: "100vh", overflowX: "hidden" }}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
 
       <div style={{ position: "relative", zIndex: 1 }}>
         {/* ---- nav ---- */}

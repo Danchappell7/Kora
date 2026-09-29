@@ -2,7 +2,7 @@
    KANBO — login / sign-up / forgot-password (Supabase mode only)
    ============================================================ */
 import { useState } from "react";
-import { Icon, KanboLogo } from "../components/primitives";
+import { Icon, KanboLogo, AppBg } from "../components/primitives";
 import { Landing } from "../components/Landing";
 import { useAuth } from "./AuthProvider";
 import { store } from "../data/store";
@@ -44,7 +44,7 @@ function RequestAccessForm({ onBack, onSignIn }: { onBack: () => void; onSignIn:
   };
   return (
     <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 16 }}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 420, maxWidth: "100%", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <button onClick={onBack} style={{ ...linkStyle, color: "var(--ink-4)", display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 14, fontWeight: 500 }}>
           <Icon name="arrowLeft" size={14} /> Back to home
@@ -124,7 +124,7 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
 
   return (
     <div style={{ position: "relative", height: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 16 }}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 400, maxWidth: "100%", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         {onBack && (
           <button onClick={onBack} style={{ ...linkStyle, color: "var(--ink-4)", display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 14, fontWeight: 500 }}>
@@ -200,7 +200,7 @@ export function UpdatePasswordScreen() {
 
   return (
     <div style={{ position: "relative", height: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 16 }}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 400, maxWidth: "100%", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <h2 style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 6 }}>Set a new password</h2>
         <p style={{ fontSize: 13, color: "var(--ink-4)", margin: "0 0 18px" }}>Choose a new password for your account.</p>
@@ -220,7 +220,7 @@ export function UpdatePasswordScreen() {
 export function PendingApproval({ email, onSignOut, suspended }: { email?: string | null; onSignOut: () => void; suspended?: boolean }) {
   return (
     <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 16 }}>
-      <div className="app-bg" /><div className="app-grid" />
+      <AppBg grid />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 420, maxWidth: "100%", padding: 30, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", textAlign: "center" }}>
         <span style={{ display: "inline-grid", placeItems: "center", width: 50, height: 50, borderRadius: 15, background: suspended ? "color-mix(in oklch, var(--prio-urgent) 16%, transparent)" : "var(--accent-dim)", color: suspended ? "var(--prio-urgent)" : "var(--accent)", marginBottom: 16 }}><Icon name={suspended ? "lock" : "clock"} size={24} /></span>
         {suspended ? (

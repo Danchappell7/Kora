@@ -8,7 +8,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { LoginScreen } from "../auth/LoginScreen";
 import { AdminView } from "../components/views/AdminView";
 import { store } from "../data/store";
-import { KanboLogo, Icon } from "../components/primitives";
+import { KanboLogo, Icon, AppBg } from "../components/primitives";
 
 // The founding admin is always allowed; other admins are recognised via the
 // server-side is_admin() flag (so "grant admin" actually opens this dashboard).
@@ -39,7 +39,7 @@ export function AdminApp() {
 
   return (
     <div style={{ position: "relative", height: "100vh", overflow: "hidden" }}>
-      <div className="app-bg" />
+      <AppBg />
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
         <header style={{ display: "flex", alignItems: "center", gap: 11, padding: "14px 24px", borderBottom: "1px solid var(--hairline)", background: "var(--surface-raised)", backdropFilter: "blur(10px)" }}>
           <KanboLogo size={26} />
@@ -60,13 +60,13 @@ export function AdminApp() {
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
-  return <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center" }}><div className="app-bg" /><span style={{ position: "relative", zIndex: 1, color: "var(--ink-4)", fontSize: 14 }}>{children}</span></div>;
+  return <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center" }}><AppBg /><span style={{ position: "relative", zIndex: 1, color: "var(--ink-4)", fontSize: 14 }}>{children}</span></div>;
 }
 
 function NotAuthorised({ onSignOut, email }: { onSignOut?: () => void; email?: string }) {
   return (
     <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center", padding: 20 }}>
-      <div className="app-bg" />
+      <AppBg />
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 380, maxWidth: "100%", padding: 28, borderRadius: 20, textAlign: "center", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "inline-flex", padding: 13, borderRadius: 14, background: "var(--surface-2)", marginBottom: 14 }}><Icon name="lock" size={22} style={{ color: "var(--ink-4)" }} /></div>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 7 }}>Not authorised</h2>

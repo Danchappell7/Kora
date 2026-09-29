@@ -5,6 +5,7 @@
    ============================================================ */
 import { Component, type ReactNode } from "react";
 import { reportError } from "../lib/monitoring";
+import { AppBg } from "./primitives";
 
 interface Props { children: ReactNode }
 interface State { error: Error | null }
@@ -24,7 +25,7 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!this.state.error) return this.props.children;
     return (
       <div style={{ position: "relative", height: "100vh", display: "grid", placeItems: "center", overflow: "hidden", padding: 24 }}>
-        <div className="app-bg" />
+        <AppBg />
         <div className="glass" style={{ position: "relative", zIndex: 1, maxWidth: 440, width: "100%", padding: 28, borderRadius: 20, textAlign: "center", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "color-mix(in oklch, var(--st-blocked) 14%, transparent)", color: "var(--st-blocked)", marginBottom: 16 }}>
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>

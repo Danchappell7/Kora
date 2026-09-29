@@ -14,5 +14,5 @@ export function useEntrance(replayKey?: unknown, ms = 800): string {
     const t = window.setTimeout(() => setOn(false), ms);
     return () => window.clearTimeout(t);
   }, [replayKey, ms]);
-  return on ? "kstagger" : "";
+  return on ? "kstagger" : "kstagger-settled";
 }
