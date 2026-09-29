@@ -167,6 +167,14 @@ p { text-wrap: pretty; }
   animation: kauroraIn 1.6s var(--ease-out);
 }
 @keyframes kauroraIn { from { opacity: 0.45; transform: scale(1.05); } }
+/* opt-in (Settings → Appearance → Ambient motion): a very slow drift. Off by
+   default because glass re-blurs anything moving beneath it every frame. */
+@keyframes kauroraDrift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-3%, 2%, 0) scale(1.06); }
+  100% { transform: translate3d(2%, -1.5%, 0) scale(1.03); }
+}
+[data-ambient="on"] .app-bg { animation: kauroraIn 1.6s var(--ease-out), kauroraDrift 48s ease-in-out 1.6s infinite alternate; }
 /* film grain: a static, near-invisible texture that makes surfaces feel
    like material rather than flat colour. Static = the blur cost is paid once. */
 .app-bg::after {
@@ -176,7 +184,7 @@ p { text-wrap: pretty; }
   opacity: var(--grain-opacity, 0.05);
 }
 [data-theme="dark"] { --grain-opacity: 0.07; }
-@media (prefers-reduced-motion: reduce) { .app-bg { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .app-bg, [data-ambient="on"] .app-bg { animation: none !important; } }
 .app-grid {
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background-image:

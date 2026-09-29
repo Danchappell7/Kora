@@ -12,7 +12,9 @@
 export type AccentId = "violet" | "blue" | "teal" | "green" | "amber" | "rose" | "magenta";
 export type TextSize = "small" | "normal" | "large";
 
-export interface Appearance { accent: AccentId; textSize: TextSize; }
+// ambient = opt-in slow drift of the background aurora. Off by default: every
+// glass card re-blurs whatever moves beneath it, so it costs a little GPU.
+export interface Appearance { accent: AccentId; textSize: TextSize; ambient: boolean; }
 
 // each accent is a single oklch hue; lightness/chroma tuned so every accent
 // sits at the same visual weight as the brand violet.
@@ -33,7 +35,7 @@ export const accentSwatch = (id: AccentId) => {
 
 const ZOOM: Record<TextSize, string> = { small: "0.94", normal: "1", large: "1.08" };
 
-export const DEFAULT_APPEARANCE: Appearance = { accent: "violet", textSize: "normal" };
+export const DEFAULT_APPEARANCE: Appearance = { accent: "violet", textSize: "normal", ambient: false };
 
 export function loadAppearance(): Appearance {
   const get = (k: string, fallback: string) => { try { return localStorage.getItem(k) || fallback; } catch { return fallback; } };
@@ -42,6 +44,7 @@ export function loadAppearance(): Appearance {
   return {
     accent: ACCENTS.some((a) => a.id === accent) ? accent : "violet",
     textSize: ["small", "normal", "large"].includes(textSize) ? textSize : "normal",
+    ambient: get("kanbo-ambient", "off") === "on",
   };
 }
 
@@ -62,12 +65,14 @@ export function applyAppearance(a: Appearance) {
     root.style.setProperty("--on-accent", `oklch(0.99 0.01 ${hue})`);
   }
   root.style.zoom = ZOOM[a.textSize]; // Chromium/WebKit — scales the whole app uniformly
+  root.setAttribute("data-ambient", a.ambient ? "on" : "off");
 }
 
 export function saveAppearance(a: Appearance) {
   try {
     localStorage.setItem("kanbo-accent", a.accent);
     localStorage.setItem("kanbo-textsize", a.textSize);
+    localStorage.setItem("kanbo-ambient", a.ambient ? "on" : "off");
   } catch { /* private mode */ }
   applyAppearance(a);
 }

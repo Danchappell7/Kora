@@ -198,6 +198,13 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                   })}
                 </div>
               </div>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginTop: 14, cursor: "pointer" }}>
+                <input type="checkbox" checked={appearance.ambient} onChange={() => onChangeAppearance({ ...appearance, ambient: !appearance.ambient })} style={{ marginTop: 3, cursor: "pointer" }} />
+                <span>
+                  <span style={{ display: "block", fontSize: 13.5, color: "var(--ink-2)" }}>Ambient motion</span>
+                  <span style={{ display: "block", fontSize: 12, color: "var(--ink-4)", lineHeight: 1.45 }}>The background glow drifts slowly. Uses a little more battery on laptops.</span>
+                </span>
+              </label>
             </>
           )}
 
