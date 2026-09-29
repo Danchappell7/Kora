@@ -70,7 +70,7 @@
   --shadow-lg: 0 2px 6px oklch(0.3 0.04 264 / 0.06), 0 34px 70px -22px oklch(0.3 0.05 264 / 0.28);
 
   /* soft vibrancy bleeding behind the glass */
-  --aurora-1: oklch(0.82 0.13 262 / 0.50);
+  --aurora-1: oklch(0.82 0.13 var(--aurora-h, 262) / 0.50); /* tinted by the chosen accent */
   --aurora-2: oklch(0.84 0.11 320 / 0.42);
   --aurora-3: oklch(0.90 0.10 200 / 0.40);
   --grid-line: transparent;
@@ -100,7 +100,7 @@
   --shadow: 0 1px 0 oklch(1 0 0 / 0.05) inset, 0 12px 32px -12px oklch(0 0 0 / 0.6);
   --shadow-lg: 0 1px 0 oklch(1 0 0 / 0.06) inset, 0 34px 70px -22px oklch(0 0 0 / 0.7);
 
-  --aurora-1: oklch(0.6 0.18 264 / 0.28);
+  --aurora-1: oklch(0.6 0.18 var(--aurora-h, 264) / 0.28);
   --aurora-2: oklch(0.55 0.15 320 / 0.22);
   --aurora-3: oklch(0.6 0.12 200 / 0.20);
   --grid-line: transparent;
@@ -150,7 +150,22 @@ p { text-wrap: pretty; }
     radial-gradient(760px 560px at 82% -6%, var(--aurora-1), transparent 62%),
     radial-gradient(720px 600px at -6% 18%, var(--aurora-2), transparent 60%),
     radial-gradient(900px 700px at 50% 116%, var(--aurora-3), transparent 60%);
+  /* one-time breathe-in on load. Deliberately NOT a continuous drift: every
+     glass card re-blurs whatever moves beneath it, so a perpetual animation
+     would cost GPU/battery on every frame. */
+  animation: kauroraIn 1.6s var(--ease-out);
 }
+@keyframes kauroraIn { from { opacity: 0.45; transform: scale(1.05); } }
+/* film grain: a static, near-invisible texture that makes surfaces feel
+   like material rather than flat colour. Static = the blur cost is paid once. */
+.app-bg::after {
+  content: ""; position: absolute; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: var(--grain-opacity, 0.05);
+}
+[data-theme="dark"] { --grain-opacity: 0.07; }
+@media (prefers-reduced-motion: reduce) { .app-bg { animation: none; } }
 .app-grid {
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background-image:

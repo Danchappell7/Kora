@@ -52,8 +52,9 @@ export function applyAppearance(a: Appearance) {
   // brand default (violet) keeps the original hand-tuned tokens untouched so
   // nothing shifts for existing users; other accents derive from the hue.
   if (a.accent === "violet") {
-    ["--accent", "--accent-strong", "--accent-dim", "--accent-glow", "--on-accent"].forEach((v) => root.style.removeProperty(v));
+    ["--accent", "--accent-strong", "--accent-dim", "--accent-glow", "--on-accent", "--aurora-h"].forEach((v) => root.style.removeProperty(v));
   } else {
+    root.style.setProperty("--aurora-h", String(hue)); // background aurora follows the accent
     root.style.setProperty("--accent", `oklch(0.605 ${chroma} ${hue})`);
     root.style.setProperty("--accent-strong", `oklch(0.55 ${chroma} ${hue})`);
     root.style.setProperty("--accent-dim", `oklch(0.605 ${chroma} ${hue} / 0.12)`);
