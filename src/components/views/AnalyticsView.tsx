@@ -9,10 +9,12 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO, getProject, getMember } from "../../data/data";
 import { store } from "../../data/store";
 import type { Task, Priority, Status, CustomFieldDef } from "../../data/types";
+import { useEntrance } from "../../hooks/useEntrance";
 
 type Dim = "status" | "priority" | "project" | "assignee" | string; // string = custom field id
 
 export function AnalyticsView({ tasks, members = [], customFields = [] }: { tasks: Task[]; members?: { id: string; name: string }[]; customFields?: CustomFieldDef[] }) {
+  const entrance = useEntrance();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [dim, setDim] = useState<Dim>("status");
   const [scope, setScope] = useState<"all" | "open" | "done">("all");
@@ -153,7 +155,7 @@ export function AnalyticsView({ tasks, members = [], customFields = [] }: { task
         {answer && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.7, whiteSpace: "pre-wrap", marginTop: 12, padding: "12px 14px", borderRadius: 12, background: "var(--surface)", border: "1px solid var(--hairline)" }}>{answer}</div>}
       </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
+      <div className={entrance} style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
         <StatTile kicker="Completion rate" value={completion + "%"} icon="target" accent sub="of all tasks" />
         <StatTile kicker="Done this week" value={doneThisWeek} icon="check" sub="last 7 days" />
         <StatTile kicker="Finished early" value={finishedEarly} icon="trendingUp" sub="before due date" />

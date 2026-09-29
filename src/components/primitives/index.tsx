@@ -2,6 +2,7 @@
    KANBO — shared primitives (Avatar, StatusDot, Checkbox, Tag,
    PriorityFlag, Segmented, Tooltip, AiScore)
    ============================================================ */
+import { useState, useEffect } from "react";
 import { Icon } from "./Icon";
 import {
   getMember, memberInitials, STATUS_META, TAGS, PRIORITY_META,
@@ -66,17 +67,60 @@ export function StatusDot({ status, size = 9, glow }: { status: Status; size?: n
 }
 
 /* ---------- Checkbox ---------- */
-export function Check({ done, onToggle, size = 18 }: { done?: boolean; onToggle?: () => void; size?: number }) {
+// "Just completed" registry. Completing a task often MOVES its row (e.g. into
+// the Done group), which unmounts the checkbox mid-animation; the re-mounted
+// checkbox/row look themselves up here and finish the celebration in place.
+const recentlyCompleted = new Map<string, number>();
+const CELEBRATE_MS = 700;
+export function markJustCompleted(key?: string) {
+  if (!key) return;
+  const now = Date.now();
+  recentlyCompleted.forEach((t, k) => { if (now - t > 5000) recentlyCompleted.delete(k); });
+  recentlyCompleted.set(key, now);
+}
+export function wasJustCompleted(key?: string): boolean {
+  const t = key ? recentlyCompleted.get(key) : undefined;
+  return !!t && Date.now() - t < CELEBRATE_MS;
+}
+
+// The signature completion moment: when the user checks something off, the box
+// springs, a ring bursts outward, the tick draws itself, and phones get a light
+// haptic tap. Un-checking (and anything already done on first render) is calm.
+// Pass `celebrateKey` (the task id) so the moment survives a row re-mount.
+export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: boolean; onToggle?: () => void; size?: number; celebrateKey?: string }) {
+  const [pop, setPop] = useState(() => !!done && wasJustCompleted(celebrateKey));
+  useEffect(() => {
+    if (!pop) return;
+    const t = window.setTimeout(() => setPop(false), 650);
+    return () => window.clearTimeout(t);
+  }, [pop]);
+  const click = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!done) {
+      setPop(true);
+      markJustCompleted(celebrateKey);
+      try { navigator.vibrate?.(10); } catch { /* unsupported (iOS) — no-op */ }
+    }
+    onToggle?.();
+  };
+  const tick = size * 0.7;
   return (
-    <button onClick={(e) => { e.stopPropagation(); onToggle && onToggle(); }} aria-label="toggle"
+    <button onClick={click} aria-label={done ? "Mark as not done" : "Mark as done"} aria-pressed={!!done}
+      className={"kcheck" + (pop ? " kcheck-pop" : "")}
       style={{
         width: size, height: size, borderRadius: 6, flexShrink: 0, cursor: "pointer", padding: 0,
-        display: "grid", placeItems: "center", transition: "all .18s var(--ease)",
+        display: "grid", placeItems: "center", transition: "background .2s var(--ease), border-color .2s var(--ease), box-shadow .3s var(--ease)",
         border: `1.6px solid ${done ? "var(--accent)" : "var(--hairline-strong)"}`,
         background: done ? "var(--accent)" : "transparent",
         boxShadow: done ? "0 0 12px var(--accent-glow)" : "none",
+        color: "var(--on-accent)",
       }}>
-      {done && <Icon name="check" size={size * 0.7} sw={3} style={{ color: "var(--on-accent)" }} />}
+      {done && (
+        <svg width={tick} height={tick} viewBox="0 0 24 24" aria-hidden="true" style={{ display: "block" }}>
+          <path d="M5 12.5l4.2 4.2L19 7" pathLength={1} fill="none" stroke="currentColor" strokeWidth={3.2}
+            strokeLinecap="round" strokeLinejoin="round" className={pop ? "kcheck-draw" : undefined} />
+        </svg>
+      )}
     </button>
   );
 }

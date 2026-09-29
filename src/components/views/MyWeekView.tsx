@@ -5,6 +5,7 @@
 import { Icon, StatusDot } from "../primitives";
 import { getProject, KANBO_TODAY } from "../../data/data";
 import type { Task } from "../../data/types";
+import { useEntrance } from "../../hooks/useEntrance";
 
 const isoOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
@@ -18,6 +19,7 @@ function Stat({ label, value, color }: { label: string; value: number; color?: s
 }
 
 export function MyWeekView({ tasks, onOpen, onPatch }: { tasks: Task[]; onOpen: (id: string) => void; onPatch: (id: string, patch: Partial<Task>) => void }) {
+  const entrance = useEntrance();
   const today = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const todayIso = isoOf(today);
   const dow = (today.getDay() + 6) % 7; // 0 = Monday
@@ -88,7 +90,7 @@ export function MyWeekView({ tasks, onOpen, onPatch }: { tasks: Task[]; onOpen: 
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
+      <div className={entrance} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
         {days.map((d, i) => {
           const iso = weekIsos[i];
           const items = open.filter((t) => t.dueDate === iso);

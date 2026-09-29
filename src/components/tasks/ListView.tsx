@@ -1,8 +1,8 @@
 /* ============================================================
    KANBO — List view (the showpiece) + TaskRow
    ============================================================ */
-import { useState } from "react";
-import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore } from "../primitives";
+import { useState, useRef, useEffect } from "react";
+import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
@@ -26,6 +26,7 @@ export function CustomChips({ task, fields, members = [] }: { task: Task; fields
   return <>{chips.map((c) => <span key={c.id} className="pchip" title={c.label}><span className="truncate" style={{ maxWidth: 90 }}>{c.label}</span></span>)}</>;
 }
 import type { GroupBy } from "../../app-types";
+import { useEntrance } from "../../hooks/useEntrance";
 
 export function SubtaskProgress({ subtasks }: { subtasks?: Subtask[] }) {
   if (!subtasks?.length) return null;
@@ -55,6 +56,22 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
   const proj = getProject(task.projectId);
   const blocked = blockingTasks(task, allTasks);
   const done = task.status === "done";
+  // play the strike-sweep only when THIS row flips to done while on screen —
+  // rows that are already done on first render just show a static strike.
+  // (also plays when completing MOVED this row into another group — the fresh
+  // mount looks itself up in the just-completed registry)
+  const prevDone = useRef(done);
+  const [justDone, setJustDone] = useState(() => done && wasJustCompleted(task.id));
+  useEffect(() => {
+    const was = prevDone.current;
+    prevDone.current = done;
+    if (done && !was) setJustDone(true);
+  }, [done]);
+  useEffect(() => {
+    if (!justDone) return;
+    const t = window.setTimeout(() => setJustDone(false), 600);
+    return () => window.clearTimeout(t);
+  }, [justDone]);
   const ds = dueState(task.dueDate, task.status);
   const dueColor = ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-3)";
   // sub-tasks are full tasks with parentId; legacy checklist items live on task.subtasks
@@ -92,7 +109,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
           </button>
         )}
 
-        <Check done={done} onToggle={() => onToggle(task.id)} />
+        <Check done={done} celebrateKey={task.id} onToggle={() => onToggle(task.id)} />
 
         {hasSubs && (
           <button onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }} className="btn-icon" style={{ width: 20, height: 20, border: "none", background: "transparent", color: "var(--ink-4)" }}>
@@ -129,7 +146,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
                 onBlur={saveTitle}
                 style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 450, fontFamily: "var(--font-display)", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--accent)", borderRadius: 7, padding: "3px 7px", outline: "none" }} />
             ) : (
-              <span className="truncate" title={onPatch ? "Double-click to rename" : undefined}
+              <span className={"truncate" + (justDone ? " kstrike-anim" : "")} title={onPatch ? "Double-click to rename" : undefined}
                 onDoubleClick={onPatch ? (e) => { e.stopPropagation(); setTitleDraft(task.title); setEditingTitle(true); } : undefined}
                 style={{ fontSize: 14.5, fontWeight: 450, color: done ? "var(--ink-4)" : "var(--ink)", textDecoration: done ? "line-through" : "none" }}>{task.title}</span>
             )}
@@ -225,7 +242,7 @@ function TaskRow({ task, allTasks, onOpen, onToggle, onToggleSubtask, smart, dep
             const cds = dueState(c.dueDate, c.status);
             return (
               <div key={c.id} onClick={() => onOpen(c.id)} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px 8px " + (52 + depth * 22) + "px", borderTop: "1px solid var(--hairline)", cursor: "pointer" }}>
-                <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={16} onToggle={() => onToggle(c.id)} /></span>
+                <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={16} celebrateKey={c.id} onToggle={() => onToggle(c.id)} /></span>
                 <span className="truncate" style={{ flex: 1, fontSize: 13.5, color: cdone ? "var(--ink-4)" : "var(--ink-2)", textDecoration: cdone ? "line-through" : "none" }}>{c.title}</span>
                 {c.priority !== "medium" && <PriorityFlag priority={c.priority} size={12} />}
                 {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}
@@ -276,6 +293,7 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
   sectionField?: "sectionId" | "mySectionId";
   sectionProjectId?: string;
 }) {
+  const entrance = useEntrance();
   const bulkEnabled = !!onBulkPatch;
   const [addingKey, setAddingKey] = useState<string | null>(null);
   const [addDraft, setAddDraft] = useState("");
@@ -430,7 +448,7 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
           <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon}
             onRename={groupBy === "section" && g.key !== "__none" && onRenameSection ? () => { const n = window.prompt("Rename section", g.label); if (n?.trim()) onRenameSection(g.key, n.trim()); } : undefined}
             onDelete={groupBy === "section" && g.key !== "__none" && onDeleteSection ? () => { if (window.confirm(`Delete section "${g.label}"? Its tasks move to No section.`)) onDeleteSection(g.key); } : undefined} />
-          <div>{(expandedGroups.has(g.key) ? g.items : g.items.slice(0, ROW_CAP)).map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
+          <div className={entrance}>{(expandedGroups.has(g.key) ? g.items : g.items.slice(0, ROW_CAP)).map((t) => <TaskRow key={t.id} task={t} allTasks={allTasks} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart}
             selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
             draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
             onPickup={setDragId} onHover={(id, half) => setHover({ id, half })} onRowDrop={onRowDrop}

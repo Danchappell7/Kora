@@ -47,7 +47,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
 
   return (
     <>
-      <div style={{ position: "fixed", inset: 0, zIndex: 95, background: "color-mix(in oklch, var(--bg-deep) 65%, transparent)", backdropFilter: "blur(4px)" }} />
+      <div className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 95, background: "color-mix(in oklch, var(--bg-deep) 65%, transparent)", backdropFilter: "blur(4px)" }} />
       <div role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="glass anim-scalein" style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 96, width: 460, maxWidth: "94vw", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 18 }}>
 
         {step === 0 && (

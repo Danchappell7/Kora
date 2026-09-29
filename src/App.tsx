@@ -1866,7 +1866,7 @@ export default function App() {
       <GlobalTipStyles />
       {isMobile ? (
         <>
-          {sidebarOpen && <div aria-hidden="true" onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 49, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(2px)" }} />}
+          {sidebarOpen && <div aria-hidden="true" onClick={() => setSidebarOpen(false)} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 49, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(2px)" }} />}
           <div role="dialog" aria-modal="true" aria-label="Menu" aria-hidden={!sidebarOpen} style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 50, transform: sidebarOpen ? "none" : "translateX(-100%)", transition: "transform .25s var(--ease)", boxShadow: sidebarOpen ? "var(--shadow-lg)" : "none" }}>
             {sidebar}
           </div>
@@ -1934,7 +1934,7 @@ export default function App() {
         taskCounts={(() => { const c: Record<string, number> = {}; (tasks ?? []).forEach((t) => (t.tags || []).forEach((tg) => { c[tg] = (c[tg] || 0) + 1; })); return c; })()}
         onUpdate={updateTag} onDelete={deleteTag} onMerge={mergeTags} />
       {shortcutsOpen && (
-        <div onClick={() => setShortcutsOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 200, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
+        <div onClick={() => setShortcutsOpen(false)} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 200, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
           <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" className="glass anim-scalein" style={{ width: 440, maxWidth: "94vw", borderRadius: 18, padding: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
               <Icon name="command" size={18} style={{ color: "var(--accent)" }} />

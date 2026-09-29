@@ -68,7 +68,7 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 130, background: "color-mix(in oklch, var(--bg-deep) 62%, transparent)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, overflowY: "auto" }}>
+    <div className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 130, background: "color-mix(in oklch, var(--bg-deep) 62%, transparent)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, overflowY: "auto" }}>
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="glass anim-scalein" style={{ width: 460, maxWidth: "94vw", borderRadius: 22, padding: 28, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", textAlign: "center" }}>
         <div style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={40} /></div>
 

@@ -8,6 +8,7 @@ import { getProject, fmtDue, dueState, STATUS_META, toLocalISO, presetDate } fro
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
+import { useEntrance } from "../../hooks/useEntrance";
 
 const selStyle: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
 
@@ -25,6 +26,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
 }) {
+  const entrance = useEntrance(presetKey);
   const [q, setQ] = useState<Query>(preset ? { ...EMPTY, ...preset } : EMPTY);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const toggleSel = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -125,7 +127,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
         </div>
         );
       })()}
-      <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
+      <div className={"glass " + entrance} style={{ borderRadius: 16, overflow: "hidden" }}>
         {active && results.map((t, i) => {
           const proj = getProject(t.projectId);
           const ds = dueState(t.dueDate, t.status);

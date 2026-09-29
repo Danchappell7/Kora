@@ -101,7 +101,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const previewName = [firstName, lastName].filter(Boolean).join(" ") || email;
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 120, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "10vh", overflowY: "auto" }}>
+    <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 120, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "10vh", overflowY: "auto" }}>
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Profile settings" onClick={(e) => e.stopPropagation()} className="glass anim-scalein" style={{ width: 460, maxWidth: "94vw", borderRadius: 20, overflow: "hidden", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "16px 18px", borderBottom: "1px solid var(--hairline)" }}>
           <Icon name="settings" size={18} style={{ color: "var(--accent)" }} />

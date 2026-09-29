@@ -103,7 +103,7 @@ export function ImportTasksModal({ open, onClose, onImport, projects = [], membe
 
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
+      <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
       <div role="dialog" aria-modal="true" aria-label="Import tasks" className="glass anim-scalein" style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 91, width: 580, maxWidth: "94vw", maxHeight: "90vh", padding: 24, borderRadius: 20, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Icon name="arrowUpRight" size={18} style={{ color: "var(--accent)" }} />

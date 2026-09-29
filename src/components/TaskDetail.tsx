@@ -424,7 +424,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
   };
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(3px)" }}>
+    <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(3px)" }}>
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label={`Task: ${task.title}`} onClick={(e) => e.stopPropagation()} style={{
         position: "absolute", top: 0, right: 0, bottom: 0, width: isMobile ? "100%" : 480, maxWidth: "100%",
         background: "var(--surface-raised)", borderLeft: isMobile ? "none" : "1px solid var(--hairline-strong)",
@@ -458,7 +458,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
           onDrop={(e) => { if (e.dataTransfer.files?.length) { e.preventDefault(); setDragOver(false); onPickFiles(e.dataTransfer.files); } }}>
           {/* title — editable */}
           <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-            <div style={{ marginTop: 3 }}><Check done={done} size={22} onToggle={() => onToggle(task.id)} /></div>
+            <div style={{ marginTop: 3 }}><Check done={done} size={22} celebrateKey={task.id} onToggle={() => onToggle(task.id)} /></div>
             <textarea
               ref={titleRef}
               value={titleBuf}
@@ -797,7 +797,7 @@ export function TaskDetail({ taskId, tasks, tags, activity, members, currentUser
               const cds = dueState(c.dueDate, c.status);
               return (
                 <div key={c.id} className="lift-row" onClick={() => onOpenTask?.(c.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 8px", margin: "0 -8px", borderRadius: 9, cursor: "pointer" }}>
-                  <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={17} onToggle={() => onToggle(c.id)} /></span>
+                  <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={17} celebrateKey={c.id} onToggle={() => onToggle(c.id)} /></span>
                   <span className="truncate" style={{ flex: 1, fontSize: 13.5, color: cdone ? "var(--ink-4)" : "var(--ink-2)", textDecoration: cdone ? "line-through" : "none" }}>{c.title}</span>
                   {c.priority !== "medium" && <PriorityFlag priority={c.priority} size={13} />}
                   {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}

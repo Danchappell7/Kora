@@ -50,7 +50,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   if (parsed.focusMin) chips.push({ icon: <Icon name="zap" size={12} />, label: `${parsed.focusMin}m` });
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 1000, background: "color-mix(in oklch, var(--ink) 22%, transparent)", backdropFilter: "blur(3px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "16vh" }}>
+    <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "color-mix(in oklch, var(--ink) 22%, transparent)", backdropFilter: "blur(3px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "16vh" }}>
       <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Quick capture" className="glass anim-scalein" style={{ width: 560, maxWidth: "94vw", borderRadius: 16, padding: 16, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
           <Icon name="zap" size={18} style={{ color: "var(--accent)", flexShrink: 0 }} />

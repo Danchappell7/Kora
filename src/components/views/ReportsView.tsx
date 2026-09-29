@@ -12,6 +12,7 @@ import { StatTile } from "./HomeView";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { KANBO_TODAY, toLocalISO, getProject, getMember } from "../../data/data";
 import type { Task } from "../../data/types";
+import { useEntrance } from "../../hooks/useEntrance";
 
 const DAY = 86400000;
 const startOfWeek = (d: Date) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - x.getDay()); return x; };
@@ -23,6 +24,7 @@ export function ReportsView({ tasks, projects, members = [] }: {
   projects: { id: string; name: string }[];
   members?: { id: string; name: string }[];
 }) {
+  const entrance = useEntrance();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [weeks, setWeeks] = useState<number>(8);
   const [projectId, setProjectId] = useState<string>("all");
@@ -185,7 +187,7 @@ export function ReportsView({ tasks, projects, members = [] }: {
       </div>
 
       {/* KPI tiles */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5,1fr)", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
+      <div className={entrance} style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5,1fr)", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
         <StatTile kicker="Velocity" value={`${report.velocity}/wk`} icon="zap" accent sub={`${trendArrow.s} vs earlier`} />
         <StatTile kicker="Completed" value={report.totalDone} icon="check" sub={`last ${weeks} wks`} />
         <StatTile kicker="Created" value={report.totalCreated} icon="plus" sub={`last ${weeks} wks`} />

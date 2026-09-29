@@ -7,6 +7,7 @@ import { Icon, Avatar, StatusDot } from "../primitives";
 import { timeAgo, getProject } from "../../data/data";
 import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
 import type { Task, WorkspaceMember, Role, Activity, ActivityKind, IconName } from "../../data/types";
+import { useEntrance } from "../../hooks/useEntrance";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
   created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
@@ -34,6 +35,7 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   onArchive: (id: string) => void;
   onClearAll: () => void;
 }) {
+  const entrance = useEntrance();
   const [filter, setFilter] = useState("all");
   const [snoozeFor, setSnoozeFor] = useState<string | null>(null);
   const [snoozed, setSnoozed] = useState<Record<string, number>>(() => { try { return JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}"); } catch { return {}; } });
@@ -98,7 +100,7 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
       ) : buckets.map((bucket) => (
       <div key={bucket.label} style={{ marginBottom: 16 }}>
         <div className="kicker" style={{ marginBottom: 8, paddingLeft: 2 }}>{bucket.label}</div>
-        <div className="glass" style={{ borderRadius: 16, overflow: "hidden" }}>
+        <div className={"glass " + entrance} style={{ borderRadius: 16, overflow: "hidden" }}>
         {bucket.items.map((a, i) => {
           const meta = KIND_META[a.kind] ?? KIND_META.status;
           const taskStillExists = a.taskId && tasks.some((t) => t.id === a.taskId);
@@ -229,7 +231,7 @@ function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () =
 
   return (
     <>
-      <div onClick={onCancel} style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
+      <div onClick={onCancel} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
       <div role="dialog" aria-modal="true" aria-label="Adjust logo" className="glass anim-scalein" style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 91, width: 360, maxWidth: "92vw", padding: 22, borderRadius: 20, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 16 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ fontSize: 15, fontWeight: 600 }}>Adjust logo</div>
@@ -363,7 +365,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
     const [titleDraft, setTitleDraft] = useState(m.title ?? "");
     return (
       <>
-        <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(2px)" }} />
+        <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(2px)" }} />
         <div role="dialog" aria-modal="true" aria-label={`${m.name || m.email} profile`} className="anim-fadein" style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 420, maxWidth: "92vw", zIndex: 71, background: "var(--surface-raised)", borderLeft: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "18px 20px", borderBottom: "1px solid var(--hairline)" }}>
             {m.userId ? <Avatar id={m.userId} size={44} /> : <span style={{ width: 44, height: 44, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={20} /></span>}

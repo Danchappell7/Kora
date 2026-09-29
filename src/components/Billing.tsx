@@ -82,7 +82,7 @@ export function UpgradeModal({ open, onClose, seats, busyPlan, onChoose }: {
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   if (!open) return null;
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 120, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "10vh", overflowY: "auto" }}>
+    <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 120, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "10vh", overflowY: "auto" }}>
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Choose a plan" onClick={(e) => e.stopPropagation()} className="anim-scalein" style={{ width: 620, maxWidth: "94vw" }}>
         <div className="glass" style={{ borderRadius: 22, padding: 26, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
           <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
