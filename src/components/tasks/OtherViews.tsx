@@ -2,7 +2,7 @@
    KANBO — Board (Kanban), Timeline (Gantt), Calendar views
    ============================================================ */
 import { useState, useRef, useEffect } from "react";
-import { Icon, Avatar, StatusDot, Tag, PriorityFlag } from "../primitives";
+import { Icon, Avatar, StatusDot, Tag, PriorityFlag, EmptyArt } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { bulkItemStyle, BulkMenuButton, CustomChips } from "./ListView";
 import {
@@ -398,8 +398,8 @@ export function TimelineView({ tasks, onOpen, onPatch }: { tasks: Task[]; allTas
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 380 }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="layers" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>Nothing to chart yet</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="layers" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Nothing to chart yet</p>
           <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Add a few tasks and they'll lay out here on a timeline by project and due date.</p>
         </div>
       </div>
@@ -620,8 +620,8 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
         <div style={{ marginBottom: 14 }}><MonthNav /></div>
         {agenda.length === 0 ? (
           <div style={{ textAlign: "center", color: "var(--ink-4)", padding: "40px 16px" }}>
-            <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="calendar" size={24} /></div>
-            <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>Nothing scheduled this month</p>
+            <div style={{ marginBottom: 14 }}><EmptyArt kind="calendar" /></div>
+            <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Nothing scheduled this month</p>
             <p style={{ fontSize: 13, margin: "5px 0 0" }}>Tasks with a due date and connected-calendar events show up here.</p>
           </div>
         ) : agenda.map((day) => {
@@ -819,8 +819,8 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
         <div style={{ textAlign: "center", padding: "60px 24px", color: "var(--ink-4)", fontSize: 13 }}>Loading files…</div>
       ) : files.length === 0 ? (
         <div style={{ textAlign: "center", padding: "70px 24px", color: "var(--ink-4)" }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="folder" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No files yet</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="folder" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>No files yet</p>
           <p style={{ fontSize: 13, margin: "5px 0 0" }}>Attachments added to tasks here will appear in one place.</p>
         </div>
       ) : (

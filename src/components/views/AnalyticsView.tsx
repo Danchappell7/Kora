@@ -2,7 +2,7 @@
    KANBO — Analytics dashboard (data-driven, no placeholder claims)
    ============================================================ */
 import { useState, type ReactNode, type CSSProperties } from "react";
-import { Icon, StatusDot, PriorityFlag } from "../primitives";
+import { Icon, StatusDot, PriorityFlag, EmptyArt } from "../primitives";
 import { Bars, Ring, type BarDatum } from "../charts";
 import { StatTile } from "./HomeView";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -118,8 +118,8 @@ export function AnalyticsView({ tasks, members = [], customFields = [] }: { task
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 420 }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="chart" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No analytics yet</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="chart" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>No analytics yet</p>
           <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Create and complete a few tasks and your completion rate, throughput, and breakdowns will appear here.</p>
         </div>
       </div>

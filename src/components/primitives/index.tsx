@@ -11,6 +11,7 @@ import type { Status, Priority, IconName } from "../../data/types";
 
 export { Icon };
 export { KanboLogo } from "./KanboLogo";
+export { EmptyArt } from "./EmptyArt";
 export { EmojiPicker } from "./EmojiPicker";
 
 /* ---------- Avatar ---------- */

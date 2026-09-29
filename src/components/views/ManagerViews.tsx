@@ -2,7 +2,7 @@
    KANBO — manager / reporting views: Workload, Goals (OKRs), Portfolios.
    ============================================================ */
 import { useState } from "react";
-import { Icon, Avatar } from "../primitives";
+import { Icon, Avatar, EmptyArt } from "../primitives";
 import { getProject, getMember, projectProgress } from "../../data/data";
 import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, Section, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey } from "../../data/types";
 
@@ -23,8 +23,8 @@ export const STATUS_KIND_META: Record<StatusKind, { label: string; color: string
 function EmptyState({ icon, title, sub }: { icon: "target" | "briefcase" | "chart"; title: string; sub: string }) {
   return (
     <div style={{ textAlign: "center", padding: "70px 24px", color: "var(--ink-4)" }}>
-      <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name={icon} size={24} style={{ color: "var(--ink-4)" }} /></div>
-      <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>{title}</p>
+      <div style={{ marginBottom: 14 }}><EmptyArt kind={icon} /></div>
+      <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>{title}</p>
       <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>{sub}</p>
     </div>
   );

@@ -3,7 +3,7 @@
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Icon, Avatar, StatusDot } from "../primitives";
+import { Icon, Avatar, StatusDot, EmptyArt } from "../primitives";
 import { timeAgo, getProject } from "../../data/data";
 import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
 import type { Task, WorkspaceMember, Role, Activity, ActivityKind, IconName } from "../../data/types";
@@ -68,8 +68,8 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 420 }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="inbox" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>You're all caught up</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="inbox" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>You're all caught up</p>
           <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Activity on your tasks — creates, completions, comments — shows up here. Archived items stay in your history.</p>
         </div>
       </div>
@@ -295,8 +295,8 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 440 }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="users" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>Personal is just for you</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="users" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Personal is just for you</p>
           <p style={{ fontSize: 13, margin: "5px 0 16px", lineHeight: 1.5 }}>Create a team workspace to invite people and collaborate on shared projects and tasks.</p>
           <button className="btn btn-accent" onClick={onNewWorkspace}><Icon name="plus" size={15} /> New workspace</button>
         </div>

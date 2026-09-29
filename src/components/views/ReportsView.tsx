@@ -6,7 +6,7 @@
    from real task data (created/completed dates); nothing is mocked.
    ============================================================ */
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Icon } from "../primitives";
+import { Icon, EmptyArt } from "../primitives";
 import { LineChart, GroupedBars } from "../charts";
 import { StatTile } from "./HomeView";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -151,8 +151,8 @@ export function ReportsView({ tasks, projects, members = [] }: {
     return (
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
         <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 420 }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="trendingUp" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No report yet</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="trendingUp" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>No report yet</p>
           <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Create and complete tasks over a few weeks and your throughput, velocity, and cycle-time trends will appear here.</p>
         </div>
       </div>

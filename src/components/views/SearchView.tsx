@@ -3,7 +3,7 @@
    plus saved searches. Reads tasks already in memory (instant).
    ============================================================ */
 import { useMemo, useState, useEffect } from "react";
-import { Icon, Avatar, StatusDot, PriorityFlag } from "../primitives";
+import { Icon, Avatar, StatusDot, PriorityFlag, EmptyArt } from "../primitives";
 import { getProject, fmtDue, dueState, STATUS_META, toLocalISO, presetDate } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
@@ -146,8 +146,20 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
             </div>
           );
         })}
-        {active && results.length === 0 && <div style={{ padding: "32px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>No tasks match.</div>}
-        {!active && <div style={{ padding: "40px 18px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>Search by text, status, priority, assignee, project, tag or due date.</div>}
+        {active && results.length === 0 && (
+          <div style={{ padding: "36px 18px 32px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>
+            <EmptyArt kind="search" size={112} />
+            <p style={{ fontSize: 15.5, color: "var(--ink)", margin: "12px 0 0", fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>No tasks match</p>
+            <p style={{ margin: "4px 0 0" }}>Try loosening a filter, or clear them to start over.</p>
+          </div>
+        )}
+        {!active && (
+          <div style={{ padding: "40px 18px 36px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>
+            <EmptyArt kind="search" size={112} />
+            <p style={{ fontSize: 15.5, color: "var(--ink)", margin: "12px 0 0", fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Find anything, instantly</p>
+            <p style={{ margin: "4px 0 0" }}>Search by text, status, priority, assignee, project, tag or due date.</p>
+          </div>
+        )}
       </div>
     </div>
   );

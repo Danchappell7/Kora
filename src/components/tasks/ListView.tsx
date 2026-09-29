@@ -2,7 +2,7 @@
    KANBO — List view (the showpiece) + TaskRow
    ============================================================ */
 import { useState, useRef, useEffect } from "react";
-import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted } from "../primitives";
+import { Icon, Avatar, Check, StatusDot, Tag, PriorityFlag, AiScore, wasJustCompleted, EmptyArt } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   getProject, blockingTasks, dueState, fmtDue, toLocalISO, KANBO_TODAY,
@@ -428,8 +428,8 @@ export function ListView({ tasks, allTasks, projects = [], compact = false, onOp
       )}
       {tasks.length === 0 && !(groupBy === "section" && sections.length > 0) ? (
         <div style={{ textAlign: "center", padding: "64px 24px", color: "var(--ink-4)" }}>
-          <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--surface)", border: "1px solid var(--hairline)", marginBottom: 14 }}><Icon name="tasks" size={24} style={{ color: "var(--ink-4)" }} /></div>
-          <p style={{ fontSize: 14.5, color: "var(--ink-2)", margin: 0, fontWeight: 600 }}>No tasks yet</p>
+          <div style={{ marginBottom: 14 }}><EmptyArt kind="tasks" /></div>
+          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>No tasks yet</p>
           <p style={{ fontSize: 13, margin: "5px 0 18px" }}>Type your first task below, or import a whole list.</p>
           {onQuickAdd && (
             <div style={{ display: "flex", gap: 8, maxWidth: 460, margin: "0 auto", alignItems: "center" }}>

@@ -294,8 +294,11 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
   background-repeat: no-repeat; background-position: 0 56%; background-size: 100% 1.5px;
   animation: kstrike 0.42s var(--ease-out);
 }
+/* empty-state illustrations: gentle float + a soft arrival */
+@keyframes kfloat { 50% { transform: translateY(-4px); } }
+.kempty-art { animation: scaleIn 0.5s var(--ease-spring), kfloat 6s ease-in-out 0.5s infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .kstagger > *, .kbackdrop, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
+  .kstagger > *, .kbackdrop, .kempty-art, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
   .kcheck-draw { stroke-dashoffset: 0; animation: none !important; }
 }
 
