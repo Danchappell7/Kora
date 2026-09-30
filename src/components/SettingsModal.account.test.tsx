@@ -58,7 +58,11 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsModal>[0]> 
   return props;
 }
 
+/** open a section from the list on the left */
+const goTo = (name: string) => fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${name}`, "i") }));
+
 async function uploadGif() {
+  goTo("Profile");
   fireEvent.change(screen.getByLabelText("Upload profile photo"), { target: { files: [gif()] } });
   await screen.findByRole("button", { name: /change photo/i });
   await waitFor(() => expect(screen.getByRole("button", { name: /change photo/i })).toBeEnabled());
@@ -75,6 +79,7 @@ beforeEach(() => {
 describe("Sign out of all devices", () => {
   it("asks first, with focus on Cancel", async () => {
     renderSettings();
+    goTo("Account");
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     const panel = screen.getByRole("group", { name: /confirm signing out of all devices/i });
     expect(within(panel).getByText(/every browser and device, including this one/i)).toBeInTheDocument();
@@ -85,6 +90,7 @@ describe("Sign out of all devices", () => {
   it("removes a photo uploaded but never saved before the session ends, and keeps the saved one", async () => {
     renderSettings();
     await uploadGif();
+    goTo("Account");
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     await waitFor(() => expect(h.auth.signOut).toHaveBeenCalledTimes(1));
@@ -95,16 +101,40 @@ describe("Sign out of all devices", () => {
     h.client.auth.signOut.mockImplementationOnce(async () => ({ error: new Error("Failed to fetch") as unknown as null }));
     renderSettings();
     await uploadGif();
+    goTo("Account");
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/nothing was signed out/i);
-    expect(document.querySelector("img")?.getAttribute("src")).toBe(photo("avatar-1.jpg"));
     expect(screen.getByRole("button", { name: /sign out everywhere/i })).toBeEnabled();
+    goTo("Profile");
+    expect(document.querySelector("img")?.getAttribute("src")).toBe(photo("avatar-1.jpg"));
+  });
+});
+
+describe("Sign out (this device)", () => {
+  it("tidies away an unsaved photo, then signs out here only", async () => {
+    renderSettings();
+    await uploadGif();
+    goTo("Account");
+    fireEvent.click(screen.getByRole("button", { name: /^sign out$/i }));
+    await waitFor(() => expect(h.auth.signOut).toHaveBeenCalledTimes(1));
+    expect(h.calls).toEqual([`remove:${path("avatar-2.gif")}`, "auth.signOut"]);
+    expect(h.client.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it("uses the app's own sign-out when it passes one", async () => {
+    const onSignOut = vi.fn();
+    renderSettings({ onSignOut });
+    goTo("Account");
+    fireEvent.click(screen.getByRole("button", { name: /^sign out$/i }));
+    await waitFor(() => expect(onSignOut).toHaveBeenCalledTimes(1));
+    expect(h.auth.signOut).not.toHaveBeenCalled();
   });
 });
 
 describe("Delete account", () => {
   const confirmDelete = () => {
+    goTo("Account");
     fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
     fireEvent.change(screen.getByLabelText(/type delete to confirm/i), { target: { value: "DELETE" } });
     fireEvent.click(screen.getByRole("button", { name: /delete forever/i }));
@@ -113,6 +143,7 @@ describe("Delete account", () => {
   it("says comments keep the person's name", async () => {
     renderSettings();
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); // session lookup
+    goTo("Account");
     fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
     expect(screen.getByText(/still showing your name/i)).toBeInTheDocument();
     expect(screen.queryByText(/without your name/i)).not.toBeInTheDocument();
@@ -138,6 +169,7 @@ describe("Saving with a photo changed in another tab", () => {
   it("keeps the newer photo when this dialog didn't touch it", async () => {
     h.state.storedAvatar = photo("avatar-9.jpg"); // set elsewhere; avatar-1 was removed there
     const props = renderSettings();
+    goTo("Profile");
     fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Augusta" } });
     fireEvent.click(screen.getByRole("button", { name: /save profile/i }));
     await waitFor(() => expect(props.onSave).toHaveBeenCalledTimes(1));
@@ -150,9 +182,12 @@ describe("Saving with a photo changed in another tab", () => {
     const props = renderSettings();
     await uploadGif();
     fireEvent.click(screen.getByRole("button", { name: /save profile/i }));
-    await waitFor(() => expect(props.onClose).toHaveBeenCalled());
+    await waitFor(() => expect(h.calls).toContain(`remove:${[path("avatar-1.jpg"), path("avatar-9.jpg")].sort().join(",")}`));
     expect(props.onSave).toHaveBeenCalledWith(expect.objectContaining({ avatarUrl: photo("avatar-2.gif") }));
-    expect(h.calls).toContain(`remove:${[path("avatar-1.jpg"), path("avatar-9.jpg")].sort().join(",")}`);
+    // the sheet stays open on the saved photo, with nothing left to save
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(await screen.findByText("Profile saved", { selector: ".kset-foot-note" })).toBeInTheDocument();
+    expect(document.querySelector("img")?.getAttribute("src")).toBe(photo("avatar-2.gif"));
   });
 });
 
@@ -160,6 +195,7 @@ describe("Google accounts", () => {
   it("offers to set a password, then remembers one was set", async () => {
     h.state.appMeta = { provider: "google", providers: ["google"] };
     renderSettings();
+    goTo("Account");
     fireEvent.click(await screen.findByRole("button", { name: /set a password/i }));
     fireEvent.change(await screen.findByLabelText("New password"), { target: { value: "correct horse battery" } });
     fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "correct horse battery" } });
@@ -174,6 +210,7 @@ describe("Google accounts", () => {
     renderSettings();
     await waitFor(() => expect(h.client.auth.getSession).toHaveBeenCalled());
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); // let the session lookup land
+    goTo("Account");
     expect(screen.getByRole("button", { name: /change password/i })).toBeInTheDocument();
     expect(screen.queryByText(/add a password/i)).not.toBeInTheDocument();
   });

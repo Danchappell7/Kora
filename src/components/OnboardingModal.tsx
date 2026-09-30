@@ -1,14 +1,17 @@
 /* ============================================================
-   KANBO — first-run onboarding: welcome → your name → first project.
-   Shown once to brand-new accounts (no real projects yet). The name
-   step is skipped when the profile already has a first name (e.g. it
-   was just entered in the welcome modal).
+   KANBO — first-run onboarding: welcome → your name → first project →
+   your five places. Shown once to brand-new accounts (no real projects
+   yet). The name step is skipped when the profile already has a first
+   name (e.g. it was just entered in the welcome modal).
+   One centred sheet (a bottom sheet on phones), no scrim click to
+   close: Escape or "Skip for now" finishes it.
    ============================================================ */
-import { useEffect, useRef, useState } from "react";
-import { Icon, KanboLogo, EmojiPicker } from "./primitives";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Icon, KanboLogo, EmojiPicker, Button, Kbd, projectPaint } from "./primitives";
+import { Popover } from "./primitives/Popover";
 import { useFocusTrap } from "../hooks/useFocusTrap";
-import { TextField } from "../auth/AuthFields";
-import type { Profile } from "../data/types";
+import { PLACES, type PlaceId } from "../lib/nav";
+import type { IconName, Profile } from "../data/types";
 import type { NewProject } from "../data/store";
 
 const COLORS: { value: string; name: string }[] = [
@@ -20,7 +23,18 @@ const COLORS: { value: string; name: string }[] = [
   { value: "oklch(0.78 0.1 45)", name: "Peach" },
 ];
 
-export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish }: {
+/** what each of the five places is for (the names and icons come from nav.ts) */
+const PLACE_LINES: Record<PlaceId, string> = {
+  today: "Your plan for the day, drawn for you.",
+  inbox: "Mentions, assignments and requests.",
+  tasks: "Everything on your plate, and what you're waiting on.",
+  projects: "Your team's projects, goals and requests.",
+  team: "Who's doing what, and what's at risk.",
+};
+
+const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project", "Your five places"];
+
+export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday }: {
   open: boolean;
   profile: Profile | null;
   workspaceId: string | null;
@@ -28,6 +42,8 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   onSaveProfile: (d: { firstName: string; lastName: string; pronouns: string; avatarUrl?: string | null }) => Promise<void>;
   onCreateProject: (p: NewProject) => void;
   onFinish: () => void;
+  /** "Take me to Today": runs after onFinish (the app lands on Today anyway when it's left out) */
+  onGoToday?: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [firstName, setFirstName] = useState(profile?.firstName || "");
@@ -39,6 +55,9 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   const [busy, setBusy] = useState(false);
   // once the person types, the profile no longer overwrites their edits
   const nameEdited = useRef(false);
+  const emojiRef = useRef<HTMLButtonElement>(null);
+  // the step you moved to is read out (not the one you opened on)
+  const [moved, setMoved] = useState(false);
 
   // The profile usually arrives (or gains a name from the welcome modal)
   // after this mounts — keep the fields in step with it until edited.
@@ -66,101 +85,261 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
 
   if (!open) return null;
 
+  const go = (n: number) => { setMoved(true); setStep(n); };
   const saveName = async () => {
     setBusy(true);
     try { await onSaveProfile({ firstName: firstName.trim(), lastName: lastName.trim(), pronouns: profile?.pronouns || "" }); } catch { /* non-blocking */ }
-    setBusy(false); setStep(2);
+    setBusy(false); go(2);
   };
   const createProject = () => {
     const n = projName.trim();
     if (n) onCreateProject({ name: n, emoji, color, workspaceId });
-    setStep(3);
+    go(3);
   };
   const editName = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => { nameEdited.current = true; set(e.target.value); };
   const greetName = firstName.trim();
+  const finishToToday = () => { onFinish(); onGoToday?.(); };
 
-  const dots = (
-    <div aria-hidden="true" style={{ display: "flex", gap: 6, justifyContent: "center", marginTop: 4 }}>
-      {steps.map((i) => <span key={i} style={{ width: i === step ? 18 : 6, height: 6, borderRadius: 99, background: i === step ? "var(--accent)" : "var(--hairline-strong)", transition: "all .2s var(--ease)" }} />)}
-    </div>
-  );
+  // colour: one radio group, arrows move and pick
+  const onSwatchKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const dir = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    const to = e.key === "Home" ? 0 : e.key === "End" ? COLORS.length - 1 : null;
+    if (!dir && to === null) return;
+    e.preventDefault();
+    const i = COLORS.findIndex((c) => c.value === color);
+    const n = to ?? (i + dir + COLORS.length) % COLORS.length;
+    setColor(COLORS[n].value);
+    (e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]')[n])?.focus();
+  };
+
+  const position = steps.indexOf(step);
 
   return (
-    <div className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 95, background: "color-mix(in oklch, var(--bg-deep) 65%, transparent)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, overflowY: "auto" }}>
-      <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="glass anim-scalein" style={{ position: "relative", zIndex: 96, width: 460, maxWidth: "94vw", margin: "auto", padding: 28, borderRadius: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 18 }}>
+    <div className="kbackdrop ksheet-layer konb-layer" data-side="center">
+      <style>{FIRST_RUN_CSS}</style>
+      <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="ksheet konb">
+        <span className="ksheet-handle" aria-hidden="true" />
+        <div className="konb-body">
+          {step === 0 && (
+            <div key="welcome" className="konb-step konb-intro">
+              <span className="konb-mark" aria-hidden="true"><KanboLogo size={40} /></span>
+              <div className="konb-head">
+                <h2 className="konb-title">{hasName ? `Welcome, ${profFirst.trim()}` : "Welcome to Kanbo"}</h2>
+                <p className="konb-lede">
+                  {hasName ? "One quick thing before you dive in: set up your first project." : "The to-do list that plans your day. Let's get you set up in under a minute."}
+                </p>
+              </div>
+              <div className="konb-acts" data-stack="">
+                {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={() => go(hasName ? 2 : 1)}>Get started</Button>
+                <Button variant="ghost" onClick={onFinish}>Skip for now</Button>
+              </div>
+            </div>
+          )}
 
-        {step === 0 && (
-          <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 14 }}>
-            <span style={{ alignSelf: "center" }}><KanboLogo size={48} /></span>
-            <div>
-              <h2 style={{ fontSize: 22, fontWeight: 700, margin: "0 0 6px" }}>{hasName ? `Welcome, ${profFirst.trim()}` : "Welcome to Kanbo"}</h2>
-              <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: 0 }}>
-                {hasName ? "One quick thing before you dive in: set up your first project." : "The to-do list that plans your day. Let’s get you set up in under a minute."}
-              </p>
-            </div>
-            {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-            <button autoFocus data-autofocus className="btn btn-accent" onClick={() => setStep(hasName ? 2 : 1)} style={{ justifyContent: "center", marginTop: 4 }}>Get started <Icon name="arrowRight" size={15} /></button>
-            <button className="btn btn-ghost" onClick={onFinish} style={{ justifyContent: "center", color: "var(--ink-4)" }}>Skip for now</button>
-          </div>
-        )}
+          {step === 1 && (
+            <form key="name" className="konb-step" onSubmit={(e) => { e.preventDefault(); if (firstName.trim() && !busy) void saveName(); }}>
+              <div className="konb-head">
+                <h2 className="konb-title">What should we call you?</h2>
+                <p className="konb-lede">This is how teammates will see you on tasks, comments and assignments.</p>
+              </div>
+              <div className="konb-fields">
+                <div className="konb-field">
+                  <label htmlFor="kanbo-onb2-first">First name</label>
+                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                  <input id="kanbo-onb2-first" className="konb-input" autoFocus data-autofocus value={firstName} onChange={editName(setFirstName)} placeholder="First name" autoComplete="given-name" />
+                </div>
+                <div className="konb-field">
+                  <label htmlFor="kanbo-onb2-last">Last name</label>
+                  <input id="kanbo-onb2-last" className="konb-input" value={lastName} onChange={editName(setLastName)} placeholder="Last name" autoComplete="family-name" />
+                </div>
+              </div>
+              <div className="konb-acts">
+                <Button variant="ghost" size="lg" onClick={() => go(2)}>Skip</Button>
+                <Button type="submit" variant="primary" size="lg" iconRight="arrowRight" disabled={!firstName.trim()} loading={busy} className="konb-grow">
+                  {busy ? "Saving…" : "Continue"}
+                </Button>
+              </div>
+            </form>
+          )}
 
-        {step === 1 && (
-          <form onSubmit={(e) => { e.preventDefault(); if (firstName.trim() && !busy) saveName(); }} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <h2 style={{ fontSize: 19, fontWeight: 700, margin: "0 0 6px" }}>What should we call you?</h2>
-              <p style={{ fontSize: 13.5, color: "var(--ink-4)", margin: 0 }}>This is how teammates will see you.</p>
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-              <TextField autoFocus data-autofocus value={firstName} onChange={editName(setFirstName)} placeholder="First name" aria-label="First name" autoComplete="given-name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
-              <TextField value={lastName} onChange={editName(setLastName)} placeholder="Surname" aria-label="Surname" autoComplete="family-name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setStep(2)} style={{ justifyContent: "center" }}>Skip</button>
-              <button type="submit" className="btn btn-accent" disabled={busy || !firstName.trim()} style={{ flex: 1, justifyContent: "center", opacity: firstName.trim() ? 1 : 0.5 }}>{busy ? "Saving…" : "Continue"} <Icon name="arrowRight" size={15} /></button>
-            </div>
-          </form>
-        )}
+          {step === 2 && (
+            <form key="project" className="konb-step" onSubmit={(e) => { e.preventDefault(); if (projName.trim()) createProject(); }}>
+              <div className="konb-head">
+                <h2 className="konb-title">Create your first project</h2>
+                <p className="konb-lede">Projects keep related tasks together. You can add more later.</p>
+              </div>
+              <div className="konb-field">
+                <label htmlFor="kanbo-onb2-project">Project name</label>
+                <div className="konb-projrow">
+                  <button ref={emojiRef} type="button" className="konb-emoji" onClick={() => setPickerOpen((v) => !v)}
+                    aria-label={`Project icon: ${emoji}. Choose another`} aria-haspopup="dialog" aria-expanded={pickerOpen} data-tip="Choose an icon">
+                    <span aria-hidden="true">{emoji}</span>
+                  </button>
+                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                  <input id="kanbo-onb2-project" className="konb-input" autoFocus data-autofocus value={projName} onChange={(e) => setProjName(e.target.value)}
+                    placeholder="e.g. Website redesign" autoComplete="off" />
+                </div>
+              </div>
+              <Popover open={pickerOpen} anchorRef={emojiRef} onClose={() => setPickerOpen(false)} role="dialog" label="Choose a project icon" minWidth={0}
+                className="konb-emoji-pop" style={{ padding: 0, borderRadius: "var(--r-lg, 12px)", background: "var(--surface-raised)", boxShadow: "var(--e2, var(--shadow-lg))" }}>
+                <EmojiPicker height={188} onPick={(e) => { setEmoji(e); setPickerOpen(false); }} />
+              </Popover>
+              <div className="konb-field" role="group" aria-labelledby="kanbo-onb2-colour">
+                <span id="kanbo-onb2-colour" className="konb-label">Colour</span>
+                <div role="radiogroup" aria-label="Project colour" className="konb-swatches" onKeyDown={onSwatchKey}>
+                  {COLORS.map((c) => {
+                    const on = color === c.value;
+                    return (
+                      <button key={c.value} type="button" role="radio" aria-checked={on} aria-label={c.name} data-tip={c.name}
+                        tabIndex={on ? 0 : -1} className="konb-swatch" onClick={() => setColor(c.value)}
+                        style={{ "--sw": projectPaint(c.value).solid } as React.CSSProperties}>
+                        {on && <Icon name="check" size={14} sw={2.5} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="konb-acts">
+                <Button variant="ghost" size="lg" onClick={() => go(3)}>Skip</Button>
+                <Button type="submit" variant="primary" size="lg" iconRight="arrowRight" disabled={!projName.trim()} className="konb-grow">Create project</Button>
+              </div>
+            </form>
+          )}
 
-        {step === 2 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <h2 style={{ fontSize: 19, fontWeight: 700, margin: "0 0 6px" }}>Create your first project</h2>
-              <p style={{ fontSize: 13.5, color: "var(--ink-4)", margin: 0 }}>Projects keep related tasks together. You can add more later.</p>
+          {step === 3 && (
+            <div key="places" className="konb-step">
+              <div className="konb-head">
+                <h2 className="konb-title">Your five places</h2>
+                <p className="konb-lede">You're all set{greetName ? `, ${greetName}` : ""}. Everything in Kanbo lives in one of these.</p>
+              </div>
+              <PlaceList rows={PLACES.map((p, i) => ({ id: p.id, icon: p.icon, name: p.label, line: PLACE_LINES[p.id], keys: ["G", p.gKey.toUpperCase()], sep: i > 0 && p.group !== PLACES[i - 1].group }))} />
+              <div className="konb-acts" data-stack="">
+                {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={finishToToday}>Take me to Today</Button>
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 10, position: "relative" }}>
-              <button type="button" onClick={() => setPickerOpen((v) => !v)} aria-label={`Project icon: ${emoji}. Choose another`} aria-expanded={pickerOpen} title="Choose icon" style={{ width: 48, height: 44, flexShrink: 0, borderRadius: 11, fontSize: 20, border: pickerOpen ? "1px solid var(--accent)" : "1px solid var(--field-border, var(--hairline))", background: "var(--field-bg, var(--surface))", cursor: "pointer" }}>{emoji}</button>
-              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-              <TextField autoFocus data-autofocus value={projName} onChange={(e) => setProjName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") createProject(); }} placeholder="e.g. Website redesign" aria-label="Project name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
-              {pickerOpen && <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 5 }}><EmojiPicker height={180} onPick={(e) => { setEmoji(e); setPickerOpen(false); }} /></div>}
-            </div>
-            <div role="radiogroup" aria-label="Project colour" style={{ display: "flex", gap: 8 }}>
-              {COLORS.map((c) => (
-                <button key={c.value} type="button" role="radio" aria-checked={color === c.value} aria-label={c.name} title={c.name} onClick={() => setColor(c.value)}
-                  style={{ width: 28, height: 28, borderRadius: 99, background: c.value, border: "none", cursor: "pointer", boxShadow: color === c.value ? "0 0 0 2px var(--bg), 0 0 0 4px var(--accent)" : "none" }} />
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setStep(3)} style={{ justifyContent: "center" }}>Skip</button>
-              <button type="button" className="btn btn-accent" onClick={createProject} disabled={!projName.trim()} style={{ flex: 1, justifyContent: "center", opacity: projName.trim() ? 1 : 0.5 }}>Create project <Icon name="arrowRight" size={15} /></button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {step === 3 && (
-          <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 14 }}>
-            <span style={{ alignSelf: "center", display: "grid", placeItems: "center", width: 54, height: 54, borderRadius: 16, background: "var(--accent-dim)", color: "var(--accent)" }}><Icon name="check" size={28} sw={2.4} /></span>
-            <div>
-              <h2 style={{ fontSize: 21, fontWeight: 700, margin: "0 0 6px" }}>You’re all set{greetName ? `, ${greetName}` : ""} 🎉</h2>
-              <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: 0 }}>Capture a task, plan your day, or invite your team — your dashboard has a quick checklist to guide you.</p>
-            </div>
-            {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-            <button autoFocus data-autofocus className="btn btn-accent" onClick={onFinish} style={{ justifyContent: "center", marginTop: 4 }}>Go to my dashboard</button>
-          </div>
-        )}
-
-        {dots}
+        <div className="konb-dots" aria-hidden="true">
+          {steps.map((i) => <span key={i} className="konb-dot" data-on={i === step || undefined} />)}
+        </div>
+        <p className="sr-only" role="status">{moved ? `Step ${position + 1} of ${steps.length}: ${STEP_TITLES[step]}` : ""}</p>
       </div>
     </div>
   );
 }
+
+/** icon · name · one line (and the g-key on a keyboard) */
+export function PlaceList({ rows }: { rows: { id: string; icon: IconName; name: string; line: ReactNode; keys?: string[]; sep?: boolean }[] }) {
+  return (
+    <ul className="konb-places">
+      {rows.map((r) => (
+        <li key={r.id} className="konb-place" data-sep={r.sep || undefined}>
+          <span className="konb-place-icon" aria-hidden="true"><Icon name={r.icon} size={16} sw={1.75} /></span>
+          <span className="konb-place-text">
+            <span className="konb-place-name">{r.name}</span>
+            <span className="konb-place-line">{r.line}</span>
+          </span>
+          {r.keys && (
+            <span className="konb-place-keys" aria-hidden="true">
+              {r.keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/* Shared by the welcome and onboarding sheets. New Paper & Navy tokens are
+   read with a fallback to today's, so this looks right either side of P01. */
+export const FIRST_RUN_CSS = `
+@media (min-width: 860px) {
+  .ksheet-layer.konb-layer { align-items: center; padding: 24px; }
+}
+.ksheet.konb { --sheet-w: 480px; overflow: hidden; }
+.konb-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 32px 32px 8px; }
+.konb-step { display: flex; flex-direction: column; gap: 24px; animation: konbIn var(--d-3, 240ms) var(--ease); }
+.konb-intro { display: flex; flex-direction: column; align-items: center; gap: 20px; text-align: center; }
+@keyframes konbIn { from { opacity: 0.35; translate: 0 4px; } }
+.konb-mark { display: grid; place-items: center; }
+.konb-head { display: grid; gap: 6px; width: 100%; }
+.konb-title { margin: 0; font: 600 20px/28px var(--font-head, var(--font-display)); letter-spacing: -0.012em; color: var(--ink); text-wrap: balance; }
+.konb-lede { margin: 0; font: 400 15px/24px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.konb-intro .konb-lede { max-width: 360px; margin: 0 auto; }
+
+/* fields */
+.konb-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.konb-field { display: grid; gap: 6px; min-width: 0; text-align: left; }
+.konb-field > label, .konb-label { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.konb-input {
+  width: 100%; min-width: 0; height: 40px; padding: 0 12px; border-radius: var(--r-md, 8px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); color: var(--ink);
+  font: 500 14px/20px var(--font-ui, var(--font-display)); transition: border-color var(--d-1, 90ms) var(--ease);
+}
+.konb-input:hover:not(:focus) { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.konb-input::placeholder { color: var(--ink-4); opacity: 1; }
+.konb-input[aria-invalid="true"] { border-color: var(--signal, var(--prio-urgent)); }
+.konb-err { margin: -12px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); text-align: left; }
+.konb-projrow { display: flex; gap: 8px; }
+.konb-emoji {
+  display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; padding: 0; border-radius: var(--r-md, 8px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); cursor: pointer;
+  font-size: 20px; line-height: 1; transition: border-color var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease);
+}
+.konb-emoji:hover, .konb-emoji[aria-expanded="true"] { border-color: var(--field-border-hover, var(--hairline-strong)); background: linear-gradient(var(--fill-1), var(--fill-1)), var(--field-bg, var(--surface)); }
+/* the picker keeps the popover's frame, not a second one of its own */
+.konb-emoji-pop > div { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; }
+.konb-swatches { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px; }
+.konb-swatch {
+  position: relative; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%;
+  cursor: pointer; background: var(--sw); color: oklch(1 0 0); box-shadow: 0 0 0 1px oklch(0 0 0 / 0.08) inset;
+  transition: box-shadow var(--d-1, 90ms) var(--ease);
+}
+.konb-swatch svg { filter: drop-shadow(0 1px 1px oklch(0 0 0 / 0.35)); }
+.konb-swatch:hover:not([aria-checked="true"]) { box-shadow: 0 0 0 2px var(--surface-raised), 0 0 0 4px color-mix(in oklch, var(--sw) 45%, transparent); }
+.konb-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--surface-raised), 0 0 0 4px var(--sw); }
+.konb-swatch:focus-visible { outline-offset: 5px; }
+
+/* actions */
+.konb-acts { display: flex; gap: 8px; width: 100%; }
+.konb-acts[data-stack] { flex-direction: column; align-items: center; gap: 4px; }
+.konb-acts .konb-grow { flex: 1; }
+.konb-acts[data-stack] .kbtn[data-variant="ghost"] { color: var(--ink-3); }
+
+/* place rows (the five places, the rhythm tour) */
+.konb-places { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; text-align: left; }
+.konb-place { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 0; }
+.konb-place[data-sep] { margin-top: 8px; padding-top: 14px; box-shadow: inset 0 1px 0 var(--hairline); }
+.konb-place-icon {
+  display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: var(--r-md, 8px);
+  background: var(--fill-1); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.konb-place-text { display: grid; gap: 0; flex: 1; min-width: 0; }
+.konb-place-name { font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.konb-place-line { font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.konb-place-keys { display: inline-flex; gap: 3px; flex-shrink: 0; }
+
+/* progress */
+.konb-dots { display: flex; justify-content: center; gap: 6px; flex-shrink: 0; padding: 16px 0 20px; }
+.konb-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--hairline-strong); transition: width var(--d-2, 160ms) var(--ease), background var(--d-2, 160ms) var(--ease); }
+.konb-dot[data-on] { width: 18px; background: var(--accent-fill, var(--accent)); }
+
+@media (max-width: 859px) {
+  .konb-body { padding: 28px 16px 4px; }
+  .konb-dots { padding: 12px 0 16px; }
+  /* 16px stops iOS zooming into a field on focus */
+  .konb-input { font-size: 16px; }
+  .konb-place-keys { display: none; }
+}
+@media (max-width: 359px) { .konb-fields { grid-template-columns: 1fr; } }
+@media (pointer: coarse) {
+  .konb-swatch::before { content: ""; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; translate: -50% -50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .konb-step { animation: none !important; }
+  .konb-dot, .konb-swatch, .konb-emoji { transition: none; }
+}
+`;
