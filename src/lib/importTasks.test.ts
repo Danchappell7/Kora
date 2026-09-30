@@ -98,6 +98,25 @@ describe("natural-language text", () => {
     expect(rows[2]).toMatchObject({ title: "Draft deck", priority: "high" });
     expect(rows[2].dueDate).toBeTruthy();
   });
+  it("never invents a date from a word or a number that is part of the title", () => {
+    const rows = analyseImport([
+      "Set up 24/7 on-call rota", "Review weekend sales", "Cancel the monthly subscription", "Monday standup notes",
+      "Look at 3 vendor quotes", "Prep for the Monday meeting", "Split the 50/50 budget",
+    ].join("\n"), opts).rows;
+    expect(rows.map((r) => r.title)).toEqual([
+      "Set up 24/7 on-call rota", "Review weekend sales", "Cancel the monthly subscription", "Monday standup notes",
+      "Look at 3 vendor quotes", "Prep for the Monday meeting", "Split the 50/50 budget",
+    ]);
+    expect(rows.every((r) => r.dueDate === undefined)).toBe(true);
+  });
+  it("reads a day/month in a title in the import's date order", () => {
+    const text = "Pay the invoice by 10/3\nFile the return 3/10 !high";
+    const dmy = analyseImport(text, opts).rows;
+    expect(dmy.map((r) => r.dueDate?.slice(5))).toEqual(["03-10", "10-03"]);
+    const mdy = analyseImport(text, { ...opts, dateOrder: "mdy" }).rows;
+    expect(mdy.map((r) => r.dueDate?.slice(5))).toEqual(["10-03", "03-10"]);
+    expect(mdy.map((r) => r.title)).toEqual(["Pay the invoice", "File the return"]);
+  });
   it("can be switched off", () => {
     const rows = analyseImport("Record 5 min intro video", { ...opts, smartText: false }).rows;
     expect(rows[0].title).toBe("Record 5 min intro video");
@@ -357,10 +376,48 @@ describe("lists pasted from Word and Outlook", () => {
     expect(a.hasHeader).toBe(true);
     expect(a.rows.map((r) => [r.title, r.assigneeId])).toEqual([["Fix the boiler", "u-sarah"], ["Paint the fence", "u-tom"], ["Book the van", "u-tom"]]);
   });
-  it("keeps a tab-indented sub-bullet from Notes or Docs as a task", () => {
+  it("keeps a tab-indented sub-bullet from Notes or Docs as a task, nested under the line above", () => {
     const a = analyseImport("To do\n- Call Bob\n\t- Check the numbers\n- Email Sue", opts);
     expect(a.mode).toBe("lines");
     expect(a.rows.map((r) => r.title)).toEqual(["Call Bob", "Check the numbers", "Email Sue"]);
+    expect(a.rows.map((r) => r.parentIndex)).toEqual([undefined, 0, undefined]);
+    expect(a.rows[1].parentTitle).toBe("Call Bob");
+    expect(a.warnings.subtasks).toBe(1);
+  });
+  it("nests indented lines: a tab or two spaces is one level, and dedenting climbs back out", () => {
+    const text = "Plan launch\n  Book venue\n    Pay deposit\n  Send invites\nThank everyone\n\tWrite notes";
+    const a = analyseImport(text, opts);
+    expect(a.mode).toBe("lines");
+    expect(a.rows.map((r) => [r.title, r.parentIndex])).toEqual([
+      ["Plan launch", undefined], ["Book venue", 0], ["Pay deposit", 1], ["Send invites", 0], ["Thank everyone", undefined], ["Write notes", 4],
+    ]);
+    expect(a.warnings.subtasks).toBe(4);
+    expect(a.warnings.orphanSubtasks).toBe(0);
+  });
+  it("counts indentation from the least-indented line, and a single stray space isn't a level", () => {
+    const a = analyseImport("    - Draft brief\n      - Check facts\n    - Book venue\n     - Ring caterer", opts);
+    expect(a.rows.map((r) => [r.title, r.parentIndex])).toEqual([
+      ["Draft brief", undefined], ["Check facts", 0], ["Book venue", undefined], ["Ring caterer", undefined],
+    ]);
+  });
+  it("never nests under a heading it left out", () => {
+    const a = analyseImport("Agreed on Monday:\n  - Email supplier\n  - Book room", opts);
+    expect(a.rows.map((r) => [r.title, r.parentIndex])).toEqual([["Email supplier", undefined], ["Book room", undefined]]);
+    expect(a.warnings.skippedHeadings).toBe(1);
+  });
+  it("reads tabs used only as indentation as a list, not as columns", () => {
+    const a = analyseImport("Launch\n\tHero copy\n\tPress list\n\t\tCheck contacts", opts);
+    expect(a.mode).toBe("lines");
+    expect(a.rows.map((r) => [r.title, r.parentIndex])).toEqual([["Launch", undefined], ["Hero copy", 0], ["Press list", 0], ["Check contacts", 2]]);
+    // …while a tab between cells is still a spreadsheet row
+    expect(analyseImport("Draft deck\t31/10/2026", opts).mode).toBe("columns");
+  });
+  it("copes with a very long pasted list", () => {
+    const text = Array.from({ length: 200000 }, (_, i) => (i % 2 ? "  " : "") + `Task ${i}`).join("\n");
+    const a = analyseImport(text, opts);
+    expect(a.rows).toHaveLength(IMPORT_LIMIT);
+    expect(a.rows[1].parentIndex).toBe(0);
+    expect(a.truncated).toBe(true);
   });
   it("takes ticked checklist items as written", () => {
     const a = analyseImport("- [x] Email Sarah tomorrow !high\n- [ ] Call Tom next week", opts);

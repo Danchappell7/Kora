@@ -87,6 +87,12 @@ describe("ImportTasksModal", () => {
     expect(onImport.mock.calls[0][0][0].dueDate).toBe("2026-03-04");
   });
 
+  it("opens with a paste handed over from Quick capture", async () => {
+    const { textarea } = setup({ defaultProjectId: "p-web", initialText: "Call Sarah\nBook venue\nSend invites" });
+    expect(textarea).toHaveValue("Call Sarah\nBook venue\nSend invites");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("3 tasks ready"));
+  });
+
   it("keeps the pasted text when cancelled", () => {
     const { type, onClose, rerender } = setup({ defaultProjectId: "p-web" });
     type("Keep me");
@@ -140,6 +146,40 @@ describe("ImportTasksModal", () => {
     fireEvent.drop(dialog, { dataTransfer: { files: [csv], types: ["Files"] } });
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1 task ready"));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows an indented list nested, as it'll be created, and hands over the parents", () => {
+    const { type, onImport } = setup({ defaultProjectId: "p-web", supports: { subtasks: true } });
+    type("Plan launch\n  Book venue\n    Pay deposit\nSend invites");
+    expect(screen.getByRole("status")).toHaveTextContent("4 tasks ready");
+    expect(screen.getByText("2 sub-tasks will be nested under their parent tasks.")).toBeInTheDocument();
+    const preview = screen.getByRole("list", { name: "Preview of the tasks" });
+    const items = Array.from(preview.querySelectorAll("li"));
+    expect(items.map((li) => li.style.paddingLeft)).toEqual(["", "28px", "48px", ""]);
+    expect(items[2]).toHaveTextContent("Sub-task of Book venue:");
+    fireEvent.click(screen.getByRole("button", { name: "Import 4 tasks" }));
+    expect(onImport.mock.calls[0][0].map((r: { title: string; parentIndex?: number }) => [r.title, r.parentIndex]))
+      .toEqual([["Plan launch", undefined], ["Book venue", 0], ["Pay deposit", 1], ["Send invites", undefined]]);
+  });
+
+  it("says indented lines will be flat when the handler can't nest them", () => {
+    const { type } = setup({ defaultProjectId: "p-web" });
+    type("Plan launch\n\tBook venue");
+    expect(screen.getByText(/1 sub-task will be imported as an ordinary task/)).toBeInTheDocument();
+    const items = Array.from(screen.getByRole("list", { name: "Preview of the tasks" }).querySelectorAll("li"));
+    expect(items.map((li) => li.style.paddingLeft)).toEqual(["", ""]);
+  });
+
+  it("is described by its how-to, and keeps showing the preview while it closes", () => {
+    const { type, rerender, onClose } = setup({ defaultProjectId: "p-web" });
+    const dialog = screen.getByRole("dialog", { name: "Import tasks" });
+    const lede = document.getElementById(dialog.getAttribute("aria-describedby") ?? "");
+    expect(lede).toHaveTextContent(/indent a line to make it a sub-task/);
+    type("Call Sarah");
+    rerender(<ImportTasksModal open={false} onClose={onClose} onImport={vi.fn()} projects={projects} members={members} defaultProjectId="p-web" />);
+    // whatever is still on screen during the fade is what was there, never an empty sheet
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector(".ksheet-layer[data-state='closing']")).toHaveTextContent("1 task ready");
   });
 
   it("reads a Trello board's JSON export", async () => {

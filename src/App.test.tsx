@@ -19,7 +19,7 @@ const renderApp = () => render(
 const boot = async () => { renderApp(); await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument()); };
 const key = (k: string, opts: Record<string, unknown> = {}) => fireEvent.keyDown(document.body, { key: k, ...opts });
 const openTask = async (title: string) => { fireEvent.click((await screen.findAllByText(title))[0]); return screen.findByRole("dialog", { name: `Task: ${title}` }); };
-const DECK = "Finalize Q3 launch narrative deck"; // seeded demo task t-1, mine, in Foundrise
+const DECK = "Finalise Q3 launch narrative deck"; // seeded demo task t-1, mine, in Foundrise
 const lastOf = <T,>(xs: T[]): T => xs[xs.length - 1];
 const projectButton = (name: string) => {
   const btn = screen.getAllByText(name, { selector: ".kproj *" })[0]?.closest("button");
@@ -150,7 +150,7 @@ describe("App (demo mode)", () => {
     hideTab();
     await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    expect(await screen.findByText(/Restored “Finalize Q3 launch narrative deck” as a copy — it has a new link/)).toBeInTheDocument();
+    expect(await screen.findByText(/Restored “Finalise Q3 launch narrative deck” as a copy — it has a new link/)).toBeInTheDocument();
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ title: DECK, comments: 0 }), expect.anything()));
     await waitFor(() => expect(addSub).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(tick).toHaveBeenCalledTimes(2)); // the two ticked checklist items stay ticked

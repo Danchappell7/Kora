@@ -4,7 +4,8 @@ import {
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
   DAY_START, DAY_END, nextDueDate, nextOccurrence, nextOccurrenceChildren,
   refreshClock, KANBO_TODAY, NOW_MIN, presetDate, todayISO, parseTaskTokens,
-  seriesAnchorDay,
+  seriesAnchorDay, TASKS, DEMO_ACTIVITY, DEMO_TASK_EVENTS, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES,
+  DEMO_RULES, DEMO_FORMS,
 } from "./data";
 import type { Task } from "./types";
 
@@ -539,6 +540,13 @@ describe("capture tokens are cut where they were found", () => {
     // quick-add keeps a leading dash or trailing colon a title may need
     expect(parseTaskTokens("-5% churn: tomorrow").title).toBe("-5% churn:");
   });
+
+  it("doesn't read a date out of a word or a number that belongs to the title", () => {
+    for (const text of ["Fix 24/7 monitoring", "Review weekend sales", "Plan the weekend", "Monday standup notes", "Split the 50/50 budget"]) {
+      expect(parseCapture(text)!).toMatchObject({ title: text, dueDate: undefined });
+      expect(parseTaskTokens(text)).toEqual({ title: text });
+    }
+  });
 });
 
 describe("parseTaskTokens shares the fixes", () => {
@@ -550,5 +558,94 @@ describe("parseTaskTokens shares the fixes", () => {
     expect(b).toMatchObject({ focusMin: 180, priority: "high", dueDate: dayOffset(1), title: "Prepare review" });
     expect(parseTaskTokens("Email Sara tomorrow 90m").title).toBe("Email Sara");
     expect(parseTaskTokens("Plan next week").dueDate).toBe(dayOffset(7));
+  });
+});
+
+/* ---------- the living demo ---------- */
+describe("demo seed", () => {
+  const byId = (id: string) => TASKS.find((t) => t.id === id)!;
+
+  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30", () => {
+    expect(TASKS.map((t) => t.id)).toEqual(Array.from({ length: 30 }, (_, i) => `t-${i + 1}`));
+    expect(byId("t-1")).toMatchObject({ title: "Finalise Q3 launch narrative deck", status: "progress", projectId: "p-launch", assigneeId: "m-self" });
+    expect(byId("t-1").subtasks.filter((s) => s.done)).toHaveLength(2);
+    expect(byId("t-2")).toMatchObject({ status: "blocked", assigneeId: "m-1", dependencies: ["t-4"] });
+    expect(TASKS.every((t) => !!t.createdBy && !!t.createdAt)).toBe(true);
+  });
+
+  it("writes British English", () => {
+    const copy = TASKS.flatMap((t) => [t.title, t.description, t.aiReason ?? ""]).join(" ");
+    expect(copy).not.toMatch(/\b(finalize|color|organize|prioritize|canceled)\b/i);
+  });
+
+  it("puts Maya over a 40h week and leaves the press release unowned", () => {
+    const maya = ["t-2", "t-6", "t-10", "t-18"].reduce((h, id) => h + (byId(id).effortHours ?? 0), 0);
+    expect(maya).toBe(44);
+    expect(byId("t-30").effortHours).toBe(1);
+    expect(byId("t-17")).toMatchObject({ assigneeId: "", dueDate: dayOffset(2), projectId: "p-launch" });
+    // the deck really is holding up three tasks
+    expect(TASKS.filter((t) => t.dependencies.includes("t-1")).map((t) => t.id)).toEqual(["t-17", "t-20", "t-23"]);
+    expect(byId("t-23").isMilestone).toBe(true);
+  });
+
+  it("keeps Maya over capacity in this Monday–Sunday week, whichever day the demo opens", async () => {
+    vi.useFakeTimers();
+    try {
+      // Mon 28 Sep … Sun 4 Oct 2026
+      for (let day = 28; day <= 34; day++) {
+        vi.setSystemTime(new Date(2026, 8, day, 10, 0));
+        vi.resetModules();
+        const seed = await import("./data");
+        const today = new Date(2026, 8, day);
+        const monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+        const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+        const [from, to] = [seed.toLocalISO(monday), seed.toLocalISO(sunday)];
+        const hours = seed.TASKS
+          .filter((t) => t.assigneeId === "m-1" && t.status !== "done" && !t.isMilestone && t.dueDate && t.dueDate >= from && t.dueDate <= to)
+          .reduce((h, t) => h + (t.effortHours ?? 1), 0);
+        expect([seed.toLocalISO(today), hours]).toEqual([seed.toLocalISO(today), 45]);
+        // Monday to Thursday the dates are exactly as written (+1, +2, +3)
+        if (today.getDay() >= 1 && today.getDay() <= 4) expect(seed.TASKS.find((t) => t.id === "t-18")!.dueDate).toBe(seed.dayOffset(3));
+      }
+    } finally {
+      vi.useRealTimers();
+      vi.resetModules();
+    }
+  });
+
+  it("has a date that slipped twice and a task that went quiet", () => {
+    expect(byId("t-3").originalDueDate).toBe(dayOffset(-4));
+    const slips = DEMO_TASK_EVENTS.filter((e) => e.taskId === "t-3" && e.field === "due");
+    expect(slips.map((e) => e.newValue).sort()).toEqual([dayOffset(-1), dayOffset(3)].sort());
+    const t9 = DEMO_TASK_EVENTS.filter((e) => e.taskId === "t-9");
+    expect(t9).toHaveLength(1);
+    expect(Date.now() - Date.parse(t9[0].createdAt)).toBeGreaterThan(8 * 86400000);
+    expect(Date.now() - Date.parse(byId("t-9").createdAt!)).toBeGreaterThan(19 * 86400000);
+  });
+
+  it("gives Pulse two days of history, newest first, by real people", () => {
+    const names = new Set(DEMO_TASK_EVENTS.filter((e) => Date.now() - Date.parse(e.createdAt) < 3 * 86400000).map((e) => e.actorName));
+    expect([...names]).toEqual(expect.arrayContaining(["Maya Lin", "Theo Vance", "Sana Rao"]));
+    const times = DEMO_TASK_EVENTS.map((e) => e.createdAt);
+    expect(times).toEqual([...times].sort().reverse());
+    expect(DEMO_TASK_EVENTS.every((e) => TASKS.some((t) => t.id === e.taskId))).toBe(true);
+  });
+
+  it("fills the Inbox, Goals, Portfolios, updates, Rules and Requests", () => {
+    expect(DEMO_ACTIVITY).toHaveLength(6);
+    expect(DEMO_ACTIVITY.filter((a) => !a.readAt).map((a) => a.kind).sort()).toEqual(["assigned", "mention"]);
+    expect(DEMO_ACTIVITY.every((a) => a.taskTitle === TASKS.find((t) => t.id === a.taskId)?.title)).toBe(true);
+    // every row is from someone (the kinds the Inbox names an actor for), never "You …"
+    expect(DEMO_ACTIVITY.every((a) => ["assigned", "mention", "comment"].includes(a.kind))).toBe(true);
+    const members = ["Maya Lin", "Theo Vance", "Sana Rao"];
+    expect(DEMO_ACTIVITY.filter((a) => !a.detail.startsWith("Request via")).every((a) => members.includes(a.detail))).toBe(true);
+    // the request's task carries the line a form submission writes
+    expect(byId("t-25").description).toMatch(/^Request via Launch requests\./);
+    expect(DEMO_GOALS.map((g) => g.status)).toEqual(["on_track", "at_risk"]);
+    expect(DEMO_PORTFOLIOS).toEqual([expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] })]);
+    expect(DEMO_STATUS_UPDATES.some((u) => u.projectId === "p-infra")).toBe(false);
+    expect(DEMO_RULES[0]).toMatchObject({ projectId: "p-launch", trigger: "task_created", actions: [{ type: "add_tag", value: "eng" }] });
+    expect(DEMO_FORMS[0]).toMatchObject({ name: "Launch requests", fields: ["description", "priority", "dueDate"] });
+    expect(EVENTS.map((e) => e.id)).toEqual(expect.arrayContaining(["e1", "e2", "e3", "e4", "e5"]));
   });
 });

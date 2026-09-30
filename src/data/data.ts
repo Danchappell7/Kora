@@ -9,6 +9,7 @@ import type {
   Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/supabase";
+import { parseTask, tidyTitle, type NlpKind } from "../lib/nlp";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
    It is ONE Date object that refreshClock() (below, next to NOW_MIN) moves
@@ -240,7 +241,11 @@ export const BUILTIN_TAGS: Record<string, TagDef> = {
 export let TAGS: Record<string, TagDef> = { ...BUILTIN_TAGS };
 
 /* Tasks. status: todo|progress|review|blocked|done.  priority: low|medium|high|urgent
-   aiScore 0-100 = model's recommended priority. focusMin = estimated deep-work minutes. */
+   aiScore 0-100 = model's recommended priority. focusMin = estimated deep-work minutes.
+   The demo seed is a living week at Foundrise: a launch deck holding up three
+   tasks, a blocked hand-off, a date that slipped twice, stale work, one person
+   over capacity, an unassigned task due soon, and history for Pulse and Radar.
+   Ids t-1…t-16 keep their statuses, projects and assignees (tests lean on them). */
 let _id = 0;
 const t = (o: Partial<Task> & { title: string; status: Status; priority: Priority; projectId: string }): Task => ({
   id: "t-" + (++_id),
@@ -249,67 +254,137 @@ const t = (o: Partial<Task> & { title: string; status: Status; priority: Priorit
   dependencies: [],
   subtasks: [],
   assigneeId: "m-self",
+  createdBy: "m-self",
   focusMin: 30,
   comments: 0,
   aiScore: 0,
   ...o,
 });
+/* an ISO timestamp `days` ago at hh:mm local time (seed history) */
+function daysAgoAt(days: number, hh: number, mm = 0): string {
+  const d = new Date(KANBO_TODAY);
+  d.setDate(d.getDate() - days);
+  d.setHours(hh, mm, 0, 0);
+  return d.toISOString();
+}
+/* an ISO timestamp `minutes` before the page loaded (today's history, always in the past) */
+const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60000).toISOString();
+/* `n` days on, but never past this Sunday: Workload, Pulse and Radar count the
+   Monday–Sunday week, so Maya's ~45h stays in it (and over her 40h) whichever
+   day the demo is opened. Monday to Thursday it's plain dayOffset(n). */
+const thisWeek = (n: number): string => dayOffset(Math.min(n, 6 - ((KANBO_TODAY.getDay() + 6) % 7)));
 
 export const TASKS: Task[] = [
-  t({ title: "Finalize Q3 launch narrative deck", status: "progress", priority: "urgent", projectId: "p-launch",
+  t({ title: "Finalise Q3 launch narrative deck", status: "progress", priority: "urgent", projectId: "p-launch",
       assigneeId: "m-self", dueDate: dayOffset(0), originalDueDate: dayOffset(2), tags: ["writing"], aiScore: 96,
-      aiReason: "Blocks 3 downstream tasks and is due today.", focusMin: 90, comments: 4,
-      description: "Tighten the story arc, land the 'why now', and cut to 14 slides.",
+      aiReason: "Blocks 3 downstream tasks and is due today.", focusMin: 90, comments: 4, effortHours: 6,
+      createdAt: daysAgoAt(12, 9, 40),
+      description: "Tighten the story arc, land the ‘why now’, and cut to 14 slides.",
       subtasks: [
         { id: "s1", title: "Rewrite opening hook", done: true },
         { id: "s2", title: "Add traction chart", done: true },
         { id: "s3", title: "Trim to 14 slides", done: false },
       ] }),
   t({ title: "Ship onboarding redesign to staging", status: "blocked", priority: "high", projectId: "p-launch",
-      assigneeId: "m-1", dueDate: dayOffset(1), tags: ["eng", "design"], dependencies: ["t-4"], aiScore: 88,
-      aiReason: "Waiting on design tokens — nudge Sana to unblock.", focusMin: 120, comments: 2 }),
+      assigneeId: "m-1", dueDate: thisWeek(1), tags: ["eng", "design"], dependencies: ["t-4"], aiScore: 88,
+      aiReason: "Waiting on design tokens — nudge Sana to unblock.", focusMin: 120, comments: 2, effortHours: 12,
+      createdAt: daysAgoAt(10, 11, 5) }),
   t({ title: "Run pricing-page A/B test", status: "todo", priority: "high", projectId: "p-growth",
-      assigneeId: "m-2", dueDate: dayOffset(3), tags: ["research", "eng"], aiScore: 74,
-      aiReason: "High expected lift; start once deck is out.", focusMin: 60, comments: 1 }),
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(3), originalDueDate: dayOffset(-4), tags: ["research", "eng"], aiScore: 74,
+      aiReason: "High expected lift; start once the deck is out.", focusMin: 60, comments: 1, createdAt: daysAgoAt(14, 10, 0) }),
   t({ title: "Define design tokens v2", status: "review", priority: "high", projectId: "p-brand",
-      assigneeId: "m-3", dueDate: dayOffset(0), tags: ["design"], aiScore: 81,
-      aiReason: "In review — unblocks onboarding redesign.", focusMin: 45, comments: 6,
-      description: "Color, type scale, spacing, and motion primitives." }),
-  t({ title: "Draft investor update — May", status: "todo", priority: "medium", projectId: "p-personal",
+      assigneeId: "m-3", collaborators: ["m-self"], dueDate: dayOffset(0), tags: ["design"], aiScore: 81,
+      aiReason: "In review — unblocks the onboarding redesign.", focusMin: 45, comments: 6, effortHours: 8,
+      createdAt: daysAgoAt(15, 14, 20),
+      description: "Colour, type scale, spacing and motion primitives." }),
+  t({ title: "Draft investor update — Q3", status: "todo", priority: "medium", projectId: "p-personal",
       assigneeId: "m-self", dueDate: dayOffset(2), tags: ["writing"], aiScore: 58,
-      aiReason: "Recurring; batch with deck writing.", focusMin: 40, comments: 0 }),
+      aiReason: "Recurring; batch it with the deck writing.", focusMin: 40, comments: 0, createdAt: daysAgoAt(6, 8, 15) }),
   t({ title: "Migrate auth to edge sessions", status: "progress", priority: "urgent", projectId: "p-infra",
-      assigneeId: "m-1", dueDate: dayOffset(1), tags: ["eng"], aiScore: 91,
-      aiReason: "Security-sensitive and time-boxed this sprint.", focusMin: 150, comments: 3,
+      assigneeId: "m-1", dueDate: thisWeek(1), tags: ["eng"], aiScore: 91,
+      aiReason: "Security-sensitive and time-boxed this sprint.", focusMin: 150, comments: 3, effortHours: 16,
+      createdAt: daysAgoAt(9, 9, 0),
       subtasks: [
         { id: "s4", title: "Spike: token rotation", done: true },
-        { id: "s5", title: "Rollout behind flag", done: false },
+        { id: "s5", title: "Roll out behind a flag", done: false },
       ] }),
   t({ title: "Interview 5 churned users", status: "todo", priority: "medium", projectId: "p-growth",
       assigneeId: "m-4", dueDate: dayOffset(4), tags: ["research"], aiScore: 49,
-      aiReason: "Schedule mornings — your focus peaks then.", focusMin: 60, comments: 0 }),
+      aiReason: "Schedule mornings — your focus peaks then.", focusMin: 60, comments: 0, createdAt: daysAgoAt(8, 16, 30) }),
   t({ title: "Fix flaky CI on macOS runners", status: "todo", priority: "low", projectId: "p-infra",
-      assigneeId: "m-2", dueDate: dayOffset(6), tags: ["bug", "eng"], aiScore: 33,
-      aiReason: "Low urgency; good filler for fragmented time.", focusMin: 30, comments: 1 }),
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(6), tags: ["bug", "eng"], aiScore: 33,
+      aiReason: "Low urgency; good filler for fragmented time.", focusMin: 30, comments: 1, effortHours: 3,
+      createdAt: daysAgoAt(5, 13, 10) }),
   t({ title: "New homepage hero illustration", status: "progress", priority: "medium", projectId: "p-brand",
-      assigneeId: "m-3", dueDate: dayOffset(5), tags: ["design"], aiScore: 52,
-      aiReason: "Creative work — protect an afternoon block.", focusMin: 90, comments: 2 }),
+      assigneeId: "m-3", createdBy: "m-3", dueDate: dayOffset(5), tags: ["design"], aiScore: 52,
+      aiReason: "Creative work — protect an afternoon block.", focusMin: 90, comments: 2, effortHours: 10,
+      createdAt: daysAgoAt(20, 10, 30) }),
   t({ title: "Set up usage analytics events", status: "review", priority: "medium", projectId: "p-launch",
-      assigneeId: "m-1", dueDate: dayOffset(2), tags: ["eng"], dependencies: ["t-6"], aiScore: 61,
-      aiReason: "Needs edge sessions merged first.", focusMin: 45, comments: 0 }),
+      assigneeId: "m-1", dueDate: thisWeek(2), tags: ["eng"], dependencies: ["t-6"], aiScore: 61,
+      aiReason: "Needs edge sessions merged first.", focusMin: 45, comments: 0, effortHours: 6, createdAt: daysAgoAt(7, 15, 0) }),
   t({ title: "Weekly review & plan", status: "todo", priority: "low", projectId: "p-personal",
-      assigneeId: "m-self", dueDate: dayOffset(0), tags: ["ops"], aiScore: 40,
-      aiReason: "Anchor habit — keep the Friday slot.", focusMin: 25, comments: 0 }),
+      assigneeId: "m-self", dueDate: dayOffset(0), recurrence: "weekly", tags: ["ops"], aiScore: 40,
+      aiReason: "Anchor habit — keep the Friday slot.", focusMin: 25, comments: 0, createdAt: daysAgoAt(30, 17, 0) }),
   t({ title: "Approve Q3 launch budget", status: "done", priority: "high", projectId: "p-launch",
-      assigneeId: "m-self", dueDate: dayOffset(-1), completedAt: dayOffset(-1), tags: ["ops"], aiScore: 70, focusMin: 20 }),
+      assigneeId: "m-self", dueDate: dayOffset(-1), completedAt: dayOffset(-1), tags: ["ops"], aiScore: 70, focusMin: 20,
+      effortHours: 2, createdAt: daysAgoAt(9, 11, 0) }),
   t({ title: "Pick launch date with leadership", status: "done", priority: "high", projectId: "p-launch",
-      assigneeId: "m-self", dueDate: dayOffset(-2), completedAt: dayOffset(-2), tags: ["ops"], aiScore: 65, focusMin: 30 }),
+      assigneeId: "m-self", dueDate: dayOffset(-2), completedAt: dayOffset(-2), tags: ["ops"], aiScore: 65, focusMin: 30,
+      effortHours: 1, createdAt: daysAgoAt(11, 9, 30) }),
   t({ title: "Audit landing-page performance", status: "done", priority: "medium", projectId: "p-growth",
-      assigneeId: "m-2", dueDate: dayOffset(-3), completedAt: dayOffset(-3), tags: ["eng"], aiScore: 44, focusMin: 40 }),
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(-3), completedAt: dayOffset(-3), tags: ["eng"], aiScore: 44, focusMin: 40,
+      createdAt: daysAgoAt(10, 12, 0) }),
   t({ title: "Competitor teardown — 3 tools", status: "done", priority: "low", projectId: "p-growth",
-      assigneeId: "m-4", dueDate: dayOffset(-2), completedAt: dayOffset(-2), tags: ["research"], aiScore: 38, focusMin: 60 }),
-  t({ title: "Refresh brand color palette", status: "done", priority: "medium", projectId: "p-brand",
-      assigneeId: "m-3", dueDate: dayOffset(-4), completedAt: dayOffset(-1), tags: ["design"], aiScore: 50, focusMin: 50 }),
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(-2), completedAt: dayOffset(-2), tags: ["research"], aiScore: 38, focusMin: 60,
+      createdAt: daysAgoAt(13, 10, 45) }),
+  t({ title: "Refresh brand colour palette", status: "done", priority: "medium", projectId: "p-brand",
+      assigneeId: "m-3", createdBy: "m-3", dueDate: dayOffset(-4), completedAt: dayOffset(-1), tags: ["design"], aiScore: 50, focusMin: 50,
+      effortHours: 4, createdAt: daysAgoAt(16, 9, 15) }),
+  // ---- the launch week (t-17 onwards)
+  t({ title: "Write press release for launch", status: "todo", priority: "high", projectId: "p-launch",
+      assigneeId: "", dueDate: dayOffset(2), tags: ["writing"], dependencies: ["t-1"], aiScore: 72,
+      aiReason: "Due in two days and nobody owns it yet.", focusMin: 60, effortHours: 3, createdAt: daysAgoAt(3, 10, 20) }),
+  t({ title: "Load-test edge sessions", status: "todo", priority: "high", projectId: "p-infra",
+      assigneeId: "m-1", dueDate: thisWeek(3), tags: ["eng"], dependencies: ["t-6"], aiScore: 67,
+      aiReason: "Starts once the migration lands.", focusMin: 120, effortHours: 10, createdAt: daysAgoAt(2, 9, 50) }),
+  t({ title: "Review launch FAQ copy", status: "todo", priority: "medium", projectId: "p-launch",
+      assigneeId: "m-3", dueDate: dayOffset(1), tags: ["writing"], aiScore: 55, focusMin: 30, effortHours: 2,
+      createdAt: daysAgoAt(2, 14, 5) }),
+  t({ title: "Prep launch-day comms plan", status: "progress", priority: "high", projectId: "p-launch",
+      assigneeId: "m-self", dueDate: dayOffset(1), tags: ["writing"], dependencies: ["t-1"], aiScore: 77,
+      aiReason: "Due tomorrow; draft the timeline while the deck settles.", focusMin: 60, effortHours: 3,
+      createdAt: daysAgoAt(4, 11, 30) }),
+  t({ title: "Send the interview brief", status: "todo", priority: "medium", projectId: "p-launch",
+      assigneeId: "m-self", createdBy: "m-1", dueDate: dayOffset(0), tags: ["research"], aiScore: 63,
+      aiReason: "Maya handed it to you this morning; it's due today.", focusMin: 30, effortHours: 0.5, createdAt: minutesAgo(250) }),
+  t({ title: "Approve token naming", status: "todo", priority: "high", projectId: "p-brand",
+      assigneeId: "m-self", dueDate: dayOffset(0), tags: ["design"], aiScore: 79,
+      aiReason: "Twenty minutes that unblock the onboarding redesign.", focusMin: 20, effortHours: 0.5,
+      createdAt: daysAgoAt(1, 16, 40) }),
+  t({ title: "Launch day", status: "todo", priority: "high", projectId: "p-launch", isMilestone: true,
+      assigneeId: "m-self", dueDate: dayOffset(8), dependencies: ["t-1", "t-2"], aiScore: 60, focusMin: 15,
+      createdAt: daysAgoAt(11, 9, 45) }),
+  t({ title: "Record product demo video", status: "done", priority: "medium", projectId: "p-launch",
+      assigneeId: "m-2", dueDate: dayOffset(0), completedAt: dayOffset(0), tags: ["design"], aiScore: 58, focusMin: 60,
+      effortHours: 4, createdAt: daysAgoAt(6, 10, 0) }),
+  t({ title: "Update pricing FAQ", status: "todo", priority: "medium", projectId: "p-launch",
+      assigneeId: "m-self", createdBy: "m-2", dueDate: dayOffset(4), tags: ["writing"], aiScore: 46, focusMin: 45, effortHours: 2,
+      createdAt: daysAgoAt(1, 12, 0),
+      // the line a request form's submission opens with (Inbox reads "New request … via Launch requests")
+      description: "Request via Launch requests.\n\nThe pricing FAQ still lists the beta tiers — update it for launch." }),
+  t({ title: "Book venue for launch party", status: "todo", priority: "low", projectId: "p-launch",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(6), tags: ["ops"], aiScore: 35, focusMin: 30, effortHours: 2,
+      createdAt: daysAgoAt(3, 15, 15) }),
+  t({ title: "Renew passport", status: "todo", priority: "medium", projectId: "p-personal",
+      assigneeId: "m-self", dueDate: dayOffset(12), tags: ["ops"], aiScore: 30, focusMin: 30, createdAt: daysAgoAt(5, 20, 10) }),
+  t({ title: "Plan Q4 roadmap offsite", status: "todo", priority: "medium", projectId: "p-launch",
+      assigneeId: "m-self", tags: ["ops"], aiScore: 42, focusMin: 60, effortHours: 4, createdAt: daysAgoAt(12, 16, 0) }),
+  t({ title: "Accessibility pass on onboarding", status: "todo", priority: "medium", projectId: "p-launch",
+      assigneeId: "m-3", dueDate: dayOffset(5), tags: ["design"], aiScore: 57, focusMin: 90, effortHours: 6,
+      createdAt: daysAgoAt(4, 9, 20) }),
+  t({ title: "Security review sign-off", status: "review", priority: "high", projectId: "p-infra",
+      assigneeId: "m-1", createdBy: "m-1", dueDate: thisWeek(2), tags: ["eng"], aiScore: 70, focusMin: 30, effortHours: 1,
+      createdAt: daysAgoAt(3, 11, 50) }),
 ];
 
 /* ---- meta ---- */
@@ -429,21 +504,89 @@ export const PLAN_TODAY_IDS = ["t-1", "t-6", "t-3", "t-9", "t-5", "t-10"];
    are connected — empty for real accounts). */
 export let EVENTS: CalEvent[] = [
   { id: "e1", title: "Team standup", start: 9 * 60, end: 9 * 60 + 30, kind: "meeting", with: ["Maya", "Theo", "Sana"] },
+  { id: "e5", title: "Launch sync", start: 11 * 60, end: 11 * 60 + 30, kind: "meeting", with: ["Maya", "Theo"] },
   { id: "e2", title: "Lunch", start: 12 * 60, end: 13 * 60, kind: "break" },
   { id: "e3", title: "Design review", start: 13 * 60, end: 14 * 60, kind: "meeting", with: ["Sana", "Theo"] },
   { id: "e4", title: "1:1 with Maya", start: 16 * 60 + 30, end: 17 * 60, kind: "meeting", with: ["Maya"] },
 ];
 
-/* demo seed for the redesign's surfaces — Inbox, Pulse and Radar, Goals,
-   Portfolios, status updates, Rules and Requests. Empty until P14 fills them,
-   so demo mode looks exactly as it does today. */
-export const DEMO_ACTIVITY: Activity[] = [];
-export const DEMO_GOALS: Goal[] = [];
-export const DEMO_PORTFOLIOS: Portfolio[] = [];
-export const DEMO_STATUS_UPDATES: StatusUpdate[] = [];
-export const DEMO_TASK_EVENTS: WorkspaceEvent[] = [];
-export const DEMO_RULES: AutomationRule[] = [];
-export const DEMO_FORMS: FormDef[] = [];
+/* ============================================================
+   Demo seed for the redesign's surfaces: Inbox, Pulse and Radar,
+   Goals, Portfolios, status updates, Rules and Requests.
+   Demo mode only (store.ts hands these out when there's no Supabase).
+   ============================================================ */
+
+/* The Inbox: six items, two of them new. `detail` is the actor's full name,
+   and only on the kinds InboxView's actorOf names someone for (assigned,
+   mention, comment): a status or completed row is always the signed-in
+   user's own history, so it would read "You …". A request names its form. */
+export const DEMO_ACTIVITY: Activity[] = ([
+  { id: "a-demo-1", taskId: "t-4", taskTitle: "Define design tokens v2", kind: "mention", detail: "Sana Rao", createdAt: minutesAgo(40) },
+  { id: "a-demo-2", taskId: "t-21", taskTitle: "Send the interview brief", kind: "assigned", detail: "Maya Lin", createdAt: minutesAgo(250) },
+  { id: "a-demo-3", taskId: "t-24", taskTitle: "Record product demo video", kind: "comment", detail: "Theo Vance", createdAt: minutesAgo(125), readAt: minutesAgo(100) },
+  { id: "a-demo-4", taskId: "t-1", taskTitle: "Finalise Q3 launch narrative deck", kind: "comment", detail: "Theo Vance", createdAt: minutesAgo(310), readAt: minutesAgo(290) },
+  { id: "a-demo-5", taskId: "t-2", taskTitle: "Ship onboarding redesign to staging", kind: "mention", detail: "Maya Lin", createdAt: daysAgoAt(1, 15, 12), readAt: daysAgoAt(1, 15, 40) },
+  { id: "a-demo-6", taskId: "t-25", taskTitle: "Update pricing FAQ", kind: "assigned", detail: "Request via Launch requests", createdAt: daysAgoAt(1, 12, 0), readAt: daysAgoAt(1, 12, 30) },
+] satisfies Activity[]).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+
+/* Task history (task_events), newest first: status and due moves across the
+   last two days by Maya, Theo and Sana (Pulse's "done since yesterday"), the
+   pricing test's date slipping twice, and the hero illustration going quiet. */
+const ev = (id: string, taskId: string, actorId: string, field: WorkspaceEvent["field"], oldValue: string | null, newValue: string | null, createdAt: string): WorkspaceEvent => ({
+  id, taskId, actorId, actorName: MEMBERS.find((m) => m.id === actorId)?.name ?? "Someone", field, oldValue, newValue, createdAt,
+});
+export const DEMO_TASK_EVENTS: WorkspaceEvent[] = [
+  ev("ev-1", "t-24", "m-2", "status", "progress", "done", minutesAgo(130)),
+  ev("ev-2", "t-10", "m-1", "status", "progress", "review", minutesAgo(190)),
+  ev("ev-3", "t-21", "m-1", "assignee", "m-1", "m-self", minutesAgo(250)),
+  ev("ev-4", "t-12", "m-self", "status", "review", "done", daysAgoAt(1, 17, 45)),
+  ev("ev-5", "t-26", "m-2", "due", dayOffset(4), dayOffset(6), daysAgoAt(1, 16, 30)),
+  ev("ev-6", "t-2", "m-1", "status", "progress", "blocked", daysAgoAt(1, 15, 10)),
+  ev("ev-7", "t-4", "m-3", "status", "progress", "review", daysAgoAt(1, 11, 5)),
+  ev("ev-8", "t-16", "m-3", "status", "review", "done", daysAgoAt(1, 10, 20)),
+  ev("ev-9", "t-3", "m-2", "due", dayOffset(-1), dayOffset(3), daysAgoAt(2, 14, 20)),
+  ev("ev-10", "t-13", "m-self", "status", "progress", "done", daysAgoAt(2, 12, 15)),
+  ev("ev-11", "t-6", "m-1", "status", "todo", "progress", daysAgoAt(2, 9, 30)),
+  ev("ev-12", "t-3", "m-2", "due", dayOffset(-4), dayOffset(-1), daysAgoAt(6, 10, 0)),
+  ev("ev-13", "t-9", "m-3", "status", "todo", "progress", daysAgoAt(9, 11, 0)),
+].sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+
+/* the launch goal lands with the Launch day milestone (t-23) */
+const LAUNCH_DAY = dayOffset(8);
+const launchDayLabel = (() => {
+  const d = new Date(LAUNCH_DAY + "T00:00:00");
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+})();
+export const DEMO_GOALS: Goal[] = [
+  { id: "g-launch", name: `Launch Q3 on ${launchDayLabel}`, description: "Ship the Q3 launch on the date we told customers.",
+    status: "on_track", projectId: "p-launch", due: LAUNCH_DAY, workspaceId: "ws-foundrise", position: 0 },
+  { id: "g-actives", name: "Grow weekly actives to 5,000", description: "Weekly active users across web and mobile.",
+    target: 5000, current: 3900, unit: "users", status: "at_risk", due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: "ws-foundrise", position: 1 },
+];
+
+export const DEMO_PORTFOLIOS: Portfolio[] = [
+  { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise" },
+];
+
+/* Platform Infra has no update at all, so it reads as stale. */
+export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
+  { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise",
+    summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way." },
+  { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise",
+    summary: "Deck is the critical path; onboarding is blocked on tokens." },
+];
+
+/* Rules have no conditions yet, so "tag bugs" would tag every new launch task:
+   it ships switched off, ready to show (and to switch on). */
+export const DEMO_RULES: AutomationRule[] = [
+  { id: "rule-bugs", projectId: "p-launch", workspaceId: "ws-foundrise", name: "Tag bugs for engineering",
+    trigger: "task_created", actions: [{ type: "add_tag", value: "eng" }], enabled: false },
+];
+
+export const DEMO_FORMS: FormDef[] = [
+  { id: "form-launch", projectId: "p-launch", workspaceId: "ws-foundrise", name: "Launch requests",
+    description: "Ask the launch team for copy, assets or a fix before launch day.", fields: ["description", "priority", "dueDate"] },
+];
 
 export const fmtClock = (m: number): string => {
   const h = Math.floor(m / 60), mm = m % 60, ap = h >= 12 ? "pm" : "am", hh = h % 12 || 12;
@@ -535,54 +678,15 @@ export function planDay(tasks: Task[], events: CalEvent[], opts: { nowMin?: numb
   return planDayDetailed(tasks, events, opts).placed;
 }
 
-/* ---- natural-language tokens shared by both parsers ----
-   Each token must stand on its own: preceded by the start, a space or an
-   opening bracket (words also after a comma — not durations, or "10,000
-   hours" would read as 0), and not followed by a letter, digit or
-   apostrophe — so "Q3", "3pm" and "today's numbers" are left alone while
-   "(2h)" and "[tomorrow]" still count. Removing a token keeps what led into
-   it plus a space, so words don't fuse; tidyTitle then drops the "()" it
-   may leave behind. */
-const HOURS_RE = /(^|[\s(\[])(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)(?:(\d{1,2})(?:m|mins?|minutes?)?|\s+(\d{1,2})\s*(?:m|mins?|minutes?))?(?![\w'’])/i;
-const MINS_RE = /(^|[\s(\[])(\d+)\s*(?:m|mins?|minutes?)(?![\w'’])/i;
-/* Cut a match out of `s` AT ITS POSITION, putting `keep` in its place.
-   (`s.replace(m[0], …)` would cut the first literal copy instead — which can
-   be one the regex deliberately skipped: the " today" inside "today's" in
-   "Review today's numbers today".) */
-function cutMatch(s: string, m: RegExpMatchArray, keep = " "): string {
-  const at = m.index ?? s.indexOf(m[0]);
-  return s.slice(0, at) + keep + s.slice(at + m[0].length);
-}
-/* "90m", "45 mins", "1.5h", "3 hrs", "2 hours", "1h30", "1h 30m" → minutes */
-function takeDuration(s: string): { min: number; rest: string } | null {
-  const h = s.match(HOURS_RE);
-  if (h) {
-    const min = Math.round(parseFloat(h[2]) * 60) + parseInt(h[3] ?? h[4] ?? "0", 10);
-    return { min, rest: cutMatch(s, h, h[1] + " ") };
-  }
-  const m = s.match(MINS_RE);
-  if (m) return { min: parseInt(m[2], 10), rest: cutMatch(s, m, m[1] + " ") };
-  return null;
-}
-/* "today" / "tomorrow" / "next week", with an optional lead-in ("by", "due",
-   "for") that goes with it: "Send invoice by tomorrow" → "Send invoice". */
-const DUE_WORD_RE = /(^|[\s(\[,;])(?:(?:by|due|for)\s+)?(today|tomorrow|next\s+week)(?![\w'’])/i;
-function takeDueWord(s: string): { offset: number; rest: string } | null {
-  const m = s.match(DUE_WORD_RE);
-  if (!m) return null;
-  const w = m[2].toLowerCase();
-  return { offset: w === "today" ? 0 : w === "tomorrow" ? 1 : 7, rest: cutMatch(s, m, m[1] + " ") };
-}
-/* energy words: "deep work" / "focus time" / "focus block" anywhere, or a bare
-   "deep" / "focus" as the last word. "Focus group prep" or "Deep dive into
-   churn" are titles, not energy. */
-const DEEP_RE = /(^|[\s(\[,;])(deep|focus)(?:[\s-]+(?:work|time|block)(?![\w'’])|(?=[\s.,;:!?)\]]*$))/i;
-/* what's left once tokens are cut out: a "()" / "[]" a token sat in (only a
-   free-standing one — "parseDate()" keeps its brackets), doubled spaces and
-   separators stranded at either end (`edge`) */
+/* ---- natural-language capture ----
+   Both parsers below are thin wrappers over lib/nlp's parseTask (the one
+   grammar), kept with their original signatures and return shapes. They read
+   only the tokens they have always read — everything else stays in the title
+   exactly as typed — and "next week" is a week today, as it always was. */
+const CAPTURE_KINDS: NlpKind[] = ["duration", "date", "priority", "energy"];
+const TOKEN_KINDS: NlpKind[] = ["duration", "priority", "date", "project", "person"];
+/* capture trims a stranded "-", "–" or ":" too; quick-add keeps them */
 const EDGE_SEPARATORS = /^[\s,;:–—-]+|[\s,;:–—-]+$/g;
-const tidyTitle = (s: string, edge: RegExp = EDGE_SEPARATORS): string =>
-  s.replace(/(^|\s)(?:\(\s*\)|\[\s*\])(?=[\s.,;:!?]|$)/g, "$1").replace(/\s{2,}/g, " ").replace(edge, "").trim();
 /* the signed-in user (demo: "m-self") — the store maps it on insert anyway,
    but using the real id keeps the task in My Week before the next reload */
 const selfMemberId = (): string => MEMBERS.find((m) => m.type === "self")?.id ?? "m-self";
@@ -593,60 +697,39 @@ const selfMemberId = (): string => MEMBERS.find((m) => m.type === "self")?.id ??
 export interface CaptureOptions { projectId?: string; assigneeId?: string }
 let _capId = 1000;
 export function parseCapture(text: string, opts: CaptureOptions = {}): Task | null {
-  let s = text.trim();
-  if (!s) return null;
-  let dur = 30;
+  if (!text.trim()) return null;
+  const p = parseTask(text, { today: KANBO_TODAY, kinds: CAPTURE_KINDS, nextWeek: "+7", priorityWords: true });
+  let s = tidyTitle(p.title, EDGE_SEPARATORS);
+  const dur = p.focusMin != null ? Math.max(SLOT_MIN, p.focusMin) : 30;
   let energy: EnergyKind = "admin";
   let tag: string | null = null;
-  let dueDate: string | undefined;       // no date unless the text says so
-  let priority: Priority = "medium";
-  const d = takeDuration(s);
-  if (d) { dur = Math.max(SLOT_MIN, d.min); s = d.rest; }
-  const due = takeDueWord(s);
-  if (due) { dueDate = dayOffset(due.offset); s = due.rest; }
-  const pm = s.match(/(^|[\s(\[,;])(?:urgent|asap)(?![\w'’])|!{2,}/i);
-  if (pm) { priority = "high"; s = cutMatch(s, pm, (pm[1] ?? "") + " "); }
-  const deep = s.match(DEEP_RE);
-  if (deep) {
-    energy = "deep"; tag = "writing";
-    const at = (deep.index ?? 0) + deep[1].length;
-    // a leading "Deep work on the pricing model" IS the title — keep it;
-    // elsewhere it's an annotation ("Draft deck deep work") — drop it
-    if (at > 0 && s.slice(0, at).trim()) s = cutMatch(s, deep, deep[1] + " ");
-  }
+  if (p.energy === "deep") { energy = "deep"; tag = "writing"; }
   else if (/\bdesign|creativ/i.test(s)) { energy = "create"; tag = "design"; }
   else if (/\bcall\b|\bmeet|\binterview/i.test(s)) { energy = "collab"; tag = "research"; }
-  s = tidyTitle(s);
   if (!s) s = "New task";
   // built-in tag ids only exist in demo mode — real accounts have their own tags
   const tags = tag && !isSupabaseConfigured && TAGS[tag] ? [tag] : [];
   return {
     id: "t-cap" + (++_capId), title: s.charAt(0).toUpperCase() + s.slice(1), description: "",
-    status: "todo", priority, projectId: opts.projectId || "p-personal", assigneeId: opts.assigneeId || selfMemberId(),
-    dueDate, tags, dependencies: [], subtasks: [], comments: 0,
+    status: "todo", priority: p.priority ?? "medium", projectId: opts.projectId || "p-personal", assigneeId: opts.assigneeId || selfMemberId(),
+    dueDate: p.dueDate, tags, dependencies: [], subtasks: [], comments: 0,
     focusMin: dur, dur, energy, scheduled: null, aiScore: 60,
-    aiReason: "Captured just now — drag it onto your day or hit Auto-plan.", planToday: true,
+    aiReason: "Captured just now — drag it onto your day, or let Plan my day place it.", planToday: true,
   };
 }
 
 /* Natural-language tokens for the New-task quick add:
    "Email Sara tomorrow 90m #Foundrise !high @dan" → fields + cleaned title. */
 export interface ParsedTokens { title: string; dueDate?: string; priority?: Priority; projectId?: string; assigneeId?: string; focusMin?: number }
-export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = []): ParsedTokens {
-  let s = text;
-  const out: ParsedTokens = { title: "" };
-  const dur = takeDuration(s);
-  if (dur) { out.focusMin = dur.min; s = dur.rest; }
-  const pw = s.match(/(^|\s)!(urgent|high|medium|med|low)\b/i);
-  if (pw) { const w = pw[2].toLowerCase(); out.priority = (w === "med" ? "medium" : w) as Priority; s = cutMatch(s, pw); }
-  else { const bang = s.match(/(^|\s)(!{1,3})(?=\s|$)/); if (bang) { out.priority = bang[2].length >= 3 ? "urgent" : bang[2].length === 2 ? "high" : "medium"; s = cutMatch(s, bang); } }
-  const due = takeDueWord(s);
-  if (due) { out.dueDate = dayOffset(due.offset); s = due.rest; }
-  const projM = s.match(/(^|\s)#([\w-]+)/);
-  if (projM) { const q = projM[2].toLowerCase(); const p = projects.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || projects.find((x) => x.name.toLowerCase().includes(q)); if (p) { out.projectId = p.id; s = cutMatch(s, projM); } }
-  const asM = s.match(/(^|\s)@([\w-]+)/);
-  if (asM) { const q = asM[2].toLowerCase(); const m = members.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || members.find((x) => x.name.toLowerCase().includes(q)); if (m) { out.assigneeId = m.id; s = cutMatch(s, asM); } }
-  // gentler edges than capture: a title may well start with "-" or end in ":"
-  out.title = tidyTitle(s, /^[\s,;]+|[\s,;]+$/g);
+export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = [],
+  opts: { dateOrder?: "dmy" | "mdy" } = {}): ParsedTokens {
+  // (an import passes its file's date order, so "10/3" in a US list is 3 October)
+  const p = parseTask(text, { today: KANBO_TODAY, projects, members, kinds: TOKEN_KINDS, nextWeek: "+7", dateOrder: opts.dateOrder });
+  const out: ParsedTokens = { title: p.title };
+  if (p.focusMin != null) out.focusMin = p.focusMin;
+  if (p.priority) out.priority = p.priority;
+  if (p.dueDate) out.dueDate = p.dueDate;
+  if (p.projectId) out.projectId = p.projectId;
+  if (p.assigneeId) out.assigneeId = p.assigneeId;
   return out;
 }
