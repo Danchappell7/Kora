@@ -104,6 +104,7 @@ const PANEL_CSS = `
 
 /* ⋯ menu */
 .ktd-menuwrap { position: relative; display: inline-flex; }
+.ktd-menuwrap > .kibtn[aria-expanded="true"] { background: var(--fill-2); color: var(--ink); }
 .ktd-menu, .ktd-pop {
   min-width: 212px; padding: 4px; border-radius: var(--r-lg, 12px);
   background: linear-gradient(var(--surface-raised), var(--surface-raised)), var(--surface-solid);
@@ -188,6 +189,7 @@ textarea.ktd-title:focus { background: transparent; }
 }
 .ktd-input[data-mono="true"] { font: 500 12px/20px var(--font-mono); font-variant-numeric: tabular-nums; }
 .ktd-input[data-narrow="true"] { width: 112px; flex: none; }
+.ktd-input[data-narrow="xs"] { width: 80px; flex: none; }
 .ktd-input::placeholder { color: var(--ink-4); font-family: ${UI}; font-size: 13px; }
 .ktd-input:hover { background: var(--fill-1); }
 .ktd-input:focus { background: var(--field-bg, var(--surface)); border-color: var(--field-border-hover, var(--hairline-strong)); }
@@ -220,7 +222,7 @@ textarea.ktd-title:focus { background: transparent; }
 
 /* description */
 .ktd-desc { position: relative; margin-top: 20px; }
-.ktd-desc-view { max-width: var(--read-max, 720px); margin: 0 -8px; padding: 4px 8px; border-radius: var(--r-sm, 6px); font: 400 15px/24px ${UI}; color: var(--ink-2); overflow-wrap: anywhere; }
+.ktd-desc-view { display: block; width: calc(100% + 16px); max-width: var(--read-max, 720px); margin: 0 -8px; padding: 4px 8px; border: 0; background: none; text-align: left; border-radius: var(--r-sm, 6px); font: 400 15px/24px ${UI}; color: var(--ink-2); overflow-wrap: anywhere; }
 .ktd-desc-view[data-editable="true"] { cursor: text; }
 .ktd-desc-view[data-editable="true"]:hover { background: var(--fill-1); }
 .ktd-desc-view[data-empty="true"] { color: var(--ink-4); }
@@ -276,8 +278,9 @@ button.ktd-row-title:focus-visible::after { outline: 2px solid var(--accent); ou
 .ktd-time { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
 .ktd-c-body { margin-top: 2px; font: 400 14px/22px ${UI}; color: var(--ink); overflow-wrap: anywhere; }
 .ktd-c-body a { color: var(--accent-text, var(--accent)); }
-.ktd-c-foot { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
-.ktd-c-tools { display: inline-flex; flex-wrap: wrap; gap: 0; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
+.ktd-c-foot { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; }
+.ktd-c-foot > .ktd-react + .ktd-c-tools, .ktd-c-foot > .ktd-react { margin-left: 0; }
+.ktd-c-tools { display: inline-flex; flex-wrap: wrap; gap: 0; margin-left: -6px; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
 .ktd-c:hover .ktd-c-tools, .ktd-c:focus-within .ktd-c-tools { opacity: 1; }
 .ktd-act { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 6px; border: 0; border-radius: var(--r-sm, 6px); background: transparent; font: 500 12px/1 ${UI}; color: var(--ink-3); cursor: pointer; }
 .ktd-act:hover { background: var(--fill-1); color: var(--ink); }
@@ -378,7 +381,7 @@ function PropSelect({ id, value, options, onChange, text, leading, empty, wide, 
       <span aria-hidden="true" style={{ display: "contents" }}>
         {leading}
         <span className="ktd-val-text">{text}</span>
-        <Icon name="chevronDown" size={14} sw={1.75} className="ktd-chev" />
+        {!small && <Icon name="chevronDown" size={14} sw={1.75} className="ktd-chev" />}
       </span>
       <select ref={selectRef} id={id} value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -509,7 +512,7 @@ function AssigneeMenu({ anchorRef, onClose, people, currentUserId, assigneeId, c
     <Popover open anchorRef={anchorRef} onClose={onClose} role="dialog" label="Assignee" minWidth={264} maxHeight={380}
       initialFocus={searchRef} className="ktd-pop" style={{ padding: 4, width: 280 }}>
       <div onKeyDown={(e) => moveFocus(e, 'input, [role="option"], [data-collab]')}>
-        {people.length > 6 && (
+        {people.length > 1 && (
           <input ref={searchRef} className="ktd-pop-search" value={q} onChange={(e) => setQ(e.target.value)}
             placeholder="Find someone…" aria-label="Find someone" autoComplete="off" spellCheck={false} />
         )}
@@ -686,7 +689,8 @@ export interface TaskDetailProps {
   onCreateCustomField?: (projectId: string, name: string, type: CustomFieldDef["type"], options: string[]) => void;
   onDeleteCustomField?: (id: string) => void;
   sections?: Section[];
-  onCreateSection?: (projectId: string, name: string) => void;
+  /** may return the new section's (temporary) id, which the task is then filed under straight away */
+  onCreateSection?: (projectId: string, name: string) => string | void | undefined;
   onCreateTag: (label: string, color: string) => void;
   onDeleteTag: (id: string) => void;
   onAddComment: (taskId: string, body: string, mentions?: string[], parentId?: string) => Promise<Comment | null>;
@@ -1113,7 +1117,11 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
     if (!n || !onCreateSection) return;
     const existing = sections.find((s) => s.name.trim().toLowerCase() === n.toLowerCase());
     if (existing) onPatch(task.id, { sectionId: existing.id });
-    else { pendingSection.current = { name: n.toLowerCase(), before: new Set(sections.map((s) => s.id)) }; onCreateSection(task.projectId, n); }
+    else {
+      pendingSection.current = { name: n.toLowerCase(), before: new Set(sections.map((s) => s.id)) };
+      const made = onCreateSection(task.projectId, n);
+      if (typeof made === "string" && made) { pendingSection.current = null; onPatch(task.id, { sectionId: made }); }
+    }
     setSectionName(""); setAddingSection(false);
   };
   const addSub = () => { const v = newSub.trim(); if (v) { onAddSubtask(task.id, v); setNewSub(""); } };
@@ -1352,7 +1360,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
   const totalReacts = Object.values(taskReactions).reduce((n, u) => n + (u?.length ?? 0), 0);
   const chosenCollaborators = (task.collaborators ?? []).filter((id) => id !== task.assigneeId);
   const section = sections.find((s) => s.id === task.sectionId);
-  const hasSections = sections.length > 0 || !!onCreateSection;
+  // a project that doesn't use sections doesn't get a "No section" on every task
+  const hasSections = sections.length > 0 || !!task.sectionId;
 
   /* ---------- which optional fields show ---------- */
   const hasRepeat = !!task.recurrence && task.recurrence !== "none";
@@ -1448,7 +1457,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
       <dd>
         {readOnly ? readValue(logged == null ? "—" : fmtHours(logged), logged == null) : (
           <>
-            <BufferedInput id={ids.logged} className="ktd-input" data-mono="true" data-narrow="true" placeholder="0h" value={fmtHours(logged)}
+            <BufferedInput id={ids.logged} className="ktd-input" data-mono="true" data-narrow="xs" placeholder="0h" value={fmtHours(logged)}
               onCommit={(s) => { const h = parseHours(s); if (h === null || h === logged) return false; onPatch(task.id, { loggedHours: h }); }} />
             {[0.5, 1].map((h) => (
               <Button key={h} variant="ghost" size="sm" title={h === 1 ? "Log an hour" : "Log 30 minutes"} style={{ color: "var(--ink-3)", padding: "0 8px" }}
@@ -1515,6 +1524,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
         </div>
       )}
     </div>
+  );
+  const addDepButton = (
+    <Button ref={depAddRef} variant="ghost" size="sm" icon="plus" onClick={() => { setDepQuery(""); setDepIdx(0); setDepPickerOpen(true); }} style={{ marginLeft: -10, color: "var(--ink-3)" }}>Add dependency</Button>
   );
   const depRow = (t: Task, kind: "blocker" | "dependent") => {
     const tdone = t.status === "done";
@@ -1825,7 +1837,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
         {(!readOnly || desc) && (
           <div className="ktd-desc">
             <h3 className="sr-only" id={ids.desc}>Description</h3>
-            {!readOnly && !descEditing && (
+            {!readOnly && !descEditing && desc && (
               <Button ref={descEditBtnRef} variant="ghost" size="sm" className="ktd-desc-edit" aria-label="Edit description" onClick={startDescEdit}>Edit</Button>
             )}
             {descEditing && !readOnly ? (
@@ -1876,10 +1888,12 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
                   </div>
                 )}
               </div>
+            ) : !desc ? (
+              <button ref={descEditBtnRef} type="button" className="ktd-desc-view" data-editable="true" data-empty="true" aria-label="Edit description" onClick={startDescEdit}>Add details…</button>
             ) : (
-              <div className="ktd-desc-view" data-editable={!readOnly || undefined} data-empty={!desc || undefined}
+              <div className="ktd-desc-view" data-editable={!readOnly || undefined}
                 onClick={(e) => { if (readOnly || (e.target as HTMLElement).closest("a")) return; startDescEdit(); }}>
-                {desc ? renderRich(desc, mentionNames) : "Add details…"}
+                {renderRich(desc, mentionNames)}
               </div>
             )}
           </div>
@@ -1938,33 +1952,25 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
         )}
 
         {/* ================= dependencies ================= */}
-        {(deps.length > 0 || dependents.length > 0) ? (
-          <>
-            {(deps.length > 0 || canAddDep) && (
-              <section className="ktd-sec" aria-labelledby={`${uid}-blockedby`}>
-                <div className="ksection">
-                  <h3 className="ksection-title" id={`${uid}-blockedby`}>Blocked by{deps.length > 0 && <span className="ksection-count">{deps.length}</span>}</h3>
-                </div>
-                {deps.map((b) => depRow(b, "blocker"))}
-                {depPicker || (canAddDep && (
-                  <Button ref={depAddRef} variant="ghost" size="sm" icon="plus" onClick={() => { setDepQuery(""); setDepIdx(0); setDepPickerOpen(true); }} style={{ marginLeft: -10, color: "var(--ink-3)" }}>Add dependency</Button>
-                ))}
-              </section>
-            )}
-            {dependents.length > 0 && (
-              <section className="ktd-sec" aria-labelledby={`${uid}-blocking`}>
-                <div className="ksection">
-                  <h3 className="ksection-title" id={`${uid}-blocking`}>Blocking<span className="ksection-count">{dependents.length}</span></h3>
-                </div>
-                {dependents.map((d) => depRow(d, "dependent"))}
-              </section>
-            )}
-          </>
-        ) : canAddDep && (
-          <div style={{ marginTop: 12 }}>
-            {depPicker || <Button ref={depAddRef} variant="ghost" size="sm" icon="plus" onClick={() => { setDepQuery(""); setDepIdx(0); setDepPickerOpen(true); }} style={{ marginLeft: -10, color: "var(--ink-3)" }}>Add dependency</Button>}
-          </div>
+        {deps.length > 0 && (
+          <section className="ktd-sec" aria-labelledby={`${uid}-blockedby`}>
+            <div className="ksection">
+              <h3 className="ksection-title" id={`${uid}-blockedby`}>Blocked by<span className="ksection-count">{deps.length}</span></h3>
+            </div>
+            {deps.map((b) => depRow(b, "blocker"))}
+            {canAddDep && (depPicker || addDepButton)}
+          </section>
         )}
+        {dependents.length > 0 && (
+          <section className="ktd-sec" aria-labelledby={`${uid}-blocking`}>
+            <div className="ksection">
+              <h3 className="ksection-title" id={`${uid}-blocking`}>Blocking<span className="ksection-count">{dependents.length}</span></h3>
+            </div>
+            {dependents.map((d) => depRow(d, "dependent"))}
+          </section>
+        )}
+        {/* nothing blocks it yet: just the way to say so */}
+        {deps.length === 0 && canAddDep && <div style={{ marginTop: dependents.length ? 8 : 12 }}>{depPicker || addDepButton}</div>}
 
         {/* ================= files (hidden while there are none) ================= */}
         {(files.length > 0 || uploading) && (
