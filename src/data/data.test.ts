@@ -540,6 +540,13 @@ describe("capture tokens are cut where they were found", () => {
     // quick-add keeps a leading dash or trailing colon a title may need
     expect(parseTaskTokens("-5% churn: tomorrow").title).toBe("-5% churn:");
   });
+
+  it("doesn't read a date out of a word or a number that belongs to the title", () => {
+    for (const text of ["Fix 24/7 monitoring", "Review weekend sales", "Plan the weekend", "Monday standup notes", "Split the 50/50 budget"]) {
+      expect(parseCapture(text)!).toMatchObject({ title: text, dueDate: undefined });
+      expect(parseTaskTokens(text)).toEqual({ title: text });
+    }
+  });
 });
 
 describe("parseTaskTokens shares the fixes", () => {

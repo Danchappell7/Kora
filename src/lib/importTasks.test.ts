@@ -98,6 +98,25 @@ describe("natural-language text", () => {
     expect(rows[2]).toMatchObject({ title: "Draft deck", priority: "high" });
     expect(rows[2].dueDate).toBeTruthy();
   });
+  it("never invents a date from a word or a number that is part of the title", () => {
+    const rows = analyseImport([
+      "Set up 24/7 on-call rota", "Review weekend sales", "Cancel the monthly subscription", "Monday standup notes",
+      "Look at 3 vendor quotes", "Prep for the Monday meeting", "Split the 50/50 budget",
+    ].join("\n"), opts).rows;
+    expect(rows.map((r) => r.title)).toEqual([
+      "Set up 24/7 on-call rota", "Review weekend sales", "Cancel the monthly subscription", "Monday standup notes",
+      "Look at 3 vendor quotes", "Prep for the Monday meeting", "Split the 50/50 budget",
+    ]);
+    expect(rows.every((r) => r.dueDate === undefined)).toBe(true);
+  });
+  it("reads a day/month in a title in the import's date order", () => {
+    const text = "Pay the invoice by 10/3\nFile the return 3/10 !high";
+    const dmy = analyseImport(text, opts).rows;
+    expect(dmy.map((r) => r.dueDate?.slice(5))).toEqual(["03-10", "10-03"]);
+    const mdy = analyseImport(text, { ...opts, dateOrder: "mdy" }).rows;
+    expect(mdy.map((r) => r.dueDate?.slice(5))).toEqual(["10-03", "03-10"]);
+    expect(mdy.map((r) => r.title)).toEqual(["Pay the invoice", "File the return"]);
+  });
   it("can be switched off", () => {
     const rows = analyseImport("Record 5 min intro video", { ...opts, smartText: false }).rows;
     expect(rows[0].title).toBe("Record 5 min intro video");

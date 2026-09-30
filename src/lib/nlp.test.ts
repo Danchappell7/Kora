@@ -84,7 +84,33 @@ describe("dates", () => {
     ["Cut portions to 1/2", { title: "Cut portions to 1/2" }],
     ["Pay rent 31/02", { title: "Pay rent 31/02" }],
     ["Budget 10,000 for Q3", { title: "Budget 10,000 for Q3" }],
+    // a bare day/month mid-sentence needs a lead-in or a token after it; 24/7 is never a day
+    ["Set up 24/7 on-call rota", { title: "Set up 24/7 on-call rota" }],
+    ["Fix 24/7 monitoring", { title: "Fix 24/7 monitoring" }],
+    ["Support 24/7", { title: "Support 24/7" }],
+    ["Split the 20/12 budget", { title: "Split the 20/12 budget" }],
+    ["Pay rent by 3/10 please", { title: "Pay rent please", dueDate: "2026-10-03" }],
+    ["Pay rent 3/10 !high", { title: "Pay rent", dueDate: "2026-10-03", priority: "high" }],
+    ["Book the train 3/10 at 9am", { title: "Book the train", dueDate: "2026-10-03", dueTime: "09:00" }],
+    // "weekend" is a word too: only a lead-in, this/next or the end make it a day
+    ["Review weekend sales", { title: "Review weekend sales" }],
+    ["Plan the weekend", { title: "Plan the weekend" }],
+    ["Tidy the garage by the weekend", { title: "Tidy the garage", dueDate: "2026-10-03" }],
+    ["Paint the fence at the weekend", { title: "Paint the fence", dueDate: "2026-10-03" }],
+    ["Tidy the garage weekend 10am", { title: "Tidy the garage", dueDate: "2026-10-03", dueTime: "10:00" }],
+    // a day after "the", "last", "our"… is a noun; a title that opens with its day keeps it
+    ["Prep for the Monday meeting", { title: "Prep for the Monday meeting" }],
+    ["Last friday retro notes", { title: "Last friday retro notes" }],
+    ["Enjoy the sun", { title: "Enjoy the sun" }],
+    ["Monday standup notes", { title: "Monday standup notes" }],
+    ["Monday 9am standup", { title: "standup", dueDate: "2026-10-05", dueTime: "09:00" }],
+    ["Fri: send the deck", { title: ": send the deck", dueDate: "2026-10-02" }],
   ]);
+  it("reads 3/10 month first when a file says so (import's date order)", () => {
+    expect(parse("Pay rent 10/3", { dateOrder: "mdy" }).dueDate).toBe("2026-10-03");
+    expect(parse("Pay rent 10/3").dueDate).toBe("2027-03-10");
+    expect(parse("Pay rent 2026-10-03", { dateOrder: "mdy" }).dueDate).toBe("2026-10-03");
+  });
 });
 
 describe("times", () => {
@@ -104,6 +130,15 @@ describe("times", () => {
     ["Call Sana fri 3pm", { title: "Call Sana", dueDate: "2026-10-02", dueTime: "15:00" }],
     ["Call Sana tomorrow at 9.30", { title: "Call Sana", dueDate: "2026-10-01", dueTime: "09:30" }],
     ["Call Sana today 4pm", { title: "Call Sana", dueDate: "2026-09-30", dueTime: "16:00", planToday: true }],
+    // a bare "at 3" beside a day, or before another token, is a time…
+    ["Call Sana fri at 3", { title: "Call Sana", dueDate: "2026-10-02", dueTime: "15:00" }],
+    ["Call Sana at 3 on fri", { title: "Call Sana", dueDate: "2026-10-02", dueTime: "15:00" }],
+    ["Call Sana at 3 #launch", { title: "Call Sana", dueDate: "2026-09-30", dueTime: "15:00", planToday: true, projectId: "p-launch" }],
+    // …mid-sentence it's a title
+    ["Look at 3 vendor quotes", { title: "Look at 3 vendor quotes" }],
+    ["Look at 3 vendor quotes tomorrow", { title: "Look at 3 vendor quotes", dueDate: "2026-10-01" }],
+    ["Meet at 10 Downing Street", { title: "Meet at 10 Downing Street" }],
+    ["Meet at 10.30 in the lobby", { title: "Meet in the lobby", dueDate: "2026-09-30", dueTime: "10:30", planToday: true }],
     // not times
     ["Release v2.30", { title: "Release v2.30" }],
     ["Call Sana 13pm", { title: "Call Sana 13pm" }],
@@ -129,8 +164,17 @@ describe("repeats", () => {
     ["Invoice every month", { title: "Invoice", recurrence: "monthly", dueDate: "2026-09-30" }],
     // a date given with the repeat wins over the implied first one
     ["Invoice every month 3 Oct", { title: "Invoice", recurrence: "monthly", dueDate: "2026-10-03" }],
-    // a leading "Weekly …" stays in the title, and still repeats
-    ["Weekly review & plan", { title: "Weekly review & plan", recurrence: "weekly", dueDate: "2026-09-30" }],
+    // a bare "weekly"/"monthly" repeats only at the end, or before other tokens…
+    ["Pay rent monthly !high", { title: "Pay rent", recurrence: "monthly", dueDate: "2026-09-30", priority: "high" }],
+    ["Team sync weekly 10am", { title: "Team sync", recurrence: "weekly", dueDate: "2026-09-30", dueTime: "10:00", planToday: true }],
+    ["Water plants daily.", { title: "Water plants.", recurrence: "daily", dueDate: "2026-09-30" }],
+    ["Weekly 10am", { title: "Weekly", recurrence: "weekly", dueDate: "2026-09-30", dueTime: "10:00", planToday: true }],
+    // …in the middle of a title it's an adjective
+    ["Cancel the monthly subscription", { title: "Cancel the monthly subscription" }],
+    ["Send weekly update to the board", { title: "Send weekly update to the board" }],
+    ["Review weekdays schedule", { title: "Review weekdays schedule" }],
+    ["Weekly review & plan", { title: "Weekly review & plan" }],
+    ["Weekly review & plan every fri", { title: "Weekly review & plan", recurrence: "weekly", dueDate: "2026-10-02" }],
   ]);
 });
 
@@ -259,6 +303,16 @@ describe("the whole sentence", () => {
 
   it("can read “next week” as a week today, as the legacy parsers do", () => {
     expect(parse("Plan next week", { nextWeek: "+7" }).dueDate).toBe("2026-10-07");
+  });
+
+  it("reads a long paste in linear time (tags, rejected sat/sun, and all)", () => {
+    const text = Array.from({ length: 4000 }, (_, i) => (i % 2 ? `Task ${i} +design sat nav` : `Task ${i} fri 3pm`)).join("\n");
+    const t0 = performance.now();
+    const p = parse(text);
+    // was ~45s for 8,000 lines when every rule re-joined the text; now a few ms
+    expect(performance.now() - t0).toBeLessThan(1500);
+    expect(p.tags).toEqual(["design"]);
+    expect(p.spans.filter((s) => s.kind === "tag")).toHaveLength(2000);
   });
 
   it("uses the live day when none is given", () => {

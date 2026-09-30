@@ -39,6 +39,9 @@ export interface NlpContext {
   /** Also read the bare words "urgent" and "asap" as high priority, as the
    *  Today capture always has. Off by default: "Urgent care booking" is a title. */
   priorityWords?: boolean;
+  /** How "3/10" reads: day first (UK, the default) or month first — as an
+   *  import file's own date order says. */
+  dateOrder?: "dmy" | "mdy";
 }
 
 /** Where a recognised token sits in the original text (for live highlighting). */
@@ -90,7 +93,7 @@ const ORD = "(?:st|nd|rd|th)?";
 const DAY = [
   "day\\s+after\\s+tomorrow",
   "today|tonight|tod|eod|tomorrow|tmrw|tmr",
-  "(?:this\\s+|next\\s+)?weekend",
+  "(?:this\\s+|next\\s+)?weekend|(?:by|before|until|till|over|at)\\s+the\\s+weekend",
   "next\\s+(?:week|month)",
   "end\\s+of\\s+(?:the\\s+)?(?:week|month)|eow|eom",
   "in\\s+(?:a|an|one|\\d{1,3})\\s*(?:days?|weeks?|wks?|fortnights?|months?|mos?)",
@@ -145,8 +148,9 @@ export function dayLabel(iso: string, today: Date = KANBO_TODAY): string {
 }
 
 /** A day written in words → the date. Null when it isn't a real day (31/02). */
-function resolveDay(raw: string, today: Date, nextWeek: "monday" | "+7"): Date | null {
-  const s = raw.toLowerCase().replace(/\s+/g, " ").replace(/,/g, "").trim();
+function resolveDay(raw: string, today: Date, nextWeek: "monday" | "+7", order: "dmy" | "mdy" = "dmy"): Date | null {
+  const s = raw.toLowerCase().replace(/\s+/g, " ").replace(/,/g, "").trim()
+    .replace(/^(?:by|before|until|till|over|at) the (?=weekend$)/, "");   // "at the weekend"
   if (s === "day after tomorrow") return addDays(today, 2);
   if (/^(today|tonight|tod|eod)$/.test(s)) return today;
   if (/^(tomorrow|tmrw|tmr)$/.test(s)) return addDays(today, 1);
@@ -179,7 +183,8 @@ function resolveDay(raw: string, today: Date, nextWeek: "monday" | "+7"): Date |
     return x && daysBetween(x, today) > 31 ? validDay(x.getFullYear() + 1, mo, d) : x;
   };
   m = s.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/);
-  if (m) return build(fullYear(m[3]), +m[2] - 1, +m[1]);                        // dd/mm — UK order
+  if (m) return order === "mdy" ? build(fullYear(m[3]), +m[1] - 1, +m[2])        // mm/dd, when a file says so
+    : build(fullYear(m[3]), +m[2] - 1, +m[1]);                                   // dd/mm — UK order
   m = s.match(/^(\d{1,2})(?:st|nd|rd|th)? (?:of )?([a-z]+)\.?(?: (\d{4}))?$/);
   if (m && m[2] in MONTH_WORDS) return build(fullYear(m[3]), MONTH_WORDS[m[2]], +m[1]);
   m = s.match(/^([a-z]+)\.? (\d{1,2})(?:st|nd|rd|th)?(?: (\d{4}))?$/);
@@ -224,21 +229,24 @@ const REPEAT_RE = new RegExp(
   `${BEFORE}((?:on\\s+)?weekdays|every\\s+(?:other\\s+)?(?:${WD})|every\\s+(?:day|weekdays?|week|fortnight|month|other\\s+week|(?:2|two)\\s+weeks)|daily|weekly|fortnightly|biweekly|monthly)${AFTER}`,
   "giu",
 );
+/** `adjective`: a bare "weekly", "monthly", "weekdays"… — also an ordinary
+ *  word in a title ("Cancel the monthly subscription"), unlike "every week". */
 type RepeatSpec = { recurrence: Recurrence; dow?: number; label: string; adjective: boolean };
+const REPEAT_ADJECTIVE = /^(?:daily|weekly|fortnightly|biweekly|monthly|weekdays)$/;
 function resolveRepeat(raw: string): RepeatSpec | null {
-  const s = raw.toLowerCase().replace(/\s+/g, " ").replace(/^on /, "");
-  let m = s.match(/^every (other )?([a-z]+)$/);
+  const s = raw.toLowerCase().replace(/\s+/g, " ").trim();
+  const adjective = REPEAT_ADJECTIVE.test(s);
+  const w = s.replace(/^on /, "");
+  const m = w.match(/^every (other )?([a-z]+)$/);
   if (m && m[2] in WEEKDAY_WORDS) {
     const dow = WEEKDAY_WORDS[m[2]];
-    return { recurrence: m[1] ? "biweekly" : "weekly", dow, label: `Every ${m[1] ? "other " : ""}${WEEKDAY_NAMES[dow]}`, adjective: false };
+    return { recurrence: m[1] ? "biweekly" : "weekly", dow, label: `Every ${m[1] ? "other " : ""}${WEEKDAY_NAMES[dow]}`, adjective };
   }
-  if (s === "every day" || s === "daily") return { recurrence: "daily", label: "Every day", adjective: s === "daily" };
-  if (s === "weekdays" || s === "every weekday" || s === "every weekdays") return { recurrence: "weekdays", label: "Every weekday", adjective: false };
-  if (s === "every week" || s === "weekly") return { recurrence: "weekly", label: "Every week", adjective: s === "weekly" };
-  if (/^(every (fortnight|other week|2 weeks|two weeks)|fortnightly|biweekly)$/.test(s)) {
-    return { recurrence: "biweekly", label: "Every 2 weeks", adjective: s === "fortnightly" || s === "biweekly" };
-  }
-  if (s === "every month" || s === "monthly") return { recurrence: "monthly", label: "Every month", adjective: s === "monthly" };
+  if (w === "every day" || w === "daily") return { recurrence: "daily", label: "Every day", adjective };
+  if (w === "weekdays" || w === "every weekday" || w === "every weekdays") return { recurrence: "weekdays", label: "Every weekday", adjective };
+  if (w === "every week" || w === "weekly") return { recurrence: "weekly", label: "Every week", adjective };
+  if (/^(every (fortnight|other week|2 weeks|two weeks)|fortnightly|biweekly)$/.test(w)) return { recurrence: "biweekly", label: "Every 2 weeks", adjective };
+  if (w === "every month" || w === "monthly") return { recurrence: "monthly", label: "Every month", adjective };
   return null;
 }
 /** the first due date of a repeat that didn't say one */
@@ -320,14 +328,33 @@ class Scan {
   readonly src: string;
   private buf: string[];
   private used: Uint8Array;
+  /** `buf` joined, until the next take() changes it (every rule reads the
+   *  text, and joining it afresh each time made long pastes quadratic) */
+  private joined: string | null;
   readonly spans: NlpSpan[] = [];
   constructor(text: string) {
     this.src = text;
     this.buf = Array.from({ length: text.length }, (_, i) => text[i]);
     this.used = new Uint8Array(text.length);
+    this.joined = text;
   }
   /** the text with every token read so far blanked out */
-  get text(): string { return this.buf.join(""); }
+  get text(): string { return this.joined ??= this.buf.join(""); }
+  /** does the unread text at `i` match `sticky` (a /y regex)? Looks ahead
+   *  without copying the rest of the text. */
+  at(sticky: RegExp, i: number): boolean {
+    sticky.lastIndex = i;
+    return sticky.test(this.text);
+  }
+  /** is a token already read right before `a` or right after `b` (spaces aside)? */
+  besideRead(a: number, b: number): boolean {
+    let i = a - 1;
+    while (i >= 0 && /\s/.test(this.src[i]) && !this.used[i]) i--;
+    if (i >= 0 && this.used[i]) return true;
+    let j = b;
+    while (j < this.src.length && /\s/.test(this.src[j]) && !this.used[j]) j++;
+    return j < this.src.length && !!this.used[j];
+  }
   isFree(a: number, b: number): boolean {
     for (let i = a; i < b; i++) if (this.used[i]) return false;
     return true;
@@ -343,6 +370,7 @@ class Scan {
   /** mark a token read: blank it out of the title (unless `keep`) and record its span */
   take(a: number, b: number, kind: NlpKind, label: string, keep = false) {
     for (let i = a; i < b; i++) { this.used[i] = 1; if (!keep) this.buf[i] = " "; }
+    if (!keep) this.joined = null;
     this.spans.push({ start: a, end: b, kind, label });
   }
   /** recognised but not wanted: left in the title, but no other rule may read inside it */
@@ -364,8 +392,23 @@ class Scan {
     }
     return null;
   }
-  /** the unread text after `end`, for rules that look ahead */
-  after(end: number): string { return this.text.slice(end); }
+  /**
+   * Like find, but hands over every unread match, in one pass over one copy of
+   * the text (tokens never overlap, so what an earlier match took can't change
+   * a later one). For rules that read more than once, like "+design +eng".
+   */
+  each(re: RegExp, accept: (m: RegExpExecArray, at: number, end: number) => void): void {
+    const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    const s = this.text;
+    let m: RegExpExecArray | null;
+    while ((m = g.exec(s))) {
+      const at = m.index + (m[1]?.length ?? 0), end = m.index + m[0].length;
+      const free = end > at && this.isFree(at, end);
+      if (free) accept(m, at, end);
+      // past a token that was just read; otherwise from the next character
+      g.lastIndex = free && !this.isFree(at, end) ? end : m.index + 1;
+    }
+  }
 }
 
 const EDGE_GENTLE = /^[\s,;]+|[\s,;]+$/g;
@@ -383,11 +426,26 @@ export function tidyTitle(s: string, edge: RegExp = EDGE_GENTLE): string {
 const DANGLING_END = /\s+(?:with|for|to|by|on|at|from|in|and|&|of|due)\s*$/i;
 const DANGLING_START = /^\s*(?:to|will|should|and|&)\s+/i;
 
-// sat/sun are also words ("sat nav", "sun cream"): read them as days only when
-// something says so — a lead-in ("on sun"), "this"/"next", or nothing after
-// them but punctuation, a time, another token or the end
-const AMBIGUOUS_DAYS = new Set(["sat", "sun", "tod"]);
-const DAY_FOLLOWERS = /^[\s]*(?:$|[,.;:!?)\]]|[#@+!~\d]|(?:at|from|every|by|due|am|pm)(?![\p{L}]))/iu;
+// sat/sun/weekend are also words ("sat nav", "sun cream", "weekend sales"):
+// read them as days only when something says so — a lead-in ("on sun"),
+// "this"/"next", or nothing after them but punctuation, a time, another token
+// or the end. A bare "3/10" (no year) is held to the same test, so "24/7
+// on-call rota" and "Q3 50/50 split" stay titles.
+const AMBIGUOUS_DAYS = new Set(["sat", "sun", "tod", "weekend"]);
+/** sticky (/y): what may follow a day that has no lead-in */
+const DAY_FOLLOWERS = /[\s]*(?:$|[,.;:!?)\]]|[#@+!~\d]|(?:at|from|every|by|due|am|pm)(?![\p{L}]))/iuy;
+/** sticky: what may follow a bare "at 3" — the end, or another token */
+const TOKEN_FOLLOWERS = /[\s]*(?:$|[,.;:!?)\]]|[#@+!~])/uy;
+/** sticky: nothing left but punctuation to the end */
+const ONLY_PUNCT_LEFT = /[\s.,;:!?)\]]*$/y;
+/** a day word right after one of these is a noun ("the weekend", "last Friday") */
+const DAY_DETERMINER = /(?:^|[\s(\[,;])(?:the|a|an|my|your|our|his|her|their|its|that|last|each)\s+$/i;
+
+/** nothing but spaces before `i` (walks back from i, so it's cheap on long text) */
+function opensText(src: string, i: number): boolean {
+  for (let j = i - 1; j >= 0; j--) if (!/\s/.test(src[j])) return false;
+  return true;
+}
 
 const ALL_KINDS: NlpKind[] = ["date", "time", "repeat", "start", "priority", "project", "person", "tag", "duration", "estimate", "energy"];
 
@@ -410,21 +468,20 @@ export function parseTask(text: string, ctx: NlpContext = {}): ParsedTask {
     return false;
   };
 
-  // 1) repeats — before dates, so "every mon" keeps its "mon"
+  // 1) repeats — before dates, so "every mon" keeps its "mon". A bare
+  //    "weekly"/"monthly" waits until the end (step 10).
   let repeat = null as RepeatSpec | null;
   scan.find(REPEAT_RE, (m, at, end) => {
     const r = resolveRepeat(m[2]);
-    if (!r) return null;
-    // a leading "Weekly review" keeps its adjective in the title (it still repeats)
-    const lead = r.adjective && !scan.src.slice(0, at).trim() && !!scan.src.slice(end).trim();
-    if (claim("repeat", at, end, r.label, lead)) repeat = r;
+    if (!r || r.adjective) return null;
+    if (claim("repeat", at, end, r.label)) repeat = r;
     return true;
   });
 
   // 2) start dates — "from mon", "starting 3 Oct"
   let start = null as Date | null;
   scan.find(START_RE, (m, at, end) => {
-    const d = resolveDay(m[3], today, nextWeek);
+    const d = resolveDay(m[3], today, nextWeek, ctx.dateOrder);
     if (!d) return null;
     if (claim("start", at, end, `Starts ${dayLabel(iso(d), today)}`)) start = d;
     return true;
@@ -435,12 +492,24 @@ export function parseTask(text: string, ctx: NlpContext = {}): ParsedTask {
   scan.find(DATE_RE, (m, at, end) => {
     const lead = m[2], core = m[3];
     const bare = core.toLowerCase();
-    if (!lead && AMBIGUOUS_DAYS.has(bare) && !DAY_FOLLOWERS.test(scan.after(end))) return null;
-    // "1/2" is a fraction far more often than 1 February: a day/month needs 4 characters or a year
-    if (/^\d{1,2}\/\d{1,2}$/.test(core) && core.length < 4) return null;
+    const dayWord = bare in WEEKDAY_WORDS || AMBIGUOUS_DAYS.has(bare);
+    if (!lead && dayWord) {
+      // "the weekend", "last Friday", "our Monday call": a noun, not a due date
+      if (DAY_DETERMINER.test(scan.src.slice(Math.max(0, at - 12), at))) return null;
+      const settled = scan.at(DAY_FOLLOWERS, end);
+      if (AMBIGUOUS_DAYS.has(bare) && !settled) return null;
+      // a title that opens with its day ("Monday standup notes") keeps it
+      if (bare in WEEKDAY_WORDS && !settled && opensText(scan.src, at)) return null;
+    }
+    if (/^\d{1,2}\/\d{1,2}$/.test(core)) {
+      // "1/2" is a fraction far more often than 1 February: a day/month needs 4 characters or a year
+      if (core.length < 4 || core === "24/7") return null;
+      // mid-sentence, only with a lead-in ("by 3/10") or a token after it ("3/10 9am")
+      if (!lead && !scan.at(DAY_FOLLOWERS, end)) return null;
+    }
     // numbers straight after a comma are data ("A,2026-10-01", "10,000"), not a day
     if (!lead && /^\d/.test(core) && /[,;]/.test(m[1])) return null;
-    const d = resolveDay(core, today, nextWeek);
+    const d = resolveDay(core, today, nextWeek, ctx.dateOrder);
     if (!d) return null;
     if (claim("date", at, end, dayLabel(iso(d), today))) due = d;
     return true;
@@ -450,6 +519,9 @@ export function parseTask(text: string, ctx: NlpContext = {}): ParsedTask {
   scan.find(TIME_RE, (m, at, end) => {
     const t = resolveTime(m[2]);
     if (!t) return null;
+    // a bare "at 3" (no minutes, no am/pm) is a time only beside a day ("fri at 3")
+    // or at the end: "Look at 3 vendor quotes", "Meet at 10 Downing Street" are titles
+    if (/^at\s+\d{1,2}$/i.test(m[2]) && !scan.besideRead(at, end) && !scan.at(TOKEN_FOLLOWERS, end)) return null;
     if (claim("time", at, end, t)) out.dueTime = t;
     return true;
   });
@@ -500,15 +572,12 @@ export function parseTask(text: string, ctx: NlpContext = {}): ParsedTask {
     return true;
   });
   const tags: string[] = [];
-  if (ctx.tags) {
-    for (;;) {
-      const hit = scan.find(TAG_RE, (m, at, end) => {
-        const t = matchTag(m[2], ctx.tags!);
-        return t ? { t, at, end } : null;
-      });
-      if (!hit) break;
-      if (claim("tag", hit.at, hit.end, hit.t.label) && !tags.includes(hit.t.id)) tags.push(hit.t.id);
-    }
+  const tagDict = ctx.tags;
+  if (tagDict) {
+    scan.each(TAG_RE, (m, at, end) => {
+      const t = matchTag(m[2], tagDict);
+      if (t && claim("tag", at, end, t.label) && !tags.includes(t.id)) tags.push(t.id);
+    });
   }
   if (tags.length) out.tags = tags;
 
@@ -519,6 +588,20 @@ export function parseTask(text: string, ctx: NlpContext = {}): ParsedTask {
     if (claim("energy", at, end, "Deep work", lead)) out.energy = "deep";
     return true;
   });
+
+  // 10) a bare "weekly", "monthly", "daily"… repeats only as the last word, or
+  //     with nothing after it but other tokens: "Pay rent monthly", "Team sync
+  //     weekly 10am". "Send weekly update to the board" and "Cancel the monthly
+  //     subscription" are titles. A title that is nothing but its repeat
+  //     ("Weekly 10am") keeps the word.
+  if (!repeat) {
+    scan.find(REPEAT_RE, (m, at, end) => {
+      const r = resolveRepeat(m[2]);
+      if (!r || !r.adjective || !scan.at(ONLY_PUNCT_LEFT, end)) return null;
+      if (claim("repeat", at, end, r.label, opensText(scan.text, at))) repeat = r;
+      return true;
+    });
+  }
 
   // assemble
   const todayIso = iso(today);

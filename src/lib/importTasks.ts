@@ -774,9 +774,9 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
   // rows whose section also mapped to a status: keep the section only if it exists
   const softSection = new WeakSet<ImportRow>();
 
-  const applyTokens = (text: string, row: ImportRow) => {
+  const applyTokens = (text: string, row: ImportRow, dateOrder: DateOrder) => {
     const p = protectPossessives(text);
-    const parsed = parseTaskTokens(p.text, projects, members);
+    const parsed = parseTaskTokens(p.text, projects, members, { dateOrder });
     row.title = p.restore(parsed.title) || text;
     if (parsed.priority) row.priority = parsed.priority;
     if (parsed.dueDate) row.dueDate = parsed.dueDate;
@@ -816,7 +816,7 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
       s = s.trim();
       if (!s) continue;
       // checklist items are taken as written: their "tomorrow" meant the day they were jotted down
-      if (smart && !box) applyTokens(s, row); else row.title = s;
+      if (smart && !box) applyTokens(s, row, base.dateOrder); else row.title = s;
       if (!row.title.trim()) row.title = s;
       if (cells.length > 1) row.description = cells.slice(1).join("\n");
       capTitle(row);
@@ -941,7 +941,7 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
       if (out.length >= limit) { beyond++; continue; }
       const row: ImportRow = { title: rawTitle };
       // free-text tokens only when there's no real header (a Title column is taken literally)
-      if (!hasHeader && smart) applyTokens(rawTitle, row);
+      if (!hasHeader && smart) applyTokens(rawTitle, row, order);
 
       // description: notes columns (+ untyped columns when headerless) (+ extras when asked)
       const descParts = (hasHeader ? descCs : textCols).map((c) => (r[c] ?? "").replace(/\r\n?/g, "\n").trim()).filter(Boolean);

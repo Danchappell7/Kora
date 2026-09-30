@@ -714,8 +714,10 @@ export function parseCapture(text: string, opts: CaptureOptions = {}): Task | nu
 /* Natural-language tokens for the New-task quick add:
    "Email Sara tomorrow 90m #Foundrise !high @dan" → fields + cleaned title. */
 export interface ParsedTokens { title: string; dueDate?: string; priority?: Priority; projectId?: string; assigneeId?: string; focusMin?: number }
-export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = []): ParsedTokens {
-  const p = parseTask(text, { today: KANBO_TODAY, projects, members, kinds: TOKEN_KINDS, nextWeek: "+7" });
+export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = [],
+  opts: { dateOrder?: "dmy" | "mdy" } = {}): ParsedTokens {
+  // (an import passes its file's date order, so "10/3" in a US list is 3 October)
+  const p = parseTask(text, { today: KANBO_TODAY, projects, members, kinds: TOKEN_KINDS, nextWeek: "+7", dateOrder: opts.dateOrder });
   const out: ParsedTokens = { title: p.title };
   if (p.focusMin != null) out.focusMin = p.focusMin;
   if (p.priority) out.priority = p.priority;
