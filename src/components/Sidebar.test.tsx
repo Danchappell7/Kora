@@ -194,7 +194,7 @@ describe("Sidebar saved lists", () => {
     const onDeleteSavedSearch = vi.fn();
     const s = renderSidebar({ saved, onDeleteSavedSearch });
     fireEvent.click(screen.getByRole("button", { name: "Remove saved list Urgent bugs" }));
-    fireEvent.click(screen.getByRole("button", { name: "You" }));
+    fireEvent.click(screen.getByRole("button", { name: "You, account" }));
     await act(async () => { fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" })); await Promise.resolve(); });
     expect(onDeleteSavedSearch).toHaveBeenCalledWith("ss-1");
     expect(s.onSignOut).toHaveBeenCalledTimes(1);
@@ -365,7 +365,7 @@ describe("Sidebar footer", () => {
 
   it("opens an account menu with Settings, Keyboard shortcuts and Sign out", () => {
     const s = renderSidebar();
-    const me = screen.getByRole("button", { name: "You" });
+    const me = screen.getByRole("button", { name: "You, account" });
     expect(me).toHaveAttribute("aria-haspopup", "menu");
     fireEvent.click(me);
     const menu = screen.getByRole("menu", { name: "Account" });
@@ -375,6 +375,23 @@ describe("Sidebar footer", () => {
     expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(s.onOpenSettings).toHaveBeenCalled();
+  });
+
+  it("keeps the account menu a pure menu: the name card is visual, and every owned element is an item or a separator", () => {
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "You, account" }));
+    const menu = screen.getByRole("menu", { name: "Account" });
+    const card = menu.querySelector(".ksb-acct-head")!;
+    expect(card).toHaveAttribute("aria-hidden", "true");
+    // everything else the menu holds is an item or a separator
+    const owned = Array.from(menu.querySelectorAll("*")).filter((el) => !el.closest("[aria-hidden='true']") && el.getAttribute("role"));
+    expect(new Set(owned.map((el) => el.getAttribute("role")))).toEqual(new Set(["menuitem", "separator"]));
+  });
+
+  it("leaves Keyboard shortcuts out of the account menu when nothing opens them", () => {
+    renderSidebar({ withShortcuts: false });
+    fireEvent.click(screen.getByRole("button", { name: "You, account" }));
+    expect(within(screen.getByRole("menu", { name: "Account" })).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Settings⌘,", "Sign out"]);
   });
 });
 

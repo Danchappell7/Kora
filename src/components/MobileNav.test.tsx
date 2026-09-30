@@ -38,6 +38,26 @@ describe("MobileNav", () => {
     expect(screen.getByRole("button", { name: "Inbox, 4 unread" })).toHaveTextContent("4");
   });
 
+  it("marks More as current inside Projects or Team (they live behind it), and says whether its drawer is open", () => {
+    const { rerender } = render(<MobileNav route={{ view: "project", projectId: "p-1" }} setRoute={vi.fn()} inboxCount={0} onMore={vi.fn()} />);
+    const more = screen.getByRole("button", { name: "More" });
+    expect(more).toHaveAttribute("aria-current", "true");
+    expect(more).toHaveAttribute("aria-haspopup", "dialog");
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Today" })).not.toHaveAttribute("aria-current");
+    rerender(<MobileNav route={{ view: "plan" }} setRoute={vi.fn()} inboxCount={0} onMore={vi.fn()} moreOpen />);
+    expect(more).not.toHaveAttribute("aria-current");
+    expect(more).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("draws the centre + as a plain primary fill, without the hero glow", () => {
+    renderNav();
+    const css = Array.from(document.querySelectorAll("style")).map((el) => el.textContent ?? "").find((t) => t.includes(".kmnav-plus"))!;
+    const plus = css.match(/\.kmnav-plus \{([^}]*)\}/)![1];
+    expect(plus).toMatch(/background:\s*var\(--accent-fill/);
+    expect(plus).not.toMatch(/hero-glow|box-shadow/);
+  });
+
   it("hides + and More when there's nothing to wire them to (guests, older callers)", () => {
     renderNav({ onCapture: undefined, onMore: undefined });
     expect(screen.queryByRole("button", { name: "Quick capture" })).not.toBeInTheDocument();

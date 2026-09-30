@@ -30,10 +30,10 @@ const MOBILE_CSS = `
   border-radius: 999px; background: var(--accent-fill, var(--accent)); color: var(--on-accent);
   font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--bg-deep);
 }
+/* a plain primary fill: the glow belongs to the one hero action on the page */
 .kmnav-plus {
   display: grid; place-items: center; width: 48px; height: 40px; border-radius: var(--r-md, 8px);
   background: var(--accent-fill, var(--accent)); color: var(--on-accent);
-  box-shadow: var(--hero-glow, 0 1px 2px oklch(0.35 0.15 290 / 0.25), 0 8px 20px -8px oklch(0.5 0.22 300 / 0.45));
   transition: background-color var(--d-1, 90ms) var(--ease), transform var(--d-1, 90ms) var(--ease);
 }
 .kmnav-slot:active .kmnav-plus { background: var(--accent-hover, var(--accent-strong)); transform: translateY(0.5px); }
@@ -42,7 +42,7 @@ const MOBILE_CSS = `
 
 const place = (id: PlaceId) => PLACES.find((p) => p.id === id)!;
 
-export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore }: {
+export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore, moreOpen = false }: {
   route: Route;
   setRoute: (r: Route) => void;
   inboxCount: number;
@@ -50,6 +50,8 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore }: {
   onCapture?: () => void;
   /** More: opens the sidebar drawer (hidden without it) */
   onMore?: () => void;
+  /** the drawer More opens is open (More's aria-expanded) */
+  moreOpen?: boolean;
   /** a Personal workspace (no team). The bar's slots are the same either way;
    *  the drawer's Team group reads Insights. */
   personal?: boolean;
@@ -70,7 +72,8 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore }: {
       </button>
     );
   };
-  // Projects and Team live behind More: say so while you're in one of them
+  // Projects and Team live behind More: say so, to the eye and to screen
+  // readers ("current"), while you're in one of them
   const inMore = here === "projects" || here === "team";
   return (
     <nav className="kmnav" aria-label="Primary">
@@ -84,7 +87,8 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore }: {
       )}
       {slot("inbox")}
       {onMore && (
-        <button type="button" className="kmnav-slot" data-active={inMore || undefined} aria-label="More" aria-haspopup="dialog" onClick={onMore}>
+        <button type="button" className="kmnav-slot" data-active={inMore || undefined} aria-current={inMore ? "true" : undefined}
+          aria-label="More" aria-haspopup="dialog" aria-expanded={moreOpen} onClick={onMore}>
           <span className="kmnav-ico"><Icon name="menu" size={22} sw={1.75} /></span>
           <span className="kmnav-label" aria-hidden="true">More</span>
         </button>

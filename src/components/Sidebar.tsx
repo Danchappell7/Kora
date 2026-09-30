@@ -63,9 +63,12 @@ main[tabindex="-1"]:focus { outline: none; }
 /* phone drawer only: search sits under the switcher (the header has it on desktop) */
 .ksb-search {
   display: none; align-items: center; gap: 8px; width: 100%; height: 40px; margin-top: 8px; padding: 0 10px;
-  border: 0; border-radius: var(--r-md, 8px); background: var(--fill-1); color: var(--ink-4); cursor: pointer; text-align: left;
-  font: 500 14px/20px var(--font-ui, var(--font-display));
+  border: 0; border-radius: var(--r-md, 8px); background: var(--fill-1); color: var(--ink-3); cursor: pointer; text-align: left;
+  font: 500 14px/20px var(--font-ui, var(--font-display)); transition: background-color var(--d-1, 90ms) var(--ease);
 }
+/* (--ink-3, not the header field's --ink-4: on --fill-1 over the sidebar's
+   deeper tint, --ink-4 falls just short of 4.5:1 in Paper) */
+.ksb-search:hover, .ksb-search:active { background: var(--fill-2); }
 .ksb-search > svg { color: var(--icon-quiet, var(--ink-4)); }
 
 /* places */
@@ -99,7 +102,7 @@ main[tabindex="-1"]:focus { outline: none; }
 /* saved views (nested under My tasks) */
 .ksaved-row { position: relative; }
 .ksb .ksaved-del {
-  position: absolute; right: 4px; top: 50%; translate: 0 -50%; display: grid; place-items: center; width: 20px; height: 20px; padding: 0;
+  position: absolute; right: 2px; top: 50%; translate: 0 -50%; display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
   border: 0; border-radius: var(--r-xs, 4px); background: var(--fill-2); color: var(--ink-3); cursor: pointer;
 }
 .ksb .ksaved-del:hover { color: var(--signal, var(--st-blocked)); background: color-mix(in oklch, var(--signal, var(--st-blocked)) 12%, transparent); }
@@ -107,6 +110,9 @@ main[tabindex="-1"]:focus { outline: none; }
    badge steps aside so the two never overlap */
 .ksaved-row:hover .knav-badge { visibility: hidden; }
 .ksaved-row:has(:focus-visible) .knav-badge { visibility: hidden; }
+/* …and a long name ends before it rather than under it */
+.ksb .ksaved-row:hover > .knav { padding-right: 30px; }
+.ksb .ksaved-row:has(:focus-visible) > .knav { padding-right: 30px; }
 
 /* projects */
 .ksb-projects { margin-top: 4px; }
@@ -192,6 +198,11 @@ main[tabindex="-1"]:focus { outline: none; }
 .ksb-acct-head b { display: block; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
 .ksb-acct-head span { display: block; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ksb [data-tip]::after { z-index: 40; }
+/* The scrolling column clips anything that leaves it, and its only tooltip
+   buttons (New project, Restore) sit at its right edge: their tooltips grow
+   leftwards from that edge instead of centring on the button. */
+.ksb-scroll [data-tip]::after { left: auto; right: 0; transform: translate(0, 2px); }
+.ksb-scroll [data-tip]:hover::after { transform: none; }
 
 /* the phone drawer: a 300px sheet with touch-sized rows */
 @media (max-width: 860px) {
@@ -218,8 +229,10 @@ main[tabindex="-1"]:focus { outline: none; }
      first) or Delete's "Archive instead". */
   .kproj-act[data-kind="archive"] { display: none; }
   .ksaved-del { opacity: 1; }
+  .ksb .ksaved-del { width: 32px; height: 32px; }
   .ksaved-row .knav-badge { visibility: hidden; }
-  .ksaved-row .knav { padding-right: 32px; }
+  /* (as specific as the hover rules above, and later, so a tap's sticky hover can't undo it) */
+  .ksb .ksaved-row > .knav[data-nested] { min-height: 32px; padding-right: 38px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -784,6 +797,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         {/* you */}
         <div className="ksb-me">
           <button ref={acctRef} type="button" className="ksb-me-btn" disabled={!hasAcctMenu}
+            aria-label={hasAcctMenu ? `${displayName}, account` : undefined}
             aria-haspopup={hasAcctMenu ? "menu" : undefined} aria-expanded={hasAcctMenu ? acctOpen : undefined}
             onClick={() => setAcctOpen((v) => !v)}>
             {getMember(currentUserId)
@@ -797,7 +811,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           {onOpenSettings && <IconButton size="sm" icon="settings" label="Settings" onClick={onOpenSettings} />}
         </div>
         <Popover open={acctOpen} anchorRef={acctRef} onClose={() => setAcctOpen(false)} side="top" label="Account" minWidth={212} style={{ padding: 4 }}>
-          <div className="ksb-acct-head">
+          {/* (a menu may own only its items, so this card is visual: the
+              trigger names the person, and Settings › Account has the email) */}
+          <div className="ksb-acct-head" role="none" aria-hidden="true">
             <b className="truncate">{displayName}{currentUser?.pronouns && <span style={{ display: "inline", fontWeight: 500 }}> · {currentUser.pronouns}</span>}</b>
             {currentUser?.email && <span>{currentUser.email}</span>}
           </div>

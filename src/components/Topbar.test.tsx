@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { Topbar, PageHeader } from "./Topbar";
 
 const makeCreate = () => ({ onNewTask: vi.fn(), onQuickCapture: vi.fn(), onPasteNotes: vi.fn(), onImport: vi.fn(), onNewProject: vi.fn() });
@@ -116,6 +116,80 @@ describe("PageHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(onOpenSettings).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New task" })).not.toBeInTheDocument();
+  });
+});
+
+describe("PageHeader layout", () => {
+  const headerCss = () => Array.from(document.querySelectorAll("style")).map((el) => el.textContent ?? "").find((t) => t.includes(".kph-row"))!;
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("gives way by its own width (the docked task panel narrows it, not the window)", () => {
+    render(<PageHeader title="Today" onSearch={vi.fn()} create={makeCreate()} />);
+    const css = headerCss();
+    expect(css).toMatch(/\.kph:not\(\[data-mobile\]\) \{[^}]*container: kph \/ inline-size/);
+    expect(css).toMatch(/@container kph \(max-width: \d+px\) \{[^}]*\.kph-search \{ display: none; \}/);
+    // (window-width folding only where container queries aren't supported)
+    const outside = css.replace(/@supports not \(container-type: inline-size\) \{[\s\S]*?\n\}/, "");
+    expect(outside).not.toMatch(/@media \(max-width: 1[02]\d\dpx\)/);
+  });
+
+  it("keeps New task named when a narrow header draws it as a bare +", () => {
+    render(<PageHeader title="Today" onSearch={vi.fn()} create={makeCreate()} />);
+    const btn = screen.getByRole("button", { name: "New task" });
+    expect(btn).toHaveAttribute("aria-keyshortcuts", "C");
+    expect(btn).toHaveAttribute("data-tip", "New task");
+  });
+
+  it("puts the title add-on after the title block, which outranks it: the add-on has only the room the title leaves", () => {
+    render(<PageHeader title="Q4 Launch" titleAddon={<span>On track</span>} actions={<button type="button">Post update</button>}
+      onSearch={vi.fn()} create={makeCreate()} />);
+    const h1 = screen.getByRole("heading", { level: 1, name: "Q4 Launch" });
+    const addon = screen.getByText("On track").closest(".kph-addon")!;
+    expect(addon).not.toBeNull();
+    expect(h1.closest(".kph-lead")!.contains(addon)).toBe(false);
+    expect(h1.compareDocumentPosition(addon) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const css = headerCss();
+    expect(css).toMatch(/\.kph\[data-addon\] \.kph-lead \{ flex: 0 0 auto; max-width: 100%; \}/);
+    expect(css).toMatch(/\.kph-addon \{[^}]*flex: 0 1 auto; min-width: 0;[^}]*overflow: hidden/);
+  });
+
+  it("hides the add-on while it can't be drawn whole, rather than cutting it", () => {
+    let report: () => void = () => {};
+    vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { report = cb; } observe() {} disconnect() {} });
+    render(<PageHeader title="Q4 Launch" titleAddon={<span>On track</span>} onSearch={vi.fn()} create={null} />);
+    const addon = screen.getByText("On track").closest(".kph-addon") as HTMLElement;
+    Object.defineProperty(addon, "clientWidth", { configurable: true, value: 80 });
+    Object.defineProperty(addon, "scrollWidth", { configurable: true, value: 200 });
+    act(() => report());
+    expect(addon).toHaveAttribute("data-clipped");
+    expect(headerCss()).toMatch(/\.kph-addon\[data-clipped\] \{ visibility: hidden; \}/);
+    Object.defineProperty(addon, "scrollWidth", { configurable: true, value: 80 });
+    act(() => report());
+    expect(addon).not.toHaveAttribute("data-clipped");
+  });
+
+  it("on a phone: opaque from the first pixel of scroll, 44px from the eighth, without changing the page's height", () => {
+    let report: (e: Partial<IntersectionObserverEntry>) => void = () => {};
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(cb: (entries: Partial<IntersectionObserverEntry>[]) => void) { report = (e) => cb([e]); }
+      observe() {} disconnect() {}
+    });
+    const { container } = render(<PageHeader title="Today" onSearch={vi.fn()} create={null} isMobile />);
+    const header = container.querySelector("header.kph")!;
+    act(() => report({ isIntersecting: true, intersectionRatio: 1 }));
+    expect(header).not.toHaveAttribute("data-scrolled");
+    expect(header).not.toHaveAttribute("data-stuck");
+    act(() => report({ isIntersecting: true, intersectionRatio: 0.5 }));
+    expect(header).toHaveAttribute("data-scrolled");
+    expect(header).not.toHaveAttribute("data-stuck");
+    act(() => report({ isIntersecting: false, intersectionRatio: 0 }));
+    expect(header).toHaveAttribute("data-stuck", "true");
+    act(() => report({ isIntersecting: true, intersectionRatio: 1 }));
+    expect(header).not.toHaveAttribute("data-scrolled");
+    // the 8px the row gives up becomes margin, so the layout below never moves
+    const css = headerCss();
+    expect(css).toMatch(/\.kph\[data-mobile\]\[data-stuck="true"\] \{ margin-bottom: 8px; \}/);
+    expect(css).toMatch(/\.kph\[data-mobile\]\[data-stuck="true"\] > \.kph-row \{ height: 44px; \}/);
   });
 });
 
