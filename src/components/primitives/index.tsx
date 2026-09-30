@@ -21,6 +21,11 @@ export { EmojiPicker } from "./EmojiPicker";
 export { markJustCompleted, wasJustCompleted, markJustLanded, wasJustLanded } from "./celebrate";
 // Paper & Navy kit (Button, Tabs, StatusGlyph, DateChip, Sheet…): see kit.tsx
 export * from "./kit";
+// project identity (the twelve-hue spectrum): see ProjectTile.tsx and lib/projectIdentity.ts
+export { ProjectTile, ProjectCover, ProjectChip } from "./ProjectTile";
+export type { ProjectLike, ProjectTileSize, ProjectTileProps, ProjectCoverProps, ProjectChipProps } from "./ProjectTile";
+export { projectIdentity, projectHue, projectSpectrum, spectrumColor, SPECTRUM } from "../../lib/projectIdentity";
+export type { ProjectIdentity, SpectrumHue, SpectrumKey } from "../../lib/projectIdentity";
 
 /* ---------- colour chips ----------
    Chips tinted with a RAW palette colour (tags, energy levels, calendar

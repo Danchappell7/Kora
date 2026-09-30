@@ -179,3 +179,29 @@ describe("Paper & Navy", () => {
     expect(wide?.body).toMatch(/\[data-panel="open"\] #main\s*\{[^}]*margin-right:\s*var\(--detail-w\)/);
   });
 });
+
+describe("project identity", () => {
+  it("covers are static (nothing for reduced motion to stop) with a grain of 4–6% in both themes", () => {
+    for (const s of [".kpcover", ".kpcover::before", ".kpcover::after", ".kpcover-wrap"]) expect(bodyOf(s), s).not.toMatch(/animation|transition/);
+    const grains = [...css.matchAll(/--spec-cover-grain:\s*([\d.]+)/g)].map((m) => +m[1]);
+    expect(grains).toHaveLength(2);
+    for (const g of grains) { expect(g).toBeGreaterThanOrEqual(0.04); expect(g).toBeLessThanOrEqual(0.06); }
+    expect(bodyOf(".kpcover::before")).toMatch(/opacity:\s*var\(--spec-cover-grain/);
+  });
+
+  it("the tile is a rounded square at 25% of its size, for every size", () => {
+    const sizes: Array<[string, number]> = [[".kptile", 20], ...[16, 28, 44, 64].map((n) => [`.kptile[data-size="${n}"]`, n] as [string, number])];
+    for (const [sel, n] of sizes) {
+      const body = bodyOf(sel);
+      expect(body, sel).toMatch(new RegExp(`width:\\s*${n}px`));
+      expect(body, sel).toMatch(new RegExp(`border-radius:\\s*${n / 4}px`));
+    }
+  });
+
+  it("only an interactive chip washes in the project's tint", () => {
+    // (an :is() list holds a comma, so match on the whole selector text)
+    const hover = all.find(([sels]) => sels.join(",") === ":is(button,a).kpchip:hover");
+    expect(hover?.[1]).toMatch(/background:\s*var\(--p-tint\)/);
+    expect(bodyOf(".kpchip")).toMatch(/background:\s*transparent/);
+  });
+});

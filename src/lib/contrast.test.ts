@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { contrast, parseColor, over, oklchToRgb, rgbToOklch, toOklch } from "./contrast";
+import { contrast, parseColor, over, oklchToRgb, rgbToOklch, toOklch, mixOklab } from "./contrast";
 
 describe("contrast maths", () => {
   it("matches the WCAG reference points", () => {
@@ -49,6 +49,21 @@ describe("contrast maths", () => {
     expect(toOklch("rgb(128, 128, 128)")!.c).toBeLessThan(0.001);
     expect(toOklch("var(--accent)")).toBeNull();
     expect(toOklch("")).toBeNull();
+  });
+
+  it("mixes in OKLAB like color-mix(in oklab, …): the ends are exact and the midpoint is the perceptual middle", () => {
+    const white = parseColor("#fff")!, black = parseColor("#000")!;
+    const jade = oklchToRgb(0.62, 0.144, 158);
+    const at1 = mixOklab(jade, white, 1), at0 = mixOklab(jade, white, 0);
+    for (const k of ["r", "g", "b"] as const) { expect(at1[k]).toBeCloseTo(jade[k], 4); expect(at0[k]).toBeCloseTo(1, 4); }
+    // OKLAB lightness is linear in the mix: half of black and white is L 0.5 (sRGB ~#636363), not #808080
+    expect(rgbToOklch(mixOklab(black, white, 0.5)).l).toBeCloseTo(0.5, 3);
+    expect(mixOklab(black, white, 0.5).r).toBeCloseTo(0x63 / 255, 1);
+    // a 14% tint keeps the hue and carries 14% of the chroma
+    const tint = rgbToOklch(mixOklab(jade, white, 0.14));
+    expect(tint.h).toBeCloseTo(158, 0);
+    expect(tint.c).toBeCloseTo(0.144 * 0.14, 2);
+    expect(mixOklab({ ...jade, a: 1 }, { ...white, a: 0 }, 0.25).a).toBeCloseTo(0.25);
   });
 
   it("composites translucent foregrounds before measuring", () => {

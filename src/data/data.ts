@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { isSupabaseConfigured } from "../lib/supabase";
 import { parseTask, tidyTitle, type NlpKind } from "../lib/nlp";
+import { spectrumColor } from "../lib/projectIdentity";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
    It is ONE Date object that refreshClock() (below, next to NOW_MIN) moves
@@ -204,18 +205,21 @@ export let WORKSPACES: Workspace[] = [
   { id: "ws-reco", name: "Reco HQ", kind: "team" },
 ];
 
+/* Each demo project wears its own emoji and spectrum hue (lib/projectIdentity.ts),
+   spread round the wheel so the identity shows at a glance: Personal is Iris,
+   the launch Sky, the brand Orchid, infra Jade and growth Tangerine. */
 export let PROJECTS: Project[] = [
-  { id: "p-personal", name: "Personal", emoji: "📌", color: "oklch(0.78 0.1 45)", workspaceId: null },
-  { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: "oklch(0.74 0.14 230)", workspaceId: "ws-foundrise" },
-  { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: "oklch(0.74 0.16 305)", workspaceId: "ws-foundrise" },
-  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: "oklch(0.75 0.13 155)", workspaceId: "ws-foundrise" },
-  { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: "oklch(0.78 0.15 70)", workspaceId: "ws-reco" },
+  { id: "p-personal", name: "Personal", emoji: "📌", color: spectrumColor("iris"), workspaceId: null },
+  { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: spectrumColor("sky"), workspaceId: "ws-foundrise" },
+  { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise" },
+  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise" },
+  { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco" },
 ];
 
 /* Minimal reference data a brand-new (real) account starts with — one personal
    workspace + project, no teammates, no demo projects. */
 export const PERSONAL_WORKSPACE: Workspace = { id: null, name: "Personal", kind: "personal" };
-export const PERSONAL_PROJECT: Project = { id: "p-personal", name: "Personal", emoji: "📥", color: "oklch(0.78 0.1 45)", workspaceId: null };
+export const PERSONAL_PROJECT: Project = { id: "p-personal", name: "Personal", emoji: "📥", color: spectrumColor("iris"), workspaceId: null };
 
 /* Reference data is `let` so the active mode can replace it at runtime
    (demo mode keeps the rich seed; Supabase mode swaps in the minimal set).

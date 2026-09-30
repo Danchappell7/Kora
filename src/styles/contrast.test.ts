@@ -3,10 +3,11 @@
    in BOTH themes) and checks WCAG 2.x ratios for text, chips, controls and
    every accent colour. */
 import { describe, it, expect } from "vitest";
-import { contrast, over, oklchToRgb, parseColor, rgbToOklch, type RGBA } from "../lib/contrast";
+import { contrast, mixOklab, over, oklchToRgb, parseColor, rgbToOklch, type RGBA } from "../lib/contrast";
 import { ACCENTS, applyAppearance, accentTheme, LIGHT_CANVAS, LIGHT_PANEL, LIGHT_WELL } from "../lib/appearance";
 import { projectPaint } from "../components/primitives/kit";
 import { MEMBERS, PROJECTS, TAGS } from "../data/data";
+import { SPECTRUM, projectIdentity, spectrumColor } from "../lib/projectIdentity";
 
 type Theme = "light" | "dark";
 
@@ -46,10 +47,22 @@ function resolve(value: string, t: Record<string, string>, depth = 0): string {
   return v.trim();
 }
 
-/** Evaluate the colour forms the tokens use: oklch/hex, and color-mix with transparent / black / white. */
+/** Fold numeric calc(a * b) / calc(a + b) (the spectrum's chroma trims and neighbour hue). */
+function calcs(expr: string): string {
+  let v = expr, prev = "";
+  while (v !== prev) {
+    prev = v;
+    v = v.replace(/calc\(\s*(-?[\d.]+)\s*([*+-])\s*(-?[\d.]+)\s*\)/g, (_, a, op, b) => String(op === "*" ? +a * +b : op === "+" ? +a + +b : +a - +b));
+  }
+  return v;
+}
+
+/** Evaluate the colour forms the tokens use: oklch/hex, color-mix with transparent / black / white, and in oklab (project tints). */
 function color(expr: string): RGBA {
-  const s = expr.trim();
-  let m = s.match(/^color-mix\(in oklch,\s*(.+?)\s+([\d.]+)%\s*,\s*transparent\s*\)$/);
+  const s = calcs(expr.trim());
+  let m = s.match(/^color-mix\(in oklab,\s*(.+?)\s+([\d.]+)%\s*,\s*(.+)\)$/);
+  if (m) return mixOklab(color(m[1]), color(m[3]), parseFloat(m[2]) / 100);
+  m = s.match(/^color-mix\(in oklch,\s*(.+?)\s+([\d.]+)%\s*,\s*transparent\s*\)$/);
   if (m) { const c = color(m[1]); return { ...c, a: c.a * parseFloat(m[2]) / 100 }; }
   m = s.match(/^color-mix\(in oklch,\s*oklch\(([\d.]+)\s+([\d.]+)\s+([\d.]+)\)\s*,\s*(black|white)\s+([\d.]+)%\s*\)$/);
   if (m) {
@@ -210,6 +223,51 @@ describe.each(["light", "dark"] as const)("%s theme tokens", (theme) => {
       const dot = color(resolve(projectPaint(c).solid, t));
       for (const [k, under] of [["canvas", bgs.canvas], ["sidebar", bgs.panel]] as const) expect(contrast(dot, under), `${c} on ${k}`).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  describe("project spectrum (lib/projectIdentity.ts): all twelve hues", () => {
+    const ids = SPECTRUM.map((sp) => ({ sp, id: projectIdentity({ id: `p-${sp.key}`, color: spectrumColor(sp.key) }) }));
+    const raised = bgs.raised;
+
+    it("the fill (tile rings, block edges, the Daybeam, active bars) is ≥ 3:1 on every surface", () => {
+      for (const { sp, id } of ids) expect(worst(color(resolve(id.fill, t)), bgs), sp.name).toBeGreaterThanOrEqual(3);
+    });
+
+    it("the ink (initials, project-coloured text) is ≥ 4.5:1 on its own tint and on every surface", () => {
+      for (const { sp, id } of ids) {
+        const ink = color(resolve(id.ink, t)), tint = color(resolve(id.tint, t));
+        expect(contrast(ink, tint), `${sp.name} ink on tint`).toBeGreaterThanOrEqual(4.5);
+        expect(worst(ink, bgs), `${sp.name} ink`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it("text on the tint (Today blocks, hovered chips) stays AA: --ink, --ink-2 and --ink-3", () => {
+      for (const { sp, id } of ids) {
+        const tint = color(resolve(id.tint, t));
+        for (const n of ["--ink", "--ink-2", "--ink-3"]) expect(contrast(tok(n, t), tint), `${n} on ${sp.name} tint`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it("the tint is a quiet wash: the fill mixed at --spec-tint over --bg-raised", () => {
+      const pct = parseFloat(resolve("var(--spec-tint)", t)) / 100;
+      for (const { sp, id } of ids) {
+        const tint = color(resolve(id.tint, t)), fill = color(resolve(id.fill, t)), mixed = mixOklab(fill, raised, pct);
+        for (const k of ["r", "g", "b"] as const) expect(tint[k], sp.name).toBeCloseTo(mixed[k], 6);
+        expect(contrast(tint, raised), sp.name).toBeLessThan(1.6);   // a wash, never a loud fill
+      }
+    });
+
+    it("fill and ink sit inside sRGB, so what's on screen is what's measured here (no clipping, no wide-gamut drift)", () => {
+      for (const { sp, id } of ids) {
+        for (const expr of [id.fill, id.ink]) {
+          const m = calcs(resolve(expr, t)).match(/^oklch\(([\d.]+) ([\d.]+) ([\d.]+)\)$/)!;
+          const [L, C, H] = [+m[1], +m[2], +m[3]];
+          const back = rgbToOklch(oklchToRgb(L, C, H));
+          expect(Math.abs(back.l - L), `${sp.name} ${expr}`).toBeLessThan(0.003);
+          expect(Math.abs(back.c - C), `${sp.name} ${expr}`).toBeLessThan(0.003);
+        }
+      }
+    });
   });
 
   it("tag chips (chipInk on chipFill) ≥ 4.5:1 for the whole tag palette", () => {

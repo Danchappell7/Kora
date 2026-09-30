@@ -90,6 +90,19 @@ export function toOklch(input: string): { l: number; c: number; h: number } | nu
   return rgb ? rgbToOklch(rgb) : null;
 }
 
+/**
+ * `color-mix(in oklab, a p, b)`: interpolate two colours in OKLAB, `p` (0..1)
+ * being a's share, exactly as the browser mixes the project tints
+ * (`--p-tint`). Alpha interpolates linearly; opaque in, opaque out.
+ */
+export function mixOklab(a: RGBA, b: RGBA, p: number): RGBA {
+  const lab = (c: RGBA) => { const o = rgbToOklch(c), h = (o.h * Math.PI) / 180; return [o.l, o.c * Math.cos(h), o.c * Math.sin(h)]; };
+  const A = lab(a), B = lab(b);
+  const [L, x, y] = A.map((v, i) => v * p + B[i] * (1 - p));
+  const h = (Math.atan2(y, x) * 180) / Math.PI;
+  return oklchToRgb(L, Math.hypot(x, y), h < 0 ? h + 360 : h, a.a * p + b.a * (1 - p));
+}
+
 /** Alpha-composite `top` over an opaque `bottom` (browsers blend in gamma-encoded sRGB). */
 export function over(top: RGBA, bottom: RGBA): RGBA {
   const a = top.a;

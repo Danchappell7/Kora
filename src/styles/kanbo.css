@@ -157,6 +157,16 @@
   --chip-ink-mix: black; --chip-ink-shift: 42%; --chip-fill: 14%; --chip-edge: 34%;
   --pill-ink-mix: black; --pill-ink-shift: 8%;   /* Pill text a shade deeper than its tone: AA on its tint over wells and the sidebar */
 
+  /* project spectrum: twelve hues (lib/projectIdentity.ts SPECTRUM) at ONE lightness per
+     theme; a `.kp` element sets --p-h and gets --p-fill / --p-ink / --p-tint / --p-cover */
+  --spec-fill-l: 0.62; --spec-fill-c: 0.16;    /* marks: tile rings, block edges, the Daybeam (≥ 3:1 on every surface) */
+  --spec-ink-l: 0.45;  --spec-ink-c: 0.13;     /* initials, project-coloured text (≥ 4.5:1 on its tint and every surface) */
+  --spec-tint: 14%;                            /* the fill mixed in oklab over --bg-raised: tiles, Today blocks, chip hover */
+  --spec-cover-a-l: 0.68; --spec-cover-a-c: 0.15;  /* cover field: the hue… */
+  --spec-cover-b-l: 0.8;  --spec-cover-b-c: 0.09;  /* …into its neighbour (H+24), softer */
+  --spec-cover-hi-l: 0.92; --spec-cover-hi-c: 0.05; /* top-left light */
+  --spec-cover-sweep: 0.22; --spec-cover-grain: 0.05; --spec-cover-scrim: 45%;
+
   /* elevation. e1/e2/e3 carry their own hairline ring (use them with NO
      border); the -drop parts are the shadow alone, for surfaces that already
      draw a 1px border (.glass, legacy --shadow / --shadow-lg callers), so an
@@ -251,6 +261,14 @@
   --avatar-ink: var(--bg-deep);
   --chip-ink-mix: white; --chip-ink-shift: 12%; --chip-fill: 12%; --chip-edge: 30%;
   --pill-ink-mix: white; --pill-ink-shift: 0%;
+
+  --spec-fill-l: 0.72; --spec-fill-c: 0.15;
+  --spec-ink-l: 0.86;  --spec-ink-c: 0.08;
+  --spec-tint: 22%;
+  --spec-cover-a-l: 0.52; --spec-cover-a-c: 0.13;
+  --spec-cover-b-l: 0.34; --spec-cover-b-c: 0.08;
+  --spec-cover-hi-l: 0.66; --spec-cover-hi-c: 0.1;
+  --spec-cover-sweep: 0.07; --spec-cover-grain: 0.06; --spec-cover-scrim: 62%;
 
   --e1-drop: inset 0 1px 0 oklch(1 0 0 / 0.04);
   --e2-drop: inset 0 1px 0 oklch(1 0 0 / 0.04), 0 16px 40px -12px oklch(0 0 0 / 0.55);
@@ -1169,6 +1187,93 @@ button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparen
 
 /* ---- ProjectDot ---- */
 .kpdot { display: inline-block; flex-shrink: 0; vertical-align: middle; }
+
+/* ---- Project identity (lib/projectIdentity.ts). A `.kp` element carries
+   --p-h (+ the --p-fc / --p-ic chroma trims that keep each hue in sRGB, and
+   --p-cl, the cover lift for the yellows) and
+   derives the project's colours at the theme's spectrum lightness, for itself
+   and everything inside it. These templates are projectIdentity()'s, with the
+   numbers as variables (projectIdentity.test.ts keeps them in step). ---- */
+.kp {
+  --p-fill: oklch(var(--spec-fill-l, 0.62) calc(var(--spec-fill-c, 0.16) * var(--p-fc, 1)) var(--p-h, 270));
+  --p-ink: oklch(var(--spec-ink-l, 0.45) calc(var(--spec-ink-c, 0.13) * var(--p-ic, 1)) var(--p-h, 270));
+  --p-tint: color-mix(in oklab, var(--p-fill) var(--spec-tint, 14%), var(--bg-raised));
+  --p-cover: radial-gradient(120% 160% at 0% 0%, oklch(var(--spec-cover-hi-l, 0.92) calc(var(--spec-cover-hi-c, 0.05) * var(--p-fc, 1)) var(--p-h, 270)), transparent 62%), linear-gradient(118deg, oklch(calc(var(--spec-cover-a-l, 0.68) + var(--p-cl, 0)) calc(var(--spec-cover-a-c, 0.15) * var(--p-fc, 1)) var(--p-h, 270)), oklch(calc(var(--spec-cover-b-l, 0.8) + var(--p-cl, 0)) calc(var(--spec-cover-b-c, 0.09) * var(--p-fc, 1)) calc(var(--p-h, 270) + 24)));
+}
+
+/* ProjectTile: the emoji (or initial) on the project's tint, a 35% ring of its
+   fill; radius 25% of the size */
+.kptile {
+  display: inline-grid; place-items: center; flex-shrink: 0; position: relative; overflow: hidden;
+  width: 20px; height: 20px; border-radius: 5px;
+  background: var(--p-tint);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--p-fill) 35%, transparent);
+  color: var(--p-ink);
+  font: 400 12px/1 "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font-ui);
+  text-align: center; vertical-align: middle; user-select: none; -webkit-user-select: none;
+}
+.kptile[data-size="16"] { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; }
+.kptile[data-size="28"] { width: 28px; height: 28px; border-radius: 7px; font-size: 16px; }
+.kptile[data-size="44"] { width: 44px; height: 44px; border-radius: 11px; font-size: 25px; }
+.kptile[data-size="64"] { width: 64px; height: 64px; border-radius: 16px; font-size: 36px; }
+.kptile[data-glyph="initial"] { font-family: var(--font-ui); font-weight: 600; font-size: 11px; letter-spacing: 0; }
+.kptile[data-glyph="initial"][data-size="16"] { font-size: 10px; }
+.kptile[data-glyph="initial"][data-size="28"] { font-size: 14px; }
+.kptile[data-glyph="initial"][data-size="44"] { font-size: 20px; font-family: var(--font-head); }
+.kptile[data-glyph="initial"][data-size="64"] { font-size: 28px; font-family: var(--font-head); }
+.kptile[data-empty="true"] { background: var(--fill-2); box-shadow: inset 0 0 0 1px var(--hairline); }
+/* the tile that sits on a cover's bottom edge: a 4px ring of the surface below, lifted */
+.kptile[data-ring="true"] {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--p-fill) 35%, transparent), 0 0 0 4px var(--kpt-ring, var(--bg)), 0 10px 24px -12px oklch(0.2 0.03 268 / 0.45);
+}
+
+/* ProjectChip: tile 16 + name in --ink-2; an interactive chip washes in the project's tint */
+.kpchip {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
+  height: 22px; padding: 0 6px 0 3px; margin: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--ink-2); font: 500 12px/16px var(--font-ui);
+  text-decoration: none; vertical-align: middle; white-space: nowrap;
+}
+.kpchip[data-size="md"] { height: 24px; gap: 7px; font-size: 13px; line-height: 20px; }
+.kpchip-name, .kpchip-suffix { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kpchip-name { flex-shrink: 0.5; }
+.kpchip-sep { display: inline-flex; flex-shrink: 0; margin: 0 -2px; color: var(--icon-quiet); }
+.kpchip-suffix { color: var(--ink-3); }
+.kpchip[data-empty="true"] { color: var(--ink-3); }
+:is(button, a).kpchip { cursor: pointer; transition: background-color var(--d-1) var(--ease), color var(--d-1) var(--ease); }
+:is(button, a).kpchip:hover { background: var(--p-tint); color: var(--ink); }
+:is(button, a).kpchip:hover .kpchip-suffix { color: var(--ink-2); }
+:is(button, a).kpchip:active { background: color-mix(in oklab, var(--p-fill) 22%, var(--p-tint)); }
+
+/* ProjectCover: the project's colour field + a diagonal light sweep, very faint
+   grain, and a scrim that settles into the surface below. No text sits on it
+   (the tile is the only thing that may overlap it); static, so nothing to
+   reduce for motion. The wrapper reserves room for a tile's overhang. */
+.kpcover-wrap { position: relative; --kpc-h: 96px; --kpc-inset: 16px; --kpc-surface: var(--bg); --kpt-ring: var(--kpc-surface); }
+.kpcover-wrap[data-size="page"] { --kpc-h: 140px; --kpc-inset: var(--gutter, 32px); }
+@media (max-width: 859px) { .kpcover-wrap[data-size="page"] { --kpc-h: 104px; } }
+.kpcover-wrap[data-surface="surface"] { --kpc-surface: var(--surface); }
+.kpcover-wrap[data-surface="raised"] { --kpc-surface: var(--surface-raised); }
+.kpcover-wrap[data-reserve="true"][data-tile="28"] { padding-bottom: 14px; }
+.kpcover-wrap[data-reserve="true"][data-tile="44"] { padding-bottom: 22px; }
+.kpcover-wrap[data-reserve="true"][data-tile="64"] { padding-bottom: 32px; }
+.kpcover {
+  position: relative; height: var(--kpc-h); overflow: hidden; isolation: isolate; border-radius: var(--kpc-r, 0);
+  background: linear-gradient(112deg, transparent 14%, oklch(1 0 0 / var(--spec-cover-sweep, 0.22)) 34%, transparent 56%), var(--p-cover);
+}
+.kpcover[data-empty="true"] { background: var(--surface-2); }
+.kpcover::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: var(--spec-cover-grain, 0.05);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='.33 .33 .33 0 0 .33 .33 .33 0 0 .33 .33 .33 0 0 0 0 0 0 1'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E") 0 0 / 180px 180px;
+}
+.kpcover::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, transparent 45%, color-mix(in oklab, var(--kpc-surface) var(--spec-cover-scrim, 45%), transparent));
+}
+.kpcover-wrap > .kptile { position: absolute; left: var(--kpc-inset); }
+.kpcover-wrap[data-tile="28"] > .kptile { top: calc(var(--kpc-h) - 14px); }
+.kpcover-wrap[data-tile="44"] > .kptile { top: calc(var(--kpc-h) - 22px); }
+.kpcover-wrap[data-tile="64"] > .kptile { top: calc(var(--kpc-h) - 32px); }
 
 /* ---- SectionLabel ---- */
 .ksection { display: flex; align-items: center; gap: 8px; min-height: 28px; color: var(--ink-3); }
