@@ -3,7 +3,7 @@
    (real addresses, Back/Forward), the page header, and the wiring
    between every view and the store.
    ============================================================ */
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import { Icon, GlobalTipStyles, AppBg, Button, IconButton, ProjectDot, type TabItem } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
@@ -81,13 +81,15 @@ const GUEST_MSG = "Guests can view and comment — ask a workspace admin for mem
 // activity the signed-in user wrote about their own actions — history, not notifications
 const SELF_KINDS = new Set<ActivityKind>(["created", "status", "completed", "reopened", "deleted"]);
 
-/** The shell's own silhouette while the workspace loads: the sidebar, the
- *  56px page header and a column of 36px rows, so nothing jumps when it lands. */
+/** The shell's own silhouette while the workspace loads: the sidebar (or, on a
+ *  phone, the bottom bar), the page header and a column of 36px rows, so
+ *  nothing jumps when it lands. The silhouette is hidden from assistive tech;
+ *  a status line says what's happening instead. */
 function FullLoader() {
   const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
   const bar = (w: number | string, h = 12, style: React.CSSProperties = {}) => <div className="skel" style={{ width: w, height: h, borderRadius: "var(--r-xs, 4px)", ...style }} />;
   return (
-    <div aria-busy="true" style={{ position: "relative", height: "100vh", overflow: "hidden", display: "flex", background: "var(--bg)" }}>
+    <div style={{ position: "relative", height: "100vh", overflow: "hidden", display: "flex", background: "var(--bg)" }}>
       <span className="sr-only" role="status">Loading your workspace…</span>
       <AppBg />
       {!isMobile && (
@@ -118,6 +120,16 @@ function FullLoader() {
             </div>
           ))}
         </div>
+        {isMobile && (
+          // the phone's bottom bar: five slots, the middle one the + button
+          <div style={{ marginTop: "auto", flexShrink: 0, display: "flex", alignItems: "flex-start", height: "calc(56px + env(safe-area-inset-bottom, 0px))", paddingTop: 8, boxSizing: "border-box", background: "var(--bg-deep)", borderTop: "1px solid var(--hairline)" }}>
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div key={i} style={{ flex: "1 1 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                {i === 2 ? bar(48, 40, { borderRadius: "var(--r-md, 8px)", marginTop: -2 }) : <>{bar(22, 22, { borderRadius: "var(--r-sm, 6px)" })}{bar(36, 8)}</>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -161,6 +173,23 @@ function addressFor(route: Route, opts: { task?: string | null; q?: string | nul
   return qs ? `${path}?${qs}` : path;
 }
 const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.projectId ?? "") === (b.projectId ?? "") && (a.list ?? "") === (b.list ?? "") && (a.tab ?? "") === (b.tab ?? "");
+/** Where a route really goes for this person in this workspace: Personal has no
+ *  Pulse (its /team is Insights), and guests have no Rules, the workspace's or a
+ *  project's. Everything else goes where it says. */
+function normaliseRoute(r: Route, ctx: { personal: boolean; guest: boolean }): Route {
+  if (ctx.personal && r.view === "pulse") return { view: "analytics" };
+  if (ctx.guest && r.view === "automations") return { view: "projects" };
+  if (ctx.guest && r.view === "project" && r.tab === "rules") return { view: "project", projectId: r.projectId };
+  return r;
+}
+/** One page: a place, or one project in it (its tabs are the same page). */
+const pageOf = (r: Route) => `${placeOf(r)}:${r.view === "project" ? r.projectId ?? "" : ""}`;
+/** Whose plan a task carries once a change lands: a change that hands the task to
+ *  someone (you included) decides, otherwise its assignee. */
+const ownerAfter = (t: Task, patch: Partial<Task>) => ("assigneeId" in patch ? patch.assigneeId : t.assigneeId);
+/** What a guarded change replaced: the row's own fields, and your plan on someone else's task. */
+type GuardedUndo = { id: string; row: Partial<Task>; plan: Partial<Pick<Task, PersonalKey>> | null };
+type BulkOpts = { patchFor?: (t: Task) => Partial<Task>; undoAlso?: () => void };
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** "Wed 30 Sep" (spelt out here: some browsers' en-GB says "Sept") */
@@ -203,7 +232,7 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("profile");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
@@ -279,6 +308,8 @@ export default function App() {
   const detailIdRef = useRef<string | null>(detailId); detailIdRef.current = detailId;
   const resolvedThemeRef = useRef(resolvedTheme); resolvedThemeRef.current = resolvedTheme;
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
+  // the tasks as this person sees them (their own plan on others' tasks); set where it's worked out below
+  const seenRef = useRef<Task[] | null>(null);
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
   const sectionsRef = useRef<Section[]>([]); sectionsRef.current = sections;
@@ -543,12 +574,14 @@ export default function App() {
       if (mod && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); return; }
       const modal = () => !!document.querySelector('[aria-modal="true"]');
       if (mod && !e.altKey && !e.shiftKey && e.key === ",") {
-        if (modal()) return;
-        e.preventDefault(); openSettingsRef.current(); return;
+        e.preventDefault(); // never the browser's own settings, even while a dialog is up
+        if (!modal()) openSettingsRef.current();
+        return;
       }
-      // ⌘Z: take back the newest undoable change (a text field keeps its own undo)
+      // ⌘Z: take back the newest undoable change, wherever you are (the task panel
+      // and the ritual sheets included). Only a text field keeps ⌘Z for its own undo.
       if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "z") {
-        if (isEditable(e.target) || modal()) return;
+        if (isEditable(e.target)) return;
         e.preventDefault();
         const label = undoLast();
         toastInfoRef.current(label ? `Undone: ${label}` : "Nothing to undo");
@@ -712,7 +745,7 @@ export default function App() {
       // signed out: nothing from the last session may leak into the next one
       setTasks(null); bootedRef.current = false; onboardCheckedRef.current = false;
       pendingTasksRef.current = []; createsRef.current.clear(); unsavedRef.current.clear(); setUnsavedIds([]);
-      recentWritesRef.current.clear(); spawnedRef.current.clear(); readLocallyRef.current.clear();
+      recentWritesRef.current.clear(); spawnedRef.current.clear(); readLocallyRef.current.clear(); archivedHereRef.current.clear();
       return;
     }
     let cancelled = false;
@@ -797,10 +830,17 @@ export default function App() {
      step with anything else (the open task, a project's real id, a guard). */
   const pushedThisTickRef = useRef(false);
   const shellShownRef = useRef(false);
+  // Phones scroll the whole page (the app root), so a new page has to start at its
+  // top, and Back / Forward return to where you were: each history entry keeps its
+  // scroll position, and this says where the page should sit after the next render.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const scrollToRef = useRef<number | null>(null);
   const writeUrl = useCallback((url: string, mode: "push" | "replace") => {
     if (url === window.location.pathname + window.location.search) return;
     try {
       if (mode === "push" && !pushedThisTickRef.current) {
+        // the entry you're leaving remembers how far down you were
+        window.history.replaceState({ ...(window.history.state ?? {}), kScroll: rootRef.current?.scrollTop ?? 0 }, "");
         window.history.pushState({}, "", url);
         pushedThisTickRef.current = true;
         queueMicrotask(() => { pushedThisTickRef.current = false; });
@@ -810,27 +850,37 @@ export default function App() {
 
   /** Go somewhere. Closes the task panel (unless `keepPanel`: a tab switch on
    *  the same page) and the phone drawer; `replace` for redirects Back shouldn't revisit. */
-  const setRoute = useCallback((r: Route, opts: { replace?: boolean; keepPanel?: boolean } = {}) => {
+  const setRoute = useCallback((to: Route, opts: { replace?: boolean; keepPanel?: boolean } = {}) => {
+    const wsId = workspaceRef.current;
+    const r = bootedRef.current ? normaliseRoute(to, { personal: wsId === null, guest: roleIn(wsId) === "guest" }) : to;
+    if (!sameRoute(r, routeRef.current)) scrollToRef.current = 0; // a new page or tab starts at its top
     setRouteRaw(r);
     setSearchPrefill(null);
     if (r.smart) setSmart(true);
     if (!opts.keepPanel) setDetailId(null);
     setSidebarOpen(false); // close the mobile drawer on navigation
     if (shellShownRef.current) writeUrl(addressFor(r, { task: opts.keepPanel ? detailIdRef.current : null }), opts.replace ? "replace" : "push");
-  }, [writeUrl]);
+  }, [writeUrl, roleIn]);
   goRef.current = setRoute;
-  // the palette's Recent: the last five places you went, newest first (in memory only)
+  // the palette's Recent: the last five places you went, and the tasks you last opened, newest first (in memory only)
   const recentRoutesRef = useRef<Route[]>([]);
   useEffect(() => {
     recentRoutesRef.current = [route, ...recentRoutesRef.current.filter((r) => !sameRoute(r, route))].slice(0, 5);
   }, [route]);
+  const recentTaskIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (detailId) recentTaskIdsRef.current = [detailId, ...recentTaskIdsRef.current.filter((id) => id !== detailId)].slice(0, 5);
+  }, [detailId]);
 
   // Back / Forward: follow the address. Overlays close; the task panel stays.
   useEffect(() => {
     const onPop = () => {
       if (!shellShownRef.current) return;
       const params = new URLSearchParams(window.location.search);
-      const r = routeOf(window.location.pathname, window.location.search) ?? { view: "plan" };
+      const wsId = workspaceRef.current;
+      const r = normaliseRoute(routeOf(window.location.pathname, window.location.search) ?? { view: "plan" }, { personal: wsId === null, guest: roleIn(wsId) === "guest" });
+      const saved = (window.history.state as { kScroll?: unknown } | null)?.kScroll;
+      scrollToRef.current = typeof saved === "number" ? saved : 0;
       setRouteRaw(r);
       const q = params.get("q");
       setSearchPrefill(r.view === "search" && !r.list && q ? { text: q, key: `url-${Date.now()}` } : null);
@@ -840,7 +890,20 @@ export default function App() {
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [roleIn]);
+  // …and once the new page is on screen, put the phone's page scroll where it belongs
+  // (before paint, so the old position never shows). Desktop views scroll on their own.
+  useLayoutEffect(() => {
+    const top = scrollToRef.current;
+    if (top === null) return;
+    scrollToRef.current = null;
+    const el = rootRef.current;
+    if (!el || el.scrollTop === top) return;
+    el.scrollTop = top;
+    // a page that's still filling in (its header settling, a notice arriving) can be
+    // too short for the spot on the first pass: try again once it has laid out
+    if (el.scrollTop < top) requestAnimationFrame(() => requestAnimationFrame(() => { if (el.scrollTop < top) el.scrollTop = top; }));
+  }, [route]);
 
   // remember the workspace per person, so the next visit opens where they left off
   // (only the user's own switches — not where we opened, nor a switch we forced)
@@ -910,6 +973,16 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, projects, workspace, tasks === null]);
+  // The page has to make sense for who you are here, however you arrived (an address,
+  // Back, a g-key, a workspace switch, a role change): Personal's /team is Insights, and
+  // a guest opening Rules lands on Projects (or the project) instead. setRoute and Back
+  // already ask; this catches the first address and the workspace or role changing.
+  useEffect(() => {
+    if (tasks === null) return;
+    const n = normaliseRoute(route, { personal: workspace === null, guest: roleIn(workspace) === "guest" });
+    if (!sameRoute(n, route)) setRoute(n, { replace: true, keepPanel: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route, workspace, wsMembers, tasks === null]);
 
   /* append to the activity feed (Inbox) — fire-and-forget */
   const log = useCallback((kind: ActivityKind, task: { id: string | null; title: string }, detail: string) => {
@@ -919,6 +992,8 @@ export default function App() {
   }, []);
 
   /* ---- inbox archiving (with Undo) ---- */
+  // what was archived on this visit (Inbox › Archived can move it back), with its archive's save
+  const archivedHereRef = useRef(new Map<string, { item: Activity; archived: Promise<void> }>());
   const putBackActivity = useCallback((items: Activity[]) => {
     setActivity((xs) => {
       const have = new Set(xs.map((a) => a.id));
@@ -931,6 +1006,7 @@ export default function App() {
   const undoArchive = useCallback((parts: ArchivePart[]) => {
     const items = parts.flatMap((p) => p.items);
     if (!items.length) return;
+    items.forEach((a) => archivedHereRef.current.delete(a.id));
     putBackActivity(items);
     Promise.all(parts.map((p) => p.archived.then(() => p.items.map((a) => a.id), () => [] as string[]))).then((landed) => {
       const ids = landed.flat();
@@ -957,13 +1033,19 @@ export default function App() {
     toastAction(prev ? `Archived ${plural(n, "notification")}` : message, "Undo", () => { done(); undoArchive(batch); }, { key: "inbox-archive", onExpire: done });
   }, [toastAction, undoArchive]);
 
+  const noteArchived = useCallback((items: Activity[], archived: Promise<void>) => {
+    items.forEach((item) => archivedHereRef.current.set(item.id, { item, archived }));
+    archived.catch(() => items.forEach((a) => archivedHereRef.current.delete(a.id))); // it's back in the inbox
+  }, []);
+
   const archiveActivity = useCallback((id: string) => {
     const removed = activityRef.current.filter((a) => a.id === id);
     setActivity((xs) => xs.filter((a) => a.id !== id)); // optimistic
     const archived = store.archiveActivity(id);
     archived.catch((e) => { reportError(e); toastError("Couldn't archive that item."); putBackActivity(removed); });
+    noteArchived(removed, archived);
     offerArchiveUndo({ items: removed, archived }, "Notification archived");
-  }, [toastError, putBackActivity, offerArchiveUndo]);
+  }, [toastError, putBackActivity, offerArchiveUndo, noteArchived]);
 
   // "Archive all" clears what the inbox is showing — this workspace, not every workspace
   const clearInbox = useCallback((ids?: unknown) => {
@@ -974,8 +1056,9 @@ export default function App() {
     setActivity((xs) => xs.filter((a) => !set.has(a.id)));
     const archived = store.clearInbox(list);
     archived.catch((e) => { reportError(e); toastError("Couldn't clear the inbox."); putBackActivity(removed); });
+    noteArchived(removed, archived);
     offerArchiveUndo({ items: removed, archived }, Array.isArray(ids) ? `Archived ${plural(list.length, "item")}` : "Inbox cleared");
-  }, [toastError, putBackActivity, offerArchiveUndo]);
+  }, [toastError, putBackActivity, offerArchiveUndo, noteArchived]);
 
   /* ---- profile ---- */
   const uploadAvatar = useCallback((file: File) => store.uploadAvatar(userIdRef.current, file), []);
@@ -1618,7 +1701,7 @@ export default function App() {
   }, [denyGuest, confirmCompleteBlocked, onStatusChange, updateWithStatus, updateTasks, unspawnRecurrence, toastAction]);
 
   const patchTaskRef = useRef<(id: string, patch: Partial<Task>) => void>(() => {});
-  const bulkPatchRef = useRef<(ids: string[], patch: Partial<Task>) => void>(() => {});
+  const bulkPatchRef = useRef<(ids: string[], patch: Partial<Task>, opts?: BulkOpts) => void>(() => {});
   const patchTask = useCallback((id: string, patchIn: Partial<Task>) => {
     const all = tasksRef.current ?? [];
     const prev = all.find((t) => t.id === id); if (!prev) return;
@@ -1689,7 +1772,10 @@ export default function App() {
   }, [patchTask]);
 
   // ---- bulk actions (multi-select) ----
-  const bulkPatch = useCallback((ids: string[], patchIn: Partial<Task>) => {
+  /** One change to many tasks, with one "Updated" toast whose Undo takes it all back.
+   *  `patchFor` gives a task its own part of the change (the plan-state guard sends
+   *  teammates' tasks only the shared fields); `undoAlso` joins that Undo. */
+  const bulkPatch = useCallback((ids: string[], patchIn: Partial<Task>, opts: BulkOpts = {}) => {
     if (!ids.length) return;
     const all = tasksRef.current ?? [];
     const rows = ids.map((id) => all.find((t) => t.id === id)).filter((t): t is Task => !!t);
@@ -1702,21 +1788,26 @@ export default function App() {
     const completed: string[] = [];
     const fx = newStatusFx();
     for (const prev of rows) {
-      const p: Partial<Task> = { ...patchIn };
+      const p: Partial<Task> = { ...(opts.patchFor ? opts.patchFor(prev) : patchIn) };
       // per task: completedAt only moves for tasks whose status really changes
       if ("status" in p && (!p.status || p.status === prev.status)) { delete p.status; delete p.completedAt; }
       const note = retarget(prev, p); if (note) notes.add(note);
       if (p.status) { if (p.status === "done") completed.push(prev.id); Object.assign(p, onStatusChange(prev, { ...prev, ...p }, fx)); }
       if (Object.keys(p).length) { patches.set(prev.id, p); cascadeToDescendants(prev, p, all, patches); }
     }
-    if (!patches.size) { toastInfo(`Nothing to change — ${rows.length === 1 ? "it's" : "they're"} already like that.`); return; }
+    if (!patches.size) {
+      // only your own plan changed (teammates' tasks): that's still a change, with its Undo
+      if (opts.undoAlso) toastAction(`Updated ${plural(rows.length, "task")} in your plan`, "Undo", opts.undoAlso, {});
+      else toastInfo(`Nothing to change — ${rows.length === 1 ? "it's" : "they're"} already like that.`);
+      return;
+    }
     if (fx.logs.size) {
       // retry just the tasks whose save failed, as a fresh bulk change (side effects included)
       const failedIds: string[] = [];
       const picked = new Set(rows.map((r) => r.id));
       updateWithStatus(patches, fx, {
         onFailed: (fids) => failedIds.push(...fids.filter((x) => picked.has(x))),
-        retry: () => { if (failedIds.length) bulkPatchRef.current(failedIds, patchIn); },
+        retry: () => { if (failedIds.length) bulkPatchRef.current(failedIds, patchIn, { patchFor: opts.patchFor }); },
       });
     } else updateTasks(patches);
     toastAction(`Updated ${plural(rows.length, "task")}`, "Undo", () => {
@@ -1725,6 +1816,7 @@ export default function App() {
       const back = new Map<string, Partial<Task>>();
       patches.forEach((p, id) => { const before = all.find((t) => t.id === id); if (before && present.has(id)) back.set(id, pickFields(before, Object.keys(p))); });
       updateTasks(back, { notify: false });
+      opts.undoAlso?.();
     }, {});
     if (notes.size === 1) toastInfo([...notes][0]);
     else if (notes.size > 1) toastInfo(`${plural(notes.size, "task")} ${notes.size === 1 ? "was" : "were"} reassigned to you — their assignees aren't in that workspace.`);
@@ -1749,32 +1841,56 @@ export default function App() {
     setOverlayRev((n) => n + 1);
   }, []);
 
-  /** patchTask behind the plan-state guard (every view's single-task edits go through it). */
-  const guardedPatch = useCallback((id: string, patch: Partial<Task>) => {
-    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
-    if (t.assigneeId === userIdRef.current) { patchTask(id, patch); return; }
+  /** patchTask behind the plan-state guard (every view's single-task edits go through
+   *  it). Returns what the change replaced, on the row and in your own plan, so an
+   *  Undo can put back exactly that (see undoGuarded). */
+  const guardedWrite = useCallback((id: string, patch: Partial<Task>): GuardedUndo | null => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return null;
+    if (ownerAfter(t, patch) === userIdRef.current) {
+      patchTask(id, patch);
+      return { id, row: pickFields(t, Object.keys(patch)), plan: null };
+    }
     const { personal, shared } = splitPersonal(patch);
+    let plan: GuardedUndo["plan"] = null;
     if (Object.keys(personal).length) {
-      if (denyGuest([t.workspaceId])) return;
+      if (denyGuest([t.workspaceId])) return null;
+      // what you saw there before: your own plan on it (the row's is its assignee's)
+      const seen = seenRef.current?.find((x) => x.id === id) ?? t;
+      plan = pickFields(seen, Object.keys(personal)) as GuardedUndo["plan"];
       writeOverlay(t, personal);
     }
     if (Object.keys(shared).length) patchTask(id, shared);
+    return { id, row: pickFields(t, Object.keys(shared)), plan };
   }, [patchTask, denyGuest, writeOverlay]);
+  const guardedPatch = useCallback((id: string, patch: Partial<Task>) => { guardedWrite(id, patch); }, [guardedWrite]);
+  /** Put back what a guarded change replaced: the row's own fields that no longer
+   *  hold their old value (a change that never landed writes nothing), and your plan. */
+  const undoGuarded = useCallback((u: GuardedUndo) => {
+    const now = tasksRef.current?.find((x) => x.id === u.id); if (!now) return;
+    const row: Record<string, unknown> = {};
+    const cur = now as unknown as Record<string, unknown>;
+    for (const [k, v] of Object.entries(u.row)) if (cur[k] !== v) row[k] = v;
+    if (Object.keys(row).length) patchTask(u.id, row as Partial<Task>);
+    if (u.plan) writeOverlay(now, u.plan);
+  }, [patchTask, writeOverlay]);
 
-  /** bulkPatch behind the same guard. */
+  /** bulkPatch behind the same guard: one change, one "Updated" toast, one Undo
+   *  (it puts back your plan on teammates' tasks too). */
   const guardedBulkPatch = useCallback((ids: string[], patch: Partial<Task>) => {
     const { personal, shared } = splitPersonal(patch);
     const all = tasksRef.current ?? [], me = userIdRef.current;
-    const theirs = Object.keys(personal).length ? all.filter((t) => ids.includes(t.id) && t.assigneeId !== me) : [];
+    const theirs = Object.keys(personal).length ? all.filter((t) => ids.includes(t.id) && ownerAfter(t, patch) !== me) : [];
     if (!theirs.length) { bulkPatch(ids, patch); return; }
-    if (denyGuest(theirs.map((t) => t.workspaceId))) return;
+    if (denyGuest(all.filter((t) => ids.includes(t.id)).map((t) => t.workspaceId))) return;
+    const seen = new Map((seenRef.current ?? []).map((t) => [t.id, t]));
+    const before = theirs.map((t) => ({ t, plan: pickFields(seen.get(t.id) ?? t, Object.keys(personal)) }));
     theirs.forEach((t) => writeOverlay(t, personal));
     const theirIds = new Set(theirs.map((t) => t.id));
-    const own = ids.filter((id) => !theirIds.has(id));
-    if (own.length) bulkPatch(own, patch);
-    if (Object.keys(shared).length) bulkPatch([...theirIds], shared);
-    else if (!own.length) toastSuccess(`Updated ${plural(theirs.length, "task")} in your plan`);
-  }, [bulkPatch, denyGuest, writeOverlay, toastSuccess]);
+    bulkPatch(ids, patch, {
+      patchFor: (t) => (theirIds.has(t.id) ? shared : patch),
+      undoAlso: () => before.forEach(({ t, plan }) => writeOverlay(t, plan)),
+    });
+  }, [bulkPatch, denyGuest, writeOverlay]);
 
   const deleteTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
@@ -1949,13 +2065,15 @@ export default function App() {
       || ps.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id
       || "p-personal";
     const focusMin = partial.focusMin ?? 30;
+    const assigneeId = partial.assigneeId || me;
     const base: Task = {
       id: newTaskId(),
       title: partial.title, description: partial.description ?? "", status: partial.status || "todo", priority: partial.priority || "medium",
-      projectId, assigneeId: partial.assigneeId || me, tags: partial.tags ?? [], dependencies: [], subtasks: [],
+      projectId, assigneeId, tags: partial.tags ?? [], dependencies: [], subtasks: [],
       comments: 0, aiScore: 50, aiReason: undefined, focusMin, dur: focusMin, scheduled: null,
-      // only tasks added from Plan my day go straight into today's plan
-      planToday: r.view === "plan",
+      // only your own tasks added from Today go straight onto today's plan (a teammate's
+      // day is theirs to plan)
+      planToday: r.view === "plan" && assigneeId === me,
       recurrence: "none", dueDate: partial.dueDate, dueTime: partial.dueTime, startDate: partial.startDate,
       sectionId: partial.sectionId, mySectionId: partial.mySectionId, collaborators: partial.collaborators,
       position: partial.position ?? Date.now(),
@@ -1963,20 +2081,28 @@ export default function App() {
     return { ...base, energy: partial.energy ?? energyOf(base) };
   }, []);
 
+  /** A task's plan is its assignee's: a new task that ends up with someone else
+   *  (as asked, or by a rule) starts off their day, whatever the page it came from. */
+  const unplanIfTheirs = useCallback((t: Task): Task => (
+    (t.planToday || t.scheduled != null) && t.assigneeId && t.assigneeId !== userIdRef.current ? { ...t, planToday: false, scheduled: null } : t
+  ), []);
+
   // inline quick-add + quick capture
   const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {
-    const t = applyAutomation(buildNewTask(partial));
+    const t = unplanIfTheirs(applyAutomation(buildNewTask(partial)));
     if (denyGuest([projectWs(t.projectId)])) return;
     persistTask(t);
     noteElsewhere([t.projectId]);
-  }, [applyAutomation, buildNewTask, denyGuest, persistTask, noteElsewhere]);
+  }, [applyAutomation, buildNewTask, denyGuest, persistTask, noteElsewhere, unplanIfTheirs]);
 
   // genuine "new task" entry points (modal, forms) run automation rules;
   // duplicate / recurrence / sub-tasks call persistTask directly (no rules)
+  // (on Today a new task of yours lands on today's plan; one for a teammate, or one a
+  // rule hands to someone else, never plans their day for them)
   const createTask = useCallback((t: Task) => {
     if (denyGuest([projectWs(t.projectId)])) return;
-    persistTask(applyAutomation({ ...t, planToday: routeRef.current.view === "plan" ? (t.planToday ?? true) : false }));
-  }, [denyGuest, persistTask, applyAutomation]);
+    persistTask(unplanIfTheirs(applyAutomation({ ...t, planToday: routeRef.current.view === "plan" ? (t.planToday ?? true) : false })));
+  }, [denyGuest, persistTask, applyAutomation, unplanIfTheirs]);
 
   // Plan my day capture: yours, and in the workspace you're planning
   const createFromPlan = useCallback((t: Task) => {
@@ -2789,8 +2915,10 @@ export default function App() {
     setDetailId(null); setFocusOpen(true); focus.setRunning(true);
   };
 
-  /** Settings, open at a section (⌘, · ? for Shortcuts · Month's "connect" · Manage tags…). */
-  const openSettings = useCallback((section: SettingsSection = "profile") => { setSettingsSection(section); setSettingsOpen(true); }, []);
+  /** Settings, open at a section: Appearance (the preferences people reach for most) for
+   *  ⌘, and the Settings buttons, Profile from your avatar, Shortcuts for ?, Calendar from
+   *  Month and Today, Tags from Manage tags… */
+  const openSettings = useCallback((section: SettingsSection = "appearance") => { setSettingsSection(section); setSettingsOpen(true); }, []);
   openSettingsRef.current = openSettings;
   /** The command bar; with `query` it opens on its Ask row with that text. */
   const openPalette = useCallback((query?: string) => { setPaletteQuery(query); setCmdOpen(true); }, []);
@@ -2830,25 +2958,27 @@ export default function App() {
    *  no deletes), then one Undo (and ⌘Z) that puts back every field it changed and
    *  takes back what it created. Plan fields go through the plan-state guard. */
   const applyAskActions = useCallback((actions: AskAction[]) => {
-    const all = tasksRef.current ?? [];
-    const before = new Map<string, Record<string, unknown>>();
+    // what each change replaced, newest last: Undo walks back through them in reverse,
+    // so two changes to one task put back what was there before the first
+    const undos: GuardedUndo[] = [];
     const created: string[] = [];
+    const me = userIdRef.current;
     let n = 0;
     for (const a of actions) {
       if (a.op === "update") {
-        const t = all.find((x) => x.id === a.id);
-        const keys = Object.keys(a.patch);
-        if (!t || !keys.length) continue;
-        const prev = before.get(a.id) ?? {};
-        for (const k of keys) if (!(k in prev)) prev[k] = (t as unknown as Record<string, unknown>)[k];
-        before.set(a.id, prev);
-        guardedPatch(a.id, a.patch);
-        n++;
+        if (!Object.keys(a.patch).length) continue;
+        const u = guardedWrite(a.id, a.patch);
+        if (!u) continue;
+        undos.push(u); n++;
       } else if (a.op === "create") {
         const { planToday, ...fields } = a.task;
-        const t = applyAutomation({ ...buildNewTask(fields), ...(planToday !== undefined ? { planToday } : {}) });
+        const t0 = applyAutomation(buildNewTask(fields));
+        // "on today" for someone else's new task is your plan, not theirs
+        const mine = !t0.assigneeId || t0.assigneeId === me;
+        const t = mine ? (planToday !== undefined ? { ...t0, planToday } : t0) : unplanIfTheirs(t0);
         if (denyGuest([projectWs(t.projectId)])) continue;
         persistTask(t);
+        if (!mine && planToday) writeOverlay(t, { planToday: true });
         noteElsewhere([t.projectId]);
         created.push(t.id); n++;
       } else if (a.op === "open") {
@@ -2858,11 +2988,11 @@ export default function App() {
     }
     if (!n) return;
     toastAction(`Applied ${plural(n, "change")}`, "Undo", () => {
-      before.forEach((p, id) => guardedPatch(id, p as Partial<Task>));
+      [...undos].reverse().forEach(undoGuarded);
       if (created.length) discardCreated(created);
     }, {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guardedPatch, applyAutomation, buildNewTask, denyGuest, persistTask, noteElsewhere, discardCreated, toastAction]);
+  }, [guardedWrite, undoGuarded, applyAutomation, buildNewTask, unplanIfTheirs, writeOverlay, denyGuest, persistTask, noteElsewhere, discardCreated, toastAction]);
 
   /** Waiting on: ask the assignee for an update, in a comment that mentions them. */
   const nudge = useCallback((taskId: string) => {
@@ -2872,13 +3002,22 @@ export default function App() {
     void addComment(taskId, `@${first} — any update on this?`, [t.assigneeId]).then((c) => { if (c) toastSuccess(`Nudged ${first}`); });
   }, [addComment, toastSuccess]);
 
-  /** My tasks' "Save view": today's My tasks filters as a saved search (they span every workspace). */
-  const saveMyTasksView = useCallback((name: string) => {
+  /** My tasks' "Save view": the view as My tasks describes it (its text, tab and
+   *  filters), else its saved filters, as a saved search (they span every workspace). */
+  const saveMyTasksView = useCallback((name: string, query?: Record<string, string>) => {
     const f = readFilters("my");
-    saveSearch(name.trim() || "Saved view", {
+    saveSearch(name.trim() || "Saved view", query ?? {
       assignee: f.assignee !== "all" ? f.assignee : userIdRef.current, priority: f.priority, tag: f.tag, due: f.due, status: "open",
     });
   }, [saveSearch]);
+
+  /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
+  const unarchiveInbox = useCallback((ids: string[]) => {
+    const parts = ids.map((id) => archivedHereRef.current.get(id)).filter((p): p is { item: Activity; archived: Promise<void> } => !!p);
+    if (!parts.length) return;
+    ids.forEach((id) => archivedHereRef.current.delete(id));
+    undoArchive(parts.map((p) => ({ items: [p.item], archived: p.archived })));
+  }, [undoArchive]);
 
   // Early-access gate: a platform admin is always let through — by the profile's
   // is_admin flag, or else by asking the server (is_admin(), which also knows the
@@ -2906,19 +3045,24 @@ export default function App() {
     window.addEventListener(DAY_CHANGE_EVENT, onDay);
     return () => window.removeEventListener(DAY_CHANGE_EVENT, onDay);
   }, []);
-  // What this person sees: on tasks assigned to someone else, their own plan (slot,
-  // "on today", My-tasks section, Kanbo's order) instead of the assignee's.
+  // What this person sees on their own surfaces (Today, Week, My tasks, Inbox, Search,
+  // the palette, the task panel): on tasks assigned to someone else, their own plan
+  // (slot, "on today", My-tasks section, Kanbo's order) instead of the assignee's.
+  // Team and project views keep each task's own row: a teammate's plan is theirs to show.
   const tasksSeen = useMemo(() => (tasks ? withOverlay(tasks, currentUserId, dayKey) : null),
     // (overlayRev: this person just changed their plan on someone else's task)
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tasks, currentUserId, dayKey, overlayRev]);
+  seenRef.current = tasksSeen;
   useEffect(() => { if (tasks !== null) prunePlanOverlay(currentUserId); }, [currentUserId, dayKey, tasks === null]); // eslint-disable-line react-hooks/exhaustive-deps
   // scope everything to the active workspace (memoised: the focus timer re-renders
   // App every second, and the Sidebar's badge counts key off this list)
-  const allTasks = useMemo(() => {
+  const inWorkspace = useCallback((list: Task[]) => {
     const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
-    return (tasksSeen ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
-  }, [tasksSeen, projects, workspace]);
+    return list.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
+  }, [projects, workspace]);
+  const allTasks = useMemo(() => inWorkspace(tasks ?? []), [tasks, inWorkspace]);
+  const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
   const risks = useMemo(() => {
@@ -2961,6 +3105,16 @@ export default function App() {
   useEffect(() => {
     document.title = shellShown ? `${inboxCount > 0 ? `(${inboxCount}) ` : ""}${pageTitle} · Kanbo` : baseTitleRef.current;
   }, [shellShown, pageTitle, inboxCount]);
+  // Screen readers hear where you've gone: a new page (a place, or another project) is
+  // announced by name. A tab switch isn't: the tab you pressed already says so.
+  const [announced, setAnnounced] = useState("");
+  const lastPageRef = useRef<string | null>(null);
+  const page = pageOf(route);
+  useEffect(() => {
+    if (!shellShown) return;
+    const prev = lastPageRef.current; lastPageRef.current = page;
+    if (prev !== null && prev !== page) setAnnounced(pageTitle);
+  }, [shellShown, page, pageTitle]);
   // someone new to Kanbo never needs "What moved" (they get "Your five places" in the tour)
   useEffect(() => { if (shellShown && !knewOldLayout) markWhatMovedSeen(); }, [shellShown, knewOldLayout]);
   // after 16:00 Today offers "Shut down" (flips once, not every minute)
@@ -2991,7 +3145,7 @@ export default function App() {
   // personal — they never show (or schedule) teammates' work.
   const seen = tasksSeen ?? tasks;
   const isMine = (t: Task) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId);
-  const myTasks = allTasks.filter(isMine);
+  const myTasks = allSeen.filter(isMine);
   // "Show archived" follows the page: this project's archived tasks, or mine in My tasks
   const wsArchived = seen.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
   const archivedTasks = route.view === "project" && route.projectId ? wsArchived.filter((t) => t.projectId === route.projectId) : wsArchived.filter(isMine);
@@ -3041,9 +3195,17 @@ export default function App() {
   const wsForms = forms.filter((f) => wsProjects.some((p) => p.id === f.projectId));
 
   /* ---- Today ---- */
-  // momentum: what's done today out of today's work (done today + still open for today)
-  const doneToday = myTasks.filter((t) => t.status === "done" && t.completedAt === dayKey).length;
-  const openToday = myTasks.filter((t) => t.status !== "done" && (t.dueDate === dayKey || !!t.planToday)).length;
+  // Momentum: today's work done ÷ today's work, counted the way Today counts it (P04's
+  // momentumCounts): top-level tasks only; yours, or ones you've put on today's plan;
+  // done today, or still open and due today or on today's plan (a block on today's
+  // canvas is on the plan, so "scheduled today" is counted there).
+  const day10 = (iso?: string | null) => (iso ? iso.slice(0, 10) : "");
+  let doneToday = 0, openToday = 0;
+  for (const t of myTasks) {
+    if (t.parentId || (!t.planToday && t.assigneeId !== currentUserId)) continue;
+    if (t.status === "done") { if (day10(t.completedAt) === dayKey) doneToday++; }
+    else if (day10(t.dueDate) === dayKey || !!t.planToday) openToday++;
+  }
   const dayTotal = doneToday + openToday;
   const setup = [
     { label: "Add your first task", done: allTasks.length > 0, action: () => openNewTask() },
@@ -3103,9 +3265,12 @@ export default function App() {
         return {
           title: "Today", meta: dayMeta(KANBO_TODAY),
           switcher: { items: tabsFor("today", navCtx).map((t) => ({ id: t.id, label: t.label })), value: route.view, onChange: (id) => setRoute({ view: id as Route["view"] }), label: "Show your day, week or month" },
-          actions: route.view === "plan" && lateDay && !activeReadOnly
-            ? <Button variant="secondary" size="sm" icon="sunset" iconRight={shutDown ? "check" : undefined} aria-label={shutDown ? "Shut down (done for today)" : "Shut down my day"} onClick={() => setShutdownOpen(true)}>Shut down</Button>
-            : undefined,
+          actions: activeReadOnly ? undefined
+            : route.view === "plan" && lateDay
+              ? <Button variant="secondary" size="sm" icon="sunset" iconRight={shutDown ? "check" : undefined} aria-label={shutDown ? "Shut down (done for today)" : "Shut down my day"} onClick={() => setShutdownOpen(true)}>Shut down</Button>
+              : route.view === "myweek"
+                ? <Button variant="secondary" size="sm" icon="check" onClick={() => setWeeklyOpen(true)}>Weekly review</Button>
+                : undefined,
           momentum: route.view === "plan" && dayTotal > 0 ? doneToday / dayTotal : null,
         };
       }
@@ -3144,11 +3309,13 @@ export default function App() {
         return {
           title: "Projects", meta: activeWsName,
           tabs: tabs.map((t) => tabItem(t, { count: counts[t.id] || undefined })), tabValue: route.view, onTab: placeTab(tabs), tabsLabel: "Projects",
-          actions: activeReadOnly ? undefined : <Button variant="primary" size="sm" icon="plus" onClick={() => setNewProjectOpen(true)}>New project</Button>,
+          // (secondary: the header's New task is this row's one primary button)
+          actions: activeReadOnly ? undefined : <Button variant="secondary" size="sm" icon="plus" onClick={() => setNewProjectOpen(true)}>New project</Button>,
         };
       }
       case "team": {
-        if (personal) return { title: "Insights" };
+        // Personal has no team: Insights, and People / Workload (their empty states) by name when reached by address
+        if (personal) return { title: titleOf(route, { personal }) };
         const tabs = tabsFor("team", navCtx);
         const people = assignees.length;
         return {
@@ -3168,7 +3335,10 @@ export default function App() {
      so they compile against today's components and the finished ones alike; once a
      component declares one, TypeScript checks it here as usual. */
   const headerNext = { momentumLabel: header.momentum != null ? `Today's work done, ${doneToday} of ${dayTotal}` : undefined };
-  const sidebarNext = { theme: resolvedTheme, onToggleTheme: flipTheme, teamBadge: !personal && signalRisks > 0 ? signalRisks : undefined, onOpenSearch: () => openPalette() };
+  const sidebarNext = {
+    theme: resolvedTheme, onToggleTheme: flipTheme, teamBadge: !personal && signalRisks > 0 ? signalRisks : undefined, onOpenSearch: () => openPalette(),
+    onOpenShortcuts: () => openSettings("shortcuts"),
+  };
   const mobileNavNext = { onCapture: activeReadOnly ? undefined : openCapture, onMore: () => setSidebarOpen(true), personal };
   const insightsNext = {
     scope: insightsScope, onScopeChange: setInsightsScope, currentUserId, personal, onAsk: () => openPalette(""),
@@ -3181,7 +3351,9 @@ export default function App() {
   const paletteNext = {
     ai: aiOn ? (q: string, ts: Task[], ctx: AskContext) => store.aiCommand(q, ts, ctx) : undefined,
     askContext, canAct: !activeReadOnly, onApplyAsk: applyAskActions, onGo: (r: Route) => setRoute(r),
-    recent: recentRoutesRef.current.filter((r) => !sameRoute(r, route)), initialQuery: paletteQuery,
+    recent: recentRoutesRef.current.filter((r) => !sameRoute(r, route)), recentTaskIds: recentTaskIdsRef.current,
+    // opened by an "Ask Kanbo" button: the example questions lead
+    initialQuery: paletteQuery, askFirst: paletteQuery !== undefined, personal,
   };
   const settingsNext = {
     section: settingsSection, onSection: setSettingsSection, isAdmin,
@@ -3220,16 +3392,18 @@ export default function App() {
       case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch}
         onDeleteSavedSearch={(id) => { removeSavedSearch(id)?.catch(() => toastError("Couldn't delete the saved search.")); }}
         preset={searchPreset} presetKey={searchPresetKey} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields}
-        {...{ onToggle: toggleTask }} />;
+        {...{ onToggle: toggleTask, activeId: detailId ?? undefined }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} />;
-      case "inbox": return <InboxView activity={scopedActivity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox}
+      // (your own plan on each task: "Add to Today" knows what's already on your day)
+      case "inbox": return <InboxView activity={scopedActivity} tasks={allSeen} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox}
         {...{
-          currentUserId, members: assignees,
-          onReply: (taskId: string, body: string) => addComment(taskId, body),
+          currentUserId, members: assignees, readOnly: activeReadOnly, onUnarchive: unarchiveInbox,
+          // a reply to someone mentions them, so they hear about it
+          onReply: (taskId: string, body: string, mentions?: string[]) => addComment(taskId, body, mentions ?? []),
           onAcceptToday: (taskId: string) => guardedPatch(taskId, { planToday: true }),
           onSchedule: (taskId: string, dueDate: string) => guardedPatch(taskId, { dueDate }),
           onComplete: (taskId: string) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); },
@@ -3243,7 +3417,8 @@ export default function App() {
       case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} readOnly={activeReadOnly}
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
         onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
-        onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined} />;
+        onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
+        {...{ personal, onNewWorkspace: () => setNewWorkspaceOpen(true) }} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace}
         {...{ onOpenWorkspaceSettings: settingsNext.renderWorkspace ? () => openSettings("workspace") : undefined }} />;
       case "tasks":
@@ -3265,6 +3440,11 @@ export default function App() {
           onOpenSavedView: (id: string) => setRoute({ view: "search", list: id }), onSaveView: saveMyTasksView,
           onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
         };
+        // both: rows follow Appearance's density (and the Display menu changes it there), and the open task stays marked
+        const pageBoth = {
+          density: appearance.density, onDensity: (density: "comfortable" | "compact") => setAppearance((a) => ({ ...a, density })),
+          activeTaskId: detailId ?? undefined,
+        };
         return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
@@ -3283,7 +3463,7 @@ export default function App() {
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={openProject ? customFields.filter((f) => f.projectId === openProject.id) : customFields}
           exportOpts={{ sections, customFields: openProject ? customFields.filter((f) => f.projectId === openProject.id) : customFields, allTasks }}
-          {...pageNext} />;
+          {...pageNext} {...pageBoth} />;
       }
       default: return null;
     }
@@ -3301,11 +3481,12 @@ export default function App() {
   return (
     // Desktop: the sidebar and a main column whose views scroll on their own. Phone: the
     // whole page is one scroll (the header and the bottom bar stay put), no inner scroll boxes.
-    <div data-panel={detailId ? "open" : undefined} style={isMobile
+    <div ref={rootRef} data-panel={detailId ? "open" : undefined} style={isMobile
       ? { position: "relative", height: "100vh", overflowX: "hidden", overflowY: "auto", overscrollBehaviorY: "contain", background: "var(--bg)" }
       : { position: "relative", height: "100vh", display: "flex", overflow: "hidden", background: "var(--bg)" }}>
       <AppBg />
       <GlobalTipStyles />
+      <div className="sr-only" aria-live="polite" aria-atomic="true">{announced}</div>
       {isMobile ? (
         <>
           {sidebarOpen && <div aria-hidden="true" onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 49, background: "var(--scrim, color-mix(in oklch, var(--bg-deep) 55%, transparent))", animation: "fadeIn var(--d-2, 160ms) var(--ease)" }} />}
@@ -3357,10 +3538,12 @@ export default function App() {
           </Notice>
         )}
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
-        <PageHeader {...header} onSearch={() => openPalette()} create={createMenu} isMobile={isMobile} onOpenSettings={() => openSettings()} userId={currentUserId} {...headerNext} />
+        <PageHeader {...header} onSearch={() => openPalette()} create={createMenu} isMobile={isMobile} onOpenSettings={() => openSettings("profile")} userId={currentUserId} {...headerNext} />
         {/* the page fades in on a change of place (not of tab) */}
         <div key={place} className="kroute" style={{ flex: isMobile ? "1 0 auto" : 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <ErrorBoundary key={`${route.view}:${route.projectId ?? ""}`} inline name="view" onHome={() => setRoute({ view: "plan" })}>
+          {/* a page that fails offers Today, and Today itself offers My tasks (never the page that just failed) */}
+          <ErrorBoundary key={`${route.view}:${route.projectId ?? ""}`} inline name="view"
+            onHome={() => setRoute(route.view === "plan" ? { view: "tasks" } : { view: "plan" })} homeLabel={route.view === "plan" ? "Go to My tasks" : "Go to Today"}>
             <RenderView render={renderMain} />
           </ErrorBoundary>
         </div>
@@ -3398,6 +3581,7 @@ export default function App() {
           else if (s.id === "prioritize") autoPrioritize();
           else if (s.id === "focus") openFocus(true);
           else if (s.id === "shutdown") { if (!denyGuest([workspace])) setShutdownOpen(true); }
+          else if (s.id === "weekly-review") { if (!denyGuest([workspace])) setWeeklyOpen(true); }
           else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
           else if (s.id === "manage-tags") openSettings("tags");
           else if (s.id === "toggle-theme") flipTheme();
@@ -3408,7 +3592,7 @@ export default function App() {
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <TaskDetail taskId={detailId} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} {...{ docked: docked && !isMobile, onStartFocus: focusTask }} />
+            readOnly={detailReadOnly} {...{ docked: docked && !isMobile, onStartFocus: focusTask, onOpenProject: (pid: string) => setRoute({ view: "project", projectId: pid }) }} />
         </ErrorBoundary>
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
@@ -3453,8 +3637,9 @@ export default function App() {
           onArchive={proj.archivedAt || !canArchiveProject(proj, { myRole: roleIn(proj.workspaceId) }) ? undefined : () => setProjectArchived(proj.id, true)}
           onConfirm={(mode, target) => { confirmDeleteProject(deleteProjectId, mode, target); }} onClose={() => setDeleteProjectId(null)} />;
       })()}
-      {/* one time, for people who knew the old layout: where everything went */}
-      {knewOldLayout && !onboardOpen && !welcomeOpen && <WhatMoved isMobile={isMobile} onShowMe={() => openPalette()} />}
+      {/* one time, for people who knew the old layout: where everything went (out of
+          the way while a task panel is open, where the card would sit on its composer) */}
+      {knewOldLayout && !onboardOpen && !welcomeOpen && <WhatMoved isMobile={isMobile} hidden={!!detailId} onShowMe={() => openPalette()} />}
     </div>
   );
 }

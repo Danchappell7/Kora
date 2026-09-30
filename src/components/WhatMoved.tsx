@@ -1,7 +1,10 @@
 /* ============================================================
-   KANBO — "What moved": a one-time card, bottom right, for people
-   who knew the old layout. Five lines on where things went, then
-   it's gone for good (per browser). Never shown in tests.
+   KANBO — "What moved": a one-time card for people who knew the
+   old layout. Five lines on where things went, then it's gone for
+   good (per browser). Never shown in tests.
+   Desktop: bottom right (toasts live bottom left), stepping aside
+   while a task panel is open. Phones: under the header, clear of
+   the bottom bar and the toasts above it.
    ============================================================ */
 import { useState, type ReactNode } from "react";
 import { Icon, Button, IconButton, Kbd } from "./primitives";
@@ -20,37 +23,42 @@ export function markWhatMovedSeen(): void {
 
 const B = ({ children }: { children: ReactNode }) => <strong style={{ fontWeight: 600, color: "var(--ink)" }}>{children}</strong>;
 
-const LINES: { icon: IconName; text: ReactNode }[] = [
+const lines = (touch: boolean): { icon: IconName; text: ReactNode }[] => [
   { icon: "sun", text: <>Home and Plan my day are now <B>Today</B>.</> },
   { icon: "calendar", text: <>My week and Calendar live in <B>Today › Week</B> and <B>Month</B>.</> },
   { icon: "kanbo", text: <>Goals, Portfolios, Rules and Requests are under <B>Projects</B>.</> },
   { icon: "users", text: <>Workload and Insights are under <B>Team</B>.</> },
-  { icon: "search", text: <>Search and Ask live in <Kbd>⌘K</Kbd>. Type a question to ask Kanbo.</> },
+  touch
+    ? { icon: "search", text: <>Search and Ask are behind the <B>search</B> button at the top. Type a question to ask Kanbo.</> }
+    : { icon: "search", text: <>Search and Ask live in <Kbd>⌘K</Kbd>. Type a question to ask Kanbo.</> },
 ];
 
-export function WhatMoved({ onShowMe, onDismiss, isMobile = false }: {
+export function WhatMoved({ onShowMe, onDismiss, isMobile = false, hidden = false }: {
   /** "Show me around": opens the command bar */
   onShowMe: () => void;
   /** after either button (the card has already remembered it was seen) */
   onDismiss?: () => void;
-  /** phones: full width, above the bottom bar */
+  /** phones: full width, under the page header */
   isMobile?: boolean;
+  /** stand aside for now (a task panel is open where the card sits); it comes back after */
+  hidden?: boolean;
 }) {
   const [open, setOpen] = useState(() => import.meta.env.MODE !== "test" && !whatMovedSeen());
-  if (!open) return null;
+  if (!open || hidden) return null;
   const close = () => { markWhatMovedSeen(); setOpen(false); onDismiss?.(); };
   return (
     <aside aria-labelledby="kwhat-title"
       onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } }}
       style={{
         position: "fixed", zIndex: "var(--z-popover, 80)",
-        right: isMobile ? 16 : 24, left: isMobile ? 16 : "auto",
-        bottom: isMobile ? "calc(72px + env(safe-area-inset-bottom, 0px))" : 24,
-        width: isMobile ? "auto" : 360, padding: "16px 20px 16px",
+        ...(isMobile
+          ? { left: 16, right: 16, top: "calc(60px + env(safe-area-inset-top, 0px))" }
+          : { right: 24, bottom: 24, width: 360 }),
+        padding: "16px 20px 16px",
         // raised surface laid on the canvas colour, so it's opaque in every theme
         background: "linear-gradient(var(--surface-raised), var(--surface-raised)), var(--bg)",
         borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))",
-        animation: "ksheetIn var(--d-3, 240ms) var(--ease)",
+        animation: isMobile ? "fadeIn var(--d-3, 240ms) var(--ease)" : "ksheetIn var(--d-3, 240ms) var(--ease)",
       }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <h2 id="kwhat-title" style={{ flex: 1, margin: "2px 0 0", fontFamily: "var(--font-ui, var(--font-display))", fontSize: "var(--t-body, 15px)", lineHeight: "var(--lh-body, 24px)", fontWeight: 600, color: "var(--ink)" }}>
@@ -62,7 +70,7 @@ export function WhatMoved({ onShowMe, onDismiss, isMobile = false }: {
         Five places instead of nineteen. Everything you used is still here.
       </p>
       <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-        {LINES.map((l, i) => (
+        {lines(isMobile).map((l, i) => (
           <li key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: "var(--t-ui, 13px)", lineHeight: "var(--lh-ui, 20px)", color: "var(--ink-2)" }}>
             <Icon name={l.icon} size={16} style={{ flexShrink: 0, marginTop: 2, color: "var(--icon-quiet, var(--ink-4))" }} />
             <span>{l.text}</span>

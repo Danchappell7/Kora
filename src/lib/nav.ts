@@ -339,13 +339,17 @@ export const SHORTCUTS: Shortcut[] = [
 ];
 
 /** The page's name, for the header and the tab title. A project's page is
- *  titled by the project's name, which only the caller knows. */
+ *  titled by the project's name, which only the caller knows. Personal has no
+ *  team, so its Team place is Insights; People and Workload keep their own
+ *  names there when an address still leads to them. */
 export function titleOf(route: Route, ctx?: Pick<NavCtx, "personal">): string {
   switch (placeOf(route)) {
     case "today": return "Today";
     case "inbox": return "Inbox";
     case "tasks": return route.view === "search" ? "Search" : "My tasks";
     case "projects": return "Projects";
-    case "team": return ctx?.personal ? "Insights" : "Team";
+    case "team":
+      if (!ctx?.personal) return "Team";
+      return route.view === "team" ? "People" : route.view === "workload" ? "Workload" : "Insights";
   }
 }

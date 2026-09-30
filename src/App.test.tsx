@@ -33,6 +33,7 @@ const projectButton = (name: string) => {
 const spies: { mockRestore: () => void }[] = [];
 const track = <T extends { mockRestore: () => void }>(s: T): T => { spies.push(s); return s; };
 afterEach(() => {
+  vi.useRealTimers();
   spies.splice(0).forEach((s) => s.mockRestore());
   localStorage.clear();
   clearUndo();
@@ -680,6 +681,8 @@ describe("App (demo mode)", () => {
       return { ...b, tasks: b.tasks.map((t) => (t.id === "t-2" ? { ...t, assigneeId: "m-1", collaborators: ["m-self"], status: "todo" as const, dependencies: [], scheduled: null, planToday: false } : t)) };
     }));
     const today = toLocalISO(KANBO_TODAY);
+    // Plan my day fills what's left of the working day: plan in the morning, whatever the real clock says
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(KANBO_TODAY.getTime() + 9 * 3600e3) });
     // you've put it on your day (in your own plan)
     localStorage.setItem("kanbo-plan-overlay:m-self", JSON.stringify({ [today]: { "t-2": { planToday: true } } }));
     const update = track(vi.spyOn(store, "updateTask"));
@@ -711,5 +714,79 @@ describe("App (demo mode)", () => {
     expect(address()).toBe("/team");
     key(",", { metaKey: true });
     expect(await screen.findByRole("dialog", { name: /settings/i })).toBeInTheDocument();
+    // with a dialog up, ⌘, still never reaches the browser (its own settings page)
+    expect(fireEvent.keyDown(document.body, { key: ",", metaKey: true })).toBe(false);
+  });
+
+  it("⌘Z also works while the task panel is open (only a text field keeps ⌘Z for itself)", async () => {
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    const undo = vi.fn();
+    pushUndo("Completed “Finalise the deck”", undo);
+    key("z", { metaKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Undone: Completed “Finalise the deck”")).toBeInTheDocument();
+    // typing in the panel: the field's own undo, not the app's
+    pushUndo("Moved 3 tasks to Monday", undo);
+    const field = within(panel).getAllByRole("textbox")[0];
+    fireEvent.keyDown(field, { key: "z", metaKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("in Personal, Team is Insights: g e and an old /team address land on /team/insights", async () => {
+    await boot();
+    fireEvent.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    fireEvent.click(screen.getAllByText("Personal").map((el) => el.closest("button")).find(Boolean)!);
+    await waitFor(() => expect(screen.queryByText("Brand Refresh", { selector: ".kproj *" })).not.toBeInTheDocument());
+    key("g"); key("e");
+    expect(await screen.findByRole("heading", { level: 1, name: "Insights" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/team/insights"));
+    expect(document.title).toMatch(/Insights · Kanbo$/);
+    // Back to the Today you came from, then Forward: still Insights, never Pulse
+    act(() => { window.history.back(); });
+    expect(await screen.findByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    act(() => { window.history.forward(); });
+    expect(await screen.findByRole("heading", { level: 1, name: "Insights" })).toBeInTheDocument();
+    expect(address()).toBe("/team/insights");
+  });
+
+  it("a guest who opens Rules by address lands on Projects, and a project's Rules on the project", async () => {
+    asGuest();
+    at("/projects/rules");
+    const first = renderApp();
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/projects"));
+    first.unmount();
+    at("/p/p-launch/rules");
+    renderApp();
+    expect(await screen.findByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/p/p-launch"));
+  });
+
+  it("Today › Week offers the weekly review (not to guests)", async () => {
+    at("/today/week");
+    const first = renderApp();
+    expect(await screen.findByRole("button", { name: "Weekly review" })).toBeInTheDocument();
+    first.unmount();
+    asGuest();
+    at("/today/week");
+    await boot();
+    expect(screen.getByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Weekly review" })).not.toBeInTheDocument();
+  });
+
+  it("a screen reader hears the new page's name: a new place, or another project", async () => {
+    await boot();
+    const live = document.querySelector<HTMLElement>('.sr-only[aria-live="polite"]')!;
+    expect(live.textContent).toBe(""); // the first page isn't news
+    key("g"); key("t");
+    await waitFor(() => expect(live).toHaveTextContent("My tasks"));
+    key("g"); key("o");
+    await waitFor(() => expect(live).toHaveTextContent("Projects"));
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "Q3 Product" } });
+    fireEvent.click(within(await screen.findByRole("group", { name: "Projects" })).getAllByRole("option")[0]);
+    await waitFor(() => expect(live).toHaveTextContent("Q3 Product Launch"));
   });
 });

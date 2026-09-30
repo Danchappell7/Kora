@@ -41,6 +41,23 @@ describe("WhatMoved", () => {
     expect(show).toHaveBeenCalledTimes(1);
   });
 
+  it("steps aside while a task panel is open, and comes back after (still unseen)", () => {
+    asApp();
+    const { rerender } = render(<WhatMoved onShowMe={() => {}} hidden />);
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(whatMovedSeen()).toBe(false);
+    rerender(<WhatMoved onShowMe={() => {}} />);
+    expect(screen.getByRole("complementary", { name: "Kanbo's had a tidy-up" })).toBeInTheDocument();
+  });
+
+  it("on a phone it points at the search button, not a key", () => {
+    asApp();
+    render(<WhatMoved onShowMe={() => {}} isMobile />);
+    const card = screen.getByRole("complementary", { name: "Kanbo's had a tidy-up" });
+    expect(card).toHaveTextContent("Search and Ask are behind the search button at the top.");
+    expect(card).not.toHaveTextContent("⌘K");
+  });
+
   it("stays away when it has been marked seen (someone new, after the tour)", () => {
     asApp();
     markWhatMovedSeen();
