@@ -4,11 +4,13 @@
    Cross-user aggregates come from admin_stats(); the charts come from
    admin_series() (both optional SECURITY DEFINER RPCs).
    ============================================================ */
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Icon } from "../primitives";
 import { store, type AdminSeries, type AdminDay, type AdminAccount, type AdminAccountDetail, type AdminBilling, type AdminFunnel, type AdminWorkspace, type AdminAuditEntry } from "../../data/store";
 import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { downloadAccountsCsv } from "../../admin/accountsCsv";
 
 /* Early-access requests — review, approve (with email), decline. */
 type ReqTab = "pending" | "approved" | "declined" | "all";
@@ -264,10 +266,10 @@ function Ribbon({ items }: { items: { label: string; value: string }[] }) {
 /* ---- big interactive trend chart with gridlines, axis + hover ---- */
 const METRICS: { key: keyof Omit<AdminDay, "d">; label: string; color: string }[] = [
   { key: "sessions", label: "Sessions", color: "var(--accent)" },
-  { key: "active", label: "Active users", color: "#37c6a8" },
-  { key: "signups", label: "Signups", color: "#f0a93b" },
-  { key: "tasks", label: "Tasks created", color: "#6aa3ff" },
-  { key: "actions", label: "Actions", color: "#d77bf0" },
+  { key: "active", label: "Active users", color: "var(--st-done)" },
+  { key: "signups", label: "Signups", color: "var(--st-review)" },
+  { key: "tasks", label: "Tasks created", color: "var(--st-progress)" },
+  { key: "actions", label: "Actions", color: "var(--brand-magenta)" },
 ];
 
 const RANGES = [7, 30, 90];
@@ -322,18 +324,19 @@ function TrendChart({ days }: { days: AdminDay[] }) {
           {/* date range */}
           <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 8, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
             {RANGES.map((r) => (
-              <button key={r} onClick={() => setRange(r)} style={{ fontSize: 11.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, border: "none", cursor: "pointer",
+              <button key={r} onClick={() => setRange(r)} aria-pressed={r === range} title={`Last ${r} days`} style={{ fontSize: 11.5, fontWeight: 600, padding: "4px 9px", borderRadius: 6, border: "none", cursor: "pointer",
                 background: r === range ? "var(--accent)" : "transparent", color: r === range ? "var(--on-accent)" : "var(--ink-3)" }}>{r}d</button>
             ))}
           </div>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {METRICS.map((m) => (
-              <button key={m.key} onClick={() => setMetric(m.key)} style={{
+              <button key={m.key} onClick={() => setMetric(m.key)} aria-pressed={m.key === metric} style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
                 fontSize: 11.5, fontWeight: 600, padding: "5px 11px", borderRadius: 8, cursor: "pointer",
-                border: "1px solid " + (m.key === metric ? "transparent" : "var(--hairline-strong)"),
-                background: m.key === metric ? m.color : "transparent",
-                color: m.key === metric ? "#fff" : "var(--ink-3)", transition: "all .15s var(--ease)",
-              }}>{m.label}</button>
+                border: "1px solid " + (m.key === metric ? m.color : "var(--hairline-strong)"),
+                background: m.key === metric ? `color-mix(in oklch, ${m.color} 14%, transparent)` : "transparent",
+                color: m.key === metric ? "var(--ink)" : "var(--ink-3)", transition: "all .15s var(--ease)",
+              }}><span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 99, background: m.color, flexShrink: 0 }} />{m.label}</button>
             ))}
           </div>
         </div>
@@ -427,18 +430,6 @@ function StatusChip({ label, color }: { label: string; color: string }) {
   );
 }
 
-/* ---- CSV export ---- */
-function exportAccountsCSV(rows: AdminAccount[]) {
-  const head = ["Name", "Email", "Joined", "Last active", "Approved", "Admin", "Suspended"];
-  const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const body = rows.map((a) => [a.name, a.email, a.createdAt, a.updatedAt, a.approved === false ? "no" : "yes", a.isAdmin ? "yes" : "no", a.suspended ? "yes" : "no"].map(esc).join(","));
-  const csv = [head.join(","), ...body].join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url; a.download = `kanbo-accounts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-  URL.revokeObjectURL(url);
-}
-
 /* ---- per-account slide-over: detail + admin actions ---- */
 function AccountDrawer({ account, currentEmail, onClose, onReload }: {
   account: AdminAccount; currentEmail?: string; onClose: () => void; onReload: () => Promise<void>;
@@ -446,6 +437,11 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
   const [detail, setDetail] = useState<AdminAccountDetail | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Tab stays inside, Escape closes, and focus goes back to the account row
+  // afterwards (the trap remembers it, so move focus in only after it's set up)
+  const trapRef = useFocusTrap<HTMLDivElement>(true, onClose);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { closeRef.current?.focus(); }, []);
   useEffect(() => { let on = true; store.adminAccountDetail(account.id).then((d) => on && setDetail(d)).catch(reportError); return () => { on = false; }; }, [account.id]);
 
   const isSelf = (account.email || "").toLowerCase() === (currentEmail || "").toLowerCase();
@@ -472,14 +468,14 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
   return (
     <>
       <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklch, var(--bg-deep) 45%, transparent)", backdropFilter: "blur(2px)" }} />
-      <div role="dialog" aria-modal="true" aria-label={`${account.name} account`} className="anim-fadein" style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 440, maxWidth: "94vw", zIndex: 71, background: "var(--surface-raised)", borderLeft: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column" }}>
+      <div ref={trapRef} role="dialog" aria-modal="true" aria-label={`${account.name || account.email} account`} style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 440, maxWidth: "94vw", zIndex: 71, animation: "slideInRight .3s var(--ease)", background: "var(--surface-raised)", borderLeft: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "18px 20px", borderBottom: "1px solid var(--hairline)" }}>
           <span style={{ width: 42, height: 42, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: "var(--accent-dim)", color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 14, fontWeight: 600 }}>{(account.name || account.email || "?").slice(0, 2).toUpperCase()}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="truncate" style={{ fontSize: 16, fontWeight: 600 }}>{account.name || "Unnamed"}{isSelf && <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
             <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{account.email}</div>
           </div>
-          <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ border: "none" }}><Icon name="x" size={18} /></button>
+          <button className="btn-icon" onClick={onClose} aria-label={`Close ${account.name || account.email}`} ref={closeRef} style={{ border: "none" }}><Icon name="x" size={18} /></button>
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
@@ -503,7 +499,7 @@ function AccountDrawer({ account, currentEmail, onClose, onReload }: {
             <Row k="Plan" v={detail?.plan ? `${detail.plan}${detail.subStatus ? ` · ${detail.subStatus}` : ""}` : "—"} />
           </div>
 
-          {err && <div style={{ fontSize: 12.5, color: "var(--prio-urgent)", background: "color-mix(in oklch, var(--prio-urgent) 10%, transparent)", borderRadius: 10, padding: "9px 12px" }}>{err}</div>}
+          {err && <div role="alert" style={{ fontSize: 12.5, color: "var(--prio-urgent)", background: "color-mix(in oklch, var(--prio-urgent) 10%, transparent)", borderRadius: 10, padding: "9px 12px" }}>{err}</div>}
 
           <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
             <div className="kicker">Actions</div>
@@ -589,7 +585,7 @@ function AccountsPanel({ accounts, loading, currentEmail, onReload }: {
         <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} aria-label="Sort accounts" style={selStyle}>
           <option value="recent">Recently active</option><option value="joined">Newest</option><option value="name">Name</option>
         </select>
-        <button onClick={() => exportAccountsCSV(sorted)} disabled={!sorted.length} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> CSV</button>
+        <button onClick={() => downloadAccountsCsv(sorted)} disabled={!sorted.length} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="archive" size={14} /> Export CSV</button>
       </div>
 
       {!loading && accounts.length > 0 && (
@@ -629,7 +625,7 @@ function AccountsPanel({ accounts, loading, currentEmail, onReload }: {
 }
 
 /* ---- billing & revenue ---- */
-const SUB_COLORS: Record<string, string> = { active: "#37c6a8", trialing: "var(--accent)", past_due: "#f0a93b", canceled: "#8a8f98" };
+const SUB_COLORS: Record<string, string> = { active: "var(--st-done)", trialing: "var(--accent)", past_due: "var(--st-review)", canceled: "var(--st-todo)" };
 function money(cents: number): string {
   const v = cents / 100;
   return "£" + (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
@@ -735,9 +731,9 @@ function FunnelCard({ funnel }: { funnel: AdminFunnel }) {
   const base = Math.max(funnel.signups, 1);
   const steps = [
     { label: "Signed up", v: funnel.signups, color: "var(--accent)", hint: "" },
-    { label: "Approved", v: funnel.approved, color: "#6aa3ff", hint: "" },
-    { label: "Activated", v: funnel.activated, color: "#37c6a8", hint: "created a task" },
-    { label: "Active 30d", v: funnel.active_30d, color: "#f0a93b", hint: "" },
+    { label: "Approved", v: funnel.approved, color: "var(--st-progress)", hint: "" },
+    { label: "Activated", v: funnel.activated, color: "var(--st-done)", hint: "created a task" },
+    { label: "Active 30d", v: funnel.active_30d, color: "var(--st-review)", hint: "" },
   ];
   return (
     <div className="glass" style={{ borderRadius: 18, padding: "16px 18px", flex: 1, minWidth: 240 }}>
@@ -766,8 +762,8 @@ function FunnelCard({ funnel }: { funnel: AdminFunnel }) {
 /* ---- broadcast banner composer ---- */
 const BANNER_KINDS: { k: "info" | "warning" | "success"; label: string; color: string }[] = [
   { k: "info", label: "Info", color: "var(--accent)" },
-  { k: "warning", label: "Warning", color: "#f0a93b" },
-  { k: "success", label: "Success", color: "#37c6a8" },
+  { k: "warning", label: "Warning", color: "var(--st-review)" },
+  { k: "success", label: "Success", color: "var(--st-done)" },
 ];
 function BannerComposer() {
   const [msg, setMsg] = useState("");
@@ -885,8 +881,8 @@ function AuditPanel() {
   );
 }
 
-const STATUS_COLORS: Record<string, string> = { todo: "#8a8f98", progress: "var(--accent)", review: "#f0a93b", blocked: "#e5544b", done: "#37c6a8" };
-const PRIORITY_COLORS: Record<string, string> = { low: "#6aa3ff", medium: "#37c6a8", high: "#f0a93b", urgent: "#e5544b" };
+const STATUS_COLORS: Record<string, string> = { todo: "var(--st-todo)", progress: "var(--st-progress)", review: "var(--st-review)", blocked: "var(--st-blocked)", done: "var(--st-done)" };
+const PRIORITY_COLORS: Record<string, string> = { low: "var(--prio-low)", medium: "var(--prio-medium)", high: "var(--prio-high)", urgent: "var(--prio-urgent)" };
 
 export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
