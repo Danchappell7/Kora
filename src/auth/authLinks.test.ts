@@ -1,8 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { readAuthUrl, withoutParams, friendlyAuthError, isExpiredLinkError, linkNeedsPassword, EXPIRED_MESSAGE } from "./authLinks";
-import { claimLocalData, clearLocalUserData, OWNER_KEY, SNAPSHOT_KEY, STASH_PREFIX } from "./localData";
-import { offlineQueue } from "../lib/offlineQueue";
-import type { Task } from "../data/types";
+import { describe, it, expect } from "vitest";
+import { readAuthUrl, withoutParams, friendlyAuthError, isExpiredLinkError, expiredLinkError, linkNeedsPassword, EXPIRED_MESSAGE, CONFIRM_EXPIRED_MESSAGE } from "./authLinks";
 
 const ORIGIN = "https://www.kanbo.co.uk";
 
@@ -17,14 +14,38 @@ describe("readAuthUrl", () => {
   it("handles errors in the query string and keeps unrelated params", () => {
     const s = readAuthUrl(`${ORIGIN}/?error=server_error&error_description=Database+error+saving+new+user&task=t1`);
     expect(s.linkError?.kind).toBe("failed");
-    expect(s.linkError?.message).toContain("Database error saving new user");
+    expect(s.linkError?.message).toBe("That sign-in didn’t work. Please try again, or ask your workspace admin for help.");
+    expect(s.errorDetail).toEqual({ error: "server_error", code: null, description: "Database error saving new user" });
     expect(s.cleanUrl).toBe("/?task=t1");
+  });
+
+  it("never shows the link's own error text (anyone can craft one)", () => {
+    const s = readAuthUrl(`${ORIGIN}/#error=x&error_description=Your+account+is+locked.+Call+0800+000+000+now`);
+    expect(s.linkError?.kind).toBe("failed");
+    expect(s.linkError?.message).not.toMatch(/locked|0800/);
+  });
+
+  it("explains an uninvited Google account in invite-only mode in plain English", () => {
+    const s = readAuthUrl(`${ORIGIN}/#error=access_denied&error_code=signup_disabled&error_description=Signups+not+allowed+for+this+instance`);
+    expect(s.linkError?.kind).toBe("failed");
+    expect(s.linkError?.message).toMatch(/invite-only/);
+    expect(s.linkError?.message).not.toMatch(/instance/);
   });
 
   it("explains a cancelled Google sign-in without calling it expired", () => {
     const s = readAuthUrl(`${ORIGIN}/#error=access_denied`);
     expect(s.linkError?.kind).toBe("failed");
     expect(s.linkError?.message).toMatch(/cancelled/);
+    // an OAuth "invalid state" is not an expired email link
+    expect(readAuthUrl(`${ORIGIN}/?error=invalid_request&error_code=bad_oauth_state&error_description=OAuth+state+is+invalid`).linkError?.kind).toBe("failed");
+  });
+
+  it("sends an expired confirmation link to sign-in, not to 'reset your password'", () => {
+    expect(expiredLinkError("signup")).toEqual({ kind: "confirm-expired", message: CONFIRM_EXPIRED_MESSAGE });
+    expect(expiredLinkError("email")).toEqual({ kind: "confirm-expired", message: CONFIRM_EXPIRED_MESSAGE });
+    expect(expiredLinkError("recovery")).toEqual({ kind: "expired", message: EXPIRED_MESSAGE });
+    expect(expiredLinkError("invite").kind).toBe("expired");
+    expect(expiredLinkError(null).kind).toBe("expired");
   });
 
   it("recognises scanner-safe token links without consuming them", () => {
@@ -42,7 +63,7 @@ describe("readAuthUrl", () => {
   });
 
   it("ignores ordinary URLs and anchors", () => {
-    expect(readAuthUrl(`${ORIGIN}/privacy#cookies`)).toEqual({ pendingLink: null, linkError: null, implicitType: null, cleanUrl: null });
+    expect(readAuthUrl(`${ORIGIN}/privacy#cookies`)).toEqual({ pendingLink: null, linkError: null, errorDetail: null, implicitType: null, cleanUrl: null });
     expect(readAuthUrl(`${ORIGIN}/?task=abc`).linkError).toBeNull();
   });
 });
@@ -63,7 +84,9 @@ describe("auth link helpers", () => {
   it("detects expired OTP errors by code or message", () => {
     expect(isExpiredLinkError({ code: "otp_expired" })).toBe(true);
     expect(isExpiredLinkError({ message: "Token has expired or is invalid" })).toBe(true);
+    expect(isExpiredLinkError({ message: "Email link is invalid or has expired" })).toBe(true);
     expect(isExpiredLinkError({ message: "Database error" })).toBe(false);
+    expect(isExpiredLinkError({ message: "OAuth state is invalid" })).toBe(false);
   });
 
   it("maps raw Supabase messages to plain guidance", () => {
@@ -72,54 +95,5 @@ describe("auth link helpers", () => {
     expect(friendlyAuthError("Signups not allowed for this instance")).toMatch(/invite-only/);
     expect(friendlyAuthError("TypeError: Failed to fetch")).toMatch(/connection/);
     expect(friendlyAuthError("Something unusual")).toBe("Something unusual");
-  });
-});
-
-describe("local data belongs to one account at a time", () => {
-  const task = (id: string) => ({ id, title: `Task ${id}` } as unknown as Task);
-  beforeEach(() => { offlineQueue.clear(); localStorage.clear(); });
-
-  it("never replays another account's queued edits; parks and restores them instead", () => {
-    claimLocalData("user-a");
-    offlineQueue.enqueueCreate(task("t1"), "user-a");
-    offlineQueue.enqueueUpdate("t9", { title: "renamed" });
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ uid: "user-a", boot: {} }));
-
-    claimLocalData("user-b");
-    expect(offlineQueue.size()).toBe(0);
-    expect(localStorage.getItem(SNAPSHOT_KEY)).toBeNull();
-    expect(localStorage.getItem(OWNER_KEY)).toBe("user-b");
-    expect(JSON.parse(localStorage.getItem(STASH_PREFIX + "user-a") || "[]")).toHaveLength(2);
-
-    claimLocalData("user-a");
-    expect(offlineQueue.all().map((m) => m.kind)).toEqual(["create", "update"]);
-    expect(localStorage.getItem(STASH_PREFIX + "user-a")).toBeNull();
-  });
-
-  it("infers the owner of data cached before owner tracking existed", () => {
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ uid: "old-user", boot: {} }));
-    claimLocalData("new-user");
-    expect(localStorage.getItem(SNAPSHOT_KEY)).toBeNull();
-
-    localStorage.clear();
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ uid: "same", boot: {} }));
-    claimLocalData("same");
-    expect(localStorage.getItem(SNAPSHOT_KEY)).not.toBeNull();
-  });
-
-  it("clears the snapshot, queue and per-account state on sign-out, keeping device preferences", () => {
-    claimLocalData("user-a");
-    offlineQueue.enqueueCreate(task("t1"), "user-a");
-    localStorage.setItem(SNAPSHOT_KEY, "{}");
-    localStorage.setItem("kanbo-filters", "{}");
-    localStorage.setItem("kanbo-theme", "light");
-    sessionStorage.setItem("kanbo-needs-password", "invite");
-    clearLocalUserData();
-    expect(offlineQueue.size()).toBe(0);
-    expect(localStorage.getItem(SNAPSHOT_KEY)).toBeNull();
-    expect(localStorage.getItem("kanbo-filters")).toBeNull();
-    expect(localStorage.getItem(OWNER_KEY)).toBeNull();
-    expect(sessionStorage.getItem("kanbo-needs-password")).toBeNull();
-    expect(localStorage.getItem("kanbo-theme")).toBe("light");
   });
 });

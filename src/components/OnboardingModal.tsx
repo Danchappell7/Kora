@@ -53,10 +53,41 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   const hasName = !!profFirst.trim();
   const steps = hasName ? [0, 2, 3] : [0, 1, 2, 3];
 
-  const trapRef = useFocusTrap<HTMLDivElement>(open, () => {
+  const onEscape = () => {
     if (pickerOpen) { setPickerOpen(false); return; }
     onFinish();
+  };
+  const escRef = useRef(onEscape);
+  escRef.current = onEscape;
+  const trapRef = useFocusTrap<HTMLDivElement>(open, onEscape);
+
+  // For a brand-new account the welcome modal can open on top of this one.
+  // When it closes, its focus trap hands focus back to an element that no
+  // longer exists and focus drops to <body> — outside this dialog, where Tab
+  // and Escape do nothing. While this is the only modal, pull focus back in.
+  const orphaned = () => {
+    const el = trapRef.current, a = document.activeElement;
+    if (!el || (a && a !== document.body && a.isConnected)) return null;
+    return Array.from(document.querySelectorAll('[aria-modal="true"]')).every((d) => d === el) ? el : null;
+  };
+  useEffect(() => {
+    if (!open) return;
+    orphaned()?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
   });
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" && e.key !== "Escape") return;
+      const el = orphaned();
+      if (!el) return;
+      e.preventDefault();
+      if (e.key === "Escape") escRef.current();
+      else el.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!open) return null;
 
@@ -93,7 +124,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
               </p>
             </div>
             {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-            <button autoFocus className="btn btn-accent" onClick={() => setStep(hasName ? 2 : 1)} style={{ justifyContent: "center", marginTop: 4 }}>Get started <Icon name="arrowRight" size={15} /></button>
+            <button autoFocus data-autofocus className="btn btn-accent" onClick={() => setStep(hasName ? 2 : 1)} style={{ justifyContent: "center", marginTop: 4 }}>Get started <Icon name="arrowRight" size={15} /></button>
             <button className="btn btn-ghost" onClick={onFinish} style={{ justifyContent: "center", color: "var(--ink-4)" }}>Skip for now</button>
           </div>
         )}
@@ -106,7 +137,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-              <TextField autoFocus value={firstName} onChange={editName(setFirstName)} placeholder="First name" aria-label="First name" autoComplete="given-name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
+              <TextField autoFocus data-autofocus value={firstName} onChange={editName(setFirstName)} placeholder="First name" aria-label="First name" autoComplete="given-name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
               <TextField value={lastName} onChange={editName(setLastName)} placeholder="Surname" aria-label="Surname" autoComplete="family-name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
             </div>
             <div style={{ display: "flex", gap: 10 }}>
@@ -125,7 +156,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
             <div style={{ display: "flex", gap: 10, position: "relative" }}>
               <button type="button" onClick={() => setPickerOpen((v) => !v)} aria-label={`Project icon: ${emoji}. Choose another`} aria-expanded={pickerOpen} title="Choose icon" style={{ width: 48, height: 44, flexShrink: 0, borderRadius: 11, fontSize: 20, border: pickerOpen ? "1px solid var(--accent)" : "1px solid var(--field-border, var(--hairline))", background: "var(--field-bg, var(--surface))", cursor: "pointer" }}>{emoji}</button>
               {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-              <TextField autoFocus value={projName} onChange={(e) => setProjName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") createProject(); }} placeholder="e.g. Website redesign" aria-label="Project name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
+              <TextField autoFocus data-autofocus value={projName} onChange={(e) => setProjName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") createProject(); }} placeholder="e.g. Website redesign" aria-label="Project name" style={{ flex: 1, minWidth: 0, fontSize: 15 }} />
               {pickerOpen && <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 5 }}><EmojiPicker height={180} onPick={(e) => { setEmoji(e); setPickerOpen(false); }} /></div>}
             </div>
             <div role="radiogroup" aria-label="Project colour" style={{ display: "flex", gap: 8 }}>
@@ -149,7 +180,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
               <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: 0 }}>Capture a task, plan your day, or invite your team — your dashboard has a quick checklist to guide you.</p>
             </div>
             {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-            <button autoFocus className="btn btn-accent" onClick={onFinish} style={{ justifyContent: "center", marginTop: 4 }}>Go to my dashboard</button>
+            <button autoFocus data-autofocus className="btn btn-accent" onClick={onFinish} style={{ justifyContent: "center", marginTop: 4 }}>Go to my dashboard</button>
           </div>
         )}
 

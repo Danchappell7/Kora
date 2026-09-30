@@ -48,6 +48,14 @@ describe("LoginScreen", () => {
     expect(a.clearLinkError).toHaveBeenCalled();
   });
 
+  it("opens sign-in (not password reset) after an expired confirmation link", () => {
+    mockAuth({ linkError: { kind: "confirm-expired", message: "That confirmation link has expired or was already used." } });
+    render(<LoginScreen initialMode="signup" />);
+    expect(screen.getByText("That confirmation link has expired or was already used.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send reset link" })).not.toBeInTheDocument();
+  });
+
   it("uses password-manager friendly autocomplete and a show/hide toggle", () => {
     render(<LoginScreen />);
     expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");

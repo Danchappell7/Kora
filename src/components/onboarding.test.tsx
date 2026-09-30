@@ -58,6 +58,25 @@ describe("OnboardingModal", () => {
     expect(screen.getByLabelText("Surname")).toHaveValue("Okafor");
   });
 
+  it("takes focus back when the welcome modal on top of it closes", () => {
+    const onFinish = vi.fn();
+    const Both = ({ welcome }: { welcome: boolean }) => (
+      <>
+        <OnboardingModal {...base} onFinish={onFinish} profile={profile("Sam")} />
+        <WelcomeModal open={welcome} canSkip initialFirst="Sam" onClose={() => {}} onSaveProfile={vi.fn(async () => {})} />
+      </>
+    );
+    const { rerender } = render(<Both welcome />);
+    expect(screen.getByLabelText("First name")).toHaveFocus();
+    rerender(<Both welcome={false} />);
+    expect(screen.getByRole("button", { name: /Get started/ })).toHaveFocus();
+
+    // and if focus is ever dropped onto the page behind, keys still reach it
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onFinish).toHaveBeenCalledTimes(1);
+  });
+
   it("closes on Escape", () => {
     const onFinish = vi.fn();
     render(<OnboardingModal {...base} onFinish={onFinish} profile={null} />);

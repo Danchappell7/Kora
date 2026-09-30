@@ -71,10 +71,11 @@ function ErrorText({ children }: { children: ReactNode }) {
 
 /** Explains a failed or expired email link above the form. */
 function LinkBanner({ error }: { error: LinkError }) {
-  const tone = error.kind === "expired" ? "var(--prio-high)" : "var(--prio-urgent)";
+  const expired = error.kind !== "failed";
+  const tone = expired ? "var(--prio-high)" : "var(--prio-urgent)";
   return (
     <div role="status" style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "11px 13px", marginBottom: 16, borderRadius: 12, fontSize: 13, lineHeight: 1.5, color: "var(--ink-2)", background: `color-mix(in oklch, ${tone} 12%, transparent)`, border: `1px solid color-mix(in oklch, ${tone} 32%, transparent)` }}>
-      <span style={{ color: tone, flexShrink: 0, marginTop: 1 }}><Icon name={error.kind === "expired" ? "clock" : "lock"} size={16} /></span>
+      <span style={{ color: tone, flexShrink: 0, marginTop: 1 }}><Icon name={expired ? "clock" : "lock"} size={16} /></span>
       <span>{error.message}</span>
     </div>
   );
@@ -155,11 +156,14 @@ function RequestAccessForm({ onBack, onSignIn }: { onBack: () => void; onSignIn:
 
 export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: Mode; onBack?: () => void } = {}) {
   const { signIn, signUp, signInWithGoogle, resetPassword, resendConfirmation, linkError, clearLinkError } = useAuth();
-  // a failed/expired email link is explained once, here; an expired one opens
-  // "send yourself a new link" directly
+  // a failed/expired email link is explained once, here; an expired password
+  // link opens "send yourself a new link" directly, an expired confirmation
+  // link opens sign-in (which offers to resend the confirmation if needed)
   const [banner, setBanner] = useState<LinkError | null>(linkError);
   const [mode, setMode] = useState<Mode>(() =>
-    linkError?.kind === "expired" ? "reset" : SIGNUP_DISABLED && initialMode === "signup" ? "signin" : initialMode);
+    linkError?.kind === "expired" ? "reset"
+      : linkError?.kind === "confirm-expired" || (SIGNUP_DISABLED && initialMode === "signup") ? "signin"
+      : initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);

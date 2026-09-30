@@ -9,13 +9,14 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
-import { setUserContext } from "../lib/monitoring";
+import { setUserContext, reportError } from "../lib/monitoring";
 import { offlineQueue } from "../lib/offlineQueue";
+import { store } from "../data/store";
 import {
-  readAuthUrl, withoutParams, linkNeedsPassword, isExpiredLinkError, friendlyAuthError,
-  EXPIRED_MESSAGE, NEEDS_PASSWORD_KEY, type LinkError, type LinkType, type PendingLink,
+  readAuthUrl, withoutParams, linkNeedsPassword, isExpiredLinkError, expiredLinkError, friendlyAuthError,
+  NEEDS_PASSWORD_KEY, type LinkError, type LinkType, type PendingLink,
 } from "./authLinks";
-import { claimLocalData, clearLocalUserData } from "./localData";
+import { claimLocalData, parkLocalData, clearLocalUserData, forgetStoredSession, isAuthStorageKey, pageNav } from "./localData";
 import { UnsyncedSignOutDialog } from "./UnsyncedSignOutDialog";
 
 type PasswordReason = "invite" | "recovery";
@@ -48,7 +49,8 @@ interface AuthValue {
   /** Signs out, wipes this device's cached workspace + offline queue, and
    *  reloads so nothing from this account stays in memory. If edits are
    *  still unsynced the person is asked first, unless `discardUnsynced`
-   *  (e.g. straight after deleting the account). */
+   *  (e.g. straight after deleting the account) or the account no longer
+   *  exists on the server. */
   signOut: (opts?: SignOutOptions | SyntheticEvent) => Promise<void>;
 }
 
@@ -78,6 +80,25 @@ function writePasswordReason(r: PasswordReason | null) {
 }
 const isNetworkFailure = (e: { name?: string; status?: number; message?: string }) =>
   e.name === "AuthRetryableFetchError" || e.status === 0 || /failed to fetch|network|load failed/i.test(e.message ?? "");
+/** the client's persisted-session key (GoTrueClient keeps it on a protected field) */
+const authStorageKey = () => (supabase?.auth as unknown as { storageKey?: string } | undefined)?.storageKey ?? null;
+
+/** Has the server stopped recognising this session (account deleted, session
+ *  revoked)? Queued edits can then never sync, so there's nothing to protect. */
+async function sessionIsGone(): Promise<boolean> {
+  if (!supabase || (typeof navigator !== "undefined" && navigator.onLine === false)) return false;
+  try {
+    // don't leave the Sign out click hanging on a slow network — ask instead
+    const res = await Promise.race([
+      supabase.auth.getUser(),
+      new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+    ]);
+    const error = res?.error;
+    if (!error) return false;
+    if (error.name === "AuthSessionMissingError") return true;
+    return !isNetworkFailure(error) && [401, 403, 404].includes(error.status ?? 0);
+  } catch { return false; }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserRaw] = useState<AuthValue["user"]>(isSupabaseConfigured ? null : DEMO_USER);
@@ -92,6 +113,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
   const [guard, setGuard] = useState<{ resolve: (ok: boolean) => void } | null>(null);
   const signingOut = useRef(false);
+  /** the account this page has shown (its in-memory state belongs to them) */
+  const pageUid = useRef<string | null>(null);
+  /** a reload is under way — don't expose anything else to the app */
+  const reloading = useRef(false);
 
   const setUser = useCallback((next: AuthValue["user"]) => setUserRaw((prev) => (sameUser(prev, next) ? prev : next)), []);
   const setPasswordReason = useCallback((r: PasswordReason | null) => { writePasswordReason(r); setPasswordReasonRaw(r); }, []);
@@ -99,42 +124,85 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // a failed/expired link's params are explained on screen — tidy the address bar
   useEffect(() => {
     if (BOOT?.cleanUrl) { try { window.history.replaceState(window.history.state, "", BOOT.cleanUrl); } catch { /* ignore */ } }
+    // its raw text is never shown (anyone can craft one) — keep it for debugging
+    if (BOOT?.linkError?.kind === "failed" && BOOT.errorDetail) {
+      const { error, code, description } = BOOT.errorDetail;
+      reportError(new Error("Auth redirect error"), { error, code, description: description?.slice(0, 200) ?? null });
+    }
   }, []);
+
+  // Every session change goes through here before the app sees it.
+  const adopt = useCallback((u: User | null) => {
+    if (reloading.current) return;
+    if (!u) {
+      // The session ended without this tab signing out (another tab signed
+      // out, or it expired): park this tab's unsynced edits under that
+      // account, so they can't replay as whoever signs in next.
+      if (pageUid.current && !signingOut.current) parkLocalData(pageUid.current);
+      setUser(null);
+      return;
+    }
+    // make sure this device's offline cache belongs to this account first;
+    // if another account's state is in this page, start from a fresh page
+    if (claimLocalData(u.id)) { reloading.current = true; pageNav.reload(); return; }
+    pageUid.current = u.id;
+    setLinkError(null); // signed in: an old link error no longer applies
+    setUser(mapUser(u));
+  }, [setUser]);
 
   useEffect(() => {
     if (!supabase) return;
     let alive = true;
-    // a session is about to become visible to the app: make sure this device's
-    // offline cache belongs to that account first (never replay someone else's edits)
-    const adopt = (u: User | null) => { if (u) claimLocalData(u.id); setUser(mapUser(u)); };
     supabase.auth.getSession()
       .then(({ data }) => { if (alive) adopt(data.session?.user ?? null); })
       .catch(() => { /* treat as signed out */ })
-      .finally(() => { if (alive) setLoading(false); });
+      .finally(() => { if (alive && !reloading.current) setLoading(false); });
     // fires on sign-in, sign-out, and token refresh/expiry → keeps the UI gated
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") setPasswordReason("recovery");
       adopt(session?.user ?? null);
     });
-    return () => { alive = false; sub.subscription.unsubscribe(); };
-  }, [setUser, setPasswordReason]);
+    // Another tab dropped the stored session without a sign-out broadcast
+    // (see finishSignOut when offline): this tab is signed out too.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key && e.newValue === null && pageUid.current && isAuthStorageKey(e.key, authStorageKey())) adopt(null);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => { alive = false; sub.subscription.unsubscribe(); window.removeEventListener("storage", onStorage); };
+  }, [adopt, setPasswordReason]);
 
   useEffect(() => { setUserContext(user ? { id: user.id, email: user.email } : null); }, [user]);
 
   const finishSignOut = useCallback(async () => {
     if (supabase) {
-      // never strand the user (e.g. mid account-deletion) if the network call
-      // fails — force local signed-out state regardless.
-      try { await supabase.auth.signOut(); } catch { /* ignore */ }
+      let failed = false;
+      try {
+        const res = await Promise.race([supabase.auth.signOut(), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        failed = !res || !!res.error;
+      } catch { failed = true; }
+      // Offline, on an Auth 5xx or a hung request, supabase-js keeps the
+      // session in storage, and the reload below would sign this person
+      // straight back in — on a shared desk, for the next person. Drop the
+      // stored session ourselves.
+      if (failed) {
+        try { await supabase.auth.stopAutoRefresh?.(); } catch { /* ignore */ }
+        forgetStoredSession(authStorageKey());
+      }
     }
     clearLocalUserData();
     setPasswordReason(null);
     setPendingLink(null);
+    reloading.current = true;
     setUserRaw(null);
     // start the next person on this device from a clean slate: reloading drops
     // every in-memory cache (tasks, filters, onboarding checks) of this account.
-    try { window.location.replace(window.location.pathname); } catch { /* non-browser */ }
+    pageNav.restart();
   }, [setPasswordReason]);
+
+  // the sign-out guard's "sync now": replay the queue straight away. The page
+  // reloads after sign-out, so App's optimistic-id swap isn't needed; if they
+  // stay signed in, App's realtime refresh picks up the saved tasks.
+  const syncNow = useCallback(() => store.flushQueue(), []);
 
   const value: AuthValue = {
     configured: isSupabaseConfigured,
@@ -156,14 +224,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try { window.history.replaceState(window.history.state, "", withoutParams(window.location.href, ["token_hash", "type", "next", "redirect_to"])); } catch { /* ignore */ }
       if (error) {
         setPendingLink(null);
-        setLinkError(isExpiredLinkError(error) ? { kind: "expired", message: EXPIRED_MESSAGE } : { kind: "failed", message: friendlyAuthError(error.message) });
+        // a dead confirmation link just needs a sign-in; a dead password link, a
+        // new link. (Already signed in? They simply carry on — nothing to explain.)
+        if (!user) setLinkError(isExpiredLinkError(error) ? expiredLinkError(type) : { kind: "failed", message: friendlyAuthError(error.message) });
         return { error: error.message };
       }
       if (linkNeedsPassword(type)) setPasswordReason(type as PasswordReason);
       // set the user now (SIGNED_IN follows) so the screen goes straight on
       // to the password step instead of flashing the landing page
       const u = data.session?.user ?? null;
-      if (u) { claimLocalData(u.id); setUser(mapUser(u)); }
+      if (u) adopt(u);
       setPendingLink(null);
       return {};
     },
@@ -223,7 +293,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const discard = !!opts && typeof opts === "object" && (opts as SignOutOptions).discardUnsynced === true;
       signingOut.current = true;
       try {
-        if (!discard && offlineQueue.size() > 0) {
+        // (a deleted account's edits can never sync — no point asking)
+        if (!discard && offlineQueue.size() > 0 && !(await sessionIsGone())) {
           const ok = await new Promise<boolean>((resolve) => setGuard({ resolve }));
           setGuard(null);
           if (!ok) return;
@@ -238,7 +309,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={value}>
       {children}
-      {guard && <UnsyncedSignOutDialog onStay={() => guard.resolve(false)} onSignOut={() => guard.resolve(true)} />}
+      {guard && <UnsyncedSignOutDialog onSync={syncNow} onStay={() => guard.resolve(false)} onSignOut={() => guard.resolve(true)} />}
     </AuthContext.Provider>
   );
 }
