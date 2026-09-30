@@ -88,12 +88,22 @@ export function dependencyCandidates(task: Task, tasks: Task[], query: string, l
   return out;
 }
 
-/** One line for the panel's Activity list (notification rows carry the actor's name in `detail`). */
-export function activityLine(a: Pick<Activity, "kind" | "detail">): string {
+/**
+ * One line for the panel's Activity list. `assigned` and `mention` rows are
+ * written by the notification triggers with the actor's name in `detail`.
+ * `comment` rows come from two places: the trigger (the commenter's name) and
+ * your own comment, which is logged with its text — so a comment row only reads
+ * "X commented" when `detail` is a known teammate, and is otherwise quoted.
+ */
+export function activityLine(a: Pick<Activity, "kind" | "detail">, knownNames: string[] = []): string {
   const who = a.detail?.trim() || "Someone";
   if (a.kind === "mention") return `${who} mentioned you`;
-  if (a.kind === "comment") return `${who} commented`;
   if (a.kind === "assigned") return `${who} assigned you`;
+  if (a.kind === "comment") {
+    const lc = who.toLowerCase();
+    const isPerson = who === "Someone" || knownNames.some((n) => n.trim().toLowerCase() === lc);
+    return isPerson ? `${who} commented` : `Comment: “${who}”`;
+  }
   return a.detail;
 }
 
@@ -105,22 +115,61 @@ export function isTextEntry(t: EventTarget | null): boolean {
   return t.tagName === "INPUT" && TEXT_INPUT_TYPES.has(((t as HTMLInputElement).getAttribute("type") ?? "").toLowerCase());
 }
 
-/** Uploads live at `<uploader uid>/<task id>/<file>`, and only the uploader may delete. */
-export function attachmentOwnerId(a: Pick<Attachment, "path">): string {
-  return (a.path ?? "").split("/")[0] ?? "";
+/** Who may delete a file: its owner — `attachments.user_id` when the row
+ *  carries it (account deletion hands files to the task owner), else the
+ *  uploader, the first segment of `<uploader uid>/<task id>/<file>`. */
+export function attachmentOwnerId(a: Pick<Attachment, "path"> & { userId?: string | null }): string {
+  return a.userId || ((a.path ?? "").split("/")[0] ?? "");
 }
-export function canDeleteAttachment(a: Pick<Attachment, "path">, userId: string, demo: boolean): boolean {
+export function canDeleteAttachment(a: Pick<Attachment, "path"> & { userId?: string | null }, userId: string, demo: boolean): boolean {
   return demo || (!!userId && attachmentOwnerId(a) === userId);
 }
 
-/* unsent comment drafts survive switching task or closing the panel (per tab) */
-const draftKey = (taskId: string) => "kanbo-draft:" + taskId;
-export function readDraft(taskId: string): string {
-  try { return sessionStorage.getItem(draftKey(taskId)) ?? ""; } catch { return ""; }
+/* Unsent comment drafts survive switching task or closing the panel (per tab).
+   Keyed by the signed-in user too, so someone else signing in on the same tab
+   never finds (and posts) another person's draft. */
+const DRAFT_PREFIX = "kanbo-draft:";
+const draftKey = (userId: string, taskId: string) => `${DRAFT_PREFIX}${userId}:${taskId}`;
+export function readDraft(userId: string, taskId: string): string {
+  try { return sessionStorage.getItem(draftKey(userId, taskId)) ?? ""; } catch { return ""; }
 }
-export function writeDraft(taskId: string, text: string): void {
+export function writeDraft(userId: string, taskId: string, text: string): void {
   try {
-    if (text.trim()) sessionStorage.setItem(draftKey(taskId), text);
-    else sessionStorage.removeItem(draftKey(taskId));
+    if (text.trim()) sessionStorage.setItem(draftKey(userId, taskId), text);
+    else sessionStorage.removeItem(draftKey(userId, taskId));
   } catch { /* storage blocked — the draft just won't persist */ }
+}
+
+/* Title/description text that couldn't be saved because the page was closing
+   (the save may not have reached the server, or someone else had changed it).
+   The panel offers it back the next time you open that task. */
+export type UnsavedField = "title" | "description";
+const UNSAVED_PREFIX = "kanbo-unsaved:";
+const unsavedKey = (userId: string, taskId: string, field: UnsavedField) => `${UNSAVED_PREFIX}${userId}:${taskId}:${field}`;
+export function stashUnsaved(userId: string, taskId: string, field: UnsavedField, text: string): void {
+  try { sessionStorage.setItem(unsavedKey(userId, taskId, field), text); } catch { /* storage blocked */ }
+}
+export function dropUnsaved(userId: string, taskId: string, field: UnsavedField): void {
+  try { sessionStorage.removeItem(unsavedKey(userId, taskId, field)); } catch { /* storage blocked */ }
+}
+/** read and forget */
+export function takeUnsaved(userId: string, taskId: string, field: UnsavedField): string | null {
+  try {
+    const k = unsavedKey(userId, taskId, field);
+    const v = sessionStorage.getItem(k);
+    if (v != null) sessionStorage.removeItem(k);
+    return v;
+  } catch { return null; }
+}
+
+/** Forget every unsent comment draft and unsaved edit in this tab (call on sign-out). */
+export function clearTaskDrafts(): void {
+  try {
+    const doomed: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (k && (k.startsWith(DRAFT_PREFIX) || k.startsWith(UNSAVED_PREFIX))) doomed.push(k);
+    }
+    doomed.forEach((k) => sessionStorage.removeItem(k));
+  } catch { /* storage blocked */ }
 }

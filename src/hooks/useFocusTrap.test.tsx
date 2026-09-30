@@ -9,6 +9,8 @@ function Harness({ onEsc, autofocus }: { onEsc: () => void; autofocus?: boolean 
       <button>Behind</button>
       <div ref={ref} role="dialog" aria-label="Trap">
         <input aria-label="Name" />
+        {/* a field that handles Escape itself (e.g. closes its own menu) */}
+        <input aria-label="Search" onKeyDown={(e) => { if (e.key === "Escape") e.stopPropagation(); }} />
         <select aria-label="Pick"><option>a</option></select>
         <input type="checkbox" aria-label="Tick" />
         <button data-autofocus={autofocus ? "" : undefined}>Inside</button>
@@ -24,6 +26,48 @@ describe("useFocusTrap", () => {
     fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Escape" });
     fireEvent.keyDown(screen.getByLabelText("Pick"), { key: "Escape" });
     expect(onEsc).not.toHaveBeenCalled();
+  });
+
+  it("the first Escape in a field leaves it; the next closes", () => {
+    const onEsc = vi.fn();
+    render(<Harness onEsc={onEsc} />);
+    const name = screen.getByLabelText("Name");
+    act(() => name.focus());
+    fireEvent.keyDown(name, { key: "Escape" });
+    expect(onEsc).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onEsc).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a field that handles Escape itself keep it (React handlers run first)", () => {
+    const onEsc = vi.fn();
+    render(<Harness onEsc={onEsc} />);
+    const search = screen.getByLabelText("Search");
+    act(() => search.focus());
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(onEsc).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(search);
+  });
+
+  it("Tab from the parked dialog carries on after the field you left", () => {
+    // jsdom has no layout, so every element looks hidden (offsetParent null) — pretend otherwise
+    const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetParent");
+    Object.defineProperty(HTMLElement.prototype, "offsetParent", { configurable: true, get() { return (this as HTMLElement).parentElement; } });
+    try {
+      render(<Harness onEsc={() => {}} />);
+      const name = screen.getByLabelText("Name");
+      act(() => name.focus());
+      fireEvent.keyDown(name, { key: "Escape" });
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab" });
+      expect(document.activeElement).toBe(screen.getByLabelText("Search"));
+      act(() => name.focus());
+      fireEvent.keyDown(name, { key: "Escape" });
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab", shiftKey: true });
+      expect(document.activeElement).toBe(screen.getByText("Inside"));   // wraps back to the end
+    } finally {
+      if (desc) Object.defineProperty(HTMLElement.prototype, "offsetParent", desc);
+    }
   });
 
   it("closes on Escape from a button or checkbox", () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { TaskDetail, type TaskDetailProps } from "./TaskDetail";
+import { ToastProvider } from "./Toast";
 import type { Task, WorkspaceMember, Activity } from "../data/types";
 
 const mk = (over: Partial<Task> = {}): Task => ({
@@ -9,7 +10,7 @@ const mk = (over: Partial<Task> = {}): Task => ({
 });
 const member = (userId: string, name: string): WorkspaceMember => ({ id: "wm-" + userId, workspaceId: "w1", userId, email: userId + "@example.com", name, role: "member", status: "active" });
 
-async function setup(over: Partial<TaskDetailProps> = {}) {
+async function setup(over: Partial<TaskDetailProps> = {}, opts: { toasts?: boolean } = {}) {
   const props: TaskDetailProps = {
     taskId: "t1", tasks: [mk()], tags: {}, activity: [], members: [member("u1", "Me"), member("u2", "Maya Lin"), member("u3", "Mark Ode")],
     currentUserId: "u1",
@@ -17,12 +18,14 @@ async function setup(over: Partial<TaskDetailProps> = {}) {
     onCreateTag: vi.fn(), onDeleteTag: vi.fn(), onAddComment: vi.fn(async () => null), onFocus: vi.fn(),
     ...over,
   };
-  const r = render(<TaskDetail {...props} />);
+  const ui = () => opts.toasts ? <ToastProvider><TaskDetail {...props} /></ToastProvider> : <TaskDetail {...props} />;
+  const r = render(ui());
   await act(async () => {});   // let the demo-mode comment / file / history loads settle
-  const rerenderWith = async (p: Partial<TaskDetailProps>) => { Object.assign(props, p); r.rerender(<TaskDetail {...props} />); await act(async () => {}); };
+  const rerenderWith = async (p: Partial<TaskDetailProps>) => { Object.assign(props, p); r.rerender(ui()); await act(async () => {}); };
   return { ...r, props, rerenderWith };
 }
 const titleBox = () => screen.getByLabelText("Task title") as HTMLTextAreaElement;
+const nextFrame = () => act(async () => { await new Promise((r) => setTimeout(r, 200)); });
 
 beforeEach(() => { sessionStorage.clear(); });
 // restore only our confirm spies (restoreAllMocks would also wipe the global matchMedia mock)
@@ -66,6 +69,40 @@ describe("TaskDetail — Escape", () => {
     fireEvent.change(box, { target: { value: "@Mark Ode can you look?" } });
     await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
     expect(onAddComment).toHaveBeenCalledWith("t1", "@Mark Ode can you look?", ["u3"], undefined);
+  });
+});
+
+describe("TaskDetail — Escape after editing", () => {
+  it("Escape in the description hands focus to its Edit button", async () => {
+    await setup();
+    fireEvent.click(screen.getByRole("button", { name: "Edit description" }));
+    const desc = screen.getByLabelText("Description") as HTMLTextAreaElement;
+    act(() => desc.focus());
+    fireEvent.keyDown(desc, { key: "Escape" });
+    await nextFrame();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit description" }));
+  });
+
+  it("still closes on Escape after you delete the comment whose reply you were editing", async () => {
+    let n = 0;
+    const onAddComment = vi.fn(async (taskId: string, body: string, _m?: string[], parentId?: string) => ({
+      id: "c" + (++n), taskId, authorId: "u1", authorName: "Me", body, createdAt: new Date().toISOString(), parentId,
+    }));
+    const { props } = await setup({ onAddComment });
+    const box = screen.getByLabelText("Add a comment") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "Parent" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Me" }));
+    fireEvent.change(box, { target: { value: "Child" } });
+    await act(async () => { fireEvent.keyDown(box, { key: "Enter" }); });
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[1]);      // edit the reply
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);    // delete its parent (takes the reply too)
+    expect(screen.queryByLabelText("Edit comment")).toBeNull();
+    const close = screen.getByRole("button", { name: "Close task" });
+    act(() => close.focus());
+    fireEvent.keyDown(close, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
   });
 });
 
@@ -120,6 +157,63 @@ describe("TaskDetail — edit buffers", () => {
     expect(props.onPatch).toHaveBeenCalledTimes(1);           // the description saved on blur, once
   });
 
+  it("keeps their version on Cancel and offers yours back", async () => {
+    const { props, rerenderWith } = await setup({}, { toasts: true });
+    act(() => titleBox().focus());
+    fireEvent.change(titleBox(), { target: { value: "Mine" } });
+    await rerenderWith({ tasks: [mk({ title: "Theirs" })] });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    act(() => titleBox().blur());
+    expect(titleBox().value).toBe("Theirs");
+    fireEvent.click(screen.getByRole("button", { name: "Restore mine" }));
+    await nextFrame();
+    expect(titleBox().value).toBe("Mine");
+    expect(document.activeElement).toBe(titleBox());
+    act(() => titleBox().blur());                             // based on theirs now, so no second prompt
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(props.onPatch).toHaveBeenCalledWith("t1", { title: "Mine" });
+  });
+
+  it("offers back a description that was being typed when the page closed", async () => {
+    const first = await setup({}, { toasts: true });
+    fireEvent.click(screen.getByRole("button", { name: "Edit description" }));
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Half-written brief" } });
+    act(() => { window.dispatchEvent(new Event("pagehide")); });
+    first.unmount();
+    await setup({}, { toasts: true });                        // the save never landed: still "Old text"
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("Half-written brief");
+  });
+
+  it("tabbing through estimate/logged doesn't write a stale value over a teammate's", async () => {
+    const { props, rerenderWith } = await setup({ tasks: [mk({ loggedHours: 2 })] });
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    const logged = screen.getByLabelText("Logged") as HTMLInputElement;
+    act(() => logged.focus());
+    await rerenderWith({ tasks: [mk({ loggedHours: 3 })] });  // a teammate pressed +1h
+    expect(logged.value).toBe("3");                          // untouched, so it follows along
+    act(() => logged.blur());
+    expect(props.onPatch).not.toHaveBeenCalled();
+  });
+
+  it("a custom field you changed while a teammate did asks before overwriting", async () => {
+    const f = { id: "f1", projectId: "p1", name: "Client", type: "text" as const, options: [] };
+    const { props, rerenderWith } = await setup({ customFields: [f], tasks: [mk({ custom: { f1: "Acme" } })] });
+    const input = screen.getByLabelText("Client") as HTMLInputElement;
+    act(() => input.focus());
+    act(() => input.blur());
+    expect(props.onPatch).not.toHaveBeenCalled();             // focus + blur never writes
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: "Acme Ltd" } });
+    await rerenderWith({ tasks: [mk({ custom: { f1: "Acme Holdings Ltd" } })] });
+    expect(input.value).toBe("Acme Ltd");                     // your typing isn't clobbered
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    act(() => input.blur());
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Someone else changed this"));
+    expect(props.onPatch).not.toHaveBeenCalled();
+    expect(input.value).toBe("Acme Holdings Ltd");
+  });
+
   it("buffers estimate edits and saves once on blur", async () => {
     const { props } = await setup();
     fireEvent.click(screen.getByRole("button", { name: "More options" }));
@@ -142,6 +236,14 @@ describe("TaskDetail — switching task", () => {
     expect(screen.getByLabelText("Add a comment")).toHaveValue("");
     await rerenderWith({ taskId: "t1" });
     expect(screen.getByLabelText("Add a comment")).toHaveValue("Half-written note");
+  });
+
+  it("never shows one person's unsent comment to someone else on the same tab", async () => {
+    const first = await setup();
+    fireEvent.change(screen.getByLabelText("Add a comment"), { target: { value: "Private note" } });
+    first.unmount();
+    await setup({ currentUserId: "u2" });
+    expect(screen.getByLabelText("Add a comment")).toHaveValue("");
   });
 
   it("saves the previous task's edited title to that task", async () => {
@@ -203,10 +305,30 @@ describe("TaskDetail — actions", () => {
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
-  it("words notification rows in Activity", async () => {
-    const activity: Activity[] = [{ id: "a1", taskId: "t1", taskTitle: "Write brief", kind: "mention", detail: "Maya Lin", createdAt: new Date().toISOString() }];
+  it("words notification rows in Activity, and leaves comments to the thread", async () => {
+    const now = new Date().toISOString();
+    const activity: Activity[] = [
+      { id: "a1", taskId: "t1", taskTitle: "Write brief", kind: "mention", detail: "Maya Lin", createdAt: now },
+      // your own comment is logged with its text, not a name
+      { id: "a2", taskId: "t1", taskTitle: "Write brief", kind: "comment", detail: "Can we move this to Friday?", createdAt: now },
+    ];
     await setup({ activity });
     expect(screen.getByText("Maya Lin mentioned you")).toBeInTheDocument();
+    expect(screen.queryByText(/Can we move this to Friday\?/)).toBeNull();
+  });
+
+  it("confirms before deleting a tag, naming how many tasks lose it", async () => {
+    const onDeleteTag = vi.fn();
+    const tags = { g1: { label: "Urgent", color: "#f00" } };
+    await setup({ tags, onDeleteTag, tasks: [mk({ tags: ["g1"] }), mk({ id: "t2", tags: ["g1"] })] });
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByTitle("Delete tag"));
+    expect(confirm.mock.calls[0][0]).toContain("Delete the tag “Urgent”? It will be removed from all 2 tasks that use it.");
+    expect(onDeleteTag).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByTitle("Delete tag"));
+    expect(onDeleteTag).toHaveBeenCalledWith("g1");
   });
 });
 

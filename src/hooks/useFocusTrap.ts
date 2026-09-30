@@ -31,14 +31,17 @@ const stack: HTMLElement[] = [];
  * - On activate, focus moves inside: to `[data-autofocus]`, else the first
  *   focusable element — unless a child already took focus (autoFocus).
  * - Tab / Shift+Tab wrap; focus that escapes (screen-reader navigation, a
- *   click on the page behind) is pulled back while this is the top trap.
- * - Escape calls `onEscape`, except when the event was already handled
- *   (`defaultPrevented`) or started in a text field, textarea, select or
- *   contentEditable. This native listener runs BEFORE React's onKeyDown
- *   handlers, so fields can't veto it in time; instead they own their own
- *   Escape (and call preventDefault + stopPropagation when they handle it).
- *   A React `onKeyDownCapture` handler DOES run first, so a dialog can
- *   preventDefault there to keep itself open.
+ *   click on the page behind) is pulled back while this is the top trap. When
+ *   focus is parked on the dialog itself, Tab carries on from the control you
+ *   were last in rather than jumping back to the top.
+ * - Escape is handled at the document, after React's handlers (which run at
+ *   the app root), so anything inside that handles Escape itself — a menu, a
+ *   picker, a field — can stop it (stopPropagation) or mark it handled
+ *   (preventDefault) first. Only the topmost trap acts on it:
+ *     · from a text field, textarea, select or contentEditable, the first
+ *       Escape just leaves the field (focus parks on the dialog, nothing typed
+ *       is thrown away); the next Escape closes;
+ *     · from anywhere else in the dialog it calls `onEscape`.
  */
 export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: () => void) {
   const ref = useRef<T>(null);
@@ -68,37 +71,52 @@ export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: 
       const first = auto ?? focusable()[0];
       if (first) focusEl(first); else focusContainer();
     }
-    let lastInside: HTMLElement | null = el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+    // the last control inside that had focus (never the container itself)
+    const a0 = document.activeElement;
+    let lastInside: HTMLElement | null = a0 instanceof HTMLElement && a0 !== el && el.contains(a0) ? a0 : null;
 
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (e.defaultPrevented || isEditableTarget(e.target)) return;
-        escRef.current?.();
-        return;
-      }
+    const onTab = (e: KeyboardEvent) => {
       if (e.key !== "Tab") return;
       const items = focusable();
       if (!items.length) { e.preventDefault(); return; }
       const first = items[0], last = items[items.length - 1];
       const cur = document.activeElement;
-      // focus parked on the container itself (or lost) — enter at the right end
-      if (cur === el || !el.contains(cur)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+      // focus parked on the container itself (or lost) — carry on from the
+      // control you were last in, else enter at the right end
+      if (cur === el || !el.contains(cur)) {
+        e.preventDefault();
+        const i = lastInside && lastInside.isConnected ? items.indexOf(lastInside) : -1;
+        const next = i < 0 ? (e.shiftKey ? last : first) : items[(i + (e.shiftKey ? -1 : 1) + items.length) % items.length];
+        focusEl(next);
+        return;
+      }
       if (e.shiftKey && cur === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && cur === last) { e.preventDefault(); first.focus(); }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+      if (stack[stack.length - 1] !== el) return;           // a dialog above us owns it
+      const t = e.target;
+      if (!(t instanceof Node) || !el.contains(t)) return;
+      if (isEditableTarget(t)) { focusContainer(); return; }  // leave the field; the next Escape closes
+      escRef.current?.();
     };
     const onFocusIn = (e: FocusEvent) => {
       const t = e.target as HTMLElement | null;
       if (!t || !(t instanceof HTMLElement) || t === document.body) return;
+      if (t === el) return;
       if (el.contains(t)) { lastInside = t; return; }
       if (stack[stack.length - 1] !== el) return;          // a dialog above us owns focus
       if (t.closest(OTHER_LAYER)) return;                  // popover / toast / other dialog
       const back = lastInside && lastInside.isConnected && el.contains(lastInside) ? lastInside : focusable()[0];
       if (back) focusEl(back); else focusContainer();
     };
-    el.addEventListener("keydown", onKey);
+    el.addEventListener("keydown", onTab);
+    document.addEventListener("keydown", onEsc);
     document.addEventListener("focusin", onFocusIn);
     return () => {
-      el.removeEventListener("keydown", onKey);
+      el.removeEventListener("keydown", onTab);
+      document.removeEventListener("keydown", onEsc);
       document.removeEventListener("focusin", onFocusIn);
       const i = stack.lastIndexOf(el);
       if (i >= 0) stack.splice(i, 1);

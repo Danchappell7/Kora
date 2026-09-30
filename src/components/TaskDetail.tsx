@@ -15,7 +15,8 @@ import { reportError } from "../lib/monitoring";
 import type { Attachment } from "../data/types";
 import {
   resolveMentions, dependencyCandidates, wouldCreateCycle, activityLine, isTextEntry,
-  canDeleteAttachment, readDraft, writeDraft, type MentionCandidate,
+  canDeleteAttachment, readDraft, writeDraft, stashUnsaved, dropUnsaved, takeUnsaved,
+  type MentionCandidate, type UnsavedField,
 } from "./taskDetailHelpers";
 
 const REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅", "🚀"];
@@ -91,21 +92,37 @@ const fieldInputStyle: React.CSSProperties = { height: 30, padding: "0 9px", bor
 /**
  * A text/number input that keeps what you type locally and saves once — on
  * blur, Enter, or when the panel closes — instead of writing on every
- * keystroke (which raced, and re-synced every teammate per character). While
- * you're not in it, it follows the live value.
+ * keystroke (which raced, and re-synced every teammate per character).
+ *
+ * Like the title, it remembers the live value it was loaded from (its base):
+ * while you're not in it — or you're in it but haven't typed — it follows the
+ * live value; only a real change is saved, so tabbing through never writes a
+ * stale number back over a teammate's; and if the value changed underneath
+ * your edit you're asked before overwriting it.
  */
 function BufferedInput({ value, onCommit, onKeyDown, ...rest }: { value: string; onCommit: (v: string) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onBlur" | "onFocus">) {
   const [draft, setDraft] = useState(value);
   const editing = useRef(false);
   const draftRef = useRef(value);
-  useEffect(() => { if (!editing.current) { setDraft(value); draftRef.current = value; } }, [value]);
-  const commit = () => { if (draftRef.current !== value) onCommit(draftRef.current); };
+  const baseRef = useRef(value);
+  const liveRef = useRef(value);
+  liveRef.current = value;
+  const sync = (v: string) => { setDraft(v); draftRef.current = v; baseRef.current = v; };
+  useEffect(() => { if (!editing.current || draftRef.current === baseRef.current) sync(value); }, [value]);
+  const commit = () => {
+    const mine = draftRef.current, base = baseRef.current, live = liveRef.current;
+    if (mine === base) { if (live !== base) sync(live); return; }   // untouched — never writes
+    if (mine === live) { baseRef.current = mine; return; }
+    if (live !== base && !window.confirm(CONFLICT_MSG)) { sync(live); return; }  // keep theirs
+    baseRef.current = mine;
+    onCommit(mine);
+  };
   const commitRef = useRef(commit);
   commitRef.current = commit;
   useEffect(() => () => { if (editing.current) commitRef.current(); }, []);
   return (
     <input {...rest} value={draft}
-      onFocus={() => { editing.current = true; }}
+      onFocus={() => { editing.current = true; if (draftRef.current === baseRef.current && liveRef.current !== baseRef.current) sync(liveRef.current); }}
       onChange={(e) => { setDraft(e.target.value); draftRef.current = e.target.value; }}
       onBlur={() => { editing.current = false; commit(); }}
       onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } onKeyDown?.(e); }} />
@@ -322,7 +339,9 @@ export function TaskDetail(props: TaskDetailProps) {
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label={`Task: ${task.title}`} tabIndex={-1} onClick={(e) => e.stopPropagation()} style={{
         position: "absolute", top: 0, right: 0, bottom: 0, width: isMobile ? "100%" : 480, maxWidth: "100%",
         background: "var(--surface-raised)", borderLeft: isMobile ? "none" : "1px solid var(--hairline-strong)",
-        boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", outline: "none",
+        // no outline override: when Escape parks focus on the panel itself,
+        // keyboard users see the global focus ring (drawn just inside the edge)
+        boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", outlineOffset: -3,
         animation: `${isMobile ? "slideInUp" : "slideInRight"} .3s var(--ease)`,
       }}>
         {/* keyed by task: switching task (sub-task, dependency) starts from a
@@ -345,7 +364,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
   const [aiSubBusy, setAiSubBusy] = useState(false);
   const [aiSubNote, setAiSubNote] = useState<string | null>(null);
   // the unsent comment survives switching task or closing the panel
-  const [comment, setCommentState] = useState(() => readDraft(taskId));
+  const [comment, setCommentState] = useState(() => readDraft(currentUserId, taskId));
   const [picked, setPicked] = useState<MentionCandidate[]>([]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
@@ -367,6 +386,10 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
   const editRef = useRef<HTMLTextAreaElement>(null);
   const depAddRef = useRef<HTMLButtonElement>(null);
   const depListRef = useRef<HTMLDivElement>(null);
+  const descEditBtnRef = useRef<HTMLButtonElement>(null);
+  // Escape / ⌘↵ in the description hands focus to its Edit button once the
+  // editor has closed, so keyboard users land somewhere sensible
+  const refocusDescEdit = useRef(false);
   const [thread, setThread] = useState<Comment[]>([]);
   const [editingComment, setEditingComment] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
@@ -435,18 +458,31 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
 
   // live presence — who else is viewing this task right now. Depends on the
   // viewer's name string, not the members array (whose identity changes on
-  // every realtime reload and used to tear the channel down each time). The
-  // short delay keeps a rapid close/re-open (or StrictMode) from grabbing the
-  // same-topic channel while it's still leaving, which never re-joins.
+  // every realtime reload and used to tear the channel down each time).
+  // Re-opening a task hands back the same-topic channel if the old one is still
+  // leaving, and that one never joins. So: a short delay covers the quick case
+  // (StrictMode, a fast close/re-open), and if no presence sync has arrived a
+  // few seconds after subscribing we drop that channel and join again (by then
+  // the old one has gone), backing off — however slow the network is.
   const meName = useMemo(() => members.find((m) => m.userId === currentUserId)?.name || "Someone", [members, currentUserId]);
   useEffect(() => {
+    if (!store.configured) return;
     let unsub: (() => void) | null = null;
-    const t = window.setTimeout(() => {
+    let stopped = false, synced = false, tries = 0, timer = 0;
+    const join = () => {
+      if (stopped) return;
+      unsub?.();
+      synced = false;
       unsub = store.subscribeToTaskPresence(taskId, { id: currentUserId, name: meName }, (people) => {
-        setViewers(people.filter((p) => p.id !== currentUserId));
+        synced = true;
+        if (!stopped) setViewers(people.filter((p) => p.id !== currentUserId));
       });
-    }, 250);
-    return () => { window.clearTimeout(t); setViewers([]); unsub?.(); };
+      const wait = 3000 * 2 ** tries;
+      tries += 1;
+      if (tries < 4) timer = window.setTimeout(() => { if (!synced) join(); }, wait);
+    };
+    timer = window.setTimeout(join, 250);
+    return () => { stopped = true; window.clearTimeout(timer); setViewers([]); unsub?.(); };
   }, [taskId, currentUserId, meName]);
 
   // live comments — append comments teammates post while the panel is open
@@ -477,48 +513,72 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
 
   /* ---------- saving the title / description ---------- */
   const serverTask = () => liveTasksRef.current.find((t) => t.id === task.id);
-  const keepTheirs = (mine: string) => {
-    const tell = (copiedMine: boolean) => toast?.toast(copiedMine ? "Kept their version — yours is copied to your clipboard." : "Kept their version.");
-    try {
-      const p = navigator.clipboard?.writeText(mine);
-      if (p) p.then(() => tell(true), () => tell(false)); else tell(false);
-    } catch { tell(false); }
+  // Put your text back in the editor, based on the current server value so
+  // saving it doesn't ask again. If the panel has closed meanwhile, "restore"
+  // means save it.
+  const restoreMine = (field: UnsavedField, mine: string) => {
+    const cur = serverTask(); if (!cur) return;
+    if (!alive.current) { onPatch(task.id, field === "title" ? { title: mine } : { description: mine }); return; }
+    if (field === "title") {
+      titleBase.current = cur.title;
+      setTitleBuf(mine);
+      requestAnimationFrame(() => titleRef.current?.focus());
+    } else {
+      descBase.current = cur.description ?? "";
+      setDesc(mine);
+      setDescEditing(true);
+    }
   };
-  // "silent" (tab hidden / page unloading) never prompts: a conflict is left
-  // for you to resolve when you're back
-  const commitTitle = (mode: "blur" | "silent" = "blur") => {
+  // You chose to keep a teammate's newer text. Yours isn't thrown away: the
+  // toast can put it back (and it's copied to the clipboard where the browser
+  // allows — it often doesn't when the window isn't focused).
+  const keepTheirs = (field: UnsavedField, mine: string) => {
+    dropUnsaved(currentUserId, task.id, field);
+    try { navigator.clipboard?.writeText(mine)?.catch(() => {}); } catch { /* no clipboard */ }
+    toast?.action(`Kept their version of the ${field}.`, "Restore mine", () => restoreMine(field, mine), 20000);
+  };
+  // "hidden" (tab switched away) and "unload" (page closing) never prompt: a
+  // conflict waits for you to come back. In both, what you typed is also kept
+  // in this tab's storage and offered back next time you open the task if it
+  // didn't reach the server.
+  type FlushMode = "blur" | "hidden" | "unload";
+  const commitTitle = (mode: FlushMode = "blur") => {
     if (readOnly) return;
     const cur = serverTask(); if (!cur) return;          // deleted meanwhile
     const v = titleBuf.replace(/\s*\n+\s*/g, " ").trim(), base = titleBase.current;
     if (!v || v === base.trim()) return;                  // unchanged (an emptied title just reverts)
     if (v === cur.title) { titleBase.current = v; return; }
+    if (mode !== "blur") stashUnsaved(currentUserId, task.id, "title", v);
     if (cur.title !== base) {
-      if (mode === "silent") return;
-      if (!window.confirm(CONFLICT_MSG)) { titleBase.current = cur.title; keepTheirs(v); return; }
+      if (mode !== "blur") return;
+      if (!window.confirm(CONFLICT_MSG)) { titleBase.current = cur.title; keepTheirs("title", v); return; }
     }
     titleBase.current = v;
+    if (mode === "blur") dropUnsaved(currentUserId, task.id, "title");
     onPatch(task.id, { title: v });
   };
-  const commitDesc = (mode: "blur" | "silent" = "blur") => {
+  const commitDesc = (mode: FlushMode = "blur") => {
     if (readOnly) return;
     const cur = serverTask(); if (!cur) return;
     const v = desc, base = descBase.current, server = cur.description ?? "";
     if (v === base) return;
     if (v === server) { descBase.current = v; return; }
+    if (mode !== "blur") stashUnsaved(currentUserId, task.id, "description", v);
     if (server !== base) {
-      if (mode === "silent") return;
-      if (!window.confirm(CONFLICT_MSG)) { descBase.current = server; keepTheirs(v); if (alive.current) setDesc(server); return; }
+      if (mode !== "blur") return;
+      if (!window.confirm(CONFLICT_MSG)) { descBase.current = server; keepTheirs("description", v); if (alive.current) setDesc(server); return; }
     }
     descBase.current = v;
+    if (mode === "blur") dropUnsaved(currentUserId, task.id, "description");
     onPatch(task.id, { description: v });
   };
   // every close path saves: unmount (close button, backdrop, Esc, opening
   // another task), and a best-effort save when the tab is hidden or unloads
-  const flushRef = useRef<(mode: "blur" | "silent") => void>(() => {});
+  const flushRef = useRef<(mode: FlushMode) => void>(() => {});
   flushRef.current = (mode) => { commitTitle(mode); commitDesc(mode); };
   useEffect(() => {
-    const onVis = () => { if (document.visibilityState === "hidden") flushRef.current("silent"); };
-    const onPageHide = () => flushRef.current("silent");
+    const onVis = () => { if (document.visibilityState === "hidden") flushRef.current("hidden"); };
+    const onPageHide = () => flushRef.current("unload");
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pagehide", onPageHide);
     return () => {
@@ -527,9 +587,30 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
       flushRef.current("blur");
     };
   }, []);
+  // text you'd typed when the page last closed (or the tab was hidden) that
+  // never reached the server — offer it back
+  useEffect(() => {
+    if (readOnly) return;
+    (["title", "description"] as const).forEach((field) => {
+      const text = takeUnsaved(currentUserId, task.id, field);
+      const cur = serverTask();
+      if (text == null || !cur || text === (field === "title" ? cur.title : cur.description ?? "")) return;
+      toast?.action(`Your last change to this task's ${field} may not have been saved.`, "Restore", () => restoreMine(field, text), 20000);
+    });
+    // once per task (the panel is keyed by task)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // leave the field you're typing in (its blur saves it) but keep the panel open
+  // (focus parks on the panel, which shows the focus ring; Tab carries on
+  // from the field you left)
   const stepOut = () => panelRef.current?.focus({ preventScroll: true });
+  // …except the description, whose Edit button takes focus once it's back
+  useEffect(() => {
+    if (descEditing || !refocusDescEdit.current) return;
+    refocusDescEdit.current = false;
+    if (document.activeElement === panelRef.current) descEditBtnRef.current?.focus();
+  }, [descEditing, panelRef]);
   const startDescEdit = () => {
     if (readOnly) return;
     descBase.current = task.description ?? "";
@@ -554,7 +635,10 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
   ]);
   const replyingToComment = replyingTo ? thread.find((c) => c.id === replyingTo) : null;
   const done = task.status === "done";
-  const taskActivity = activity.filter((a) => a.taskId === task.id).slice(0, 8);
+  // comments are already in the thread above (with author and text), and a
+  // comment row can't be worded reliably — your own is logged with its text,
+  // a teammate's with their name — so they're left out here
+  const taskActivity = activity.filter((a) => a.taskId === task.id && a.kind !== "comment").slice(0, 8);
   // Only people who belong to THIS task's workspace can be assigned/collaborate.
   // A personal-project task (no workspace) is therefore just you — never members
   // pulled in from your other team workspaces.
@@ -566,6 +650,14 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
   const projectTaskCount = tasks.filter((t) => t.projectId === task.projectId).length;
   const ids = { status: `${uid}-status`, priority: `${uid}-priority`, project: `${uid}-project`, section: `${uid}-section`, assignee: `${uid}-assignee`, due: `${uid}-due`, repeat: `${uid}-repeat`, estimate: `${uid}-estimate`, logged: `${uid}-logged`, desc: `${uid}-desc`, mentions: `${uid}-mentions`, descMentions: `${uid}-desc-mentions`, deps: `${uid}-deps` };
 
+  // deleting a tag removes it from every task that has it — say so first
+  const confirmDeleteTag = (id: string) => {
+    const label = tags[id]?.label ?? "this tag";
+    const n = tasks.filter((t) => t.tags.includes(id)).length;
+    const scope = n === 0 ? "" : n === 1 ? " It will be removed from the 1 task that uses it." : ` It will be removed from all ${n} tasks that use it.`;
+    if (!window.confirm(`Delete the tag “${label}”?${scope} This can't be undone.`)) return;
+    onDeleteTag(id);
+  };
   const toggleTag = (id: string) => {
     const next = task.tags.includes(id) ? task.tags.filter((x) => x !== id) : [...task.tags, id];
     onPatch(task.id, { tags: next });
@@ -591,7 +683,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     ? mentionable.filter((m) => m.name.toLowerCase().includes(mentionQuery)).slice(0, 6)
     : [];
   const mentionActive = Math.min(mentionIdx, Math.max(0, mentionMatches.length - 1));
-  const setComment = (v: string) => { setCommentState(v); writeDraft(task.id, v); };
+  const setComment = (v: string) => { setCommentState(v); writeDraft(currentUserId, task.id, v); };
   const onCommentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setComment(val);
@@ -646,14 +738,14 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     catch (err) { reportError(err, { op: "addComment" }); toast?.error("Couldn't post the comment."); }
     if (!alive.current) {
       // the panel moved on while this posted — just don't restore the sent text as a draft
-      if (c && readDraft(forTask).trim() === v) writeDraft(forTask, "");
+      if (c && readDraft(currentUserId, forTask).trim() === v) writeDraft(currentUserId, forTask, "");
       return;
     }
     setPosting(false);
     if (c && (!c.taskId || c.taskId === forTask)) {
       setThread((t) => t.some((x) => x.id === c.id) ? t : [...t, c]);
       // clear the box — unless you kept typing while it posted
-      setCommentState((cur) => { const next = cur.trim() === v ? "" : cur; writeDraft(forTask, next); return next; });
+      setCommentState((cur) => { const next = cur.trim() === v ? "" : cur; writeDraft(currentUserId, forTask, next); return next; });
       setPicked([]); setMentionQuery(null); setReplyingTo(null);
     }
   };
@@ -665,9 +757,19 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     setThread((t) => t.map((x) => x.id === c.id ? { ...x, reactions } : x));
     store.toggleReaction(c.id, emoji, currentUserId).catch(reportError);
   };
+  // leaving a comment edit hands focus back to that comment's Edit button
+  // (or parks it on the panel if the comment has gone)
+  const endCommentEdit = (id: string) => {
+    setEditingComment(null);
+    requestAnimationFrame(() => {
+      if (!alive.current) return;
+      const btn = Array.from(panelRef.current?.querySelectorAll<HTMLButtonElement>("[data-edit-comment]") ?? []).find((b) => b.dataset.editComment === id);
+      if (btn) btn.focus(); else stepOut();
+    });
+  };
   const saveCommentEdit = (c: Comment) => {
     const v = editDraft.trim();
-    setEditingComment(null);
+    endCommentEdit(c.id);
     if (!v || v === c.body) return;
     setThread((t) => t.map((x) => x.id === c.id ? { ...x, body: v } : x));
     store.updateComment(c.id, v).catch(reportError);
@@ -679,6 +781,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     const removedIds = new Set([c.id, ...thread.filter((x) => x.parentId === c.id).map((x) => x.id)]);
     setThread((t) => t.filter((x) => !removedIds.has(x.id)));
     if (replyingTo && removedIds.has(replyingTo)) setReplyingTo(null);
+    if (editingComment && removedIds.has(editingComment)) setEditingComment(null);
     onPatch(task.id, { comments: Math.max(0, (task.comments || 0) - removedIds.size) });
     store.deleteComment(c.id).catch(reportError);
   };
@@ -748,11 +851,13 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
   /* ---------- Escape ----------
      Escape belongs to the innermost thing: a menu or picker closes first; in
      a text field it finishes editing (saving via blur) and keeps the panel
-     open; only then does it close the panel. The capture phase runs before
-     the focus trap's listener, so preventDefault there keeps the trap from
-     closing the panel; the bubble phase then does the work and stops the
-     event before App's window-level Escape handler sees it. */
-  const hasOpenLayer = () => reactPickerFor !== null || reactMoreOpen || depPickerOpen || mentionMatches.length > 0 || descMatches.length > 0 || editingComment !== null;
+     open; only then does it close the panel. preventDefault in the capture
+     phase marks it handled for the focus trap (which listens on the document);
+     the bubble phase then does the work and stops the event before it reaches
+     the trap or App's window-level Escape handler. */
+  // (the edit box itself, not the id: the comment may have been deleted under it)
+  const commentEditOpen = () => !!editRef.current?.isConnected;
+  const hasOpenLayer = () => reactPickerFor !== null || reactMoreOpen || depPickerOpen || mentionMatches.length > 0 || descMatches.length > 0 || commentEditOpen();
   const onEscCapture = (e: React.KeyboardEvent) => {
     if (e.key !== "Escape" || e.nativeEvent.isComposing) return;
     if (hasOpenLayer() || isEditableTarget(e.target)) e.preventDefault();
@@ -764,8 +869,13 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     if (depPickerOpen) { closeDepPicker(true); e.stopPropagation(); return; }
     if (mentionMatches.length > 0 || descMatches.length > 0) { setMentionQuery(null); setDescMentionQuery(null); e.stopPropagation(); return; }
     // a comment edit is open but you're elsewhere — take you back to it rather than lose it
-    if (editingComment !== null && e.target !== editRef.current) { editRef.current?.focus(); e.stopPropagation(); return; }
-    if (isTextEntry(e.target)) { e.stopPropagation(); stepOut(); return; }
+    if (commentEditOpen() && e.target !== editRef.current) { editRef.current?.focus(); e.stopPropagation(); return; }
+    if (isTextEntry(e.target)) {
+      e.stopPropagation();
+      if (e.target === descRef.current) refocusDescEdit.current = true;
+      stepOut();
+      return;
+    }
     // a select / date / checkbox already saved its value — nothing to lose, so close
     if (isEditableTarget(e.target)) { e.stopPropagation(); onClose(); }
   };
@@ -1054,7 +1164,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                   </span>
                 )
               ) : (
-                <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={onDeleteTag} small />
+                <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={confirmDeleteTag} small />
               )}
             </MetaRow>
             <MetaRow icon="target" label="Milestone">
@@ -1073,7 +1183,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
             <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
               <span className="kicker" id={ids.desc}>Description</span>
               {!readOnly && !descEditing && (
-                <button type="button" onClick={startDescEdit} aria-label="Edit description"
+                <button ref={descEditBtnRef} type="button" onClick={startDescEdit} aria-label="Edit description"
                   style={{ marginLeft: "auto", padding: "2px 6px", border: "none", borderRadius: 6, background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12 }}>Edit</button>
               )}
             </div>
@@ -1097,7 +1207,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDescMentionQuery(null); return; }
                   }
                   // ⌘/Ctrl+Enter finishes editing
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); stepOut(); }
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); refocusDescEdit.current = true; stepOut(); }
                 }}
                 onBlur={() => {
                   descFocused.current = false;
@@ -1371,13 +1481,13 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                       <textarea autoFocus ref={editRef} value={editDraft} onChange={(e) => setEditDraft(e.target.value)} aria-label="Edit comment"
                         onKeyDown={(e) => {
                           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveCommentEdit(c);
-                          else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditingComment(null); stepOut(); }
+                          else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); endCommentEdit(c.id); }
                         }}
                         rows={Math.max(2, Math.min(8, (editDraft.match(/\n/g)?.length ?? 0) + 1))}
                         style={{ width: "100%", resize: "vertical", padding: "8px 10px", borderRadius: 9, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, lineHeight: 1.5 }} />
                       <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                         <button className="btn btn-accent" onClick={() => saveCommentEdit(c)} style={{ padding: "4px 12px", fontSize: 12.5 }}>Save</button>
-                        <button className="btn btn-ghost" onClick={() => setEditingComment(null)} style={{ padding: "4px 10px", fontSize: 12.5 }}>Cancel</button>
+                        <button className="btn btn-ghost" onClick={() => endCommentEdit(c.id)} style={{ padding: "4px 10px", fontSize: 12.5 }}>Cancel</button>
                       </div>
                     </div>
                   ) : (
@@ -1415,7 +1525,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                     )}
                     {c.authorId === currentUserId && (
                       <>
-                        <button onClick={() => { setEditDraft(c.body); setEditingComment(c.id); }} title="Edit comment" style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>Edit</button>
+                        <button data-edit-comment={c.id} onClick={() => { setEditDraft(c.body); setEditingComment(c.id); }} title="Edit comment" style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-4)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>Edit</button>
                         <button onClick={() => removeComment(c)} title="Delete comment" style={{ height: 22, padding: "0 8px", borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--prio-urgent)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-display)", display: "inline-flex", alignItems: "center", gap: 4 }}>Delete</button>
                       </>
                     )}
@@ -1434,7 +1544,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                 <div key={a.id} style={{ display: "flex", gap: 10, marginBottom: 10 }}>
                   <span style={{ width: 6, height: 6, borderRadius: 99, marginTop: 6, flexShrink: 0, background: a.kind === "completed" ? "var(--st-done)" : "var(--ink-4)" }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>{activityLine(a)}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>{activityLine(a, mentionNames)}</div>
                     <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", marginTop: 1 }}>{timeAgo(a.createdAt)}</div>
                   </div>
                 </div>

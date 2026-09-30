@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   resolveMentions, wouldCreateCycle, dependencyCandidates, activityLine, isTextEntry,
-  attachmentOwnerId, canDeleteAttachment, readDraft, writeDraft,
+  attachmentOwnerId, canDeleteAttachment, readDraft, writeDraft, stashUnsaved, takeUnsaved, clearTaskDrafts,
 } from "./taskDetailHelpers";
 import type { Task } from "../data/types";
 
@@ -76,9 +76,14 @@ describe("dependencies", () => {
 describe("activityLine", () => {
   it("words notification rows like the inbox", () => {
     expect(activityLine({ kind: "mention", detail: "Maya Lin" })).toBe("Maya Lin mentioned you");
-    expect(activityLine({ kind: "comment", detail: "Theo Vance" })).toBe("Theo Vance commented");
+    expect(activityLine({ kind: "comment", detail: "Theo Vance" }, ["Maya Lin", "Theo Vance"])).toBe("Theo Vance commented");
     expect(activityLine({ kind: "assigned", detail: "" })).toBe("Someone assigned you");
     expect(activityLine({ kind: "completed", detail: "Marked complete" })).toBe("Marked complete");
+  });
+  it("doesn't turn your own comment's text into a name", () => {
+    // App logs your own comment with its text as the detail
+    expect(activityLine({ kind: "comment", detail: "Can we move this to Friday?" }, ["Maya Lin"])).toBe("Comment: “Can we move this to Friday?”");
+    expect(activityLine({ kind: "comment", detail: "" })).toBe("Someone commented");
   });
 });
 
@@ -102,15 +107,33 @@ describe("attachments", () => {
     expect(canDeleteAttachment(a, "u-bob", false)).toBe(false);
     expect(canDeleteAttachment({ path: "demo" }, "m-self", true)).toBe(true);
   });
+  it("prefers the row's owner when it has one (files handed on when an account is deleted)", () => {
+    const a = { path: "u-alice/t1/abc_report.pdf", userId: "u-owner" };
+    expect(canDeleteAttachment(a, "u-owner", false)).toBe(true);
+    expect(canDeleteAttachment(a, "u-alice", false)).toBe(false);
+  });
 });
 
 describe("comment drafts", () => {
   beforeEach(() => sessionStorage.clear());
-  it("persist per task and clear when emptied", () => {
-    writeDraft("t1", "half a thought");
-    expect(readDraft("t1")).toBe("half a thought");
-    expect(readDraft("t2")).toBe("");
-    writeDraft("t1", "   ");
-    expect(readDraft("t1")).toBe("");
+  it("persist per person and task, and clear when emptied", () => {
+    writeDraft("u1", "t1", "half a thought");
+    expect(readDraft("u1", "t1")).toBe("half a thought");
+    expect(readDraft("u1", "t2")).toBe("");
+    expect(readDraft("u2", "t1")).toBe("");                   // someone else signing in on this tab
+    writeDraft("u1", "t1", "   ");
+    expect(readDraft("u1", "t1")).toBe("");
+  });
+  it("unsaved edits are read once, and sign-out clears everything", () => {
+    stashUnsaved("u1", "t1", "title", "Mine");
+    expect(takeUnsaved("u1", "t1", "title")).toBe("Mine");
+    expect(takeUnsaved("u1", "t1", "title")).toBeNull();
+    writeDraft("u1", "t1", "draft");
+    stashUnsaved("u1", "t1", "description", "text");
+    sessionStorage.setItem("other-key", "keep");
+    clearTaskDrafts();
+    expect(readDraft("u1", "t1")).toBe("");
+    expect(takeUnsaved("u1", "t1", "description")).toBeNull();
+    expect(sessionStorage.getItem("other-key")).toBe("keep");
   });
 });
