@@ -14,8 +14,13 @@ import type { FocusTimer } from "../hooks/useFocusTimer";
 
 /* Sidebar-only rules: project row action group, saved-list delete reveal and
    the skip link. Kept beside the component so the row layout lives in one
-   place. Hover-revealed controls also appear on keyboard focus and are always
-   visible on touch screens. */
+   place. Hover-revealed controls also appear for KEYBOARD focus in their row
+   (:has(:focus-visible)) and are always visible on touch screens. Not
+   :focus-within on the row: Chrome focuses a button on mouse click, so the
+   project or list you just opened would keep its actions stuck on screen
+   (the rule kanbo.css follows for tag chips and saved lists). The :has()
+   rules are separate, so a browser without :has() drops only them; there,
+   tabbing onto an action still shows the group (.kproj-acts:focus-within). */
 const SIDEBAR_CSS = `
 .kskip:not(:focus) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .kskip:focus { position: absolute; left: 12px; top: 10px; z-index: 30; padding: 9px 13px; border-radius: 10px; background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-lg); font: 600 13px var(--font-display); text-decoration: none; }
@@ -23,29 +28,39 @@ main[tabindex="-1"]:focus { outline: none; }
 
 .kproj-item { position: relative; display: flex; align-items: center; border-radius: 9px; }
 .kproj-item > .kproj { flex: 1; min-width: 0; }
-.kproj-item:hover > .kproj, .kproj-item:focus-within > .kproj { padding-right: var(--kacts, 86px); }
+.kproj-item:hover > .kproj { padding-right: var(--kacts, 86px); }
+.kproj-item:has(:focus-visible, .kproj-acts:focus-within) > .kproj { padding-right: var(--kacts, 86px); }
 /* keep the row highlighted while the pointer is on its actions */
 .kproj-item:hover > .kproj:not([data-active="true"]) { background: var(--surface); }
 [data-theme="light"] .kproj-item:hover > .kproj:not([data-active="true"]) { background: oklch(0.28 0.02 266 / 0.045); }
 .kproj-pinmark { display: inline-flex; color: var(--accent); flex-shrink: 0; }
-.kproj-item:hover .kproj-n, .kproj-item:focus-within .kproj-n,
-.kproj-item:hover .kproj-pinmark, .kproj-item:focus-within .kproj-pinmark { visibility: hidden; }
+.kproj-item:hover .kproj-n, .kproj-item:hover .kproj-pinmark { visibility: hidden; }
+.kproj-item:has(:focus-visible, .kproj-acts:focus-within) :is(.kproj-n, .kproj-pinmark) { visibility: hidden; }
 .kproj-acts { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 1px; opacity: 0; pointer-events: none; transition: opacity .14s var(--ease); }
-.kproj-item:hover .kproj-acts, .kproj-item:focus-within .kproj-acts { opacity: 1; pointer-events: auto; }
+.kproj-item:hover .kproj-acts, .kproj-acts:focus-within { opacity: 1; pointer-events: auto; }
+.kproj-item:has(:focus-visible) .kproj-acts { opacity: 1; pointer-events: auto; }
 .kproj-act { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: 7px; background: transparent; color: var(--ink-3); cursor: pointer; transition: color .14s, background .14s; }
 .kproj-act:hover { color: var(--ink); background: var(--fill-2, color-mix(in oklch, var(--ink) 8%, transparent)); }
 .kproj-act[data-on="true"] { color: var(--accent); }
 .kproj-act[data-kind="delete"]:hover { color: var(--st-blocked); background: color-mix(in oklch, var(--st-blocked) 14%, transparent); }
 
-.ksaved-row:focus-within .ksaved-del { opacity: 1; }
-.ksaved-row:hover .knav-badge, .ksaved-row:focus-within .knav-badge { visibility: hidden; }
+/* the × itself is revealed by kanbo.css (hover / keyboard focus); its count
+   badge steps aside so the two never overlap */
+.ksaved-row:hover .knav-badge { visibility: hidden; }
+.ksaved-row:has(:focus-visible) .knav-badge { visibility: hidden; }
 
 @media (hover: none), (pointer: coarse) {
   /* no hover on touch: the actions sit in the row, always reachable */
   .kproj-acts { position: static; transform: none; opacity: 1; pointer-events: auto; padding-right: 2px; }
-  .kproj-item:hover > .kproj, .kproj-item:focus-within > .kproj { padding-right: 11px; }
+  .kproj-item:hover > .kproj { padding-right: 11px; }
+  .kproj-item:has(:focus-visible, .kproj-acts:focus-within) > .kproj { padding-right: 11px; }
   .kproj-item .kproj-n, .kproj-item .kproj-pinmark { display: none; }
   .kproj-act { width: 32px; height: 32px; }
+  /* …except the one-tap Archive: permanently shown beside Delete on a phone
+     it's an easy mis-tap that hides the project for the whole team. On touch,
+     archiving goes through the project Overview's Archive button (which
+     confirms first) or Delete's "Archive instead". */
+  .kproj-act[data-kind="archive"] { display: none; }
   .ksaved-del { opacity: 1; }
   .ksaved-row .knav-badge { visibility: hidden; }
 }
@@ -70,19 +85,29 @@ function focusMain(): boolean {
 }
 
 function DeepWorkMini({ focus, onOpen }: { focus: FocusTimer; onOpen: () => void }) {
-  const { running, setRunning, seconds, endSession, focusMinToday } = focus;
+  const { running, setRunning, seconds, endSession, focusMinToday, phase } = focus;
   const [flash, setFlash] = useState<string | null>(null);
+  const flashTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
   const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
   const ss = String(seconds % 60).padStart(2, "0");
   const hasElapsed = seconds > 0;
   const todayLabel = focusMinToday > 0 ? `${Math.floor(focusMinToday / 60) ? `${Math.floor(focusMinToday / 60)}h ` : ""}${focusMinToday % 60}m banked today` : "Bank focused time as you work";
-  const end = () => { const m = endSession(); setFlash(m > 0 ? `Banked ${m}m of deep work` : "Too short to bank"); window.setTimeout(() => setFlash(null), 2600); };
+  // break time is never banked (endSession returns 0), so ending a break says
+  // so instead of implying the session was too short — as FocusMode does
+  const end = () => {
+    const onBreak = phase === "break";
+    const m = endSession();
+    setFlash(m > 0 ? `Banked ${m}m of deep work` : onBreak ? "Break ended" : "Too short to bank");
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), 2600);
+  };
   return (
     <div className="glass" style={{ margin: "4px 12px 0", padding: 13, borderRadius: 14, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
         <Icon name="clock" size={13} style={{ color: "var(--accent)" }} />
         <span className="kicker" style={{ color: "var(--ink-3)" }}>Deep Work</span>
-        {running && <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 8px var(--accent)", animation: "pulseGlow 1.6s infinite" }} />}
+        {running && <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 var(--glow-r, 8px) var(--accent)", animation: "pulseGlow 1.6s infinite" }} />}
         <button onClick={onOpen} className="btn-icon" title="Open focus mode" aria-label="Open focus mode" style={{ marginLeft: "auto", width: 22, height: 22, border: "none", color: "var(--ink-4)" }}><Icon name="arrowUpRight" size={14} /></button>
       </div>
       <div className="mono tnum" style={{ fontSize: 30, fontWeight: 500, letterSpacing: "-0.02em", lineHeight: 1, color: running ? "var(--accent)" : "var(--ink)" }}>
@@ -107,12 +132,15 @@ function DeepWorkMini({ focus, onOpen }: { focus: FocusTimer; onOpen: () => void
   );
 }
 
-function NavItem({ icon, label, active, badge, onClick }: {
+function NavItem({ icon, label, active, badge, onClick, title }: {
   icon: IconName; label: string; active?: boolean; badge?: number; onClick?: () => void;
+  /** hover tooltip (also read as the button's description) */
+  title?: string;
 }) {
   return (
-    <button onClick={onClick} className="knav" data-active={active} aria-current={active ? "page" : undefined}>
-      {active && <span style={{ position: "absolute", left: -12, top: "50%", transform: "translateY(-50%)", width: 3, height: 18, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 10px var(--accent)" }} />}
+    <button onClick={onClick} className="knav" data-active={active} aria-current={active ? "page" : undefined} title={title}>
+      {/* glow radius follows the theme: 10px on glass, none on paper */}
+      {active && <span style={{ position: "absolute", left: -12, top: "50%", transform: "translateY(-50%)", width: 3, height: 18, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 calc(var(--glow-r, 8px) * 1.25) var(--accent)" }} />}
       <Icon name={icon} size={18} style={{ color: active ? "var(--accent)" : "currentColor", opacity: active ? 1 : 0.85 }} />
       <span style={{ flex: 1 }}>{label}</span>
       {badge != null && badge > 0 && (
@@ -363,7 +391,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                   {smartCounts && workspaces.length > 1 && <span title="Counts include tasks from every workspace" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: "0.1em", fontWeight: 500, color: "var(--ink-4)" }}>All workspaces</span>}
                 </div>
                 {smartRows.map((s) => (
-                  <NavItem key={s.id} icon={s.icon} label={s.label} badge={s.count} active={route.view === "search" && route.list === s.id} onClick={() => setRoute({ view: "search", list: s.id })} />
+                  <NavItem key={s.id} icon={s.icon} label={s.label} badge={s.count} title={s.description} active={route.view === "search" && route.list === s.id} onClick={() => setRoute({ view: "search", list: s.id })} />
                 ))}
                 {savedSearches.filter((s) => !hiddenSaved.has(s.id)).map((s) => (
                   <div key={s.id} className="ksaved-row" style={{ position: "relative" }}>
@@ -400,7 +428,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           return (
             <div key={p.id} role="listitem" className="kproj-item" style={{ "--kacts": `${reserve}px` } as CSSProperties}>
               <button onClick={() => setRoute({ view: "project", projectId: p.id })} className="kproj" data-active={active} aria-current={active ? "page" : undefined}>
-                <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 3, background: p.color, flexShrink: 0, boxShadow: `0 0 8px color-mix(in oklch, ${p.color} 60%, transparent)` }} />
+                <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 3, background: p.color, flexShrink: 0, boxShadow: `0 0 var(--glow-r, 8px) color-mix(in oklch, ${p.color} 60%, transparent)` }} />
                 <span className="truncate" style={{ flex: 1, minWidth: 0 }}>{p.name}</span>
                 {isPinned && <span className="kproj-pinmark" aria-hidden="true"><StarGlyph filled size={11} /></span>}
                 {isPinned && <span className="sr-only">, pinned</span>}
@@ -413,7 +441,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                   <StarGlyph filled={isPinned} />
                 </button>
                 {archivable && (
-                  <button type="button" className="kproj-act" aria-label={`Archive project ${p.name}`} title="Archive project"
+                  <button type="button" className="kproj-act" data-kind="archive" aria-label={`Archive project ${p.name}`} title="Archive project"
                     onClick={(e) => { e.stopPropagation(); onArchiveProject!(p.id); }}>
                     <Icon name="archive" size={14} />
                   </button>

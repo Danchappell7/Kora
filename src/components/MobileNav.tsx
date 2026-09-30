@@ -39,7 +39,7 @@ export function MobileNav({ route, setRoute, inboxCount }: {
               color: active ? "var(--accent)" : "var(--ink-4)", fontFamily: "var(--font-display)",
             }}>
             <span style={{ position: "relative", display: "grid", placeItems: "center" }}>
-              <Icon name={t.icon} size={21} style={{ filter: active ? "drop-shadow(0 0 8px var(--accent-glow))" : undefined }} />
+              <Icon name={t.icon} size={21} style={{ filter: active ? "drop-shadow(0 0 var(--glow-r, 8px) var(--accent-glow))" : undefined }} />
               {t.id === "inbox" && inboxCount > 0 && (
                 <span aria-hidden="true" className="mono" style={{ position: "absolute", top: -5, right: -8, minWidth: 15, height: 15, padding: "0 4px", borderRadius: 99, background: "var(--accent)", color: "var(--on-accent)", fontSize: 9.5, fontWeight: 700, display: "grid", placeItems: "center", lineHeight: 1 }}>
                   {inboxCount > 9 ? "9+" : inboxCount}

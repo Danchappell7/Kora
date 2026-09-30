@@ -65,13 +65,21 @@ interface IconProps {
   style?: CSSProperties;
   className?: string;
   fill?: string;
+  /** Only for an icon that carries meaning on its own (no visible text or
+   *  labelled control around it): it's then exposed as an image with this
+   *  name. Without it the icon is decorative and hidden from assistive tech,
+   *  so the button or text beside it provides the name. */
+  "aria-label"?: string;
 }
 
-export function Icon({ name, size = 18, sw = 1.7, style, className, fill }: IconProps) {
+export function Icon({ name, size = 18, sw = 1.7, style, className, fill, "aria-label": label }: IconProps) {
   const d = ICONS[name];
+  // focusable=false: old Edge/IE put every inline <svg> in the Tab order
+  const a11y = label ? { role: "img", "aria-label": label } : { "aria-hidden": true as const };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill={fill || "none"}
       stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"
+      {...a11y} focusable="false"
       className={className} style={{ flexShrink: 0, ...style }}>
       {d.split("M").filter(Boolean).map((seg, i) => <path key={i} d={"M" + seg} />)}
     </svg>

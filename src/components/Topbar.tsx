@@ -89,7 +89,7 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
       </button>
       <button className="btn-icon" onClick={onBell} title={bellLabel} aria-label={bellLabel} style={{ position: "relative" }}>
         <Icon name="bell" size={17} />
-        {showDot && <span aria-hidden="true" style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 6px var(--accent)" }} />}
+        {showDot && <span aria-hidden="true" style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 calc(var(--glow-r, 8px) * 0.75) var(--accent)" }} />}
       </button>
       <div style={{ position: "relative" }}>
         <button ref={createBtnRef} className="btn btn-accent topbar-create" onClick={() => setCreateOpen((v) => !v)}

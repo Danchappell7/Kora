@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { Check, Segmented, avatarPaint, chipInk } from "./index";
+import { Check, Segmented, avatarPaint, chipInk, Icon, StatusDot, PriorityFlag } from "./index";
+import type { Status, Priority } from "../../data/types";
 import { contrast, legibleFill, parseColor, oklchToRgb, DARK_INK, LIGHT_INK } from "../../lib/contrast";
 
 describe("Check", () => {
@@ -70,5 +71,48 @@ describe("avatar initials stay legible on any profile colour", () => {
 describe("chip ink", () => {
   it("mixes toward the theme's ink colour by the theme's shift", () => {
     expect(chipInk("oklch(0.78 0.15 70)")).toBe("color-mix(in oklch, oklch(0.78 0.15 70), var(--chip-ink-mix, black) var(--chip-ink-shift, 0%))");
+  });
+});
+
+describe("Icon", () => {
+  it("is decorative by default: hidden from assistive tech and out of the Tab order", () => {
+    const { container } = render(<button type="button" aria-label="Archive project Q4 Launch"><Icon name="archive" /></button>);
+    const svg = container.querySelector("svg")!;
+    expect(svg).toHaveAttribute("aria-hidden", "true");
+    expect(svg).toHaveAttribute("focusable", "false");
+    expect(screen.getByRole("button", { name: "Archive project Q4 Launch" })).toBeInTheDocument();
+  });
+
+  it("becomes a named image when it carries meaning on its own", () => {
+    render(<Icon name="lock" aria-label="Private project" />);
+    const img = screen.getByRole("img", { name: "Private project" });
+    expect(img).not.toHaveAttribute("aria-hidden");
+  });
+});
+
+describe("status and priority don't rely on colour alone", () => {
+  /** a fingerprint of the drawn shapes (element + fill/stroke role), colour-free */
+  const shape = (el: Element) => Array.from(el.querySelectorAll("svg > *"))
+    .map((n) => `${n.tagName}:${n.getAttribute("d") ?? ""}:${n.getAttribute("fill") === "none" ? "outline" : "filled"}`).join("|");
+
+  it("gives every status its own shape, at the smallest size the app uses", () => {
+    const statuses: Status[] = ["todo", "progress", "review", "blocked", "done"];
+    const shapes = statuses.map((s) => { const { container, unmount } = render(<StatusDot status={s} size={6} />); const f = shape(container); unmount(); return f; });
+    expect(new Set(shapes).size).toBe(statuses.length);
+  });
+
+  it("marks urgent with an exclamation beside the flag, so it differs from high by shape", () => {
+    const flags = (["urgent", "high", "medium"] as Priority[]).map((p) => { const { container, unmount } = render(<PriorityFlag priority={p} />); const f = shape(container); unmount(); return f; });
+    expect(flags[0]).not.toBe(flags[1]);
+    expect(flags[0]).toMatch(/M20\.5 4v5\.2/);
+    expect(flags[1]).not.toMatch(/M20\.5/);
+    // high is filled, medium is an outline
+    expect(flags[1]).not.toBe(flags[2]);
+  });
+
+  it("keeps the dot and flag out of the accessibility tree (callers name them)", () => {
+    const { container } = render(<><StatusDot status="blocked" /><PriorityFlag priority="urgent" /></>);
+    container.querySelectorAll("svg").forEach((svg) => expect(svg).toHaveAttribute("aria-hidden", "true"));
+    expect(screen.getByTitle("Urgent priority")).toBeInTheDocument();
   });
 });
