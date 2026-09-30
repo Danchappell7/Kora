@@ -43,6 +43,11 @@ describe("extractTasks", () => {
     ["TODO: patch the server !!!", { title: "Patch the server", priority: "urgent" }],
     ["TODO: book the venue (Theo)", { title: "Book the venue", assigneeId: "m-2" }],
     ["TODO: print the menus - Sana", { title: "Print the menus", assigneeId: "m-3" }],
+    ["☐ Book the venue", { title: "Book the venue", confidence: 0.9 }],
+    ["□ Order lunch", { title: "Order lunch", confidence: 0.9 }],
+    // passive minutes: nobody named does it, so there's no owner to flag
+    ["Action: budget to be approved by Friday", { title: "Budget to be approved", dueDate: "2026-10-02" }],
+    ["TODO: Legal to review the contract", { title: "Legal to review the contract" }],
   ])("%s", (text, expected) => {
     expect(one(text)).toMatchObject(expected);
   });
@@ -58,10 +63,46 @@ describe("extractTasks", () => {
       "We will ship on Monday",
       "Pricing will change next quarter",
       "Budget is approved",
+      "Budget to be approved by Friday",
+      "Sana will be told on Monday",
       "- [x] Sent the invites",
+      "☑ Booked the train",
+      "✅ Printed the badges",
       "Welcome to the team",
       "Decided to keep the name",
     ].join("\n"))).toEqual([]);
+  });
+
+  it("never makes an owner of a thing", () => {
+    const r = one("Action: Budget to sign off the venue");
+    expect(r.title).toBe("Budget to sign off the venue");
+    expect(r.assigneeName).toBeUndefined();
+    expect(r.assigneeId).toBeUndefined();
+  });
+
+  it("reads a heading copied without a colon (Google Docs, Notion)", () => {
+    expect(run("Weekly sync\nAction items\n- Book the venue\n- Send invites to partners").map((t) => t.title))
+      .toEqual(["Book the venue", "Send invites to partners"]);
+    expect(run("Next steps\nSana to send the brief\nOrder the lanyards\nNotes\n- Budget is approved").map((t) => t.title))
+      .toEqual(["Send the brief", "Order the lanyards"]);
+  });
+
+  it("closes an Actions section at a blank line followed by prose", () => {
+    const r = run([
+      "Actions:",
+      "- Sana to send the brief by Fri",
+      "- Theo will chase legal",
+      "",
+      "Thanks everyone, great session.",
+      "Next meeting is on Monday.",
+      "- Budget is approved",
+    ].join("\n"));
+    expect(r.map((t) => t.title)).toEqual(["Send the brief", "Chase legal"]);
+  });
+
+  it("keeps a bulleted action after a blank line, and skips chat right under the heading", () => {
+    const r = run(["Next steps:", "- Draft the press release", "", "- Book the venue", "Thanks all!", "Any questions?"].join("\n"));
+    expect(r.map((t) => t.title)).toEqual(["Draft the press release", "Book the venue"]);
   });
 
   it("takes every line under an Actions or Next steps heading, and stops at the next heading", () => {

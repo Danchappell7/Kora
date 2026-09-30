@@ -642,7 +642,7 @@ export function parseDateText(text: string, today: Date = KANBO_TODAY): { date?:
 }
 
 /** Pasted lines → task titles with their nesting depth. Bullets and
- *  checkboxes are trimmed ("- ", "* ", "• ", "[ ] ", "- [ ] ", "1. "); a tab
+ *  checkboxes are trimmed ("- ", "* ", "• ", "[ ] ", "- [ ] ", "☐ ", "1. "); a tab
  *  or two spaces of indent is one level; blank lines are dropped. */
 export function splitLines(text: string): { title: string; depth: number }[] {
   const out: { title: string; depth: number }[] = [];
@@ -650,7 +650,7 @@ export function splitLines(text: string): { title: string; depth: number }[] {
     if (!raw.trim()) continue;
     const indent = raw.match(/^[\t ]*/)?.[0] ?? "";
     const depth = [...indent].reduce((n, c) => n + (c === "\t" ? 2 : 1), 0) >> 1;
-    const title = raw.trim().replace(/^(?:[-*•◦▪‣·–—+]\s+)?(?:\[[ xX]?\]\s+)?(?:\d{1,3}[.)]\s+)?/, "").trim();
+    const title = raw.trim().replace(/^(?:[-*•◦▪‣·–—+]\s+)?(?:\[[ xX]?\]\s+|[☐□▢☑☒✅]\s+)?(?:\d{1,3}[.)]\s+)?/, "").trim();
     if (title) out.push({ title, depth });
   }
   return out;

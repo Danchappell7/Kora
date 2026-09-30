@@ -7,7 +7,9 @@
      · owners                     "Sana to send the brief by Fri",
                                   "Theo will chase legal", "@maya draft the FAQ",
                                   "I'll send the recap"
-     · everything under a heading "Actions" / "Next steps" / "Action items"
+     · bullets under a heading "Actions" / "Next steps" / "Action items"
+       (with or without a colon — Google Docs and Notion copy headings as
+       bare lines), until the next heading or a blank line and prose
    Dates, times and priorities in the line go through the one grammar
    (lib/nlp). People are matched against the workspace; a name that
    isn't in it is kept as `assigneeName` so the review sheet can flag it.
@@ -24,9 +26,25 @@ export interface ExtractOptions {
 
 const MAX_TITLE = 200;
 const BULLET = /^(?:[-*•◦▪‣·–—+]\s+|\d{1,3}[.)]\s+|[a-z][.)]\s+)/;
-const CHECKBOX = /^\[([ xX✓✔]?)\]\s*/;
+const CHECKBOX = /^\[([ xX✓✔]?)\]\s*|^([☐□▢☑☒✅✔✓])\s*/;
+const TICKED = /[xX✓✔☑☒✅]/;
 const MARKER = /^(?:todo|to[- ]do|action(?:\s+(?:item|point))?|ap|next\s+steps?|follow[- ]?up)\s*[:\-–—]\s*/i;
 const ACTION_HEADING = /^(?:actions?|action\s+(?:items?|points?)|next\s+steps?|to[- ]?dos?|tasks?|follow[- ]?ups?|owners?\s*(?:&|and)\s*actions?)(?:\s+(?:from|for)\b.*)?$/i;
+/** headings that end an Actions section even without a colon ("Notes", "Decisions") */
+const OTHER_HEADING = /^(?:notes?|decisions?(?:\s+made)?|agenda|attendees|present|apologies|discussion|summary|updates?|questions?|open\s+questions|risks?|parking\s+lot|fyi|minutes|recap|context|background|key\s+points|highlights)$/i;
+/** a plain line under Actions that is chat, not a task ("Thanks everyone", "Next meeting is Monday") */
+const PROSE = /^(?:thanks|thank\s+you|cheers|great|good|nice|well\s+done|welcome|hi|hello|see\s+you|we\b|everyone|all\s+good|next\s+(?:meeting|call|sync|session|catch[- ]?up|check[- ]?in|review)\b)|\?$/i;
+/** "Budget to be approved", "Sana will be told": nobody named does the work */
+const PASSIVE = /^(?:be|been|being|get|gets|got)\b/i;
+// capitalised words that open minutes the way a name does, but are things
+const NOT_PEOPLE = new Set([
+  "budget", "pricing", "price", "design", "legal", "finance", "marketing", "sales", "engineering", "product", "ops", "operations",
+  "support", "website", "site", "app", "deck", "launch", "release", "contract", "invoice", "report", "roadmap", "plan", "project",
+  "meeting", "doc", "docs", "copy", "brief", "date", "deadline", "venue", "event", "hr", "board", "leadership", "management",
+  "client", "clients", "customer", "customers", "vendor", "supplier", "agency", "office", "data", "dashboard", "api", "server",
+  "migration", "timeline", "scope", "proposal", "feedback", "review", "demo", "video", "press", "pr", "faq", "onboarding", "hiring",
+  "everything", "nothing", "something", "everyone", "nobody", "it", "work", "bug", "bugs", "issue", "issues",
+]);
 // words that open a sentence the way a name would, but aren't people
 const NOT_NAMES = new Set([
   "i", "we", "they", "you", "he", "she", "it", "this", "that", "these", "those", "everyone", "everybody", "someone",
@@ -44,7 +62,9 @@ function ownerOf(name: string, members: ExtractOptions["members"]): Owner | null
   const clean = name.replace(/^@/, "").replace(/['’]s$/, "").trim();
   if (!clean || NOT_NAMES.has(clean.toLowerCase())) return null;
   const m = matchMember(clean, members);
-  return m ? { id: m.id, name: clean } : { name: clean };
+  if (m) return { id: m.id, name: clean };
+  // someone not in the workspace is kept (the sheet flags them); a thing never is
+  return clean.split(/\s+/).some((w) => NOT_PEOPLE.has(w.toLowerCase())) ? null : { name: clean };
 }
 
 /** "Sana to send…", "Theo will…", "@maya draft…", "I'll…" → the owner and the rest. */
@@ -58,6 +78,8 @@ function splitOwner(s: string, o: ExtractOptions, marked: boolean): { owner?: Ow
   if (m) return { owner: o.me ? { id: o.me, name: "me" } : undefined, rest: m[1] };
   // "Maya Lin to …" / "Sana will …" / "Theo'll …"
   m = s.match(/^([\p{Lu}][\p{L}-]+(?:\s+[\p{Lu}][\p{L}-]+)?)(?:\s+(to|will|is\s+going\s+to|needs?\s+to|should)|['’]ll)\s+(.+)$/u);
+  // "Budget to be approved by Friday": passive, so no one named owns it
+  if (m && PASSIVE.test(m[3])) return null;
   if (m) {
     const owner = ownerOf(m[1], o.members);
     // an unknown name counts in the minutes' own form ("Priya to …"), or on a marked line;
@@ -96,31 +118,46 @@ export function extractTasks(text: string, opts: ExtractOptions): ExtractedTask[
   const out: ExtractedTask[] = [];
   const seen = new Set<string>();
   let underActions = false;
+  // a blank line since the heading or the section's last line: a plain line
+  // after one is the notes moving on, not another action
+  let gap = false;
   for (const raw of text.replace(/\r\n?/g, "\n").split("\n")) {
     let s = raw.trim();
-    if (!s) continue;
-    // a heading switches "everything below is an action" on or off
+    if (!s) { gap = true; continue; }
+    // a heading switches "everything below is an action" on or off: "## Actions",
+    // "Next steps:", "**Action items**", or a bare short line that can only be one
     const heading = s.replace(/^#{1,6}\s*/, "").replace(/^\*\*(.+)\*\*$/, "$1").replace(/:$/, "").trim();
-    const isHeading = /^#{1,6}\s/.test(s) || /:$/.test(s) || /^\*\*.+\*\*:?$/.test(s);
-    if (isHeading && heading.split(/\s+/).length <= 4) { underActions = ACTION_HEADING.test(heading); continue; }
+    const styled = /^#{1,6}\s/.test(s) || /:$/.test(s) || /^\*\*.+\*\*:?$/.test(s);
+    const bare = !BULLET.test(s) && (ACTION_HEADING.test(heading) || OTHER_HEADING.test(heading));
+    if ((styled || bare) && heading.split(/\s+/).length <= 4) { underActions = ACTION_HEADING.test(heading); gap = false; continue; }
 
     let confidence = 0;
     const bulleted = BULLET.test(s);
     s = s.replace(BULLET, "");
     const box = s.match(CHECKBOX);
     if (box) {
-      if (box[1].trim()) continue;                 // ticked: already done
+      if (TICKED.test(box[1] ?? box[2] ?? "")) continue;   // ticked: already done
       s = s.slice(box[0].length);
       confidence = 0.9;
     }
     const marker = s.match(MARKER);
     if (marker) { s = s.slice(marker[0].length); confidence = Math.max(confidence, 0.9); }
     const marked = confidence > 0;
+    const listed = marked || bulleted;
+
+    // under an Actions heading: its bullets, and plain lines until a blank line
+    // and prose (the notes moving on) close the section
+    let inSection = underActions;
+    if (inSection && !listed && (gap || PROSE.test(s))) {
+      if (gap) underActions = false;
+      inSection = false;
+    }
+    if (inSection) gap = false;
 
     let owner: Owner | undefined;
-    const split = splitOwner(s, opts, marked || underActions);
+    const split = splitOwner(s, opts, marked || inSection);
     if (split) { owner = split.owner; s = split.rest; confidence = Math.max(confidence, 0.8); }
-    else if (!marked && !underActions) continue;   // prose: not an action
+    else if (!marked && !inSection) continue;   // prose: not an action
     if (!owner) {
       const tail = trailingOwner(s, opts.members);
       if (tail) { owner = tail.owner; s = tail.rest; }
