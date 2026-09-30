@@ -32,6 +32,20 @@ export function oklchToRgb(L: number, C: number, H: number, alpha = 1): RGBA {
   return { r: enc(lin[0]), g: enc(lin[1]), b: enc(lin[2]), a: alpha };
 }
 
+/** gamma-encoded sRGB → oklch (the inverse of oklchToRgb); hue in degrees 0..360. */
+export function rgbToOklch(c: RGBA): { l: number; c: number; h: number } {
+  const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+  const r = lin(c.r), g = lin(c.g), b = lin(c.b);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+  const A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+  const B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+  const h = (Math.atan2(B, A) * 180) / Math.PI;
+  return { l: L, c: Math.hypot(A, B), h: h < 0 ? h + 360 : h };
+}
+
 const num = (s: string, pctScale = 1): number => {
   const t = s.trim();
   if (t === "none") return 0;

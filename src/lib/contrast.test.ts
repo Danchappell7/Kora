@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { contrast, parseColor, over, oklchToRgb } from "./contrast";
+import { contrast, parseColor, over, oklchToRgb, rgbToOklch } from "./contrast";
 
 describe("contrast maths", () => {
   it("matches the WCAG reference points", () => {
@@ -25,6 +25,19 @@ describe("contrast maths", () => {
     expect(parseColor("#abc")).not.toBeNull();
     expect(parseColor("var(--accent)")).toBeNull();
     expect(parseColor("color-mix(in oklch, red, blue)")).toBeNull();
+  });
+
+  it("converts sRGB back to oklch (the inverse of oklchToRgb)", () => {
+    for (const [L, C, H] of [[0.74, 0.14, 230], [0.62, 0.15, 25], [0.54, 0.215, 288], [0.75, 0.13, 155]]) {
+      const o = rgbToOklch(oklchToRgb(L, C, H));
+      expect(o.l).toBeCloseTo(L, 3);
+      expect(o.c).toBeCloseTo(C, 3);
+      expect(o.h).toBeCloseTo(H, 1);
+    }
+    const violet = rgbToOklch(parseColor("#8B5CF6")!); // brand violet
+    expect(violet.h).toBeGreaterThan(285);
+    expect(violet.h).toBeLessThan(300);
+    expect(rgbToOklch(parseColor("#808080")!).c).toBeLessThan(0.001); // greys have no chroma
   });
 
   it("composites translucent foregrounds before measuring", () => {
