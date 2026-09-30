@@ -127,10 +127,17 @@ describe("validateActions", () => {
     expect(CAP_REASON).toBe("Kanbo can change up to 25 tasks at once");
   });
 
-  it("rejects everything when the person can't act (guests)", () => {
-    const { valid, rejected } = validateActions([upd("t1", { status: "done" }), { op: "open", route: { view: "plan" } }], tasks, ctx, false);
-    expect(valid).toEqual([]);
-    expect(rejected.map((r) => r.reason)).toEqual([GUEST_REASON, GUEST_REASON]);
+  it("turns away every change when the person can't act (guests), but still lets an open through", () => {
+    const { valid, rejected } = validateActions([
+      upd("t1", { status: "done" }),
+      { op: "create", task: { title: "Book the venue" } },
+      { op: "delete", id: "t1" },
+      { op: "open", route: { view: "plan" } },
+      { op: "open", taskId: "nope" },
+    ], tasks, ctx, false);
+    expect(valid).toEqual([{ op: "open", route: { view: "plan" } }]);
+    expect(changeCount(valid)).toBe(0);
+    expect(rejected.map((r) => r.reason)).toEqual([GUEST_REASON, GUEST_REASON, GUEST_REASON, "Kanbo can only open the tasks it was asked about"]);
   });
 
   it("copes with a non-array", () => {
@@ -139,14 +146,14 @@ describe("validateActions", () => {
 });
 
 describe("diffRows", () => {
-  it("reads old → new per field, dates in en-GB", () => {
+  it("reads old → new per field, dates in en-GB, every value in the data face but a title", () => {
     const rows = diffRows([upd("t1", { dueDate: "2026-10-05", assigneeId: "u-sana", planToday: true }) as AskAction], byId, ctx);
     expect(rows).toEqual([{
       index: 0, op: "update", taskId: "t1", title: "Approve token naming", status: "todo",
       changes: [
         { field: "dueDate", label: "Due", from: "Wed 30 Sep", to: "Mon 5 Oct", mono: true },
-        { field: "assigneeId", label: "Assignee", from: "Daniel Okai", to: "Sana Rao", mono: false },
-        { field: "planToday", label: "Today", from: "Off Today", to: "On Today", mono: false },
+        { field: "assigneeId", label: "Assignee", from: "Daniel Okai", to: "Sana Rao", mono: true },
+        { field: "planToday", label: "Today", from: "Off Today", to: "On Today", mono: true },
       ],
     }]);
   });
@@ -161,6 +168,7 @@ describe("diffRows", () => {
     expect(rows[1]).toMatchObject({ index: 1, op: "create", title: "Book the venue", status: "todo" });
     expect(rows[1].changes).toEqual([{ field: "dueDate", label: "Due", from: null, to: "Mon 4 Jan 2027", mono: true }]);
     expect(rows).toHaveLength(2);
+    expect(diffRows([upd("t1", { title: "Approve the token names" }) as AskAction], byId, ctx)[0].changes[0]).toMatchObject({ field: "title", mono: false });
   });
 });
 
@@ -170,6 +178,15 @@ describe("headsUps", () => {
     const [h] = headsUps(valid, tasks, "u-me", ctx.members);
     expect(h).toMatchObject({ kind: "blocker", lead: "Approve token naming", indices: [0], keep: "Keep it" });
     expect(h.text).toBe("unblocks Maya's “Ship onboarding redesign”, due Thu 1 Oct — moving it later delays that.");
+  });
+
+  it("only says “later” when the blocker moves later", () => {
+    const late = [task("b", "Blocker", { dueDate: "2026-10-20" }), task("d", "Dependant", { dueDate: "2026-10-01", dependencies: ["b"] })];
+    expect(headsUps([upd("b", { dueDate: "2026-10-10" })] as AskAction[], late, "u-me", ctx.members)[0].text)
+      .toBe("unblocks your “Dependant”, due Thu 1 Oct — this date still lands after it.");
+    const undated = [task("b", "Blocker"), task("d", "Dependant", { dueDate: "2026-10-01", dependencies: ["b"] })];
+    expect(headsUps([upd("b", { dueDate: "2026-10-10" })] as AskAction[], undated, "u-me", ctx.members)[0].text)
+      .toBe("unblocks your “Dependant”, due Thu 1 Oct — this date lands after it.");
   });
 
   it("stays quiet when the dependant moves too", () => {

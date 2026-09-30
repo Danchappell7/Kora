@@ -324,6 +324,9 @@ const statusWord = (w: string): [Status, string] | null => {
 function result(answer: string, actions: AskAction[] = [], cites: string[] = []): AskResult {
   return { answer, actions, cites: [...new Set(cites)], source: "local" };
 }
+/** An answer that isn't drawn from the tasks (help, a name or day it didn't
+ *  follow): no `cites`, so the card makes no "How I got here" claim. */
+const aside = (answer: string): AskResult => ({ answer, actions: [], source: "local" });
 
 interface Proposal {
   /** the change for one task, or null when it's already that way */
@@ -339,7 +342,9 @@ interface Proposal {
 const VERBING: Record<string, string> = { move: "Moving", assign: "Assigning", unassign: "Unassigning", mark: "Marking", make: "Making" };
 
 /** Propose the change for every selected task (skipping the ones already that
- *  way). Read-only (a guest): say what it would take, propose nothing. */
+ *  way). Read-only (a guest): the answer says what the change would take; the
+ *  changes still come back, and validateActions turns them away, so the card
+ *  can tell the guest why (and the only gate stays in one place). */
 function propose(ctx: Ctx, sel: Selection, p: Proposal): AskResult {
   const target = p.target ? ` ${p.target}` : "";
   const will = (what: string) => (ctx.readOnly ? ` ${VERBING[p.verb] ?? "Changing"} ${what}${target} needs edit access.` : ` I'll ${p.verb} ${what}${target}.`);
@@ -349,7 +354,7 @@ function propose(ctx: Ctx, sel: Selection, p: Proposal): AskResult {
   if (sel.single) {
     const [t] = sel.tasks;
     if (!changes.length) return result(`${quote(t)} is already ${p.already}.`, [], [t.id]);
-    return result(will(quote(t)).trim(), ctx.readOnly ? [] : [{ op: "update", id: t.id, patch: changes[0].patch }], [t.id]);
+    return result(will(quote(t)).trim(), [{ op: "update", id: t.id, patch: changes[0].patch }], [t.id]);
   }
   const lead = describe(sel, sel.tasks.length);
   if (!changes.length) return result(`${lead} ${plural(sel.tasks.length, "It's", "They're")} already ${p.already}.${underwayNote(sel)}`, [], cites);
@@ -357,7 +362,7 @@ function propose(ctx: Ctx, sel: Selection, p: Proposal): AskResult {
   const them = skipped ? `the other ${num(changes.length)}` : plural(changes.length, "it", "them");
   const skipNote = skipped ? ` ${num(skipped, true)} ${plural(skipped, "is", "are")} already ${p.already}.` : "";
   return result(`${lead}${skipNote}${will(them)}${underwayNote(sel)}`,
-    ctx.readOnly ? [] : changes.map(({ t, patch }) => ({ op: "update", id: t.id, patch })), cites);
+    changes.map(({ t, patch }) => ({ op: "update", id: t.id, patch })), cites);
 }
 
 function moveIntent(rest: string, tasks: Task[], ctx: Ctx): AskResult | null {
@@ -407,7 +412,7 @@ function moveIntent(rest: string, tasks: Task[], ctx: Ctx): AskResult | null {
       return propose(ctx, sel, { patch: (t) => (t.projectId === project.id ? null : { projectId: project.id }), verb: "move", target: `to ${project.name}`, already: `in ${project.name}` });
     }
   }
-  if (splits.length) return result("I couldn't tell which day you meant. Try “Monday”, “tomorrow”, “next week” or “5/10”.");
+  if (splits.length) return aside("I couldn't tell which day you meant. Try “Monday”, “tomorrow”, “next week” or “5/10”.");
   return null;
 }
 
@@ -418,8 +423,8 @@ function assignIntent(what: string, who: string, tasks: Task[], ctx: Ctx): AskRe
     return propose(ctx, sel, { patch: (t) => (t.assigneeId ? { assigneeId: "" } : null), verb: "unassign", target: "", already: "unassigned" });
   }
   const person = findMember(who, ctx);
-  if (person === "ambiguous") return result(`More than one person here is called “${who}”. Try their full name.`);
-  if (!person) return result(`I don't know anyone called “${who}” in this workspace.`);
+  if (person === "ambiguous") return aside(`More than one person here is called “${who}”. Try their full name.`);
+  if (!person) return aside(`I don't know anyone called “${who}” in this workspace.`);
   const sel = select(what, tasks, ctx);
   if ("error" in sel) return result(sel.error, [], sel.cites);
   const you = person.id === ctx.me;
@@ -444,7 +449,7 @@ function priorityIntent(what: string, priority: Priority, tasks: Task[], ctx: Ct
 
 const reason = (t: Task) => (t.aiReason ? `: ${t.aiReason.replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase())}` : "");
 
-function planIntent(part: string, tasks: Task[], ctx: AskContext): AskResult {
+function planIntent(part: string, tasks: Task[], ctx: Ctx): AskResult {
   const mine = tasks.filter((t) => !t.archivedAt && t.status !== "done" && t.assigneeId === ctx.me);
   const due = mine.filter((t) => t.dueDate === ctx.today || (t.planToday && !(t.dueDate && t.dueDate < ctx.today)));
   const late = mine.filter((t) => t.dueDate && t.dueDate < ctx.today);
@@ -455,7 +460,9 @@ function planIntent(part: string, tasks: Task[], ctx: AskContext): AskResult {
         : "Nothing is due today.";
   const lead = part === "day" ? load : `For this ${part}: ${load.charAt(0).toLowerCase()}${load.slice(1)}`;
   const start = first ? ` Start with ${quote(first)}${reason(first)}.` : "";
-  return result(`${lead}${start} Your suggested plan is waiting on Today — press Plan my day to make it solid.`,
+  // a guest can look at Today but can't firm up a plan there
+  const next = ctx.readOnly ? " Your day is laid out on Today." : " Your suggested plan is waiting on Today — press Plan my day to make it solid.";
+  return result(`${lead}${start}${next}`,
     [{ op: "open", route: { view: "plan" } }], [...late, ...due].map((t) => t.id));
 }
 
@@ -541,12 +548,12 @@ const normalise = (s: string) => s
   .trim();
 
 /** Answer (and propose changes for) a question on-device. Nothing is applied
- *  here. `canAct: false` (a guest): answers, and says what a change would
- *  take instead of proposing it. */
+ *  here. `canAct: false` (a guest, or a host that can't apply changes): the
+ *  answer says what a change would take instead of promising it. */
 export function localAsk(question: string, tasks: Task[], context: AskContext, opts: { canAct?: boolean } = {}): AskResult {
   const ctx: Ctx = { ...context, readOnly: opts.canAct === false };
   const q = normalise(question);
-  if (!q) return result(LOCAL_HELP);
+  if (!q) return aside(LOCAL_HELP);
   let m: RegExpExecArray | null;
 
   if ((m = /^(?:help me )?plan (?:my |the |this )?(day|morning|afternoon|evening|today)\b/.exec(q))) return planIntent(m[1] === "today" ? "day" : m[1], tasks, ctx);
@@ -573,7 +580,7 @@ export function localAsk(question: string, tasks: Task[], context: AskContext, o
     || (m = /^(?:show|list|what are|what's on)?\s*(?:me\s+)?([a-z][\w-]*(?: [a-z][\w-]*)?)'s (?:tasks|work|plate|list)$/.exec(q))) {
     const who = m[1].replace(/^(is|are)\s+/, "");
     const person = findMember(/^(i|me|you)$/.test(who) ? "me" : who, ctx);
-    if (person === "ambiguous") return result(`More than one person here is called “${who}”. Try their full name.`);
+    if (person === "ambiguous") return aside(`More than one person here is called “${who}”. Try their full name.`);
     if (person) return personIntent(person, tasks, ctx);
     unknown = who;
   }
@@ -587,6 +594,6 @@ export function localAsk(question: string, tasks: Task[], context: AskContext, o
 
   const listed = listIntent(q, tasks, ctx);
   if (listed) return listed;
-  if (unknown && !/^(everyone|everybody|the team|team|we|you)$/.test(unknown)) return result(`I don't know anyone called “${unknown}” in this workspace.`);
-  return result(LOCAL_HELP);
+  if (unknown && !/^(everyone|everybody|the team|team|we|you)$/.test(unknown)) return aside(`I don't know anyone called “${unknown}” in this workspace.`);
+  return aside(LOCAL_HELP);
 }

@@ -5,11 +5,14 @@
    changes until Apply; Edit leaves rows out; "Keep it" drops one.
    Model-written answers sit on vellum; on-device answers don't
    (vellum is only ever for the model's own words).
+   Everything is checked against what the question was asked with
+   (the tasks, people, projects and day), so the card never shifts
+   while it's being read.
    ============================================================ */
-import { forwardRef, useImperativeHandle, useMemo, useState, type ReactNode } from "react";
+import { forwardRef, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { AiMark, Button, Check, Icon, Kbd, Pill, Provenance, StatusGlyph, Vellum } from "./primitives";
 import { GO_TARGETS, titleOf } from "../lib/nav";
-import { validateActions, diffRows, headsUps, fmtDay, GUEST_REASON, type DiffRow } from "../lib/askActions";
+import { validateActions, diffRows, headsUps, fmtDay, GUEST_REASON, NO_CHANGE_REASON, type DiffRow, type HeadsUp } from "../lib/askActions";
 import type { AskAction, AskContext, AskResult } from "../lib/askTypes";
 import type { Route } from "../app-types";
 import type { Task } from "../data/types";
@@ -22,17 +25,35 @@ export interface AskView {
   phase: "loading" | "done";
   /** the tasks the question was asked about (what Kanbo read) */
   sent: Task[];
+  /** today, me, the people and projects it was asked against */
+  ctx: AskContext;
   result?: AskResult;
   via?: AskVia;
   /** the daily AI limit, when `via` is "limit" */
   limit?: number;
 }
 
+/** What the card holds, for the palette's footer and screen-reader line. */
+export interface AskSummary {
+  /** changes that passed the checks (the diff's rows) */
+  changes: number;
+  /** of those, the ones still included: what Apply (and Enter) would send */
+  selected: number;
+  /** changes Kanbo turned away (not a guest's, and not ones that change nothing) */
+  leftOut: number;
+  /** what Enter follows when there are no changes: "Open the task", "Go to Today" */
+  follow?: string;
+}
+
 export interface AskKanboHandle {
   /** Enter in the palette: apply the included changes, else follow the
-   *  first "open". False when there's nothing to do. */
+   *  first "open". False when there's nothing to do, or the answer has only
+   *  just appeared: a doubled Enter never applies what nobody has read. */
   submit: () => boolean;
 }
+
+/** How long an answer is on screen before Enter may act on it. */
+export const SETTLE_MS = 300;
 
 const ASK_CSS = `
 .kask { padding: 0 0 4px; font-family: var(--font-ui, var(--font-display)); }
@@ -56,25 +77,30 @@ const ASK_CSS = `
   background: var(--surface-raised); overflow: hidden; }
 .kask .kvellum .kask-diff { background: var(--bg); }
 .kask-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 10px; align-items: start; padding: 0 12px; border-top: 1px solid var(--hairline); }
-.kask-row :is(.kask-glyph, .kask-title, .kask-changes) { transition: opacity var(--d-1, 90ms) var(--ease); }
+.kask-row :is(.kask-glyph, .kask-titlewrap, .kask-changes) { transition: opacity var(--d-1, 90ms) var(--ease); }
 .kask-row:first-child { border-top: 0; }
-.kask-row[data-out="true"] :is(.kask-glyph, .kask-title, .kask-changes) { opacity: 0.5; }
+.kask-row[data-out="true"] :is(.kask-glyph, .kask-titlewrap, .kask-changes) { opacity: 0.5; }
 .kask-row[data-out="true"] .kask-title, .kask-row[data-out="true"] .kask-new { text-decoration: line-through; text-decoration-color: var(--ink-4); }
 .kask-lead { display: flex; align-items: center; gap: 10px; height: 36px; }
 .kask-glyph { display: inline-flex; }
 .kask-lead .kcheck { margin-right: 2px; }
-.kask-title { min-width: 0; height: 36px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 500 13px/36px var(--font-ui, var(--font-display)); color: var(--ink); }
-.kask-title .kpill { margin-left: 8px; vertical-align: 1px; }
+/* the title gives way before the "New task" pill does */
+.kask-titlewrap { display: flex; align-items: center; gap: 8px; min-width: 0; height: 36px; }
+.kask-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kask-titlewrap .kpill { flex-shrink: 0; }
 .kask-changes { display: grid; }
 .kask-change { display: grid; grid-template-columns: 64px 104px 14px 104px; column-gap: 8px; align-items: center; height: 36px; }
 .kask-field { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
-.kask-old, .kask-new { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/16px var(--font-ui, var(--font-display)); }
-.kask-old { text-align: right; color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); font-weight: 500; }
+/* values read as data (mono), old struck through → new in accent; a renamed title keeps the UI face */
+.kask-old, .kask-new { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px/16px var(--font-ui, var(--font-display)); }
+.kask-old[data-mono="true"], .kask-new[data-mono="true"] { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; }
+.kask-old { text-align: right; color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
 .kask-new { color: var(--accent-text, var(--accent)); }
-.kask-old[data-mono="true"], .kask-new[data-mono="true"] { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
 .kask-arrow { color: var(--icon-quiet, var(--ink-4)); }
 .kask-change[data-new="true"] .kask-old, .kask-change[data-new="true"] .kask-arrow { visibility: hidden; }
+
+.kask-none { margin: 16px 0 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
 /* heads-ups */
 .kask-heads { list-style: none; display: grid; gap: 8px; margin: 10px 0 0; padding: 0; }
@@ -114,8 +140,10 @@ const ASK_CSS = `
   .kask-card, .kask .kvellum { padding: 14px 14px 16px; }
   .kask-row { grid-template-columns: auto minmax(0, 1fr); }
   .kask-changes { grid-column: 2 / -1; padding-bottom: 8px; }
-  .kask-change { grid-template-columns: 48px auto 14px auto; justify-content: start; height: 24px; }
+  .kask-change { grid-template-columns: 64px auto 14px auto; justify-content: start; height: 24px; }
   .kask-old { text-align: left; }
+  /* a new task's values start where the old values would */
+  .kask-change[data-new="true"] :is(.kask-old, .kask-arrow) { display: none; }
   .kask-foot .kask-undo { margin-left: 0; flex-basis: 100%; }
   .kask-cite-go { display: none; }
 }
@@ -147,9 +175,15 @@ function routeLabel(route: Route, ctx: AskContext): string {
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
+/** A stable name for each checked action, which Edit and "Keep it" leave out
+ *  by: the task's id for an update, its place among the creates for a create. */
+function keysOf(valid: AskAction[]): string[] {
+  let creates = 0;
+  return valid.map((a) => (a.op === "update" ? `u:${a.id}` : a.op === "create" ? `c:${creates++}` : `o:${a.taskId ?? JSON.stringify(a.route)}`));
+}
+
 export const AskKanbo = forwardRef<AskKanboHandle, {
   view: AskView;
-  ctx: AskContext;
   /** may this person change tasks here (and can the app apply them)? */
   canAct: boolean;
   /** a guest: explain why nothing can change */
@@ -157,46 +191,79 @@ export const AskKanbo = forwardRef<AskKanboHandle, {
   onApply?: (actions: AskAction[]) => void;
   onOpenTask?: (id: string) => void;
   onGo?: (route: Route) => void;
-}>(function AskKanbo({ view, ctx, canAct, guest, onApply, onOpenTask, onGo }, ref) {
-  const { result, sent } = view;
+  /** told whenever what Enter would do changes (the palette's footer and live line) */
+  onSummary?: (summary: AskSummary) => void;
+  /** where focus goes when the button it was on disappears and nothing in the card should take it */
+  returnFocus?: () => void;
+}>(function AskKanbo({ view, canAct, guest, onApply, onOpenTask, onGo, onSummary, returnFocus }, ref) {
+  const { result, sent, ctx } = view;
+  const done = view.phase === "done" && !!result;
+  const canChange = canAct && !!onApply;
   const byId = useMemo(() => new Map(sent.map((t) => [t.id, t])), [sent]);
   const { valid, rejected } = useMemo(
-    () => (result ? validateActions(result.actions, sent, ctx, canAct && !!onApply) : { valid: [], rejected: [] }),
-    [result, sent, ctx, canAct, onApply],
+    () => (result ? validateActions(result.actions, sent, ctx, canChange) : { valid: [], rejected: [] }),
+    [result, sent, ctx, canChange],
   );
+  const keys = useMemo(() => keysOf(valid), [valid]);
   const rows = useMemo(() => diffRows(valid, byId, ctx), [valid, byId, ctx]);
   const heads = useMemo(() => headsUps(valid, sent, ctx.me, ctx.members), [valid, sent, ctx]);
   const opens = valid.filter((a): a is Extract<AskAction, { op: "open" }> => a.op === "open");
-  const [excluded, setExcluded] = useState<Set<number>>(() => new Set());
+  const [excluded, setExcluded] = useState<ReadonlySet<string>>(() => new Set());
   const [editing, setEditing] = useState(false);
-  const included = rows.filter((r) => !excluded.has(r.index));
-  const selected = included.map((r) => valid[r.index]);
+  const isOut = (index: number) => excluded.has(keys[index]);
+  const selected = rows.filter((r) => !isOut(r.index)).map((r) => valid[r.index]);
+  const n = selected.length;
+  const turnedAway = rejected.filter((r) => r.reason !== GUEST_REASON && r.reason !== NO_CHANGE_REASON);
+  const followLabel = (a: Extract<AskAction, { op: "open" }>) => (a.taskId ? "Open the task" : `Go to ${routeLabel(a.route!, ctx)}`);
+  const follow = !rows.length && opens.length ? followLabel(opens[0]) : undefined;
 
-  const follow = (a: Extract<AskAction, { op: "open" }>) => {
+  // tell the palette what Enter would do (before paint, so its live line never lags)
+  const summaryRef = useRef(onSummary);
+  summaryRef.current = onSummary;
+  useLayoutEffect(() => {
+    if (done) summaryRef.current?.({ changes: rows.length, selected: n, leftOut: turnedAway.length, follow });
+  }, [done, rows.length, n, turnedAway.length, follow]);
+
+  // when the answer appeared: Enter only acts once it has been on screen a moment
+  const shownAt = useRef(0);
+  useLayoutEffect(() => { if (done) shownAt.current = Date.now(); }, [done]);
+
+  const run = (a: Extract<AskAction, { op: "open" }>) => {
     if (a.taskId) onOpenTask?.(a.taskId);
     else if (a.route) onGo?.(a.route);
   };
   const apply = () => { if (selected.length && onApply) onApply(selected); };
   useImperativeHandle(ref, () => ({
     submit: () => {
-      if (view.phase !== "done") return false;
+      if (!done || Date.now() - shownAt.current < SETTLE_MS) return false;
       if (rows.length) { if (!selected.length || !onApply) return false; apply(); return true; }
-      if (opens.length) { follow(opens[0]); return true; }
+      if (opens.length) { run(opens[0]); return true; }
       return false;
     },
   }));
 
-  const toggle = (i: number) => setExcluded((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; });
-  const leaveOut = (indices: number[]) => setExcluded((s) => new Set([...s, ...indices]));
+  const toggle = (i: number) => setExcluded((s) => { const next = new Set(s); if (next.has(keys[i])) next.delete(keys[i]); else next.add(keys[i]); return next; });
+
+  // "Keep it" removes its own row, button and all: focus moves on deliberately
+  const headBtns = useRef(new Map<string, HTMLButtonElement>());
+  const applyBtn = useRef<HTMLButtonElement>(null);
+  const focusAfter = useRef<string | null>(null);   // a heads-up's id, "apply" or "return"
+  useLayoutEffect(() => {
+    const next = focusAfter.current;
+    if (!next) return;
+    focusAfter.current = null;
+    const el = next === "apply" ? applyBtn.current : next === "return" ? null : headBtns.current.get(next);
+    if (el && !el.disabled) el.focus(); else returnFocus?.();
+  });
 
   if (view.phase === "loading" || !result) {
-    const n = sent.length;
+    const count = sent.length;
     return (
       <div className="kask" aria-busy="true">
         <style>{ASK_CSS}</style>
         <div className="kask-head"><AiMark size={14} />Ask Kanbo</div>
         <div className="kask-card">
-          <p className="kask-reading"><AiMark size={16} thinking />Kanbo is reading {n} {plural(n, "task", "tasks")}…</p>
+          <p className="kask-reading"><AiMark size={16} thinking />Kanbo is reading {count} {plural(count, "task", "tasks")}…</p>
           <div className="kask-skel" aria-hidden="true"><span /><span /><span /></div>
         </div>
       </div>
@@ -204,28 +271,37 @@ export const AskKanbo = forwardRef<AskKanboHandle, {
   }
 
   const cites = (result.cites ?? []).map((id) => byId.get(id)).filter((t): t is Task => !!t);
-  const provenance = {
+  // no `cites` at all: an answer that wasn't drawn from the tasks (help, a name it didn't know)
+  const provenance = result.cites && {
     summary: `from ${cites.length || sent.length} ${plural(cites.length || sent.length, "task", "tasks")}`,
     details: cites.length ? [...cites.slice(0, 12).map((t) => t.title), ...(cites.length > 12 ? [`and ${cites.length - 12} more`] : [])] : undefined,
   };
-  const proposed = result.actions.some((a) => a?.op === "update" || a?.op === "create");   // raw, before validation
-  const leftOut = [...new Set(rejected.filter((r) => r.reason !== GUEST_REASON && r.reason !== "Nothing would change").map((r) => r.reason))];
-  const leftOutCount = rejected.filter((r) => r.reason !== GUEST_REASON && r.reason !== "Nothing would change").length;
-  const shownRows = editing ? rows : rows.filter((r) => !excluded.has(r.index));
-  const shownHeads = heads.filter((h) => !h.indices.every((i) => excluded.has(i)));
-  const n = selected.length;
+  const proposed = result.actions.some((a) => a?.op === "update" || a?.op === "create");   // raw, before the checks
+  const reasons = [...new Set(turnedAway.map((r) => r.reason))];
+  const shownRows = editing ? rows : rows.filter((r) => !isOut(r.index));
+  const shownHeads = heads.filter((h) => !h.indices.every(isOut));
   const today = ctx.today;
+
+  const keep = (h: HeadsUp, e: MouseEvent) => {
+    const out = new Set(excluded);
+    h.indices.forEach((i) => out.add(keys[i]));
+    // from the keyboard, carry on to the next heads-up, else Apply; after a
+    // click, back to the field (where Enter applies)
+    const next = shownHeads.slice(shownHeads.indexOf(h) + 1).find((x) => !x.indices.every((i) => out.has(keys[i])));
+    focusAfter.current = e.detail > 0 ? "return" : next ? next.id : "apply";
+    setExcluded(out);
+  };
 
   const body: ReactNode = (
     <>
       <p className="kask-answer">{result.answer}</p>
-      <Provenance summary={provenance.summary} details={provenance.details} />
+      {provenance && <Provenance summary={provenance.summary} details={provenance.details} />}
 
-      {rows.length > 0 && (
+      {rows.length > 0 && (shownRows.length > 0 ? (
         <ul className="kask-diff" aria-label="Proposed changes">
-          {shownRows.map((row) => <DiffLine key={row.index} row={row} editing={editing} out={excluded.has(row.index)} onToggle={() => toggle(row.index)} />)}
+          {shownRows.map((row) => <DiffLine key={keys[row.index]} row={row} editing={editing} out={isOut(row.index)} onToggle={() => toggle(row.index)} />)}
         </ul>
-      )}
+      ) : <p className="kask-none">Every change is left out. Edit brings them back.</p>)}
 
       {rows.length > 0 && shownHeads.length > 0 && (
         <ul className="kask-heads" aria-label="Heads-up">
@@ -233,7 +309,9 @@ export const AskKanbo = forwardRef<AskKanboHandle, {
             <li key={h.id}>
               <WarnGlyph />
               <p><b>{h.lead}</b> {h.text}</p>
-              <Button size="sm" variant="secondary" aria-label={`${h.keep}: ${h.lead}`} onClick={() => leaveOut(h.indices)}>{h.keep}</Button>
+              <Button size="sm" variant="secondary" aria-label={`${h.keep}: ${h.lead}`}
+                ref={(el) => { if (el) headBtns.current.set(h.id, el); else headBtns.current.delete(h.id); }}
+                onClick={(e) => keep(h, e)}>{h.keep}</Button>
             </li>
           ))}
         </ul>
@@ -241,17 +319,17 @@ export const AskKanbo = forwardRef<AskKanboHandle, {
 
       {rows.length > 0 ? (
         <div className="kask-foot">
-          <Button variant="hero" kbd="⏎" disabled={!n} onClick={apply}>
+          <Button ref={applyBtn} variant="hero" kbd="⏎" disabled={!n} onClick={apply}>
             {n ? `Apply ${n} ${plural(n, "change", "changes")}` : "Nothing to apply"}
           </Button>
           <Button variant="secondary" aria-pressed={editing} onClick={() => setEditing((e) => !e)}>{editing ? "Done" : "Edit"}</Button>
-          <span className="kask-undo"><Icon name="clock" size={14} sw={1.75} />You can undo for 10 seconds<span className="kask-undo-key">· <Kbd>⌘Z</Kbd></span></span>
+          {n > 0 && <span className="kask-undo"><Icon name="clock" size={14} sw={1.75} />You can undo for 10 seconds<span className="kask-undo-key">· <Kbd>⌘Z</Kbd></span></span>}
         </div>
       ) : opens.length > 0 ? (
         <div className="kask-foot">
           {opens.slice(0, 2).map((a, i) => (
-            <Button key={i} variant={i === 0 ? "primary" : "secondary"} iconRight="arrowRight" kbd={i === 0 ? "⏎" : undefined} onClick={() => follow(a)}>
-              {a.taskId ? "Open the task" : `Go to ${routeLabel(a.route!, ctx)}`}
+            <Button key={i} variant={i === 0 ? "primary" : "secondary"} iconRight="arrowRight" kbd={i === 0 ? "⏎" : undefined} onClick={() => run(a)}>
+              {followLabel(a)}
             </Button>
           ))}
         </div>
@@ -291,9 +369,9 @@ export const AskKanbo = forwardRef<AskKanboHandle, {
       {result.source === "ai" ? <Vellum>{body}</Vellum> : <div className="kask-card">{body}</div>}
       <div className="kask-notes">
         {guest && proposed && <p className="kask-note"><Icon name="lock" size={14} sw={1.75} />Guests can ask, not change.</p>}
-        {leftOut.length > 0 && (
+        {reasons.length > 0 && (
           <p className="kask-note"><Icon name="x" size={14} sw={1.75} />
-            Kanbo left out {leftOutCount} {plural(leftOutCount, "change", "changes")}: {leftOut.join("; ")}.
+            Kanbo left out {turnedAway.length} {plural(turnedAway.length, "change", "changes")}: {reasons.join("; ")}.
           </p>
         )}
         {view.via === "limit"
@@ -311,8 +389,8 @@ function DiffLine({ row, editing, out, onToggle }: { row: DiffRow; editing: bool
         {editing && <Check size={16} done={!out} onToggle={onToggle} name={`Include “${row.title}”`} />}
         <span className="kask-glyph" aria-hidden="true"><StatusGlyph status={row.status} size={14} /></span>
       </span>
-      <span className="kask-title" title={row.title}>
-        {row.title}
+      <span className="kask-titlewrap">
+        <span className="kask-title" title={row.title}>{row.title}</span>
         {row.op === "create" && <Pill tone="accent">New task</Pill>}
       </span>
       <span className="kask-changes">

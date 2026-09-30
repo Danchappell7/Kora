@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { useState } from "react";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import { CommandPalette, looksLikeAsk } from "./CommandPalette";
+import { SETTLE_MS } from "./AskKanbo";
 import { NewProjectModal } from "./NewProjectModal";
 import { GO_TARGETS } from "../lib/nav";
 import * as nlp from "../lib/nlp";
@@ -28,6 +29,15 @@ const open = (props: Partial<React.ComponentProps<typeof CommandPalette>> = {}) 
 const input = () => screen.getByRole("combobox", { name: "Search or ask Kanbo" });
 const type = (text: string) => fireEvent.change(input(), { target: { value: text } });
 const selected = () => screen.getAllByRole("option").find((o) => o.getAttribute("aria-selected") === "true");
+const live = (c: HTMLElement) => c.querySelector('.kcmd [aria-live="polite"]');
+/** Enter acts on an answer only once it has been on screen a moment: step the clock past that. */
+const settle = () => { const later = Date.now() + SETTLE_MS + 1; vi.spyOn(Date, "now").mockReturnValue(later); };
+/** A phone: touch first, no hover (until the test ends). */
+let phone: { mockRestore: () => void } | null = null;
+const asPhone = () => { phone = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+  matches: query.includes("pointer: coarse"), media: query, onchange: null,
+  addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+}) as MediaQueryList); };
 
 // Wednesday 30 Sep 2026: the week runs Mon 28 Sep – Sun 4 Oct
 const ctx: AskContext = {
@@ -43,7 +53,12 @@ const week: Task[] = [
   task("t5", "Ship onboarding redesign", { assigneeId: "m-1", status: "blocked", dueDate: "2026-10-01", dependencies: ["t2"] }),
 ];
 
-afterEach(() => { vi.mocked(nlp.parseTask).mockRestore?.(); });
+afterEach(() => {
+  vi.mocked(nlp.parseTask).mockRestore?.();
+  vi.mocked(Date.now).mockRestore?.();
+  phone?.mockRestore();
+  phone = null;
+});
 
 describe("CommandPalette", () => {
   it("is an ARIA combobox driving a listbox", () => {
@@ -247,7 +262,43 @@ describe("Ask Kanbo", () => {
     expect(screen.getAllByRole("option")).toHaveLength(1);
     expect(screen.getByText(/No tasks, projects or pages match/)).toBeInTheDocument();
     fireEvent.keyDown(input(), { key: "Enter" });
-    expect(screen.getByRole("region", { name: "Kanbo's answer" })).toHaveTextContent(/I can find, move, assign and mark tasks on-device/);
+    const region = screen.getByRole("region", { name: "Kanbo's answer" });
+    expect(region).toHaveTextContent(/I can find, move, assign and mark tasks on-device/);
+    // the help isn't drawn from the tasks, so it makes no "How I got here" claim
+    expect(region).not.toHaveTextContent("How I got here");
+  });
+
+  it("with Search on offer (as the app has it), nothing matching still goes to Kanbo", () => {
+    const onSearchAll = vi.fn();
+    const { container, unmount } = open({ tasks: week, askContext: ctx, onSearchAll });
+    type("zzqx");
+    expect(selected()).toHaveTextContent("Ask Kanbo: “zzqx”");
+    expect(screen.getByText("No tasks, projects or pages match “zzqx”. Press Enter to ask Kanbo.")).toBeInTheDocument();
+    expect(live(container)).toHaveTextContent("No results. Press Enter to ask Kanbo.");
+    // "See all results" is still there, one Tab away
+    fireEvent.keyDown(input(), { key: "Tab" });
+    expect(selected()).toHaveTextContent("See all results for “zzqx” in Search");
+    fireEvent.keyDown(input(), { key: "Tab" });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(screen.getByRole("region", { name: "Kanbo's answer" })).toBeInTheDocument();
+    expect(onSearchAll).not.toHaveBeenCalled();
+    unmount();
+    // a query that only names a project picks the project, not "See all results"
+    open({ projects, onOpenProject: vi.fn(), onSearchAll });
+    type("launch");
+    expect(selected()).toHaveTextContent("Q4 Launch");
+    expect(screen.queryByText(/No tasks, projects or pages match/)).not.toBeInTheDocument();
+  });
+
+  it("opened to ask: the examples lead, and whatever is typed goes to Kanbo", () => {
+    open({ tasks: week, askContext: ctx, askFirst: true });
+    expect(input()).toHaveAttribute("placeholder", "Ask Kanbo about your work…");
+    expect(screen.getAllByRole("group")[0]).toHaveAccessibleName("Ask Kanbo");
+    expect(selected()).toHaveTextContent("What's overdue?");
+    type("deck");
+    expect(selected()).toHaveTextContent("Ask Kanbo: “deck”");
+    fireEvent.keyDown(input(), { key: "Tab" });
+    expect(selected()).toHaveTextContent("Finalise launch deck");
   });
 
   it("renders the model's diff: old struck through, new, on vellum, with usage in the footer", async () => {
@@ -315,8 +366,10 @@ describe("Ask Kanbo", () => {
     open({ tasks: week, askContext: ctx, onApplyAsk });
     type("move my unstarted tasks this week to monday");
     fireEvent.keyDown(input(), { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: "Keep it: Approve token naming" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep it: Approve token naming" }), { detail: 1 });
     expect(within(screen.getByRole("list", { name: "Proposed changes" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(input()).toHaveFocus();   // after a click, back to the field
+    settle();
     fireEvent.keyDown(input(), { key: "Enter" });   // Enter applies
     expect(onApplyAsk).toHaveBeenCalledWith([
       { op: "update", id: "t1", patch: { dueDate: "2026-10-05" } },
@@ -384,8 +437,165 @@ describe("Ask Kanbo", () => {
     type("plan my day");
     fireEvent.keyDown(input(), { key: "Enter" });
     expect(screen.getByRole("button", { name: /Go to Today/ })).toBeInTheDocument();
+    settle();
     fireEvent.keyDown(input(), { key: "Enter" });
     expect(onGo).toHaveBeenCalledWith({ view: "plan" });
+  });
+
+  it("Enter applies only once the answer has been on screen a moment, and never on a held key", () => {
+    const onApplyAsk = vi.fn();
+    open({ tasks: week, askContext: ctx, onApplyAsk });
+    type("move my unstarted tasks this week to monday");
+    fireEvent.keyDown(input(), { key: "Enter" });   // asks: the on-device answer is there at once
+    fireEvent.keyDown(input(), { key: "Enter" });   // a double press
+    expect(onApplyAsk).not.toHaveBeenCalled();
+    settle();
+    fireEvent.keyDown(input(), { key: "Enter", repeat: true });   // the key still held down
+    expect(onApplyAsk).not.toHaveBeenCalled();
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onApplyAsk).toHaveBeenCalledTimes(1);
+  });
+
+  it("on a phone, asking puts the keyboard away, and the return key never applies", () => {
+    asPhone();
+    const onApplyAsk = vi.fn();
+    const { container } = open({ tasks: week, askContext: ctx, onApplyAsk });
+    expect(input()).toHaveAttribute("enterkeyhint", "go");
+    type("move my unstarted tasks this week to monday");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(screen.getByRole("region", { name: "Kanbo's answer" })).toHaveFocus();
+    expect(input()).not.toHaveAttribute("enterkeyhint");
+    expect(live(container)).toHaveTextContent(/3 changes to review\.$/);   // no "Press Enter" on a phone
+    settle();
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onApplyAsk).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Apply 3 changes/ }));
+    expect(onApplyAsk).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies what was on screen, even when the workspace changes while the answer is open", async () => {
+    const onApplyAsk = vi.fn();
+    const withBrand: AskContext = { ...ctx, projects: [...ctx.projects, { id: "p-brand", name: "Brand Refresh" }] };
+    const ai = vi.fn(async (): Promise<AiOutcome<AskResult>> => ({
+      source: "ai",
+      data: { source: "ai", answer: "Shuffling.", actions: [
+        { op: "update", id: "t1", patch: { projectId: "p-brand" } },
+        { op: "update", id: "t2", patch: { priority: "high" } },
+        { op: "update", id: "t3", patch: { priority: "urgent" } },
+      ] },
+    }));
+    const props = { open: true, onClose: () => {}, onAction: () => {}, tasks: week, ai, onApplyAsk };
+    const { rerender } = render(<CommandPalette {...props} askContext={withBrand} />);
+    type("shuffle them?");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await screen.findByText("Shuffling.");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include “Approve token naming”" }));
+    // Brand Refresh is archived by someone else meanwhile: nothing on screen shifts, and what was left out stays out
+    rerender(<CommandPalette {...props} askContext={{ ...ctx }} />);
+    expect(within(screen.getByRole("list", { name: "Proposed changes" })).getAllByRole("listitem")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: /Apply 2 changes/ }));
+    expect(onApplyAsk).toHaveBeenCalledWith([
+      { op: "update", id: "t1", patch: { projectId: "p-brand" } },
+      { op: "update", id: "t3", patch: { priority: "urgent" } },
+    ]);
+  });
+
+  it("without a way to apply, it doesn't promise a change, and still goes places", () => {
+    const onGo = vi.fn();
+    open({ tasks: week, askContext: ctx, onGo });
+    type("move my unstarted tasks this week to monday");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    const region = screen.getByRole("region", { name: "Kanbo's answer" });
+    expect(region.querySelector(".kask-answer")).toHaveTextContent(/Moving them to Monday 5 Oct needs edit access\./);
+    expect(within(region).queryByRole("button", { name: /Apply/ })).not.toBeInTheDocument();
+    type("plan my day");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: /Go to Today/ }));
+    expect(onGo).toHaveBeenCalledWith({ view: "plan" });
+  });
+
+  it("tells screen readers (and the footer) only what can really be applied", async () => {
+    const answer = (text: string, actions: unknown[]) => vi.fn(async (): Promise<AiOutcome<AskResult>> => ({
+      source: "ai", data: { source: "ai", answer: text, actions: actions as AskResult["actions"] },
+    }));
+    // one change a task it wasn't asked about, one that changes nothing: neither can be applied
+    const none = answer("Moving two.", [
+      { op: "update", id: "not-sent", patch: { dueDate: "2026-10-05" } },
+      { op: "update", id: "t1", patch: { dueDate: "2026-09-28" } },
+    ]);
+    const first = open({ tasks: week, ai: none, askContext: ctx, onApplyAsk: vi.fn() });
+    type("move them?");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await screen.findByText("Moving two.", { selector: ".kask-answer" });
+    expect(live(first.container)).toHaveTextContent(/^Moving two\. Kanbo left out 1 change\.$/);
+    expect(first.container.querySelector(".kcmd-foot")).not.toHaveTextContent("apply");
+    first.unmount();
+    // 30 proposed, 25 allowed: the count is the one on the button
+    const many = Array.from({ length: 30 }, (_, i) => task(`x${i}`, `Task ${i}`, { dueDate: "2026-10-01" }));
+    const lots = answer("Moving thirty.", many.map((t) => ({ op: "update", id: t.id, patch: { dueDate: "2026-10-05" } })));
+    const second = open({ tasks: many, ai: lots, askContext: ctx, onApplyAsk: vi.fn() });
+    type("move them?");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await screen.findByText("Moving thirty.", { selector: ".kask-answer" });
+    expect(live(second.container)).toHaveTextContent(/^Moving thirty\. 25 changes to review\. Press Enter to apply\. Kanbo left out 5 changes\.$/);
+    expect(screen.getByRole("button", { name: /Apply 25 changes/ })).toBeInTheDocument();
+    expect(second.container.querySelector(".kcmd-foot")).toHaveTextContent("apply");
+    // leave every change out: the footer stops offering Enter
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    for (const box of screen.getAllByRole("checkbox", { name: /^Include/ })) fireEvent.click(box);
+    expect(screen.getByRole("button", { name: "Nothing to apply" })).toBeDisabled();
+    expect(second.container.querySelector(".kcmd-foot")).not.toHaveTextContent("apply");
+  });
+
+  it("“Keep it” from the keyboard moves on to the next heads-up, then to Apply", async () => {
+    const ai = vi.fn(async (): Promise<AiOutcome<AskResult>> => ({
+      source: "ai",
+      data: { source: "ai", answer: "Three changes.", actions: [
+        { op: "update", id: "t2", patch: { dueDate: "2026-10-05" } },   // blocks Maya's work
+        { op: "update", id: "t5", patch: { priority: "high" } },        // Maya's task
+        { op: "update", id: "t3", patch: { priority: "high" } },
+      ] },
+    }));
+    open({ tasks: week, ai, askContext: ctx, onApplyAsk: vi.fn() });
+    type("tidy up?");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await screen.findByText("Three changes.", { selector: ".kask-answer" });
+    const keep = screen.getByRole("button", { name: "Keep it: Approve token naming" });
+    act(() => keep.focus());
+    fireEvent.click(keep);   // Enter or Space on the button
+    expect(screen.getByRole("button", { name: "Leave it: Ship onboarding redesign" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Leave it: Ship onboarding redesign" }));
+    expect(screen.getByRole("button", { name: /Apply 1 change/ })).toHaveFocus();
+  });
+
+  it("says so when every change has been kept as it was, with Edit to bring them back", () => {
+    open({ tasks: week, askContext: ctx, onApplyAsk: vi.fn() });
+    type("assign “Ship onboarding redesign” to Daniel");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Leave it: Ship onboarding redesign" }));
+    expect(screen.queryByRole("list", { name: "Proposed changes" })).not.toBeInTheDocument();
+    expect(screen.getByText("Every change is left out. Edit brings them back.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Nothing to apply" })).toBeDisabled();
+    expect(input()).toHaveFocus();   // nothing left in the card to move on to
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include “Ship onboarding redesign”" }));
+    expect(screen.getByRole("button", { name: "Apply 1 change" })).toBeEnabled();
+  });
+
+  it("a new task keeps its “New task” pill however long its title", async () => {
+    const long = "Write the onboarding checklist for the new cohort of design contractors starting in October";
+    const ai = vi.fn(async (): Promise<AiOutcome<AskResult>> => ({
+      source: "ai", data: { source: "ai", answer: "Adding one.", actions: [{ op: "create", task: { title: long, dueDate: "2026-10-05" } }] },
+    }));
+    open({ tasks: week, ai, askContext: ctx, onApplyAsk: vi.fn() });
+    type("add it?");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    const pill = await screen.findByText("New task");
+    // the title truncates on its own; the pill sits beside it and never shrinks away
+    expect(pill.closest(".kask-title")).toBeNull();
+    expect(pill.parentElement).toHaveClass("kask-titlewrap");
+    expect(pill.parentElement!.querySelector(".kask-title")).toHaveTextContent(long);
   });
 
   it("a guest can ask but never sees Apply", async () => {
@@ -394,9 +604,16 @@ describe("Ask Kanbo", () => {
     type("move my unstarted tasks this week to monday");
     fireEvent.keyDown(input(), { key: "Enter" });
     expect(screen.getByText(/Moving them to Monday 5 Oct needs edit access/, { selector: ".kask-answer" })).toBeInTheDocument();
+    expect(screen.getByText("Guests can ask, not change.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Apply/ })).not.toBeInTheDocument();
+    settle();
     fireEvent.keyDown(input(), { key: "Enter" });
     expect(onApplyAsk).not.toHaveBeenCalled();
+    // a guest can still be taken to Today, without being asked to firm up a plan
+    type("plan my day");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(screen.getByText(/Your day is laid out on Today\.$/, { selector: ".kask-answer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Go to Today/ })).toBeInTheDocument();
     unmount();
     // the model may still propose changes: they're never shown, and the guest is told why
     const ai = vi.fn(async (): Promise<AiOutcome<AskResult>> => ({

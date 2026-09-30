@@ -90,11 +90,18 @@ describe("localAsk: moving", () => {
 });
 
 describe("localAsk: read-only (guests)", () => {
-  it("answers, and says what a change would take instead of proposing it", () => {
+  it("answers, and says what a change would take instead of promising it", () => {
     const r = localAsk("move my unstarted tasks this week to monday", tasks, ctx, { canAct: false });
-    expect(r.actions).toEqual([]);
     expect(r.answer).toMatch(/^Four of your tasks due this week haven't been started\. Moving them to Monday 5 Oct needs edit access\./);
+    // the changes still come back, and the one gate turns them all away
+    expect(r.actions).toHaveLength(4);
+    expect(validateActions(r.actions, tasks, ctx, false).valid).toEqual([]);
     expect(localAsk("assign pricing-page test to sana", tasks, ctx, { canAct: false }).answer).toBe("Assigning “Run pricing-page A/B test” to Sana Rao needs edit access.");
+  });
+
+  it("doesn't ask a guest to firm up a plan", () => {
+    expect(localAsk("plan my day", tasks, ctx, { canAct: false }).answer).toMatch(/Your day is laid out on Today\.$/);
+    expect(localAsk("plan my day", tasks, ctx).answer).toMatch(/press Plan my day to make it solid\.$/);
   });
 });
 
@@ -165,6 +172,9 @@ describe("localAsk: questions", () => {
   it("explains what it can do for anything else", () => {
     expect(ask("write me a poem").answer).toBe(LOCAL_HELP);
     expect(ask("").answer).toBe(LOCAL_HELP);
+    // not drawn from the tasks, so no "How I got here"
+    expect(ask("write me a poem").cites).toBeUndefined();
+    expect(ask("what is zed working on?").cites).toBeUndefined();
     expect(LOCAL_HELP).toBe("I can find, move, assign and mark tasks on-device. Try “what's overdue?” or “move my unstarted tasks this week to Monday”.");
   });
 });

@@ -8,7 +8,8 @@
    · only tasks that were sent with the question;
    · people and projects from this workspace;
    · never a delete, never an unknown op;
-   · at most 25 changes; a guest (canAct = false) gets none.
+   · at most 25 changes; a guest (canAct = false) gets none (an
+     `open` only navigates, so it is still checked and kept).
    ============================================================ */
 import { PRIORITY_META, STATUS_META, getMember } from "../data/data";
 import type { Priority, Status, Task } from "../data/types";
@@ -22,6 +23,7 @@ export const ASK_FIELDS: readonly AskField[] = ["title", "status", "dueDate", "d
 export const MAX_ASK_CHANGES = 25;
 export const CAP_REASON = `Kanbo can change up to ${MAX_ASK_CHANGES} tasks at once`;
 export const GUEST_REASON = "Guests can ask, not change";
+export const NO_CHANGE_REASON = "Nothing would change";
 
 const STATUSES = Object.keys(STATUS_META) as Status[];
 const PRIORITIES = Object.keys(PRIORITY_META) as Priority[];
@@ -110,15 +112,13 @@ export interface RejectedAction { action: AskAction; reason: string }
 /** Check every proposed action. Updates to the same task are merged (the
  *  later value wins), fields that wouldn't change anything are dropped, and
  *  anything past the 25th change is turned away. `sentTasks` are the tasks the
- *  question was asked about: nothing else can be touched. */
+ *  question was asked about: nothing else can be touched. `canAct` false (a
+ *  guest, or a host that can't apply): every update and create is turned away,
+ *  while opens, which only navigate, are checked as usual. */
 export function validateActions(actions: unknown, sentTasks: Task[], ctx: AskContext, canAct: boolean): { valid: AskAction[]; rejected: RejectedAction[] } {
   const list: unknown[] = Array.isArray(actions) ? actions : [];
   const rejected: RejectedAction[] = [];
   const reject = (action: unknown, reason: string) => { rejected.push({ action: action as AskAction, reason }); };
-  if (!canAct) {
-    list.forEach((a) => reject(a, GUEST_REASON));
-    return { valid: [], rejected };
-  }
   const byId = new Map(sentTasks.map((t) => [t.id, t]));
   const out: AskAction[] = [];
   const updateAt = new Map<string, number>();   // task id → its (merged) update's place in `out`
@@ -127,6 +127,7 @@ export function validateActions(actions: unknown, sentTasks: Task[], ctx: AskCon
   for (const action of list) {
     if (!isObj(action)) { reject(action, "Kanbo didn't understand that change"); continue; }
     const op = action.op;
+    if (!canAct && op !== "open") { reject(action, GUEST_REASON); continue; }
     if (op === "delete") { reject(action, "Kanbo never deletes tasks"); continue; }
     if (op === "update") {
       const id = action.id;
@@ -186,7 +187,7 @@ export function validateActions(actions: unknown, sentTasks: Task[], ctx: AskCon
       for (const [k, v] of Object.entries(action.patch) as [AskField, unknown][]) {
         if (current(task, k) !== v) (patch as Record<string, unknown>)[k] = v;
       }
-      if (!Object.keys(patch).length) { reject(action, "Nothing would change"); continue; }
+      if (!Object.keys(patch).length) { reject(action, NO_CHANGE_REASON); continue; }
       if (changes >= MAX_ASK_CHANGES) { reject(action, CAP_REASON); continue; }
       changes += 1;
       valid.push({ op: "update", id: action.id, patch });
@@ -248,7 +249,7 @@ export interface DiffChange {
   /** null for a new task (there is nothing before) */
   from: string | null;
   to: string;
-  /** dates and times read in the data face */
+  /** values read in the data face (a renamed title stays in the UI face) */
   mono: boolean;
 }
 export interface DiffRow {
@@ -277,7 +278,7 @@ export function diffRows(valid: AskAction[], tasksById: TaskLookup, ctx: AskCont
       rows.push({
         index, op: "update", taskId: task.id, title: task.title, status: task.status,
         changes: ordered(action.patch).map((f) => ({
-          field: f, label: FIELD_LABEL[f], mono: f === "dueDate" || f === "dueTime",
+          field: f, label: FIELD_LABEL[f], mono: f !== "title",
           from: fmtValue(f, current(task, f), ctx), to: fmtValue(f, action.patch[f], ctx),
         })),
       });
@@ -287,7 +288,7 @@ export function diffRows(valid: AskAction[], tasksById: TaskLookup, ctx: AskCont
       rows.push({
         index, op: "create", title, status: rest.status ?? "todo",
         changes: ordered(fields).filter((f) => f !== "status" || rest.status !== "todo").map((f) => ({
-          field: f, label: FIELD_LABEL[f], mono: f === "dueDate" || f === "dueTime", from: null, to: fmtValue(f, fields[f], ctx),
+          field: f, label: FIELD_LABEL[f], mono: f !== "title", from: null, to: fmtValue(f, fields[f], ctx),
         })),
       });
     }
@@ -347,6 +348,9 @@ export function headsUps(valid: AskAction[], allTasks: Task[], me: string, membe
     }
     if (patch.dueDate && patch.dueDate !== task.dueDate) {
       const newDue = patch.dueDate;
+      // only a later date "delays" anything; an earlier one that still lands late, or a first date, just lands after
+      const later = !!task.dueDate && newDue > task.dueDate;
+      const lands = (one: boolean) => (later ? `moving it later delays ${one ? "that" : "them"}.` : `this date ${task.dueDate ? "still " : ""}lands after ${one ? "it" : "them"}.`);
       const waiting = allTasks
         .filter((d) => d.id !== task.id && d.status !== "done" && !d.archivedAt && (d.dependencies ?? []).includes(task.id))
         .map(now)
@@ -358,9 +362,9 @@ export function headsUps(valid: AskAction[], allTasks: Task[], me: string, membe
         knock.push({ id: `milestone:${task.id}`, kind: "milestone", lead: task.title, text: `feeds the milestone “${milestone.title}”, due ${fmtDay(milestone.dueDate!)} — this lands after it.`, indices: [index], keep: "Keep it" });
       } else if (waiting.length === 1) {
         const d = waiting[0];
-        knock.push({ id: `blocker:${task.id}`, kind: "blocker", lead: task.title, text: `unblocks ${owner(d)} “${d.title}”, due ${fmtDay(d.dueDate!)} — moving it later delays that.`, indices: [index], keep: "Keep it" });
+        knock.push({ id: `blocker:${task.id}`, kind: "blocker", lead: task.title, text: `unblocks ${owner(d)} “${d.title}”, due ${fmtDay(d.dueDate!)} — ${lands(true)}`, indices: [index], keep: "Keep it" });
       } else if (waiting.length > 1) {
-        knock.push({ id: `blocker:${task.id}`, kind: "blocker", lead: task.title, text: `unblocks ${waiting.length} tasks due before ${fmtDay(newDue)} — moving it later delays them.`, indices: [index], keep: "Keep it" });
+        knock.push({ id: `blocker:${task.id}`, kind: "blocker", lead: task.title, text: `unblocks ${waiting.length} tasks due before ${fmtDay(newDue)} — ${lands(false)}`, indices: [index], keep: "Keep it" });
       }
     }
     if (task.assigneeId && task.assigneeId !== me) theirs.push({ index, who: firstName(task.assigneeId, members) ?? "a teammate" });
@@ -388,8 +392,9 @@ export function headsUps(valid: AskAction[], allTasks: Task[], me: string, membe
 /* ---------------- undo ---------------- */
 
 /** The patches that put every updated task back as it was (for Undo / ⌘Z).
- *  A field that was empty comes back as `undefined` (cleared). Creates have
- *  no inverse here: whoever created the task removes it. */
+ *  Pass the tasks as they were *before* applying. A field that was empty comes
+ *  back as `undefined` (cleared). Creates have no inverse here: only the app
+ *  knows the new task's id, so its Undo removes the tasks it created. */
 export function inversePatches(valid: AskAction[], tasksById: TaskLookup): AskAction[] {
   const out: AskAction[] = [];
   for (const a of valid) {

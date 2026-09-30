@@ -5,17 +5,20 @@
 
    Typing shows, in order: Ask Kanbo · Tasks · Projects · Go to ·
    Actions. The Ask row is picked for you when the text reads like a
-   question or an instruction ("…?", "move …", "what …"); Tab swaps
-   between it and the first result. Enter on it asks: the model when
-   Kanbo AI is on and reachable, the on-device rules otherwise, and
-   the answer (with any proposed changes) replaces the list. Nothing
-   changes until Apply.
+   question or an instruction ("…?", "move …", "what …"), or when
+   nothing matches; otherwise the first result is. Tab swaps the two.
+   Enter on it asks: the model when Kanbo AI is on and reachable, the
+   on-device rules otherwise, and the answer (with any proposed
+   changes) replaces the list. Nothing changes until Apply, and Enter
+   only applies from a keyboard, once the answer has been on screen a
+   moment (never on a held key, and never from a phone's return key).
    With nothing typed: Recent · Go to · Ask Kanbo (two examples) ·
-   Actions.
+   Actions; opened `askFirst` (an "Ask Kanbo" button), the examples
+   lead and the Ask row is always the pick.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { AiMark, Icon, IconButton, Kbd, ProjectDot, StatusGlyph } from "./primitives";
-import { AskKanbo, type AskKanboHandle, type AskView, type AskVia } from "./AskKanbo";
+import { AskKanbo, type AskKanboHandle, type AskSummary, type AskView, type AskVia } from "./AskKanbo";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProject, getMember, MEMBERS, PROJECTS, STATUS_META, todayISO } from "../data/data";
 import { GO_TARGETS, PLACES, navItems, titleOf, type GoTarget } from "../lib/nav";
@@ -97,20 +100,24 @@ type Item =
   | { kind: "go"; target: GoTarget; crumb?: string; color?: string };
 interface Group { key: string; heading?: string; items: Item[] }
 
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+/** Touch first (a phone): no hardware keyboard, and the on-screen return key must never apply anything. */
+const coarsePointer = () => typeof window !== "undefined" && !!window.matchMedia?.("(hover: none) and (pointer: coarse)").matches;
+
 const LIST_ID = "kcmd-list";
 const ANSWER_ID = "kcmd-answer";
 const optId = (i: number) => `kcmd-opt-${i}`;
 
 const PALETTE_CSS = `
 .kcmd-layer { position: fixed; inset: 0; z-index: var(--z-palette, 120); display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; }
-.kcmd-layer::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--scrim); animation: kcmdScrim var(--d-2, 160ms) var(--ease); }
+.kcmd-layer::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--scrim); animation: kcmdScrim var(--d-3, 240ms) var(--ease); }
 @keyframes kcmdScrim { from { opacity: 0; } }
 .kcmd {
   display: flex; flex-direction: column; width: 680px; max-width: 100%; max-height: min(680px, calc(100dvh - 12vh - 16px));
   border-radius: var(--r-xl, 16px); overflow: hidden; color: var(--ink);
   background: linear-gradient(var(--surface-raised), var(--surface-raised)), var(--surface-solid);
   box-shadow: var(--e3, var(--shadow-lg));
-  animation: kcmdIn var(--d-2, 160ms) var(--ease);
+  animation: kcmdIn var(--d-3, 240ms) var(--ease);
 }
 @keyframes kcmdIn { from { opacity: 0.35; translate: 0 8px; } }
 
@@ -128,7 +135,7 @@ const PALETTE_CSS = `
 
 /* the list */
 .kcmd-list { flex: 1 1 auto; min-height: 0; max-height: 424px; overflow-y: auto; overscroll-behavior: contain; padding: 4px 8px 8px; }
-.kcmd-list[data-mode="ask"] { max-height: none; padding-top: 8px; }
+.kcmd-list[data-mode="ask"] { max-height: none; padding-top: 8px; outline: none; }
 .kcmd-group + .kcmd-group, .kcmd-list > .kcmd-opt + .kcmd-group { margin-top: 4px; }
 .kcmd-heading { display: flex; align-items: center; height: 32px; padding: 4px 12px 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kcmd-opt {
@@ -148,7 +155,7 @@ const PALETTE_CSS = `
 .kcmd-ask-lead { font-weight: 600; color: var(--accent-text, var(--accent)); }
 .kcmd-opt[data-kind="ask"] .kcmd-label { color: var(--ink-2); }
 .kcmd-opt[data-example="true"] .kcmd-label { color: var(--ink-2); }
-.kcmd-empty { margin: 4px 12px 8px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kcmd-empty { margin: 2px 12px 8px 40px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
 /* footer: the keys, and today's AI use */
 .kcmd-foot { display: flex; align-items: center; gap: 16px; flex-shrink: 0; height: 40px; padding: 0 16px; border-top: 1px solid var(--hairline);
@@ -169,7 +176,7 @@ const PALETTE_CSS = `
 
 export function CommandPalette({
   open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true,
-  ai, askContext, onApplyAsk, canAct, onGo, recent, recentTaskIds, initialQuery, personal,
+  ai, askContext, onApplyAsk, canAct, onGo, recent, recentTaskIds, initialQuery, personal, askFirst = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -206,10 +213,15 @@ export function CommandPalette({
   initialQuery?: string;
   /** the Personal workspace: Go to lists Insights where a team has Team */
   personal?: boolean;
+  /** opened to ask (an "Ask Kanbo" button): the example questions lead, and
+   *  whatever is typed goes to Kanbo unless another row is picked */
+  askFirst?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const [ask, setAsk] = useState<(AskView & { seq: number }) | null>(null);
+  // what the open answer would do on Enter (reported by AskKanbo, for this answer's seq)
+  const [summary, setSummary] = useState<(AskSummary & { seq: number }) | null>(null);
   const [usage, setUsage] = useState<{ used: number; limit: number } | null>(null);
   // tasks opened from here (the Recent group, alongside App's own list)
   const [openedHere, setOpenedHere] = useState<string[]>([]);
@@ -217,6 +229,7 @@ export function CommandPalette({
   // the query the selection was last defaulted for (see below)
   const [selFor, setSelFor] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const answerRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const askRef = useRef<AskKanboHandle>(null);
   const askSeq = useRef(0);
@@ -242,6 +255,8 @@ export function CommandPalette({
   }, [askContext, projects]);
   const guest = canAct === false;
   const canApply = !guest && !!onApplyAsk;
+  // read when the palette opens: a phone never applies from its return key
+  const coarse = useMemo(() => open && coarsePointer(), [open]);
 
   const query = q.trim().toLowerCase();
   const spans = useMemo<NlpSpan[]>(() => {
@@ -300,12 +315,11 @@ export function CommandPalette({
         { kind: "ask", text: ASK_EXAMPLES.overdue, example: true },
         { kind: "ask", text: canApply ? ASK_EXAMPLES.act : ASK_EXAMPLES.read, example: true },
       ];
-      return [
-        { key: "recent", heading: "Recent", items: [...routes, ...recentTasks] },
-        { key: "go", heading: "Go to", items: places },
-        { key: "try", heading: "Ask Kanbo", items: examples },
-        { key: "actions", heading: "Actions", items: actions.map((s) => ({ kind: "action", s })) },
-      ];
+      const recentGroup: Group = { key: "recent", heading: "Recent", items: [...routes, ...recentTasks] };
+      const goGroup: Group = { key: "go", heading: "Go to", items: places };
+      const tryGroup: Group = { key: "try", heading: "Ask Kanbo", items: examples };
+      const actionGroup: Group = { key: "actions", heading: "Actions", items: actions.map((s) => ({ kind: "action", s })) };
+      return askFirst ? [tryGroup, recentGroup, goGroup, actionGroup] : [recentGroup, goGroup, tryGroup, actionGroup];
     }
 
     // ---- tasks: title, project name, assignee name or tag; best matches and open work first ----
@@ -352,22 +366,34 @@ export function CommandPalette({
 
     return [
       { key: "ask", items: [{ kind: "ask", text: q.trim() }] },
-      { key: "tasks", heading: "Tasks", items: [...taskItems, ...searchItems] },
+      // "See all results" follows the tasks; with none, it stands alone where they'd be
+      { key: "tasks", heading: taskItems.length ? "Tasks" : undefined, items: [...taskItems, ...searchItems] },
       { key: "projects", heading: "Projects", items: projectItems },
       { key: "go", heading: "Go to", items: goItems },
       { key: "actions", heading: "Actions", items: actionItems },
     ];
-  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, ctx.today]);
+  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today]);
 
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
-  const hasResults = items.length > 1;
+  // real matches: tasks, projects, places and actions (not the Ask row, and not "See all results")
+  const firstResult = query ? items.findIndex((it) => it.kind !== "ask" && it.kind !== "search") : -1;
+  const hasResults = firstResult > 0;
+  const resultCount = hasResults ? items.filter((it) => it.kind !== "ask" && it.kind !== "search").length : 0;
+  // where Tab goes from the Ask row: the first match, else "See all results"
+  const tabTo = hasResults ? firstResult : query && items.length > 1 ? 1 : -1;
   // a new query picks its own default (decided while rendering, so the old
   // highlight never flashes): the Ask row when it reads like a question or an
-  // instruction, otherwise the first result
+  // instruction, when nothing matches, or when the palette was opened to ask;
+  // otherwise the first match
   if (open && selFor !== q) {
     setSelFor(q);
-    setSel(query && !looksLikeAsk(q) && hasResults ? 1 : 0);
+    setSel(hasResults && !askFirst && !looksLikeAsk(q) ? firstResult : 0);
   }
+
+  // on a phone, asking puts the keyboard away so the answer has the screen
+  // (focus moves to the answer, still inside the palette; tap the field to ask again)
+  const askedSeq = ask?.seq;
+  useEffect(() => { if (coarse && askedSeq != null) answerRef.current?.focus({ preventScroll: true }); }, [coarse, askedSeq]);
 
   if (!open) return null;
 
@@ -379,16 +405,18 @@ export function CommandPalette({
     // Ask reads this workspace: the tasks in the context's projects (all of them when there's no context)
     const inScope = askContext ? new Set(askContext.projects.map((p) => p.id)) : null;
     const sent = tasks.filter((t) => !t.archivedAt && (!inScope || inScope.has(t.projectId)));
+    // the answer is checked and shown against what it was asked with, even if the workspace changes meanwhile
+    const asked = ctx;
     if (!ai) {
-      setAsk({ seq, question, phase: "done", sent, result: localAsk(question, sent, ctx, { canAct: !guest }), via: "off" });
+      setAsk({ seq, question, phase: "done", sent, ctx: asked, result: localAsk(question, sent, asked, { canAct: canApply }), via: "off" });
       return;
     }
-    setAsk({ seq, question, phase: "loading", sent });
+    setAsk({ seq, question, phase: "loading", sent, ctx: asked });
     void (async () => {
       let result: AskResult | null = null;
       let via: AskVia = "unavailable";
       try {
-        const out = await ai(question, sent, ctx);
+        const out = await ai(question, sent, asked);
         if (out.source === "ai") {
           const d = out.data;
           if (d && typeof d.answer === "string" && d.answer.trim()) {
@@ -411,12 +439,14 @@ export function CommandPalette({
         }
       } catch { via = "unavailable"; }
       if (seq !== askSeq.current) return;          // cancelled, closed or asked again: ignore the late answer
-      if (!result) result = localAsk(question, sent, ctx, { canAct: !guest });
+      if (!result) result = localAsk(question, sent, asked, { canAct: canApply });
       if (result.usage) { setUsage(result.usage); limitRef.current = result.usage.limit; }
-      setAsk({ seq, question, phase: "done", sent, result, via, limit: limitRef.current ?? usage?.limit ?? 200 });
+      setAsk({ seq, question, phase: "done", sent, ctx: asked, result, via, limit: limitRef.current ?? usage?.limit ?? 200 });
     })();
   };
   const cancelAsk = () => { askSeq.current += 1; setAsk(null); inputRef.current?.focus(); };
+  // focus lost from the answer (its button went away): back to the field, or on a phone to the answer itself
+  const refocus = () => (coarse ? answerRef.current : inputRef.current)?.focus({ preventScroll: true });
 
   const go = (route: Route) => { if (onGo) onGo(route); else onNavigate?.(route.view); };
   const activate = (it: Item) => {
@@ -436,14 +466,19 @@ export function CommandPalette({
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (ask) {
-      if (e.key === "Enter") { e.preventDefault(); askRef.current?.submit(); }   // applying or following closes the palette
+      if (e.key === "Enter") {
+        e.preventDefault();
+        // applying or following closes the palette. Never on a held key (auto-repeat), and never from a
+        // phone's return key: there it only puts the keyboard away, and Apply is the button
+        if (!e.repeat && !coarse) askRef.current?.submit();
+      }
       return;
     }
     if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => items.length ? (s + 1) % items.length : 0); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => items.length ? (s - 1 + items.length) % items.length : 0); }
-    else if (e.key === "Enter") { e.preventDefault(); if (items[sel]) activate(items[sel]); }
+    else if (e.key === "Enter") { e.preventDefault(); if (!e.repeat && items[sel]) activate(items[sel]); }
     // Tab swaps between the Ask row and the first result
-    else if (e.key === "Tab" && query && hasResults) { e.preventDefault(); setSel((s) => (s === 0 ? 1 : 0)); }
+    else if (e.key === "Tab" && tabTo > 0) { e.preventDefault(); setSel((s) => (s === 0 ? tabTo : 0)); }
   };
   // Escape: cancels a question in flight (back to the list), otherwise closes —
   // one press, as the Esc hint says, wherever focus is in the palette
@@ -479,7 +514,7 @@ export function CommandPalette({
         return row(it, it.example
           ? <span className="kcmd-label">“{it.text}”</span>
           : <span className="kcmd-label"><span className="kcmd-ask-lead">Ask Kanbo</span>: “{it.text}”</span>,
-        { icon: <AiMark size={it.example ? 14 : 16} />, kind: "ask", example: it.example, hint: !it.example && hasResults && sel !== 0 ? "Tab" : undefined });
+        { icon: <AiMark size={it.example ? 14 : 16} />, kind: "ask", example: it.example, hint: !it.example && tabTo > 0 && sel !== 0 ? "Tab" : undefined });
       case "task":
         return row(it, <>
           <span className="kcmd-label">{it.label}<span className="sr-only">, {STATUS_META[it.status]?.label}</span></span>
@@ -512,15 +547,20 @@ export function CommandPalette({
   const activeItem = items[sel];
   const enterVerb = !activeItem ? "" : activeItem.kind === "ask" ? "ask" : activeItem.kind === "action" ? "run" : "open";
   const inAsk = !!ask;
-  // (the model's raw actions: validated in AskKanbo, so read defensively here)
-  const proposed = ask?.result && canApply ? ask.result.actions.filter((a) => a?.op === "update" || a?.op === "create").length : 0;
+  // what the answer on screen would do, as AskKanbo counted it (after its checks and the person's edits)
+  const sum = ask?.phase === "done" && summary?.seq === ask.seq ? summary : null;
+  const enterTo = (label: string) => (coarse ? "" : ` Press Enter to ${label.charAt(0).toLowerCase()}${label.slice(1)}.`);
   const announcement = ask
-    ? ask.phase === "loading" ? `Kanbo is reading ${ask.sent.length} tasks. Press Escape to cancel.`
-      : `${ask.result?.answer ?? ""}${proposed ? ` ${proposed} ${proposed === 1 ? "change" : "changes"} proposed. Press Enter to apply.` : ""}`
-    : query ? (hasResults ? `${count - 1} result${count - 1 === 1 ? "" : "s"}` : "No results. Press Enter to ask Kanbo.") : "";
-  const askVerb = ask?.phase !== "done" || !ask.result ? ""
-    : proposed ? "apply"
-      : canApply && ask.result.actions.some((a) => a?.op === "open") ? "open" : "";
+    ? ask.phase === "loading" ? `Kanbo is reading ${ask.sent.length} ${plural(ask.sent.length, "task", "tasks")}.${coarse ? "" : " Press Escape to cancel."}`
+      : !sum ? ""
+        : [
+          ask.result?.answer ?? "",
+          sum.changes ? `${sum.changes} ${plural(sum.changes, "change", "changes")} to review.${enterTo("apply")}`
+            : sum.follow ? enterTo(sum.follow).trim() : "",
+          sum.leftOut ? `Kanbo left out ${sum.leftOut} ${plural(sum.leftOut, "change", "changes")}.` : "",
+        ].filter(Boolean).join(" ")
+    : query ? (hasResults ? `${resultCount} ${plural(resultCount, "result", "results")}` : "No results. Press Enter to ask Kanbo.") : "";
+  const askVerb = !sum ? "" : sum.selected ? "apply" : !sum.changes && sum.follow ? "open" : "";
 
   return (
     <div className="kcmd-layer"
@@ -552,10 +592,10 @@ export function CommandPalette({
             <input ref={inputRef} className="kcmd-input" value={q}
               onChange={(e) => { setQ(e.target.value); if (ask) { askSeq.current += 1; setAsk(null); } }}
               onKeyDown={onKeyDown} onScroll={syncMirror} onSelect={syncMirror}
-              placeholder="Search, jump or ask Kanbo…"
+              placeholder={askFirst ? "Ask Kanbo about your work…" : "Search, jump or ask Kanbo…"}
               role="combobox" aria-label="Search or ask Kanbo" aria-expanded={!inAsk && count > 0} aria-controls={inAsk ? ANSWER_ID : LIST_ID}
               aria-activedescendant={active >= 0 ? optId(active) : undefined} aria-autocomplete="list" aria-describedby="kcmd-help"
-              autoComplete="off" spellCheck={false} data-focus-ring="none" enterKeyHint={inAsk ? "done" : "go"} />
+              autoComplete="off" spellCheck={false} data-focus-ring="none" enterKeyHint={inAsk ? undefined : "go"} />
           </div>
           <span className="kcmd-esc" aria-hidden="true"><Kbd>Esc</Kbd></span>
           <IconButton className="kcmd-close" icon="x" label="Close" size="sm" onClick={close} />
@@ -564,11 +604,14 @@ export function CommandPalette({
         <div className="sr-only" aria-live="polite">{announcement}</div>
 
         {inAsk ? (
-          <div id={ANSWER_ID} className="kcmd-list" data-mode="ask" role="region" aria-label="Kanbo's answer">
-            <AskKanbo key={ask.seq} ref={askRef} view={ask} ctx={ctx} canAct={canApply} guest={guest}
+          <div ref={answerRef} id={ANSWER_ID} className="kcmd-list" data-mode="ask" role="region" aria-label="Kanbo's answer"
+            tabIndex={-1} data-focus-ring="none">
+            <AskKanbo key={ask.seq} ref={askRef} view={ask} canAct={canApply} guest={guest}
               onApply={onApplyAsk ? (actions) => { onApplyAsk(actions); close(); } : undefined}
               onOpenTask={(id) => { remember(id); onOpenTask?.(id); close(); }}
-              onGo={(route) => { go(route); close(); }} />
+              onGo={(route) => { go(route); close(); }}
+              onSummary={(s) => setSummary({ ...s, seq: ask.seq })}
+              returnFocus={refocus} />
           </div>
         ) : (
           <div id={LIST_ID} className="kcmd-list" role="listbox" aria-label="Results">
@@ -577,15 +620,20 @@ export function CommandPalette({
                 <div id={`kcmd-h-${g.key}`} role="presentation" className="kcmd-heading">{g.heading}</div>
                 {g.items.map(renderItem)}
               </div>
-            ) : <div key={g.key} role="presentation">{g.items.map(renderItem)}</div>))}
-            {onlyAsk && <p role="presentation" className="kcmd-empty">No tasks, projects or pages match “{q.trim()}”. Press Enter to ask Kanbo.</p>}
+            ) : (
+              <div key={g.key} role="presentation">
+                {g.items.map(renderItem)}
+                {/* nothing matches: say so under the Ask row, which Enter will use */}
+                {g.key === "ask" && onlyAsk && <p role="presentation" className="kcmd-empty">No tasks, projects or pages match “{q.trim()}”. Press Enter to ask Kanbo.</p>}
+              </div>
+            )))}
           </div>
         )}
 
         <div className="kcmd-foot">
           {!inAsk && <span className="kcmd-hint"><Kbd>↑</Kbd><Kbd>↓</Kbd>move</span>}
           {!inAsk && enterVerb && <span className="kcmd-hint"><Kbd>⏎</Kbd>{enterVerb}</span>}
-          {!inAsk && query && hasResults && <span className="kcmd-hint"><Kbd>Tab</Kbd>{sel === 0 ? "results" : "ask Kanbo"}</span>}
+          {!inAsk && tabTo > 0 && <span className="kcmd-hint"><Kbd>Tab</Kbd>{sel === 0 ? "results" : "ask Kanbo"}</span>}
           {inAsk && askVerb && <span className="kcmd-hint"><Kbd>⏎</Kbd>{askVerb}</span>}
           <span className="kcmd-hint"><Kbd>Esc</Kbd>{ask?.phase === "loading" ? "cancel" : "close"}</span>
           {usage && <span className="kcmd-usage">Kanbo AI · {usage.used} of {usage.limit} today</span>}
