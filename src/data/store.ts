@@ -97,12 +97,13 @@ async function authUid(fallback: string): Promise<string> {
     return data.session?.user?.id ?? fallback;
   } catch { return fallback; } // e.g. an offline token refresh — never lose the write over it
 }
-/** Who a queued op belongs to: the live session's user, else whoever the
- *  queue is scoped to (the session can read as empty offline with an
- *  expired token). */
-async function queueUser(): Promise<string | undefined> {
-  return (await authUid("")) || offlineQueue.currentUser() || undefined;
-}
+/** Who a queued op belongs to, answered WITHOUT waiting on the auth client:
+ *  the queue is already scoped to the signed-in user (by bootstrap and on
+ *  every auth change). Offline with an expired token, getSession() retries
+ *  the refresh for ~25 s, and an edit that isn't in the queue yet is lost if
+ *  the tab is closed meanwhile — so writes queue first and never await this.
+ *  Null only before the first sign-in is seen; callers then ask the session. */
+const queueOwner = (): string | null => offlineQueue.currentUser();
 
 /* ---------- DB row <-> Task mapping (Supabase) ---------- */
 interface TaskRow {
@@ -466,6 +467,11 @@ const isNetworkError = (e: unknown) =>
 // claim_invites runs once per signed-in user per page session — not on every
 // realtime reload (which fans out to every connected teammate).
 let claimedFor: string | null = null;
+// bumped on every sign-out: a load that started before it must not write the
+// previous user's workspace back into storage when it finishes
+let sessionGen = 0;
+// changes parked for a passing server problem get one more try per session
+let deadRetriedFor: string | null = null;
 
 /** Hand a pre-namespacing shared queue to its owner — the user the offline
  *  snapshot belongs to, i.e. whoever was last signed in on this device. */
@@ -495,6 +501,8 @@ function clearLocalOnSignOut() {
   } catch { /* storage unavailable */ }
   offlineQueue.setUser(null);
   claimedFor = null;
+  deadRetriedFor = null;
+  sessionGen++;
 }
 
 if (supabase) {
@@ -656,6 +664,10 @@ let flushInFlight: Promise<number> | null = null;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let flushBackoff = 2000;
 const MAX_ATTEMPTS = 5;
+// a replay failing on something that may clear up (gateway 5xx, timeout,
+// PostgREST restarting) keeps being retried — backing off to once a minute —
+// and is only parked after this long, so a server hiccup never costs edits
+const PARK_TRANSIENT_AFTER_MS = 30 * 60_000;
 /** Drain the queue soon without waiting for an 'online' event — after a
  *  request dies mid-flight on flaky Wi-Fi, navigator.onLine never changes. */
 function scheduleFlush(delay = flushBackoff) {
@@ -664,12 +676,31 @@ function scheduleFlush(delay = flushBackoff) {
 }
 const opTaskId = (m: QueuedMutation) => (m.kind === "create" ? m.task.id : m.taskId);
 const errText = (e: unknown) => String((e as Error)?.message ?? e);
+/** An error the server will give again however often it's retried: bad data,
+ *  a constraint, a permission (RLS) or trigger refusal, a malformed request.
+ *  Anything else (5xx from the gateway, timeouts, JWT refresh, connection
+ *  errors — or no code at all) may clear up by itself. */
+function isPermanentError(e: unknown): boolean {
+  const code = String((e as { code?: unknown })?.code ?? "");
+  return /^(22|23|42|P0)/.test(code) || /^PGRST[12]/.test(code);
+}
+/** Try the queue again later, backing off up to once a minute. */
+function retryLater() {
+  scheduleFlush(flushBackoff);
+  flushBackoff = Math.min(flushBackoff * 2, 60_000);
+}
 
 async function replayQueue(client: SupabaseClient, remap?: RemapFn): Promise<number> {
   // never replay without a session, and only ever the signed-in user's own ops
-  const { data } = await client.auth.getSession();
-  const uid = data.session?.user?.id;
-  if (!uid) return 0;
+  let uid: string | undefined;
+  try { uid = (await client.auth.getSession()).data.session?.user?.id; } catch { /* token refresh failing */ }
+  if (!uid) {
+    // no session at the moment (a token refresh failing while the browser
+    // still says it's online): try again later rather than leaving the queue
+    // parked until an 'online' event that may never come
+    if (offlineQueue.size() && !isOffline()) retryLater();
+    return 0;
+  }
   scopeQueueTo(uid);
   let synced = 0;
   const tried = new Set<string>();
@@ -705,24 +736,26 @@ async function replayQueue(client: SupabaseClient, remap?: RemapFn): Promise<num
     } catch (e) {
       if (isNetworkError(e)) break; // still offline — stop, keep the rest
       blocked.add(taskId);
-      // a transient server error (500/timeout) shouldn't discard a user's
-      // change on the first miss: retry a few times, then park it where it
-      // can be retried or discarded rather than dropping it
+      // edits collapsed into this update while it was in flight weren't part
+      // of what failed: they move to their own op, right behind it
+      if (m.kind === "update" && !offlineQueue.splitUnsent(m.id, m.patch)) continue;
+      // Never discard a user's change on the first miss. The server refusing
+      // the data itself (RLS, a constraint) won't change, so that's parked
+      // after a few tries; anything that may clear up is retried for much
+      // longer. Parked ops can be retried or discarded, never silently lost.
       const attempts = offlineQueue.bumpAttempts(m.id);
-      if (attempts >= MAX_ATTEMPTS) {
-        offlineQueue.deadLetter(m.id, errText(e));
-        reportError(e, { op: "flushQueue-deadletter", kind: m.kind, attempts });
-      } else {
-        reportError(e, { op: "flushQueue-retry", kind: m.kind, attempts });
+      const permanent = isPermanentError(e);
+      const failingFor = Date.now() - (m.failedSince ?? Date.now());
+      if (attempts >= MAX_ATTEMPTS && (permanent || failingFor >= PARK_TRANSIENT_AFTER_MS)) {
+        offlineQueue.deadLetter(m.id, errText(e), !permanent);
+        reportError(e, { op: "flushQueue-deadletter", kind: m.kind, attempts, permanent });
+      } else if (attempts === 1) {
+        reportError(e, { op: "flushQueue-retry", kind: m.kind, permanent });
       }
     }
   }
   if (offlineQueue.size() === 0) flushBackoff = 2000;
-  else if (!isOffline()) {
-    // left-overs (a blip mid-replay, or an op being retried): go again soon, backing off
-    scheduleFlush(flushBackoff);
-    flushBackoff = Math.min(flushBackoff * 2, 60_000);
-  }
+  else if (!isOffline()) retryLater(); // left-overs (a blip mid-replay, or an op being retried): go again soon
   return synced;
 }
 
@@ -734,10 +767,9 @@ export type RealtimeChange =
   | { kind: "resync"; reason: "reconnected" | "online" | "visible" };
 // in the supabase_realtime publication since 0005–0010
 const CORE_TABLES = ["tasks", "projects", "tags", "subtasks", "workspaces", "workspace_members", "attachments", "activity"];
-// team structure tables. Until they're added to the publication
-// (alter publication supabase_realtime add table …) the server rejects every
-// binding on a channel that names them, so they get their own channel and can
-// never take live task sync down with them.
+// team structure tables. Migration 0042 adds them to the publication; until
+// it's live the server rejects every binding on a channel that names them, so
+// they get their own channel and can never take live task sync down with them.
 const EXTRA_TABLES = ["sections", "custom_field_defs", "goals", "portfolios", "status_updates", "automation_rules", "forms", "task_dependencies"];
 const RESYNC_AFTER_HIDDEN_MS = 60_000;
 let channelSeq = 0;
@@ -771,6 +803,7 @@ export const store = {
     const sUser = sessionData.session?.user;
     const uid = sUser?.id ?? (user && user.id !== "m-self" ? user.id : undefined);
     if (!uid) throw new Error("Not authenticated");
+    const gen = sessionGen;
     // only this user's queued offline edits are applied / replayed
     scopeQueueTo(uid);
     const restore = (snap: Snapshot): Bootstrap => {
@@ -931,11 +964,27 @@ export const store = {
       automationRules,
       forms,
     };
+    // signed out (or someone else signed in) while this was loading — e.g. a
+    // realtime reload still in flight: don't write their workspace back to
+    // this device, and don't fold anyone's queue onto it
+    if (gen !== sessionGen || offlineQueue.currentUser() !== uid) return boot;
     // cache for offline reads (write-half handled by offlineQueue)
     cacheSnapshot({ boot, ref, uid, savedAt: Date.now() });
+    // changes parked last time for a passing server problem (not a refusal)
+    // get another go once per session; App drains the queue after this load
+    if (deadRetriedFor !== uid) {
+      deadRetriedFor = uid;
+      const retry = offlineQueue.deadLetters().filter((d) => d.retryable).map((d) => d.op.id);
+      if (retry.length) offlineQueue.retryDeadLetters(retry);
+    }
     // show edits still waiting in the queue rather than the server's older copy
     return offlineQueue.size() ? { ...boot, tasks: applyQueue(boot.tasks) } : boot;
   },
+
+  /** Register the caller's id-swap callback once, at startup, so retries the
+   *  store schedules itself (after a request died mid-flight) can also tell
+   *  it when a queued create was saved under a new id. */
+  setRemapHandler(onRemap: RemapFn | null): void { lastRemap = onRemap ?? undefined; },
 
   /** Replay the signed-in user's queued offline task mutations, in order,
    *  when back online. onRemap(clientId, serverId, saved) lets the caller swap
@@ -1060,7 +1109,6 @@ export const store = {
     if (!tasks.length) return [];
     if (!supabase) return tasks.slice();
     const client = supabase;
-    const uid = await authUid(userId);
     const idMap = new Map<string, string>();
     for (const t of tasks) if (!isUuid(t.id) && !idMap.has(t.id)) idMap.set(t.id, uuidv4());
     const prepared = tasks.map((t) => {
@@ -1068,7 +1116,9 @@ export const store = {
       const parentId = t.parentId ? (idMap.get(t.parentId) ?? t.parentId) : t.parentId;
       return id === t.id && parentId === t.parentId ? t : { ...t, id, parentId };
     });
-    if (isOffline()) { offlineQueue.enqueueCreates(prepared, uid); return prepared; }
+    // offline: queue before anything is awaited (see queueOwner)
+    if (isOffline()) { offlineQueue.enqueueCreates(prepared, queueOwner() ?? await authUid(userId)); return prepared; }
+    const uid = await authUid(userId);
 
     const saved: Task[] = [];
     const failed: { task: Task; message: string }[] = [];
@@ -1101,7 +1151,10 @@ export const store = {
       }
     }
     if (failed.length) {
-      const err = new Error(`${failed.length} of ${tasks.length} task${tasks.length === 1 ? "" : "s"} couldn't be saved: ${failed[0].message}`) as BatchCreateError;
+      // the server's wording stays on err.failed[].message (and in monitoring);
+      // the message itself is fit to show people
+      reportError(new Error(failed[0].message), { op: "createTasksBatch", failed: failed.length, total: tasks.length });
+      const err = new Error(`${failed.length} of ${tasks.length} task${tasks.length === 1 ? "" : "s"} couldn't be imported. Check they're in a project you can edit and try again.`) as BatchCreateError;
       err.saved = saved;
       err.failed = failed;
       throw err;
@@ -1111,22 +1164,30 @@ export const store = {
 
   async createTask(t: Task, userId: string): Promise<Task> {
     if (!supabase) return t; // demo mode keeps the optimistic copy
-    const uid = await authUid(userId);
     // offline — or queued ops on this id still waiting (e.g. an undone
-    // delete): queue behind them so they apply in order, and keep the client id
+    // delete): queue behind them so they apply in order, and keep the client
+    // id. Queued before anything is awaited (see queueOwner).
     if (isOffline() || offlineQueue.hasPending(t.id)) {
-      offlineQueue.enqueueCreate(t, uid);
+      offlineQueue.enqueueCreate(t, queueOwner() ?? await authUid(userId));
       if (!isOffline()) scheduleFlush();
       return t;
     }
+    const uid = await authUid(userId);
     // the row id is fixed before sending, so a retry can never make a twin
     const id = isUuid(t.id) ? t.id : uuidv4();
     try {
       return await insertTaskRow(supabase, t, id, uid);
     } catch (e) {
       // dropped mid-flight — it may or may not have landed, so queue it under
-      // the same id (the replay is a no-op if it did) and keep the client id
-      if (isNetworkError(e)) { offlineQueue.enqueueCreate(t, uid, id); scheduleFlush(); return t; }
+      // the same id (the replay is a no-op if it did). That id is handed back
+      // now, so the caller swaps it in at once and later edits queue behind
+      // this create, rather than waiting on a replay callback to learn it.
+      if (isNetworkError(e)) {
+        const pinned = id === t.id ? t : { ...t, id };
+        offlineQueue.enqueueCreate(pinned, queueOwner() ?? uid, id);
+        scheduleFlush();
+        return pinned;
+      }
       throw e;
     }
   },
@@ -1136,15 +1197,17 @@ export const store = {
     if (Object.keys(patchToRow(patch)).length === 0) return; // nothing that persists
     // offline — or older queued edits to this task still waiting: queue behind
     // them, so a stale queued value can't be replayed over this newer one
+    // Queued before anything is awaited (see queueOwner).
     if (isOffline() || offlineQueue.hasPending(id)) {
-      offlineQueue.enqueueUpdate(id, patch, await queueUser());
+      offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid(""));
       if (!isOffline()) scheduleFlush();
       return;
     }
     try {
       await updateTaskRow(supabase, id, patch);
+      offlineQueue.supersede(id, Object.keys(patch)); // a parked older value must never come back over this
     } catch (e) {
-      if (isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch, await queueUser()); scheduleFlush(); return; } // dropped mid-flight — queue it
+      if (isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid("")); scheduleFlush(); return; } // dropped mid-flight — queue it
       throw e;
     }
   },
@@ -1152,14 +1215,15 @@ export const store = {
   async deleteTask(id: string): Promise<void> {
     if (!supabase) return;
     if (isOffline() || offlineQueue.hasPending(id)) {
-      offlineQueue.enqueueDelete(id, await queueUser());
+      offlineQueue.enqueueDelete(id, queueOwner() ?? await authUid(""));
       if (!isOffline()) scheduleFlush();
       return;
     }
     try {
       await deleteTaskRow(supabase, id);
+      offlineQueue.supersede(id, null);
     } catch (e) {
-      if (isNetworkError(e)) { offlineQueue.enqueueDelete(id, await queueUser()); scheduleFlush(); return; }
+      if (isNetworkError(e)) { offlineQueue.enqueueDelete(id, queueOwner() ?? await authUid("")); scheduleFlush(); return; }
       throw e;
     }
   },
@@ -2186,7 +2250,12 @@ export const store = {
         if (msg?.extension !== "postgres_changes" || msg?.status !== "error" || disposed) return;
         extrasOff = true;
         closeExtras();
-        reportOnce("realtime-extras", new Error("Realtime unavailable for team tables: " + (msg.message || "subscription refused")), { op: "realtime-extras", tables: EXTRA_TABLES });
+        // expected until migration 0042 (which adds them) is live, so it's a
+        // console note, not a monitoring error on every page load for every user
+        if (!reportedOnce.has("realtime-extras")) {
+          reportedOnce.add("realtime-extras");
+          console.info("[kanbo] Live updates for team tables are off — the realtime publication doesn't include them yet:", msg.message || "subscription refused");
+        }
       });
       extras = ch;
       // otherwise status is ignored: the core channel owns reconnect + resync.

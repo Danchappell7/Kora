@@ -20,10 +20,14 @@
    - Ops that keep failing are parked in a dead-letter list
      (kanbo-offline-deadletter:<uid>) rather than dropped, so nothing the
      user typed is silently thrown away.
+   - A patch value of undefined means "clear this field" (unarchive, reopen,
+     remove a due date). JSON drops undefined keys, so those keys are listed
+     in `unset` on the stored op and put back when it's read.
    ============================================================ */
 import type { Task } from "../data/types";
 
-interface OpBase { id: string; ts: number; attempts?: number; userId: string }
+/** failedSince: when the op first failed to replay (cleared once it syncs). */
+interface OpBase { id: string; ts: number; attempts?: number; failedSince?: number; userId: string }
 export type QueuedMutation =
   /** serverId: the row id this create is (or may already have been) written
    *  under. Set before the first send, so a lost response can be retried
@@ -32,7 +36,9 @@ export type QueuedMutation =
   | (OpBase & { kind: "update"; taskId: string; patch: Partial<Task> })
   | (OpBase & { kind: "delete"; taskId: string });
 
-export interface DeadLetter { op: QueuedMutation; failedAt: number; error: string }
+/** retryable: it failed on something that may clear up (a gateway error or
+ *  timeout), not on the data itself, so it's worth another try later. */
+export interface DeadLetter { op: QueuedMutation; failedAt: number; error: string; retryable?: boolean }
 
 const QUEUE_PREFIX = "kanbo-offline-queue:";
 const DEAD_PREFIX = "kanbo-offline-deadletter:";
@@ -81,9 +87,31 @@ function writeList(key: string, list: unknown[]): boolean {
     return true;
   } catch { return false; } // quota — keep the in-memory copy
 }
-function readQueue(uid: string): QueuedMutation[] {
-  return readList<QueuedMutation>(QUEUE_PREFIX + uid).filter((m) => isOp(m) && m.userId === uid);
+/* Stored form of an op: an update's cleared fields (value undefined, which
+   JSON would drop) are listed in `unset`. */
+type StoredOp = QueuedMutation & { unset?: string[] };
+function pack(m: QueuedMutation): StoredOp {
+  const { unset: _old, ...op } = m as StoredOp;
+  if (op.kind !== "update") return op;
+  const cleared = Object.keys(op.patch).filter((k) => (op.patch as Record<string, unknown>)[k] === undefined);
+  return cleared.length ? { ...op, unset: cleared } : op;
 }
+function unpack(m: StoredOp): QueuedMutation {
+  const { unset, ...op } = m;
+  if (op.kind !== "update" || !Array.isArray(unset) || !op.patch || typeof op.patch !== "object") return op;
+  const patch: Record<string, unknown> = { ...op.patch };
+  for (const k of unset) if (typeof k === "string" && !(k in patch)) patch[k] = undefined;
+  return { ...op, patch: patch as Partial<Task> };
+}
+function readQueue(uid: string): QueuedMutation[] {
+  return readList<StoredOp>(QUEUE_PREFIX + uid).filter((m) => isOp(m) && m.userId === uid).map(unpack);
+}
+function readDead(uid: string): DeadLetter[] {
+  return readList<DeadLetter>(DEAD_PREFIX + uid).filter((d) => d && isOp(d.op)).map((d) => ({ ...d, op: unpack(d.op) }));
+}
+/** Same value for replay purposes: a cleared field is undefined in a fresh
+ *  patch and may be null in one that came back from storage. */
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /** Pull the latest queue from storage (another tab may have changed it). */
 function refresh() {
@@ -93,12 +121,33 @@ function refresh() {
 function notify() { const n = mem.length; listeners.forEach((l) => l(n)); }
 function notifyDead() { const d = dead.slice(); deadListeners.forEach((l) => l(d)); }
 function persist() {
-  if (user && storage) dirty = !writeList(QUEUE_PREFIX + user, mem);
+  if (user && storage) dirty = !writeList(QUEUE_PREFIX + user, mem.map(pack));
   notify();
 }
 function persistDead() {
-  if (user && storage) writeList(DEAD_PREFIX + user, dead);
+  if (user && storage) writeList(DEAD_PREFIX + user, dead.map((d) => ({ ...d, op: pack(d.op) })));
   notifyDead();
+}
+/** A newer edit to a task makes the same fields in its parked updates stale:
+ *  drop them, so retrying a parked change (by hand or automatically) can
+ *  never put back a value the user has changed since. fields null: the task
+ *  was deleted, so nothing parked for it still applies. */
+function supersedeDead(taskId: string, fields: string[] | null) {
+  if (user && storage) dead = readDead(user);
+  if (!dead.length) return;
+  let changed = false;
+  dead = dead.flatMap((d) => {
+    if (opTaskId(d.op) !== taskId) return [d];
+    if (fields === null) { changed = true; return []; }
+    if (d.op.kind !== "update") return [d];
+    const patch: Record<string, unknown> = { ...d.op.patch };
+    const hit = fields.filter((f) => f in patch);
+    if (!hit.length) return [d];
+    changed = true;
+    hit.forEach((f) => delete patch[f]);
+    return Object.keys(patch).length ? [{ ...d, op: { ...d.op, patch: patch as Partial<Task> } }] : [];
+  });
+  if (changed) persistDead();
 }
 function newOpId() { return "q-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 /** Mutations are scoped to the user who made them. */
@@ -111,7 +160,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
     if (!user) return;
     if ((e.key === null || e.key === QUEUE_PREFIX + user) && !dirty) { mem = readQueue(user); notify(); }
-    if (e.key === null || e.key === DEAD_PREFIX + user) { dead = readList<DeadLetter>(DEAD_PREFIX + user); notifyDead(); }
+    if (e.key === null || e.key === DEAD_PREFIX + user) { dead = readDead(user); notifyDead(); }
   });
 }
 
@@ -122,7 +171,7 @@ export const offlineQueue = {
     user = uid;
     dirty = false;
     mem = uid ? readQueue(uid) : [];
-    dead = uid ? readList<DeadLetter>(DEAD_PREFIX + uid) : [];
+    dead = uid ? readDead(uid) : [];
     notify();
     notifyDead();
   },
@@ -165,11 +214,15 @@ export const offlineQueue = {
   enqueueUpdate(taskId: string, patch: Partial<Task>, userId?: string) {
     scopeTo(userId);
     const who = userId || user || "";
+    supersedeDead(taskId, Object.keys(patch));
     // collapse consecutive updates to the same task that haven't synced yet —
     // keeps the queue small and replays the latest intent. (A collapse into an
-    // op that's mid-replay is safe: ack() only clears the fields it sent.)
+    // op that's mid-replay is safe: ack() only clears the fields it sent, and
+    // a failed replay splits off what it didn't send.) Never collapse into an
+    // op that has already failed: if the server keeps refusing it, this good
+    // edit would be refused — and parked — along with it.
     const last = mem[mem.length - 1];
-    if (last && last.kind === "update" && last.taskId === taskId && last.userId === who) {
+    if (last && last.kind === "update" && last.taskId === taskId && last.userId === who && !last.attempts) {
       last.patch = { ...last.patch, ...patch };
       persist();
       return;
@@ -181,6 +234,7 @@ export const offlineQueue = {
   enqueueDelete(taskId: string, userId?: string) {
     scopeTo(userId);
     const who = userId || user || "";
+    supersedeDead(taskId, null);
     // a delete supersedes any queued create/update for a task created offline.
     // If its create was never sent, just drop its ops. If it may already have
     // reached the server (a send was attempted), still delete that row.
@@ -204,9 +258,9 @@ export const offlineQueue = {
     if (m.kind === "update" && sentPatch) {
       const rest: Record<string, unknown> = { ...m.patch };
       for (const k of Object.keys(sentPatch)) {
-        if (JSON.stringify(rest[k]) === JSON.stringify((sentPatch as Record<string, unknown>)[k])) delete rest[k];
+        if (k in rest && sameValue(rest[k], (sentPatch as Record<string, unknown>)[k])) delete rest[k];
       }
-      if (Object.keys(rest).length) { m.patch = rest as Partial<Task>; m.attempts = 0; persist(); return true; }
+      if (Object.keys(rest).length) { m.patch = rest as Partial<Task>; m.attempts = 0; delete m.failedSince; persist(); return true; }
     }
     mem = mem.filter((x) => x.id !== id);
     persist();
@@ -221,8 +275,34 @@ export const offlineQueue = {
     const m = mem.find((x) => x.id === id);
     if (!m) return 0;
     m.attempts = (m.attempts ?? 0) + 1;
+    m.failedSince ??= Date.now();
     persist();
     return m.attempts;
+  },
+
+  /** An update failed to replay. Edits collapsed into it while the request
+   *  was in flight weren't part of what failed: move them to their own op,
+   *  straight after it, so they sync on their own once it's resolved instead
+   *  of being refused (and parked) with it. Returns false when nothing that
+   *  failed is left in the op (every field was edited again meanwhile), so
+   *  the failure shouldn't count against it. */
+  splitUnsent(id: string, sentPatch: Partial<Task>): boolean {
+    refresh();
+    const idx = mem.findIndex((x) => x.id === id);
+    const m = mem[idx];
+    if (!m || m.kind !== "update") return true;
+    const sent = sentPatch as Record<string, unknown>;
+    const kept: Record<string, unknown> = {};
+    const extra: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(m.patch)) {
+      if (k in sent && sameValue(v, sent[k])) kept[k] = v; else extra[k] = v;
+    }
+    if (!Object.keys(kept).length) return false;
+    if (!Object.keys(extra).length) return true;
+    m.patch = kept as Partial<Task>;
+    mem.splice(idx + 1, 0, { id: newOpId(), ts: Date.now(), kind: "update", taskId: m.taskId, patch: extra as Partial<Task>, userId: m.userId });
+    persist();
+    return true;
   },
 
   /** Pin the row id a queued create will be written under (before sending). */
@@ -246,7 +326,7 @@ export const offlineQueue = {
 
   /** Park an op that keeps failing (and, for a create, the later ops on the
    *  same task, which can't apply without it) instead of dropping it. */
-  deadLetter(id: string, error: string) {
+  deadLetter(id: string, error: string, retryable = false) {
     refresh();
     const idx = mem.findIndex((x) => x.id === id);
     if (idx < 0) return;
@@ -255,13 +335,28 @@ export const offlineQueue = {
       ? mem.filter((x, i) => i === idx || (i > idx && opTaskId(x) === m.task.id))
       : [m];
     const ids = new Set(moving.map((x) => x.id));
+    // an update's fields that later queued edits to the same task set again
+    // are already stale; if the task is deleted later on, none of it applies
+    let park: QueuedMutation[] = moving;
+    if (m.kind === "update") {
+      const later = mem.slice(idx + 1).filter((x) => opTaskId(x) === m.taskId);
+      const patch: Record<string, unknown> = { ...m.patch };
+      if (later.some((x) => x.kind === "delete")) park = [];
+      else for (const x of later) if (x.kind === "update") Object.keys(x.patch).forEach((k) => delete patch[k]);
+      if (park.length) park = Object.keys(patch).length ? [{ ...m, patch: patch as Partial<Task> }] : [];
+    }
     mem = mem.filter((x) => !ids.has(x.id));
     persist();
-    if (user && storage) dead = readList<DeadLetter>(DEAD_PREFIX + user);
+    if (!park.length) return;
+    if (user && storage) dead = readDead(user);
     const failedAt = Date.now();
-    dead = [...dead, ...moving.map((op) => ({ op, failedAt, error }))];
+    dead = [...dead, ...park.map((op) => ({ op, failedAt, error, ...(retryable ? { retryable } : {}) }))];
     persistDead();
   },
+
+  /** The user changed these fields of a task (fields null: deleted it) —
+   *  anything parked for them is out of date. */
+  supersede(taskId: string, fields: string[] | null) { supersedeDead(taskId, fields); },
 
   /** Changes that couldn't be synced after several attempts. */
   deadLetters(): DeadLetter[] { return dead.slice(); },
@@ -273,19 +368,19 @@ export const offlineQueue = {
   /** Put parked changes back in the queue for another try (all when no ids). */
   retryDeadLetters(opIds?: string[]): number {
     refresh();
-    if (user && storage) dead = readList<DeadLetter>(DEAD_PREFIX + user);
+    if (user && storage) dead = readDead(user);
     const pick = new Set(opIds ?? dead.map((d) => d.op.id));
     const back = dead.filter((d) => pick.has(d.op.id));
     if (!back.length) return 0;
     dead = dead.filter((d) => !pick.has(d.op.id));
-    mem = [...mem, ...back.map((d) => ({ ...d.op, attempts: 0 }))];
+    mem = [...mem, ...back.map((d) => { const op = { ...d.op, attempts: 0 }; delete op.failedSince; return op; })];
     persist();
     persistDead();
     return back.length;
   },
   /** Throw parked changes away for good (all when no ids). */
   discardDeadLetters(opIds?: string[]): number {
-    if (user && storage) dead = readList<DeadLetter>(DEAD_PREFIX + user);
+    if (user && storage) dead = readDead(user);
     const before = dead.length;
     dead = opIds ? dead.filter((d) => !opIds.includes(d.op.id)) : [];
     persistDead();
@@ -318,7 +413,7 @@ export const offlineQueue = {
     }
     let moved = 0;
     for (const [who, list] of buckets) {
-      if (!writeList(QUEUE_PREFIX + who, [...readQueue(who), ...list])) { discarded += list.length; continue; }
+      if (!writeList(QUEUE_PREFIX + who, [...readQueue(who), ...list].map(pack))) { discarded += list.length; continue; }
       moved += list.length;
     }
     try { storage.removeItem(LEGACY_QUEUE_KEY); } catch { /* ignore */ }

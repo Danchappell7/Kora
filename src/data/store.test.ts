@@ -476,6 +476,9 @@ describe("store (supabase) — idempotent writes and the offline queue", () => {
     const err = await s.createTasksBatch(input, "user-a").then(() => null, (e) => e);
     expect(err?.saved.map((t: Task) => t.id)).toEqual([uuidN(1), uuidN(3)]);
     expect(err?.failed).toHaveLength(1);
+    // a message fit to show people; the server's wording stays on .failed
+    expect(err?.message).toBe("1 of 3 tasks couldn't be imported. Check they're in a project you can edit and try again.");
+    expect(err?.failed[0].message).toMatch(/check constraint/);
   });
 });
 
@@ -574,17 +577,21 @@ describe("store (supabase) — realtime resync and sign-out", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("drops the team-table channel if the server refuses it (not in the publication)", async () => {
+  it("drops the team-table channel if the server refuses it (not in the publication), without paging monitoring", async () => {
     const fake = makeFake();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const { store: s } = await loadStore(fake);
     s.subscribeToChanges(vi.fn());
     fake.channels[0].status?.("SUBSCRIBED");
     const sys = fake.channels[1].bindings.find((b) => b.type === "system");
     sys?.cb({ extension: "postgres_changes", status: "error", message: "Unable to subscribe to changes with given parameters" });
-    expect(fake.reportError).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: "realtime-extras" }));
+    // expected until 0042 is live: a console note, not a Sentry event per page load
+    expect(fake.reportError).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
     fake.channels[0].status?.("CHANNEL_ERROR");
     fake.channels[0].status?.("SUBSCRIBED");
     expect(fake.channels).toHaveLength(2); // not re-requested this session
+    info.mockRestore();
   });
 
   it("on sign-out removes the snapshot and the old shared queue, keeping each user's own queue", async () => {
@@ -597,5 +604,226 @@ describe("store (supabase) — realtime resync and sign-out", () => {
     expect(localStorage.getItem("kanbo-offline-snapshot")).toBeNull();
     expect(localStorage.getItem("kanbo-offline-queue")).toBeNull();
     expect(JSON.parse(localStorage.getItem("kanbo-offline-queue:user-a")!)).toHaveLength(1); // parked with its owner
+  });
+});
+
+/* ------------------------------------------------------------------
+   Review fixes — offline durability, poisoned ops, sign-out race
+   ------------------------------------------------------------------ */
+describe("store (supabase) — offline queue durability", () => {
+  let onLine: ReturnType<typeof vi.spyOn> | null = null;
+  const goOffline = () => { onLine = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false); };
+  const goOnline = () => { onLine?.mockRestore(); onLine = null; };
+  beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] }); });
+  afterEach(() => { goOnline(); vi.useRealTimers(); vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
+
+  const updatesSent = (fake: ReturnType<typeof makeFake>) =>
+    fake.calls.filter((c) => c.table === "tasks" && c.op === "update").map((c) => c.payload);
+
+  it("queues offline writes at once, even while getSession() is stuck refreshing a token", async () => {
+    const fake = makeFake();
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    fake.client.auth.getSession = () => new Promise(() => {}); // never settles (offline refresh retries)
+    goOffline();
+    void s.createTask(mkTask(uuidN(1)), "user-a");
+    void s.updateTask(uuidN(2), { title: "renamed offline" });
+    void s.deleteTask(uuidN(3));
+    void s.createTasksBatch([mkTask(uuidN(4)), mkTask(uuidN(5))], "user-a");
+    // no await: everything is already in the queue and in storage
+    expect(queue.size()).toBe(5);
+    const stored = JSON.parse(localStorage.getItem("kanbo-offline-queue:user-a")!);
+    expect(stored.map((m: { kind: string }) => m.kind)).toEqual(["create", "update", "delete", "create", "create"]);
+    expect(stored.every((m: { userId: string }) => m.userId === "user-a")).toBe(true);
+  });
+
+  it("an offline unarchive or reopen still clears the field after a trip through storage", async () => {
+    const fake = makeFake();
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    goOffline();
+    await s.updateTask(uuidN(1), { archivedAt: undefined });                  // unarchive
+    await s.updateTask(uuidN(2), { status: "todo", completedAt: undefined }); // reopen
+    expect(JSON.parse(localStorage.getItem("kanbo-offline-queue:user-a")!)[0].unset).toEqual(["archivedAt"]);
+    goOnline();
+    await s.flushQueue();
+    expect(updatesSent(fake)).toEqual([{ archived_at: null }, { status: "todo", completed_at: null }]);
+    expect(queue.size()).toBe(0);
+  });
+
+  it("a live edit never merges into a queued op the server keeps refusing", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => {
+      if (c.table !== "tasks" || c.op !== "update") return undefined;
+      return "section_id" in (c.payload as object) ? { error: { message: "violates foreign key constraint", code: "23503" } } : undefined;
+    });
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    queue.enqueueUpdate(uuidN(1), { sectionId: "sec-deleted" }, "user-a");
+    await s.flushQueue();                                                  // fails once
+    await s.updateTask(uuidN(1), { title: "Renamed while online" });       // queued behind it, not merged
+    expect(queue.all().map((m) => m.kind === "update" && m.patch)).toEqual([{ sectionId: "sec-deleted" }, { title: "Renamed while online" }]);
+    for (let i = 0; i < 4; i++) await s.flushQueue();                      // 5th failure parks it
+    expect(queue.deadLetters().map((d) => d.op.kind === "update" && d.op.patch)).toEqual([{ sectionId: "sec-deleted" }]);
+    expect(queue.deadLetters()[0].retryable).toBeFalsy();
+    await s.flushQueue();
+    expect(updatesSent(fake)).toContainEqual({ title: "Renamed while online" });
+    expect(queue.size()).toBe(0);
+  });
+
+  it("an edit collapsed into an update while it was in flight is split off when that update fails", async () => {
+    const fake = makeFake();
+    let queueRef: Awaited<ReturnType<typeof loadStore>>["queue"] | null = null;
+    fake.setHandler((c) => {
+      if (c.table !== "tasks" || c.op !== "update") return undefined;
+      if ("section_id" in (c.payload as object)) {
+        queueRef?.enqueueUpdate(uuidN(1), { title: "typed meanwhile" }, "user-a"); // lands mid-flight
+        return { error: { message: "violates foreign key constraint", code: "23503" } };
+      }
+      return undefined;
+    });
+    const { store: s, queue } = await loadStore(fake);
+    queueRef = queue;
+    queue.setUser("user-a");
+    queue.enqueueUpdate(uuidN(1), { sectionId: "sec-deleted" }, "user-a");
+    await s.flushQueue();
+    const ops = queue.all();
+    expect(ops.map((m) => m.kind === "update" && m.patch)).toEqual([{ sectionId: "sec-deleted" }, { title: "typed meanwhile" }]);
+    expect(ops[0].attempts).toBe(1);
+    expect(ops[1].attempts).toBeUndefined();
+  });
+
+  it("keeps retrying through a server hiccup instead of parking queued work after 30 s", async () => {
+    const fake = makeFake();
+    let down = true;
+    fake.setHandler((c) => (c.table === "tasks" && c.op === "update" && down ? { error: { message: "502 Bad Gateway" } } : undefined));
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    queue.enqueueUpdate(uuidN(1), { title: "saved offline" }, "user-a");
+    for (let i = 0; i < 8; i++) { await s.flushQueue(); vi.setSystemTime(Date.now() + 60_000); }
+    expect(queue.size()).toBe(1);                       // still queued, still shown
+    expect(queue.deadLetters()).toHaveLength(0);
+    expect(fake.reportError.mock.calls.filter((c) => c[1]?.op === "flushQueue-retry")).toHaveLength(1); // not one per retry
+    vi.setSystemTime(Date.now() + 31 * 60_000);         // failing for over half an hour: park it…
+    await s.flushQueue();
+    expect(queue.deadLetters()).toHaveLength(1);
+    expect(queue.deadLetters()[0].retryable).toBe(true);
+    down = false;                                        // …and give it another go next session
+    await s.bootstrap({ id: "user-a" });
+    expect(queue.deadLetters()).toHaveLength(0);
+    await s.flushQueue();
+    const sent = updatesSent(fake);
+    expect(sent[sent.length - 1]).toEqual({ title: "saved offline" });
+    expect(queue.size()).toBe(0);
+  });
+
+  it("a parked change never comes back over a newer edit to the same field", async () => {
+    const fake = makeFake();
+    let down = true;
+    fake.setHandler((c) => (c.table === "tasks" && c.op === "update" && down ? { error: { message: "503 Service Unavailable" } } : undefined));
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    queue.enqueueUpdate(uuidN(1), { title: "old", priority: "high" }, "user-a");
+    await s.flushQueue();                                          // fails: now retried, not merged into
+    await s.updateTask(uuidN(1), { title: "newer" });              // queued behind it
+    vi.setSystemTime(Date.now() + 31 * 60_000);
+    for (let i = 0; i < 5; i++) await s.flushQueue();              // the old op is parked…
+    // …without the title the user has changed since
+    expect(queue.deadLetters().map((d) => d.op.kind === "update" && d.op.patch)).toEqual([{ priority: "high" }]);
+    down = false;
+    await s.flushQueue();
+    expect(updatesSent(fake).slice(-1)).toEqual([{ title: "newer" }]);
+    await s.updateTask(uuidN(1), { priority: "low" });             // a live edit supersedes the rest
+    expect(queue.deadLetters()).toEqual([]);
+    await s.bootstrap({ id: "user-a" });                           // so the next session's auto-retry has nothing stale to replay
+    expect(queue.size()).toBe(0);
+  });
+
+  it("retries later when the session can't be read (token refresh failing while 'online')", async () => {
+    const fake = makeFake();
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    queue.enqueueUpdate(uuidN(1), { title: "waiting" }, "user-a");
+    const realGetSession = fake.client.auth.getSession;
+    fake.client.auth.getSession = async () => ({ data: { session: null as never }, error: null });
+    expect(await s.flushQueue()).toBe(0);
+    fake.client.auth.getSession = realGetSession;       // refresh recovers
+    await vi.advanceTimersByTimeAsync(2_000);            // the store's own retry
+    expect(updatesSent(fake)).toEqual([{ title: "waiting" }]);
+    expect(queue.size()).toBe(0);
+  });
+
+  it("a create whose response is lost hands back its real id, and store-scheduled retries use the registered remap", async () => {
+    const fake = makeFake();
+    let lose = true;
+    fake.setHandler((c) => {
+      if (c.table !== "tasks" || c.op !== "upsert") return undefined;
+      if (lose) { lose = false; return { error: { message: "TypeError: Failed to fetch" } }; }
+      return { data: [{ id: (c.payload as { id: string }).id }] };
+    });
+    const { store: s, queue } = await loadStore(fake);
+    const remap = vi.fn();
+    s.setRemapHandler(remap);
+    const saved = await s.createTask(mkTask("t-new-1"), "user-a");
+    expect(saved.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4/);            // swapped in by the caller straight away
+    expect(queue.all()[0].kind === "create" && queue.all()[0]).toMatchObject({ task: { id: saved.id }, serverId: saved.id });
+    await s.updateTask(saved.id, { title: "edited" });                // queues behind the create
+    expect(queue.size()).toBe(2);
+    await vi.advanceTimersByTimeAsync(2_000);                         // store-scheduled retry, no App callback passed
+    expect(remap).toHaveBeenCalledWith(saved.id, saved.id, expect.objectContaining({ id: saved.id }));
+    expect(queue.size()).toBe(0);
+  });
+
+  it("an offline-created task queued under a client id is remapped by a store-scheduled retry", async () => {
+    const fake = makeFake();
+    let lose = true;
+    fake.setHandler((c) => {
+      if (c.table !== "tasks" || c.op !== "upsert") return undefined;
+      if (lose) { lose = false; return { error: { message: "TypeError: Failed to fetch" } }; }
+      return { data: [{ id: (c.payload as { id: string }).id }] };
+    });
+    const { store: s, queue } = await loadStore(fake);
+    queue.setUser("user-a");
+    queue.enqueueCreate(mkTask("t-new-9"), "user-a");
+    const remap = vi.fn();
+    s.setRemapHandler(remap);
+    await s.flushQueue();                                              // dropped mid-flight
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(remap).toHaveBeenCalledWith("t-new-9", expect.stringMatching(/^[0-9a-f-]{36}$/), expect.anything());
+  });
+
+  it("a reload still in flight at sign-out doesn't write the old user's snapshot back", async () => {
+    const fake = makeFake();
+    let signOutMidLoad = false;
+    fake.setHandler((c) => {
+      if (signOutMidLoad && c.table === "tasks" && c.op === "select") { signOutMidLoad = false; fake.fireAuth("SIGNED_OUT", null); }
+      return undefined;
+    });
+    const { store: s } = await loadStore(fake);
+    await s.bootstrap({ id: "user-a" });
+    expect(localStorage.getItem("kanbo-offline-snapshot")).toBeTruthy();
+    signOutMidLoad = true;
+    await s.bootstrap({ id: "user-a" }); // e.g. a debounced realtime reload
+    expect(localStorage.getItem("kanbo-offline-snapshot")).toBeNull();
+  });
+
+  it("only one tab replays at a time (navigator.locks)", async () => {
+    const fake = makeFake();
+    let held = true;
+    const request = vi.fn((_name: string, _opts: unknown, cb: (lock: unknown) => Promise<number>) => cb(held ? null : { name: "kanbo-flush" }));
+    Object.defineProperty(navigator, "locks", { value: { request }, configurable: true });
+    try {
+      const { store: s, queue } = await loadStore(fake);
+      queue.setUser("user-a");
+      queue.enqueueUpdate(uuidN(1), { title: "x" }, "user-a");
+      expect(await s.flushQueue()).toBe(0);            // another tab holds the lock and is replaying
+      expect(updatesSent(fake)).toHaveLength(0);
+      expect(request).toHaveBeenCalledWith("kanbo-flush", { ifAvailable: true }, expect.any(Function));
+      held = false;
+      expect(await s.flushQueue()).toBe(1);
+      expect(updatesSent(fake)).toEqual([{ title: "x" }]);
+    } finally {
+      delete (navigator as unknown as { locks?: unknown }).locks;
+    }
   });
 });
