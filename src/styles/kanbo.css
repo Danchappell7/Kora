@@ -13,30 +13,17 @@
   --font-head: 'Sora', 'Manrope', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* ---- KANBO brand accent — blue→violet→magenta (violet as the solid signal) ---- */
-  --accent: oklch(0.605 0.205 287);
-  --accent-strong: oklch(0.55 0.225 290);
-  --accent-dim: oklch(0.605 0.205 287 / 0.12);
-  --accent-glow: oklch(0.605 0.205 287 / 0.32);
-  --on-accent: oklch(0.99 0.01 287);
+  /* ---- KANBO brand accent — blue→violet→magenta (violet as the solid signal) ----
+     The accent, status and priority colours are theme-tuned, so they live in
+     the LIGHT and DARK blocks below. Non-violet accents are applied by
+     lib/appearance.ts, which writes oklch(var(--accent-l) C H) style values
+     inline so each theme's lightness still applies. */
   /* brand gradient (hero element, used with restraint) */
   --brand-blue: #5B7CFA;
   --brand-violet: #8B5CF6;
   --brand-magenta: #C24BE0;
   --brand-grad: linear-gradient(135deg, #5B7CFA, #8B5CF6 52%, #C24BE0);
   --brand-grad-soft: linear-gradient(135deg, oklch(0.66 0.19 270 / 0.16), oklch(0.62 0.22 320 / 0.16));
-
-  /* ---- Status palette (shared) ---- */
-  --st-todo: oklch(0.62 0.02 260);
-  --st-progress: oklch(0.62 0.17 256);
-  --st-review: oklch(0.72 0.15 70);
-  --st-blocked: oklch(0.62 0.20 18);
-  --st-done: oklch(0.66 0.16 156);
-
-  --prio-low: oklch(0.62 0.02 260);
-  --prio-medium: oklch(0.64 0.15 250);
-  --prio-high: oklch(0.70 0.16 70);
-  --prio-urgent: oklch(0.60 0.21 20);
 
   --radius: 18px;
   --radius-sm: 12px;
@@ -50,40 +37,107 @@
    Three clear layers instead of one lavender wash:
      canvas  (--bg)       cool near-white, barely tinted
      panel   (--bg-deep)  a step darker — sidebar, board lanes, wells
-     card    (--surface*) near-opaque white with a crisp hairline + soft shadow
-   Ink scale meets WCAG AA for small text on both canvas and cards
-   (--ink-4 ~4.7:1). The aurora is an ambient top-light, not a tint on
-   every card, and glass saturation is low so it can't colour-cast cards. */
+     card    (--surface*) paper-white with a crisp hairline + soft shadow
+   Contrast (WCAG 2.x, worst case across canvas / panel / cards / wells):
+     --ink 15.4 · --ink-2 9.6 · --ink-3 6.6 · --ink-4 5.0 — all text-safe;
+     accent, status and priority colours are ≥ 4.5:1 as text, including on
+     their own 14% chip tint (src/styles/contrast.test.ts guards all of it).
+     The aurora is an ambient top-light, not a tint on every card, and glass
+     saturation is low so it can't colour-cast.
+
+   IMPORTANT: `:root` matches <html> in BOTH themes, so every token declared
+   here must also be declared in the DARK block, or the light value leaks. */
 :root, [data-theme="light"] {
-  --bg: oklch(0.972 0.004 265);
-  --bg-deep: oklch(0.935 0.008 266);
-  --ink: oklch(0.21 0.016 266);
-  --ink-2: oklch(0.36 0.014 266);
-  --ink-3: oklch(0.47 0.012 266);
-  --ink-4: oklch(0.555 0.011 266);
+  --bg: oklch(0.966 0.005 265);
+  --bg-deep: oklch(0.944 0.007 266);
+  --ink: oklch(0.20 0.018 266);
+  --ink-2: oklch(0.35 0.016 266);
+  --ink-3: oklch(0.44 0.013 266);
+  --ink-4: oklch(0.505 0.012 266);
 
-  /* near-opaque porcelain surfaces */
-  --surface: oklch(1 0 0 / 0.80);
-  --surface-2: oklch(1 0 0 / 0.92);
+  /* paper-white cards on a tinted canvas; --surface-2 is a secondary fill a
+     step DARKER than cards (wells, chips, inactive controls) */
+  --surface: oklch(1 0 0 / 0.94);
+  --surface-2: oklch(0.955 0.005 266);
   --surface-solid: oklch(1 0 0);
-  --surface-raised: oklch(1 0 0 / 0.97);
+  --surface-raised: oklch(1 0 0);
+  /* ink-tint fills for hover / pressed / selected (work on any surface) */
+  --fill-1: oklch(0.28 0.02 266 / 0.055);
+  --fill-2: oklch(0.28 0.02 266 / 0.085);
+  /* progress / meter tracks: an ink tint, so a track reads on the canvas as
+     well as on white cards (the opaque --surface-2 all but vanished on the
+     canvas). Components: background var(--track, var(--surface-2)). */
+  --track: var(--fill-2);
 
-  --hairline: oklch(0.28 0.02 266 / 0.11);
-  --hairline-strong: oklch(0.28 0.02 266 / 0.20);
+  --hairline: oklch(0.28 0.02 266 / 0.12);
+  --hairline-strong: oklch(0.28 0.02 266 / 0.22);
   --edge-light: oklch(1 0 0 / 0.95);
+  /* boundary of a control whose outline IS the control (empty checkbox):
+     ≥ 3:1 on every surface (WCAG 1.4.11) */
+  --control-border: oklch(0.62 0.012 266);
+  /* form fields: a whisper off-white (lifts off the canvas, sits into white
+     cards) with a defined edge; focus adds a 2px accent ring */
+  --field-bg: oklch(0.985 0.003 265);
+  --field-border: oklch(0.28 0.02 266 / 0.26);
+  --field-border-hover: oklch(0.28 0.02 266 / 0.40);
+  /* modal scrim: a cool graphite veil, so dialogs lift off the page */
+  --scrim: oklch(0.22 0.025 266 / 0.30);
+
+  /* accent — deeper in light so it passes as text (violet 5.0:1 on canvas)
+     and carries white text (5.3:1). --accent-l/-strong-l let appearance.ts
+     derive any accent hue at this theme's lightness. */
+  --accent-l: var(--accent-l-light, 0.54);
+  --accent-strong-l: var(--accent-strong-l-light, 0.49);
+  --accent-dim-a: 0.10;
+  --accent-glow-a: 0.22;
+  --accent: oklch(0.54 0.215 288);
+  --accent-strong: oklch(0.49 0.22 290);
+  --accent-dim: oklch(0.54 0.215 288 / 0.10);
+  --accent-glow: oklch(0.54 0.215 288 / 0.22);
+  --accent-text: var(--accent);
+  --on-accent: var(--on-accent-light, oklch(0.99 0.01 287));
+  /* solid accent fill that carries --on-accent text (primary buttons), and
+     its hover (deeper for white text, lighter for accents that carry ink) */
+  --accent-fill: color-mix(in oklch, var(--accent), black var(--accent-shade-light, 0%));
+  --accent-hover: var(--accent-hover-light, var(--accent-strong));
+
+  /* status & priority — deep enough to be text-safe (≥ 4.5:1) on canvas,
+     panel, cards AND on their own 14% chip tint ("At risk" pill), while
+     staying vivid as dots, bars and timeline fills */
+  --st-todo: oklch(0.495 0.02 260);
+  --st-progress: oklch(0.495 0.17 256);
+  --st-review: oklch(0.50 0.125 62);
+  --st-blocked: oklch(0.505 0.19 22);
+  --st-done: oklch(0.475 0.12 156);
+  --prio-low: oklch(0.495 0.02 260);
+  --prio-medium: oklch(0.49 0.15 252);
+  --prio-high: oklch(0.50 0.13 62);
+  --prio-urgent: oklch(0.50 0.2 22);
+  /* solid destructive fill that carries white text */
+  --danger-fill: var(--st-blocked);
+
+  /* no neon on paper: glows collapse to nothing, chips darken their ink */
+  --glow-r: 0px;
+  --chart-glow: none;
+  --avatar-ink: oklch(0.22 0.02 266);
+  --chip-ink-mix: black;
+  --chip-ink-shift: 42%;
+  --chip-fill: 14%;
+  --chip-edge: 34%;
 
   --glass-blur: 24px;
   --glass-sat: 1.15;
-  /* layered, neutral shadows: a tight contact shadow + a soft ambient one */
-  --shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.05), 0 6px 16px -6px oklch(0.25 0.03 266 / 0.10);
-  --shadow-lg: 0 2px 4px oklch(0.25 0.02 266 / 0.05), 0 16px 36px -10px oklch(0.25 0.03 266 / 0.14), 0 44px 90px -30px oklch(0.25 0.04 266 / 0.18);
+  /* layered, neutral shadows: a 0.5px ring + tight contact + soft ambient */
+  --shadow: 0 0 0 0.5px oklch(0.25 0.02 266 / 0.05), 0 1px 2px oklch(0.25 0.02 266 / 0.06), 0 4px 12px -4px oklch(0.25 0.03 266 / 0.09);
+  --shadow-lg: 0 1px 2px oklch(0.25 0.02 266 / 0.06), 0 12px 28px -8px oklch(0.25 0.03 266 / 0.16), 0 36px 72px -24px oklch(0.25 0.04 266 / 0.20);
 
   /* ambient top-light, not a wash */
-  --aurora-1: oklch(0.86 0.10 var(--aurora-h, 262) / 0.34); /* tinted by the chosen accent */
-  --aurora-2: oklch(0.88 0.08 320 / 0.20);
-  --aurora-3: oklch(0.93 0.06 200 / 0.16);
+  --aurora-1: oklch(0.88 0.08 var(--aurora-h, 262) / 0.28); /* tinted by the chosen accent */
+  --aurora-2: oklch(0.90 0.06 320 / 0.14);
+  --aurora-3: oklch(0.94 0.05 200 / 0.12);
   --grid-line: transparent;
-  --grain-opacity: 0.035;
+  --grain-opacity: 0.02;
+  --grain-blend: multiply;
 
   color-scheme: light;
 }
@@ -94,17 +148,65 @@
   --bg-deep: oklch(0.16 0.014 266);
   --ink: oklch(0.97 0.005 264);
   --ink-2: oklch(0.78 0.012 264);
-  --ink-3: oklch(0.62 0.012 266);
-  --ink-4: oklch(0.50 0.012 266);
+  /* raised for WCAG AA on the lighter glass panels (--surface-2 is the
+     worst case): ink-3 ≥ 5.7:1, ink-4 ≥ 4.6:1 everywhere */
+  --ink-3: oklch(0.72 0.012 266);
+  --ink-4: oklch(0.665 0.012 266);
 
   --surface: oklch(0.30 0.018 264 / 0.5);
   --surface-2: oklch(0.34 0.02 264 / 0.6);
   --surface-solid: oklch(0.24 0.016 264);
   --surface-raised: oklch(0.28 0.018 264 / 0.9);
+  --fill-1: oklch(1 0 0 / 0.06);
+  --fill-2: oklch(1 0 0 / 0.10);
+  --track: var(--surface-2);
 
   --hairline: oklch(0.92 0.01 264 / 0.12);
   --hairline-strong: oklch(0.92 0.01 264 / 0.20);
   --edge-light: oklch(1 0 0 / 0.10);
+  --control-border: oklch(0.56 0.012 266);
+  --field-bg: var(--surface);
+  --field-border: var(--hairline);
+  --field-border-hover: var(--hairline-strong);
+  --scrim: color-mix(in oklch, var(--bg-deep) 60%, transparent);
+
+  --accent-l: var(--accent-l-dark, 0.605);
+  --accent-strong-l: var(--accent-strong-l-dark, 0.55);
+  --accent-dim-a: 0.12;
+  --accent-glow-a: 0.32;
+  --accent: oklch(0.605 0.205 287);
+  --accent-strong: oklch(0.55 0.225 290);
+  --accent-dim: oklch(0.605 0.205 287 / 0.12);
+  --accent-glow: oklch(0.605 0.205 287 / 0.32);
+  /* the glowing mid-tone violet can't carry text on its own dark panels, so
+     text-on-dark uses a lighter tint (≥ 5.4:1 on every surface) */
+  --accent-text: var(--accent-text-dark, oklch(0.72 0.15 287));
+  --on-accent: var(--on-accent-dark, oklch(0.99 0.01 287));
+  /* buttons sit a shade deeper than the glow so white text reaches 4.5:1 */
+  --accent-fill: color-mix(in oklch, var(--accent), black var(--accent-shade-dark, 4.5%));
+  --accent-hover: var(--accent-hover-dark, var(--accent-strong));
+
+  /* status & priority — the neutral, blue and red members are lifted just
+     enough to pass 4.5:1 as text on glass cards and their own chip tint */
+  --st-todo: oklch(0.69 0.02 260);
+  --st-progress: oklch(0.69 0.16 256);
+  --st-review: oklch(0.72 0.15 70);
+  --st-blocked: oklch(0.705 0.18 18);
+  --st-done: oklch(0.665 0.16 156);
+  --prio-low: oklch(0.69 0.02 260);
+  --prio-medium: oklch(0.69 0.14 250);
+  --prio-high: oklch(0.70 0.16 70);
+  --prio-urgent: oklch(0.715 0.18 20);
+  /* the lifted reds are for text and dots; white-on-red buttons need depth */
+  --danger-fill: oklch(0.57 0.2 20);
+
+  --glow-r: 8px;
+  --chart-glow: drop-shadow(0 0 6px currentColor);
+  --avatar-ink: var(--bg-deep);
+  --chip-ink-mix: white;
+  --chip-ink-shift: 12%;
+  --chip-fill: 12%;
+  --chip-edge: 30%;
 
   --glass-blur: 30px;
   --glass-sat: 1.9;
@@ -115,9 +217,14 @@
   --aurora-2: oklch(0.55 0.15 320 / 0.22);
   --aurora-3: oklch(0.6 0.12 200 / 0.20);
   --grid-line: transparent;
+  --grain-opacity: 0.07;
+  --grain-blend: normal;
 
   color-scheme: dark;
 }
+
+/* form controls (checkboxes, radios, range sliders) follow the brand accent */
+:root { accent-color: var(--accent); }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -133,7 +240,20 @@ body {
   font-optical-sizing: auto;
   overflow: hidden;
 }
-#root { height: 100vh; }
+/* Full-height shells fill the window through the 100% chain, not 100vh.
+   Settings → Text size scales the app with `zoom` on <html>, and browsers
+   zoom vh too: a 100vh shell was 8% taller than the window at "Large"
+   (sidebar footer, list ends and composers clipped under overflow:hidden)
+   and left a 6% gap at "Small". Percentages resolve against the real
+   viewport at any zoom — and, on phones, against the visible area rather
+   than the toolbar-collapsed "large" viewport that 100vh reports.
+   The shells (app, loader, sign-in, admin, error screen) set height:100vh
+   inline, so they're matched on their style attribute. */
+#root { height: 100%; }
+#root > [style^="height: 100vh"],
+#root > [style*="; height: 100vh"] { height: 100% !important; }
+#root > [style^="min-height: 100vh"],
+#root > [style*="; min-height: 100vh"] { min-height: 100% !important; }
 
 /* KANBO brand: Sora for display headings + page titles.
    Balanced wrapping keeps headings from leaving a lonely last word;
@@ -183,8 +303,9 @@ p { text-wrap: pretty; }
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 180px 180px;
   opacity: var(--grain-opacity, 0.05);
+  /* light: multiply, so the grain reads as paper tooth instead of a grey veil */
+  mix-blend-mode: var(--grain-blend, normal);
 }
-[data-theme="dark"] { --grain-opacity: 0.07; }
 @media (prefers-reduced-motion: reduce) { .app-bg, .app-bg-intro, [data-ambient="on"] .app-bg { animation: none !important; } }
 .app-grid {
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
@@ -217,7 +338,9 @@ p { text-wrap: pretty; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .kicker {
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
-  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-4);
+  letter-spacing: 0.16em; text-transform: uppercase;
+  /* 10.5px labels are small text: --ink-3 keeps them ≥ 5:1 in both themes */
+  color: var(--ink-3);
 }
 .tnum { font-variant-numeric: tabular-nums; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -239,10 +362,10 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .btn-ghost { background: var(--surface-2); border-color: var(--hairline); color: var(--ink-2); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .btn-ghost:hover { background: var(--surface-raised); color: var(--ink); border-color: var(--hairline-strong); box-shadow: var(--shadow); }
 .btn-accent {
-  background: var(--accent); color: var(--on-accent); font-weight: 650;
+  background: var(--accent-fill, var(--accent)); color: var(--on-accent); font-weight: 650;
   box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 8px 22px -8px var(--accent-glow);
 }
-.btn-accent:hover { background: var(--accent-strong); box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 12px 30px -6px var(--accent-glow); transform: translateY(-1px); }
+.btn-accent:hover { background: var(--accent-hover, var(--accent-strong)); box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 12px 30px -6px var(--accent-glow); transform: translateY(-1px); }
 .btn-icon {
   width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 12px;
   background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
@@ -254,15 +377,15 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
    COMPOSE with an element's own inline transform (e.g. a dialog centred with
    translate(-50%,-50%)) instead of overwriting it mid-animation. */
 @keyframes fadeUp { from { translate: 0 12px; } to { translate: 0 0; } }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* house rule: entrances never start below 0.35 opacity, so a throttled or
+   backgrounded tab (or a capture mid-animation) never shows an empty panel */
+@keyframes fadeIn { from { opacity: 0.35; } to { opacity: 1; } }
 @keyframes scaleIn { from { scale: 0.97; translate: 0 4px; } to { scale: 1; translate: 0 0; } }
 @keyframes slideInRight { from { translate: 24px 0; } to { translate: 0 0; } }
-@keyframes slideInUp { from { translate: 0 28px; opacity: 0; } to { translate: 0 0; opacity: 1; } }
+@keyframes slideInUp { from { translate: 0 28px; } to { translate: 0 0; } }
 @keyframes pulseGlow { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 @keyframes spinSlow { to { transform: rotate(360deg); } }
 .spin { animation: spinSlow 1s linear infinite; }
-.ksaved-del { opacity: 0; transition: opacity .12s; }
-.ksaved-row:hover .ksaved-del { opacity: 1; }
 @keyframes dash { to { stroke-dashoffset: 0; } }
 /* Base state is VISIBLE — animation is enhancement only, never gates content.
    No `both`/backwards fill, so a paused/backgrounded frame still shows content. */
@@ -294,14 +417,30 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
    anything mounted later appears instantly. */
 .kstagger-settled > * { animation: none; }
 
-/* Modal backdrops: fade in, and one consistent frosted depth across every
-   dialog (overrides the slightly different per-modal inline blurs). */
-@keyframes kbackdropIn { from { opacity: 0; } }
+/* Modal backdrops: one consistent scrim + frosted depth across every dialog
+   (overrides the per-modal inline backgrounds and blurs). The scrim lives on
+   a ::before layer and only THAT layer fades in: most dialogs render inside
+   their backdrop, so fading the backdrop element used to fade the dialog
+   (TaskDetail, New task, Settings…) in from opacity 0. The dialogs carry
+   their own transform-only entrance. */
 .kbackdrop {
-  animation: kbackdropIn 0.22s var(--ease-out);
-  -webkit-backdrop-filter: blur(10px) saturate(1.35) !important;
-  backdrop-filter: blur(10px) saturate(1.35) !important;
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
+.kbackdrop::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(10px) saturate(1.35);
+  backdrop-filter: blur(10px) saturate(1.35);
+  animation: kbackdropIn 0.22s var(--ease-out);
+}
+/* light: less saturation, so the aurora doesn't bloom through the veil */
+[data-theme="light"] .kbackdrop::before {
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  backdrop-filter: blur(10px) saturate(1.1);
+}
+@keyframes kbackdropIn { from { opacity: 0.35; } }
 
 /* Signature completion moment on the shared checkbox */
 .kcheck { position: relative; }
@@ -335,7 +474,7 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 @keyframes kfloat { 50% { transform: translateY(-4px); } }
 .kempty-art { animation: scaleIn 0.5s var(--ease-spring), kfloat 6s ease-in-out 0.5s infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .kstagger > *, .kbackdrop, .kempty-art, .kland, .kland-row, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
+  .kstagger > *, .kbackdrop::before, .kempty-art, .kland, .kland-row, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
   .kcheck-draw { stroke-dashoffset: 0; animation: none !important; }
 }
 
@@ -361,7 +500,7 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, color-mix(in oklch, var(--ink) 7%, transparent), transparent); animation: skelShimmer 1.4s ease-in-out infinite; }
 @keyframes skelShimmer { to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
-.iadd:hover { color: var(--accent) !important; border-color: var(--accent) !important; }
+.iadd:hover { color: var(--accent-text, var(--accent)) !important; border-color: var(--accent) !important; }
 
 /* Plan-my-day scheduled block — reveal the "remove from day" ✕ on hover/focus */
 .plan-block-x { opacity: 0; transition: opacity .14s var(--ease), background .14s var(--ease), color .14s var(--ease); }
@@ -376,17 +515,47 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .kproj { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 11px; border-radius: 9px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 13.5px; color: var(--ink-3); text-align: left; transition: background .15s; }
 .kproj:hover { background: var(--surface); }
 .kproj[data-active="true"] { background: var(--surface-2); color: var(--ink); }
-.kproj-del { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 24px; height: 24px; border: none; border-radius: 7px; background: var(--surface-2); color: var(--ink-3); cursor: pointer; opacity: 0; transition: opacity .14s, color .14s, background .14s; }
-.kproj-row:hover .kproj-del { opacity: 1; }
+.kproj-del { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 24px; height: 24px; border: none; border-radius: 7px; background: var(--surface-2); color: var(--ink-3); cursor: pointer; opacity: 0; transition: opacity .14s, color .14s, background .14s; }
+/* the actions sit left of the pin star (which stays visible and clickable),
+   over the task count they replace; with two actions (Archive, then Delete)
+   the first steps further left so neither covers the other */
+.kproj-del:has(+ .kproj-del) { right: 52px; }
 .kproj-del:hover { color: var(--st-blocked); background: color-mix(in oklch, var(--st-blocked) 14%, transparent); }
-.kproj-row:hover .kproj-count { opacity: 0; }
 
 /* tag chip delete (hover-reveal) */
-.tagchip-del { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 99px; background: var(--st-blocked); color: oklch(0.99 0.01 20); cursor: pointer; opacity: 0; transition: opacity .14s; box-shadow: var(--shadow); }
-.tagchip:hover .tagchip-del { opacity: 1; }
+.tagchip-del { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 99px; background: var(--danger-fill, var(--st-blocked)); color: oklch(0.99 0.01 20); cursor: pointer; opacity: 0; transition: opacity .14s; box-shadow: var(--shadow); }
+
+/* saved-search remove (hover-reveal) */
+.ksaved-del { opacity: 0; transition: opacity .12s; }
+
+/* Hover-revealed actions must also appear for KEYBOARD users: a focusable
+   control at opacity 0 means Tab lands on something invisible and Space/Enter
+   fires an action nobody could see (delete a tag, archive a project). They
+   show while KEYBOARD focus is anywhere in their row, and on their own focus.
+   Not :focus-within — Chrome focuses a button on mouse click, so a clicked
+   project/tag/saved list would keep its delete controls stuck on screen
+   (covering the name) until focus moved on; :focus-visible is keyboard-only
+   for buttons. The :has() rules are separate so a browser without :has()
+   drops only them, never the hover rule. */
+.kproj-row:hover .kproj-del, .kproj-del:focus-visible,
+.tagchip:hover .tagchip-del, .tagchip-del:focus-visible,
+.ksaved-row:hover .ksaved-del, .ksaved-del:focus-visible { opacity: 1; }
+.kproj-row:has(:focus-visible) .kproj-del,
+.tagchip:has(:focus-visible) .tagchip-del,
+.ksaved-row:has(:focus-visible) .ksaved-del { opacity: 1; }
+.kproj-row:hover .kproj-count { opacity: 0; }
+.kproj-row:has(:focus-visible) .kproj-count { opacity: 0; }
+/* multi-select boxes on list rows and board cards fade in on hover (opacity
+   is inline in ListView/OtherViews), so keyboard focus must reveal them too.
+   The row rule looks for a focused BUTTON only: text/date inputs match
+   :focus-visible even on a mouse click (a picked due date would leave the
+   box showing). */
+.ksel:focus-visible,
+button:is([aria-label="Select task"], [aria-label="Deselect task"]):focus-visible { opacity: 1 !important; }
+.task-row:has(button:focus-visible) button[aria-label="Select task"] { opacity: 1 !important; }
 
 /* hover-lift helpers (CSS so no stale inline transforms) */
-.lift { transition: transform .16s var(--ease), border-color .16s var(--ease); }
+.lift { transition: transform .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease); }
 .lift:hover { transform: translateY(-2px); border-color: var(--hairline-strong); }
 .lift-row { transition: background .14s, opacity .35s var(--ease); }
 .lift-row:hover { background: var(--surface); }
@@ -404,17 +573,94 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 
 /* ---- light-theme refinements ----
    On a near-white canvas a white hover is invisible, so light hovers use a
-   faint ink tint instead; the top bar gets a frosted band so content scrolls
-   under a defined edge. Dark theme is untouched. */
+   faint ink tint (--fill-1/--fill-2) instead; the top bar gets a frosted band
+   so content scrolls under a defined edge. Dark theme is untouched. */
 [data-theme="light"] .lift-row:hover { background: oklch(0.28 0.02 266 / 0.035); }
-[data-theme="light"] .knav:hover, [data-theme="light"] .kproj:hover { background: oklch(0.28 0.02 266 / 0.045); }
+[data-theme="light"] .lift-row:active { background: var(--fill-1); }
+[data-theme="light"] .knav:hover, [data-theme="light"] .kproj:hover { background: var(--fill-1); }
 [data-theme="light"] .knav[data-active="true"], [data-theme="light"] .kproj[data-active="true"] {
-  background: var(--surface-solid); box-shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.06), 0 0 0 1px var(--hairline);
+  background: var(--surface-solid); box-shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.08), 0 0 0 0.5px oklch(0.28 0.02 266 / 0.16);
 }
+/* the active nav bar is a solid 3px accent stroke on paper — no neon glow */
+[data-theme="light"] .knav[data-active="true"] > span:first-child { box-shadow: none !important; }
 [data-theme="light"] .topbar { background: color-mix(in oklch, var(--bg) 78%, transparent); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
-[data-theme="light"] .btn-ghost { background: var(--surface-solid); }
-[data-theme="light"] .btn-ghost:hover { background: var(--surface-solid); border-color: var(--hairline-strong); }
-[data-theme="light"] .kicker { color: var(--ink-3); }
+/* phone drawer: the sidebar is translucent glass, and over the graphite scrim
+   it turned grey — as a drawer it's a solid panel */
+[data-theme="light"] [role="dialog"][aria-label="Menu"] aside { background: var(--bg-deep) !important; }
+[data-theme="light"] .btn-ghost { background: var(--surface-solid); border-color: oklch(0.28 0.02 266 / 0.16); box-shadow: 0 1px 1.5px oklch(0.25 0.02 266 / 0.06); }
+[data-theme="light"] .btn-ghost:hover { background: var(--surface-solid); border-color: var(--hairline-strong); box-shadow: var(--shadow); }
+[data-theme="light"] .btn-ghost:active { background: var(--surface-2); }
+/* icon buttons: bordered ones are white keycaps like .btn-ghost; borderless
+   toolbar ones are transparent until hovered, then an ink tint.
+   "Borderless" = inline border:none, which React writes through the CSSOM:
+   Chrome serialises it into the style attribute as LONGHANDS
+   ("border-width: medium; border-style: none; …" — checked in Chromium 152),
+   so that spelling is matched as well as the shorthand one (the ";" stops a
+   per-side "border-style: none none solid" counting). .btn-icon-quiet is
+   the class form. */
+[data-theme="light"] .btn-icon { background: var(--surface-solid); }
+[data-theme="light"] .btn-icon:is(.btn-icon-quiet, [style*="border: none"], [style*="border-style: none;"]) { background: transparent; }
+[data-theme="light"] .btn-icon:hover { background: var(--fill-1); border-color: var(--hairline-strong); }
+[data-theme="light"] .btn-icon:active { background: var(--fill-2); }
+/* segmented control: iOS-style grey track with a white thumb */
+[data-theme="light"] .kseg { background: var(--fill-1); border-color: transparent; }
+[data-theme="light"] .kseg-btn:hover:not([data-active="true"]) { color: var(--ink); }
+[data-theme="light"] .kseg-btn[data-active="true"] {
+  background: var(--surface-solid);
+  box-shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.10), 0 0 0 0.5px oklch(0.28 0.02 266 / 0.14);
+}
+/* loading skeletons read as grey placeholders on white cards */
+[data-theme="light"] .skel { background: var(--fill-2); }
+/* progress / meter tracks (project progress, goals, workload, reports, admin
+   usage, plan-my-day capacity) are inline-styled with this exact pair, which
+   is serialised verbatim (a shorthand holding var() can't be expanded into
+   longhands); nothing else in the app uses it. Components moving to
+   var(--track, var(--surface-2)) get the same result without this match. */
+[data-theme="light"] div[style*="background: var(--surface-2); overflow: hidden;"] { background: var(--track) !important; }
+/* cards lift with a shadow, not just a nudge */
+[data-theme="light"] .glass.lift:hover { box-shadow: var(--shadow-lg); }
+/* board lanes: a recessed bg-deep well with a hairline edge, so white cards
+   sit IN a visible column. Lanes are inline-styled in OtherViews, so they're
+   matched on that style (.klane is the class form); the drag-over state
+   swaps the inline background to --accent-dim, which this leaves alone. */
+[data-theme="light"] div[style*="background: color-mix(in oklch, var(--bg-deep) 28%, transparent)"],
+[data-theme="light"] .klane:not([style*="accent-dim"]) {
+  background: color-mix(in oklch, var(--bg-deep) 70%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--hairline) !important;
+}
+[data-theme="light"] button[style*="background: color-mix(in oklch, var(--bg-deep) 28%, transparent)"] {
+  background: color-mix(in oklch, var(--bg-deep) 70%, transparent) !important;
+}
+/* form fields: components style fields inline with --surface/--surface-2 and
+   --hairline; inside a text field those tokens resolve to the field tokens,
+   so every bordered field gets a defined edge without touching inline
+   styles (borderless inline editors and accent-bordered states are
+   unaffected). */
+[data-theme="light"] :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"]), textarea, select) {
+  --surface: var(--field-bg);
+  --surface-2: var(--field-bg);
+  --hairline: var(--field-border);
+  --hairline-strong: var(--field-border-hover);
+}
+
+/* ---- icon buttons (both themes; after the light block so these win) ----
+   Most icon buttons are borderless toolbar buttons (inline border:none) that
+   also set a quiet inline colour (--ink-3/--ink-4), which beat the CSS hover
+   colour. Give them their hover ink back, and make destructive ones read as
+   destructive before the click. .btn-icon-quiet is the class form. */
+.btn-icon:is([style*="color: var(--ink-3)"], [style*="color: var(--ink-4)"]):hover { color: var(--ink) !important; }
+.btn-icon:is([title^="Delete"], [aria-label^="Delete"], [aria-label^="Remove"]):hover {
+  color: var(--st-blocked) !important; background: color-mix(in oklch, var(--st-blocked) 12%, transparent);
+}
+
+/* destructive confirm buttons are filled inline with --st-blocked or
+   --prio-urgent, which (in dark) are tuned for TEXT; as a button fill they
+   use the deeper --danger-fill so the white label stays ≥ 4.5:1 */
+button[style*="background: var(--st-blocked)"], button[style*="background: var(--prio-urgent)"] { background: var(--danger-fill) !important; }
+
+/* the multi-select boxes on rows/cards are checkboxes: their empty outline
+   is the control, so it gets the ≥ 3:1 control border */
+button:is([aria-label="Select task"], [aria-label="Deselect task"]), .ksel { --hairline-strong: var(--control-border); }
 
 /* ---- premium selects (both themes): custom chevron instead of the OS widget.
    !important is needed because components set the \`background\` shorthand
@@ -428,7 +674,7 @@ select {
 [data-theme="dark"] select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3a7b4' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
 }
-select:hover { border-color: var(--hairline-strong) !important; }
+select:hover { border-color: var(--field-border-hover, var(--hairline-strong)) !important; }
 select[multiple] { background-image: none !important; padding-right: 8px !important; }
 
 /* ---- focus-visible ring for keyboard users (accessibility) ---- */
@@ -436,6 +682,27 @@ select[multiple] { background-image: none !important; padding-right: 8px !import
    used to square off round buttons/chips on keyboard focus) */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:focus:not(:focus-visible) { outline: none; }
+/* Text fields: almost every field sets outline:none inline, which silently
+   removed the only focus indicator — !important restores it. */
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent) !important; outline-offset: 1px;
+}
+/* borderless inline editors (task/goal names, subtask entry) get a rounded
+   ring with room to breathe instead of a hard box on the text. Inline
+   border:none is matched in both serialisations (see .btn-icon above);
+   data-focus-ring="inline" is the explicit form. */
+:is(input, textarea):is([style*="border: none"], [style*="border-style: none;"], [data-focus-ring="inline"]):focus-visible { outline-offset: 3px; border-radius: 6px; }
+/* The palette and quick-capture inputs ARE their dialog (the dialog's own
+   frame is the focus context); a ring inside it would be noise. Opt-out
+   for similar hero inputs: data-focus-ring="none". */
+[aria-label="Command palette"] input:focus-visible,
+[aria-label="Quick capture"] input:focus-visible,
+[data-focus-ring="none"]:focus-visible { outline: none !important; }
+/* Invisible native pickers stretched over a label (due-date chips in list
+   rows and board cards) can't show their own ring — ring the label. */
+label:has(> input[style*="opacity: 0"]:focus-visible) {
+  outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px;
+}
 
 /* ---- responsive ---- */
 @media (max-width: 860px) {
@@ -445,7 +712,11 @@ button:focus:not(:focus-visible) { outline: none; }
   .kseg { overflow-x: auto; max-width: 100%; }
 }
 @media (max-width: 560px) {
-  .topbar-search { display: none !important; }
+  /* phones: search collapses to an icon button instead of disappearing — it
+     opens the command palette, the only route to Manage tags and Quick
+     capture on a device with no keyboard shortcut */
+  .topbar-search { flex: 0 0 auto !important; width: 40px; height: 40px !important; padding: 0 !important; justify-content: center; }
+  .topbar-search kbd { display: none; }
   [data-tip]::after { display: none; } /* tooltips are awkward on touch */
   .topbar { padding: 12px 14px; }
   .topbar h1 { font-size: 19px; }
@@ -457,8 +728,18 @@ button:focus:not(:focus-visible) { outline: none; }
 @media (hover: none), (pointer: coarse) {
   /* controls that fade in on hover must be permanently reachable by a finger */
   .kproj-del { opacity: 1 !important; }
+  /* …except the sidebar's one-tap Archive (the first of the two actions):
+     permanently shown beside Delete on a phone it's an easy mis-tap that
+     hides the project for the whole team. On touch, archiving goes through
+     the project Overview's Archive button, which confirms first. */
+  .kproj-del[title^="Archive"] { display: none !important; }
+  .kproj-del:has(+ .kproj-del) { display: none !important; }
   .tagchip-del { opacity: 1 !important; }
+  .ksaved-del { opacity: 1 !important; }
   .kproj-row .kproj-count { opacity: 0 !important; } /* hide count so it doesn't sit under the delete button */
+  /* the saved-search × sits at the row's right edge: pad the row so its
+     count badge moves clear of it instead of hiding under an invisible target */
+  .ksaved-row .knav { padding-right: 36px; }
   .lift:hover { transform: none; } /* no phantom hover-lift stuck after a tap */
   /* comfortable 40px+ touch targets */
   .btn-icon { width: 40px; height: 40px; }

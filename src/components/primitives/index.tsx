@@ -4,6 +4,7 @@
    ============================================================ */
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "./Icon";
+import { legibleFill, LIGHT_INK } from "../../lib/contrast";
 import {
   getMember, memberInitials, STATUS_META, TAGS, PRIORITY_META,
 } from "../../data/data";
@@ -14,7 +15,34 @@ export { KanboLogo } from "./KanboLogo";
 export { EmptyArt } from "./EmptyArt";
 export { EmojiPicker } from "./EmojiPicker";
 
+/* ---------- colour chips ----------
+   Chips tinted with a RAW palette colour (tags, energy levels, calendar
+   providers) keep their colour identity with a translucent fill + edge,
+   while the TEXT is pushed away from the background: 42% toward black on
+   paper, 12% toward white on glass, so every tag colour stays ≥ 4.5:1 on its
+   own tint. Black and white have no hue, so the mix keeps the tag's own hue.
+   Chips coloured with a status/priority TOKEN (AiScore, "At risk") don't
+   need this: those tokens are tuned per theme to pass on their own tint. */
+export const chipInk = (c: string) => `color-mix(in oklch, ${c}, var(--chip-ink-mix, black) var(--chip-ink-shift, 0%))`;
+export const chipFill = (c: string) => `color-mix(in oklch, ${c} var(--chip-fill, 12%), transparent)`;
+export const chipEdge = (c: string) => `color-mix(in oklch, ${c} var(--chip-edge, 30%), transparent)`;
+
 /* ---------- Avatar ---------- */
+// Initials must read on ANY profile colour: dark ink (--avatar-ink) on the
+// pastel palette, white on deep colours, and a mid-tone neither reaches
+// 4.5:1 on (e.g. the old default self violet, oklch 0.585) is lifted toward
+// white just enough for dark ink. Cached per colour — avatars are in every row.
+const avatarCache = new Map<string, { fill: string; ink: string }>();
+export function avatarPaint(color: string): { fill: string; ink: string } {
+  let paint = avatarCache.get(color);
+  if (!paint) {
+    const { fill, ink } = legibleFill(color);
+    paint = { fill, ink: ink === "light" ? LIGHT_INK : "var(--avatar-ink)" };
+    avatarCache.set(color, paint);
+  }
+  return paint;
+}
+
 export function Avatar({ id, size = 24, ring }: { id: string; size?: number; ring?: boolean }) {
   const m = getMember(id);
   if (!m) return null;
@@ -27,12 +55,13 @@ export function Avatar({ id, size = 24, ring }: { id: string; size?: number; rin
       }} />
     );
   }
+  const paint = avatarPaint(m.color);
   return (
     <span title={m.name} style={{
       width: size, height: size, borderRadius: 99, flexShrink: 0,
       display: "inline-grid", placeItems: "center",
       fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: size * 0.36,
-      color: "var(--bg-deep)", background: m.color,
+      color: paint.ink, background: paint.fill,
       boxShadow: shadow,
     }}>{memberInitials(m.name)}</span>
   );
@@ -60,7 +89,7 @@ export function StatusDot({ status, size = 9, glow }: { status: Status; size?: n
         position: "absolute", inset: 0, borderRadius: 99,
         background: status === "todo" ? "transparent" : c,
         border: status === "todo" ? `1.6px solid ${c}` : "none",
-        boxShadow: glow ? `0 0 8px ${c}` : "none",
+        boxShadow: glow ? `0 0 var(--glow-r, 8px) ${c}` : "none", // no glow on paper (light: 0px)
       }} />
       {isProgress && <span style={{ position: "absolute", inset: -3, borderRadius: 99, border: `1.5px solid ${c}`, opacity: 0.35, animation: "pulseGlow 2s var(--ease) infinite" }} />}
     </span>
@@ -100,8 +129,11 @@ export function wasJustLanded(key?: string): boolean {
 // The signature completion moment: when the user checks something off, the box
 // springs, a ring bursts outward, the tick draws itself, and phones get a light
 // haptic tap. Un-checking (and anything already done on first render) is calm.
-// Pass `celebrateKey` (the task id) so the moment survives a row re-mount.
-export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: boolean; onToggle?: () => void; size?: number; celebrateKey?: string }) {
+// Pass `celebrateKey` (the task id) so the moment survives a row re-mount, and
+// `label` (the task or subtask title) so screen readers hear WHICH item
+// ("Done: Write brief"). When the box isn't a completion toggle at all (a
+// yes/no custom field), `name` replaces the whole accessible name ("Approved").
+export function Check({ done, onToggle, size = 18, celebrateKey, label, name }: { done?: boolean; onToggle?: () => void; size?: number; celebrateKey?: string; label?: string; name?: string }) {
   const [pop, setPop] = useState(() => !!done && wasJustCompleted(celebrateKey));
   // A complete-click only ARMS the celebration; it plays when `done` actually
   // flips. So if completion is cancelled (e.g. "this task is blocked — mark it
@@ -128,14 +160,18 @@ export function Check({ done, onToggle, size = 18, celebrateKey }: { done?: bool
   };
   const tick = size * 0.7;
   return (
-    <button onClick={click} aria-label={done ? "Mark as not done" : "Mark as done"} aria-pressed={!!done}
+    // A checkbox (state is aria-checked) with a name that doesn't flip with
+    // the state, so it never reads as "Mark as not done, pressed".
+    <button type="button" role="checkbox" aria-checked={!!done} onClick={click}
+      aria-label={name || (label ? `Done: ${label}` : "Done")}
       className={"kcheck" + (pop ? " kcheck-pop" : "")}
       style={{
         width: size, height: size, borderRadius: 6, flexShrink: 0, cursor: "pointer", padding: 0,
         display: "grid", placeItems: "center", transition: "background .2s var(--ease), border-color .2s var(--ease), box-shadow .3s var(--ease)",
-        border: `1.6px solid ${done ? "var(--accent)" : "var(--hairline-strong)"}`,
+        // the empty outline IS the control: ≥ 3:1 on every surface (WCAG 1.4.11)
+        border: `1.6px solid ${done ? "var(--accent)" : "var(--control-border, var(--hairline-strong))"}`,
         background: done ? "var(--accent)" : "transparent",
-        boxShadow: done ? "0 0 12px var(--accent-glow)" : "none",
+        boxShadow: done ? "0 0 calc(var(--glow-r, 8px) * 1.5) var(--accent-glow)" : "none",
         color: "var(--on-accent)",
       }}>
       {done && (
@@ -193,7 +229,8 @@ export function Collapse({ open, children, ms = 280 }: { open: boolean; children
   }, [open, ms]);
   if (!mounted) return null;
   return (
-    <div style={{ display: "grid", gridTemplateRows: expanded ? "1fr" : "0fr", opacity: expanded ? 1 : 0,
+    // opacity floor 0.35 (house rule): a throttled frame never shows a blank section
+    <div style={{ display: "grid", gridTemplateRows: expanded ? "1fr" : "0fr", opacity: expanded ? 1 : 0.35,
       transition: `grid-template-rows ${ms}ms var(--ease-out), opacity ${ms}ms var(--ease-out)` }}>
       <div style={{ minHeight: 0, overflow: settled ? "visible" : "hidden" }}>{children}</div>
     </div>
@@ -250,9 +287,9 @@ export function Tag({ id, small }: { id: string; small?: boolean }) {
       display: "inline-flex", alignItems: "center", gap: 5,
       fontFamily: "var(--font-mono)", fontSize: small ? 10 : 11, fontWeight: 500,
       padding: small ? "1px 7px" : "2px 8px", borderRadius: 6,
-      color: tg.color,
-      border: `1px solid color-mix(in oklch, ${tg.color} 30%, transparent)`,
-      backgroundColor: `color-mix(in oklch, ${tg.color} 12%, transparent)`,
+      color: chipInk(tg.color),
+      border: `1px solid ${chipEdge(tg.color)}`,
+      backgroundColor: chipFill(tg.color),
     }}>{tg.label}</span>
   );
 }
@@ -290,15 +327,19 @@ export interface SegmentedOption<T extends string = string> {
   label: string;
   icon?: IconName;
 }
-export function Segmented<T extends string>({ options, value, onChange }: {
+// A single-select toggle group: each option is a toggle button whose pressed
+// state is exposed (aria-pressed), inside a named group ("View", "Group by").
+export function Segmented<T extends string>({ options, value, onChange, ariaLabel }: {
   options: SegmentedOption<T>[];
   value: T;
   onChange: (v: T) => void;
+  ariaLabel?: string;
 }) {
   return (
-    <div className="kseg">
+    <div className="kseg" role="group" aria-label={ariaLabel}>
       {options.map((o) => (
-        <button key={o.value} className="kseg-btn" data-active={o.value === value} onClick={() => onChange(o.value)} title={o.label}>
+        <button key={o.value} type="button" className="kseg-btn" data-active={o.value === value} aria-pressed={o.value === value}
+          onClick={() => onChange(o.value)} title={o.label}>
           {o.icon && <Icon name={o.icon} size={15} />}{o.label}
         </button>
       ))}
