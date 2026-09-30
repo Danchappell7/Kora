@@ -68,6 +68,7 @@ describe("ProjectActions — posting an update", () => {
     render(<ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus })} />);
     fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
     await waitFor(() => expect(box()).toHaveValue("Kanbo's words"));
+    expect(box()).toHaveFocus();                                        // the words arrive without stealing focus
     expect(aiStatus).toHaveBeenCalledWith(expect.objectContaining({ project: "Alpha", blocked: [expect.objectContaining({ title: "Ship onboarding", waitingOn: ["Finalise the deck"] })] }));
     expect(screen.getByRole("button", { name: "Off track" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(/How I got here · from this week's/)).toBeInTheDocument();

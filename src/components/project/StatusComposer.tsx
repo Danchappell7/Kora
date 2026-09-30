@@ -6,7 +6,7 @@
    closing the popover never throws typed words away.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
-import { AiMark, Button, Segmented, Vellum } from "../primitives";
+import { AiMark, Button, Provenance, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { KANBO_TODAY } from "../../data/data";
 import type { Project, StatusKind, StatusUpdate, Task } from "../../data/types";
@@ -180,9 +180,11 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
         </div>
       )}
       <Segmented ariaLabel="Project status" options={STATUS_OPTIONS} value={c.kind} onChange={c.setKind} />
-      {c.source === "ai"
-        ? <Vellum provenance={{ summary: `from this week's ${changes}`, details: factLines(facts) }}>{field}</Vellum>
-        : field}
+      {/* one wrapper either way, so the field never remounts (and never drops focus) as Kanbo's words arrive or go */}
+      <div className={c.source === "ai" ? "kvellum" : "kpj-draft"}>
+        {field}
+        {c.source === "ai" && <Provenance summary={`from this week's ${changes}`} details={factLines(facts)} />}
+      </div>
       {c.source === "template" && (
         <p className="kpj-composer-note">{c.note ?? `Drafted on this device from this week's ${changes}.`} Edit it before you post.</p>
       )}
