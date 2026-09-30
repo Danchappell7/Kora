@@ -138,7 +138,7 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                       <div className="kpj-card-head">
                         {proj && !projectId && <ProjectDot color={proj.color} size={10} title={proj.name} />}
                         {readOnly
-                          ? <span className="kpj-name-input" style={{ display: "inline-flex", alignItems: "center" }}>{rule.name}</span>
+                          ? <span className="kpj-name-static">{rule.name}</span>
                           : <DraftInput value={rule.name} required label={`Rule name: ${rule.name}`} onCommit={(v) => onUpdate(rule.id, { name: v })} className="kpj-name-input" />}
                         <div className="kpj-card-side">
                           {!projectId && proj && <span className="kpj-card-meta">{proj.name}</span>}
@@ -292,12 +292,12 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                       <div className="kpj-card-head">
                         {proj && !projectId && <ProjectDot color={proj.color} size={10} title={proj.name} />}
                         {readOnly
-                          ? <span className="kpj-name-input" style={{ display: "inline-flex", alignItems: "center" }}>{f.name}</span>
+                          ? <span className="kpj-name-static">{f.name}</span>
                           : <DraftInput value={f.name} required label={`Form name: ${f.name}`} onCommit={(v) => onUpdate(f.id, { name: v })} className="kpj-name-input" />}
                         <div className="kpj-card-side">
                           {!projectId && proj && <span className="kpj-card-meta">{proj.name}</span>}
                           <Button variant={filling ? "ghost" : "secondary"} size="sm" aria-expanded={filling} aria-label={`${filling ? "Close" : "Open"} form ${f.name}`}
-                            onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }}>{filling ? "Close" : "Fill in"}</Button>
+                            onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }}>{filling ? "Close" : "Open form"}</Button>
                           {!readOnly && (
                             <IconButton icon="trash" size="sm" tone="danger" label={`Delete form ${f.name}`}
                               onClick={() => { if (window.confirm(`Delete the form “${f.name}”?`)) onDelete(f.id); }} />

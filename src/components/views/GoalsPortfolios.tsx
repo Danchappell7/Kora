@@ -4,8 +4,7 @@
    read them at a glance)
    ============================================================ */
 import { useState } from "react";
-import { Button, DateChip, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
-import { Avatar } from "../primitives";
+import { Avatar, Button, DateChip, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
 import { getProject, getMember, projectProgress, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate } from "../../data/types";
 import { goalDescendants, goalProgressMap, goalTree, projectHealth, useStableOrder, type GoalProgress, type HealthKind } from "./reportingUtils";

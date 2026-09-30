@@ -52,6 +52,8 @@
 .kpj-field[aria-invalid="true"] { border-color: color-mix(in oklch, var(--kpj-signal) 60%, transparent); }
 textarea.kpj-field { height: auto; padding: 8px 10px; resize: vertical; font: 400 14px/22px var(--kpj-font); }
 select.kpj-field { cursor: pointer; }
+.kpj-field:disabled { opacity: 0.6; cursor: default; }
+.kpj-card .ktoggle-switch:disabled { opacity: 0.45; cursor: default; }
 .kpj-search { position: relative; display: inline-flex; align-items: center; width: 240px; max-width: 100%; }
 .kpj-search > svg { position: absolute; left: 10px; color: var(--kpj-icon); pointer-events: none; }
 .kpj-search > .kpj-field { width: 100%; padding-left: 32px; }
@@ -65,6 +67,7 @@ select.kpj-field { cursor: pointer; }
 .kpj-name-input:hover { background: var(--kpj-hover); }
 .kpj-name-input:focus { background: var(--field-bg, var(--surface)); border-color: var(--field-border, var(--hairline-strong)); }
 .kpj-name-input:focus-visible { outline-offset: 1px !important; }
+.kpj-name-static { flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 15px/24px var(--kpj-font); color: var(--ink); }
 
 /* ---------------- cards (Goals, Portfolios, Rules, Requests) ---------------- */
 .kpj-stack { display: flex; flex-direction: column; gap: 12px; }

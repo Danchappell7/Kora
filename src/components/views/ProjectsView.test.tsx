@@ -108,7 +108,7 @@ describe("ProjectsView (the directory)", () => {
     const onPostUpdate = vi.fn().mockResolvedValue(true);
     const onOpenProject = vi.fn();
     render(<ProjectsView {...props({ onPostUpdate, onOpenProject })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Draft an update on Infra" }));
+    fireEvent.click(screen.getByRole("button", { name: "Draft update for Infra" }));
     const box = screen.getByRole("textbox", { name: "Update" }) as HTMLTextAreaElement;
     expect(box.value).toMatch(/^Nothing finished this week; 0% done overall\. Overdue: Task t6\./);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Post update" })); });
@@ -119,7 +119,7 @@ describe("ProjectsView (the directory)", () => {
 
   it("has no update buttons for guests", () => {
     render(<ProjectsView {...props({ onPostUpdate: undefined })} />);
-    expect(screen.queryByRole("button", { name: /Post an update on/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Post update for/ })).not.toBeInTheDocument();
   });
 
   it("shows an empty state with New project, and none for guests", () => {

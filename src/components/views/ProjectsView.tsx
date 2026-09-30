@@ -171,10 +171,10 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
 
   const rowActions = (r: Row) => canPost ? (
     <div className="kpj-rowacts" data-open={composer?.open && composer.id === r.p.id ? "true" : undefined} onClick={(e) => e.stopPropagation()}>
-      <Button variant="ghost" size="sm" aria-label={`Draft an update on ${r.p.name}`} aria-haspopup="dialog" onClick={(e) => openComposer(e, r.p.id, "draft")}>
+      <Button variant="ghost" size="sm" aria-label={`Draft update for ${r.p.name}`} aria-haspopup="dialog" onClick={(e) => openComposer(e, r.p.id, "draft")}>
         <span className="kpj-btn-mark"><AiMark size={14} />Draft update</span>
       </Button>
-      <Button variant="secondary" size="sm" aria-label={`Post an update on ${r.p.name}`} aria-haspopup="dialog" onClick={(e) => openComposer(e, r.p.id, "post")}>Post update</Button>
+      <Button variant="secondary" size="sm" aria-label={`Post update for ${r.p.name}`} aria-haspopup="dialog" onClick={(e) => openComposer(e, r.p.id, "post")}>Post update</Button>
     </div>
   ) : null;
 
@@ -221,7 +221,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
               onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }}
               placeholder="Filter projects" aria-label="Filter projects" autoComplete="off" spellCheck={false} />
           </label>
-          <Segmented ariaLabel="Show" options={SCOPES} value={scope} onChange={setScope} />
+          <Segmented ariaLabel="Which projects" options={SCOPES} value={scope} onChange={setScope} />
           <span className="kpj-spacer" />
           <span className="kpj-count" aria-live="polite">
             {shown.length === projects.length ? `${projects.length} ${projects.length === 1 ? "project" : "projects"}` : `${shown.length} of ${projects.length}`}
