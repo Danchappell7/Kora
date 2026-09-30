@@ -47,11 +47,13 @@ export function WhatMoved({ onShowMe, onDismiss, isMobile = false }: {
         right: isMobile ? 16 : 24, left: isMobile ? 16 : "auto",
         bottom: isMobile ? "calc(72px + env(safe-area-inset-bottom, 0px))" : 24,
         width: isMobile ? "auto" : 360, padding: "16px 20px 16px",
-        background: "var(--surface-raised)", borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))",
+        // raised surface laid on the canvas colour, so it's opaque in every theme
+        background: "linear-gradient(var(--surface-raised), var(--surface-raised)), var(--bg)",
+        borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))",
         animation: "ksheetIn var(--d-3, 240ms) var(--ease)",
       }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-        <h2 id="kwhat-title" style={{ flex: 1, margin: "4px 0 0", fontFamily: "var(--font-head)", fontSize: 16, lineHeight: "24px", fontWeight: 600, letterSpacing: "-0.012em", color: "var(--ink)" }}>
+        <h2 id="kwhat-title" style={{ flex: 1, margin: "2px 0 0", fontFamily: "var(--font-ui, var(--font-display))", fontSize: "var(--t-body, 15px)", lineHeight: "var(--lh-body, 24px)", fontWeight: 600, color: "var(--ink)" }}>
           Kanbo's had a tidy-up
         </h2>
         <IconButton icon="x" label="Dismiss" size="sm" onClick={close} style={{ marginRight: -8 }} />

@@ -161,8 +161,10 @@ function addressFor(route: Route, opts: { task?: string | null; q?: string | nul
   return qs ? `${path}?${qs}` : path;
 }
 const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.projectId ?? "") === (b.projectId ?? "") && (a.list ?? "") === (b.list ?? "") && (a.tab ?? "") === (b.tab ?? "");
-/** "Wed 30 Sep" */
-const dayMeta = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Wed 30 Sep" (spelt out here: some browsers' en-GB says "Sept") */
+const dayMeta = (d: Date) => `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
 
 export default function App() {
   const auth = useAuth();
@@ -1124,7 +1126,7 @@ export default function App() {
     }
     // the older hand-off, which the server still uses for legacy connections
     if (cal === "connected") { toastSuccess("Calendar connected"); setRoute({ view: "calendar" }, { replace: true }); }
-    if (cal === "error") toastError("Couldn't connect that calendar. Please try again.");
+    if (cal === "error") { toastError("Couldn't connect that calendar. Please try again."); setRoute({ view: "calendar" }, { replace: true }); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUserId]);
 
@@ -2787,6 +2789,7 @@ export default function App() {
   openSettingsRef.current = openSettings;
   /** The command bar; with `query` it opens on its Ask row with that text. */
   const openPalette = useCallback((query?: string) => { setPaletteQuery(query); setCmdOpen(true); }, []);
+  useEffect(() => { if (!cmdOpen) setPaletteQuery(undefined); }, [cmdOpen]); // however it closed
   /** Paste notes → tasks: empty, or with the notes (and what they're from) already in. */
   const openExtract = useCallback((text?: string, context?: string) => {
     if (denyGuest([workspaceRef.current])) return;
@@ -3172,7 +3175,7 @@ export default function App() {
   const paletteNext = {
     ai: aiOn ? (q: string, ts: Task[], ctx: AskContext) => store.aiCommand(q, ts, ctx) : undefined,
     askContext, canAct: !activeReadOnly, onApplyAsk: applyAskActions, onGo: (r: Route) => setRoute(r),
-    recent: recentRoutesRef.current, initialQuery: paletteQuery,
+    recent: recentRoutesRef.current.filter((r) => !sameRoute(r, route)), initialQuery: paletteQuery,
   };
   const settingsNext = {
     section: settingsSection, onSection: setSettingsSection, isAdmin,
@@ -3290,7 +3293,11 @@ export default function App() {
   );
 
   return (
-    <div data-panel={detailId ? "open" : undefined} style={{ position: "relative", height: "100vh", display: "flex", overflow: "hidden", background: "var(--bg)" }}>
+    // Desktop: the sidebar and a main column whose views scroll on their own. Phone: the
+    // whole page is one scroll (the header and the bottom bar stay put), no inner scroll boxes.
+    <div data-panel={detailId ? "open" : undefined} style={isMobile
+      ? { position: "relative", height: "100vh", overflowX: "hidden", overflowY: "auto", overscrollBehaviorY: "contain", background: "var(--bg)" }
+      : { position: "relative", height: "100vh", display: "flex", overflow: "hidden", background: "var(--bg)" }}>
       <AppBg />
       <GlobalTipStyles />
       {isMobile ? (
@@ -3303,7 +3310,7 @@ export default function App() {
           </div>
         </>
       ) : sidebar}
-      <main id="main" tabIndex={-1} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1, outline: "none" }}>
+      <main id="main" tabIndex={-1} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1, outline: "none", ...(isMobile ? { minHeight: "100%" } : {}) }}>
         {!online && (
           <Notice tone="warn" icon="refresh">
             You're offline — changes are saved on this device{pendingSync > 0 ? ` (${pendingSync} queued)` : ""} and will sync when you reconnect.
@@ -3346,12 +3353,16 @@ export default function App() {
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
         <PageHeader {...header} onSearch={() => openPalette()} create={createMenu} isMobile={isMobile} onOpenSettings={() => openSettings()} userId={currentUserId} {...headerNext} />
         {/* the page fades in on a change of place (not of tab) */}
-        <div key={place} className="kroute" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <div key={place} className="kroute" style={{ flex: isMobile ? "1 0 auto" : 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <ErrorBoundary key={`${route.view}:${route.projectId ?? ""}`} inline name="view" onHome={() => setRoute({ view: "plan" })}>
             <RenderView render={renderMain} />
           </ErrorBoundary>
         </div>
-        {isMobile && <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} {...mobileNavNext} />}
+        {isMobile && (
+          <div style={{ position: "sticky", bottom: 0, zIndex: "var(--z-header, 10)" }}>
+            <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} {...mobileNavNext} />
+          </div>
+        )}
       </main>
 
       <ImportTasksModal open={importOpen} onClose={() => setImportOpen(false)}
@@ -3363,7 +3374,7 @@ export default function App() {
         onImport={importTasks} />
 
       {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
-      <CommandPalette open={cmdOpen} onClose={() => { setCmdOpen(false); setPaletteQuery(undefined); }} tasks={seen} onOpenTask={setDetailId}
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={seen} onOpenTask={setDetailId}
         projects={projects} workspaces={workspaces} canCreateProject={!activeReadOnly}
         onOpenProject={(id) => {
           const p = projects.find((x) => x.id === id);
@@ -3380,7 +3391,7 @@ export default function App() {
           else if (s.id === "plan") setRoute({ view: "plan" });
           else if (s.id === "prioritize") autoPrioritize();
           else if (s.id === "focus") openFocus(true);
-          else if (s.id === "shutdown") setShutdownOpen(true);
+          else if (s.id === "shutdown") { if (!denyGuest([workspace])) setShutdownOpen(true); }
           else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
           else if (s.id === "manage-tags") openSettings("tags");
           else if (s.id === "toggle-theme") flipTheme();

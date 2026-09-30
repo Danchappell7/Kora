@@ -633,10 +633,10 @@ describe("App (demo mode)", () => {
     await boot();
     expect(await screen.findByRole("dialog", { name: `Task: ${DECK}` })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
-    expect(address()).toBe("/tasks?task=t-1");
+    await waitFor(() => expect(address()).toBe("/tasks?task=t-1"));
     key("Escape");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: `Task: ${DECK}` })).not.toBeInTheDocument());
-    expect(address()).toBe("/tasks");
+    await waitFor(() => expect(address()).toBe("/tasks"));
   });
 
   it("Search keeps the text it was handed in the address", async () => {
