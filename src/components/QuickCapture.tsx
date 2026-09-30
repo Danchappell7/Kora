@@ -17,7 +17,7 @@ import { Popover } from "./primitives/Popover";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { getMember, todayISO, KANBO_TODAY, TAGS } from "../data/data";
 import { parseTask, parseDateText, segments, splitLines, stripTokens, fmtMinutes, dayLabel, type NlpSpan, type NlpKind, type ParsedTask } from "../lib/nlp";
-import type { ImportRow } from "../lib/importTasks";
+import { IMPORT_LIMIT, type ImportRow } from "../lib/importTasks";
 import type { Task, Status, TagDef } from "../data/types";
 
 /* ============================== TokenField ============================== */
@@ -183,7 +183,7 @@ export function PersonMark({ id, name }: { id: string; name: string }) {
 type Due = { date?: string; time?: string } | null;
 interface Picks { due?: Due; assigneeId?: string; projectId?: string }
 
-export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate, onPasteNotes, onImportRows, tags, initialText }: {
+export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate, onPasteNotes, onImportRows, onOpenImport, tags, initialText }: {
   open: boolean;
   onClose: () => void;
   projects: { id: string; name: string; color?: string }[];
@@ -194,6 +194,8 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   onPasteNotes?: (text: string) => void;
   /** creates a multi-line paste in one go (parentIndex = sub-task of that row). Without it, rows go through onCreate one by one, flat. */
   onImportRows?: (rows: ImportRow[]) => void;
+  /** a paste longer than Quick capture takes (IMPORT_LIMIT lines) goes to Import tasks, prefilled with it */
+  onOpenImport?: (text: string) => void;
   /** tags "+design" can match (defaults to the live tag dictionary) */
   tags?: Record<string, TagDef>;
   /** text to open with (e.g. a ⌘K query turned into a task) */
@@ -229,11 +231,15 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
     [projs, members, tagDict, today]);
   const lines = useMemo(() => splitLines(text), [text]);
   const multi = lines.length > 1;
-  const parsed = useMemo(() => parseTask(text, ctx), [text, ctx]);
+  // more lines than one batch takes: nothing is parsed, the paste is handed to Import
+  const tooMany = lines.length > IMPORT_LIMIT;
+  // a paste is read line by line (below); the whole text is only ever one task
+  const parsed = useMemo(() => (multi ? NOTHING_READ : parseTask(text, ctx)), [multi, text, ctx]);
 
   // highlight every line of a paste, not just the first
   const spans = useMemo(() => {
     if (!multi) return parsed.spans;
+    if (tooMany) return [];
     const out: NlpSpan[] = [];
     let at = 0;
     for (const line of text.split("\n")) {
@@ -241,7 +247,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
       at += line.length + 1;
     }
     return out;
-  }, [multi, parsed, text, ctx]);
+  }, [multi, tooMany, parsed, text, ctx]);
 
   // what will be created: typed tokens win, then what was picked from a chip
   const dateTyped = parsed.spans.some((s) => s.kind === "date" || s.kind === "time");
@@ -254,7 +260,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   const assignee = assigneeId ? members.find((m) => m.id === assigneeId) : undefined;
 
   const rows = useMemo<ImportRow[]>(() => {
-    if (!multi) return [];
+    if (!multi || tooMany) return [];
     const stack: { depth: number; index: number }[] = [];
     return lines.map((line, i) => {
       while (stack.length && stack[stack.length - 1].depth >= line.depth) stack.pop();
@@ -277,7 +283,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
       if (parentIndex !== undefined && onImportRows) row.parentIndex = parentIndex;
       return row;
     });
-  }, [multi, lines, ctx, picks.projectId, picks.assigneeId, defaultProjectId, onImportRows]);
+  }, [multi, tooMany, lines, ctx, picks.projectId, picks.assigneeId, defaultProjectId, onImportRows]);
   const subCount = rows.filter((r) => r.parentIndex !== undefined).length;
   const createLabel = `Create ${rows.length} tasks${subCount ? ` (${subCount} sub-task${subCount === 1 ? "" : "s"})` : ""}`;
 
@@ -285,6 +291,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   const refocus = () => window.setTimeout(() => fieldRef.current?.focus(), 0);
 
   const submit = (keepOpen: boolean) => {
+    if (tooMany) { toImport(); return; }
     if (multi) { createRows(keepOpen); return; }
     const title = parsed.title.trim();
     if (!title) return;
@@ -309,6 +316,9 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
     if (keepOpen) { reset(); setAdded(`${rows.length} tasks`); refocus(); } else onClose();
   };
   const toKanbo = () => { if (!onPasteNotes) return; onPasteNotes(text); onClose(); };
+  const toImport = () => { if (!onOpenImport) return; onOpenImport(text); onClose(); };
+  const lineCount = lines.length.toLocaleString("en-GB");
+  const limit = IMPORT_LIMIT.toLocaleString("en-GB");
 
   const onKeyDown = (e: KeyboardEvent<FieldEl>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(e.shiftKey); return; }
@@ -329,7 +339,9 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   const pickPerson = (id: string | undefined) => { dropTyped(["person"]); setPicks((p) => ({ ...p, assigneeId: id })); setMenu(null); refocus(); };
 
   const facts = factChips(parsed, projs, members, tagDict).filter((f) => f.kind !== "date" && f.kind !== "project" && f.kind !== "person");
-  const summary = multi
+  const summary = tooMany
+    ? `${lineCount} lines is more than Quick capture adds at once.${onOpenImport ? " Open them in Import instead." : ""}`
+    : multi
     ? `${createLabel}.`
     : [due.date ? `Due ${dayLabel(due.date)}${due.time ? ` at ${due.time}` : ""}` : null, ...facts.map((f) => f.words),
       project ? `In ${project.name}` : null, assignee ? `For ${assignee.name}` : null].filter(Boolean).join(" · ");
@@ -339,7 +351,13 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
     ? "Paste meeting notes and Kanbo turns each action into a task, for you to review first."
     : "Paste a list to add several tasks at once; indented lines become sub-tasks.";
 
-  const footer = multi ? (
+  const footer = tooMany ? (
+    onOpenImport ? (
+      <div className="kcap-foot" data-multi="true">
+        <Button variant="primary" size={isPhone ? "lg" : "md"} kbd={isPhone ? undefined : "↵"} icon="arrowUpRight" onClick={toImport}>Open in Import</Button>
+      </div>
+    ) : null
+  ) : multi ? (
     <div className="kcap-foot" data-multi="true">
       {onPasteNotes && (
         <Button variant="ghost" size={isPhone ? "lg" : "md"} onClick={toKanbo} className="kcap-kanbo">
@@ -370,7 +388,19 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
           placeholder={"Add a task — “call Sana fri 3pm ~30m”"} onKeyDown={onKeyDown} />
         <p className="sr-only" aria-live="polite">{summary}</p>
 
-        {multi ? (
+        {tooMany ? (
+          <div className="kcap-multi">
+            <p className="kcap-over">
+              <Icon name="list" size={16} sw={1.75} />
+              <span>
+                <b>{lineCount} lines</b> is more than Quick capture adds at once.{" "}
+                {onOpenImport
+                  ? <>Import takes up to {limit} at a time, with a preview first.</>
+                  : <>Add up to {limit} at a time, or use Import tasks for a longer list.</>}
+              </span>
+            </p>
+          </div>
+        ) : multi ? (
           <div className="kcap-multi">
             <p className="kcap-multi-head">
               <span>{rows.length} tasks</span>
@@ -442,6 +472,9 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
     </Sheet>
   );
 }
+
+/** what a paste reads as while it's read line by line instead */
+const NOTHING_READ: ParsedTask = { title: "", spans: [] };
 
 /** how deep row i sits (its parent chain's length) */
 function depthOf(rows: ImportRow[], i: number): number {
@@ -526,6 +559,10 @@ button.kcap-chip[aria-expanded="true"] { background: var(--fill-2); border-color
 .kcap-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kcap-row-meta { flex-shrink: 0; font-size: 11px; color: var(--ink-3); }
 .kcap-rows .kcap-more { font-size: 12px; color: var(--ink-3); padding-left: 20px; }
+.kcap-over { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 12px; border-radius: var(--r-md, 8px);
+  background: var(--fill-1); font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kcap-over b { font-weight: 600; color: var(--ink); }
+.kcap-over svg { flex-shrink: 0; margin-top: 2px; color: var(--icon-quiet, var(--ink-4)); }
 
 .kcap-tip { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0 0; min-height: 16px;
   font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }

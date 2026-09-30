@@ -87,6 +87,12 @@ describe("ImportTasksModal", () => {
     expect(onImport.mock.calls[0][0][0].dueDate).toBe("2026-03-04");
   });
 
+  it("opens with a paste handed over from Quick capture", async () => {
+    const { textarea } = setup({ defaultProjectId: "p-web", initialText: "Call Sarah\nBook venue\nSend invites" });
+    expect(textarea).toHaveValue("Call Sarah\nBook venue\nSend invites");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("3 tasks ready"));
+  });
+
   it("keeps the pasted text when cancelled", () => {
     const { type, onClose, rerender } = setup({ defaultProjectId: "p-web" });
     type("Keep me");

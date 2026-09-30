@@ -70,7 +70,7 @@ const depthOf = (rows: ImportRow[], i: number): number => {
 };
 
 export function ImportTasksModal({
-  open, onClose, onImport, projects = [], members = [], sections, defaultProjectId, defaultProjectName, supports = {},
+  open, onClose, onImport, projects = [], members = [], sections, defaultProjectId, defaultProjectName, supports = {}, initialText,
 }: {
   open: boolean;
   onClose: () => void;
@@ -84,6 +84,8 @@ export function ImportTasksModal({
   defaultProjectId?: string;
   defaultProjectName?: string;
   supports?: ImportSupport;
+  /** text to open with, e.g. a paste too long for Quick capture (replaces whatever was left in the box) */
+  initialText?: string;
 }) {
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState("");
@@ -108,6 +110,12 @@ export function ImportTasksModal({
     ? defaultProjectId ?? ""
     : defaultProjectId && projects.some((p) => p.id === defaultProjectId) ? defaultProjectId : projects.length === 1 ? projects[0].id : "";
   useEffect(() => { if (open) setTarget(defaultTarget); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [open, defaultProjectId]);
+  // opened with a paste (Quick capture's "Open in Import"): start from that text
+  useEffect(() => {
+    if (!open || !initialText?.trim()) return;
+    resetInput(); setText(initialText);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialText]);
 
   // The parent rebuilds these arrays on every render (a teammate's edit arriving,
   // the focus timer ticking): key the analysis on what's in them, not their identity.

@@ -23,10 +23,11 @@ const nextFriday = () => {
   return toLocalISO(d);
 };
 
-function Harness({ onCreate = vi.fn(), onPasteNotes, onImportRows, defaultProjectId }: {
+function Harness({ onCreate = vi.fn(), onPasteNotes, onImportRows, onOpenImport, defaultProjectId }: {
   onCreate?: (t: Partial<Task> & { title: string }) => void;
   onPasteNotes?: (text: string) => void;
   onImportRows?: (rows: ImportRow[]) => void;
+  onOpenImport?: (text: string) => void;
   defaultProjectId?: string;
 }) {
   const [open, setOpen] = useState(true);
@@ -34,7 +35,7 @@ function Harness({ onCreate = vi.fn(), onPasteNotes, onImportRows, defaultProjec
     <>
       <span data-testid="state">{open ? "open" : "closed"}</span>
       <QuickCapture open={open} onClose={() => setOpen(false)} projects={PROJECTS} members={MEMBERS} tags={{}}
-        defaultProjectId={defaultProjectId} onCreate={onCreate} onPasteNotes={onPasteNotes} onImportRows={onImportRows} />
+        defaultProjectId={defaultProjectId} onCreate={onCreate} onPasteNotes={onPasteNotes} onImportRows={onImportRows} onOpenImport={onOpenImport} />
     </>
   );
 }
@@ -159,6 +160,35 @@ describe("QuickCapture", () => {
       expect(onPasteNotes).toHaveBeenCalledWith(NOTES);
       expect(onImportRows).not.toHaveBeenCalled();
       expect(screen.getByTestId("state")).toHaveTextContent("closed");
+    });
+
+    it("sends a paste longer than one batch to Import instead of creating it", () => {
+      const onImportRows = vi.fn();
+      const onOpenImport = vi.fn();
+      const onCreate = vi.fn();
+      render(<Harness onCreate={onCreate} onImportRows={onImportRows} onOpenImport={onOpenImport} onPasteNotes={vi.fn()} />);
+      const big = Array.from({ length: 1001 }, (_, i) => `Task ${i + 1} fri`).join("\n");
+      type(big);
+      expect(screen.getByText("1,001 lines", { selector: "b" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Create/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Turn notes into tasks/ })).toBeNull();
+      expect(marks()).toEqual([]);
+      fireEvent.keyDown(field(), { key: "Enter" });
+      expect(onOpenImport).toHaveBeenCalledWith(big);
+      expect(onImportRows).not.toHaveBeenCalled();
+      expect(onCreate).not.toHaveBeenCalled();
+      expect(screen.getByTestId("state")).toHaveTextContent("closed");
+    });
+
+    it("says to use Import when there's nowhere to send a long paste", () => {
+      const onCreate = vi.fn();
+      render(<Harness onCreate={onCreate} />);
+      type(Array.from({ length: 1200 }, (_, i) => `Task ${i + 1}`).join("\n"));
+      expect(screen.getByText(/or use Import tasks for a longer list/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Open in Import|^Create/ })).toBeNull();
+      fireEvent.keyDown(field(), { key: "Enter" });
+      expect(onCreate).not.toHaveBeenCalled();
+      expect(screen.getByTestId("state")).toHaveTextContent("open");
     });
 
     it("hides the Kanbo route when nobody handles notes", () => {
