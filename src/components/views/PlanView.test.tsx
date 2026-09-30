@@ -59,15 +59,31 @@ describe("PlanView", () => {
     expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Draft Q3 deck", projectId: "p-launch", assigneeId: "u-42", planToday: true }));
   });
 
-  it("the capture preview only shows a Due chip when the text names a date", () => {
+  it("the parse line under capture only names a day when the text does", () => {
     renderPlan([]);
     const input = screen.getByLabelText("Capture a task for today");
+    const line = () => document.getElementById(input.getAttribute("aria-describedby")!)!;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "Call supplier 30m" } });
-    expect(screen.getByText("Kanbo understood")).toBeInTheDocument();
-    expect(screen.queryByText(/^Due /)).toBeNull();
+    expect(line().textContent).toContain("30m");
+    expect(line().textContent).toContain("⏎ add · ⇥ plan");
+    expect(line().textContent).not.toMatch(/Tomorrow|Today/);
     fireEvent.change(input, { target: { value: "Call supplier tomorrow" } });
-    expect(screen.getByText(/^Due /)).toBeInTheDocument();
+    expect(line().textContent).toContain("Tomorrow");
+  });
+
+  it("Tab adds the capture and puts it on the day", () => {
+    const onCreate = vi.fn();
+    renderPlan([], { onCreate });
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "Call supplier 30m" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Call supplier", planToday: true, scheduled: expect.any(Number) }));
+    expect((input as HTMLInputElement).value).toBe("");
+    // an empty field lets Tab move on as usual
+    const e = fireEvent.keyDown(input, { key: "Tab" });
+    expect(e).toBe(true);
+    expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
   it("doesn't crash on a quick-added task with no energy or duration", () => {
@@ -77,7 +93,7 @@ describe("PlanView", () => {
 
   it("doesn't crash when a placed block has no energy", () => {
     renderPlan([task({ id: "b1", title: "Imported block", planToday: true, scheduled: 9 * 60, energy: undefined })]);
-    expect(screen.getByRole("button", { name: /Imported block, 9am – 9:30am/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Imported block, 09:00–09:30/ })).toBeInTheDocument();
   });
 
   it("leaves finished tasks off the canvas", () => {
@@ -120,7 +136,7 @@ describe("PlanView", () => {
     ]);
     const banner = screen.getByRole("region", { name: /Unfinished blocks/ });
     expect(within(banner).getByText(/Yesterday's plan: 2 unfinished blocks/)).toBeInTheDocument();
-    fireEvent.click(within(banner).getByRole("button", { name: "Carry over" }));
+    fireEvent.click(within(banner).getByRole("button", { name: "Bring all" }));
     expect(onUpdate).toHaveBeenCalledTimes(2);
     expect(onUpdate).toHaveBeenCalledWith("a", { scheduled: null });
     expect(onUpdate).toHaveBeenCalledWith("b", { scheduled: null });
@@ -190,7 +206,7 @@ describe("PlanView", () => {
     expect(screen.getByText(/Yesterday's plan: 1 unfinished block/)).toBeInTheDocument();
     rerender(el(team));
     expect(screen.getByText(/Yesterday's plan: 2 unfinished blocks/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Carry over" }));
+    fireEvent.click(screen.getByRole("button", { name: "Bring all" }));
     expect(onUpdate).toHaveBeenCalledWith("w1", { scheduled: null });
     expect(onUpdate).toHaveBeenCalledWith("w2", { scheduled: null });
     // …and Personal's prompt is still waiting when you switch back
@@ -243,7 +259,7 @@ describe("PlanView drag and drop", () => {
     window.dispatchEvent(new window.PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: o.pointerId ?? 1, pointerType: o.pointerType ?? "mouse" }));
   const press = (el: Element, x: number, y: number, o: { pointerType?: string; pointerId?: number } = {}) =>
     fireEvent.pointerDown(el, { clientX: x, clientY: y, button: 0, pointerId: o.pointerId ?? 1, pointerType: o.pointerType ?? "mouse" });
-  const dragging = () => document.querySelectorAll(".dragging").length > 0;
+  const dragging = () => document.querySelectorAll("[data-dragging]").length > 0;
 
   it("a click opens the block and writes nothing", () => {
     const { btn, onUpdate, onOpen } = setup();

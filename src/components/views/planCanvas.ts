@@ -4,8 +4,71 @@
    capacity meter, and the new-day carry-over bookkeeping. Kept
    free of React so they can be unit-tested directly.
    ============================================================ */
-import { ENERGY, energyOf } from "../../data/data";
-import type { Task, EnergyKind, EnergyMeta } from "../../data/types";
+import { ENERGY, energyOf, DAY_START, DAY_END } from "../../data/data";
+import type { Task, EnergyKind, EnergyMeta, CalEvent, ExternalEvent } from "../../data/types";
+
+/* ---------- times on the 24h clock ("09:30", "09:30–10:00") ---------- */
+
+/** Minutes from midnight as a 24h time: 570 → "09:30". */
+export function fmtTime(min: number): string {
+  const m = Math.max(0, Math.round(min));
+  return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+/** "09:30–10:00" (an en dash, no spaces, as in data columns). */
+export const fmtTimeRange = (start: number, end: number): string => `${fmtTime(start)}–${fmtTime(end)}`;
+/** A duration in words for people: 90 → "1h 30m", 60 → "1h", 45 → "45m". */
+export function fmtDuration(min: number): string {
+  const m = Math.max(0, Math.round(min));
+  if (m < 60) return `${m}m`;
+  return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 60)}h`;
+}
+
+/* ---------- dates, en-GB and stable across browsers ("Wed 30 Sep", never "Sept") ---------- */
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export const weekdayShort = (d: Date): string => WEEKDAYS[d.getDay()];
+/** "30 Sep" */
+export const dayMonth = (d: Date): string => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+/** "Wed 30 Sep" */
+export const dayLong = (d: Date): string => `${WEEKDAYS[d.getDay()]} ${dayMonth(d)}`;
+/** Local midnight of "YYYY-MM-DD" (a time part is ignored); null when it isn't a date. */
+export function parseDay(iso?: string | null): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? "");
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return isNaN(d.getTime()) ? null : d;
+}
+/** Whole days from `from` to `to` (both "YYYY-MM-DD"). */
+export function daysBetween(from: string, to: string): number {
+  const a = parseDay(from), b = parseDay(to);
+  return a && b ? Math.round((b.getTime() - a.getTime()) / 86400000) : 0;
+}
+
+/* ---------- today's calendar ---------- */
+
+/** Connected-calendar events (ISO datetimes) as today's day-blocks in minutes
+ *  from midnight, which the canvas and the planner understand. All-day events
+ *  are skipped so they don't block the timeline; times are clamped to the
+ *  visible day. `now` picks the day (tests pass one). */
+export function todaysEvents(ext: ExternalEvent[], now: Date = new Date()): CalEvent[] {
+  const y = now.getFullYear(), mo = now.getMonth(), d = now.getDate();
+  const out: CalEvent[] = [];
+  for (const e of ext) {
+    if (e.allDay) continue;
+    const s = new Date(e.start), en = new Date(e.end);
+    if (isNaN(s.getTime()) || isNaN(en.getTime())) continue;
+    if (s.getFullYear() !== y || s.getMonth() !== mo || s.getDate() !== d) continue;
+    let startMin = s.getHours() * 60 + s.getMinutes();
+    let endMin = en.getHours() * 60 + en.getMinutes();
+    if (endMin <= startMin) endMin = startMin + 30;          // guard zero/negative
+    startMin = Math.max(DAY_START, Math.min(DAY_END, startMin));
+    endMin = Math.max(DAY_START, Math.min(DAY_END, endMin));
+    if (endMin <= startMin) continue;
+    out.push({ id: e.id, title: e.title, start: startMin, end: endMin, kind: "meeting" });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
 
 /* ---------- task fields that may be missing on quick-added / imported rows ---------- */
 
@@ -109,6 +172,9 @@ function shiftDay(day: string, by: number): string {
   const [y, m, d] = day.split("-").map(Number);
   return localDayKey(new Date(y, m - 1, d + by));
 }
+
+/** Placed on today's canvas (finished or not): on the plan, with a time. */
+export const isPlaced = (t: Task): boolean => !!t.planToday && t.scheduled != null && Number.isFinite(t.scheduled);
 
 /** A block on today's canvas: on the plan, placed, and not finished. */
 export const isOnCanvas = (t: Task): boolean =>
@@ -227,4 +293,37 @@ export function carryLabel(from: string | null, today: string): string {
     ? fromDate.toLocaleDateString("en-GB", { weekday: "long" })
     : fromDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   return `Your plan from ${label}`;
+}
+
+/* ---------- Today's suggestions: what you've waved away ----------
+   Personal and per device, like the carry-over record. "Not now" hides one
+   suggestion for the rest of the day; H hides them all for the day. Both
+   forget themselves at midnight, so tomorrow starts with a fresh plan. */
+
+export const ghostPrefsKey = (me?: string | null) => `kanbo-ghosts:${me || "local"}`;
+
+export interface GhostPrefs { day: string; skipped: string[]; hidden: boolean }
+
+const ghostMemory = new Map<string, GhostPrefs>();
+
+/** Today's prefs (a record from an earlier day reads as a fresh one). */
+export function readGhostPrefs(key: string, today: string = localDayKey()): GhostPrefs {
+  const fresh: GhostPrefs = { day: today, skipped: [], hidden: false };
+  let v: unknown;
+  try {
+    const raw = localStorage.getItem(key);
+    v = raw ? JSON.parse(raw) : null;
+  } catch { v = ghostMemory.get(key); /* blocked: the memory copy carries on */ }
+  if (!v || typeof v !== "object") return fresh;
+  const p = v as Partial<GhostPrefs>;
+  if (p.day !== today) return fresh;
+  return {
+    day: today,
+    skipped: Array.isArray(p.skipped) ? p.skipped.filter((x): x is string => typeof x === "string").slice(-500) : [],
+    hidden: p.hidden === true,
+  };
+}
+export function writeGhostPrefs(key: string, prefs: GhostPrefs) {
+  ghostMemory.set(key, prefs);
+  try { localStorage.setItem(key, JSON.stringify(prefs)); } catch { /* blocked */ }
 }
