@@ -660,13 +660,15 @@ function FullLoader() {
  *  that raced the insert can't make it blink out. */
 type PendingCreate = { id: string; task: Task; until: number | null };
 type CreateOpts = { log?: boolean; notify?: boolean; slot?: Limiter };
-type CommitOpts = { notify?: boolean; op?: string; onFailed?: (ids: string[]) => void; retry?: () => void };
+type CommitOpts = { notify?: boolean; op?: string; onFailed?: (ids: string[]) => void; retry?: () => void; failMessage?: (failed: number) => string };
 /** Side effects of status changes, held until the save settles: activity rows are
  *  only logged for saves that stuck, and a failed completion takes back the
  *  recurrence it spawned (a failed reopen puts back the one it removed). */
 type StatusFx = { logs: Map<string, () => void>; completing: Set<string>; unspawned: Map<string, Task> };
 const newStatusFx = (): StatusFx => ({ logs: new Map(), completing: new Set(), unspawned: new Map() });
 const UNDO_MS = 10000;
+/** Inbox items taken off screen by one archive, and that archive's save. */
+type ArchivePart = { items: Activity[]; archived: Promise<void> };
 
 /** Lets an error boundary catch errors thrown while building a view's props, too. */
 function RenderView({ render }: { render: () => React.ReactNode }) { return <>{render()}</>; }
@@ -1117,13 +1119,21 @@ export default function App() {
     recentCreatesRef.current.set(id, { seq: reloadSeqRef.current, until: Date.now() + 30000 });
   }, []);
 
-  /** Once per session: the database is missing columns this version writes
-   *  (a migration not run yet), so some fields are being dropped on save. */
+  /** Once per session, and only to a platform admin (the one person who can act on
+   *  it): the database is missing columns this version writes (a migration not run
+   *  yet), so some fields are being dropped on save. Everyone else's drops still
+   *  reach monitoring (the store reports each column once). */
   const schemaNoticeRef = useRef(false);
-  const noteSchemaBehind = useCallback(() => {
+  const noteSchemaBehind = useCallback((adminByProfile: boolean) => {
     if (schemaNoticeRef.current || !store.configured || getStrippedColumns().length === 0) return;
     schemaNoticeRef.current = true;
-    toastInfo("The server needs an update — some fields aren't being saved yet.");
+    const tell = () => {
+      const cols = getStrippedColumns();
+      toastInfo(`Admin notice: the database is behind this version — ${cols.join(", ")} ${cols.length === 1 ? "isn't" : "aren't"} being saved yet. Run the pending migration.`);
+    };
+    if (adminByProfile) { tell(); return; }
+    // the founding account may not carry the profile flag — ask the server (once, and only now)
+    store.amIAdmin().then((admin) => { if (admin) tell(); }, () => { /* not an admin as far as we can tell */ });
   }, [toastInfo]);
 
   /** Apply a bootstrap result. Returns false when a newer run's data is already on screen. */
@@ -1147,7 +1157,7 @@ export default function App() {
     // a reload where some best-effort parts failed keeps what's on screen for those
     // parts. (The first load's parts are already the device's last good copy.)
     const b = initial ? loaded : keepOnScreen(loaded, { projects: projectsRef.current, tags: tagsRef.current, workspaces: workspacesRef.current, members: wsMembersRef.current });
-    noteSchemaBehind();
+    noteSchemaBehind(!!b.profile?.isAdmin && b.profile.suspended !== true);
     setTasks(mergeServerTasks(b.tasks));
     const tmpTags = Object.fromEntries(Object.entries(tagsRef.current).filter(([k]) => k.startsWith("tmp-")));
     // Projects and workspaces this snapshot can't be trusted to leave out: ones created
@@ -1334,27 +1344,44 @@ export default function App() {
       return back.length ? [...back, ...xs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : xs;
     });
   }, []);
-  /** Undo an archive: back on screen at once, and un-archived on the server once
-   *  the archive itself has landed (if the archive failed they're already back). */
-  const undoArchive = useCallback((items: Activity[], archived: Promise<void>) => {
+  /** Undo archives: back on screen at once, and un-archived on the server (in one
+   *  call) once each archive has landed — one that failed already put its items back. */
+  const undoArchive = useCallback((parts: ArchivePart[]) => {
+    const items = parts.flatMap((p) => p.items);
     if (!items.length) return;
-    const ids = items.map((a) => a.id);
     putBackActivity(items);
-    archived.then(() => store.unarchiveActivity(ids).catch((e) => {
-      reportError(e, { op: "unarchiveActivity" });
-      const gone = new Set(ids);
-      setActivity((xs) => xs.filter((a) => !gone.has(a.id)));
-      toastError(ids.length === 1 ? "Couldn't bring that item back." : "Couldn't bring those items back.");
-    }), () => { /* the archive failed: nothing to undo */ });
+    Promise.all(parts.map((p) => p.archived.then(() => p.items.map((a) => a.id), () => [] as string[]))).then((landed) => {
+      const ids = landed.flat();
+      if (!ids.length) return;
+      return store.unarchiveActivity(ids).catch((e) => {
+        reportError(e, { op: "unarchiveActivity" });
+        const gone = new Set(ids);
+        setActivity((xs) => xs.filter((a) => !gone.has(a.id)));
+        toastError(ids.length === 1 ? "Couldn't bring that item back." : "Couldn't bring those items back.");
+      });
+    });
   }, [putBackActivity, toastError]);
+
+  /** The inbox keeps ONE Undo toast: archiving more while it's up adds to it
+   *  ("Archived 3 notifications") and its Undo brings them all back, so working
+   *  through the inbox never stacks toasts over its rows. */
+  const archiveBatchRef = useRef<ArchivePart[] | null>(null);
+  const offerArchiveUndo = useCallback((part: ArchivePart, message: string) => {
+    const prev = archiveBatchRef.current;
+    const batch = [...(prev ?? []), part];
+    archiveBatchRef.current = batch;
+    const done = () => { if (archiveBatchRef.current === batch) archiveBatchRef.current = null; };
+    const n = batch.reduce((sum, p) => sum + p.items.length, 0);
+    toastAction(prev ? `Archived ${plural(n, "notification")}` : message, "Undo", () => { done(); undoArchive(batch); }, { key: "inbox-archive", onExpire: done });
+  }, [toastAction, undoArchive]);
 
   const archiveActivity = useCallback((id: string) => {
     const removed = activityRef.current.filter((a) => a.id === id);
     setActivity((xs) => xs.filter((a) => a.id !== id)); // optimistic
     const archived = store.archiveActivity(id);
     archived.catch((e) => { reportError(e); toastError("Couldn't archive that item."); putBackActivity(removed); });
-    toastAction("Notification archived", "Undo", () => undoArchive(removed, archived), {});
-  }, [toastError, toastAction, putBackActivity, undoArchive]);
+    offerArchiveUndo({ items: removed, archived }, "Notification archived");
+  }, [toastError, putBackActivity, offerArchiveUndo]);
 
   // "Archive all" clears what the inbox is showing — this workspace, not every workspace
   const clearInbox = useCallback((ids?: unknown) => {
@@ -1365,8 +1392,8 @@ export default function App() {
     setActivity((xs) => xs.filter((a) => !set.has(a.id)));
     const archived = store.clearInbox(list);
     archived.catch((e) => { reportError(e); toastError("Couldn't clear the inbox."); putBackActivity(removed); });
-    toastAction(Array.isArray(ids) ? `Archived ${plural(list.length, "item")}` : "Inbox cleared", "Undo", () => undoArchive(removed, archived), {});
-  }, [toastError, toastAction, putBackActivity, undoArchive]);
+    offerArchiveUndo({ items: removed, archived }, Array.isArray(ids) ? `Archived ${plural(list.length, "item")}` : "Inbox cleared");
+  }, [toastError, putBackActivity, offerArchiveUndo]);
 
   /* ---- profile ---- */
   const uploadAvatar = useCallback((file: File) => store.uploadAvatar(userIdRef.current, file), []);
@@ -1593,7 +1620,7 @@ export default function App() {
         if (restore.size) setTasks((ts) => ts && ts.map((t) => { const r = restore.get(t.id); return r ? { ...t, ...r } : t; }));
         opts.onFailed?.(failed.map(([id]) => id));
         const again = new Map(failed);
-        toastAction(failed.length === 1 ? "Couldn't save — change undone" : `Couldn't save ${failed.length} changes — undone`, "Retry", () => {
+        toastAction(opts.failMessage ? opts.failMessage(failed.length) : failed.length === 1 ? "Couldn't save — change undone" : `Couldn't save ${failed.length} changes — undone`, "Retry", () => {
           if (opts.retry) { opts.retry(); return; }
           const cur = tasksRef.current ?? [];
           const prev2 = new Map(cur.filter((t) => again.has(t.id)).map((t) => [t.id, t]));
@@ -2513,7 +2540,9 @@ export default function App() {
     return !p.ownerId; // no owner recorded: the server knows the creator — let it decide
   }, [roleIn]);
 
-  // the project is deleted FIRST; its tasks are only moved or deleted once that succeeded
+  // Delete: the project is deleted FIRST; its tasks are only deleted once that succeeded.
+  // Move: the tasks move FIRST; the project is only deleted once every one has left it,
+  // so a move the server refuses never leaves tasks pointing at a deleted project.
   const confirmDeleteProject = useCallback(async (id: string, mode: DeleteMode, targetId?: string) => {
     setDeleteProjectId(null);
     if (id === "p-personal") return; // built-in default can't be deleted
@@ -2522,21 +2551,41 @@ export default function App() {
     if (denyGuest([proj.workspaceId])) return;
     if (!canDeleteProject(proj)) { toastError(`Only the owner of “${proj.name}” or a workspace admin can delete it.`); return; }
     if (id.startsWith("tmp-")) { deferTmp(id); applyProjects(projectsRef.current.filter((p) => p.id !== id)); return; }
-    try { await store.deleteProject(id); }
-    catch (e) { reportError(e, { op: "deleteProject" }); toastError(`Couldn't delete “${proj.name}” — nothing was changed.`); return; }
-    const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
-    applyProjects(projectsRef.current.filter((p) => p.id !== id));
-    setRouteRaw((r) => r.view === "project" && r.projectId === id ? { view: "tasks" } : r);
+    const dropProject = () => {
+      applyProjects(projectsRef.current.filter((p) => p.id !== id));
+      setRouteRaw((r) => r.view === "project" && r.projectId === id ? { view: "tasks" } : r);
+    };
     if (mode === "reassign" && targetId) {
       // tasks live in their project's workspace — carry the target's workspace so
       // moved tasks don't keep a stale one and vanish from view
       const targetWs = projectWs(targetId);
-      const patches = new Map(affected.map((t) => [t.id, { projectId: targetId, workspaceId: targetWs, sectionId: undefined } as Partial<Task>]));
-      // a move that fails is undone on screen with Retry (its own toast) — only claim what stuck
-      const moved = await updateTasks(patches, { notify: false, op: "reassignOnProjectDelete" });
-      if (moved) toastSuccess(`Deleted “${proj.name}”${affected.length ? ` — ${plural(affected.length, "task")} moved to “${getProject(targetId)?.name ?? "another project"}”` : ""}`);
+      const targetName = getProject(targetId)?.name ?? "another project";
+      const moveThenDelete = async (): Promise<void> => {
+        if (!projectsRef.current.some((p) => p.id === id)) return; // gone meanwhile
+        const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
+        const patches = new Map(affected.map((t) => [t.id, { projectId: targetId, workspaceId: targetWs, sectionId: undefined } as Partial<Task>]));
+        // a move that fails is undone on screen; its Retry toast runs the whole thing again
+        const moved = await updateTasks(patches, {
+          notify: false, op: "reassignOnProjectDelete", retry: () => { void moveThenDelete(); },
+          failMessage: (n) => `Couldn't move ${plural(n, "task")} — “${proj.name}” was not deleted`,
+        });
+        if (!moved) return;
+        try { await store.deleteProject(id); }
+        catch (e) {
+          reportError(e, { op: "deleteProject" });
+          toastError(affected.length ? `Moved ${plural(affected.length, "task")} to “${targetName}”, but couldn't delete “${proj.name}”.` : `Couldn't delete “${proj.name}” — nothing was changed.`);
+          return;
+        }
+        dropProject();
+        toastSuccess(`Deleted “${proj.name}”${affected.length ? ` — ${plural(affected.length, "task")} moved to “${targetName}”` : ""}`);
+      };
+      await moveThenDelete();
       return;
     }
+    try { await store.deleteProject(id); }
+    catch (e) { reportError(e, { op: "deleteProject" }); toastError(`Couldn't delete “${proj.name}” — nothing was changed.`); return; }
+    const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
+    dropProject();
     const ids = new Set(affected.map((t) => t.id));
     setTasks((ts) => ts && ts.filter((t) => !ids.has(t.id)));
     noteDelete([...ids]); dropPending(ids);

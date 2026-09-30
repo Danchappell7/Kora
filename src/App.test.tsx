@@ -421,6 +421,23 @@ describe("App (demo mode)", () => {
     expect(await screen.findByRole("button", { name: `Archive “${DECK}”` })).toBeInTheDocument();
   });
 
+  it("archiving one notification after another keeps a single Undo toast that brings them all back", async () => {
+    const items = [0, 1, 2].map((i) => ({ id: `a-${i}`, taskId: "t-1", taskTitle: `Inbox note ${i}`, kind: "assigned" as const, detail: "Maya assigned this to you", createdAt: new Date(Date.now() - i * 1000).toISOString() }));
+    track(vi.spyOn(store, "listActivity")).mockResolvedValue(items);
+    track(vi.spyOn(store, "archiveActivity")).mockResolvedValue();
+    const unarchive = track(vi.spyOn(store, "unarchiveActivity")).mockResolvedValue();
+    await boot();
+    key("g"); key("i");
+    for (const i of [0, 1, 2]) fireEvent.click(await screen.findByRole("button", { name: `Archive “Inbox note ${i}”` }));
+    const toast = (await screen.findByText("Archived 3 notifications")).parentElement!;
+    expect(screen.queryByText("Notification archived")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
+    fireEvent.click(within(toast).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(unarchive).toHaveBeenCalledTimes(1));
+    expect([...unarchive.mock.calls[0][0]].sort()).toEqual(["a-0", "a-1", "a-2"]);
+    for (const i of [0, 1, 2]) expect(await screen.findByRole("button", { name: `Archive “Inbox note ${i}”` })).toBeInTheDocument();
+  });
+
   it("import nests sub-tasks under their parent row and creates the sections and tags the file names", async () => {
     const create = track(vi.spyOn(store, "createTask"));
     const section = track(vi.spyOn(store, "createSection"));
@@ -525,5 +542,32 @@ describe("App (demo mode)", () => {
     expect(await screen.findByText(/Guests can view and comment — ask a workspace admin/)).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "New task" })).not.toBeInTheDocument();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("“Move tasks & delete” moves the tasks first — a refused move keeps the project, and Retry finishes the job", async () => {
+    let refuse = true;
+    const real = store.updateTask.bind(store);
+    const upd = track(vi.spyOn(store, "updateTask")).mockImplementation(async (id, patch) => { if (refuse) throw new Error("permission denied"); return real(id, patch); });
+    const delProject = track(vi.spyOn(store, "deleteProject"));
+    await boot();
+    fireEvent.click(within(projectButton("Platform Infra").parentElement!).getByTitle("Delete project"));
+    const dialog = await screen.findByRole("dialog", { name: "Delete project" });
+    fireEvent.click(within(dialog).getByText(/^Move \d+ tasks? to another project$/));
+    fireEvent.change(within(dialog).getByLabelText("Move tasks from Platform Infra to"), { target: { value: "p-launch" } });
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: /Move tasks & delete/ })); });
+    const failed = (await screen.findByText(/^Couldn't move \d+ tasks? — “Platform Infra” was not deleted$/)).parentElement!;
+    expect(upd).toHaveBeenCalled();
+    expect(delProject).not.toHaveBeenCalled();
+    expect(projectButton("Platform Infra")).toBeInTheDocument();
+    const moves = upd.mock.calls.length;
+    refuse = false;
+    await act(async () => { fireEvent.click(within(failed).getByRole("button", { name: "Retry" })); });
+    await waitFor(() => expect(delProject).toHaveBeenCalledWith("p-infra"));
+    expect(upd.mock.calls.length).toBe(moves * 2);
+    expect(upd.mock.calls.slice(moves).every(([, p]) => p.projectId === "p-launch")).toBe(true);
+    // every move landed before the project was deleted
+    expect(Math.max(...upd.mock.invocationCallOrder)).toBeLessThan(delProject.mock.invocationCallOrder[0]);
+    await waitFor(() => expect(screen.queryByText("Platform Infra", { selector: ".kproj *" })).not.toBeInTheDocument());
+    expect(await screen.findByText(/^Deleted “Platform Infra” — \d+ tasks? moved to “Q3 Product Launch”$/)).toBeInTheDocument();
   });
 });
