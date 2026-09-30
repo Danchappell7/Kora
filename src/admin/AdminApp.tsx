@@ -1,40 +1,70 @@
 /* ============================================================
    KANBO — standalone internal admin/analytics app, served at /admin.
    NOT part of the consumer product: its own layout, no sidebar, not linked
-   anywhere. Locked to admin-allowlisted logins.
+   anywhere. Open to Kanbo admins only.
    ============================================================ */
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
 import { LoginScreen } from "../auth/LoginScreen";
 import { AdminView } from "../components/views/AdminView";
-import { store } from "../data/store";
+import { supabase } from "../lib/supabase";
 import { KanboLogo, Icon, AppBg } from "../components/primitives";
 
-// The founding admin is always allowed; other admins are recognised via the
-// server-side is_admin() flag (so "grant admin" actually opens this dashboard).
+// Who is an admin is decided on the server by is_admin() (profiles.is_admin,
+// which "Make admin" sets, or the founding email), and every admin RPC checks
+// it again. This list is only a fallback for when that check can't run at
+// all (is_admin() not deployed yet), so the founder is never locked out.
 export const ADMIN_EMAILS = ["danchappell7@gmail.com"];
 export const isAdminEmail = (e?: string | null): boolean => !!e && ADMIN_EMAILS.includes(e.trim().toLowerCase());
 
+export type AdminAccess = "checking" | "admin" | "denied" | "unverified";
+
+/**
+ * Decide access from the is_admin() RPC result. A clear answer from the
+ * server wins (it already counts the founding email), so delegated admins
+ * get in. Only when the check itself fails does the allowlist decide; anyone
+ * else then sees "couldn't check" with a retry rather than a false "no".
+ */
+export function resolveAdminAccess(rpc: { data?: unknown; error?: unknown }, email?: string | null): Exclude<AdminAccess, "checking"> {
+  if (!rpc.error && typeof rpc.data === "boolean") return rpc.data ? "admin" : "denied";
+  return isAdminEmail(email) ? "admin" : "unverified";
+}
+
+async function checkAdmin(email?: string | null): Promise<Exclude<AdminAccess, "checking">> {
+  if (!supabase) return "admin"; // demo mode: no backend to ask
+  try {
+    const { data, error } = await supabase.rpc("is_admin");
+    return resolveAdminAccess({ data, error }, email);
+  } catch (error) {
+    return resolveAdminAccess({ error }, email);
+  }
+}
+
 export function AdminApp() {
   const auth = useAuth();
-  // null = still checking the is_admin() flag; true/false = resolved.
-  const [flagAdmin, setFlagAdmin] = useState<boolean | null>(null);
+  const uid = auth.user?.id;
+  const email = auth.user?.email;
+  const [access, setAccess] = useState<AdminAccess>("checking");
+  const [attempt, setAttempt] = useState(0);
 
+  // keyed on the user id (not the user object, which is replaced on every
+  // token refresh) so an hourly refresh never re-gates a working admin
   useEffect(() => {
-    if (!auth.configured) { setFlagAdmin(true); return; }
-    if (!auth.user) { setFlagAdmin(null); return; }
-    if (isAdminEmail(auth.user.email)) { setFlagAdmin(true); return; }
+    if (!auth.configured) { setAccess("admin"); return; }
+    if (!uid) { setAccess("checking"); return; }
     let on = true;
-    store.amIAdmin().then((ok) => on && setFlagAdmin(ok)).catch(() => on && setFlagAdmin(false));
+    setAccess("checking");
+    checkAdmin(email).then((a) => { if (on) setAccess(a); });
     return () => { on = false; };
-  }, [auth.configured, auth.user]);
+  }, [auth.configured, uid, email, attempt]);
 
   // Demo mode (no backend configured) — show the dashboard for local preview.
   if (auth.configured) {
     if (auth.loading) return <Centered>Loading…</Centered>;
     if (!auth.user) return <LoginScreen />; // must sign in first
-    if (flagAdmin === null) return <Centered>Loading…</Centered>;
-    if (!flagAdmin) return <NotAuthorised onSignOut={auth.signOut} email={auth.user.email} />;
+    if (access === "checking") return <Centered>Checking your access…</Centered>;
+    if (access === "unverified") return <Unverified onRetry={() => setAttempt((n) => n + 1)} onSignOut={auth.signOut} email={auth.user.email} />;
+    if (access === "denied") return <NotAuthorised onSignOut={auth.signOut} email={auth.user.email} />;
   }
 
   return (
@@ -70,8 +100,25 @@ function NotAuthorised({ onSignOut, email }: { onSignOut?: () => void; email?: s
       <div className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 380, maxWidth: "100%", padding: 28, borderRadius: 20, textAlign: "center", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "inline-flex", padding: 13, borderRadius: 14, background: "var(--surface-2)", marginBottom: 14 }}><Icon name="lock" size={22} style={{ color: "var(--ink-4)" }} /></div>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 7 }}>Not authorised</h2>
-        <p style={{ fontSize: 13.5, color: "var(--ink-3)", lineHeight: 1.55, margin: "0 0 18px" }}>This area is for the Kanbo team only. {email ? <>You're signed in as <strong>{email}</strong>.</> : null}</p>
+        <p style={{ fontSize: 13.5, color: "var(--ink-3)", lineHeight: 1.55, margin: "0 0 18px" }}>This area is for Kanbo admins. An existing admin can give you access from the Accounts list. {email ? <>You're signed in as <strong>{email}</strong>.</> : null}</p>
         {onSignOut && <button className="btn btn-ghost" onClick={onSignOut} style={{ width: "100%", justifyContent: "center" }}>Sign out</button>}
+      </div>
+    </div>
+  );
+}
+
+function Unverified({ onRetry, onSignOut, email }: { onRetry: () => void; onSignOut?: () => void; email?: string }) {
+  return (
+    <div style={{ position: "relative", minHeight: "100vh", display: "grid", placeItems: "center", padding: 20 }}>
+      <AppBg />
+      <div role="alert" className="glass anim-scalein" style={{ position: "relative", zIndex: 1, width: 380, maxWidth: "100%", padding: 28, borderRadius: 20, textAlign: "center", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
+        <div style={{ display: "inline-flex", padding: 13, borderRadius: 14, background: "var(--surface-2)", marginBottom: 14 }}><Icon name="refresh" size={22} style={{ color: "var(--ink-4)" }} /></div>
+        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 7 }}>Couldn't check your access</h2>
+        <p style={{ fontSize: 13.5, color: "var(--ink-3)", lineHeight: 1.55, margin: "0 0 18px" }}>We couldn't reach Kanbo to confirm you're an admin. Check your connection and try again. {email ? <>You're signed in as <strong>{email}</strong>.</> : null}</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <button className="btn btn-accent" onClick={onRetry} style={{ width: "100%", justifyContent: "center" }}><Icon name="refresh" size={15} /> Try again</button>
+          {onSignOut && <button className="btn btn-ghost" onClick={onSignOut} style={{ width: "100%", justifyContent: "center" }}>Sign out</button>}
+        </div>
       </div>
     </div>
   );

@@ -6,7 +6,7 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { Plan, Subscription } from "../data/types";
 
 const PLANS: { id: Plan; name: string; price: string; unit: string; blurb: string; features: string[] }[] = [
-  { id: "personal", name: "Personal", price: "£8", unit: "/month", blurb: "For focused individual work.", features: ["Unlimited tasks & projects", "Plan-my-day & AI prioritize", "All views, files & reminders"] },
+  { id: "personal", name: "Personal", price: "£8", unit: "/month", blurb: "For focused individual work.", features: ["Unlimited tasks & projects", "Plan-my-day & AI prioritise", "All views, files & reminders"] },
   { id: "team", name: "Team", price: "£12", unit: "/user / month", blurb: "For teams that ship together.", features: ["Everything in Personal", "Shared workspaces & invites", "Assign work & track workload"] },
 ];
 
@@ -89,7 +89,7 @@ export function UpgradeModal({ open, onClose, seats, busyPlan, onChoose }: {
             <h2 style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>Choose your plan</h2>
             <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ marginLeft: "auto", border: "none", width: 30, height: 30 }}><Icon name="x" size={17} /></button>
           </div>
-          <p style={{ margin: "0 0 20px", fontSize: 13.5, color: "var(--ink-4)" }}>Cancel anytime from billing settings.</p>
+          <p style={{ margin: "0 0 20px", fontSize: 13.5, color: "var(--ink-4)" }}>Cancel any time from billing settings.</p>
           <PlanCards seats={seats} busyPlan={busyPlan} onChoose={onChoose} />
         </div>
       </div>
@@ -97,23 +97,37 @@ export function UpgradeModal({ open, onClose, seats, busyPlan, onChoose }: {
   );
 }
 
-export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut }: {
+export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut, onManageBilling }: {
   sub: Subscription; seats: number; busyPlan: Plan | null; onChoose: (p: Plan) => void; onSignOut?: () => void;
+  /** Opens the Stripe billing portal. With it, a past-due customer is sent to
+   *  update their card instead of being offered (and charged for) a second plan. */
+  onManageBilling?: () => void | Promise<void>;
 }) {
-  const ended = sub.status !== "trialing";
+  const pastDue = sub.status === "past_due";
+  // Stripe is still retrying a past-due subscription; buying a new plan would
+  // leave the customer with two. Send them to fix the card instead.
+  const fixCard = pastDue && !!onManageBilling;
+  const heading = pastDue ? "Your last payment didn't go through"
+    : sub.status === "trialing" ? "Your free trial has ended"
+    : "Your subscription is inactive";
+  const body = fixCard
+    ? "Update your payment method and your subscription carries on as before. There's no need to choose a new plan. Your tasks, projects and team are safe."
+    : "Pick a plan to keep your tasks, projects, and team in Kanbo. Your data is safe and waiting.";
   return (
     <div style={{ position: "relative", minHeight: "100vh", overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }}>
       <AppBg />
       <div style={{ position: "relative", zIndex: 1, width: 680, maxWidth: "100%", textAlign: "center" }}>
         <span style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={42} /></span>
-        <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>
-          {ended ? "Your subscription is inactive" : "Your free trial has ended"}
-        </h1>
-        <p style={{ fontSize: 14.5, color: "var(--ink-3)", margin: "0 auto 26px", maxWidth: 460, lineHeight: 1.55 }}>
-          Pick a plan to keep your tasks, projects, and team in Kanbo. Your data is safe and waiting.
-        </p>
-        <PlanCards seats={seats} busyPlan={busyPlan} onChoose={onChoose} />
-        {onSignOut && <button onClick={onSignOut} style={{ marginTop: 22, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>Sign out</button>}
+        <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8 }}>{heading}</h1>
+        <p style={{ fontSize: 14.5, color: "var(--ink-3)", margin: "0 auto 26px", maxWidth: 460, lineHeight: 1.55 }}>{body}</p>
+        {fixCard ? (
+          <button className="btn btn-accent" onClick={() => { void onManageBilling?.(); }} style={{ padding: "11px 20px", fontSize: 14 }}>
+            <Icon name="arrowUpRight" size={15} /> Update payment method
+          </button>
+        ) : (
+          <PlanCards seats={seats} busyPlan={busyPlan} onChoose={onChoose} />
+        )}
+        {onSignOut && <button onClick={onSignOut} style={{ display: "block", margin: "22px auto 0", border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)", padding: "4px 8px", borderRadius: 6 }}>Sign out</button>}
       </div>
     </div>
   );
