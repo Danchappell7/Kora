@@ -1,34 +1,32 @@
 /* ============================================================
-   KANBO — Inbox: the activity feed (assignments, mentions,
-   comments, updates) with filters, snooze and archive
+   KANBO — Inbox: a triage queue you empty.
+   Needs your reply · New to you · FYI, with one-key actions
+   (J/K move · ↵ open · R reply · A add to Today · D schedule ·
+   H snooze · E archive), an inline reply, snooze and archive,
+   and Inbox zero at the end of it.
    ============================================================ */
-import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon, EmptyArt } from "../primitives";
-import { timeAgo, getProject, MEMBERS } from "../../data/data";
+import { Icon, EmptyArt, Avatar, Button, DateChip, Kbd, ProjectDot, SectionLabel } from "../primitives";
+import { Popover } from "../primitives/Popover";
+import { useToast } from "../Toast";
+import { timeAgo, getProject, getMember, MEMBERS, todayISO } from "../../data/data";
 import type { Task, Activity, ActivityKind, IconName } from "../../data/types";
+import { triage, requestSource, isRequestTask, TRIAGE_GROUPS, type TriageGroup } from "../../lib/inboxTriage";
 import { useEntrance } from "../../hooks/useEntrance";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 
-const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
-  created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
-  status:    { icon: "refresh", color: "var(--st-progress)", verb: "updated" },
-  completed: { icon: "check",   color: "var(--st-done)",    verb: "completed" },
-  reopened:  { icon: "refresh", color: "var(--st-review)",  verb: "reopened" },
-  comment:   { icon: "message", color: "var(--accent)",     verb: "commented on" },
-  deleted:   { icon: "trash",   color: "var(--st-blocked)", verb: "deleted" },
-  assigned:  { icon: "user",    color: "var(--accent)",     verb: "assigned you" },
-  mention:   { icon: "message", color: "var(--accent)",     verb: "mentioned you in" },
+const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
+  created:   { icon: "plus",    verb: "created" },
+  status:    { icon: "refresh", verb: "updated" },
+  completed: { icon: "check",   verb: "completed" },
+  reopened:  { icon: "refresh", verb: "reopened" },
+  comment:   { icon: "message", verb: "commented on" },
+  deleted:   { icon: "trash",   verb: "deleted" },
+  assigned:  { icon: "user",    verb: "assigned you" },
+  mention:   { icon: "message", verb: "mentioned you in" },
 };
-
-const INBOX_FILTERS: { v: string; label: string; kinds?: ActivityKind[]; noun: [string, string]; empty: string }[] = [
-  { v: "all", label: "All", noun: ["update", "updates"], empty: "You're all caught up — everything else is snoozed." },
-  { v: "assigned", label: "Assigned", kinds: ["assigned"], noun: ["assignment", "assignments"], empty: "No new assignments." },
-  { v: "mention", label: "Mentions", kinds: ["mention"], noun: ["mention", "mentions"], empty: "No mentions." },
-  { v: "comment", label: "Comments", kinds: ["comment"], noun: ["comment", "comments"], empty: "No comments." },
-  { v: "updates", label: "Updates", kinds: ["created", "status", "completed", "reopened", "deleted"], noun: ["update", "updates"], empty: "No task updates." },
-];
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -81,10 +79,41 @@ const ACTOR_VERB: Partial<Record<ActivityKind, string>> = {
   comment: "commented on",
 };
 
-// neutral wash (hover, tracks, chips) that stays visible on white porcelain
-// cards — --surface-2 is itself white there
-const FILL_1 = "var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent))";
-const isFocusVisible = (el: Element) => { try { return el.matches(":focus-visible"); } catch { return false; } };
+/* An assignment that came in through a request form reads "New request",
+   not "<Request via Launch requests> assigned you…". */
+const viaRequest = (a: Activity, task: Task | undefined): string | null => {
+  if (a.kind === "assigned" && /^\s*Request via\s/i.test(a.detail || "")) return a.detail.replace(/^\s*Request via\s+/i, "").trim() || "a request form";
+  if ((a.kind === "assigned" || a.kind === "created") && isRequestTask(task)) return requestSource(task) ?? "a request form";
+  return null;
+};
+
+/** a teammate's member id from how the feed names them (name or email) */
+function memberIdByName(name: string, members?: { id: string; name: string }[]): string | null {
+  const k = name.trim().toLowerCase();
+  if (!k) return null;
+  const hit = MEMBERS.find((m) => m.name?.trim().toLowerCase() === k || m.email?.toLowerCase() === k)
+    ?? members?.map((m) => getMember(m.id)).find((m) => m?.name?.trim().toLowerCase() === k);
+  return hit?.id ?? null;
+}
+const initialsOf = (name: string) => {
+  if (EMAIL_RE.test(name)) return name[0]?.toUpperCase() ?? "?";
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+};
+
+const isEditable = (el: EventTarget | null): boolean => {
+  const n = el as HTMLElement | null;
+  if (!n || typeof n.closest !== "function") return false;
+  return !!n.isContentEditable || !!n.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])");
+};
+const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/* The toast stack lives in App; rendered on its own (tests, previews) the
+   Inbox simply doesn't toast. */
+function useOptionalToast() {
+  try { return useToast(); } catch { return null; }
+}
 
 /* ---------- snoozes (per device) ----------
    Storage holds id → wake time for every account and workspace used in this
@@ -94,6 +123,7 @@ const isFocusVisible = (el: Element) => { try { return el.matches(":focus-visibl
    another workspace), and is then flagged "Back from snooze" once. Ones that
    ended more than WAKE_WINDOW ago are stale: dropped, never flagged. */
 const SNOOZE_KEY = "kanbo-inbox-snooze";
+const ZERO_KEY = "kanbo-inbox-zero-day";
 const MAX_TIMEOUT = 2 ** 31 - 1;
 const WAKE_WINDOW = 7 * 86400000;
 type SnoozeState = {
@@ -145,16 +175,31 @@ function snoozeOptions(from: Date): { label: string; hint: string; until: number
 
 // one formatter for every row (toLocaleString builds a new one per call)
 const FULL_DATE = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-function fullDate(iso: string): string | undefined {
+const WAKE_TIME = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Wed 30 Sep" from a Date or "YYYY-MM-DD" (the same in every browser) */
+function dayLabel(v: Date | string): string {
+  const d = typeof v === "string" ? new Date(`${v.slice(0, 10)}T00:00:00`) : v;
+  return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+}
+function fullDate(iso: string | number): string | undefined {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? undefined : FULL_DATE.format(d);
 }
+/** "15:42" today, "Tomorrow 09:00", else "Mon 5 Oct 09:00" */
+function wakeLabel(ms: number): string {
+  const d = new Date(ms), now = new Date();
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86400000);
+  const t = WAKE_TIME.format(d);
+  return days <= 0 ? t : days === 1 ? `Tomorrow ${t}` : `${dayLabel(d)} ${t}`;
+}
 
 /* Snooze menu — portalled to <body> with fixed positioning so no card, scroll
-   container or backdrop-filter ancestor can clip it; opens upward when the
-   trigger sits near the bottom of the viewport. Menu-button keyboard model:
-   focus lands on the first option, arrows move, Escape/Tab close and return
-   focus to the trigger. */
+   container or sticky ancestor can clip it; opens upward when the trigger
+   sits near the bottom of the viewport. Menu-button keyboard model: focus
+   lands on the first option, arrows move, Escape/Tab close and return focus
+   to the trigger. */
 function SnoozeMenu({ anchor, itemTitle, onPick, onClose }: {
   anchor: HTMLElement;
   itemTitle: string;
@@ -219,23 +264,16 @@ function SnoozeMenu({ anchor, itemTitle, onPick, onClose }: {
 
   return createPortal(
     <div ref={ref} role="menu" aria-label={`Snooze “${itemTitle}” until`} onKeyDown={onKeyDown}
-      className="glass anim-scalein"
+      className="kinbox-menu" data-up={pos?.up || undefined}
       style={{
-        position: "fixed", top: pos?.top ?? 0, left: pos?.left ?? 0, zIndex: 60,
+        position: "fixed", top: pos?.top ?? 0, left: pos?.left ?? 0, zIndex: 1100,
         visibility: placed ? "visible" : "hidden", transformOrigin: pos?.up ? "100% 100%" : "100% 0",
-        padding: 5, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)",
-        boxShadow: "var(--shadow-lg)", minWidth: 208,
       }}>
-      <div className="kicker" aria-hidden="true" style={{ padding: "6px 11px 4px" }}>Snooze until</div>
+      <div className="kinbox-menu-label" aria-hidden="true">Snooze until</div>
       {options.map((o) => (
-        <button key={o.label} type="button" role="menuitem" tabIndex={-1} onClick={() => onPick(o.until)}
-          onMouseEnter={(e) => (e.currentTarget.style.background = FILL_1)}
-          onMouseLeave={(e) => { if (!isFocusVisible(e.currentTarget)) e.currentTarget.style.background = "transparent"; }}
-          onFocus={(e) => { if (isFocusVisible(e.currentTarget)) e.currentTarget.style.background = FILL_1; }}
-          onBlur={(e) => (e.currentTarget.style.background = "transparent")}
-          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, width: "100%", textAlign: "left", padding: "8px 11px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, color: "var(--ink-2)" }}>
+        <button key={o.label} type="button" role="menuitem" tabIndex={-1} className="kinbox-mi" onClick={() => onPick(o.until)}>
           <span>{o.label}</span>
-          <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)" }}>{o.hint}</span>
+          <span className="kinbox-mi-hint">{o.hint}</span>
         </button>
       ))}
     </div>,
@@ -243,33 +281,91 @@ function SnoozeMenu({ anchor, itemTitle, onPick, onClose }: {
   );
 }
 
-export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
+/* Who the row is from: their avatar, initials for someone the workspace
+   doesn't know (an email, a teammate who has left), or the kind of change
+   for your own history. */
+function ActorMark({ actor, kind, request, members }: { actor: string | null; kind: ActivityKind; request: boolean; members?: { id: string; name: string }[] }) {
+  if (request) return <span className="kinbox-av" data-kind="icon" aria-hidden="true"><Icon name="inbox" size={14} sw={1.75} /></span>;
+  if (actor) {
+    const id = memberIdByName(actor, members);
+    if (id && getMember(id)) return <span className="kinbox-av" aria-hidden="true"><Avatar id={id} size={28} /></span>;
+    if (actor !== "Someone") return <span className="kinbox-av" data-kind="initials" aria-hidden="true">{initialsOf(actor)}</span>;
+    return <span className="kinbox-av" data-kind="icon" aria-hidden="true"><Icon name="user" size={14} sw={1.75} /></span>;
+  }
+  return <span className="kinbox-av" data-kind="icon" aria-hidden="true"><Icon name={KIND_META[kind]?.icon ?? "refresh"} size={14} sw={1.75} /></span>;
+}
+
+type Segment = "inbox" | "snoozed" | "archived";
+type ConfirmScope = "all" | "fyi";
+type ReplyState = { id: string; text: string; sending: boolean; error?: string };
+type RowAct = { act: string; icon: IconName; label: string; tip: string; kbd?: string; run: (anchor: HTMLElement) => void; pressed?: boolean; menu?: boolean };
+
+export interface InboxViewProps {
   activity: Activity[];
   tasks: Task[];
   onOpen: (id: string) => void;
   onArchive: (id: string) => void;
   /** Archive the given items — "Archive all" passes exactly what the inbox is
-      currently showing (the active filter, minus snoozed items). */
+      currently showing (minus snoozed items). */
   onClearAll: (ids?: string[]) => void;
-}) {
+  /** the signed-in user: "New to you" requests are the ones assigned to them */
+  currentUserId?: string;
+  members?: { id: string; name: string }[];
+  /** R: post a comment on the item's task. `mentions` carries the person being
+      replied to (a member id) for callers that notify mentions. Resolving to
+      null counts as a failed send. */
+  onReply?: (taskId: string, body: string, mentions?: string[]) => Promise<unknown>;
+  /** A: put the task on your Today */
+  onAcceptToday?: (taskId: string) => void;
+  /** D: set the task's due date */
+  onSchedule?: (taskId: string, dueDate: string) => void;
+  /** ⋯ › Mark task done */
+  onComplete?: (taskId: string) => void;
+  /** guests: no Add to Today, scheduling or completing (they can still reply) */
+  readOnly?: boolean;
+  /** the Archived filter's items; without it, what was archived on this visit */
+  archived?: Activity[];
+  /** Archived › Move back to Inbox */
+  onUnarchive?: (ids: string[]) => void;
+}
+
+export function InboxView({
+  activity, tasks, onOpen, onArchive, onClearAll,
+  currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
+}: InboxViewProps) {
   const entrance = useEntrance();
+  const toast = useOptionalToast();
   const narrow = useMediaQuery("(max-width: 560px)");
-  const [filter, setFilter] = useState("all");
+  const [segment, setSegment] = useState<Segment>("inbox");
   const [menu, setMenu] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+  const [more, setMore] = useState<string | null>(null);
   const [snz, setSnz] = useState<SnoozeState>(initialSnoozes);
   const [tick, setTick] = useState(0);
-  const [confirmArchive, setConfirmArchive] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmScope | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [reply, setReply] = useState<ReplyState | null>(null);
+  const [replied, setReplied] = useState<Set<string>>(() => new Set());
+  const [onToday, setOnToday] = useState<Set<string>>(() => new Set());
+  const [visitArchived, setVisitArchived] = useState<Activity[]>([]);
+  const [sweep, setSweep] = useState(false);
   // Unread snapshot: App marks everything read the moment the inbox opens, so
   // capture what was unread on arrival (and anything that lands while it's
   // open) to keep the dots for this visit.
   const [unread, setUnread] = useState<Set<string>>(() => new Set(activity.filter((a) => !a.readAt).map((a) => a.id)));
   const knownRef = useRef<Set<string> | null>(null);
   if (knownRef.current === null) knownRef.current = new Set(activity.map((a) => a.id));
+  const rootRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const rowEls = useRef(new Map<string, HTMLDivElement>());
+  const snoozeRefs = useRef(new Map<string, HTMLButtonElement>());
+  const moreRefs = useRef(new Map<string, HTMLButtonElement>());
+  const moreAnchor = useRef<HTMLElement | null>(null);
   const focusNextRef = useRef<string | null>(null);
-  const archiveAllRef = useRef<HTMLButtonElement>(null);
+  const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
-  const restoreArchiveFocus = useRef(false);
+  const restoreConfirmFocus = useRef<HTMLButtonElement | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
   useEffect(() => {
@@ -322,42 +418,57 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   });
 
   useEffect(() => {
-    if (confirmArchive) confirmRef.current?.focus();
-    else if (restoreArchiveFocus.current) { restoreArchiveFocus.current = false; archiveAllRef.current?.focus(); }
-  }, [confirmArchive]);
+    if (confirm) confirmRef.current?.focus();
+    else if (restoreConfirmFocus.current) { restoreConfirmFocus.current.focus(); restoreConfirmFocus.current = null; }
+  }, [confirm]);
 
+  /* ---------- what's on screen ---------- */
   const now = Date.now();
-  const activeFilter = INBOX_FILTERS.find((f) => f.v === filter) || INBOX_FILTERS[0];
-  const matches = (f: (typeof INBOX_FILTERS)[number], a: Activity) => !f.kinds || f.kinds.includes(a.kind);
-  const visible = activity.filter((a) => !((snz.until[a.id] ?? 0) > now));
-  const shown = visible.filter((a) => matches(activeFilter, a));
-  const snoozedCount = activity.length - visible.length;
-  const snoozedHere = activeFilter.kinds ? activity.filter((a) => (snz.until[a.id] ?? 0) > now && matches(activeFilter, a)).length : snoozedCount;
-  // group by recency so the feed reads as "what just happened" vs "earlier";
+  const isSnoozed = (id: string) => (snz.until[id] ?? 0) > now;
+  const visible = activity.filter((a) => !isSnoozed(a.id));
+  const snoozedItems = activity.filter((a) => isSnoozed(a.id)).sort((x, y) => snz.until[x.id] - snz.until[y.id]);
+  const snoozedCount = snoozedItems.length;
+  const archivedItems = useMemo(() => {
+    const src = archived ?? visitArchived;
+    return src.filter((a) => !activityIds.has(a.id));
+  }, [archived, visitArchived, activityIds]);
   // items back from a snooze lead, so the reminder actually reminds (an ended
   // snooze counts before the wake effect has moved it, so nothing jumps)
   const backAt = (id: string) => snz.woke[id] ?? (id in snz.until && snz.until[id] <= now ? snz.until[id] : 0);
-  const back = shown.filter((a) => backAt(a.id)).sort((x, y) => backAt(y.id) - backAt(x.id));
-  const rest = shown.filter((a) => !backAt(a.id));
-  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
-  const weekAgo = now - 7 * 86400000;
-  const today = rest.filter((a) => new Date(a.createdAt).getTime() >= startOfToday.getTime());
-  const earlier = rest.filter((a) => { const t = new Date(a.createdAt).getTime(); return t < startOfToday.getTime() && t >= weekAgo; });
-  const grouped = new Set([...today, ...earlier]);
-  const buckets: { label: string; items: Activity[] }[] = [
-    { label: "Back from snooze", items: back },
-    { label: "Today", items: today },
-    { label: "Earlier this week", items: earlier },
-    // catch-all: anything older — and anything with an unparseable date, so no item is ever dropped
-    { label: "Older", items: rest.filter((a) => !grouped.has(a)) },
-  ].filter((b) => b.items.length > 0);
-  const ordered = buckets.flatMap((b) => b.items);
+  const back = visible.filter((a) => backAt(a.id)).sort((x, y) => backAt(y.id) - backAt(x.id));
+  const groups = triage(visible.filter((a) => !backAt(a.id)), { me: currentUserId, tasks: taskById });
+  const sections: { id: TriageGroup | "back"; label: string; items: Activity[] }[] = segment === "inbox"
+    ? [{ id: "back" as const, label: "Back from snooze", items: back }, ...TRIAGE_GROUPS.map((g) => ({ id: g.id, label: g.label, items: groups[g.id] }))]
+        .filter((s) => s.items.length > 0)
+    : [];
+  const ordered = segment === "inbox" ? sections.flatMap((s) => s.items) : segment === "snoozed" ? snoozedItems : archivedItems;
+  const fyiShown = segment === "inbox" ? groups.fyi : [];
 
-  // the snoozed/archived item vanished (filter change, realtime archive…) → drop its menu
+  // the snoozed/archived item vanished (filter change, realtime archive…) → drop its menus
   const menuOpenFor = menu && ordered.some((a) => a.id === menu.id) ? menu : null;
   useEffect(() => { if (menu && !menuOpenFor) setMenu(null); }, [menu, menuOpenFor]);
-  useEffect(() => { if (confirmArchive && shown.length === 0) setConfirmArchive(false); }, [confirmArchive, shown.length]);
+  const moreOpenFor = more && ordered.some((a) => a.id === more) ? more : null;
+  useEffect(() => { if (more && !moreOpenFor) setMore(null); }, [more, moreOpenFor]);
+  const confirmCount = confirm === "fyi" ? fyiShown.length : visible.length;
+  useEffect(() => { if (confirm && (segment !== "inbox" || confirmCount === 0)) setConfirm(null); }, [confirm, segment, confirmCount]);
+  const cursorOn = cursor && ordered.some((a) => a.id === cursor) ? cursor : null;
+  const replyOn = reply && ordered.some((a) => a.id === reply.id) ? reply : null;
 
+  /* Inbox zero: the gradient sweeps the bar once a day (never under reduced motion) */
+  const zero = segment === "inbox" && visible.length === 0;
+  useEffect(() => {
+    if (!zero || reducedMotion()) return;
+    const day = todayISO();
+    try {
+      if (localStorage.getItem(ZERO_KEY) === day) return;
+      localStorage.setItem(ZERO_KEY, day);
+    } catch { return; }
+    setSweep(true);
+    const t = window.setTimeout(() => setSweep(false), 1600);
+    return () => window.clearTimeout(t);
+  }, [zero]);
+
+  /* ---------- actions ---------- */
   const neighbourOf = (id: string) => {
     const i = ordered.findIndex((a) => a.id === id);
     return i < 0 ? null : (ordered[i + 1] ?? ordered[i - 1])?.id ?? null;
@@ -376,14 +487,21 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
     forget([a.id]);
     onOpen(a.taskId);
   };
+  const noteArchived = (items: Activity[]) => {
+    if (archived || !items.length) return;
+    setVisitArchived((xs) => [...items, ...xs.filter((x) => !items.some((i) => i.id === x.id))]);
+  };
   const archiveItem = (id: string) => {
     focusNextRef.current = neighbourOf(id);
+    if (reply?.id === id) setReply(null);
+    noteArchived(activity.filter((a) => a.id === id));
     forget([id]);
     onArchive(id);
   };
   const snoozeItem = (id: string, until: number) => {
     focusNextRef.current = neighbourOf(id);
     setMenu(null);
+    if (reply?.id === id) setReply(null);
     setUnread((s) => withoutIds(s, [id]));
     // self-pruning drops only stale entries: ended snoozes for other inboxes wait their turn
     setSnz((s) => ({ until: { ...withoutStale(s.until), [id]: until }, woke: omit(s.woke, [id]) }));
@@ -394,151 +512,642 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
     if (refocus) m?.anchor.focus();
   };
   // only the snoozes counted in "{n} snoozed" (this inbox), which come back at the top
-  const unsnoozeAll = () => setSnz((s) => {
+  const unsnooze = (only?: string[]) => setSnz((s) => {
     const t = Date.now();
-    const ids = activity.filter((a) => (s.until[a.id] ?? 0) > t).map((a) => a.id);
+    const ids = (only ?? activity.map((a) => a.id)).filter((id) => (s.until[id] ?? 0) > t);
     if (!ids.length) return s;
     return { until: omit(s.until, ids), woke: { ...s.woke, ...Object.fromEntries(ids.map((id) => [id, t])) } };
   });
-  const cancelArchiveAll = () => { restoreArchiveFocus.current = true; setConfirmArchive(false); };
+  const bringBack = (id: string) => {
+    focusNextRef.current = neighbourOf(id);
+    unsnooze([id]);
+    toast?.toast("Back in your Inbox");
+  };
+  const askConfirm = (scope: ConfirmScope, trigger: HTMLButtonElement) => {
+    confirmTriggerRef.current = trigger;
+    setConfirm(scope);
+  };
+  const cancelConfirm = () => { restoreConfirmFocus.current = confirmTriggerRef.current; setConfirm(null); };
   const archiveShown = () => {
-    const ids = shown.map((a) => a.id);
-    restoreArchiveFocus.current = true;
-    setConfirmArchive(false);
+    const items = confirm === "fyi" ? fyiShown : visible;
+    const ids = items.map((a) => a.id);
+    restoreConfirmFocus.current = confirm === "fyi" ? null : confirmTriggerRef.current;
+    setConfirm(null);
     if (!ids.length) return;
+    if (reply && ids.includes(reply.id)) setReply(null);
+    noteArchived(items);
     forget(ids);
     onClearAll(ids);
   };
+  const moveBack = (id: string) => {
+    if (!onUnarchive) return;
+    focusNextRef.current = neighbourOf(id);
+    onUnarchive([id]);
+    setVisitArchived((xs) => xs.filter((x) => x.id !== id));
+  };
 
-  if (activity.length === 0) {
+  const taskOf = (a: Activity) => (a.taskId ? taskById.get(a.taskId) : undefined);
+  const canReply = (a: Activity) => !!onReply && !!taskOf(a);
+  const isOnToday = (t: Task) => !!t.planToday || onToday.has(t.id);
+  const canToday = (a: Activity) => { const t = taskOf(a); return !!onAcceptToday && !readOnly && !!t && t.status !== "done" && !isOnToday(t); };
+  const canSchedule = (a: Activity) => { const t = taskOf(a); return !!onSchedule && !readOnly && !!t && t.status !== "done"; };
+  const canComplete = (a: Activity) => { const t = taskOf(a); return !!onComplete && !readOnly && !!t && t.status !== "done"; };
+
+  const startReply = (a: Activity) => {
+    if (!canReply(a)) return;
+    setCursor(a.id);
+    setReply((r) => (r?.id === a.id ? r : { id: a.id, text: "", sending: false }));
+  };
+  const cancelReply = (refocus = true) => {
+    const id = reply?.id;
+    setReply(null);
+    if (refocus && id) window.setTimeout(() => rowRefs.current.get(id)?.focus({ preventScroll: true }), 0);
+  };
+  const sendReply = async () => {
+    const r = reply;
+    const a = r && activity.find((x) => x.id === r.id);
+    const t = a && taskOf(a);
+    const body = r?.text.trim();
+    if (!r || !a || !t || !body || !onReply || r.sending) return;
+    const actor = actorOf(a);
+    const mentionId = actor ? memberIdByName(actor, members) : null;
+    const mentions = mentionId && mentionId !== currentUserId ? [mentionId] : undefined;
+    setReply({ ...r, sending: true, error: undefined });
+    let ok = false;
+    try { ok = (await onReply(t.id, body, mentions)) !== null; } catch { ok = false; }
+    if (!mounted.current) return;
+    if (!ok) {
+      setReply((cur) => (cur?.id === r.id ? { ...cur, sending: false, error: "Couldn't send your reply. Try again." } : cur));
+      return;
+    }
+    setReply((cur) => (cur?.id === r.id ? null : cur));
+    setReplied((s) => new Set(s).add(r.id));
+    forget([r.id]);
+    toast?.success("Replied");
+    window.setTimeout(() => rowRefs.current.get(r.id)?.focus({ preventScroll: true }), 0);
+  };
+  const acceptToday = (a: Activity) => {
+    const t = taskOf(a);
+    if (!t || !onAcceptToday || readOnly) return;
+    if (isOnToday(t)) { toast?.toast("Already on Today"); return; }
+    if (t.status === "done") return;
+    onAcceptToday(t.id);
+    setOnToday((s) => new Set(s).add(t.id));
+    toast?.success("Added to Today");
+  };
+  const schedule = (a: Activity) => {
+    if (!canSchedule(a)) return;
+    rowEls.current.get(a.id)?.querySelector<HTMLButtonElement>(".kinbox-due button.kdate")?.click();
+  };
+  const openSnooze = (a: Activity) => {
+    const anchor = snoozeRefs.current.get(a.id);
+    if (anchor) setMenu({ id: a.id, anchor });
+  };
+
+  /* ---------- keyboard: J/K move · ↵ open · R · A · D · H · E ---------- */
+  const moveCursor = (dir: 1 | -1) => {
+    if (!ordered.length) return;
+    const i = cursorOn ? ordered.findIndex((a) => a.id === cursorOn) : -1;
+    const next = ordered[i < 0 ? (dir > 0 ? 0 : ordered.length - 1) : Math.max(0, Math.min(ordered.length - 1, i + dir))];
+    setCursor(next.id);
+    const el = rowRefs.current.get(next.id);
+    el?.focus({ preventScroll: true });
+    // instant: a smooth scroll still running would close a menu opened next (H)
+    rowEls.current.get(next.id)?.scrollIntoView?.({ block: "nearest", behavior: "instant" as ScrollBehavior });
+  };
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  const gAt = useRef(0);
+  keyRef.current = (e: KeyboardEvent) => {
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+    const target = e.target as HTMLElement | null;
+    if (isEditable(target)) return;
+    if (document.querySelector('[aria-modal="true"]')) return;
+    const root = rootRef.current;
+    if (!root || !(target === document.body || target === document.documentElement || (target && root.contains(target)))) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    // the second key of a "g …" go-to sequence belongs to the app
+    if (k === "g") { gAt.current = Date.now(); return; }
+    if (gAt.current && Date.now() - gAt.current < 900) { gAt.current = 0; return; }
+    // J/K anywhere in the Inbox; the arrows too while a row has focus
+    const onRow = !!target?.classList?.contains("kinbox-main");
+    if (k === "j" || (k === "ArrowDown" && onRow)) { e.preventDefault(); moveCursor(1); return; }
+    if (k === "k" || (k === "ArrowUp" && onRow)) { e.preventDefault(); moveCursor(-1); return; }
+    const a = cursorOn ? ordered.find((x) => x.id === cursorOn) : undefined;
+    if (!a) return;
+    const onButton = !!target?.closest?.("button, a, [role='menuitem']");
+    if (k === "Enter") { if (!onButton) { e.preventDefault(); openItem(a); } return; }
+    if (e.repeat) return;
+    if (segment === "inbox") {
+      if (k === "r" && canReply(a)) { e.preventDefault(); startReply(a); return; }
+      if (k === "a" && onAcceptToday && !readOnly) { e.preventDefault(); acceptToday(a); return; }
+      if (k === "d" && canSchedule(a)) { e.preventDefault(); schedule(a); return; }
+      if (k === "h") { e.preventDefault(); openSnooze(a); return; }
+      if (k === "e") { e.preventDefault(); archiveItem(a.id); return; }
+    } else if (segment === "snoozed") {
+      if (k === "h") { e.preventDefault(); bringBack(a.id); return; }
+      if (k === "e") { e.preventDefault(); archiveItem(a.id); return; }
+    }
+  };
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => keyRef.current(e);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  /* ---------- rows ---------- */
+  const actsFor = (a: Activity, title: string): RowAct[] => {
+    if (segment === "snoozed") return [
+      { act: "back", icon: "undo", label: `Bring back “${title}”`, tip: "Bring back now", kbd: "H", run: () => bringBack(a.id) },
+      { act: "archive", icon: "archive", label: `Archive “${title}”`, tip: "Archive", kbd: "E", run: () => archiveItem(a.id) },
+    ];
+    if (segment === "archived") return onUnarchive
+      ? [{ act: "back", icon: "undo", label: `Move “${title}” back to Inbox`, tip: "Move back to Inbox", run: () => moveBack(a.id) }]
+      : [];
+    const acts: RowAct[] = [];
+    if (canReply(a)) acts.push({ act: "reply", icon: "message", label: `Reply to “${title}”`, tip: "Reply", kbd: "R", run: () => startReply(a), pressed: replyOn?.id === a.id });
+    if (canToday(a)) acts.push({ act: "today", icon: "sun", label: `Add “${title}” to Today`, tip: "Add to Today", kbd: "A", run: () => acceptToday(a) });
+    if (canSchedule(a)) acts.push({ act: "schedule", icon: "calendar", label: `Schedule “${title}”`, tip: "Schedule", kbd: "D", run: () => schedule(a) });
+    acts.push({ act: "snooze", icon: "clock", label: `Snooze “${title}”`, tip: "Snooze", kbd: "H", menu: true,
+      run: (el) => { if (menuOpenFor?.id === a.id) setMenu(null); else setMenu({ id: a.id, anchor: el }); } });
+    acts.push({ act: "archive", icon: "archive", label: `Archive “${title}”`, tip: "Archive", kbd: "E", run: () => archiveItem(a.id) });
+    acts.push({ act: "more", icon: "more", label: `More actions for “${title}”`, tip: "More", menu: true,
+      run: (el) => { moreAnchor.current = el; setMore((m) => (m === a.id ? null : a.id)); } });
+    return acts;
+  };
+
+  const renderRow = (a: Activity) => {
+    const task = taskOf(a);
+    const proj = task ? getProject(task.projectId) : undefined;
+    const via = viaRequest(a, task);
+    const actor = via ? null : actorOf(a);
+    const meta = KIND_META[a.kind] ?? KIND_META.status;
+    const isUnread = unread.has(a.id) || backAt(a.id) > 0;
+    const title = a.taskTitle || "a task";
+    const isCursor = cursorOn === a.id;
+    const composing = replyOn?.id === a.id ? replyOn : null;
+    const acts = actsFor(a, title);
+    const snoozedUntil = segment === "snoozed" ? snz.until[a.id] : undefined;
+    const excerpt = !actor && !via && a.detail && (a.kind === "comment" || a.kind === "status")
+      ? (a.kind === "comment" ? `“${a.detail}”` : a.detail) : null;
+    const when = snoozedUntil
+      ? <time dateTime={new Date(snoozedUntil).toISOString()} title={fullDate(snoozedUntil)} className="kinbox-when">Back {wakeLabel(snoozedUntil)}</time>
+      : <time dateTime={a.createdAt} title={fullDate(a.createdAt)} className="kinbox-when">{timeAgo(a.createdAt)}</time>;
+    const subId = `kinbox-sub-${a.id}`;
+    const due = task && segment === "inbox" && (task.dueDate || canSchedule(a)) ? (
+      <span className="kinbox-due" data-empty={!task.dueDate || undefined}>
+        <DateChip value={task.dueDate} time={task.dueTime} label={`Due date for “${title}”`} status={task.status} placeholder="Schedule"
+          readOnly={!canSchedule(a)}
+          onChange={(d) => {
+            if (!d || !onSchedule || d === task.dueDate) return;
+            onSchedule(task.id, d);
+            toast?.success(`Scheduled for ${dayLabel(d)}`);
+          }} />
+      </span>
+    ) : null;
+    const marks = (
+      <>
+        {replied.has(a.id) && <span className="kinbox-mark" data-tone="ok"><Icon name="check" size={12} sw={2} /> Replied</span>}
+        {task && segment === "inbox" && isOnToday(task) && task.status !== "done" && <span className="kinbox-mark"><Icon name="sun" size={12} sw={2} /> On Today</span>}
+      </>
+    );
+    const style = { "--acts-w": `${Math.max(64, acts.length * 30)}px` } as CSSProperties;
     return (
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", display: "grid", placeItems: "center" }}>
-        <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 420 }}>
-          <div style={{ marginBottom: 14 }}><EmptyArt kind="inbox" /></div>
-          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>You're all caught up</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Activity on your tasks — creates, completions, comments — shows up here. Archived items stay in your history.</p>
+      <div key={a.id} className="kinbox-row" data-unread={isUnread || undefined} data-cursor={isCursor || undefined}
+        data-open={composing ? true : undefined} data-gone={task ? undefined : true} style={style}
+        ref={(el) => { if (el) rowEls.current.set(a.id, el); else rowEls.current.delete(a.id); }}
+        onFocus={() => { if (cursorOn !== a.id) setCursor(a.id); }}>
+        <ActorMark actor={actor} kind={a.kind} request={!!via} members={members} />
+        <div className="kinbox-body">
+          <button type="button" className="kinbox-main" aria-describedby={subId}
+            ref={(el) => { if (el) rowRefs.current.set(a.id, el); else rowRefs.current.delete(a.id); }}
+            onClick={() => openItem(a)} aria-disabled={task ? undefined : true}
+            title={task ? undefined : "This task has been archived or is no longer available"}>
+            {isUnread && <span className="sr-only">Unread: </span>}
+            {/* two lines before clipping, so "who did what" survives a phone-width row */}
+            <span className="kinbox-say">
+              {via
+                ? <>New request: <strong>{title}</strong></>
+                : actor
+                  ? <><strong>{actor}</strong> {ACTOR_VERB[a.kind]} <strong>{title}</strong></>
+                  : <>You {meta.verb} <strong>{title}</strong></>}
+            </span>
+          </button>
+          <div className="kinbox-sub" id={subId}>
+            {via
+              ? <span className="truncate">via {via}</span>
+              : excerpt
+                ? <span className="kinbox-excerpt truncate">{excerpt}</span>
+                : proj && <span className="kinbox-proj"><ProjectDot color={proj.color} size={8} /><span className="truncate">{proj.name}</span></span>}
+            {marks}
+            {due}
+            {narrow && when}
+          </div>
+          {composing && (
+            <ReplyComposer state={composing} to={actor} onChange={(text) => setReply((r) => (r && r.id === a.id ? { ...r, text, error: undefined } : r))}
+              onSend={sendReply} onCancel={() => cancelReply()} />
+          )}
+        </div>
+        <div className="kinbox-side">
+          <span className="kinbox-stamp">
+            {!narrow && when}
+            {isUnread && <span className="kinbox-dot" aria-hidden="true" />}
+          </span>
+          {acts.length > 0 && (
+            <span className="kinbox-acts">
+              {acts.map((x) => (
+                <button key={x.act} type="button" className="kibtn kinbox-act" data-size="sm" data-act={x.act}
+                  aria-label={x.label} data-tip={x.kbd ? `${x.tip} · ${x.kbd}` : x.tip} aria-keyshortcuts={x.kbd}
+                  aria-haspopup={x.menu ? "menu" : undefined}
+                  aria-expanded={x.act === "snooze" ? menuOpenFor?.id === a.id : x.act === "more" ? moreOpenFor === a.id : undefined}
+                  aria-pressed={x.act === "reply" ? !!x.pressed : undefined}
+                  tabIndex={isCursor ? 0 : -1}
+                  ref={x.act === "snooze" ? (el) => { if (el) snoozeRefs.current.set(a.id, el); else snoozeRefs.current.delete(a.id); }
+                    : x.act === "more" ? (el) => { if (el) moreRefs.current.set(a.id, el); else moreRefs.current.delete(a.id); } : undefined}
+                  onClick={(e) => x.run(e.currentTarget)}>
+                  <Icon name={x.icon} size={16} sw={1.75} />
+                </button>
+              ))}
+            </span>
+          )}
         </div>
       </div>
     );
-  }
-  const [one, many] = activeFilter.noun;
-  return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 40px", maxWidth: 760, width: "100%", margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-        <div role="group" aria-label="Filter inbox" style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)", maxWidth: "100%", overflowX: "auto", scrollbarWidth: "none" }}>
-          {INBOX_FILTERS.map((f) => {
-            const n = f.kinds ? visible.filter((a) => matches(f, a)).length : visible.length;
-            return (
-              <button key={f.v} type="button" aria-pressed={filter === f.v} onClick={() => { setFilter(f.v); setConfirmArchive(false); }} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", background: filter === f.v ? "var(--accent)" : "transparent", color: filter === f.v ? "var(--on-accent)" : "var(--ink-3)" }}>{f.label}{f.v !== "all" && n > 0 ? ` ${n}` : ""}</button>
-            );
-          })}
-        </div>
-        {confirmArchive ? (
-          <div role="group" aria-label="Confirm archive" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); cancelArchiveAll(); } }}
-            style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
-              Archive {shown.length} {shown.length === 1 ? one : many}?{snoozedHere === 1 ? ` The snoozed ${one} stays.` : snoozedHere > 1 ? ` Snoozed ${many} stay.` : ""}
-            </span>
-            <button type="button" className="btn btn-ghost" onClick={cancelArchiveAll} style={{ fontSize: 13, padding: "7px 12px" }}>Cancel</button>
-            <button ref={confirmRef} type="button" className="btn btn-accent" onClick={archiveShown} style={{ fontSize: 13, padding: "7px 12px" }}>
-              <Icon name="archive" size={14} /> Archive
+  };
+
+  const moreItem = moreOpenFor ? ordered.find((a) => a.id === moreOpenFor) : undefined;
+  const moreMenu = moreItem && (() => {
+    const a = moreItem, title = a.taskTitle || "a task", task = taskOf(a);
+    const run = (fn: () => void) => () => { setMore(null); fn(); };
+    const items: { key: string; icon: IconName; label: string; kbd?: string; fn: () => void }[] = [];
+    if (task) items.push({ key: "open", icon: "arrowUpRight", label: "Open task", kbd: "↵", fn: () => openItem(a) });
+    if (canReply(a)) items.push({ key: "reply", icon: "message", label: "Reply", kbd: "R", fn: () => startReply(a) });
+    if (canToday(a)) items.push({ key: "today", icon: "sun", label: "Add to Today", kbd: "A", fn: () => acceptToday(a) });
+    if (canSchedule(a)) items.push({ key: "schedule", icon: "calendar", label: "Schedule…", kbd: "D", fn: () => schedule(a) });
+    items.push({ key: "snooze", icon: "clock", label: "Snooze…", kbd: "H", fn: () => { const el = moreRefs.current.get(a.id); if (el) setMenu({ id: a.id, anchor: el }); } });
+    if (canComplete(a) && task) items.push({ key: "done", icon: "check", label: "Mark task done", fn: () => onComplete?.(task.id) });
+    items.push({ key: "archive", icon: "archive", label: "Archive", kbd: "E", fn: () => archiveItem(a.id) });
+    return (
+      <Popover open anchorRef={moreAnchor} onClose={() => setMore(null)} role="menu" label={`Actions for “${title}”`} align="end" minWidth={220}
+        style={{ padding: 4, borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))" }}>
+        {items.map((it, i) => (
+          <Fragment key={it.key}>
+            {it.key === "archive" && i > 0 && <div className="kinbox-msep" role="separator" />}
+            <button type="button" role="menuitem" className="kinbox-mi" onClick={run(it.fn)}>
+              <Icon name={it.icon} size={16} sw={1.75} />
+              <span>{it.label}</span>
+              {it.kbd && !narrow && <Kbd>{it.kbd}</Kbd>}
             </button>
-          </div>
-        ) : (
-          <button ref={archiveAllRef} type="button" className="btn btn-ghost" onClick={() => setConfirmArchive(true)} disabled={shown.length === 0}
-            style={{ marginLeft: "auto", fontSize: 13, opacity: shown.length === 0 ? 0.5 : 1, cursor: shown.length === 0 ? "default" : "pointer" }}>
-            <Icon name="archive" size={15} /> Archive all
-          </button>
-        )}
+          </Fragment>
+        ))}
+      </Popover>
+    );
+  })();
+
+  /* ---------- the bar: Inbox · Snoozed · Archived, Archive all ---------- */
+  const SEGMENTS: { id: Segment; label: string; count?: number }[] = [
+    { id: "inbox", label: "Inbox", count: visible.length },
+    { id: "snoozed", label: "Snoozed", count: snoozedCount },
+    { id: "archived", label: "Archived", count: archivedItems.length || undefined },
+  ];
+  const switchSegment = (s: Segment) => { setSegment(s); setConfirm(null); setCursor(null); setMore(null); setMenu(null); };
+  const confirmRow = (scope: ConfirmScope) => {
+    const n = scope === "fyi" ? fyiShown.length : visible.length;
+    return (
+      <div role="group" aria-label="Confirm archive" className="kinbox-confirm"
+        onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); cancelConfirm(); } }}>
+        <span className="kinbox-confirm-q">
+          Archive {scope === "fyi" ? (n === 1 ? "1 FYI item" : `${n} FYI items`) : plural(n, "item")}?
+          {scope === "all" && snoozedCount > 0 ? (snoozedCount === 1 ? " The snoozed item stays." : " Snoozed items stay.") : ""}
+        </span>
+        <Button variant="ghost" size="sm" onClick={cancelConfirm}>Cancel</Button>
+        <Button ref={confirmRef} variant="primary" size="sm" icon="archive" onClick={archiveShown}>Archive</Button>
       </div>
-      {snoozedCount > 0 && (
-        <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 10, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <Icon name="clock" size={13} /> {snoozedCount} snoozed · they'll come back here when their time is up
-          <button type="button" onClick={unsnoozeAll} style={{ border: "none", background: "transparent", padding: "2px 4px", borderRadius: 6, cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Bring back now</button>
-        </div>
-      )}
-      {shown.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "48px 24px", color: "var(--ink-4)", fontSize: 13 }}>{activeFilter.empty}</div>
-      ) : buckets.map((bucket) => (
-      <section key={bucket.label} aria-label={bucket.label} style={{ marginBottom: 16 }}>
-        <div className="kicker" style={{ marginBottom: 8, paddingLeft: 2, display: "flex", alignItems: "center", gap: 6 }}>
-          {bucket.label === "Back from snooze" && <Icon name="clock" size={12} />}{bucket.label}
-        </div>
-        {/* no overflow:hidden here — it clipped the snooze menu; the first and
-            last rows carry the card's rounding instead (16px card − 1px border) */}
-        <div className={"glass " + entrance} style={{ borderRadius: 16 }}>
-        {bucket.items.map((a, i) => {
-          const meta = KIND_META[a.kind] ?? KIND_META.status;
-          const task = a.taskId ? taskById.get(a.taskId) : undefined;
-          const proj = task ? getProject(task.projectId) : undefined;
-          const actor = actorOf(a);
-          const isUnread = unread.has(a.id) || backAt(a.id) > 0;
-          const title = a.taskTitle || "a task";
-          const first = i === 0, last = i === bucket.items.length - 1;
-          const rTop = first ? 15 : 0, rBottom = last ? 15 : 0;
-          const sub = actor
-            ? proj && <><span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 2, background: proj.color, flexShrink: 0 }} /><span className="truncate">{proj.name}</span></>
-            : a.detail && <span className="truncate">{a.kind === "comment" ? `“${a.detail}”` : a.detail}</span>;
-          // phones: the time joins the subtitle so the sentence gets the width
-          const when = <time dateTime={a.createdAt} title={fullDate(a.createdAt)} className="mono" style={{ fontSize: 11, color: isUnread ? "var(--ink-3)" : "var(--ink-4)", flexShrink: 0 }}>{timeAgo(a.createdAt)}</time>;
-          return (
-            <div key={a.id} className="kinbox-row" style={{
-              position: "relative", display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "13px 18px",
-              borderTop: i ? "1px solid var(--hairline)" : "none", borderRadius: `${rTop}px ${rTop}px ${rBottom}px ${rBottom}px`,
-              transition: "background .14s",
-            }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = FILL_1)}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-              {isUnread && (
-                <span aria-hidden="true" style={{ position: "absolute", left: 6, top: "50%", width: 7, height: 7, marginTop: -3.5, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 0 3px color-mix(in oklch, var(--accent) 16%, transparent)" }} />
-              )}
-              <span style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 99, flexShrink: 0, background: `color-mix(in oklch, ${meta.color} 14%, transparent)`, color: meta.color }}>
-                <Icon name={meta.icon} size={15} />
-              </span>
-              <button type="button" ref={(el) => { if (el) rowRefs.current.set(a.id, el); else rowRefs.current.delete(a.id); }}
-                onClick={() => openItem(a)} aria-disabled={task ? undefined : true}
-                title={task ? undefined : "This task has been archived or is no longer available"}
-                style={{
-                  flex: 1, minWidth: 0, display: "block", textAlign: "left", border: "none", background: "transparent",
-                  padding: 0, cursor: task ? "pointer" : "default", fontFamily: "var(--font-display)", borderRadius: 6,
-                }}>
-                {isUnread && <span className="sr-only">Unread: </span>}
-                {/* two lines before clipping, so "who did what" survives a phone-width row */}
-                <span style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere", lineHeight: 1.4, fontSize: 13.5, color: isUnread ? "var(--ink)" : "var(--ink-2)", fontWeight: isUnread ? 600 : 400 }}>
-                  {actor
-                    ? <><strong style={{ color: "var(--ink)" }}>{actor}</strong> {ACTOR_VERB[a.kind]} <strong style={{ color: "var(--ink)" }}>{title}</strong></>
-                    : <>You {meta.verb} <strong style={{ color: "var(--ink)" }}>{title}</strong></>}
-                </span>
-                {(sub || narrow) && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 12, color: "var(--ink-4)", marginTop: 2 }}>
-                    {sub}
-                    {narrow && <>{sub && <span aria-hidden="true">·</span>}{when}</>}
-                  </span>
-                )}
-              </button>
-              {!narrow && when}
-              <button type="button" className="btn-icon kinbox-archive" title="Snooze" aria-label={`Snooze “${title}”`}
-                aria-haspopup="menu" aria-expanded={menuOpenFor?.id === a.id}
-                onClick={(e) => { if (menuOpenFor?.id === a.id) setMenu(null); else setMenu({ id: a.id, anchor: e.currentTarget }); }}
-                style={{ border: "none", width: 30, height: 30, flexShrink: 0, color: menuOpenFor?.id === a.id ? "var(--accent)" : "var(--ink-4)" }}>
-                <Icon name="clock" size={16} />
-              </button>
-              <button type="button" className="btn-icon kinbox-archive" title="Archive" aria-label={`Archive “${title}”`}
-                onClick={() => archiveItem(a.id)}
-                style={{ border: "none", width: 30, height: 30, flexShrink: 0, color: "var(--ink-4)" }}>
-                <Icon name="archive" size={16} />
-              </button>
-            </div>
-          );
-        })}
-        </div>
+    );
+  };
+
+  const keysHint = !narrow && segment === "inbox" && ordered.length > 0 && (
+    <div className="kinbox-keys" aria-hidden="true">
+      <span><Kbd>J</Kbd><Kbd>K</Kbd> move</span>
+      <span><Kbd>↵</Kbd> open</span>
+      {onReply && <span><Kbd>R</Kbd> reply</span>}
+      {onAcceptToday && !readOnly && <span><Kbd>A</Kbd> add to Today</span>}
+      {onSchedule && !readOnly && <span><Kbd>D</Kbd> schedule</span>}
+      <span><Kbd>H</Kbd> snooze</span>
+      <span><Kbd>E</Kbd> archive</span>
+    </div>
+  );
+
+  const snoozeNote = segment === "inbox" && snoozedCount > 0 && (
+    <p className="kinbox-note">
+      <Icon name="clock" size={14} sw={1.75} />
+      <span>{snoozedCount} snoozed · they'll come back here when their time is up</span>
+      <button type="button" className="kinbox-link" onClick={() => unsnooze()}>Bring back now</button>
+    </p>
+  );
+
+  let body: JSX.Element;
+  if (segment === "inbox" && zero) {
+    body = (
+      <div className="kinbox-zero">
+        <EmptyArt kind="inbox" size={96} />
+        <h2 className="kinbox-zero-title">
+          <span className="kinbox-zero-hero">Inbox zero.</span>{" "}
+          <span className="kinbox-zero-sub">Nothing needs you.</span>
+        </h2>
+        <p className="kinbox-zero-body">New mentions, assignments and requests land here.</p>
+        {snoozeNote}
+      </div>
+    );
+  } else if (segment === "inbox") {
+    body = (
+      <>
+        {sections.map((s) => (
+          <section key={s.id} className="kinbox-group" aria-label={s.label}>
+            <SectionLabel count={s.items.length}
+              action={s.id === "fyi" && s.items.length > 1
+                ? (confirm === "fyi" ? confirmRow("fyi")
+                  : <Button variant="ghost" size="sm" aria-label="Archive FYI items" onClick={(e) => askConfirm("fyi", e.currentTarget)}>Archive FYI</Button>)
+                : undefined}>
+              {s.id === "back" && <Icon name="clock" size={12} sw={2} />}{s.label}
+            </SectionLabel>
+            <div className={"kinbox-rows " + entrance}>{s.items.map(renderRow)}</div>
+          </section>
+        ))}
+        {snoozeNote}
+        {keysHint}
+      </>
+    );
+  } else if (segment === "snoozed") {
+    body = snoozedItems.length ? (
+      <section className="kinbox-group" aria-label="Snoozed">
+        <SectionLabel count={snoozedItems.length}>Coming back later</SectionLabel>
+        <div className="kinbox-rows">{snoozedItems.map(renderRow)}</div>
       </section>
-      ))}
+    ) : (
+      <div className="kinbox-empty">
+        <p className="kinbox-empty-title">Nothing snoozed</p>
+        <p className="kinbox-empty-body">Snooze an item with <Kbd>H</Kbd> and it comes back here at the time you pick.</p>
+      </div>
+    );
+  } else {
+    body = archivedItems.length ? (
+      <section className="kinbox-group" aria-label="Archived">
+        <SectionLabel count={archivedItems.length}>{archived ? "Archived" : "Archived this visit"}</SectionLabel>
+        <div className="kinbox-rows">{archivedItems.map(renderRow)}</div>
+        <p className="kinbox-note">Every update stays in its task's history.</p>
+      </section>
+    ) : (
+      <div className="kinbox-empty">
+        <p className="kinbox-empty-title">Nothing archived yet</p>
+        <p className="kinbox-empty-body">Archive an item with <Kbd>E</Kbd> once you've dealt with it. Every update stays in its task's history.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={rootRef} className="kinbox">
+      <style>{INBOX_CSS}</style>
+      <div className="kinbox-bar">
+        <div className="kinbox-wrap kinbox-bar-in">
+          <div className="kseg kinbox-seg" role="group" aria-label="Show">
+            {SEGMENTS.map((s) => (
+              <button key={s.id} type="button" className="kseg-btn" data-active={segment === s.id} aria-pressed={segment === s.id}
+                onClick={() => switchSegment(s.id)}>
+                {s.label}
+                {s.count ? <span className="kinbox-segn">{s.count}</span> : null}
+              </button>
+            ))}
+          </div>
+          <div className="kinbox-bar-end">
+            {segment === "inbox" && visible.length > 0 && (confirm === "all" ? confirmRow("all") : (
+              <Button variant="ghost" size="sm" icon="archive" onClick={(e) => askConfirm("all", e.currentTarget)}>Archive all</Button>
+            ))}
+            {segment === "snoozed" && snoozedCount > 1 && (
+              <Button variant="ghost" size="sm" icon="undo" onClick={() => unsnooze()}>Bring all back</Button>
+            )}
+          </div>
+        </div>
+        <span className="kinbox-sweep" data-play={sweep || undefined} aria-hidden="true" />
+      </div>
+      <div className="kinbox-wrap kinbox-list">{body}</div>
       {menuOpenFor && (
         <SnoozeMenu key={menuOpenFor.id} anchor={menuOpenFor.anchor}
           itemTitle={activity.find((a) => a.id === menuOpenFor.id)?.taskTitle || "this update"}
           onPick={(until) => snoozeItem(menuOpenFor.id, until)} onClose={closeMenu} />
       )}
+      {moreMenu}
+      <span className="sr-only" aria-live="polite">{zero && segment === "inbox" && activity.length > 0 ? "Inbox zero" : ""}</span>
     </div>
   );
 }
+
+/* The inline reply: a small composer that grows with what you write.
+   ⌘↵ / Ctrl+↵ sends, Escape puts it away. */
+function ReplyComposer({ state, to, onChange, onSend, onCancel }: {
+  state: ReplyState;
+  to: string | null;
+  onChange: (text: string) => void;
+  onSend: () => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { ref.current?.focus({ preventScroll: true }); }, []);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(160, Math.max(40, el.scrollHeight))}px`;
+  }, [state.text]);
+  const first = to && to !== "Someone" && !EMAIL_RE.test(to) ? to.split(/\s+/)[0] : null;
+  const errId = `kinbox-err-${state.id}`;
+  return (
+    <div className="kinbox-compose">
+      <textarea ref={ref} rows={1} value={state.text} disabled={state.sending}
+        placeholder={first ? `Reply to ${first}…` : "Write a reply…"} aria-label={first ? `Reply to ${first}` : "Reply"}
+        aria-invalid={state.error ? true : undefined} aria-describedby={state.error ? errId : undefined}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(); }
+          else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancel(); }
+        }} />
+      <div className="kinbox-compose-foot">
+        {state.error
+          ? <span id={errId} className="kinbox-compose-hint" data-tone="signal" role="alert">{state.error}</span>
+          : <span className="kinbox-compose-hint">Posts a comment on the task</span>}
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={state.sending}>Cancel</Button>
+        <Button variant="primary" size="sm" icon="send" kbd={isMac ? "⌘↵" : "Ctrl ↵"} loading={state.sending}
+          disabled={!state.text.trim()} onClick={onSend}>Send</Button>
+      </div>
+    </div>
+  );
+}
+
+/* Scoped styles: the Inbox's rows, bar and celebration. Tokens only, each new
+   one with a fallback so the page reads right before and after the token pass. */
+const INBOX_CSS = `
+.kinbox { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.kinbox-wrap { box-sizing: border-box; width: 100%; max-width: var(--list-max, 1120px); margin: 0 auto; padding-left: var(--gutter, 32px); padding-right: var(--gutter, 32px); }
+@media (max-width: 859px) {
+  .kinbox-wrap { padding-left: var(--gutter, 16px); padding-right: var(--gutter, 16px); }
+  /* phones: the page scrolls under the app's own header, so the bar scrolls with it */
+  .kinbox-bar { position: relative; }
+}
+
+/* the bar */
+.kinbox-bar { position: sticky; top: 0; z-index: 3; flex-shrink: 0; background: var(--bg); box-shadow: inset 0 -1px 0 var(--hairline); }
+.kinbox-bar-in { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-height: var(--tabs-h, 44px); padding-top: 6px; padding-bottom: 6px; }
+.kinbox-seg { flex-shrink: 0; }
+.kinbox-seg .kseg-btn { gap: 6px; }
+.kinbox-segn { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.kinbox-seg .kseg-btn[data-active="true"] .kinbox-segn { color: var(--ink-3); }
+.kinbox-bar-end { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; min-width: 0; }
+.kinbox-confirm { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 8px; }
+.kinbox-confirm-q { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kinbox-sweep { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; pointer-events: none; opacity: 0; transform: scaleX(0); transform-origin: 0 50%;
+  background: var(--grad, linear-gradient(90deg, #5B7CFA 0%, #8B5CF6 52%, #C24BE0 100%)); }
+.kinbox-sweep[data-play="true"] { animation: kinboxSweep var(--d-4, 480ms) var(--ease) forwards, kinboxSweepOut 480ms var(--ease-exit, cubic-bezier(0.4, 0, 1, 1)) 1000ms forwards; }
+@keyframes kinboxSweep { from { opacity: 1; transform: scaleX(0); } to { opacity: 1; transform: scaleX(1); } }
+@keyframes kinboxSweepOut { from { opacity: 1; transform: scaleX(1); } to { opacity: 0; transform: scaleX(1); } }
+
+/* groups and rows */
+.kinbox-list { padding-top: 16px; padding-bottom: 48px; }
+.kinbox-group + .kinbox-group { margin-top: 24px; }
+.kinbox-group > .ksection { padding: 0 2px 0 12px; }
+.kinbox-group > .ksection .ksection-title { align-items: center; }
+.kinbox-rows { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.kinbox-row {
+  position: relative; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 12px;
+  border-radius: var(--r-sm, 6px); scroll-margin: 60px 0 16px;
+  transition: background var(--d-1, 90ms) var(--ease);
+}
+.kinbox-row:hover { background: var(--fill-1); }
+.kinbox-row[data-cursor="true"] { background: var(--fill-1); box-shadow: inset 2px 0 0 var(--accent); }
+.kinbox-row[data-open="true"] { align-items: flex-start; }
+.kinbox-row[data-open="true"] > .kinbox-av, .kinbox-row[data-open="true"] > .kinbox-side { margin-top: 6px; }
+.kinbox-av {
+  flex-shrink: 0; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  font: 600 12px/1 var(--font-ui, var(--font-display)); color: var(--ink-2); background: var(--surface-2);
+}
+.kinbox-av[data-kind="icon"] { color: var(--ink-3); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kinbox-av > * { flex-shrink: 0; }
+.kinbox-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.kinbox-main {
+  display: block; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0; background: none;
+  text-align: left; font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.kinbox-main::before { content: ""; position: absolute; inset: 0; border-radius: var(--r-sm, 6px); }
+.kinbox-main:focus-visible { outline: none; }
+.kinbox-main:focus-visible::before { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* the keyboard cursor (fill + accent edge) is the focused row's indicator; no second ring on top */
+.kinbox-row[data-cursor="true"] .kinbox-main:focus-visible::before { outline: none; }
+.kinbox-row[data-gone="true"] .kinbox-main { cursor: default; }
+.kinbox-say {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3);
+}
+.kinbox-say strong { font-weight: 600; color: var(--ink-2); }
+.kinbox-row[data-unread="true"] .kinbox-say { color: var(--ink-2); }
+.kinbox-row[data-unread="true"] .kinbox-say strong { color: var(--ink); }
+.kinbox-sub {
+  display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 20px;
+  font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3);
+}
+.kinbox-sub:empty { display: none; }
+.kinbox-excerpt { color: var(--ink-2); }
+.kinbox-proj { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.kinbox-mark { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); }
+.kinbox-mark[data-tone="ok"] { color: var(--ok, var(--st-done)); }
+.kinbox-due { position: relative; z-index: 1; display: inline-flex; flex-shrink: 0; margin: -2px 0 -2px -6px; }
+/* no date yet: the chip ("Schedule") shows on the active row, or while its picker is open */
+.kinbox-due[data-empty="true"] { opacity: 0; pointer-events: none; transition: opacity var(--d-1, 90ms) var(--ease); }
+.kinbox-row:is(:hover, :focus-within, [data-cursor="true"]) .kinbox-due[data-empty="true"],
+.kinbox-due[data-empty="true"]:has([aria-expanded="true"]) { opacity: 1; pointer-events: auto; }
+.kinbox-sub .kinbox-when { margin-left: auto; }
+
+.kinbox-side { position: relative; flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 28px; pointer-events: none; }
+@media (hover: hover) and (pointer: fine) { .kinbox-side { min-width: var(--acts-w, 0px); } }
+.kinbox-stamp { display: inline-flex; align-items: center; gap: 8px; }
+.kinbox-when { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); white-space: nowrap; }
+.kinbox-row[data-unread="true"] .kinbox-when { color: var(--ink-3); }
+.kinbox-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--accent); }
+.kinbox-acts {
+  position: absolute; top: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 2px;
+  opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease);
+}
+.kinbox-row:is(:hover, :focus-within, [data-cursor="true"]) .kinbox-acts { opacity: 1; pointer-events: auto; }
+.kinbox-row:is(:hover, :focus-within, [data-cursor="true"]) .kinbox-stamp { visibility: hidden; }
+.kinbox-act[aria-expanded="true"] { color: var(--accent-text, var(--accent)); background: var(--fill-2); }
+@media (hover: none) {
+  .kinbox-acts { position: static; opacity: 1; pointer-events: auto; }
+  .kinbox-act:not([data-act="more"]):not([data-act="back"]) { display: none; }
+  .kinbox-row:is(:hover, :focus-within, [data-cursor="true"]) .kinbox-stamp { visibility: visible; }
+}
+
+/* the inline reply */
+.kinbox-compose { position: relative; z-index: 1; display: grid; gap: 8px; margin-top: 8px; }
+.kinbox-compose textarea {
+  box-sizing: border-box; width: 100%; min-height: 40px; max-height: 160px; resize: none; margin: 0;
+  padding: 9px 12px; border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong));
+  background: var(--field-bg, var(--surface-solid)); color: var(--ink); font: 400 13px/20px var(--font-ui, var(--font-display));
+}
+.kinbox-compose textarea::placeholder { color: var(--ink-4); }
+.kinbox-compose textarea:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.kinbox-compose-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kinbox-compose-hint { margin-right: auto; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kinbox-compose-hint[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
+
+/* notes, hints, empty and zero states */
+.kinbox-note { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 24px 0 0; padding: 0 12px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kinbox-note svg { color: var(--icon-quiet, var(--ink-4)); }
+.kinbox-link {
+  margin: -2px -4px; padding: 2px 4px; border: 0; border-radius: var(--r-xs, 4px); background: none; cursor: pointer;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent));
+}
+.kinbox-link:hover { background: var(--fill-1); }
+.kinbox-keys { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 32px; padding: 0 12px; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kinbox-keys > span { display: inline-flex; align-items: center; gap: 4px; }
+.kinbox-keys .kkbd + .kkbd { margin-left: 2px; }
+@media (hover: none), (max-width: 859px) { .kinbox-keys { display: none; } }
+.kinbox-empty { max-width: 420px; margin: 0 auto; padding: 64px 16px; text-align: center; }
+.kinbox-empty-title { margin: 0; font: 600 15px/24px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kinbox-empty-body { margin: 4px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kinbox-empty-body .kkbd { margin: 0 2px; vertical-align: 1px; }
+.kinbox-zero { display: flex; flex-direction: column; align-items: center; max-width: 440px; margin: 0 auto; padding: 72px 16px 48px; text-align: center; }
+.kinbox-zero-title { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 24px 0 0; font-weight: 600; }
+.kinbox-zero-hero { font: 600 var(--t-hero, 40px)/var(--lh-hero, 44px) var(--font-head); letter-spacing: -0.028em; color: var(--ink); }
+.kinbox-zero-sub { font: 500 var(--t-title, 20px)/var(--lh-title, 28px) var(--font-head); letter-spacing: -0.012em; color: var(--ink-2); }
+.kinbox-zero-body { max-width: 360px; margin: 8px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kinbox-zero .kinbox-note { justify-content: center; margin-top: 20px; }
+@media (max-width: 859px) {
+  .kinbox-zero { padding-top: 48px; }
+  .kinbox-zero-hero { font-size: 32px; line-height: 40px; }
+}
+
+/* menus (snooze, ⋯) */
+.kinbox-menu {
+  box-sizing: border-box; min-width: 216px; padding: 4px; border-radius: var(--r-lg, 12px); color: var(--ink);
+  background: linear-gradient(var(--surface-raised), var(--surface-raised)), var(--surface-solid);
+  box-shadow: var(--e2, var(--shadow-lg)); animation: kinboxMenuIn var(--d-2, 160ms) var(--ease);
+}
+.kinbox-menu[data-up="true"] { animation-name: kinboxMenuUp; }
+@keyframes kinboxMenuIn { from { opacity: 0.35; translate: 0 4px; } }
+@keyframes kinboxMenuUp { from { opacity: 0.35; translate: 0 -4px; } }
+.kinbox-menu-label { padding: 6px 8px 4px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kinbox-mi {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px; border: 0; border-radius: var(--r-sm, 6px);
+  background: transparent; cursor: pointer; text-align: left; white-space: nowrap;
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
+}
+.kinbox-mi:hover, .kinbox-mi:focus-visible { background: var(--fill-1); color: var(--ink); }
+.kinbox-mi:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kinbox-mi > svg { flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
+.kinbox-mi > span:first-of-type { flex: 1; }
+.kinbox-mi .kkbd { margin-left: auto; }
+.kinbox-mi-hint { margin-left: auto; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.kinbox-msep { height: 1px; margin: 4px; background: var(--hairline); }
+
+@media (prefers-reduced-motion: reduce) {
+  .kinbox-sweep, .kinbox-menu { animation: none !important; }
+  .kinbox-sweep { opacity: 0; }
+}
+`;

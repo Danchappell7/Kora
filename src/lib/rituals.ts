@@ -3,7 +3,7 @@
    today's leftovers and "Your day in colour".
    Personal, per device: nothing here is shared or synced.
    ============================================================ */
-import { todayISO, KANBO_TODAY } from "../data/data";
+import { todayISO, toLocalISO, fmtDurMin, KANBO_TODAY } from "../data/data";
 import type { Task, Project } from "../data/types";
 
 const BIG3_KEY = "kanbo-big3";
@@ -80,4 +80,122 @@ export function dayInColour(tasks: Task[], projects: Pick<Project, "id" | "name"
   }).sort((a, b) => b.minutes - a.minutes || a.label.localeCompare(b.label));
   if (focusMinutes > 0) segments.push({ key: "focus", label: "Focus", minutes: Math.round(focusMinutes) });
   return { segments, total: segments.reduce((n, s) => n + s.minutes, 0) };
+}
+
+/* ---------- the Shut down sheet's arithmetic ---------- */
+
+const localDay = (iso: string): Date => { const [y, m, d] = iso.slice(0, 10).split("-").map(Number); return new Date(y, m - 1, d); };
+
+/** "YYYY-MM-DD" n days after `iso` (local calendar days, so DST never skips one). */
+export function addDaysISO(iso: string, n: number): string {
+  const d = localDay(iso);
+  d.setDate(d.getDate() + n);
+  return toLocalISO(d);
+}
+
+/** The Monday after `iso` (a Monday gives the one a week later). */
+export function nextMondayISO(iso: string = todayISO()): string {
+  const dow = localDay(iso).getDay();              // Sun 0 … Sat 6
+  return addDaysISO(iso, ((8 - dow) % 7) || 7);
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Thu 1" — a chip's short day. */
+export function shortDay(iso: string): string {
+  const d = localDay(iso);
+  return `${WEEKDAYS[d.getDay()]} ${d.getDate()}`;
+}
+
+/** "Wed 30 Sep" (en-GB, the same in every browser). */
+export function dayLabel(iso: string): string {
+  const d = localDay(iso);
+  return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+}
+
+/** Tasks finished today (by their completion time, in local time). */
+export function finishedToday(tasks: Task[], today: string = todayISO()): Task[] {
+  return tasks.filter((t) => {
+    if (t.status !== "done" || !t.completedAt || t.archivedAt) return false;
+    const at = new Date(t.completedAt);
+    return !Number.isNaN(at.getTime()) && toLocalISO(at) === today;
+  });
+}
+
+/** Where a leftover goes from the Shut down sheet. */
+export type LeftoverMove = "tomorrow" | "nextweek" | "someday" | "drop";
+
+/** The patch for one leftover move. Every move takes the task off today's plan;
+ *  "drop" keeps its due date, "someday" clears it. */
+export function movePatch(move: LeftoverMove, today: string = todayISO()): Partial<Task> {
+  const off = { planToday: false, scheduled: null } as const;
+  switch (move) {
+    case "tomorrow": return { dueDate: addDaysISO(today, 1), ...off };
+    case "nextweek": return { dueDate: nextMondayISO(today), ...off };
+    case "someday": return { dueDate: undefined, ...off };
+    case "drop": return { ...off };
+  }
+}
+
+/** The fields a move changes, as they were: what an Undo puts back. */
+export function beforeMove(t: Task): Pick<Task, "dueDate" | "planToday" | "scheduled"> {
+  return { dueDate: t.dueDate, planToday: !!t.planToday, scheduled: t.scheduled ?? null };
+}
+
+/** "Done for today. 5 finished, 2 moved to tomorrow." */
+export function closingLine(finished: number, moves: LeftoverMove[]): string {
+  const parts: string[] = [];
+  if (finished > 0) parts.push(`${finished} finished`);
+  if (moves.length) {
+    const where = moves.every((m) => m === "tomorrow") ? "moved to tomorrow"
+      : moves.every((m) => m === "nextweek") ? "moved to next week"
+      : "moved off today";
+    parts.push(`${moves.length} ${where}`);
+  }
+  return parts.length ? `Done for today. ${parts.join(", ")}.` : "Done for today.";
+}
+
+/** Minutes as the sheet shows them: "45m", "1h 30m". */
+export const fmtMinutes = (m: number): string => fmtDurMin(Math.max(0, Math.round(m)));
+
+/** The plain-text day summary behind "Copy summary". Personal: nothing is sent anywhere. */
+export function shutdownSummary(p: { day: string; finished: Pick<Task, "title">[]; segments: DaySegment[]; moved?: number }): string {
+  const lines = [`Shut down · ${dayLabel(p.day)}`];
+  if (p.finished.length) {
+    lines.push("", `Finished today (${p.finished.length})`, ...p.finished.map((t) => `• ${t.title}`));
+  } else {
+    lines.push("", "Nothing marked done today.");
+  }
+  if (p.segments.length) lines.push("", `Time: ${p.segments.map((s) => `${s.label} ${fmtMinutes(s.minutes)}`).join(" · ")}`);
+  if (p.moved) lines.push("", `Moved on: ${p.moved}`);
+  return lines.join("\n");
+}
+
+/* ---------- the Weekly review ---------- */
+
+/** Monday of the week `iso` falls in. */
+export function weekStartISO(iso: string = todayISO()): string {
+  const dow = localDay(iso).getDay();
+  return addDaysISO(iso, -((dow + 6) % 7));
+}
+
+/** Tasks finished this week so far (Monday to today). */
+export function finishedThisWeek(tasks: Task[], today: string = todayISO()): Task[] {
+  const start = weekStartISO(today);
+  return tasks.filter((t) => {
+    if (t.status !== "done" || !t.completedAt || t.archivedAt) return false;
+    const at = new Date(t.completedAt);
+    if (Number.isNaN(at.getTime())) return false;
+    const day = toLocalISO(at);
+    return day >= start && day <= today;
+  }).sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
+}
+
+/** What this week leaves behind: open tasks due this week (or earlier) that
+ *  haven't been done, soonest first. */
+export function carriedOver(tasks: Task[], today: string = todayISO()): Task[] {
+  const end = addDaysISO(weekStartISO(today), 6);
+  return tasks.filter((t) => t.status !== "done" && !t.archivedAt && !!t.dueDate && t.dueDate <= end)
+    .sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "") || a.title.localeCompare(b.title));
 }
