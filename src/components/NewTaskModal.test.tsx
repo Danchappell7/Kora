@@ -3,6 +3,8 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import { useState } from "react";
 import { NewTaskModal } from "./NewTaskModal";
 import { saveTemplate } from "../lib/templates";
+import { parseDateText } from "../lib/nlp";
+import { presetDate } from "../data/data";
 import type { Project, TagDef, Task } from "../data/types";
 
 const PROJECTS: Project[] = [
@@ -204,5 +206,63 @@ describe("NewTaskModal", () => {
     typeTitle("Tagged task");
     fireEvent.click(screen.getByRole("button", { name: /create task/i }));
     expect(onCreate.mock.calls[0][0].tags).toEqual(["tag-ops"]);
+  });
+
+  it("has no native date or time inputs: due and start dates are DateChips", () => {
+    const onCreate = vi.fn();
+    render(<Harness onCreate={onCreate} />);
+    const dialog = screen.getByRole("dialog", { name: "New task" });
+    expect(dialog.querySelector('input[type="date"], input[type="time"], input[type="datetime-local"]')).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Due date: No due date" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tomorrow" }));
+    expect(screen.getByRole("button", { name: "Due date: Tomorrow" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start date: No start date" }));
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    typeTitle("Book the venue");
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ title: "Book the venue", dueDate: presetDate("tomorrow"), startDate: presetDate("today") });
+  });
+
+  it("reads the title with the one grammar: the properties show what it read, and the task gets it", () => {
+    const onCreate = vi.fn();
+    render(<Harness onCreate={onCreate} />);
+    typeTitle("Email the supplier fri 3pm #web !high +design 45m");
+    // the tokens are highlighted in place…
+    const marks = Array.from(document.querySelectorAll(".ktok-mark")).map((m) => m.textContent);
+    expect(marks).toEqual(["fri", "3pm", "#web", "!high", "+design", "45m"]);
+    // …and each property shows what will be created
+    const fri = parseDateText("fri")!.date!;
+    expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("p-web");
+    expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("high");
+    expect(screen.getByRole("combobox", { name: "Focus time" })).toHaveValue("45");
+    expect(screen.getByRole("button", { name: /^Due date: .*15:00$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Design" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate.mock.calls[0][0]).toMatchObject({
+      title: "Email the supplier", dueDate: fri, dueTime: "15:00", projectId: "p-web", priority: "high", tags: ["tag-design"], focusMin: 45,
+    });
+  });
+
+  it("choosing a property by hand takes over from the token typed for it", () => {
+    const onCreate = vi.fn();
+    render(<Harness onCreate={onCreate} />);
+    typeTitle("Chase invoice !high tomorrow");
+    fireEvent.change(screen.getByRole("combobox", { name: "Priority" }), { target: { value: "low" } });
+    expect(title().value).toBe("Chase invoice tomorrow");
+    fireEvent.click(screen.getByRole("button", { name: "Due date: Tomorrow" }));
+    fireEvent.click(screen.getByRole("button", { name: "No date" }));
+    expect(title().value).toBe("Chase invoice");
+    fireEvent.keyDown(title(), { key: "Enter" });
+    const t = onCreate.mock.calls[0][0];
+    expect(t).toMatchObject({ title: "Chase invoice", priority: "low" });
+    expect(t.dueDate).toBeUndefined();
+  });
+
+  it("un-picking a tag typed in the title takes it out of the title", () => {
+    render(<Harness />);
+    typeTitle("Moodboard +design for the pitch");
+    fireEvent.click(screen.getByRole("button", { name: "Design" }));
+    expect(title().value).toBe("Moodboard for the pitch");
+    expect(screen.getByRole("button", { name: "Design" })).toHaveAttribute("aria-pressed", "false");
   });
 });

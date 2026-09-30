@@ -172,7 +172,7 @@ function factChips(p: ParsedTask, projects: { id: string; name: string; color?: 
 }
 
 /** a face beside a name that's already written out: decoration for screen readers */
-function PersonMark({ id, name }: { id: string; name: string }) {
+export function PersonMark({ id, name }: { id: string; name: string }) {
   if (getMember(id)) return <span className="kcap-face" aria-hidden="true"><Avatar id={id} size={18} /></span>;
   const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
   return <span className="kcap-initials" aria-hidden="true">{initials}</span>;
