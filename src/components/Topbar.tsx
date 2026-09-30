@@ -4,8 +4,7 @@
    ============================================================ */
 import { useState, useRef, useEffect, Fragment } from "react";
 import type { ReactNode, CSSProperties } from "react";
-import { Icon, Segmented } from "./primitives";
-import type { IconName } from "../data/types";
+import { Icon, Segmented, type TabItem } from "./primitives";
 
 const createMenuItem: CSSProperties = {
   display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 9,
@@ -130,9 +129,6 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
 
 /* ---------------- PageHeader (W0 stub; P03 builds the real one) ---------------- */
 
-/** The primitives' TabItem shape (kit.tsx). Structural, so either can be passed. */
-type HeaderTab = { id: string; label: string; count?: number; icon?: IconName; tone?: "signal"; href?: string; disabled?: boolean; secondary?: boolean };
-
 export interface PageHeaderProps {
   title: string;
   meta?: string;
@@ -140,7 +136,7 @@ export interface PageHeaderProps {
   titleAddon?: ReactNode;
   switcher?: { items: { id: string; label: string }[]; value: string; onChange: (id: string) => void; label: string };
   actions?: ReactNode;
-  tabs?: HeaderTab[];
+  tabs?: TabItem[];
   tabValue?: string;
   onTab?: (id: string) => void;
   tabsLabel?: string;
