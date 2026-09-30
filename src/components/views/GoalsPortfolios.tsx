@@ -3,13 +3,13 @@
    Portfolios (projects rolled up: cards to manage them, a table to
    read them at a glance)
    ============================================================ */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Avatar, Button, DateChip, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
 import { getProject, getMember, projectProgress, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate } from "../../data/types";
 import { goalDescendants, goalProgressMap, goalTree, projectHealth, useStableOrder, type GoalProgress, type HealthKind } from "./reportingUtils";
 import { DraftInput } from "../project/DraftInput";
-import { fmtAge, fmtShortDay, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS } from "../../lib/statusDraft";
+import { fmtAge, fmtShortDay, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, type TaskIndex } from "../../lib/statusDraft";
 import "../project/projects.css";
 
 type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
@@ -72,7 +72,7 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
       <div className="kpj-wrap">
         <div className="kpj-narrow">
           {goals.length === 0 && !adding ? (
-            <EmptyState art="target" size="lg" title="No goals yet" body={explainer}
+            <EmptyState art="target" title="No goals yet" body={explainer}
               action={<Button variant="primary" icon="plus" onClick={() => setAdding(true)}>New goal</Button>} />
           ) : (
             <>
@@ -179,6 +179,8 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
   const [view, setViewRaw] = useState<PfView>(readView);
   const setView = (v: PfView) => { setViewRaw(v); try { localStorage.setItem("kanbo-portfolio-view", v); } catch { /* private mode */ } };
   const ordered = useStableOrder(portfolios);
+  // the task list grouped by project once per change, not filtered again for every project
+  const idx = useMemo(() => indexTasks(tasks), [tasks]);
   const explainer = "A portfolio rolls several projects into one view: their progress, health and latest updates.";
   const findProject = (pid: string) => getProject(pid) ?? projects.find((p) => p.id === pid);
 
@@ -186,7 +188,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
     <div className="kpj-page">
       <div className="kpj-wrap">
         {portfolios.length === 0 && !adding ? (
-          <EmptyState art="briefcase" size="lg" title="No portfolios yet" body={explainer}
+          <EmptyState art="briefcase" title="No portfolios yet" body={explainer}
             action={<Button variant="primary" icon="plus" onClick={() => setAdding(true)}>New portfolio</Button>} />
         ) : (
           <>
@@ -201,7 +203,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
               {ordered.map((pf) => {
                 const inPf = pf.projectIds.map(findProject).filter((p): p is Project => !!p);
                 const rows = inPf.map((p) => {
-                  const ptasks = tasks.filter((t) => t.projectId === p.id && !t.archivedAt);
+                  const ptasks = idx.byProject.get(p.id) ?? [];
                   return { p, ptasks, health: projectHealth(ptasks, KANBO_TODAY), latest: projectUpdates(statusUpdates, p.id)[0] };
                 });
                 const allTasks = rows.reduce((a, r) => a + r.ptasks.length, 0);
@@ -225,7 +227,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                         {summary}
                       </div>
                       {rows.length === 0 ? <p className="kpj-card-meta">No projects in this portfolio yet. Switch to Cards to add some.</p> : (
-                        <PortfolioTable rows={rows.map((r) => r.p)} tasks={tasks} statusUpdates={statusUpdates} label={`${pf.name} projects`} onOpenProject={onOpenProject} />
+                        <PortfolioTable rows={rows.map((r) => r.p)} tasks={tasks} idx={idx} statusUpdates={statusUpdates} label={`${pf.name} projects`} onOpenProject={onOpenProject} />
                       )}
                     </section>
                   );
@@ -272,7 +274,10 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                                 Update: {STATUS_KIND_META[latest.status].label}
                               </Pill>
                             )}
-                            {ownerName && p.ownerId && getMember(p.ownerId) && <Avatar id={p.ownerId} size={20} />}
+                            {/* the avatar alone reads as initials: say whose it is */}
+                            {ownerName && p.ownerId && getMember(p.ownerId) && (
+                              <span className="kpj-owner" role="img" aria-label={`Owner: ${ownerName}`}><Avatar id={p.ownerId} size={20} /></span>
+                            )}
                             <span className="kpj-card-meta kpj-mono" style={{ fontSize: 11 }}>
                               {plural(count, "task")}{health && health.overdue > 0 && <span className="kpj-signal"> · {health.overdue} overdue</span>}
                             </span>
@@ -298,8 +303,8 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
 /** The exec view of a portfolio: one row per project with its latest call, progress,
  *  next milestone and how fresh its update is. */
-function PortfolioTable({ rows, tasks, statusUpdates, label, onOpenProject }: {
-  rows: Project[]; tasks: Task[]; statusUpdates: StatusUpdate[]; label: string; onOpenProject: (id: string) => void;
+function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject }: {
+  rows: Project[]; tasks: Task[]; idx: TaskIndex; statusUpdates: StatusUpdate[]; label: string; onOpenProject: (id: string) => void;
 }) {
   return (
     <div role="table" aria-label={label} className="kpj-table kpj-exec">
@@ -314,8 +319,8 @@ function PortfolioTable({ rows, tasks, statusUpdates, label, onOpenProject }: {
       </div>
       <div role="rowgroup" className="kpj-tbody">
         {rows.map((p) => {
-          const f = statusFacts(p, tasks, statusUpdates, KANBO_TODAY);
-          const stale = isStale(f, oldestTaskAge(tasks, p.id, KANBO_TODAY));
+          const f = statusFacts(p, tasks, statusUpdates, KANBO_TODAY, idx);
+          const stale = isStale(f, oldestTaskAge(idx.byProject.get(p.id) ?? [], p.id, KANBO_TODAY));
           const latest = f.latest;
           return (
             <div key={p.id} role="row" className="kpj-tr kpj-exec-tr" onClick={() => onOpenProject(p.id)}>
@@ -335,8 +340,8 @@ function PortfolioTable({ rows, tasks, statusUpdates, label, onOpenProject }: {
               </div>
               <div role="cell" className="kpj-td">
                 <span className="kpj-progress">
-                  <Meter value={f.pct} width={56} height={4} label={`${p.name} progress`} />
-                  <span className="kpj-mono" aria-hidden="true">{f.pct}%</span>
+                  <Meter value={f.pct} width={64} height={4} label={`${p.name} progress`} />
+                  <span className="kpj-mono" aria-hidden="true">{f.pct}%<span className="kpj-exec-lbl"> done</span></span>
                 </span>
               </div>
               <div role="cell" className="kpj-td kpj-exec-ms">
@@ -345,12 +350,15 @@ function PortfolioTable({ rows, tasks, statusUpdates, label, onOpenProject }: {
                     <span className="kpj-ms-title" title={f.nextMilestone.title}>{f.nextMilestone.title}</span>
                     <span className="kpj-ms-date">{fmtShortDay(f.nextMilestone.dueDate, KANBO_TODAY)}</span>
                   </span>
-                ) : <span className="kpj-dash" aria-label="None">—</span>}
+                ) : <><span className="kpj-dash" aria-hidden="true">—</span><span className="sr-only">No milestone</span></>}
               </div>
-              <div role="cell" className="kpj-td kpj-num">
+              <div role="cell" className="kpj-td kpj-num" data-empty={!stale && f.lastUpdateDays == null ? "true" : undefined}>
+                {/* the header row is hidden in the stacked (narrow) layout, so the cell says what it is */}
                 {stale
-                  ? <span className="kpj-warn" style={{ fontFamily: "var(--kpj-font)", fontSize: 12 }}>No update in {STALE_DAYS} days</span>
-                  : f.lastUpdateDays != null ? <span className="kpj-mono">{fmtAge(f.lastUpdateDays)}</span> : <span className="kpj-dash">—</span>}
+                  ? <span className="kpj-warn kpj-exec-stale">No update in {STALE_DAYS} days</span>
+                  : f.lastUpdateDays != null
+                    ? <span className="kpj-mono"><span className="kpj-exec-lbl">Updated </span>{fmtAge(f.lastUpdateDays)}{f.lastUpdateDays > 0 && <span className="kpj-exec-lbl"> ago</span>}</span>
+                    : <><span className="kpj-dash" aria-hidden="true">—</span><span className="sr-only">No update yet</span></>}
               </div>
             </div>
           );

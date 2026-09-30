@@ -57,6 +57,8 @@ select.kpj-field { cursor: pointer; }
 .kpj-search { position: relative; display: inline-flex; align-items: center; width: 240px; max-width: 100%; }
 .kpj-search > svg { position: absolute; left: 10px; color: var(--kpj-icon); pointer-events: none; }
 .kpj-search > .kpj-field { width: 100%; padding-left: 32px; }
+/* Escape clears the filter; the native clear glyph is unstyled and off-theme */
+.kpj-search > .kpj-field::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
 /* a borderless inline name (goal, portfolio, rule, form): the field only shows on hover/focus */
 .kpj-name-input {
   flex: 1 1 160px; min-width: 0; height: 32px; margin-left: -8px; padding: 0 8px; border-radius: var(--kpj-r-sm);
@@ -124,10 +126,14 @@ select.kpj-field { cursor: pointer; }
 }
 .kpj-progress { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .kpj-progress > .kpj-mono { font-size: 11px; line-height: 16px; color: var(--ink-3); min-width: 30px; text-align: right; }
+/* in a table's 96px Progress column: Meter 64, 6px, then the % (at most "100%") */
+.kpj-td > .kpj-progress { gap: 6px; }
+.kpj-td > .kpj-progress > .kpj-mono { min-width: 0; text-align: left; white-space: nowrap; }
 .kpj-ms { display: flex; flex-direction: column; min-width: 0; }
 .kpj-ms-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--kpj-font); color: var(--ink-2); }
 .kpj-ms-date { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kpj-dash { color: var(--ink-4); }
+.kpj-owner { display: inline-flex; vertical-align: middle; }
 /* row actions: revealed on hover or keyboard focus, never by a clicked button's leftover focus */
 .kpj-rowacts {
   position: absolute; top: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px;
@@ -141,17 +147,29 @@ select.kpj-field { cursor: pointer; }
 .kpj-rowacts[data-open="true"] { opacity: 1; visibility: visible; transition-delay: 0s; }
 .kpj-tbody .kpj-tr:has(:focus-visible) .kpj-rowacts { opacity: 1; visibility: visible; transition-delay: 0s; }
 
-/* the directory on a phone (and in narrow columns): one card per project */
-.kpj-cards { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+/* the directory on a phone, a touch screen or in a narrow column: one card per project
+   (one column on a phone, as many 320px+ columns as fit on a tablet) */
+.kpj-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 8px;
+  margin: 0; padding: 0; list-style: none;
+}
 .kpj-pcard {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; padding: 14px 16px;
+  position: relative; isolation: isolate; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; gap: 10px 12px; padding: 14px 16px;
   border-radius: var(--kpj-r-lg); background: var(--surface); box-shadow: var(--kpj-e1);
-  color: var(--ink); text-decoration: none; -webkit-tap-highlight-color: transparent;
+  color: var(--ink); -webkit-tap-highlight-color: transparent;
+}
+.kpj-pcard-name { display: flex; align-items: center; gap: 10px; min-width: 0; font: 600 14px/20px var(--kpj-font); }
+/* the name is the card's link, stretched over the whole card (the update buttons sit above it) */
+.kpj-pcard-link { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
+.kpj-pcard-link::after {
+  content: ""; position: absolute; inset: 0; z-index: 0; border-radius: var(--kpj-r-lg);
   transition: background var(--d-1, 90ms) var(--ease);
 }
-.kpj-pcard:active { background: linear-gradient(var(--kpj-press), var(--kpj-press)), var(--surface); }
-.kpj-pcard-name { display: flex; align-items: center; gap: 10px; min-width: 0; font: 600 14px/20px var(--kpj-font); }
-.kpj-pcard-name > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kpj-pcard-link:focus-visible { outline: none; }
+.kpj-pcard-link:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kpj-pcard-link:active::after { background: var(--kpj-press); }
+@media (hover: hover) { .kpj-pcard-link:hover::after { background: var(--kpj-hover); } }
+.kpj-pcard-acts { grid-column: 1 / -1; position: relative; z-index: 1; display: flex; justify-content: flex-end; gap: 8px; }
 .kpj-pcard-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
 .kpj-pcard-bar > .kpj-mono { min-width: 32px; font-size: 11px; color: var(--ink-3); text-align: right; }
 .kpj-pcard-meta { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); }
@@ -180,6 +198,7 @@ select.kpj-field { cursor: pointer; }
 .kpj-menu-item[aria-checked="true"] > .kpj-menu-check { color: var(--accent-text, var(--accent)); }
 .kpj-menu-check { margin-left: auto; }
 .kpj-menu-item[data-tone="danger"], .kpj-menu-item[data-tone="danger"] > svg { color: var(--kpj-signal); }
+.kpj-menu-item[data-tone="warn"], .kpj-menu-item[data-tone="warn"] > svg { color: var(--kpj-warn); }
 [data-kpop-panel] .kpj-menu-item[data-tone="danger"]:hover,
 [data-kpop-panel] .kpj-menu-item[data-tone="danger"]:focus-visible {
   color: var(--kpj-signal) !important; background: color-mix(in oklch, var(--kpj-signal) 10%, transparent) !important;
@@ -201,12 +220,16 @@ select.kpj-field { cursor: pointer; }
   background: transparent; outline: none; font: 400 14px/22px var(--kpj-font); color: var(--ink);
 }
 .kpj-composer .kvellum .kprov { margin-top: 8px; }
+/* the vellum card shows the field's focus as one ring round the card (the field itself draws none) */
+.kpj-composer .kvellum:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .kpj-composer-note { margin: -4px 0 0; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); text-wrap: pretty; }
 .kpj-composer-foot { display: flex; align-items: center; gap: 8px; }
 .kpj-composer-foot > .kpj-spacer { min-width: 0; }
-/* inside a Popover: its menu hover (a flat fill on every button) would wash out the kit's buttons */
+/* inside a Popover: its menu hover and focus (a flat fill on every button) would wash out the kit's
+   buttons, so the primary keeps its fill (and an outside focus ring) however it's reached */
+[data-kpop-panel].kpj-pop .kbtn[data-variant="primary"]:disabled,
+[data-kpop-panel].kpj-pop .kbtn[data-variant="primary"]:focus-visible:not(:disabled) { background: var(--accent-fill, var(--accent)) !important; color: var(--on-accent) !important; }
 [data-kpop-panel].kpj-pop .kbtn[data-variant="primary"]:hover:not(:disabled) { background: var(--accent-hover, var(--accent-strong)) !important; color: var(--on-accent) !important; }
-[data-kpop-panel].kpj-pop .kbtn[data-variant="primary"]:disabled { background: var(--accent-fill, var(--accent)) !important; color: var(--on-accent) !important; }
 [data-kpop-panel].kpj-pop .kbtn[data-variant="primary"]:focus-visible { outline-offset: 2px; }
 [data-kpop-panel].kpj-pop .kseg-btn[data-active="true"] { background: var(--surface-raised) !important; color: var(--ink) !important; }
 [data-kpop-panel].kpj-pop .kseg-btn:not([data-active="true"]):hover { background: transparent !important; color: var(--ink) !important; }
@@ -263,7 +286,10 @@ select.kpj-field { cursor: pointer; }
 .kpj-swatch {
   position: relative; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--kpj-r-sm); cursor: pointer;
 }
-.kpj-swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink-2); }
+/* the chosen colour: a ring with a clear gap, so it reads on any surface (page, sheet, either theme) */
+.kpj-swatch[aria-pressed="true"]::after, .kpj-swatch[data-chosen="true"]::after {
+  content: ""; position: absolute; inset: -4px; border: 2px solid var(--ink-2); border-radius: calc(var(--kpj-r-sm) + 4px); pointer-events: none;
+}
 .kpj-person { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .kpj-checklist { display: flex; flex-direction: column; gap: 2px; width: 100%; max-width: 360px; }
 .kpj-check {
@@ -336,17 +362,30 @@ select.kpj-field { cursor: pointer; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .kpj-rowacts, .kpj-tbody .kpj-tr, .kpj-chip, .kpj-name-input, .kpj-field { transition: none; }
+  .kpj-rowacts, .kpj-tbody .kpj-tr, .kpj-chip, .kpj-name-input, .kpj-field, .kpj-pcard-link::after { transition: none; }
 }
 
-/* ---------------- Portfolios: the exec table ---------------- */
-.kpj-exec-tr { grid-template-columns: minmax(160px, 1.1fr) minmax(220px, 2fr) 104px minmax(120px, 1fr) 136px; }
+/* ---------------- Portfolios: the exec table ----------------
+   Laid out by its own width (the sidebar and a docked task panel both take
+   room), never wider than its column: the summary ellipsises, the milestone
+   goes below 960px, and under 600px each project stacks. */
+.kpj-pf-exec { container-type: inline-size; }
+.kpj-exec-tr { grid-template-columns: minmax(140px, 1.1fr) minmax(0, 2fr) 96px minmax(0, 1fr) 136px; }
 .kpj-exec .kpj-tbody .kpj-tr { min-height: 48px; }
-@media (max-width: 859px) {
+.kpj-exec-stale { font: 500 12px/16px var(--kpj-font); }
+/* what a cell is, said in the cell when there's no header row to say it */
+.kpj-exec-lbl { display: none; font-family: var(--kpj-font); color: var(--ink-3); }
+@container (max-width: 959px) {
+  .kpj-exec-tr { grid-template-columns: minmax(160px, 1.2fr) minmax(0, 2fr) 96px 136px; }
+  .kpj-exec .kpj-exec-ms { display: none; }
+}
+@container (max-width: 599px) {
   .kpj-exec-tr { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; padding: 10px 12px; }
   .kpj-exec .kpj-thead { display: none; }
-  .kpj-exec .kpj-exec-ms { display: none; }
   .kpj-exec .kpj-td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .kpj-exec .kpj-td:nth-child(5) { grid-column: 1 / -1; text-align: left; }
+  .kpj-exec .kpj-td[data-empty="true"] { display: none; }
+  .kpj-exec-lbl { display: inline; }
 }
 
 /* ---------------- dialogs: New project · Delete project ---------------- */

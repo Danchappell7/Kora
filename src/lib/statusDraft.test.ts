@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Project, StatusUpdate, Task } from "../data/types";
 import {
-  draftStatusLocal, factLines, isStale, kanbosRead, oldestTaskAge, shortTitle, statusFacts, statusFactsForAi, STALE_DAYS,
+  draftStatusLocal, factLines, indexTasks, isStale, kanbosRead, oldestTaskAge, shortTitle, statusFacts, statusFactsForAi, STALE_DAYS,
 } from "./statusDraft";
 
 const TODAY = new Date(2026, 8, 30); // Wed 30 Sep 2026
@@ -42,7 +42,15 @@ describe("statusFacts", () => {
     expect(f.blocked.map((t) => t.id)).toEqual(["onb"]);          // not the archived one, not another project's
     expect(f.total).toBe(8);                                        // top-level only (the sub-task nests)
     expect(f.open).toBe(5);
+    expect(f.openAll).toBe(6);                                      // with the sub-task: what overdue counts from
     expect(f.pct).toBe(38);
+  });
+
+  it("reads the same facts from a shared index (one pass over the tasks for many projects)", () => {
+    const idx = indexTasks(ALL);
+    expect(statusFacts(P, ALL, updates, TODAY, idx)).toEqual(f);
+    expect(idx.byProject.get(P.id)?.some((t) => t.id === "arch")).toBe(false);   // archived work is left out
+    expect(idx.dependents.get("tokens")).toEqual(["onb"]);
   });
 
   it("finds this week's finished work, the overdue, the slipped and what the blocked wait on", () => {

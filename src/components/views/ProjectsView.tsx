@@ -3,19 +3,20 @@
    One row per project: its status, progress, owner, open and
    overdue work, next milestone, how fresh its last update is, and
    Kanbo's one-line read. Draft or post an update from the row.
-   Phones (and narrow columns) get one card per project.
+   Phones, touch screens (no hover to reveal a row's buttons) and
+   narrow columns get one card per project, its buttons always shown.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { AiMark, Avatar, Button, EmptyState, Icon, Meter, Pill, ProjectDot, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { getMember, KANBO_TODAY } from "../../data/data";
+import { getMember, KANBO_TODAY, todayISO } from "../../data/data";
 import type { Task, Project, StatusUpdate, StatusKind } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { pathOf } from "../../lib/nav";
-import { fmtAge, fmtShortDay, isStale, kanbosRead, oldestTaskAge, statusFacts, type StatusFacts } from "../../lib/statusDraft";
+import { fmtAge, fmtShortDay, indexTasks, isStale, kanbosRead, oldestTaskAge, statusFacts, type StatusFacts } from "../../lib/statusDraft";
 import { projectStatusPill } from "../project/ProjectHeader";
-import { ComposerPopover, useStatusComposer, type AiStatus, type PostStatus } from "../project/StatusComposer";
+import { ComposerPopover, POP_STYLE, useStatusComposer, type AiStatus, type PostStatus } from "../project/StatusComposer";
 import "../project/projects.css";
 
 type Scope = "all" | "mine" | "risk";
@@ -34,15 +35,24 @@ const SCOPES: { value: Scope; label: string }[] = [
   { value: "risk", label: "At risk" },
 ];
 const COL_W: Record<Col, string> = {
-  name: "minmax(180px, 1fr)", status: "88px", progress: "104px", owner: "44px", open: "44px",
+  name: "minmax(180px, 1fr)", status: "88px", progress: "96px", owner: "44px", open: "44px",
   overdue: "60px", milestone: "minmax(112px, 176px)", update: "96px", risks: "44px",
 };
 const COL_LABEL: Record<Col, string> = {
   name: "Project", status: "Status", progress: "Progress", owner: "Owner", open: "Open",
   overdue: "Overdue", milestone: "Next milestone", update: "Last update", risks: "Risks",
 };
+const COL_TITLE: Partial<Record<Col, string>> = {
+  open: "Open tasks, sub-tasks included",
+  overdue: "Open tasks past their due date, sub-tasks included",
+};
 const NUMERIC = new Set<Col>(["open", "overdue", "update", "risks"]);
 const TONE_RANK = { signal: 0, warn: 1, neutral: 2, accent: 3, ok: 4 } as const;
+
+/** "—" to the eye, a word to a screen reader */
+function Dash({ sr }: { sr: string }) {
+  return <><span className="kpj-dash" aria-hidden="true">—</span><span className="sr-only">{sr}</span></>;
+}
 
 /** The columns that fit: everything from 1040px; then Owner and Open go, then the milestone. */
 export function directoryColumns(width: number, withRisks: boolean): Col[] {
@@ -82,7 +92,11 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   aiStatus?: (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
   risksByProject?: Record<string, number>;
 }) {
+  // the built-in Personal project is where loose tasks live, not a project anyone runs
+  const real = useMemo(() => projects.filter((p) => p.id !== "p-personal"), [projects]);
   const phone = useMediaQuery("(max-width: 859px)");
+  // no hover (a tablet): a table row's Draft and Post update could never be revealed, so cards
+  const touch = useMediaQuery("(hover: none)");
   const [query, setQuery] = useState("");
   const [scope, setScopeRaw] = useState<Scope>(() => readPref("kanbo-projects-scope", ["all", "mine", "risk"] as const, "all"));
   const [sort, setSortRaw] = useState<SortKey>(() => readPref("kanbo-projects-sort", ["status", "name", "progress", "update"] as const, "status"));
@@ -102,17 +116,22 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     const ro = new ResizeObserver(() => setWidth(el.clientWidth));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [projects.length === 0]);
+  }, [real.length === 0]);
 
-  const rows: Row[] = useMemo(() => projects.map((p) => {
-    const facts = statusFacts(p, tasks, statusUpdates, KANBO_TODAY);
+  // overdue, update ages, staleness and milestones read today's date: recompute when the day rolls over
+  const today = todayISO();
+  // the task list grouped once per change, not rescanned for every project
+  const idx = useMemo(() => indexTasks(tasks), [tasks]);
+  const rows: Row[] = useMemo(() => real.map((p) => {
+    const own = idx.byProject.get(p.id) ?? [];
+    const facts = statusFacts(p, tasks, statusUpdates, KANBO_TODAY, idx);
     const pill = projectStatusPill(p, facts.latest);
     const risks = risksByProject?.[p.id] ?? 0;
     const mine = p.ownerId === currentUserId || (p.contributorIds ?? []).includes(currentUserId)
-      || tasks.some((t) => t.projectId === p.id && t.assigneeId === currentUserId && t.status !== "done" && !t.archivedAt);
+      || own.some((t) => t.assigneeId === currentUserId && t.status !== "done");
     const atRisk = pill.tone === "warn" || pill.tone === "signal" || facts.health === "at_risk" || facts.health === "off_track" || risks > 0;
-    return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale: isStale(facts, oldestTaskAge(tasks, p.id, KANBO_TODAY)), risks, mine, atRisk };
-  }), [projects, tasks, statusUpdates, risksByProject, currentUserId]);
+    return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale: isStale(facts, oldestTaskAge(own, p.id, KANBO_TODAY)), risks, mine, atRisk };
+  }), [real, tasks, idx, statusUpdates, risksByProject, currentUserId, today]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -128,7 +147,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     return [...list].sort(cmp[sort]);
   }, [rows, query, scope, sort]);
 
-  // the composer: one at a time, anchored to the row button that opened it
+  // the composer: one at a time, anchored to the row button that opened it (the draft is the
+  // project's shared one, so it's the same words the project header's composer shows)
   const canPost = !!onPostUpdate;
   const anchorRef = useRef<HTMLElement | null>(null);
   const [composer, setComposer] = useState<{ id: string; open: boolean; mode: "draft" | "post"; seq: number } | null>(null);
@@ -137,7 +157,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     anchorRef.current = e.currentTarget;
     setComposer((c) => ({ id, open: true, mode, seq: (c?.seq ?? 0) + 1 }));
   };
-  const composerProject = composer ? projects.find((p) => p.id === composer.id) : undefined;
+  const composerProject = composer ? real.find((p) => p.id === composer.id) : undefined;
 
   const openRow = (id: string) => {
     if (typeof window !== "undefined" && window.getSelection?.()?.toString()) return; // selecting text isn't a click
@@ -151,11 +171,11 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     onOpenProject(id);
   };
 
-  if (projects.length === 0) {
+  if (real.length === 0) {
     return (
       <div className="kpj-page">
         <div className="kpj-wrap">
-          <EmptyState art="layers" size="lg" title="No projects yet"
+          <EmptyState art="layers" title="No projects yet"
             body={canCreate ? "Projects keep a piece of work's tasks, updates and people together." : "When your team starts a project, you'll find it here."}
             action={canCreate ? <Button variant="primary" icon="plus" onClick={onNewProject}>New project</Button> : undefined} />
         </div>
@@ -163,18 +183,28 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     );
   }
 
-  const cards = phone || (width > 0 && width < 700);
+  const cards = phone || touch || (width > 0 && width < 700);
   const cols = directoryColumns(width, !!risksByProject);
   const template = cols.map((c) => COL_W[c]).join(" ");
   const sortLabel = SORTS.find((s) => s.id === sort)!.label;
   const reset = () => { setQuery(""); setScope("all"); };
 
+  const updateButtons = (r: Row) => {
+    const on = composer?.open && composer.id === r.p.id;
+    return (
+      <>
+        <Button variant="ghost" size="sm" aria-label={`Draft update for ${r.p.name}`} aria-haspopup="dialog" aria-expanded={!!on && composer?.mode === "draft"}
+          onClick={(e) => openComposer(e, r.p.id, "draft")}>
+          <span className="kpj-btn-mark"><AiMark size={14} />Draft update</span>
+        </Button>
+        <Button variant="secondary" size="sm" aria-label={`Post update for ${r.p.name}`} aria-haspopup="dialog" aria-expanded={!!on && composer?.mode === "post"}
+          onClick={(e) => openComposer(e, r.p.id, "post")}>Post update</Button>
+      </>
+    );
+  };
   const rowActions = (r: Row) => canPost ? (
     <div className="kpj-rowacts" data-open={composer?.open && composer.id === r.p.id ? "true" : undefined} onClick={(e) => e.stopPropagation()}>
-      <Button variant="ghost" size="sm" aria-label={`Draft update for ${r.p.name}`} aria-haspopup="dialog" onClick={(e) => openComposer(e, r.p.id, "draft")}>
-        <span className="kpj-btn-mark"><AiMark size={14} />Draft update</span>
-      </Button>
-      <Button variant="secondary" size="sm" aria-label={`Post update for ${r.p.name}`} aria-haspopup="dialog" onClick={(e) => openComposer(e, r.p.id, "post")}>Post update</Button>
+      {updateButtons(r)}
     </div>
   ) : null;
 
@@ -193,21 +223,27 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
       case "status": return <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>;
       case "progress": return (
         <span className="kpj-progress">
-          <Meter value={f.pct} width={56} height={4} label={`${r.p.name} progress`} />
+          <Meter value={f.pct} width={64} height={4} label={`${r.p.name} progress`} />
           <span className="kpj-mono" aria-hidden="true">{f.pct}%</span>
         </span>
       );
-      case "owner": return r.p.ownerId && getMember(r.p.ownerId) ? <Avatar id={r.p.ownerId} size={24} /> : <span className="kpj-dash" aria-label="No owner">—</span>;
-      case "open": return f.open;
+      case "owner": {
+        const owner = r.p.ownerId ? getMember(r.p.ownerId) : undefined;
+        // the avatar alone reads as initials: say whose it is
+        return owner
+          ? <span className="kpj-owner" role="img" aria-label={`Owner: ${owner.name}`}><Avatar id={owner.id} size={24} /></span>
+          : <Dash sr="No owner" />;
+      }
+      case "open": return f.openAll;
       case "overdue": return <span className={f.overdue.length ? "kpj-signal" : "kpj-muted"}>{f.overdue.length}</span>;
       case "milestone": return f.nextMilestone ? (
         <span className="kpj-ms">
           <span className="kpj-ms-title" title={f.nextMilestone.title}>{f.nextMilestone.title}</span>
           <span className="kpj-ms-date">{fmtShortDay(f.nextMilestone.dueDate, KANBO_TODAY)}</span>
         </span>
-      ) : <span className="kpj-dash" aria-label="None">—</span>;
+      ) : <Dash sr="No milestone" />;
       case "update": return <UpdateAge facts={f} stale={r.stale} />;
-      case "risks": return r.risks ? <span className="kpj-signal">{r.risks}</span> : <span className="kpj-dash" aria-label="None">—</span>;
+      case "risks": return r.risks ? <span className="kpj-signal">{r.risks}</span> : <Dash sr="No risks" />;
     }
   };
 
@@ -224,12 +260,12 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           <Segmented ariaLabel="Which projects" options={SCOPES} value={scope} onChange={setScope} />
           <span className="kpj-spacer" />
           <span className="kpj-count" aria-live="polite">
-            {shown.length === projects.length ? `${projects.length} ${projects.length === 1 ? "project" : "projects"}` : `${shown.length} of ${projects.length}`}
+            {shown.length === real.length ? `${real.length} ${real.length === 1 ? "project" : "projects"}` : `${shown.length} of ${real.length}`}
           </span>
           <Button ref={sortRef} variant="ghost" size="sm" icon="sort" iconRight="chevronDown" aria-haspopup="menu" aria-expanded={sortOpen}
             aria-label={`Sort projects: ${sortLabel}`} onClick={() => setSortOpen((v) => !v)}>{sortLabel}</Button>
           <Popover open={sortOpen} anchorRef={sortRef} onClose={() => setSortOpen(false)} role="menu" label="Sort projects by" align="end" minWidth={180}
-            className="kpj-pop" style={{ padding: 4, borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))", background: "var(--surface-raised)" }}>
+            className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
             {SORTS.map((s) => (
               <button key={s.id} type="button" role="menuitemradio" aria-checked={sort === s.id} className="kpj-menu-item"
                 onClick={() => { setSort(s.id); setSortOpen(false); }}>
@@ -247,23 +283,25 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
         ) : cards ? (
           <ul className="kpj-cards" aria-label="Projects">
             {shown.map((r) => (
-              <li key={r.p.id}>
-                <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-pcard" onClick={(e) => onLink(e, r.p.id)}>
-                  <span className="kpj-pcard-name">
-                    <ProjectDot color={r.p.color} size={10} />
-                    <span>{r.p.emoji && <span className="kpj-emoji" aria-hidden="true">{r.p.emoji}</span>}{r.p.name}</span>
-                  </span>
-                  <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
-                  <span className="kpj-pcard-bar">
-                    <Meter value={r.facts.pct} height={4} label={`${r.p.name} progress`} />
-                    <span className="kpj-mono" aria-hidden="true">{r.facts.pct}%</span>
-                  </span>
-                  <span className="kpj-pcard-meta">
-                    {r.facts.open} open
-                    {r.facts.overdue.length > 0 && <> · <span className="kpj-signal">{r.facts.overdue.length} overdue</span></>}
-                    {" · "}<UpdateAge facts={r.facts} stale={r.stale} long />
-                  </span>
-                </a>
+              // the name is the link, stretched over the card; the update buttons sit above it
+              <li key={r.p.id} className="kpj-pcard">
+                <span className="kpj-pcard-name">
+                  <ProjectDot color={r.p.color} size={10} />
+                  <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-pcard-link" onClick={(e) => onLink(e, r.p.id)}>
+                    {r.p.emoji && <span className="kpj-emoji" aria-hidden="true">{r.p.emoji}</span>}{r.p.name}
+                  </a>
+                </span>
+                <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
+                <span className="kpj-pcard-bar">
+                  <Meter value={r.facts.pct} height={4} label={`${r.p.name} progress`} />
+                  <span className="kpj-mono" aria-hidden="true">{r.facts.pct}%</span>
+                </span>
+                <span className="kpj-pcard-meta">
+                  {r.facts.openAll} open
+                  {r.facts.overdue.length > 0 && <> · <span className="kpj-signal">{r.facts.overdue.length} overdue</span></>}
+                  {" · "}<UpdateAge facts={r.facts} stale={r.stale} long />
+                </span>
+                {canPost && <div className="kpj-pcard-acts">{updateButtons(r)}</div>}
               </li>
             ))}
           </ul>
@@ -272,7 +310,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
             <div role="rowgroup" className="kpj-thead">
               <div role="row" className="kpj-tr" style={{ gridTemplateColumns: template }}>
                 {cols.map((c) => (
-                  <span key={c} role="columnheader" className={`kpj-th${NUMERIC.has(c) ? " kpj-num" : ""}`}>{COL_LABEL[c]}</span>
+                  <span key={c} role="columnheader" className={`kpj-th${NUMERIC.has(c) ? " kpj-num" : ""}`} title={COL_TITLE[c]}>{COL_LABEL[c]}</span>
                 ))}
               </div>
             </div>
@@ -314,7 +352,7 @@ function UpdateAge({ facts, stale, long }: { facts: StatusFacts; stale: boolean;
     : <span title={d === 0 ? "Last update today" : `Last update ${d} ${d === 1 ? "day" : "days"} ago`}>{text}</span>;
 }
 
-/** The directory's composer. It stays mounted once opened, so each project's draft survives a close. */
+/** The directory's composer: "Draft update" has Kanbo write it, "Post update" opens an empty field. */
 function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request, anchorRef, onClose }: {
   project: Project;
   tasks: Task[];
@@ -327,7 +365,8 @@ function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request,
 }) {
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost, aiStatus, onPosted: onClose });
   useEffect(() => {
-    if (request.open && request.mode === "draft" && !c.text.trim() && !c.drafting) c.draft();
+    if (!request.open) return;
+    if (request.mode === "draft") c.ensureDraft(); else c.startFresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request.seq]);
   return <ComposerPopover open={request.open} anchorRef={anchorRef} onClose={onClose} c={c} />;

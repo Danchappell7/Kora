@@ -43,7 +43,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *  picker stored free text (which never matched a tag, so the rule did
  *  nothing visible); those show up flagged, with a one-click link when a tag
  *  with that label exists. */
-function TagPicker({ value, tags, onChange, label }: { value: string; tags: Record<string, TagDef>; onChange: (v: string) => void; label: string }) {
+function TagPicker({ value, tags, onChange, label, disabled = false }: { value: string; tags: Record<string, TagDef>; onChange: (v: string) => void; label: string; disabled?: boolean }) {
   const entries = Object.entries(tags).sort((a, b) => a[1].label.localeCompare(b[1].label));
   const known = !!tags[value];
   const foreignId = !known && UUID_RE.test(value);           // a teammate's tag — valid, just not in your list
@@ -53,15 +53,15 @@ function TagPicker({ value, tags, onChange, label }: { value: string; tags: Reco
   return (
     <span className="kpj-tagpick">
       <span aria-hidden="true" className="kpj-tagpick-dot" data-empty={!color || undefined} style={color ? { background: projectPaint(color).solid } : undefined} />
-      <select className="kpj-field" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} aria-invalid={legacy || undefined}>
+      <select className="kpj-field" value={value} disabled={disabled} onChange={(e) => { if (!disabled) onChange(e.target.value); }} aria-label={label} aria-invalid={legacy || undefined}>
         {!value && <option value="" disabled>Choose a tag…</option>}
         {foreignId && <option value={value}>A teammate's tag</option>}
         {legacy && <option value={value}>“{value}” — not a tag</option>}
         {entries.map(([id, t]) => <option key={id} value={id}>{t.label}</option>)}
       </select>
-      {match && <Button variant="ghost" size="sm" icon="link" onClick={() => onChange(match)}>Link to tag “{tags[match].label}”</Button>}
-      {legacy && !match && <span className="kpj-hint" data-tone="signal">Choose a tag: this action adds nothing until you do.</span>}
-      {entries.length === 0 && <span className="kpj-hint">No tags yet. Create one from any task first.</span>}
+      {match && !disabled && <Button variant="ghost" size="sm" icon="link" onClick={() => onChange(match)}>Link to tag “{tags[match].label}”</Button>}
+      {legacy && (disabled || !match) && <span className="kpj-hint" data-tone="signal">{disabled ? "This action adds nothing: it isn't linked to a tag." : "Choose a tag: this action adds nothing until you do."}</span>}
+      {entries.length === 0 && !disabled && <span className="kpj-hint">No tags yet. Create one from any task first.</span>}
     </span>
   );
 }
@@ -187,7 +187,7 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                                   {projSections.map((sct) => <option key={sct.id} value={sct.id}>{sct.name}</option>)}
                                 </select>
                               )}
-                              {a.type === "add_tag" && <TagPicker value={a.value} tags={tagMap} onChange={(v) => setValue(i, v)} label={`Tag added by ${rule.name}`} />}
+                              {a.type === "add_tag" && <TagPicker value={a.value} tags={tagMap} onChange={(v) => setValue(i, v)} label={`Tag added by ${rule.name}`} disabled={readOnly} />}
                               {!readOnly && (
                                 <IconButton icon="x" size="sm" label={`Remove “${ACTION_LABEL[a.type]}” from ${rule.name}`} style={{ marginLeft: "auto" }}
                                   onClick={() => setActions(rule.actions.filter((_, j) => j !== i))} />
@@ -235,10 +235,11 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
   onCreate: (projectId: string, name: string, fields: FormFieldKey[]) => void;
   onUpdate: (id: string, patch: { name?: string; fields?: FormFieldKey[] }) => void;
   onDelete: (id: string) => void;
-  onSubmit: (projectId: string, values: FormValues) => void;
+  /** file the request. Return false if it wasn't taken (the words stay in the form). */
+  onSubmit: (projectId: string, values: FormValues) => boolean | void;
   /** inside a project: show only its forms, and new forms land in it */
   projectId?: string;
-  /** fill in only (guests): no building, renaming or deleting */
+  /** guests: see which forms there are and what they ask for; no filling in, building, renaming or deleting */
   readOnly?: boolean;
 }) {
   const realProjects = projects.filter((p) => p.id !== "p-personal");
@@ -250,7 +251,12 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
   // a remembered assignee from another workspace would silently assign the task outside this team
   const assigneeId = vals.assigneeId && members.some((m) => m.id === vals.assigneeId) ? vals.assigneeId : "";
   const add = () => { const n = name.trim(); if (n && pid) { onCreate(pid, n, ["description", "priority"]); setName(""); setAdding(false); } };
-  const submit = (f: FormDef) => { if (vals.title.trim()) { onSubmit(f.projectId, { ...vals, title: vals.title.trim(), assigneeId: f.fields.includes("assignee") ? assigneeId : undefined }); setVals({ title: "" }); setFillFor(null); } };
+  const submit = (f: FormDef) => {
+    if (!vals.title.trim()) return;
+    const taken = onSubmit(f.projectId, { ...vals, title: vals.title.trim(), assigneeId: f.fields.includes("assignee") ? assigneeId : undefined });
+    if (taken === false) return; // refused: keep what they typed
+    setVals({ title: "" }); setFillFor(null);
+  };
   const ordered = useStableOrder(projectId ? forms.filter((f) => f.projectId === projectId) : forms);
   const canAdd = !readOnly && realProjects.length > 0;
 
@@ -271,14 +277,15 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
           <div className="kpj-toolbar">
             <p className="kpj-toolbar-note">{projectId
               ? "Teammates fill these in to file work into this project."
-              : "Request forms turn what people ask for into tasks, filed straight into the right project."}</p>
+              : "Request forms turn what people ask for into tasks, filed straight into the right project."}
+              {readOnly && ordered.length > 0 && " Only members can file requests; ask one to file yours."}</p>
             {canAdd && (ordered.length > 0 || adding) && <Button variant="primary" size="sm" icon="plus" onClick={() => setAdding(true)}>New form</Button>}
           </div>
           {realProjects.length === 0 ? (
             <EmptyState art="briefcase" title="No projects yet" body="A request form files each submission into a project, so start with a project." />
           ) : ordered.length === 0 && !adding ? (
             <EmptyState art="inbox" title="No request forms yet"
-              body={readOnly ? "There's nothing to fill in here yet." : "Build a form for the things people ask for, like bug reports or design requests. Each one becomes a task."}
+              body={readOnly ? "Nobody has set up a request form here yet." : "Build a form for the things people ask for, like bug reports or design requests. Each one becomes a task."}
               action={canAdd ? <Button variant="primary" icon="plus" onClick={() => setAdding(true)}>New form</Button> : undefined} />
           ) : (
             <>
@@ -296,8 +303,10 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                           : <DraftInput value={f.name} required label={`Form name: ${f.name}`} onCommit={(v) => onUpdate(f.id, { name: v })} className="kpj-name-input" />}
                         <div className="kpj-card-side">
                           {!projectId && proj && <span className="kpj-card-meta">{proj.name}</span>}
-                          <Button variant={filling ? "ghost" : "secondary"} size="sm" aria-expanded={filling} aria-label={`${filling ? "Close" : "Open"} form ${f.name}`}
-                            onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }}>{filling ? "Close" : "Open form"}</Button>
+                          {!readOnly && (
+                            <Button variant={filling ? "ghost" : "secondary"} size="sm" aria-expanded={filling} aria-label={`${filling ? "Close" : "Open"} form ${f.name}`}
+                              onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }}>{filling ? "Close" : "Open form"}</Button>
+                          )}
                           {!readOnly && (
                             <IconButton icon="trash" size="sm" tone="danger" label={`Delete form ${f.name}`}
                               onClick={() => { if (window.confirm(`Delete the form “${f.name}”?`)) onDelete(f.id); }} />
@@ -319,10 +328,17 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                           })}
                         </div>
                       )}
-                      {filling && (
+                      {filling && !readOnly && (
                         <form className="kpj-form-fill" aria-label={`Fill in ${f.name}`} onSubmit={(e) => { e.preventDefault(); submit(f); }}>
                           {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                          <input autoFocus className="kpj-field" value={vals.title} onChange={(e) => setVals((v) => ({ ...v, title: e.target.value }))} placeholder="Title (required)" aria-label="Title" />
+                          <input autoFocus className="kpj-field" value={vals.title} onChange={(e) => setVals((v) => ({ ...v, title: e.target.value }))} placeholder="Title (required)" aria-label="Title"
+                            // Enter files a title-only form; when the form asks for more, it moves on to the next field
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter" || e.nativeEvent.isComposing || !f.fields.length) return;
+                              e.preventDefault();
+                              const els = Array.from(e.currentTarget.form?.elements ?? []) as HTMLElement[];
+                              els[els.indexOf(e.currentTarget) + 1]?.focus();
+                            }} />
                           {f.fields.includes("description") && <textarea className="kpj-field" value={vals.description ?? ""} onChange={(e) => setVals((v) => ({ ...v, description: e.target.value }))} placeholder="Description" aria-label="Description" rows={3} />}
                           {(f.fields.includes("priority") || f.fields.includes("dueDate") || f.fields.includes("assignee")) && (
                             <div className="kpj-form-fill-row">

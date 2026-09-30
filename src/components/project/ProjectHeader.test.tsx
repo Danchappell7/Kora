@@ -3,7 +3,9 @@ import { render, screen, fireEvent, waitFor, within, act } from "@testing-librar
 import type { Project, StatusKind, StatusUpdate, Task, FormDef } from "../../data/types";
 import type { Risk } from "../../lib/radar";
 import { getUserProjectTemplates } from "../../lib/templates";
+import { refreshClock, toLocalISO } from "../../data/data";
 import { ProjectActions, ProjectNotice, ProjectPanels, ProjectTitleAddon } from "./ProjectHeader";
+import { clearStatusDrafts } from "./StatusComposer";
 
 const P: Project = { id: "p-a", name: "Alpha", emoji: "🚀", color: "oklch(0.74 0.14 230)", workspaceId: "ws", ownerId: "m-self", contributorIds: ["m-1"] };
 const ago = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
@@ -21,13 +23,28 @@ const UPDATES: StatusUpdate[] = [
   { id: "u1", projectId: P.id, status: "on_track", summary: "Kick-off went well", createdAt: ago(20) },
   { id: "u2", projectId: P.id, status: "at_risk", summary: "Deck is the critical path", createdAt: ago(3) },
 ];
+const FORMS: FormDef[] = [
+  { id: "f1", projectId: P.id, name: "Launch requests", fields: ["description"] },
+  { id: "f2", projectId: "p-other", name: "Someone else's", fields: [] },
+];
+const panelProps = (o: Partial<React.ComponentProps<typeof ProjectPanels>> = {}): React.ComponentProps<typeof ProjectPanels> => ({
+  tab: "updates", project: P, tasks: TASKS, statusUpdates: UPDATES, members: [{ id: "m-self", name: "Daniel Okai" }, { id: "m-1", name: "Maya Lin" }],
+  canManage: true, readOnly: false, onUpdate: vi.fn(), onPostStatus: vi.fn(),
+  rules: { rules: [{ id: "r1", projectId: P.id, name: "Mine", trigger: "task_created", actions: [], enabled: true }, { id: "r2", projectId: "p-other", name: "Theirs", trigger: "task_created", actions: [], enabled: true }], projects: [P, { ...P, id: "p-other", name: "Other" }], members: [], sections: [], onCreate: vi.fn(), onUpdate: vi.fn(), onDelete: vi.fn() },
+  forms: { forms: FORMS, projects: [P, { ...P, id: "p-other", name: "Other" }], members: [], onCreate: vi.fn(), onUpdate: vi.fn(), onDelete: vi.fn(), onSubmit: vi.fn() },
+  ...o,
+});
 const actionProps = (o: Partial<React.ComponentProps<typeof ProjectActions>> = {}): React.ComponentProps<typeof ProjectActions> => ({
   project: P, tasks: TASKS, statusUpdates: UPDATES, canManage: true, readOnly: false, onTab: vi.fn(), ...o,
 });
 const lastPost = () => { const all = screen.getAllByRole("button", { name: "Post update" }); return all[all.length - 1]; };
 const box = () => screen.getByPlaceholderText(/What's the latest/) as HTMLTextAreaElement;
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => { localStorage.clear(); clearStatusDrafts(); });
+/** move Kanbo's clock on `days`, as the live clock does at midnight in a tab left open */
+const afterDays = (days: number, fn: () => void) => {
+  try { refreshClock(new Date(Date.now() + days * 86400000)); fn(); } finally { refreshClock(new Date()); }
+};
 
 describe("ProjectActions — posting an update", () => {
   it("posts what you wrote, with the status you chose, and closes", async () => {
@@ -83,12 +100,66 @@ describe("ProjectActions — posting an update", () => {
     expect(screen.queryByText(/How I got here/)).not.toBeInTheDocument();
   });
 
-  it("falls back to the on-device draft when the AI can't answer", async () => {
-    const aiStatus = vi.fn().mockResolvedValue({ source: "limit", data: null });
+  it.each([
+    ["limit", /You've used today's Kanbo drafts, so this one was written on this device\./],
+    ["off", /Kanbo's drafting is turned off, so this one was written on this device\./],
+    ["unavailable", /Kanbo couldn't draft this one just now, so it was written on this device\./],
+  ])("falls back to the on-device draft when Kanbo can't answer (%s), and says why without saying AI", async (source, note) => {
+    const aiStatus = vi.fn().mockResolvedValue({ source, data: null });
     render(<ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus })} />);
     fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
     await waitFor(() => expect(box().value).toMatch(/^Finished 1 task this week/));
-    expect(screen.getByText(/today's Kanbo AI allowance/)).toBeInTheDocument();
+    expect(screen.getByText(note)).toBeInTheDocument();
+    expect(screen.queryByText(/\bAI\b/)).not.toBeInTheDocument();
+  });
+
+  it("shows focus on Kanbo's words as one ring round the vellum card", async () => {
+    const aiStatus = vi.fn().mockResolvedValue({ source: "ai", data: { summary: "Kanbo's words", status: "on_track" } });
+    render(<ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
+    await waitFor(() => expect(box()).toHaveValue("Kanbo's words"));
+    expect(box()).toHaveAttribute("data-focus-ring", "none");
+    expect(box().parentElement).toHaveClass("kvellum");
+    fireEvent.change(box(), { target: { value: "" } });                 // your own words: an ordinary field again
+    expect(box()).not.toHaveAttribute("data-focus-ring");
+  });
+
+  it("Post update opens an empty field after Kanbo drafted one, but keeps words you wrote", () => {
+    render(<ProjectActions {...actionProps({ onPostStatus: vi.fn() })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
+    expect(box().value).toMatch(/^Finished 1 task this week/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Post update" }));
+    expect(box()).toHaveValue("");
+    fireEvent.change(box(), { target: { value: "My own words" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
+    expect(box()).toHaveValue("My own words");                          // Draft update never writes over yours
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Post update" }));
+    expect(box()).toHaveValue("My own words");
+  });
+
+  it("Draft update asks the AI in place of an untouched on-device draft", async () => {
+    const aiStatus = vi.fn().mockResolvedValue({ source: "ai", data: { summary: "Kanbo's words", status: "at_risk" } });
+    render(<><ProjectPanels {...panelProps()} /><ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus })} /></>);
+    expect((screen.getByRole("textbox", { name: "Update" }) as HTMLTextAreaElement).value).toMatch(/^Finished 1 task/); // the Updates tab's draft
+    fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
+    await waitFor(() => screen.getAllByRole("textbox", { name: "Update" }).forEach((t) => expect(t).toHaveValue("Kanbo's words")));
+    expect(aiStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("drafts from today's facts after the day rolls over in a tab left open", () => {
+    const aiStatus = vi.fn(() => new Promise<never>(() => {}));
+    const { rerender } = render(<ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus: aiStatus as never })} />);
+    afterDays(5, () => {
+      rerender(<ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus: aiStatus as never })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Draft update" }));
+      expect(aiStatus).toHaveBeenCalledWith(expect.objectContaining({
+        today: toLocalISO(new Date(Date.now() + 5 * 86400000)),
+        overdue: expect.arrayContaining([expect.objectContaining({ title: "Finalise the deck" })]),
+      }));
+    });
   });
 
   it("never overwrites what you typed while Kanbo was drafting", async () => {
@@ -126,6 +197,13 @@ describe("ProjectActions — the ⋯ menu", () => {
     confirm.mockRestore();
   });
 
+  it("offers Delete project only to someone who can manage the project", () => {
+    render(<ProjectActions {...actionProps({ canManage: false, onArchive: vi.fn(), onDelete: vi.fn() })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Project actions" }));
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Delete project" })).not.toBeInTheDocument();
+  });
+
   it("gives guests no update buttons and a read-only menu", () => {
     render(<ProjectActions {...actionProps({ readOnly: true, onPostStatus: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn() })} />);
     expect(screen.queryByRole("button", { name: "Post update" })).not.toBeInTheDocument();
@@ -142,6 +220,19 @@ describe("ProjectActions — the ⋯ menu", () => {
     const [tpl] = getUserProjectTemplates();
     expect(tpl).toMatchObject({ name: "Alpha", emoji: "🚀" });
     expect(tpl.tasks?.map((t) => t.title)).toEqual(["Finalise the deck", "Ship onboarding", "Approve budget"]);
+  });
+
+  it("says so in the menu when this device won't store the template", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("full", "QuotaExceededError"); });
+    try {
+      render(<ProjectActions {...actionProps()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Project actions" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Save as template" }));
+      expect(screen.getByRole("menuitem", { name: "Couldn't save: try again" })).toHaveAttribute("data-tone", "warn");
+    } finally { setItem.mockRestore(); }
+    fireEvent.click(screen.getByRole("menuitem", { name: "Couldn't save: try again" }));
+    expect(screen.getByRole("menuitem", { name: "Saved as a template" })).toBeInTheDocument();
+    expect(getUserProjectTemplates()).toHaveLength(1);
   });
 
   it("hands Save as template to the shell when it offers it", () => {
@@ -198,17 +289,7 @@ describe("ProjectNotice", () => {
 });
 
 describe("ProjectPanels", () => {
-  const forms: FormDef[] = [
-    { id: "f1", projectId: P.id, name: "Launch requests", fields: ["description"] },
-    { id: "f2", projectId: "p-other", name: "Someone else's", fields: [] },
-  ];
-  const base = (o: Partial<React.ComponentProps<typeof ProjectPanels>> = {}): React.ComponentProps<typeof ProjectPanels> => ({
-    tab: "updates", project: P, tasks: TASKS, statusUpdates: UPDATES, members: [{ id: "m-self", name: "Daniel Okai" }, { id: "m-1", name: "Maya Lin" }],
-    canManage: true, readOnly: false, onUpdate: vi.fn(), onPostStatus: vi.fn(),
-    rules: { rules: [{ id: "r1", projectId: P.id, name: "Mine", trigger: "task_created", actions: [], enabled: true }, { id: "r2", projectId: "p-other", name: "Theirs", trigger: "task_created", actions: [], enabled: true }], projects: [P, { ...P, id: "p-other", name: "Other" }], members: [], sections: [], onCreate: vi.fn(), onUpdate: vi.fn(), onDelete: vi.fn() },
-    forms: { forms, projects: [P, { ...P, id: "p-other", name: "Other" }], members: [], onCreate: vi.fn(), onUpdate: vi.fn(), onDelete: vi.fn(), onSubmit: vi.fn() },
-    ...o,
-  });
+  const base = panelProps;
 
   it("Updates: the history newest first, under a composer that starts from Kanbo's draft", () => {
     render(<ProjectPanels {...base()} />);
@@ -216,6 +297,20 @@ describe("ProjectPanels", () => {
     expect(items[0]).toHaveTextContent("Deck is the critical path");
     expect(items[1]).toHaveTextContent("Kick-off went well");
     expect(box().value).toMatch(/^Finished 1 task this week/);
+  });
+
+  it("Updates: a half-written update survives a tab switch, and is the header's draft too", () => {
+    const { rerender } = render(<ProjectPanels {...base()} />);
+    fireEvent.change(box(), { target: { value: "My careful update about the launch" } });
+    rerender(<ProjectPanels {...base({ tab: "about" })} />);
+    expect(screen.queryByRole("textbox", { name: "Update" })).not.toBeInTheDocument();
+    rerender(<ProjectPanels {...base({ tab: "updates" })} />);
+    expect(box()).toHaveValue("My careful update about the launch");
+    const header = render(<ProjectActions {...actionProps({ onPostStatus: vi.fn() })} />);
+    fireEvent.click(within(header.container).getByRole("button", { name: "Post update" }));
+    const fields = screen.getAllByRole("textbox", { name: "Update" });
+    expect(fields).toHaveLength(2);                                     // the Updates tab's and the header popover's
+    fields.forEach((t) => expect(t).toHaveValue("My careful update about the launch"));
   });
 
   it("Updates: guests read the history without a composer", () => {
@@ -238,6 +333,15 @@ describe("ProjectPanels", () => {
     unmount();
     render(<ProjectPanels {...base({ tab: "rules", readOnly: true })} />);
     expect(screen.getByText("Rules are for members")).toBeInTheDocument();
+    expect(screen.queryByText(/file a request/)).not.toBeInTheDocument();          // guests can't
+  });
+
+  it("Requests: guests see the forms and what they ask for, with nothing to fill in", () => {
+    render(<ProjectPanels {...base({ tab: "requests", readOnly: true })} />);
+    expect(screen.getByText("Launch requests")).toBeInTheDocument();
+    expect(screen.getByText("Asks for a title, description.")).toBeInTheDocument();
+    expect(screen.getByText(/Only members can file requests/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open form/ })).not.toBeInTheDocument();
   });
 
   it("About: edits the description, owner and contributors", () => {
@@ -252,6 +356,24 @@ describe("ProjectPanels", () => {
     expect(onUpdate).toHaveBeenCalledWith("p-a", { ownerId: "m-1" });
     fireEvent.click(screen.getByRole("checkbox", { name: /Maya Lin/ }));
     expect(onUpdate).toHaveBeenCalledWith("p-a", { contributorIds: [] });
+  });
+
+  it("About: counts open work with its sub-tasks, as overdue and blocked do, so they always add up", () => {
+    const tasks = [...TASKS, task("t4", { title: "Book the venue", parentId: "t1", dueDate: iso(-2) }), task("t5", { title: "Print badges", parentId: "t1", dueDate: iso(-1) })];
+    render(<ProjectPanels {...base({ tab: "about", tasks })} />);
+    expect(screen.getByText("4 open")).toBeInTheDocument();
+    expect(screen.getByText("· 2 overdue")).toBeInTheDocument();
+    expect(screen.getByText("· 1 blocked")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Alpha progress" }).closest(".kpj-progress")).toHaveAttribute("title", "1 of 3 tasks done");
+  });
+
+  it("About: flags a stale update once the day rolls over in a tab left open", () => {
+    const { rerender } = render(<ProjectPanels {...base({ tab: "about" })} />);
+    expect(screen.queryByText(/No update in/)).not.toBeInTheDocument();
+    afterDays(12, () => {
+      rerender(<ProjectPanels {...base({ tab: "about" })} />);
+      expect(screen.getByText("No update in 15 days")).toBeInTheDocument();
+    });
   });
 
   it("About: guests read it without controls", () => {

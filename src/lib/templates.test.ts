@@ -4,7 +4,9 @@ import {
   getTemplates, getUserTemplates, saveTemplate, deleteTemplate,
   getProjectTemplates, saveProjectTemplate, projectTemplateTasks,
   projectBlueprint, findProjectTemplate, getUserProjectTemplates, MAX_BLUEPRINT_TASKS,
+  storeProjectTemplate, MAX_BLUEPRINT_NOTES, MAX_BLUEPRINT_CHARS,
 } from "./templates";
+import { vi } from "vitest";
 import type { Task } from "../data/types";
 
 const KEY = "kanbo-templates";
@@ -158,6 +160,30 @@ describe("saving a project as a template", () => {
     const tasks = projectTemplateTasks(findProjectTemplate(tpl.id)!, { projectId: "p-2", workspaceId: null, assigneeId: "u-1" });
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).toMatchObject({ title: "Kick-off call", priority: "high", projectId: "p-2", status: "todo" });
+  });
+
+  it("keeps a template small: notes are trimmed, and dropped once the template's text budget is spent", () => {
+    const long = "n".repeat(MAX_BLUEPRINT_NOTES + 500);
+    const bp = projectBlueprint(Array.from({ length: 40 }, (_, i) => t(`k${i}`, { position: i, title: `Step ${i}`, description: long })));
+    expect(bp).toHaveLength(40);                                        // every title is kept
+    expect(bp[0].description).toHaveLength(MAX_BLUEPRINT_NOTES);
+    expect(bp.some((x) => !x.description)).toBe(true);                  // later notes didn't fit
+    expect(JSON.stringify(bp).length).toBeLessThan(MAX_BLUEPRINT_CHARS + 40 * 60);
+  });
+
+  it("cleans a template's tasks on the way in, not only on the way out", () => {
+    storeProjectTemplate({ name: "Raw", emoji: "📁", color: "#000", tasks: [{ title: "  Tidy me  ", priority: "extreme" as never }, { title: " " }] });
+    const stored = JSON.parse(localStorage.getItem(PKEY)!)[0];
+    expect(stored.tasks).toEqual([{ title: "Tidy me" }]);
+  });
+
+  it("says when this browser won't store the template (private mode, or storage full)", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("full", "QuotaExceededError"); });
+    try {
+      expect(storeProjectTemplate({ name: "Big", emoji: "📁", color: "#000" })).toBeNull();
+      expect(saveProjectTemplate({ name: "Big", emoji: "📁", color: "#000" }).name).toBe("Big"); // the old call still answers
+    } finally { setItem.mockRestore(); }
+    expect(getUserProjectTemplates()).toEqual([]);
   });
 
   it("sanitises stored template tasks", () => {

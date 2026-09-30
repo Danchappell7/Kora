@@ -113,6 +113,13 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
 
   const descId = `kdelproj-desc-${project.id}`;
   const hintId = `kdelproj-hint-${project.id}`;
+  // the dialog announces what's at stake as it opens (Sheet names it; this describes it)
+  useEffect(() => {
+    const dialog = bodyRef.current?.closest('[role="dialog"]');
+    if (!dialog) return;
+    dialog.setAttribute("aria-describedby", descId);
+    return () => { if (dialog.getAttribute("aria-describedby") === descId) dialog.removeAttribute("aria-describedby"); };
+  }, [descId]);
   const summary = total === 0
     ? " This project has no tasks."
     : archived > 0 && taskCount > 0 ? <> It has <strong>{n(taskCount)}</strong> and <strong>{archived} archived</strong>. What should happen to them?</>

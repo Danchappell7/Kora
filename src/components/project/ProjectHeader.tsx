@@ -12,13 +12,13 @@ import { Icon, Avatar, AvatarStack, StatusDot, EmojiPicker, Collapse, AiMark, Bu
 import { Popover } from "../primitives/Popover";
 import { STATUS_KIND_META } from "../views/GoalsPortfolios";
 import { AutomationsView, FormsView } from "../views/RulesForms";
-import { STATUS_META, getMember, KANBO_TODAY } from "../../data/data";
+import { STATUS_META, getMember, KANBO_TODAY, todayISO } from "../../data/data";
 import type { Task, Project, Status, StatusUpdate, StatusKind, IconName } from "../../data/types";
 import type { ProjectTab } from "../../app-types";
 import type { Risk } from "../../lib/radar";
 import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS } from "../../lib/statusDraft";
-import { saveProjectTemplate, projectBlueprint } from "../../lib/templates";
-import { ComposerPanel, ComposerPopover, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
+import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
+import { ComposerPanel, ComposerPopover, POP_STYLE, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
 import { DraftInput } from "./DraftInput";
 import "./projects.css";
 
@@ -102,7 +102,9 @@ export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates
   statusUpdates: StatusUpdate[];
   onOpenUpdates: () => void;
 }): JSX.Element {
-  const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates]);
+  // the facts read today's date: recompute when the day rolls over in a tab left open
+  const today = todayISO();
+  const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates, today]);
   const pill = projectStatusPill(project, facts.latest);
   const people = projectPeople(project);
   const names = people.map((id) => getMember(id)?.name).filter(Boolean).join(", ");
@@ -127,7 +129,8 @@ export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates
 
 interface MenuItem { id: string; label: string; icon: IconName; run: () => void; tone?: "danger"; sepBefore?: boolean }
 
-/** The page header's actions: Draft update (Kanbo writes it) · Post update · ⋯ Project actions. */
+/** The page header's actions: Draft update (Kanbo writes it) · Post update (an empty field) ·
+ *  ⋯ Project actions. Both buttons open the same composer, on the project's one shared draft. */
 export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate }: {
   project: Project;
   tasks: Task[];
@@ -145,22 +148,28 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   const canPost = !readOnly && !!onPostStatus;
   const [open, setOpen] = useState<null | "draft" | "post">(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [saved, setSaved] = useState(false);
+  // "Save as template" answers in place: saved, or this device's storage refused it
+  const [saved, setSaved] = useState<null | "saved" | "failed">(null);
   const draftRef = useRef<HTMLButtonElement>(null);
   const postRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus, onPosted: () => setOpen(null) });
-  useEffect(() => { setOpen(null); setMenuOpen(false); setSaved(false); }, [project.id]);
+  useEffect(() => { setOpen(null); setMenuOpen(false); setSaved(null); }, [project.id]);
   useEffect(() => {
-    if (!saved) return;
-    const t = window.setTimeout(() => { setSaved(false); setMenuOpen(false); }, 1200);
+    if (saved !== "saved") return;
+    const t = window.setTimeout(() => { setSaved(null); setMenuOpen(false); }, 1200);
     return () => window.clearTimeout(t);
   }, [saved]);
 
   const openDraft = () => {
     if (open === "draft") { setOpen(null); return; }
     setOpen("draft");
-    if (!c.text.trim() && !c.drafting) c.draft();
+    c.ensureDraft();
+  };
+  const openPost = () => {
+    if (open === "post") { setOpen(null); return; }
+    setOpen("post");
+    c.startFresh();
   };
   const run = (fn: () => void) => () => { setMenuOpen(false); fn(); };
   const items: MenuItem[] = [
@@ -172,22 +181,23 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   if (!readOnly) {
     if (onDuplicate) items.push({ id: "duplicate", label: "Duplicate", icon: "copy", run: run(() => onDuplicate(project.id)), sepBefore: true });
     items.push({
-      id: "template", label: saved ? "Saved as a template" : "Save as template", icon: saved ? "check" : "layers", sepBefore: !onDuplicate,
+      id: "template", sepBefore: !onDuplicate,
+      label: saved === "saved" ? "Saved as a template" : saved === "failed" ? "Couldn't save: try again" : "Save as template",
+      icon: saved === "saved" ? "check" : saved === "failed" ? "refresh" : "layers",
       run: () => {
-        if (saved) return;
+        if (saved === "saved") return;
         if (onSaveTemplate) { setMenuOpen(false); onSaveTemplate(project.id); return; }
-        saveProjectTemplate({ name: project.name, emoji: project.emoji, color: project.color, tasks: projectBlueprint(tasks.filter((t) => t.projectId === project.id)) });
-        setSaved(true); // says so in place, then closes
+        const tpl = storeProjectTemplate({ name: project.name, emoji: project.emoji, color: project.color, tasks: projectBlueprint(tasks.filter((t) => t.projectId === project.id)) });
+        setSaved(tpl ? "saved" : "failed"); // says so in place (and closes once saved)
       },
     });
     if (onArchive) items.push({
       id: "archive", label: "Archive project", icon: "archive", sepBefore: true,
       run: run(() => { if (window.confirm(`Archive "${project.name}"? It's hidden but kept, and you can restore it from the sidebar.`)) onArchive(project.id); }),
     });
-    if (onDelete) items.push({ id: "delete", label: "Delete project", icon: "trash", tone: "danger", sepBefore: !onArchive, run: run(() => onDelete(project.id)) });
+    // any member may archive (it's restorable); deleting is for whoever runs the project
+    if (onDelete && canManage) items.push({ id: "delete", label: "Delete project", icon: "trash", tone: "danger", sepBefore: !onArchive, run: run(() => onDelete(project.id)) });
   }
-  // (canManage gates editing in About; archive and delete are offered when the shell passes them)
-  void canManage;
 
   return (
     <div className="kpj-actions">
@@ -197,18 +207,18 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
             aria-haspopup="dialog" aria-expanded={open === "draft"}>
             <span className="kpj-btn-mark"><AiMark size={14} thinking={c.drafting} />Draft update</span>
           </Button>
-          <Button ref={postRef} variant="secondary" size="sm" onClick={() => setOpen((o) => (o === "post" ? null : "post"))}
+          <Button ref={postRef} variant="secondary" size="sm" onClick={openPost}
             aria-haspopup="dialog" aria-expanded={open === "post"}>Post update</Button>
         </>
       )}
       <IconButton ref={moreRef} icon="more" label="Project actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen}
         onClick={() => setMenuOpen((v) => !v)} />
       {canPost && <ComposerPopover open={open !== null} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} />}
-      <Popover open={menuOpen} anchorRef={moreRef} onClose={() => { setMenuOpen(false); setSaved(false); }} role="menu" label={`Actions for ${project.name}`}
-        align="end" minWidth={208} className="kpj-pop" style={{ padding: 4, borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))", background: "var(--surface-raised)" }}>
+      <Popover open={menuOpen} anchorRef={moreRef} onClose={() => { setMenuOpen(false); setSaved(null); }} role="menu" label={`Actions for ${project.name}`}
+        align="end" minWidth={208} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
         {items.flatMap((it) => [
           ...(it.sepBefore ? [<div key={`${it.id}-sep`} className="kpj-menu-sep" role="separator" />] : []),
-          <button key={it.id} type="button" role="menuitem" className="kpj-menu-item" data-tone={it.tone} onClick={it.run}>
+          <button key={it.id} type="button" role="menuitem" className="kpj-menu-item" data-tone={it.tone ?? (it.id === "template" && saved === "failed" ? "warn" : undefined)} onClick={it.run}>
             <Icon name={it.icon} size={16} sw={1.75} />{it.label}
           </button>,
         ])}
@@ -280,7 +290,7 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
     if (readOnly) {
       return (
         <div className="kpj-page"><div className="kpj-wrap">
-          <EmptyState art="layers" title="Rules are for members" body="The people running this project set up its rules. You can still file a request." />
+          <EmptyState art="layers" title="Rules are for members" body="The people running this project set up what happens automatically when its tasks change." />
         </div></div>
       );
     }
@@ -300,12 +310,13 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus });
   const history = useMemo(() => projectUpdates(statusUpdates, project.id), [statusUpdates, project.id]);
   const [shown, setShown] = useState(HISTORY_PAGE);
-  // draft first: the composer opens on the on-device draft of this week (the AI one is a click away)
+  // draft first: the composer opens on the on-device draft of this week (the AI one is a click away),
+  // unless this project already has a draft in hand (yours, or one Kanbo is writing)
   const seeded = useRef<string | null>(null);
   useEffect(() => {
     if (!canPost || seeded.current === project.id) return;
     seeded.current = project.id;
-    if (!c.text.trim()) c.draft("template");
+    if (!c.text.trim() && !c.drafting) c.draft("template");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPost, project.id]);
 
@@ -355,7 +366,8 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
   project: Project; tasks: Task[]; statusUpdates: StatusUpdate[]; members: { id: string; name: string }[];
   canManage: boolean; readOnly: boolean; onUpdate: (id: string, patch: Record<string, unknown>) => void;
 }) {
-  const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates]);
+  const today = todayISO();
+  const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates, today]);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(project.description || "");
@@ -479,11 +491,12 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
 
           <dt>Tasks</dt>
           <dd>
-            <span className="kpj-progress">
+            <span className="kpj-progress" title={`${facts.total - facts.open} of ${plural(facts.total, "task")} done`}>
               <Meter value={facts.pct} width={96} height={4} label={`${project.name} progress`} />
               <span className="kpj-mono">{facts.pct}%</span>
             </span>
-            <span className="kpj-card-meta">{facts.open} of {plural(facts.total, "task")} open
+            {/* open, overdue and blocked all count sub-tasks too, so they always add up */}
+            <span className="kpj-card-meta">{facts.total === 0 ? "No tasks yet" : `${facts.openAll} open`}
               {facts.overdue.length > 0 && <span className="kpj-signal"> · {facts.overdue.length} overdue</span>}
               {facts.blocked.length > 0 && <span className="kpj-signal"> · {facts.blocked.length} blocked</span>}
             </span>

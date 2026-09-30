@@ -91,6 +91,16 @@ describe("AutomationsView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Link to tag “Urgent”/ }));
     expect(onUpdate).toHaveBeenCalledWith("r1", { actions: [{ type: "add_tag", value: "tag-uuid-1" }] });
   });
+  it("read-only: the tag can't be changed or linked either", () => {
+    const onUpdate = vi.fn();
+    render(<AutomationsView readOnly rules={[rule([{ type: "add_tag", value: "urgent" }])]} projects={[proj("pa", "Alpha")]} members={[]} sections={[]} tags={tags} onCreate={() => {}} onUpdate={onUpdate} onDelete={() => {}} />);
+    const sel = screen.getByLabelText("Tag added by Triage") as HTMLSelectElement;
+    expect(sel).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Link to tag/ })).not.toBeInTheDocument();
+    expect(screen.getByText("This action adds nothing: it isn't linked to a tag.")).toBeInTheDocument();
+    fireEvent.change(sel, { target: { value: "tag-uuid-1" } });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
   it("shows the paused switch as an accessible switch", () => {
     render(<AutomationsView rules={[rule([])]} projects={[proj("pa", "Alpha")]} members={[]} sections={[]} tags={tags} onCreate={() => {}} onUpdate={() => {}} onDelete={() => {}} />);
     expect(screen.getByRole("switch", { name: "Run rule Triage" })).toHaveAttribute("aria-checked", "false");
@@ -116,6 +126,34 @@ describe("FormsView", () => {
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Printer jammed" } });
     fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
     expect(onSubmit).toHaveBeenCalledWith("pa", expect.objectContaining({ title: "Printer jammed", assigneeId: "" }));
+  });
+  it("Enter in the title moves on to the next field when the form asks for more, and files a title-only form", () => {
+    const onSubmit = vi.fn();
+    const forms: FormDef[] = [{ id: "f1", projectId: "pa", name: "Bug", fields: ["description"] }, { id: "f2", projectId: "pa", name: "Quick", fields: [] }];
+    render(<FormsView forms={forms} projects={[proj("pa", "Alpha")]} members={[]} onCreate={() => {}} onUpdate={() => {}} onDelete={() => {}} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open form Bug" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Printer jammed" } });
+    fireEvent.keyDown(screen.getByLabelText("Title"), { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Description")).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Open form Quick" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Coffee machine" } });
+    fireEvent.submit(screen.getByRole("form", { name: "Fill in Quick" }));
+    expect(onSubmit).toHaveBeenCalledWith("pa", expect.objectContaining({ title: "Coffee machine" }));
+  });
+  it("keeps what was typed when the request isn't taken, and clears it once it is", () => {
+    const onSubmit = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(undefined);
+    const form: FormDef = { id: "f1", projectId: "pa", name: "Bug", fields: ["description"] };
+    render(<FormsView forms={[form]} projects={[proj("pa", "Alpha")]} members={[]} onCreate={() => {}} onUpdate={() => {}} onDelete={() => {}} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open form Bug" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Printer jammed" } });
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Second floor, again" } });
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
+    expect(screen.getByLabelText("Title")).toHaveValue("Printer jammed");
+    expect(screen.getByLabelText("Description")).toHaveValue("Second floor, again");
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
   });
 });
 
@@ -191,16 +229,17 @@ describe("Rules and Requests inside a project", () => {
     expect(onCreate).toHaveBeenCalledWith("pb", "Bug report", ["description", "priority"]);
   });
 
-  it("guests can fill a request in, but not build, rename or delete forms", () => {
-    const onSubmit = vi.fn();
+  it("guests see the forms and what they ask for, but can't fill one in, build, rename or delete", () => {
+    // App refuses a guest's submission (denyGuest), so a guest is never offered one to type into
     const forms: FormDef[] = [{ id: "f2", projectId: "pb", name: "Beta form", fields: ["description"] }];
-    render(<FormsView forms={forms} projects={projects} members={[]} projectId="pb" readOnly onCreate={() => {}} onUpdate={() => {}} onDelete={() => {}} onSubmit={onSubmit} />);
+    render(<FormsView forms={forms} projects={projects} members={[]} projectId="pb" readOnly onCreate={() => {}} onUpdate={() => {}} onDelete={() => {}} onSubmit={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /New form/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Delete form/ })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("Beta form")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open form Beta form" }));
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Printer jammed" } });
-    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
-    expect(onSubmit).toHaveBeenCalledWith("pb", expect.objectContaining({ title: "Printer jammed" }));
+    expect(screen.getByText("Beta form")).toBeInTheDocument();
+    expect(screen.getByText("Asks for a title, description.")).toBeInTheDocument();
+    expect(screen.getByText(/Only members can file requests; ask one to file yours\./)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open form/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Submit/ })).not.toBeInTheDocument();
   });
 });

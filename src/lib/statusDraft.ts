@@ -21,6 +21,9 @@ export interface StatusFacts {
   /** top-level tasks (sub-tasks nest under them), like the page header */
   total: number;
   open: number;
+  /** open work, sub-tasks included: what `overdue` and `blocked` are counted from,
+   *  so a count shown beside them never reads fewer than they do */
+  openAll: number;
   /** % of top-level tasks done */
   pct: number;
   /** finished in the last 7 days */
@@ -77,14 +80,42 @@ const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, l
 const byDue = (a: Task, b: Task) =>
   (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999") || (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
 
+/** Every live task grouped once, so reading many projects (the directory, a
+ *  portfolio) doesn't rescan the whole list for each one. Build it from the
+ *  same `tasks` you pass to statusFacts. */
+export interface TaskIndex {
+  byId: Map<string, Task>;
+  byProject: Map<string, Task[]>;
+  /** task id → the open tasks that list it as a dependency */
+  dependents: Map<string, string[]>;
+}
+export function indexTasks(tasks: Task[]): TaskIndex {
+  const byId = new Map<string, Task>();
+  const byProject = new Map<string, Task[]>();
+  const dependents = new Map<string, string[]>();
+  for (const t of tasks) {
+    if (t.archivedAt) continue;
+    byId.set(t.id, t);
+    const list = byProject.get(t.projectId);
+    if (list) list.push(t); else byProject.set(t.projectId, [t]);
+    if (t.status === "done") continue;
+    for (const dep of t.dependencies ?? []) {
+      const d = dependents.get(dep);
+      if (d) d.push(t.id); else dependents.set(dep, [t.id]);
+    }
+  }
+  return { byId, byProject, dependents };
+}
+
 /**
  * The facts a status update is written from. `tasks` may be every task you
  * can see: the project's own are picked out here, and the rest are only used
- * to name what a blocked task is waiting on.
+ * to name what a blocked task is waiting on. Pass `idx` (indexTasks(tasks))
+ * when reading many projects from the same list.
  */
-export function statusFacts(project: Project, tasks: Task[], statusUpdates: StatusUpdate[], today: Date): StatusFacts {
-  const live = tasks.filter((t) => !t.archivedAt);
-  const mine = live.filter((t) => t.projectId === project.id);
+export function statusFacts(project: Project, tasks: Task[], statusUpdates: StatusUpdate[], today: Date, idx?: TaskIndex): StatusFacts {
+  const { byId, byProject, dependents } = idx ?? indexTasks(tasks);
+  const mine = byProject.get(project.id) ?? [];
   const top = mine.filter((t) => !t.parentId);
   const open = mine.filter((t) => t.status !== "done");
   const todayMid = midnight(today);
@@ -96,7 +127,6 @@ export function statusFacts(project: Project, tasks: Task[], statusUpdates: Stat
   const blocked = mine.filter((t) => t.status === "blocked").sort(byDue);
   const overdue = open.filter((t) => { const d = localDay(t.dueDate); return !!d && d < todayMid; }).sort(byDue);
 
-  const byId = new Map(live.map((t) => [t.id, t]));
   const waitingOn: Record<string, Task[]> = {};
   for (const b of blocked) {
     waitingOn[b.id] = (b.dependencies ?? []).map((id) => byId.get(id)).filter((x): x is Task => !!x && x.status !== "done");
@@ -108,14 +138,6 @@ export function statusFacts(project: Project, tasks: Task[], statusUpdates: Stat
 
   // the critical path: the open task that the most other open work waits on,
   // counting the whole chain (a milestone waiting on B waiting on A puts A first)
-  const dependents = new Map<string, string[]>();
-  for (const t of live) {
-    if (t.status === "done") continue;
-    for (const dep of t.dependencies ?? []) {
-      const list = dependents.get(dep);
-      if (list) list.push(t.id); else dependents.set(dep, [t.id]);
-    }
-  }
   const downstream = (id: string): number => {
     const seen = new Set<string>();
     const walk = (x: string) => { for (const d of dependents.get(x) ?? []) if (!seen.has(d) && d !== id) { seen.add(d); walk(d); } };
@@ -141,6 +163,7 @@ export function statusFacts(project: Project, tasks: Task[], statusUpdates: Stat
     today: iso(todayMid),
     total: top.length,
     open: top.length - topDone,
+    openAll: open.length,
     pct: top.length ? Math.round((topDone / top.length) * 100) : 0,
     done7, created7, slipped, blocked, overdue, waitingOn, nextMilestone, criticalPath,
     health: health?.kind ?? "on_track",

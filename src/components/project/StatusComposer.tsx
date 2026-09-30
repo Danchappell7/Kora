@@ -2,13 +2,14 @@
    KANBO — the status-update composer: a status, the words (Kanbo
    drafts them on request) and Post update. The project header and
    the directory open it as a popover; the Updates tab keeps it at
-   the top of the history. The draft lives in useStatusComposer, so
-   closing the popover never throws typed words away.
+   the top of the history. Every one of them edits the same draft
+   per project, so closing a popover or switching tabs never throws
+   typed words away.
    ============================================================ */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { AiMark, Button, Provenance, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
-import { KANBO_TODAY } from "../../data/data";
+import { KANBO_TODAY, todayISO } from "../../data/data";
 import type { Project, StatusKind, StatusUpdate, Task } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { draftStatusLocal, factLines, statusFacts, statusFactsForAi, statusFromHealth, type StatusFacts } from "../../lib/statusDraft";
@@ -26,7 +27,38 @@ const KINDS = new Set<string>(STATUS_OPTIONS.map((o) => o.value));
 
 export const PLACEHOLDER = "What's the latest? Wins, risks, next steps…";
 
-interface Draft { text: string; kind: StatusKind; source: "ai" | "template" | null; note: string | null }
+/* ---------------- the drafts: one per project, shared by every composer ----------------
+   The header popover, the Updates tab and a directory row all read and write
+   the same draft, and it outlives each of them (switching tab unmounts the
+   Updates tab). Kept in memory only: signing out reloads the page, so nothing
+   is left behind for the next person at this desk. */
+interface Draft {
+  text: string;
+  /** null: not chosen yet, so it follows the latest update (or the project's health) */
+  kind: StatusKind | null;
+  /** what wrote the words: Kanbo's AI, the on-device template, or you (null) */
+  source: "ai" | "template" | null;
+  note: string | null;
+  /** you've changed Kanbo's words, so they're yours now */
+  edited: boolean;
+}
+interface Entry { draft?: Draft; drafting?: { seq: number; typed: boolean }; posting?: boolean }
+const EMPTY: Draft = { text: "", kind: null, source: null, note: null, edited: false };
+const entries = new Map<string, Entry>();
+const listeners = new Set<() => void>();
+let draftSeq = 0;
+const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
+const patchEntry = (pid: string, patch: Partial<Entry>) => {
+  entries.set(pid, { ...entries.get(pid), ...patch });
+  listeners.forEach((fn) => fn());
+};
+const writeDraft = (pid: string, patch: Partial<Draft>) => patchEntry(pid, { draft: { ...(entries.get(pid)?.draft ?? EMPTY), ...patch } });
+
+/** Forget every draft (tests start from a clean slate). */
+export function clearStatusDrafts(): void {
+  entries.clear();
+  listeners.forEach((fn) => fn());
+}
 
 export interface Composer {
   project: Project;
@@ -41,20 +73,26 @@ export interface Composer {
   drafting: boolean;
   /** fill the words: Kanbo's AI when it's on, else the on-device template */
   draft: (how?: "best" | "template") => void;
+  /** Draft update: Kanbo writes it, unless there are words worth keeping (yours, or its own) */
+  ensureDraft: () => void;
+  /** Post update: an empty field to write in. Kanbo's untouched words go; yours stay. */
+  startFresh: () => void;
   canDraftAi: boolean;
   canPost: boolean;
   posting: boolean;
   post: () => void;
 }
 
-const why = (out: AiOutcome<unknown> | null): string | null =>
-  out?.source === "limit" ? "You've used today's Kanbo AI allowance, so this was drafted on this device."
-  : "Kanbo's AI couldn't draft this one, so it was drafted on this device.";
+/** Why the on-device draft stood in for Kanbo's (the interface never says "AI", §2.3). */
+const why = (out: AiOutcome<unknown> | null): string =>
+  out?.source === "limit" ? "You've used today's Kanbo drafts, so this one was written on this device."
+  : out?.source === "off" ? "Kanbo's drafting is turned off, so this one was written on this device."
+  : "Kanbo couldn't draft this one just now, so it was written on this device.";
 
 /**
- * One composer's state, per project (switching projects keeps each draft).
- * `onPosted` runs once the update is saved; a failed save keeps the words
- * (the caller shows the error).
+ * A composer for one project. Its draft is shared with every other composer
+ * on the same project and survives unmounting. `onPosted` runs once the
+ * update is saved; a failed save keeps the words (the caller shows the error).
  */
 export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiStatus, onPosted }: {
   project: Project;
@@ -64,44 +102,42 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
   aiStatus?: AiStatus;
   onPosted?: () => void;
 }): Composer {
-  const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates]);
-  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  const [draftingFor, setDraftingFor] = useState<string | null>(null);
-  const [posting, setPosting] = useState(false);
-  const seq = useRef(0);
-  const typedWhileDrafting = useRef(false);
+  // the facts read today's date, so they recompute when the day rolls over in a tab left open
+  const today = todayISO();
+  const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates, today]);
+  const id = project.id;
+  const entry = useSyncExternalStore(subscribe, () => entries.get(id));
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const onPostedRef = useRef(onPosted);
   onPostedRef.current = onPosted;
 
-  const id = project.id;
-  const fallbackKind = facts.latest?.status ?? statusFromHealth(facts.health);
-  const cur: Draft = drafts[id] ?? { text: "", kind: fallbackKind, source: null, note: null };
-  const write = (pid: string, patch: Partial<Draft>) =>
-    setDrafts((d) => ({ ...d, [pid]: { ...(d[pid] ?? { text: "", kind: fallbackKind, source: null, note: null }), ...patch } }));
+  const cur = entry?.draft ?? EMPTY;
+  const kind = cur.kind ?? facts.latest?.status ?? statusFromHealth(facts.health);
+  const drafting = !!entry?.drafting;
+  const posting = !!entry?.posting;
 
   const draft = (how: "best" | "template" = "best") => {
     const pid = id;
     const local = draftStatusLocal(facts);
-    const n = ++seq.current;
     if (!aiStatus || how === "template") {
-      setDraftingFor(null);
-      write(pid, { text: local.summary, kind: local.status, source: "template", note: null });
+      patchEntry(pid, { drafting: undefined, draft: { text: local.summary, kind: local.status, source: "template", note: null, edited: false } });
       return;
     }
-    typedWhileDrafting.current = false;
-    setDraftingFor(pid);
+    const seq = ++draftSeq;
+    patchEntry(pid, { drafting: { seq, typed: false } });
+    // the draft lands even if this composer has gone (it's shared), unless it was superseded
     const settle = (out: AiOutcome<{ summary: string; status: StatusKind }> | null) => {
-      if (!alive.current || n !== seq.current) return;
-      setDraftingFor(null);
-      if (typedWhileDrafting.current) return; // your words win over a late draft
+      const pending = entries.get(pid)?.drafting;
+      if (pending?.seq !== seq) return;
+      patchEntry(pid, { drafting: undefined });
+      if (pending.typed) return; // your words win over a late draft
       const summary = out?.source === "ai" ? out.data?.summary?.trim() : "";
       if (out?.source === "ai" && summary) {
-        const kind = KINDS.has(out.data.status) ? out.data.status : local.status;
-        write(pid, { text: summary, kind, source: "ai", note: null });
+        const k = KINDS.has(out.data.status) ? out.data.status : local.status;
+        writeDraft(pid, { text: summary, kind: k, source: "ai", note: null, edited: false });
       } else {
-        write(pid, { text: local.summary, kind: local.status, source: "template", note: why(out) });
+        writeDraft(pid, { text: local.summary, kind: local.status, source: "template", note: why(out), edited: false });
       }
     };
     let pending: Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
@@ -109,17 +145,34 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     pending.then(settle, () => settle(null));
   };
 
+  const hasText = !!cur.text.trim();
+  const ensureDraft = () => {
+    if (drafting) return;
+    // an untouched on-device draft is replaced by Kanbo's AI when it's on (unless the AI just fell back to it)
+    const redraft = !hasText || (cur.source === "template" && !cur.edited && !cur.note && !!aiStatus);
+    if (redraft) draft();
+  };
+  const startFresh = () => {
+    if (drafting) patchEntry(id, { drafting: undefined });
+    if (hasText && cur.source && !cur.edited) writeDraft(id, { ...EMPTY });
+  };
+
   const post = () => {
     const v = cur.text.trim();
     if (!v || posting || !onPost) return;
     const pid = id;
-    const done = () => { write(pid, { text: "", source: null, note: null }); onPostedRef.current?.(); };
-    const r = onPost(pid, v, cur.kind);
+    const done = () => {
+      // words typed while it was saving are kept
+      const now = entries.get(pid)?.draft;
+      patchEntry(pid, { posting: false, ...(now && now.text.trim() !== v ? {} : { draft: EMPTY }) });
+      if (alive.current) onPostedRef.current?.();
+    };
+    const r = onPost(pid, v, kind);
     if (r && typeof (r as Promise<boolean>).then === "function") {
-      setPosting(true);
+      patchEntry(pid, { posting: true });
       (r as Promise<boolean>).then(
-        (ok) => { if (!alive.current) return; setPosting(false); if (ok) done(); },
-        () => { if (alive.current) setPosting(false); },
+        (ok) => { if (ok) done(); else patchEntry(pid, { posting: false }); },
+        () => patchEntry(pid, { posting: false }),
       );
     } else done();
   };
@@ -127,19 +180,32 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
   return {
     project, facts,
     text: cur.text,
-    setText: (v) => { if (draftingFor === id) typedWhileDrafting.current = true; write(id, { text: v, ...(v.trim() ? {} : { source: null, note: null }) }); },
-    kind: cur.kind,
-    setKind: (k) => write(id, { kind: k }),
-    source: cur.text.trim() ? cur.source : null,
-    note: cur.text.trim() ? cur.note : null,
-    drafting: draftingFor === id,
+    setText: (v) => {
+      if (entry?.drafting) patchEntry(id, { drafting: { ...entry.drafting, typed: true } });
+      writeDraft(id, v.trim() ? { text: v, edited: true } : { text: v, source: null, note: null, edited: false });
+    },
+    kind,
+    setKind: (k) => writeDraft(id, { kind: k }),
+    source: hasText ? cur.source : null,
+    note: hasText ? cur.note : null,
+    drafting,
     draft,
+    ensureDraft,
+    startFresh,
     canDraftAi: !!aiStatus,
     canPost: !!onPost,
     posting,
     post,
   };
 }
+
+/** A P11 popover's panel: raised surface, r-lg and --e2, whose own 1px ring is the
+ *  edge (so no border on top of it; before the Paper & Navy tokens, the fallback
+ *  draws that ring itself). */
+export const POP_STYLE = {
+  borderRadius: "var(--r-lg, 12px)", border: "none", background: "var(--surface-raised)",
+  boxShadow: "var(--e2, 0 0 0 1px var(--hairline), var(--shadow-lg))",
+} as const;
 
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl ";
 const FOCUSABLE = 'button:not([disabled]),textarea:not([disabled]),input:not([disabled]),[href],[tabindex]:not([tabindex="-1"])';
@@ -169,7 +235,9 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
   const field = (
     <textarea ref={ref} value={c.text} onChange={(e) => c.setText(e.target.value)} onKeyDown={onKeyDown}
       placeholder={c.drafting ? "Kanbo is drafting…" : PLACEHOLDER} aria-label="Update" rows={4}
-      aria-busy={c.drafting || undefined} className={c.source === "ai" ? undefined : "kpj-field"} />
+      aria-busy={c.drafting || undefined} className={c.source === "ai" ? undefined : "kpj-field"}
+      // inside the vellum card the card itself shows focus (a ring round the card, not a box inside it)
+      data-focus-ring={c.source === "ai" ? "none" : undefined} />
   );
   const changes = facts.changes === 1 ? "1 change" : `${facts.changes} changes`;
   return (
@@ -223,7 +291,7 @@ export function ComposerPopover({ open, anchorRef, onClose, c }: {
   return (
     <Popover open={open} anchorRef={anchorRef} onClose={onClose} role="dialog" label={`Post an update on ${c.project.name}`}
       align="end" minWidth={320} initialFocus={textRef} className="kpj-pop"
-      style={{ width: 400, padding: 0, borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))", background: "var(--surface-raised)" }}>
+      style={{ ...POP_STYLE, width: 400, padding: 0 }}>
       <div onKeyDown={onKeyDown}>
         <ComposerPanel c={c} onCancel={onClose} textRef={textRef} title={`Update on ${c.project.name}`} />
       </div>

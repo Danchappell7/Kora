@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import type { Project, StatusUpdate, Task } from "../../data/types";
+import { PERSONAL_PROJECT, refreshClock } from "../../data/data";
 import { ProjectsView, directoryColumns } from "./ProjectsView";
+import { ProjectActions } from "../project/ProjectHeader";
+import { clearStatusDrafts } from "../project/StatusComposer";
 
 const ago = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
 const iso = (d: number) => { const x = new Date(); x.setDate(x.getDate() + d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
@@ -36,7 +39,7 @@ const props = (o: Partial<React.ComponentProps<typeof ProjectsView>> = {}): Reac
 const rowOf = (name: string) => screen.getByRole("link", { name: new RegExp(name) }).closest('[role="row"]') as HTMLElement;
 const names = () => within(screen.getByRole("table", { name: "Projects" })).getAllByRole("link").map((a) => a.textContent);
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => { localStorage.clear(); clearStatusDrafts(); });
 
 describe("ProjectsView (the directory)", () => {
   it("lists every project with its status, progress, milestone and how fresh its update is", () => {
@@ -58,9 +61,64 @@ describe("ProjectsView (the directory)", () => {
     expect(within(infra).getByText("1")).toHaveClass("kpj-signal");                    // overdue
   });
 
+  it("leaves out the built-in Personal project", () => {
+    render(<ProjectsView {...props({ projects: [PERSONAL_PROJECT, ...PROJECTS] })} />);
+    expect(names()).toEqual(["Launch", "Infra", "Brand"]);
+    expect(screen.getByText("3 projects")).toBeInTheDocument();
+  });
+
   it("flags an update 14 days old as stale", () => {
     render(<ProjectsView {...props({ statusUpdates: [{ ...UPDATES[1], createdAt: ago(16) }] })} />);
     expect(within(rowOf("Brand")).getByText("16d · stale")).toBeInTheDocument();
+  });
+
+  it("moves update ages on when the day rolls over in a tab left open", () => {
+    const p = props({ statusUpdates: [{ ...UPDATES[1], createdAt: ago(10) }] });
+    const { rerender } = render(<ProjectsView {...p} />);
+    expect(within(rowOf("Brand")).getByText("10d")).toBeInTheDocument();
+    try {
+      refreshClock(new Date(Date.now() + 5 * 86400000));
+      rerender(<ProjectsView {...p} />);                                              // same props: only the day moved
+      expect(within(rowOf("Brand")).getByText("15d · stale")).toBeInTheDocument();
+    } finally { refreshClock(new Date()); }
+  });
+
+  it("counts Open over the same work as Overdue (sub-tasks included), so a row never shows more overdue than open", () => {
+    const tasks = [...TASKS, task("t8", "p-infra", { parentId: "t7", dueDate: iso(-2) }), task("t9", "p-infra", { parentId: "t7", dueDate: iso(-1) })];
+    render(<ProjectsView {...props({ tasks })} />);
+    const cells = within(rowOf("Infra")).getAllByRole("cell");
+    expect(cells[4]).toHaveTextContent(/^4$/);                                        // open
+    expect(cells[5]).toHaveTextContent(/^3$/);                                        // overdue
+    expect(screen.getByRole("columnheader", { name: "Open" })).toHaveAttribute("title", "Open tasks, sub-tasks included");
+  });
+
+  it("names each owner for screen readers, and says what an empty cell means", () => {
+    render(<ProjectsView {...props()} />);
+    expect(within(rowOf("Launch")).getByRole("img", { name: /^Owner: \S/ })).toBeInTheDocument();
+    const brand = rowOf("Brand");
+    expect(within(brand).getByText("No owner")).toHaveClass("sr-only");
+    expect(within(brand).getByText("No milestone")).toHaveClass("sr-only");
+  });
+
+  it("gives touch screens cards, each with its own Draft and Post update (there's no hover to reveal a row's)", () => {
+    const mm = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({
+      matches: q === "(hover: none)", media: q, onchange: null, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    }) as unknown as MediaQueryList);
+    try {
+      const onPostUpdate = vi.fn();
+      const onOpenProject = vi.fn();
+      render(<ProjectsView {...props({ onPostUpdate, onOpenProject })} />);
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      const list = screen.getByRole("list", { name: "Projects" });
+      const infra = within(list).getByRole("link", { name: "Infra" }).closest("li") as HTMLElement;
+      expect(infra).toHaveTextContent("2 open · 1 overdue · No update yet");
+      fireEvent.click(within(infra).getByRole("button", { name: "Post update for Infra" }));
+      expect(screen.getByRole("textbox", { name: "Update" })).toHaveValue("");
+      expect(onOpenProject).not.toHaveBeenCalled();
+      fireEvent.click(within(list).getByRole("link", { name: "Brand" }));
+      expect(onOpenProject).toHaveBeenCalledWith("p-brand");
+    } finally { mm.mockRestore(); }
   });
 
   it("filters to the projects at risk, and to yours", () => {
@@ -117,6 +175,22 @@ describe("ProjectsView (the directory)", () => {
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Update" })).not.toBeInTheDocument());
   });
 
+  it("Post update opens an empty field; a row's draft is the project header's draft", () => {
+    const onPostUpdate = vi.fn();
+    render(<ProjectsView {...props({ onPostUpdate })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Draft update for Infra" }));
+    expect((screen.getByRole("textbox", { name: "Update" }) as HTMLTextAreaElement).value).toMatch(/^Nothing finished/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Post update for Infra" }));
+    const box = screen.getByRole("textbox", { name: "Update" });
+    expect(box).toHaveValue("");
+    fireEvent.change(box, { target: { value: "Moving the servers on Friday" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const header = render(<ProjectActions project={PROJECTS[2]} tasks={TASKS} statusUpdates={UPDATES} canManage readOnly={false} onTab={() => {}} onPostStatus={onPostUpdate} />);
+    fireEvent.click(within(header.container).getByRole("button", { name: "Post update" }));
+    expect(screen.getByRole("textbox", { name: "Update" })).toHaveValue("Moving the servers on Friday");
+  });
+
   it("has no update buttons for guests", () => {
     render(<ProjectsView {...props({ onPostUpdate: undefined })} />);
     expect(screen.queryByRole("button", { name: /Post update for/ })).not.toBeInTheDocument();
@@ -132,6 +206,13 @@ describe("ProjectsView (the directory)", () => {
     render(<ProjectsView {...props({ projects: [], canCreate: false })} />);
     expect(screen.getByText("No projects yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state to a new account, whose only project is the built-in Personal one", () => {
+    render(<ProjectsView {...props({ projects: [PERSONAL_PROJECT], tasks: [task("t1", "p-personal")] })} />);
+    expect(screen.getByText("No projects yet")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
   it("drops columns as the page narrows", () => {

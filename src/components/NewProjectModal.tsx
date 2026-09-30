@@ -3,7 +3,7 @@
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Button, EmojiPicker, Sheet, projectPaint } from "./primitives";
-import { getProjectTemplates, saveProjectTemplate, type ProjectTemplate } from "../lib/templates";
+import { getProjectTemplates, storeProjectTemplate, type ProjectTemplate } from "../lib/templates";
 import { PROJECT_COLOURS } from "./project/ProjectHeader";
 import type { NewProject } from "../data/store";
 import "./project/projects.css";
@@ -24,19 +24,20 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
   const [color, setColor] = useState(COLORS[0]);
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
-  const [saved, setSaved] = useState(false);
+  // "Save as template" answers in place: saved, or this device's storage refused it
+  const [saved, setSaved] = useState<null | "saved" | "failed">(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setTemplateId(""); setSaved(false); setPickerOpen(false); setTemplates(getProjectTemplates());
+    setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setTemplateId(""); setSaved(null); setPickerOpen(false); setTemplates(getProjectTemplates());
     const t = window.setTimeout(() => inputRef.current?.focus(), 30);
     return () => window.clearTimeout(t);
   }, [open]);
   useEffect(() => {
     if (!saved) return;
-    const t = window.setTimeout(() => setSaved(false), 1500);
+    const t = window.setTimeout(() => setSaved(null), saved === "failed" ? 4000 : 1500);
     return () => window.clearTimeout(t);
   }, [saved]);
 
@@ -53,9 +54,9 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
     <Sheet open={open} onClose={onClose} label="New project" title="New project" width={480} initialFocus={inputRef}
       footer={(
         <>
-          <Button variant="ghost" icon={saved ? "check" : "layers"} disabled={!trimmed} style={{ marginRight: "auto" }}
-            onClick={() => { if (trimmed) { saveProjectTemplate({ name: trimmed, emoji, color }); setSaved(true); } }}>
-            {saved ? "Saved as a template" : "Save as template"}
+          <Button variant="ghost" icon={saved === "saved" ? "check" : saved === "failed" ? "refresh" : "layers"} disabled={!trimmed} style={{ marginRight: "auto" }}
+            onClick={() => { if (trimmed) setSaved(storeProjectTemplate({ name: trimmed, emoji, color }) ? "saved" : "failed"); }}>
+            {saved === "saved" ? "Saved as a template" : saved === "failed" ? "Couldn't save: try again" : "Save as template"}
           </Button>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button variant="primary" icon="plus" onClick={submit} disabled={!trimmed}>Create</Button>
@@ -95,7 +96,7 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
                 style={{ background: projectPaint(c.value).solid }} onClick={() => setColor(c.value)} />
             ))}
             {!COLORS.includes(color) && (
-              <span className="kpj-swatch" role="img" aria-label="The template's colour" style={{ background: projectPaint(color).solid, boxShadow: "0 0 0 2px var(--bg), 0 0 0 4px var(--ink-2)" }} />
+              <span className="kpj-swatch" role="img" aria-label="The template's colour" data-chosen="true" style={{ background: projectPaint(color).solid }} />
             )}
           </div>
         </div>

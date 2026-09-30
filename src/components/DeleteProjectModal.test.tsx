@@ -21,6 +21,11 @@ describe("DeleteProjectModal", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it("describes what's at stake to a screen reader as the dialog opens", () => {
+    render(<DeleteProjectModal project={launch} taskCount={3} projects={projects} onConfirm={() => {}} onClose={() => {}} />);
+    expect(screen.getByRole("dialog", { name: "Delete project" })).toHaveAccessibleDescription(/Delete 📁 Q4 Launch ?\? It has 3 tasks ?\. What should happen to them\?/);
+  });
+
   it("closes itself after archiving, so the caller only has to archive", () => {
     const onArchive = vi.fn(); const onClose = vi.fn();
     render(<DeleteProjectModal project={launch} taskCount={1} projects={projects} onConfirm={() => {}} onArchive={onArchive} onClose={onClose} />);
