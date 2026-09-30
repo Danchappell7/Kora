@@ -5,12 +5,13 @@
    - supabase: real Postgres persistence
    Components depend only on the domain types, never the adapter.
    ============================================================ */
+import type { RealtimeChannel, RealtimePostgresChangesPayload, SupabaseClient } from "@supabase/supabase-js";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
-import { offlineQueue } from "../lib/offlineQueue";
+import { offlineQueue, LEGACY_QUEUE_KEY, type QueuedMutation } from "../lib/offlineQueue";
 import { reportError } from "../lib/monitoring";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
-  PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS,
+  PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO,
 } from "./data";
 import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
 
@@ -54,14 +55,55 @@ function withPlanFields(t: Task): Task {
 
 const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.round(Math.random() * 1e6));
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** True for ids the database can store (uuid columns reject "t-new-…" style ids). */
+const isUuid = (id: unknown): id is string => typeof id === "string" && UUID_RE.test(id);
+/** A real v4 UUID even where crypto.randomUUID is missing (older Safari, http). */
+function uuidv4(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(b);
+  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+function chunk<T>(list: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+// ids per `.in()` filter — they travel in the URL, and ~200 uuids already
+// brushes the gateway's ~8KB request-line limit.
+const IN_CHUNK = 100;
+
+/* Report a problem once per session (keyed), so a persistent misconfiguration
+   shows up in monitoring without flooding it. */
+const reportedOnce = new Set<string>();
+function reportOnce(key: string, error: unknown, context?: Record<string, unknown>) {
+  if (reportedOnce.has(key)) return;
+  reportedOnce.add(key);
+  reportError(error, context);
+}
+
 /* Always write rows under the REAL authenticated user id. Reading it from the
    live Supabase session (not app state) means a stale "m-self" placeholder can
    never leak into a uuid column. */
 async function authUid(fallback: string): Promise<string> {
   if (!supabase) return fallback;
-  const { data } = await supabase.auth.getSession();
-  return data.session?.user?.id ?? fallback;
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.user?.id ?? fallback;
+  } catch { return fallback; } // e.g. an offline token refresh — never lose the write over it
 }
+/** Who a queued op belongs to, answered WITHOUT waiting on the auth client:
+ *  the queue is already scoped to the signed-in user (by bootstrap and on
+ *  every auth change). Offline with an expired token, getSession() retries
+ *  the refresh for ~25 s, and an edit that isn't in the queue yet is lost if
+ *  the tab is closed meanwhile — so writes queue first and never await this.
+ *  Null only before the first sign-in is seen; callers then ask the session. */
+const queueOwner = (): string | null => offlineQueue.currentUser();
 
 /* ---------- DB row <-> Task mapping (Supabase) ---------- */
 interface TaskRow {
@@ -154,7 +196,7 @@ function rowToProject(r: ProjectRow): Project {
   return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined, archivedAt: r.archived_at ?? null };
 }
 
-interface TagRow { id: string; label: string; color: string; }
+interface TagRow { id: string; label: string; color: string; workspace_id?: string | null; }
 
 export interface CreatedTag { id: string; label: string; color: string; }
 
@@ -184,7 +226,7 @@ export interface NewActivity {
   detail: string;
 }
 
-interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; }
+interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; created_at?: string | null; }
 interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; title?: string | null; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
   return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status, title: r.title ?? undefined };
@@ -221,6 +263,7 @@ async function callCalendarFn(qs: string): Promise<Record<string, unknown>> {
 /* demo-mode in-memory stores (session-only, like the rest of demo mode) */
 const demoComments: Record<string, Comment[]> = {};
 let demoActivity: Activity[] = [];
+let demoArchived: Activity[] = [];
 let demoProfile: Profile | null = null;
 let demoWorkspaces: Workspace[] = [];
 let demoMembers: WorkspaceMember[] = [];
@@ -261,23 +304,44 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("custom" in patch) row.custom = patch.custom ?? {};
   if ("effortHours" in patch) row.effort_hours = patch.effortHours ?? null;
   if ("loggedHours" in patch) row.logged_hours = patch.loggedHours ?? null;
+  if ("dur" in patch) row.dur = patch.dur ?? null;
   return row;
+}
+
+// Columns a write had to drop because the live DB doesn't have them yet (a
+// migration not applied). Each is reported once, so "the schema is behind"
+// is visible in monitoring instead of fields silently not saving.
+const strippedColumns = new Set<string>();
+/** Columns stripped from writes this session because the database lacks them. */
+export function getStrippedColumns(): string[] { return [...strippedColumns]; }
+
+// The column named in a missing-column error, or null.
+function missingColumn(message?: string): { col: string; table?: string } | null {
+  if (!message) return null;
+  // PostgREST schema cache: Could not find the 'due_time' column of 'tasks' …
+  let m = message.match(/Could not find the '([^']+)' column(?: of '([^']+)')?/i);
+  if (m) return { col: m[1], table: m[2] };
+  // Postgres 42703: column tasks.due_time does not exist  |  column "due_time" does not exist
+  //                 | column "due_time" of relation "tasks" does not exist
+  m = message.match(/column\s+"?(?:([\w]+)\.)?([a-z0-9_]+)"?(?:\s+of relation\s+"?([\w]+)"?)?\s+does not exist/i);
+  if (m) return { col: m[2], table: m[1] ?? m[3] };
+  return null;
+}
+function noteStripped(col: string, table?: string) {
+  if (strippedColumns.has(col)) return;
+  strippedColumns.add(col);
+  reportError(new Error("schema behind: " + col), { op: "schema-behind", column: col, table });
 }
 
 // If a write failed because the DB doesn't have a column (a migration not yet
 // applied), return a copy of the row with that column removed; null if the
 // error isn't a missing-column error or the column isn't in the row.
 function withoutMissingColumn(row: Record<string, unknown>, message?: string): Record<string, unknown> | null {
-  if (!message) return null;
-  let col: string | null = null;
-  // PostgREST schema cache: Could not find the 'due_time' column of 'tasks' …
-  let m = message.match(/Could not find the '([^']+)' column/i);
-  if (m) col = m[1];
-  // Postgres 42703: column tasks.due_time does not exist  |  column "due_time" does not exist
-  if (!col) { m = message.match(/column\s+"?(?:[\w]+\.)?([a-z0-9_]+)"?\s+does not exist/i); if (m) col = m[1]; }
-  if (!col || !(col in row)) return null;
+  const miss = missingColumn(message);
+  if (!miss || !(miss.col in row)) return null;
+  noteStripped(miss.col, miss.table);
   const copy = { ...row };
-  delete copy[col];
+  delete copy[miss.col];
   return copy;
 }
 
@@ -383,24 +447,332 @@ function readSnapshot(uid: string | undefined): Snapshot | null {
   } catch { return null; }
 }
 const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false;
-/** Fold pending offline mutations onto a task list so an offline reload shows
- *  the user's un-synced edits (not a pre-offline snapshot) — which also stops
+/** Fold pending offline mutations onto a task list so a reload shows the
+ *  user's un-synced edits (not a pre-offline snapshot) — which also stops
  *  them re-creating a task they can't see and producing a duplicate on sync. */
 function applyQueue(tasks: Task[]): Task[] {
   let out = tasks.slice();
   for (const m of offlineQueue.all()) {
-    if (m.kind === "create") { if (!out.some((t) => t.id === m.task.id)) out = [m.task, ...out]; }
+    if (m.kind === "create") { if (!out.some((t) => t.id === m.task.id || (m.serverId && t.id === m.serverId))) out = [m.task, ...out]; }
     else if (m.kind === "update") out = out.map((t) => t.id === m.taskId ? { ...t, ...m.patch } : t);
     else out = out.filter((t) => t.id !== m.taskId);
   }
   return out;
 }
-// set true only while flushQueue replays, so the task methods below run their
-// RAW supabase path (throw on failure) instead of re-enqueuing the op.
-let replaying = false;
 /** True for fetch/network failures (offline), so we fall back to cache instead of erroring. */
 const isNetworkError = (e: unknown) =>
   isOffline() || (e instanceof TypeError) || /fetch|network|Failed to fetch|load failed/i.test(String((e as Error)?.message ?? e));
+
+/* ---------- session scoping ---------- */
+// claim_invites runs once per signed-in user per page session — not on every
+// realtime reload (which fans out to every connected teammate).
+let claimedFor: string | null = null;
+// bumped on every sign-out: a load that started before it must not write the
+// previous user's workspace back into storage when it finishes
+let sessionGen = 0;
+// changes parked for a passing server problem get one more try per session
+let deadRetriedFor: string | null = null;
+
+/** Hand a pre-namespacing shared queue to its owner — the user the offline
+ *  snapshot belongs to, i.e. whoever was last signed in on this device. */
+function migrateLegacyQueue() {
+  try { if (localStorage.getItem(LEGACY_QUEUE_KEY) === null) return; } catch { return; }
+  offlineQueue.migrateLegacy(readSnapshot(undefined)?.uid ?? null);
+}
+/** Scope the offline queue to this user. */
+function scopeQueueTo(uid: string) {
+  if (offlineQueue.currentUser() === uid) return;
+  migrateLegacyQueue();
+  offlineQueue.setUser(uid);
+}
+
+/** Signed out (here or in another tab): nothing of theirs may outlive the
+ *  session on a shared machine except their own namespaced queue, which only
+ *  ever replays for them. */
+function clearLocalOnSignOut() {
+  migrateLegacyQueue(); // park an old shared queue with its owner first
+  try {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("kanbo-offline-") && !k.includes(":")) stale.push(k); // snapshot + legacy shared queue
+    }
+    stale.forEach((k) => localStorage.removeItem(k));
+  } catch { /* storage unavailable */ }
+  offlineQueue.setUser(null);
+  claimedFor = null;
+  deadRetriedFor = null;
+  sessionGen++;
+}
+
+if (supabase) {
+  // registered once, at module load. Only synchronous work in here — awaiting
+  // supabase calls inside this callback can deadlock the auth client.
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === "SIGNED_OUT") { clearLocalOnSignOut(); return; }
+    const uid = session?.user?.id;
+    if (uid && uid !== offlineQueue.currentUser()) {
+      if (offlineQueue.currentUser()) claimedFor = null; // a different person is now signed in
+      scopeQueueTo(uid);
+    }
+  });
+}
+
+/* ---------- default workspace ---------- */
+const LAST_WS_KEY = "kanbo-last-ws:";
+/** Where a session opens: the workspace the user was last in (if they still
+ *  belong to it), else their first team workspace, else Personal (null). */
+function resolveDefaultWorkspace(uid: string, workspaces: Workspace[]): string | null {
+  const teams = workspaces.filter((w) => w.kind === "team" && !!w.id);
+  let saved: string | null = null;
+  try { saved = localStorage.getItem(LAST_WS_KEY + uid); } catch { /* private mode */ }
+  if (saved !== null) {
+    const s = saved.trim();
+    if (s === "" || s === "null" || s === "personal") return null; // they were last in Personal
+    if (teams.some((w) => w.id === s)) return s;
+  }
+  return teams[0]?.id ?? null;
+}
+
+/* ---------- task reads ---------- */
+const TASK_PAGE = 1000; // PostgREST's default max-rows
+/** Every task visible under RLS, a page at a time. One unpaged select is
+ *  silently truncated at max-rows (1,000) in no particular order, so tasks
+ *  would vanish and flicker between reloads. Keyset paging on id is stable
+ *  even if rows are added or deleted between pages. */
+async function loadAllTasks(client: SupabaseClient): Promise<TaskRow[]> {
+  const rows: TaskRow[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < 500; page++) {
+    let q = client.from("tasks").select(TASK_SELECT).order("id", { ascending: true }).limit(TASK_PAGE);
+    if (after) q = q.gt("id", after);
+    const res = await q;
+    if (res.error) throw res.error;
+    const got = (res.data as TaskRow[] | null) ?? [];
+    rows.push(...got);
+    if (got.length < TASK_PAGE) break;
+    after = got[got.length - 1].id;
+  }
+  return rows;
+}
+
+/* ---------- task writes (raw: throw on failure, never queue) ---------- */
+/** Idempotent create: the row is written under an explicit id with
+ *  ON CONFLICT DO NOTHING, so a retry after a lost response, or an offline
+ *  replay in a second tab, can never produce a duplicate task. */
+async function insertTaskRow(client: SupabaseClient, t: Task, id: string, uid: string): Promise<Task> {
+  // Resilient insert: if the DB is missing a newer column (a migration not
+  // applied yet), strip that column and retry so the task ALWAYS saves —
+  // losing a field is acceptable, losing the whole task is not.
+  let row: Record<string, unknown> = { ...taskToInsertRow(t, uid), id };
+  for (let i = 0; i < 8; i++) {
+    const { data, error } = await client.from("tasks").upsert(row, { onConflict: "id", ignoreDuplicates: true }).select("id");
+    // no row back = it already exists (an earlier attempt landed) — keep the local copy
+    if (!error) return { ...t, id: (data as { id: string }[] | null)?.[0]?.id ?? id };
+    const stripped = withoutMissingColumn(row, error.message);
+    if (!stripped) throw error;
+    row = stripped;
+  }
+  throw new Error("createTask: could not persist after stripping unknown columns");
+}
+/** Bulk variant of insertTaskRow (one statement). Rows that omit a column get
+ *  its database default, not NULL. */
+async function upsertTaskRows(client: SupabaseClient, rows: Record<string, unknown>[]): Promise<void> {
+  let batch = rows;
+  for (let i = 0; i < 8; i++) {
+    const { error } = await client.from("tasks").upsert(batch, { onConflict: "id", ignoreDuplicates: true, defaultToNull: false });
+    if (!error) return;
+    const miss = missingColumn(error.message);
+    if (!miss || !batch.some((r) => miss.col in r)) throw error;
+    noteStripped(miss.col, miss.table);
+    batch = batch.map((r) => { const c = { ...r }; delete c[miss.col]; return c; });
+  }
+  throw new Error("createTasksBatch: could not persist after stripping unknown columns");
+}
+async function updateTaskRow(client: SupabaseClient, id: string, patch: Partial<Task>): Promise<void> {
+  let row = patchToRow(patch);
+  for (let i = 0; i < 8 && Object.keys(row).length; i++) {
+    const { error } = await client.from("tasks").update(row).eq("id", id);
+    if (!error) return;
+    const stripped = withoutMissingColumn(row, error.message);
+    if (!stripped) throw error;
+    row = stripped; // nothing left to write once every column is stripped
+  }
+}
+async function deleteTaskRow(client: SupabaseClient, id: string): Promise<void> {
+  const { error } = await client.from("tasks").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** invite_member's guard messages, in the app's voice. Anything unrecognised
+ *  passes through unchanged. */
+function inviteErrorMessage(message: string): string {
+  const m = message || "";
+  if (/already a member/i.test(m)) return "They're already a member of this workspace. Change their role from the team list.";
+  if (/only the owner can add admins/i.test(m)) return "Only the workspace owner can add admins.";
+  if (/not authori[sz]ed/i.test(m)) return "Only workspace owners and admins can invite people.";
+  if (/invalid email/i.test(m)) return "That doesn't look like a valid email address.";
+  if (/invalid role/i.test(m)) return "Choose a role for this person: admin, member or guest.";
+  return m || "Couldn't send the invite.";
+}
+
+/* ---------- AI context ---------- */
+const AI_TASK_CAP = 120;     // ai-assist reads at most this many tasks
+const AI_DONE_SLOTS = 40;    // room kept for recent completions when there's lots of open work
+const PRIORITY_RANK: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+/** The tasks worth sending to the AI for a summary or a question: open work
+ *  that most needs attention first (overdue, blocked, due today, in flight,
+ *  due this week), then what was finished in the last 14 days — with people's
+ *  and projects' names rather than ids, so "what's overdue and who owns it?"
+ *  can actually be answered. */
+function aiTaskContext(tasks: Task[], today: string) {
+  const base = new Date(`${(today || "").slice(0, 10)}T00:00:00`);
+  const day0 = Number.isNaN(base.getTime()) ? new Date() : base;
+  const shift = (n: number) => { const d = new Date(day0); d.setDate(d.getDate() + n); return toLocalISO(d); };
+  const todayIso = shift(0), weekAhead = shift(7), since = shift(-14);
+  const live = tasks.filter((t) => !t.archivedAt);
+  const rank = (t: Task) => {
+    const due = t.dueDate?.slice(0, 10);
+    if (due && due < todayIso) return 0;
+    if (t.status === "blocked") return 1;
+    if (due === todayIso) return 2;
+    if (t.status === "progress" || t.status === "review") return 3;
+    if (due && due <= weekAhead) return 4;
+    return 5;
+  };
+  const open = live.filter((t) => t.status !== "done").sort((a, b) =>
+    rank(a) - rank(b) || (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9) || (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"));
+  const done = live.filter((t) => t.status === "done" && (t.completedAt ?? "").slice(0, 10) >= since)
+    .sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
+  const openTake = Math.min(open.length, AI_TASK_CAP - Math.min(done.length, AI_DONE_SLOTS));
+  const doneTake = Math.min(done.length, AI_TASK_CAP - openTake);
+  return [...open.slice(0, openTake), ...done.slice(0, doneTake)].map((t) => ({
+    id: t.id, title: t.title, status: t.status, priority: t.priority,
+    dueDate: t.dueDate ?? null, completedAt: t.completedAt ?? null,
+    assignee: getMember(t.assigneeId)?.name ?? null,
+    project: getProject(t.projectId)?.name ?? null,
+  }));
+}
+
+/** Create failed for some rows of an import; the rest were saved. */
+export interface BatchCreateError extends Error { saved: Task[]; failed: { task: Task; message: string }[] }
+
+/* ---------- offline replay scheduling ---------- */
+type RemapFn = (clientId: string, serverId: string, saved: Task) => void;
+let lastRemap: RemapFn | undefined;   // App's id-swap callback, reused by retries the store schedules itself
+let flushInFlight: Promise<number> | null = null;
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
+let flushBackoff = 2000;
+const MAX_ATTEMPTS = 5;
+// a replay failing on something that may clear up (gateway 5xx, timeout,
+// PostgREST restarting) keeps being retried — backing off to once a minute —
+// and is only parked after this long, so a server hiccup never costs edits
+const PARK_TRANSIENT_AFTER_MS = 30 * 60_000;
+/** Drain the queue soon without waiting for an 'online' event — after a
+ *  request dies mid-flight on flaky Wi-Fi, navigator.onLine never changes. */
+function scheduleFlush(delay = flushBackoff) {
+  if (!supabase || flushTimer !== undefined || typeof window === "undefined") return;
+  flushTimer = setTimeout(() => { flushTimer = undefined; void store.flushQueue(); }, delay);
+}
+const opTaskId = (m: QueuedMutation) => (m.kind === "create" ? m.task.id : m.taskId);
+const errText = (e: unknown) => String((e as Error)?.message ?? e);
+/** An error the server will give again however often it's retried: bad data,
+ *  a constraint, a permission (RLS) or trigger refusal, a malformed request.
+ *  Anything else (5xx from the gateway, timeouts, JWT refresh, connection
+ *  errors — or no code at all) may clear up by itself. */
+function isPermanentError(e: unknown): boolean {
+  const code = String((e as { code?: unknown })?.code ?? "");
+  return /^(22|23|42|P0)/.test(code) || /^PGRST[12]/.test(code);
+}
+/** Try the queue again later, backing off up to once a minute. */
+function retryLater() {
+  scheduleFlush(flushBackoff);
+  flushBackoff = Math.min(flushBackoff * 2, 60_000);
+}
+
+async function replayQueue(client: SupabaseClient, remap?: RemapFn): Promise<number> {
+  // never replay without a session, and only ever the signed-in user's own ops
+  let uid: string | undefined;
+  try { uid = (await client.auth.getSession()).data.session?.user?.id; } catch { /* token refresh failing */ }
+  if (!uid) {
+    // no session at the moment (a token refresh failing while the browser
+    // still says it's online): try again later rather than leaving the queue
+    // parked until an 'online' event that may never come
+    if (offlineQueue.size() && !isOffline()) retryLater();
+    return 0;
+  }
+  scopeQueueTo(uid);
+  let synced = 0;
+  const tried = new Set<string>();
+  const blocked = new Set<string>(); // tasks whose earlier op failed this pass — later ops on them must wait
+  // re-read every step: edits queued mid-replay (this tab or another) are
+  // picked up in order, and nothing is replayed twice in one pass
+  for (;;) {
+    const m = offlineQueue.all().find((op) => !tried.has(op.id));
+    if (!m) break;
+    tried.add(m.id);
+    if (m.userId !== uid) continue;
+    const taskId = opTaskId(m);
+    if (blocked.has(taskId)) continue;
+    try {
+      if (m.kind === "create") {
+        // pin the row id before the first send, so a lost response is retried
+        // under the same id (a no-op if it landed) instead of creating a twin
+        const id = m.serverId ?? (isUuid(m.task.id) ? m.task.id : uuidv4());
+        if (m.serverId !== id) offlineQueue.setServerId(m.id, id);
+        const saved = await insertTaskRow(client, m.task, id, uid);
+        // deleted while the request was in flight: its delete is already queued
+        if (!offlineQueue.ack(m.id)) continue;
+        if (saved.id !== m.task.id) offlineQueue.remapId(m.task.id, saved.id);
+        remap?.(m.task.id, saved.id, saved);
+      } else if (m.kind === "update") {
+        await updateTaskRow(client, m.taskId, m.patch);
+        offlineQueue.ack(m.id, m.patch);
+      } else {
+        await deleteTaskRow(client, m.taskId);
+        offlineQueue.ack(m.id);
+      }
+      synced++;
+    } catch (e) {
+      if (isNetworkError(e)) break; // still offline — stop, keep the rest
+      blocked.add(taskId);
+      // edits collapsed into this update while it was in flight weren't part
+      // of what failed: they move to their own op, right behind it
+      if (m.kind === "update" && !offlineQueue.splitUnsent(m.id, m.patch)) continue;
+      // Never discard a user's change on the first miss. The server refusing
+      // the data itself (RLS, a constraint) won't change, so that's parked
+      // after a few tries; anything that may clear up is retried for much
+      // longer. Parked ops can be retried or discarded, never silently lost.
+      const attempts = offlineQueue.bumpAttempts(m.id);
+      const permanent = isPermanentError(e);
+      const failingFor = Date.now() - (m.failedSince ?? Date.now());
+      if (attempts >= MAX_ATTEMPTS && (permanent || failingFor >= PARK_TRANSIENT_AFTER_MS)) {
+        offlineQueue.deadLetter(m.id, errText(e), !permanent);
+        reportError(e, { op: "flushQueue-deadletter", kind: m.kind, attempts, permanent });
+      } else if (attempts === 1) {
+        reportError(e, { op: "flushQueue-retry", kind: m.kind, permanent });
+      }
+    }
+  }
+  if (offlineQueue.size() === 0) flushBackoff = 2000;
+  else if (!isOffline()) retryLater(); // left-overs (a blip mid-replay, or an op being retried): go again soon
+  return synced;
+}
+
+/* ---------- realtime ---------- */
+/** What subscribeToChanges reports: a changed row, or a request to resync
+ *  everything because live events may have been missed. */
+export type RealtimeChange =
+  | { kind: "row"; table: string; event: "INSERT" | "UPDATE" | "DELETE"; row: Record<string, unknown> | null; old: Record<string, unknown> | null }
+  | { kind: "resync"; reason: "reconnected" | "online" | "visible" };
+// in the supabase_realtime publication since 0005–0010
+const CORE_TABLES = ["tasks", "projects", "tags", "subtasks", "workspaces", "workspace_members", "attachments", "activity"];
+// team structure tables. Migration 0042 adds them to the publication; until
+// it's live the server rejects every binding on a channel that names them, so
+// they get their own channel and can never take live task sync down with them.
+const EXTRA_TABLES = ["sections", "custom_field_defs", "goals", "portfolios", "status_updates", "automation_rules", "forms", "task_dependencies"];
+const RESYNC_AFTER_HIDDEN_MS = 60_000;
+let channelSeq = 0;
 
 /* ============================================================
    Public store API
@@ -431,12 +803,19 @@ export const store = {
     const sUser = sessionData.session?.user;
     const uid = sUser?.id ?? (user && user.id !== "m-self" ? user.id : undefined);
     if (!uid) throw new Error("Not authenticated");
+    const gen = sessionGen;
+    // only this user's queued offline edits are applied / replayed
+    scopeQueueTo(uid);
+    const restore = (snap: Snapshot): Bootstrap => {
+      setReferenceData(snap.ref);
+      return { ...snap.boot, tasks: applyQueue(snap.boot.tasks), defaultWorkspace: resolveDefaultWorkspace(uid, snap.boot.workspaces) };
+    };
 
     // Offline reload: restore the cached snapshot instead of failing. The
     // session above is read from local storage, so it resolves offline too.
     if (isOffline()) {
       const snap = readSnapshot(uid);
-      if (snap) { setReferenceData(snap.ref); return { ...snap.boot, tasks: applyQueue(snap.boot.tasks) }; }
+      if (snap) return restore(snap);
     }
 
     // load this user's profile (best-effort: tolerates the profiles migration
@@ -460,39 +839,46 @@ export const store = {
       avatarUrl: myProfile?.avatarUrl || null,
     };
 
-    // claim any pending workspace invites for this email (best-effort —
-    // tolerates the teams migration not being applied yet)
-    await supabase.rpc("claim_invites").then(() => {}, () => {});
+    // claim any pending workspace invites for this email — once per user per
+    // session, not on every realtime reload (best-effort; a network failure
+    // leaves it to be retried on the next load)
+    if (claimedFor !== uid) {
+      claimedFor = uid;
+      const { error: claimErr } = await supabase.rpc("claim_invites").then((r) => r, (e: unknown) => ({ error: e }));
+      if (claimErr && isNetworkError(claimErr)) claimedFor = null;
+    }
 
     // tasks are required; everything else is best-effort so a missing table
     // (e.g. a migration not yet applied) can never break boot or leak demo data.
     // Visibility (own + shared-workspace rows) is enforced by RLS — no user filter.
-    let taskData: unknown;
+    let taskRows: TaskRow[];
     try {
-      const res = await supabase.from("tasks").select(TASK_SELECT);
-      if (res.error) throw res.error;
-      taskData = res.data;
+      taskRows = await loadAllTasks(supabase);
     } catch (e) {
       // connection dropped after we thought we were online — fall back to the
       // last good snapshot rather than wiping the screen.
       const snap = readSnapshot(uid);
-      if (snap && isNetworkError(e)) { setReferenceData(snap.ref); return { ...snap.boot, tasks: applyQueue(snap.boot.tasks) }; }
+      if (snap && isNetworkError(e)) return restore(snap);
       throw e;
     }
 
     const { data: projData } = await supabase.from("projects").select("*");
     const projects = [PERSONAL_PROJECT, ...((projData as ProjectRow[] | null) ?? []).map(rowToProject)];
 
-    // real accounts start with NO built-in tags — only the user's own.
-    const { data: tagData } = await supabase.from("tags").select("*").eq("user_id", uid);
+    // real accounts start with NO built-in tags — every tag this user can see
+    // (RLS decides: their own, plus their workspaces' once tags are shared).
+    const { data: tagData } = await supabase.from("tags").select("*");
     const tags: Record<string, TagDef> = {};
     for (const t of (tagData as TagRow[] | null) ?? []) tags[t.id] = { label: t.label, color: t.color };
 
-    // workspaces + members (best-effort)
+    // workspaces + members (best-effort). Oldest first, so the switcher order
+    // (and the default team workspace) is stable across reloads and renames.
     const { data: wsData } = await supabase.from("workspaces").select("*");
+    const wsRows = ((wsData as WorkspaceRow[] | null) ?? []).slice()
+      .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
     const workspaces: Workspace[] = [
       { ...PERSONAL_WORKSPACE },
-      ...((wsData as WorkspaceRow[] | null) ?? []).map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined })),
+      ...wsRows.map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined })),
     ];
     const { data: memData } = await supabase.from("workspace_members").select("*");
     const members = ((memData as MemberRow[] | null) ?? []).map(rowToWsMember);
@@ -561,13 +947,13 @@ export const store = {
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
     setReferenceData(ref);
     const boot: Bootstrap = {
-      tasks: ((taskData as TaskRow[] | null) ?? []).map(rowToTask),
+      tasks: taskRows.map(rowToTask),
       projects,
       tags,
       workspaces,
       members,
       currentUserId: uid,
-      defaultWorkspace: null,
+      defaultWorkspace: resolveDefaultWorkspace(uid, workspaces),
       profile: myProfile,
       sections,
       customFields,
@@ -578,44 +964,47 @@ export const store = {
       automationRules,
       forms,
     };
+    // signed out (or someone else signed in) while this was loading — e.g. a
+    // realtime reload still in flight: don't write their workspace back to
+    // this device, and don't fold anyone's queue onto it
+    if (gen !== sessionGen || offlineQueue.currentUser() !== uid) return boot;
     // cache for offline reads (write-half handled by offlineQueue)
     cacheSnapshot({ boot, ref, uid, savedAt: Date.now() });
-    return boot;
+    // changes parked last time for a passing server problem (not a refusal)
+    // get another go once per session; App drains the queue after this load
+    if (deadRetriedFor !== uid) {
+      deadRetriedFor = uid;
+      const retry = offlineQueue.deadLetters().filter((d) => d.retryable).map((d) => d.op.id);
+      if (retry.length) offlineQueue.retryDeadLetters(retry);
+    }
+    // show edits still waiting in the queue rather than the server's older copy
+    return offlineQueue.size() ? { ...boot, tasks: applyQueue(boot.tasks) } : boot;
   },
 
-  /** Replay queued offline task mutations, in order, when back online.
-   *  onRemap(clientId, serverId, saved) lets the caller swap the optimistic id
-   *  in state — or INSERT the task if it isn't in state (e.g. after an online
-   *  reopen where the offline-created task only ever lived in the queue).
+  /** Register the caller's id-swap callback once, at startup, so retries the
+   *  store schedules itself (after a request died mid-flight) can also tell
+   *  it when a queued create was saved under a new id. */
+  setRemapHandler(onRemap: RemapFn | null): void { lastRemap = onRemap ?? undefined; },
+
+  /** Replay the signed-in user's queued offline task mutations, in order,
+   *  when back online. onRemap(clientId, serverId, saved) lets the caller swap
+   *  the optimistic id in state — or INSERT the task if it isn't in state
+   *  (e.g. after an online reopen where the offline-created task only ever
+   *  lived in the queue). One tab replays at a time (navigator.locks), and
+   *  creates are idempotent, so a queue can never be applied twice.
    *  Returns count synced. */
-  async flushQueue(onRemap?: (clientId: string, serverId: string, saved: Task) => void): Promise<number> {
-    if (!supabase || isOffline() || replaying) return 0;
-    let synced = 0;
-    replaying = true;
-    try {
-    for (const m of offlineQueue.all()) {
-      try {
-        if (m.kind === "create") {
-          const saved = await this.createTask(m.task, m.userId);
-          if (saved.id !== m.task.id) offlineQueue.remapId(m.task.id, saved.id);
-          onRemap?.(m.task.id, saved.id, saved);
-        } else if (m.kind === "update") {
-          await this.updateTask(m.taskId, m.patch);
-        } else {
-          await this.deleteTask(m.taskId);
-        }
-        offlineQueue.remove(m.id);
-        synced++;
-      } catch (e) {
-        if (isNetworkError(e)) break;       // still offline — stop, keep the rest
-        // transient server error (500/timeout) shouldn't discard a user's task
-        // on the first miss — retry up to 5 times, then dead-letter.
-        if (offlineQueue.bumpAttempts(m.id) >= 5) { offlineQueue.remove(m.id); reportError(e, { op: "flushQueue-drop", kind: m.kind }); }
-        else { reportError(e, { op: "flushQueue-retry", kind: m.kind }); }
-      }
-    }
-    } finally { replaying = false; }
-    return synced;
+  async flushQueue(onRemap?: RemapFn): Promise<number> {
+    if (onRemap) lastRemap = onRemap;
+    if (!supabase || isOffline() || flushInFlight) return 0; // this tab is already replaying
+    const client = supabase;
+    const run = () => replayQueue(client, onRemap ?? lastRemap);
+    const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+    flushInFlight = locks?.request
+      // another tab holds the lock → it's replaying the same queue; let it
+      ? locks.request("kanbo-flush", { ifAvailable: true }, (lock) => (lock ? run() : Promise.resolve(0))).then((n) => n)
+      : run();
+    try { return await flushInFlight; }
+    finally { flushInFlight = null; }
   },
 
   /* ---------- workspaces & membership ---------- */
@@ -668,8 +1057,15 @@ export const store = {
     }
     // guarded server-side: only owner/admin can invite, only owner can add admins
     const { data, error } = await supabase.rpc("invite_member", { p_ws: workspaceId, p_email: email.trim().toLowerCase(), p_name: name, p_role: role });
-    if (error) throw error;
-    return rowToWsMember(data as MemberRow);
+    // a real Error carrying the server's reason ("already a member …"), so the
+    // UI can show it rather than a generic failure
+    if (error) throw new Error(inviteErrorMessage(error.message));
+    if (!data) throw new Error("Couldn't create the invite. Please try again.");
+    const member = rowToWsMember(data as MemberRow);
+    // email the invitation (best-effort: the invite itself already exists and
+    // is claimed on the invitee's next sign-in, whether or not this succeeds)
+    supabase.functions.invoke("invite-member", { body: { memberId: member.id } }).then(() => {}, () => {});
+    return member;
   },
 
   async listWorkspaceMembers(): Promise<WorkspaceMember[]> {
@@ -703,66 +1099,131 @@ export const store = {
     if (error) throw error;
   },
 
-  // Create many tasks at once (CSV import). Returns the saved rows in order.
+  /** Create many tasks at once (CSV import), 200 rows per request. Every row
+   *  is written under an explicit UUID with ON CONFLICT DO NOTHING, so a
+   *  retried or partly-applied import never duplicates anything. Returns the
+   *  saved tasks in input order (with their final ids; non-UUID ids are
+   *  replaced and in-batch parentId links follow). If some rows are rejected,
+   *  the rest are still saved and a BatchCreateError lists both. */
   async createTasksBatch(tasks: Task[], userId: string): Promise<Task[]> {
-    const out: Task[] = [];
-    for (const t of tasks) out.push(await this.createTask(t, userId));
-    return out;
+    if (!tasks.length) return [];
+    if (!supabase) return tasks.slice();
+    const client = supabase;
+    const idMap = new Map<string, string>();
+    for (const t of tasks) if (!isUuid(t.id) && !idMap.has(t.id)) idMap.set(t.id, uuidv4());
+    const prepared = tasks.map((t) => {
+      const id = idMap.get(t.id) ?? t.id;
+      const parentId = t.parentId ? (idMap.get(t.parentId) ?? t.parentId) : t.parentId;
+      return id === t.id && parentId === t.parentId ? t : { ...t, id, parentId };
+    });
+    // offline: queue before anything is awaited (see queueOwner)
+    if (isOffline()) { offlineQueue.enqueueCreates(prepared, queueOwner() ?? await authUid(userId)); return prepared; }
+    const uid = await authUid(userId);
+
+    const saved: Task[] = [];
+    const failed: { task: Task; message: string }[] = [];
+    // connection lost part-way: queue what's left (a chunk that may have landed
+    // replays as a no-op) and carry on as if saved, like a single create does
+    const queueFrom = (pos: number) => {
+      const rest = prepared.slice(pos);
+      offlineQueue.enqueueCreates(rest, uid, true);
+      scheduleFlush();
+      saved.push(...rest);
+    };
+    let pos = 0;
+    chunks: for (const part of chunk(prepared, 200)) {
+      try {
+        await upsertTaskRows(client, part.map((t) => ({ ...taskToInsertRow(t, uid), id: t.id })));
+        saved.push(...part);
+        pos += part.length;
+        continue;
+      } catch (e) {
+        if (isNetworkError(e)) { queueFrom(pos); break; }
+      }
+      // one bad row fails the whole statement — go row by row to save the rest
+      for (const t of part) {
+        try { saved.push(await insertTaskRow(client, t, t.id, uid)); }
+        catch (e) {
+          if (isNetworkError(e)) { queueFrom(pos); break chunks; }
+          failed.push({ task: t, message: errText(e) });
+        }
+        pos++;
+      }
+    }
+    if (failed.length) {
+      // the server's wording stays on err.failed[].message (and in monitoring);
+      // the message itself is fit to show people
+      reportError(new Error(failed[0].message), { op: "createTasksBatch", failed: failed.length, total: tasks.length });
+      const err = new Error(`${failed.length} of ${tasks.length} task${tasks.length === 1 ? "" : "s"} couldn't be imported. Check they're in a project you can edit and try again.`) as BatchCreateError;
+      err.saved = saved;
+      err.failed = failed;
+      throw err;
+    }
+    return saved;
   },
 
   async createTask(t: Task, userId: string): Promise<Task> {
     if (!supabase) return t; // demo mode keeps the optimistic copy
-    if (!replaying && isOffline()) { offlineQueue.enqueueCreate(t, userId); return t; } // queue + keep client id
+    // offline — or queued ops on this id still waiting (e.g. an undone
+    // delete): queue behind them so they apply in order, and keep the client
+    // id. Queued before anything is awaited (see queueOwner).
+    if (isOffline() || offlineQueue.hasPending(t.id)) {
+      offlineQueue.enqueueCreate(t, queueOwner() ?? await authUid(userId));
+      if (!isOffline()) scheduleFlush();
+      return t;
+    }
+    const uid = await authUid(userId);
+    // the row id is fixed before sending, so a retry can never make a twin
+    const id = isUuid(t.id) ? t.id : uuidv4();
     try {
-      const uid = await authUid(userId);
-      // Resilient insert: if the DB is missing a newer column (a migration not
-      // applied yet), strip that column and retry so the task ALWAYS saves —
-      // losing a field is acceptable, losing the whole task is not.
-      let row = taskToInsertRow(t, uid);
-      for (let i = 0; i < 8; i++) {
-        // select only "id" — a brand-new task has no subtasks/deps, so we avoid
-        // the heavier embed (a frequent silent failure point) and just adopt the id
-        const { data, error } = await supabase.from("tasks").insert(row).select("id").single();
-        if (!error) return { ...t, id: (data as { id: string }).id };
-        const stripped = withoutMissingColumn(row, error.message);
-        if (!stripped) throw error;
-        row = stripped;
-      }
-      throw new Error("createTask: could not persist after stripping unknown columns");
+      return await insertTaskRow(supabase, t, id, uid);
     } catch (e) {
-      if (!replaying && isNetworkError(e)) { offlineQueue.enqueueCreate(t, userId); return t; } // dropped mid-flight — queue, keep client id
+      // dropped mid-flight — it may or may not have landed, so queue it under
+      // the same id (the replay is a no-op if it did). That id is handed back
+      // now, so the caller swaps it in at once and later edits queue behind
+      // this create, rather than waiting on a replay callback to learn it.
+      if (isNetworkError(e)) {
+        const pinned = id === t.id ? t : { ...t, id };
+        offlineQueue.enqueueCreate(pinned, queueOwner() ?? uid, id);
+        scheduleFlush();
+        return pinned;
+      }
       throw e;
     }
   },
 
   async updateTask(id: string, patch: Partial<Task>): Promise<void> {
     if (!supabase) return;
-    if (!replaying && isOffline()) { offlineQueue.enqueueUpdate(id, patch); return; }
-    let row = patchToRow(patch);
-    if (Object.keys(row).length === 0) return;
+    if (Object.keys(patchToRow(patch)).length === 0) return; // nothing that persists
+    // offline — or older queued edits to this task still waiting: queue behind
+    // them, so a stale queued value can't be replayed over this newer one
+    // Queued before anything is awaited (see queueOwner).
+    if (isOffline() || offlineQueue.hasPending(id)) {
+      offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid(""));
+      if (!isOffline()) scheduleFlush();
+      return;
+    }
     try {
-      for (let i = 0; i < 8; i++) {
-        const { error } = await supabase.from("tasks").update(row).eq("id", id);
-        if (!error) return;
-        const stripped = withoutMissingColumn(row, error.message);
-        if (!stripped) throw error;
-        if (Object.keys(stripped).length === 0) return; // nothing left to write
-        row = stripped;
-      }
+      await updateTaskRow(supabase, id, patch);
+      offlineQueue.supersede(id, Object.keys(patch)); // a parked older value must never come back over this
     } catch (e) {
-      if (!replaying && isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch); return; } // dropped mid-flight — queue it
+      if (isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid("")); scheduleFlush(); return; } // dropped mid-flight — queue it
       throw e;
     }
   },
 
   async deleteTask(id: string): Promise<void> {
     if (!supabase) return;
-    if (!replaying && isOffline()) { offlineQueue.enqueueDelete(id); return; }
+    if (isOffline() || offlineQueue.hasPending(id)) {
+      offlineQueue.enqueueDelete(id, queueOwner() ?? await authUid(""));
+      if (!isOffline()) scheduleFlush();
+      return;
+    }
     try {
-      const { error } = await supabase.from("tasks").delete().eq("id", id);
-      if (error) throw error;
+      await deleteTaskRow(supabase, id);
+      offlineQueue.supersede(id, null);
     } catch (e) {
-      if (!replaying && isNetworkError(e)) { offlineQueue.enqueueDelete(id); return; }
+      if (isNetworkError(e)) { offlineQueue.enqueueDelete(id, queueOwner() ?? await authUid("")); scheduleFlush(); return; }
       throw e;
     }
   },
@@ -1006,26 +1467,54 @@ export const store = {
     if (error) throw error;
   },
 
-  // every attachment across a set of tasks (for the Files view)
+  /** Every attachment across a set of tasks (the Files view), newest first.
+   *  Queried in batches (ids travel in the URL) and signed in one request.
+   *  Throws if the list can't be loaded, so the view can say so rather than
+   *  showing "No files yet". */
   async listProjectAttachments(taskIds: string[]): Promise<Attachment[]> {
-    if (!supabase || taskIds.length === 0) return [];
-    const { data, error } = await supabase.from("attachments").select("*").in("task_id", taskIds).order("created_at", { ascending: false });
-    if (error) throw error;
-    const rows = (data as AttachmentRow[] | null) ?? [];
-    return Promise.all(rows.map(async (r) => {
-      try {
-        const { data: s } = await supabase!.storage.from(ATTACH_BUCKET).createSignedUrl(r.path, 3600);
-        return rowToAttachment(r, s?.signedUrl);
-      } catch { return rowToAttachment(r, undefined); }
+    if (!supabase) {
+      const want = new Set(taskIds);
+      return Object.values(demoAttachments).flat().filter((a) => want.has(a.taskId))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+    const client = supabase;
+    // unsaved (optimistic) task ids aren't uuids and would fail the whole query
+    const ids = [...new Set(taskIds.filter(isUuid))];
+    if (ids.length === 0) return [];
+    const pages = await Promise.all(chunk(ids, IN_CHUNK).map(async (part) => {
+      const { data, error } = await client.from("attachments").select("*").in("task_id", part);
+      if (error) throw error;
+      return (data as AttachmentRow[] | null) ?? [];
     }));
+    const rows = pages.flat().sort((a, b) => b.created_at.localeCompare(a.created_at));
+    if (rows.length === 0) return [];
+    // one signing round-trip for the whole view (best-effort: a file without a
+    // link still lists, it just can't be opened until the next load)
+    const urls = new Map<string, string>();
+    try {
+      const { data: signed, error } = await client.storage.from(ATTACH_BUCKET).createSignedUrls(rows.map((r) => r.path), 3600);
+      if (error) reportError(error, { op: "listProjectAttachments-sign", count: rows.length });
+      for (const s of signed ?? []) if (s.path && s.signedUrl && !s.error) urls.set(s.path, s.signedUrl);
+    } catch (e) { reportError(e, { op: "listProjectAttachments-sign", count: rows.length }); }
+    return rows.map((r) => rowToAttachment(r, urls.get(r.path)));
   },
 
-  async createTag(label: string, color: string, userId: string, _workspaceId?: string | null): Promise<CreatedTag> {
+  /** Create a tag. Pass workspaceId to share it with that team workspace
+   *  (needs tags.workspace_id — until that migration is live the tag is
+   *  saved as personal instead of failing). */
+  async createTag(label: string, color: string, userId: string, workspaceId?: string | null): Promise<CreatedTag> {
     if (!supabase) return { id: newId(), label, color };
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("tags").insert({ user_id: uid, label, color }).select("*").single();
-    if (error) throw error;
-    return { id: data.id, label: data.label, color: data.color };
+    let row: Record<string, unknown> = { user_id: uid, label, color };
+    if (workspaceId) row.workspace_id = workspaceId;
+    for (let i = 0; i < 3; i++) {
+      const { data, error } = await supabase.from("tags").insert(row).select("*").single();
+      if (!error) { const t = data as TagRow; return { id: t.id, label: t.label, color: t.color }; }
+      const stripped = withoutMissingColumn(row, error.message);
+      if (!stripped) throw error;
+      row = stripped;
+    }
+    throw new Error("createTag failed");
   },
 
   async deleteTag(id: string): Promise<void> {
@@ -1488,7 +1977,7 @@ export const store = {
   async aiSummary(tasks: Task[], today: string): Promise<string | null> {
     if (!supabase) return null;
     try {
-      const payload = tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate ?? null, completedAt: t.completedAt ?? null }));
+      const payload = aiTaskContext(tasks, today);
       const { data, error } = await supabase.functions.invoke("ai-assist", { body: { mode: "summary", tasks: payload, today } });
       if (error || !data?.summary) return null;
       return String(data.summary);
@@ -1499,7 +1988,7 @@ export const store = {
   async aiAsk(question: string, tasks: Task[], today: string): Promise<string | null> {
     if (!supabase) return null;
     try {
-      const payload = tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate ?? null, project: t.projectId }));
+      const payload = aiTaskContext(tasks, today);
       const { data, error } = await supabase.functions.invoke("ai-assist", { body: { mode: "ask", question, tasks: payload, today } });
       if (error || !data?.answer) return null;
       return String(data.answer);
@@ -1507,44 +1996,92 @@ export const store = {
   },
 
   /* ---------- activity feed (Inbox) ---------- */
+  /** The inbox: every unread item (up to 500) plus the newest `limit`, merged,
+   *  newest first — so a burst of your own actions or a big import can never
+   *  push a teammate's assignment or mention out of view unseen. */
   async listActivity(limit = 100): Promise<Activity[]> {
     if (!supabase) return demoActivity.slice(0, limit);
-    // prefer non-archived only; fall back if the archived_at column isn't there
-    // yet (migration 0010 not applied) so the app still loads.
-    let res = await supabase.from("activity").select("*")
-      .is("archived_at", null).order("created_at", { ascending: false }).limit(limit);
-    if (res.error) {
-      res = await supabase.from("activity").select("*").order("created_at", { ascending: false }).limit(limit);
-    }
-    if (res.error) throw res.error;
-    return (res.data as ActivityRow[]).map(rowToActivity);
+    const client = supabase;
+    const newest = async () => {
+      // prefer non-archived only; fall back if the archived_at column isn't
+      // there yet (migration 0010 not applied) so the app still loads.
+      let res = await client.from("activity").select("*")
+        .is("archived_at", null).order("created_at", { ascending: false }).limit(limit);
+      if (res.error) res = await client.from("activity").select("*").order("created_at", { ascending: false }).limit(limit);
+      if (res.error) throw res.error;
+      return (res.data as ActivityRow[] | null) ?? [];
+    };
+    const unread = async () => {
+      const res = await client.from("activity").select("*")
+        .is("archived_at", null).is("read_at", null).order("created_at", { ascending: false }).limit(500);
+      return res.error ? [] : ((res.data as ActivityRow[] | null) ?? []); // best-effort (read_at arrives in 0023)
+    };
+    const [recent, pending] = await Promise.all([newest(), unread()]);
+    const byId = new Map<string, ActivityRow>();
+    for (const r of [...pending, ...recent]) byId.set(r.id, r);
+    return [...byId.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).map(rowToActivity);
   },
-  // mark all of the user's unread activity as read (best-effort; tolerates the
-  // read_at column not existing yet)
+  // mark the user's unread activity as read — all of it, or just `ids` (e.g.
+  // what the inbox is showing). Best-effort; tolerates read_at not existing yet.
   async markActivityRead(ids?: string[]): Promise<void> {
-    if (!supabase) return;
+    const stamp = new Date().toISOString();
+    if (!supabase) {
+      demoActivity = demoActivity.map((a) => (!a.readAt && (!ids || ids.includes(a.id)) ? { ...a, readAt: stamp } : a));
+      return;
+    }
     if (ids && ids.length === 0) return;
+    const client = supabase;
+    const run = async (part?: string[]) => {
+      const q = client.from("activity").update({ read_at: stamp }).is("read_at", null);
+      const { error } = await (part ? q.in("id", part) : q);
+      if (error && !missingColumn(error.message)) reportError(error, { op: "markActivityRead" });
+    };
     try {
-      const q = supabase.from("activity").update({ read_at: new Date().toISOString() }).is("read_at", null);
-      await (ids ? q.in("id", ids) : q);
-    } catch { /* column not present yet */ }
+      if (!ids) await run();
+      else for (const part of chunk([...new Set(ids.filter(isUuid))], IN_CHUNK)) await run(part);
+    } catch (e) { reportError(e, { op: "markActivityRead" }); }
   },
 
   // Archive a single inbox item — hides it from the feed, keeps the history.
   async archiveActivity(id: string): Promise<void> {
-    if (!supabase) { demoActivity = demoActivity.filter((a) => a.id !== id); return; }
+    if (!supabase) { demoArchived = [...demoArchived, ...demoActivity.filter((a) => a.id === id)]; demoActivity = demoActivity.filter((a) => a.id !== id); return; }
     const { error } = await supabase.from("activity").update({ archived_at: new Date().toISOString() }).eq("id", id);
     if (error) throw error;
   },
 
+  /** Undo an archive: put these items back in the inbox. */
+  async unarchiveActivity(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    if (!supabase) {
+      const back = demoArchived.filter((a) => ids.includes(a.id));
+      demoArchived = demoArchived.filter((a) => !ids.includes(a.id));
+      demoActivity = [...back, ...demoActivity].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return;
+    }
+    for (const part of chunk([...new Set(ids.filter(isUuid))], IN_CHUNK)) {
+      const { error } = await supabase.from("activity").update({ archived_at: null }).in("id", part);
+      if (error) throw error;
+    }
+  },
+
   // "Clear whole inbox" — archive every still-active item for this user.
-  // Pass ids to archive only those (e.g. what the inbox is currently showing).
+  // Pass ids to archive only those (e.g. what the inbox is currently showing,
+  // so one workspace's or filter's "Archive all" can't sweep up the rest).
   async clearInbox(ids?: string[]): Promise<void> {
-    if (!supabase) { demoActivity = ids ? demoActivity.filter((a) => !ids.includes(a.id)) : []; return; }
+    if (!supabase) {
+      const gone = ids ? demoActivity.filter((a) => ids.includes(a.id)) : demoActivity;
+      demoArchived = [...demoArchived, ...gone];
+      demoActivity = ids ? demoActivity.filter((a) => !ids.includes(a.id)) : [];
+      return;
+    }
     if (ids && ids.length === 0) return;
-    const q = supabase.from("activity").update({ archived_at: new Date().toISOString() }).is("archived_at", null);
-    const { error } = await (ids ? q.in("id", ids) : q);
-    if (error) throw error;
+    const stamp = new Date().toISOString();
+    const parts = ids ? chunk([...new Set(ids.filter(isUuid))], IN_CHUNK) : [undefined];
+    for (const part of parts) {
+      const q = supabase.from("activity").update({ archived_at: stamp }).is("archived_at", null);
+      const { error } = await (part ? q.in("id", part) : q);
+      if (error) throw error;
+    }
   },
 
   /* ---------- profiles ---------- */
@@ -1580,7 +2117,12 @@ export const store = {
   // Best-effort: a no-op if the function isn't deployed yet (in-app still works).
   async notify(payload: { kind: "assigned" | "mention" | "comment"; taskId: string; taskTitle: string; recipientIds?: string[] }): Promise<void> {
     if (!supabase) return;
-    try { await supabase.functions.invoke("notify", { body: payload }); } catch { /* not deployed — in-app notifications already handled by triggers */ }
+    // in-app notifications are already handled by triggers; a failure here
+    // means emails aren't going out, so make it visible (once per session)
+    try {
+      const { error } = await supabase.functions.invoke("notify", { body: payload });
+      if (error) reportOnce("notify", error, { op: "notify", kind: payload.kind });
+    } catch (e) { reportOnce("notify", e, { op: "notify", kind: payload.kind }); }
   },
 
   // Upload an avatar image to the public "avatars" bucket; returns its URL.
@@ -1608,6 +2150,9 @@ export const store = {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((body as { error?: string }).error || `Couldn't delete account (${res.status})`);
+    // nothing of a deleted account's should linger on this device
+    const uid = data.session?.user?.id;
+    if (uid) { offlineQueue.purgeUser(uid); try { localStorage.removeItem(LAST_WS_KEY + uid); } catch { /* ignore */ } }
   },
 
   /* ---------- external calendars (Google / Microsoft) ---------- */
@@ -1642,39 +2187,132 @@ export const store = {
   },
 
   async logActivity(input: NewActivity, userId: string): Promise<Activity> {
+    // your own actions are born read, so they never count as unread on any device
+    const readAt = new Date().toISOString();
     if (!supabase) {
-      const a: Activity = { id: newId(), taskId: input.taskId, taskTitle: input.taskTitle, kind: input.kind, detail: input.detail, createdAt: new Date().toISOString() };
+      const a: Activity = { id: newId(), taskId: input.taskId, taskTitle: input.taskTitle, kind: input.kind, detail: input.detail, createdAt: new Date().toISOString(), readAt };
       demoActivity = [a, ...demoActivity];
       return a;
     }
     const uid = await authUid(userId);
-    const { data, error } = await supabase
-      .from("activity")
-      .insert({ user_id: uid, task_id: input.taskId, task_title: input.taskTitle, kind: input.kind, detail: input.detail })
-      .select("*")
-      .single();
-    if (error) throw error;
-    return rowToActivity(data as ActivityRow);
+    let row: Record<string, unknown> = { user_id: uid, task_id: input.taskId, task_title: input.taskTitle, kind: input.kind, detail: input.detail, read_at: readAt };
+    for (let i = 0; i < 3; i++) {
+      const { data, error } = await supabase.from("activity").insert(row).select("*").single();
+      if (!error) return rowToActivity(data as ActivityRow);
+      const stripped = withoutMissingColumn(row, error.message); // read_at arrives in 0023
+      if (!stripped) throw error;
+      row = stripped;
+    }
+    throw new Error("logActivity failed");
   },
 
-  /* Real-time multi-tab sync: invoke onChange when any of this user's
-     tasks/projects/tags/subtasks change (RLS scopes it to their rows).
+  /* Real-time multi-tab/device sync. onChange gets each changed row (RLS
+     scopes what arrives), or { kind: "resync" } when live events may have
+     been missed and everything should be re-read: after the socket drops and
+     reconnects (sleep, Wi-Fi change), when the browser comes back online, and
+     when the tab returns after more than a minute hidden.
      Returns an unsubscribe fn. No-op in demo mode. */
-  subscribeToChanges(onChange: () => void): () => void {
+  subscribeToChanges(onChange: (change?: RealtimeChange) => void): () => void {
     if (!supabase) return () => {};
     const client = supabase;
-    const channel = client
-      .channel("kanbo-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "tags" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "subtasks" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "workspaces" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "workspace_members" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "attachments" }, onChange)
-      .on("postgres_changes", { event: "*", schema: "public", table: "activity" }, onChange) // assignment notifications land live in the inbox
-      .subscribe();
-    return () => { client.removeChannel(channel); };
+    // every channel gets a unique topic: the client hands back (and, when one
+    // closes, drops) channels by topic, so a reused name could collide with a
+    // channel that is still leaving
+    const topic = (name: string) => `${name}-${++channelSeq}`;
+    let disposed = false;
+    let core: RealtimeChannel | null = null;
+    let extras: RealtimeChannel | null = null;
+    let extrasOff = false;   // the server refused the extra tables (not in the publication)
+    let dropped = false;     // the core channel lost its connection: resync once it's back
+    let reopenTimer: ReturnType<typeof setTimeout> | undefined;
+    let reopenDelay = 2000;
+    let hiddenAt: number | null = typeof document !== "undefined" && document.visibilityState === "hidden" ? Date.now() : null;
+
+    const resync = (reason: "reconnected" | "online" | "visible") => {
+      if (disposed) return;
+      claimedFor = null; // a rare, deliberate full reload: also pick up any invite accepted meanwhile
+      onChange({ kind: "resync", reason });
+    };
+    const forward = (p: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+      if (disposed) return;
+      const row = p.new && Object.keys(p.new).length ? p.new as Record<string, unknown> : null;
+      const old = p.old && Object.keys(p.old).length ? p.old as Record<string, unknown> : null;
+      onChange({ kind: "row", table: p.table, event: p.eventType, row, old });
+    };
+    const closeExtras = () => { if (extras) { void client.removeChannel(extras); extras = null; } };
+    const openExtras = () => {
+      if (disposed || extras || extrasOff) return;
+      let ch = client.channel(topic("kanbo-changes-extra"));
+      for (const table of EXTRA_TABLES) ch = ch.on("postgres_changes", { event: "*", schema: "public", table }, forward);
+      // the server rolls back every binding on a channel if one table isn't in
+      // the publication, then keeps retrying — stop asking for this session
+      ch = ch.on("system", {}, (msg: { extension?: string; status?: string; message?: string }) => {
+        if (msg?.extension !== "postgres_changes" || msg?.status !== "error" || disposed) return;
+        extrasOff = true;
+        closeExtras();
+        // expected until migration 0042 (which adds them) is live, so it's a
+        // console note, not a monitoring error on every page load for every user
+        if (!reportedOnce.has("realtime-extras")) {
+          reportedOnce.add("realtime-extras");
+          console.info("[kanbo] Live updates for team tables are off — the realtime publication doesn't include them yet:", msg.message || "subscription refused");
+        }
+      });
+      extras = ch;
+      // otherwise status is ignored: the core channel owns reconnect + resync.
+      // If the server closes this one, forget it so the core's next
+      // SUBSCRIBED opens a fresh one.
+      ch.subscribe((status) => { if (status === "CLOSED" && extras === ch) extras = null; });
+    };
+    const scheduleReopen = () => {
+      if (disposed || reopenTimer !== undefined) return;
+      reopenTimer = setTimeout(() => {
+        reopenTimer = undefined;
+        if (disposed) return;
+        core = null; // already closed and detached by the client
+        closeExtras();
+        openCore();
+      }, reopenDelay);
+      reopenDelay = Math.min(reopenDelay * 2, 60_000);
+    };
+    const openCore = () => {
+      let ch = client.channel(topic("kanbo-changes"));
+      for (const table of CORE_TABLES) ch = ch.on("postgres_changes", { event: "*", schema: "public", table }, forward);
+      core = ch;
+      ch.subscribe((status) => {
+        if (disposed || core !== ch) return;
+        if (status === "SUBSCRIBED") {
+          reopenDelay = 2000;
+          if (dropped) { dropped = false; resync("reconnected"); }
+          openExtras();
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          dropped = true; // the client rejoins by itself; catch up when it does
+        } else if (status === "CLOSED") {
+          dropped = true; // closed by the server, not by us: it won't rejoin on its own
+          scheduleReopen();
+        }
+      });
+    };
+
+    const onOnline = () => resync("online");
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+      const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+      hiddenAt = null;
+      if (away > RESYNC_AFTER_HIDDEN_MS) resync("visible");
+    };
+    if (typeof window !== "undefined") window.addEventListener("online", onOnline);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+    openCore();
+
+    return () => {
+      disposed = true;
+      clearTimeout(reopenTimer);
+      if (typeof window !== "undefined") window.removeEventListener("online", onOnline);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+      if (core) void client.removeChannel(core);
+      core = null;
+      closeExtras();
+    };
   },
 
   /* Live presence on a single task: announce that I'm viewing it and get the
@@ -1694,15 +2332,20 @@ export const store = {
   },
 
   /* Live comment stream for one task: fires onInsert with each new comment as
-     collaborators post them, so the thread updates without a refresh. */
-  subscribeToTaskComments(taskId: string, onInsert: (c: Comment) => void): () => void {
+     collaborators post them, so the thread updates without a refresh — and,
+     if onUpdate is given, with each edited comment (body, reactions). */
+  subscribeToTaskComments(taskId: string, onInsert: (c: Comment) => void, onUpdate?: (c: Comment) => void): () => void {
     if (!supabase) return () => {};
     const client = supabase;
-    const channel = client
+    let channel = client
       .channel(`comments-${taskId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "comments", filter: `task_id=eq.${taskId}` },
-        (payload) => { try { onInsert(rowToComment(payload.new as CommentRow)); } catch { /* malformed row */ } })
-      .subscribe();
+        (payload) => { try { onInsert(rowToComment(payload.new as CommentRow)); } catch { /* malformed row */ } });
+    if (onUpdate) {
+      channel = channel.on("postgres_changes", { event: "UPDATE", schema: "public", table: "comments", filter: `task_id=eq.${taskId}` },
+        (payload) => { try { onUpdate(rowToComment(payload.new as CommentRow)); } catch { /* malformed row */ } });
+    }
+    channel.subscribe();
     return () => { client.removeChannel(channel); };
   },
 
