@@ -377,7 +377,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           {smart && !done && <AiScore score={task.aiScore} reason={task.aiReason} />}
           {showProject && (
             <span className="ktv-proj" data-row-project={task.id}>
-              {proj && <><ProjectDot color={proj.color} /><span>{proj.name}</span></>}
+              {proj && <><ProjectDot color={proj.color} title={proj.name} /><span>{proj.name}</span></>}
             </span>
           )}
           <span className="ktv-due" data-row-due={task.id} onClick={stop}>

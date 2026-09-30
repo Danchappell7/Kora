@@ -8,6 +8,9 @@
 
 /* aliases with today's fallbacks; on the root so menus portalled to <body> share them */
 :root {
+  /* the canvas as it looks behind a sticky strip: Navy's fixed halo over --bg, so a header that
+     sits on the page (or sticks while it scrolls) never shows as a darker band */
+  --tv-canvas: var(--halo, none) fixed, var(--bg);
   --tv-hover: var(--fill-1, color-mix(in oklch, var(--ink) 5%, transparent));
   --tv-press: var(--fill-2, color-mix(in oklch, var(--ink) 8%, transparent));
   --tv-selected: var(--bg-selected, var(--accent-dim));
@@ -52,8 +55,9 @@
 .ktv-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .ktv-tools .kbtn[data-on="true"] { color: var(--accent-text, var(--accent)); }
 .ktv-tools .kbtn[data-on="true"] svg { color: var(--accent-text, var(--accent)); }
+.ktv-tools .kbtn-label { display: inline-flex; align-items: center; overflow: visible; }
 .ktv-count {
-  display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+  display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin-left: 6px; padding: 0 4px; border-radius: 999px;
   font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums;
   background: var(--accent-fill, var(--accent)); color: var(--on-accent);
 }
@@ -165,7 +169,7 @@
 .ktv-group { position: relative; padding-bottom: 24px; }
 .ktv-ghead {
   position: sticky; top: var(--tv-sticky); z-index: 2; display: flex; align-items: center; gap: 8px;
-  height: 32px; background: var(--bg);
+  height: 32px; background: var(--tv-canvas);
 }
 .ktv-ghead[data-drop="true"] { background: color-mix(in oklch, var(--accent) 9%, var(--bg)); box-shadow: inset 0 -2px 0 var(--accent); }
 .ktv-gtitle {
@@ -198,7 +202,7 @@
 .ktv-sel > i { display: block; width: 8px; height: 2px; border-radius: 2px; background: currentColor; }
 .ktv-row:hover .ktv-sel, .ktv-ghead:hover .ktv-sel, .ktv-sel:focus-visible, .ktv-list[data-selecting="true"] .ktv-sel,
 .ktv-sel[aria-checked="true"], .ktv-sel[aria-checked="mixed"], .ktv-row:has(:focus-visible) .ktv-sel { opacity: 1; }
-.ktv-ghead .ktv-sel { top: calc(50% + 4px); }
+.ktv-ghead .ktv-sel { top: 50%; }
 
 .ktv-rowwrap { content-visibility: auto; contain-intrinsic-size: auto var(--tv-row); scroll-margin-top: calc(var(--tv-sticky) + 44px); }
 .ktv-row {
@@ -371,6 +375,21 @@
   .ktv-hint { display: none; }
 }
 
+/* narrow lists (the task panel docked beside them, tablets): the title keeps its room;
+   tags and the project's name step back first */
+.ktv-list, .ktv-search-results { container: ktvlist / inline-size; }
+@media (min-width: 860px) {
+  @container ktvlist (max-width: 760px) {
+    .ktv-row .ktv-meta > :not(.ktv-with):not(.ktv-subbtn):not(.ktv-m-signal) { display: none; }
+    .ktv-row .ktv-proj { width: 112px; }
+    .ktv-row .ktv-cluster { gap: 8px; }
+  }
+  @container ktvlist (max-width: 600px) {
+    .ktv-row .ktv-proj { width: auto; }
+    .ktv-row .ktv-proj > span:last-child { display: none; }
+  }
+}
+
 /* ---------------- phones: two-line rows, the page scrolls ---------------- */
 @media (max-width: 859px) {
   .ktv-row {
@@ -481,8 +500,8 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 /* ---------------- timeline ---------------- */
 .ktv-tl { --tl-lane: 160px; flex: 1; min-height: 0; overflow: auto; }
 @media (max-width: 859px) { .ktv-tl { --tl-lane: 104px; } }
-.ktv-tl-axis { position: sticky; top: 0; z-index: 4; display: flex; background: var(--bg); box-shadow: inset 0 -1px 0 var(--hairline); }
-.ktv-tl-corner { position: sticky; left: 0; z-index: 1; width: var(--tl-lane); flex-shrink: 0; background: var(--bg); box-shadow: inset -1px 0 0 var(--hairline); }
+.ktv-tl-axis { position: sticky; top: 0; z-index: 4; display: flex; background: var(--tv-canvas); box-shadow: inset 0 -1px 0 var(--hairline); }
+.ktv-tl-corner { position: sticky; left: 0; z-index: 1; width: var(--tl-lane); flex-shrink: 0; background: var(--tv-canvas); box-shadow: inset -1px 0 0 var(--hairline); }
 .ktv-tl-day { position: relative; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; height: 44px; }
 .ktv-tl-day > span:first-child { font: 500 11px/16px var(--tv-ui); color: var(--ink-4); }
 .ktv-tl-day > span:last-child { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
@@ -497,7 +516,7 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 .ktv-tl-group { display: flex; box-shadow: inset 0 -1px 0 var(--hairline); }
 .ktv-tl-lane {
   position: sticky; left: 0; z-index: 3; width: var(--tl-lane); flex-shrink: 0; align-self: stretch;
-  background: var(--bg); box-shadow: inset -1px 0 0 var(--hairline);
+  background: var(--tv-canvas); box-shadow: inset -1px 0 0 var(--hairline);
 }
 .ktv-tl-lane-in {
   position: sticky; top: 44px; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px 0 var(--tv-gutter);
