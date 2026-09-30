@@ -234,9 +234,9 @@ function rowToActivity(r: ActivityRow): Activity {
   return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined };
 }
 
-interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; notify_prefs?: Record<string, boolean> | null; }
+interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; is_admin?: boolean | null; notify_prefs?: Record<string, boolean> | null; }
 function rowToProfile(r: ProfileRow): Profile {
-  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined, notifyPrefs: r.notify_prefs ?? undefined };
+  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined, isAdmin: r.is_admin ?? undefined, notifyPrefs: r.notify_prefs ?? undefined };
 }
 function fullName(p: { firstName: string; lastName: string }): string {
   return [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
@@ -1444,6 +1444,26 @@ export const store = {
       if (Object.keys(stripped).length === 0) return;
       row = stripped;
     }
+  },
+
+  /** Follow (true) or unfollow (false) a task as the signed-in user, through
+   *  0042's toggle_task_follow (the only way guests can follow: 0041 rejects
+   *  their task updates without an error). Returns the task's followers
+   *  afterwards, or null in demo mode, offline, while older edits to the task
+   *  are still queued, or before 0042 is run, so the caller falls back to a
+   *  normal patch. Always pass true or false, never a toggle, so a screen that
+   *  is out of date can't flip the person's choice. */
+  async setTaskFollow(taskId: string, follow: boolean): Promise<string[] | null> {
+    if (!supabase || isOffline() || offlineQueue.hasPending(taskId)) return null;
+    const { data, error } = await supabase.rpc("toggle_task_follow", { p_task: taskId, p_follow: follow })
+      .then((r) => r, (e: unknown) => ({ data: null, error: e }));
+    if (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "PGRST202" || code === "42883" || isNetworkError(error)) return null;
+      throw error;
+    }
+    offlineQueue.supersede(taskId, ["followers"]); // a parked older list must never come back over this
+    return Array.isArray(data) ? (data as string[]) : [];
   },
 
   // toggle the signed-in user's reaction (emoji) on a comment.

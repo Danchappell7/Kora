@@ -24,7 +24,8 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   open: boolean;
   profile: Profile | null;
   workspaceId: string | null;
-  onSaveProfile: (d: { firstName: string; lastName: string; pronouns: string; avatarUrl: string | null }) => Promise<void>;
+  /** avatarUrl left out keeps the saved photo (this dialog never changes it) */
+  onSaveProfile: (d: { firstName: string; lastName: string; pronouns: string; avatarUrl?: string | null }) => Promise<void>;
   onCreateProject: (p: NewProject) => void;
   onFinish: () => void;
 }) {
@@ -67,7 +68,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
 
   const saveName = async () => {
     setBusy(true);
-    try { await onSaveProfile({ firstName: firstName.trim(), lastName: lastName.trim(), pronouns: profile?.pronouns || "", avatarUrl: profile?.avatarUrl ?? null }); } catch { /* non-blocking */ }
+    try { await onSaveProfile({ firstName: firstName.trim(), lastName: lastName.trim(), pronouns: profile?.pronouns || "" }); } catch { /* non-blocking */ }
     setBusy(false); setStep(2);
   };
   const createProject = () => {

@@ -1,9 +1,11 @@
+import { StrictMode } from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
+import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { isTaskId } from "./lib/taskOps";
 
 const renderApp = () => render(
@@ -209,6 +211,9 @@ describe("App (demo mode)", () => {
     fireEvent.click(await screen.findByTitle(/Import tasks/));
     const dialog = await screen.findByRole("dialog", { name: "Import tasks" });
     fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: text } });
+    // My tasks has no project of its own: the modal asks where the rows go
+    const into = within(dialog).getByLabelText("Import into") as HTMLSelectElement;
+    fireEvent.change(into, { target: { value: Array.from(into.options).find((o) => o.value)!.value } });
     await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: /^Import \d+ tasks?$/ })); });
   };
 
@@ -335,6 +340,176 @@ describe("App (demo mode)", () => {
     expect(delProject).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(delTask).toHaveBeenCalled());
     expect(await screen.findByText(/^Deleted “Brand Refresh” and \d+ tasks?$/)).toBeInTheDocument();
+  });
+
+  const asGuest = () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, members: b.members.map((m) => (m.userId === "m-self" ? { ...m, role: "guest" as const } : m)) };
+    }));
+  };
+
+  it("a guest's list and task panel are read-only (no inline add, no delete)", async () => {
+    asGuest();
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    expect(within(panel).queryByTitle("Delete task")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add task")).not.toBeInTheDocument();
+  });
+
+  it("a filter that hides every task says so, and Clear filters brings them back", async () => {
+    await boot();
+    key("g"); key("t");
+    await screen.findAllByText(DECK);
+    fireEvent.change(screen.getByLabelText("Filter tasks by title"), { target: { value: "zzz no such task" } });
+    expect(await screen.findByText("No tasks match these filters")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Clear filters/ }));
+    expect(await screen.findAllByText(DECK)).not.toHaveLength(0);
+  });
+
+  it("deleting a project offers Archive instead first, and the archive can be undone", async () => {
+    const del = track(vi.spyOn(store, "deleteProject"));
+    const arch = track(vi.spyOn(store, "setProjectArchived"));
+    await boot();
+    // (an earlier test deleted Brand Refresh from the shared demo data)
+    fireEvent.click(within(projectButton("Platform Infra").parentElement!).getByTitle("Delete project"));
+    const dialog = await screen.findByRole("dialog", { name: "Delete project" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Archive project" }));
+    await waitFor(() => expect(arch).toHaveBeenCalledWith("p-infra", true));
+    expect(del).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText("Platform Infra", { selector: ".kproj *" })).not.toBeInTheDocument());
+    fireEvent.click(within(screen.getByText("Archived “Platform Infra”").parentElement!).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(arch).toHaveBeenCalledWith("p-infra", false));
+    expect(await screen.findByText("Platform Infra", { selector: ".kproj *" })).toBeInTheDocument();
+  });
+
+  it("the ⌘K palette opens a project in another workspace by switching to it", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    const input = await screen.findByRole("combobox");
+    fireEvent.change(input, { target: { value: "Growth" } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Projects" })).getByRole("option"));
+    expect(await screen.findByText("Growth Experiments", { selector: ".kproj *" })).toBeInTheDocument();
+    expect(screen.queryByText("Brand Refresh", { selector: ".kproj *" })).not.toBeInTheDocument(); // now in Reco HQ
+    expect(await screen.findByRole("heading", { name: /Growth Experiments/ })).toBeInTheDocument();
+  });
+
+  it("the palette hands its text to Search", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "narrative" } });
+    fireEvent.click(screen.getByRole("option", { name: /See all results for “narrative” in Search/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(await screen.findByDisplayValue("narrative")).toBeInTheDocument();
+    expect(await screen.findAllByText(DECK)).not.toHaveLength(0);
+  });
+
+  it("archiving a notification can be undone", async () => {
+    const item = { id: "a-1", taskId: "t-1", taskTitle: DECK, kind: "assigned" as const, detail: "Maya assigned this to you", createdAt: new Date().toISOString() };
+    track(vi.spyOn(store, "listActivity")).mockResolvedValue([item]);
+    const archive = track(vi.spyOn(store, "archiveActivity")).mockResolvedValue();
+    const unarchive = track(vi.spyOn(store, "unarchiveActivity")).mockResolvedValue();
+    await boot();
+    key("g"); key("i");
+    fireEvent.click(await screen.findByRole("button", { name: `Archive “${DECK}”` }));
+    await waitFor(() => expect(archive).toHaveBeenCalledWith("a-1"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: `Archive “${DECK}”` })).not.toBeInTheDocument());
+    fireEvent.click(within(screen.getByText("Notification archived").parentElement!).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(unarchive).toHaveBeenCalledWith(["a-1"]));
+    expect(await screen.findByRole("button", { name: `Archive “${DECK}”` })).toBeInTheDocument();
+  });
+
+  it("import nests sub-tasks under their parent row and creates the sections and tags the file names", async () => {
+    const create = track(vi.spyOn(store, "createTask"));
+    const section = track(vi.spyOn(store, "createSection"));
+    const tag = track(vi.spyOn(store, "createTag"));
+    const update = track(vi.spyOn(store, "updateTask"));
+    await boot();
+    await importText("Name,Section/Column,Tags,Parent task\nLaunch site,Kickoff,,\nWrite copy,,Fresh tag,Launch site");
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    const parent = create.mock.calls.find((c) => c[0].title === "Launch site")![0];
+    const child = create.mock.calls.find((c) => c[0].title === "Write copy")![0];
+    expect(child.parentId).toBe(parent.id);
+    expect(child.projectId).toBe(parent.projectId);
+    expect(section).toHaveBeenCalledWith(expect.objectContaining({ name: "Kickoff", projectId: parent.projectId }), expect.anything());
+    const sec = await section.mock.results[0].value;
+    expect(parent.sectionId).toBe(sec.id); // the insert waited for the section's real id
+    expect(tag).toHaveBeenCalledWith("Fresh tag", expect.any(String), expect.anything(), "ws-foundrise");
+    const made = await tag.mock.results[0].value;
+    await waitFor(() => expect(update).toHaveBeenCalledWith(child.id, { tags: [made.id] }));
+  });
+
+  it("a completion date read from the imported file is kept", async () => {
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await importText("Name,Completed At\nShipped long ago,2026-09-10");
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0][0]).toMatchObject({ status: "done", completedAt: "2026-09-10" });
+  });
+
+  it("following a task saves normally when the follow RPC isn't available (demo mode, or before 0042)", async () => {
+    const follow = track(vi.spyOn(store, "setTaskFollow"));
+    const update = track(vi.spyOn(store, "updateTask"));
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    fireEvent.click(within(panel).getByRole("button", { name: /^Follow/ }));
+    await waitFor(() => expect(follow).toHaveBeenCalledWith("t-1", true));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("t-1", { followers: expect.arrayContaining(["m-self"]) }));
+  });
+
+  it("Settings can follow the device's theme", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "settings" } });
+    fireEvent.click(screen.getByRole("option", { name: /Open settings/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /System/ }));
+    // the test browser reports a light system theme
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("light"));
+    expect(localStorage.getItem("kanbo-theme")).toBe("system");
+  });
+
+  it("a project started from a template gets its sections and starter tasks", async () => {
+    const section = track(vi.spyOn(store, "createSection"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "new project" } });
+    fireEvent.click(screen.getByRole("option", { name: /New project/ }));
+    const dialog = await screen.findByRole("dialog", { name: "New project" });
+    fireEvent.change(within(dialog).getByLabelText("Start from template"), { target: { value: "builtin-launch" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Create/ }));
+    await waitFor(() => expect(section).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(10));
+    const plan = (await section.mock.results[0].value).id;
+    expect(create.mock.calls.find((c) => c[0].title === "Define launch goals and success metrics")![0]).toMatchObject({ sectionId: plan, status: "todo", workspaceId: "ws-foundrise" });
+  });
+
+  it("changes the queue gave up on are shown, with Retry and Discard", async () => {
+    const parked = [{ op: { id: "op-1", kind: "update", taskId: "t-1", patch: { priority: "high" } }, failedAt: Date.now(), error: "permission denied" }] as unknown as DeadLetter[];
+    track(vi.spyOn(offlineQueue, "subscribeDeadLetters").mockImplementation((fn) => { fn(parked); return () => {}; }));
+    const retry = track(vi.spyOn(offlineQueue, "retryDeadLetters")).mockReturnValue(1);
+    const discard = track(vi.spyOn(offlineQueue, "discardDeadLetters")).mockReturnValue(1);
+    track(vi.spyOn(offlineQueue, "deadLetters")).mockReturnValue(parked);
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    await boot();
+    const banner = screen.getByText(/^1 change couldn't be synced — the server turned it down/).parentElement!;
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalled();
+    fireEvent.click(within(banner).getByRole("button", { name: "Discard" }));
+    expect(discard).toHaveBeenCalled();
+  });
+
+  it("the top bar's theme button flips light and dark every time (also under StrictMode)", async () => {
+    render(<StrictMode><ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider></StrictMode>);
+    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("light"));
+    fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("dark"));
+    expect(localStorage.getItem("kanbo-theme")).toBe("dark");
   });
 
   it("guests can look but not edit: no optimistic change, one friendly toast", async () => {

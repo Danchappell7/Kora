@@ -13,6 +13,7 @@ import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { AVATAR_ACCEPT, AVATAR_MESSAGES, avatarExtension, avatarMime } from "../../lib/avatarUpload";
 import { uiZoom } from "../../lib/appearance";
+import { inviteEmailNotice, type InviteEmailResult, type InvitedMember } from "../../data/store";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
   created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
@@ -720,8 +721,11 @@ function RoleBadge({ m }: { m: WorkspaceMember }) {
 }
 
 /* Per pending email: "fresh" = invited from this page a moment ago, "sent" =
-   re-sent a moment ago (both hold Resend off for RESEND_COOLDOWN). */
-type ResendState = "sending" | "sent" | "fresh" | { error: string };
+   re-invited a moment ago, "emailed" = its email re-sent a moment ago (all hold
+   Resend off for RESEND_COOLDOWN). `info` is a
+   note about the email that needs nothing from you; with `hold` (an email went
+   under a minute ago) Resend waits out the cooldown too. */
+type ResendState = "sending" | "sent" | "emailed" | "fresh" | { error: string } | { info: string; hold?: boolean };
 
 /* Clean, clickable card — opens the profile drawer. Pending invites also get
    "Resend invite" and "Copy sign-up link" for owners/admins. Hoisted to module
@@ -737,9 +741,10 @@ function MemberCard({ m, name, isSelf, openN, onSelect, invite }: {
   const load = Math.min(100, openN * 20);
   const pending = m.status !== "active";
   const resend = invite?.resend;
-  const resendError = resend && typeof resend === "object" ? resend.error : null;
-  const done = resend === "sent" || resend === "fresh";
-  const resendLabel = resend === "sending" ? "Sending…" : resend === "sent" ? "Invite refreshed" : resend === "fresh" ? "Just invited" : "Resend invite";
+  const resendError = resend && typeof resend === "object" && "error" in resend ? resend.error : null;
+  const resendInfo = resend && typeof resend === "object" && "info" in resend ? resend : null;
+  const done = resend === "sent" || resend === "emailed" || resend === "fresh" || !!resendInfo?.hold;
+  const resendLabel = resend === "sending" ? "Sending…" : resend === "sent" ? "Invite refreshed" : resend === "emailed" ? "Invite sent" : resend === "fresh" ? "Just invited" : resendInfo?.hold ? "Recently sent" : "Resend invite";
   return (
     <div className="glass lift" style={{ borderRadius: 16, display: "flex", flexDirection: "column", width: "100%" }}>
       <button type="button" onClick={onSelect} aria-haspopup="dialog" style={{ padding: invite ? "16px 16px 12px" : 16, borderRadius: 16, textAlign: "left", cursor: "pointer", border: "none", background: "transparent", display: "flex", flexDirection: "column", gap: 13, width: "100%", color: "var(--ink)", fontFamily: "var(--font-display)" }}>
@@ -792,7 +797,8 @@ function MemberCard({ m, name, isSelf, openN, onSelect, invite }: {
           <div aria-live="polite" style={{ fontSize: 11.5, lineHeight: 1.45, color: resendError ? ERR_INK : "var(--ink-4)" }}>
             {resendError
               ? resendError
-              : resend === "sent" ? "If the email doesn't reach them, copy the sign-up link and send it yourself."
+              : resendInfo ? resendInfo.info
+              : resend === "sent" || resend === "emailed" ? "If the email doesn't reach them, copy the sign-up link and send it yourself."
               : invite.copied === "ok" ? `Share it with them — they need to sign up with ${m.email} to join.`
               : invite.copied === "failed" ? `Couldn't copy automatically — the sign-up link is ${window.location.origin}/`
               : null}
@@ -939,7 +945,7 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
   );
 }
 
-export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onUpdateWorkspace, onUploadLogo, onDeleteWorkspace }: {
+export function TeamView({ tasks, workspace, workspaces, members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onUpdateWorkspace, onUploadLogo, onDeleteWorkspace }: {
   tasks: Task[];
   workspace: string | null;
   workspaces: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -952,6 +958,9 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
       outcome, so the page then claims neither (it only clears the field, and
       the handler must surface failures itself). */
   onInvite: (workspaceId: string, email: string, role: Role) => void | Promise<unknown>;
+  /** Re-send a pending invite's email (the invite itself stands). Without it,
+      Resend re-runs onInvite, which refreshes the invite and emails it again. */
+  onResendInvite?: (memberId: string) => Promise<InviteEmailResult>;
   onRemoveMember: (memberId: string) => void;
   onSetRole?: (memberId: string, role: Role) => void;
   onSetTitle?: (memberId: string, title: string) => void;
@@ -982,7 +991,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   useEffect(() => { setInviteMsg(null); setResend({}); setCopied(null); setLogoError(null); }, [workspace]);
   const later = (fn: () => void, ms: number) => { timers.current.push(window.setTimeout(fn, ms)); };
   // an invite just went out for this email: hold Resend off until the email function would send again
-  const setResendFor = (email: string, state: "sent" | "fresh") => {
+  const setResendFor = (email: string, state: ResendState) => {
     const key = email.toLowerCase();
     setResend((s) => ({ ...s, [key]: state }));
     later(() => setResend((s) => { if (s[key] !== state) return s; const n = { ...s }; delete n[key]; return n; }), RESEND_COOLDOWN);
@@ -1029,11 +1038,14 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
       const r = onInvite(workspace, v, inviteRole);
       // no promise → no way to know how it went: claim nothing, just clear the field
       if (!isThenable(r)) { setEmail(""); return; }
-      await r;
+      const res = await r;
       setEmail("");
       setResendFor(v, existing ? "sent" : "fresh");
       const as = withArticle(ROLE_META[inviteRole].label.toLowerCase());
-      setInviteMsg({ kind: "ok", text: existing ? `Refreshed the invite for ${v} (as ${as}).` : `Invited ${v} as ${as}. They'll join when they sign up or sign in with that email.` });
+      const ok = existing ? `Refreshed the invite for ${v} (as ${as}).` : `Invited ${v} as ${as}. They'll join when they sign up or sign in with that email.`;
+      // the invite stands either way; say so when its email didn't go
+      const note = inviteEmailNotice((res as InvitedMember | undefined)?.inviteEmail);
+      setInviteMsg(note?.tone === "error" ? { kind: "error", text: note.text } : { kind: "ok", text: note ? `${ok} ${note.text}` : ok });
     } catch (e) {
       setInviteMsg({ kind: "error", text: inviteErrorText(e, v) });
     } finally {
@@ -1044,9 +1056,17 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   const resendInvite = async (m: WorkspaceMember) => {
     const key = m.email.toLowerCase();
     const cur = resend[key];
-    if (!workspace || cur === "sending" || cur === "sent" || cur === "fresh") return;
+    if (!workspace || cur === "sending" || cur === "sent" || cur === "emailed" || cur === "fresh" || (typeof cur === "object" && "info" in cur && cur.hold)) return;
     setResend((s) => ({ ...s, [key]: "sending" }));
     try {
+      if (onResendInvite) {
+        const res = await onResendInvite(m.id);
+        const note = inviteEmailNotice(res);
+        if (!note) setResendFor(key, "emailed");
+        else if (res.reason === "throttled") setResendFor(key, { info: note.text, hold: true });
+        else setResend((s) => ({ ...s, [key]: note.tone === "error" ? { error: note.text } : { info: note.text } }));
+        return;
+      }
       const r = onInvite(workspace, m.email, m.role);
       if (!isThenable(r)) { setResend((s) => { const n = { ...s }; delete n[key]; return n; }); return; }
       await r;

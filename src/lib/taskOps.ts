@@ -5,7 +5,7 @@
    React so they can be unit-tested (taskOps.test.ts).
    ============================================================ */
 import type { Task, Status, Workspace, WorkspaceMember, Project } from "../data/types";
-import { nextDueDate, toLocalISO, KANBO_TODAY } from "../data/data";
+import { nextOccurrence, toLocalISO, KANBO_TODAY } from "../data/data";
 import { reportError } from "./monitoring";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -175,20 +175,27 @@ export function cloneTaskTree(src: Task, all: Task[], over: (t: Task, isRoot: bo
 
 /** The next occurrence of a completed recurring task (with its sub-tasks reset
  *  to to-do), or null when it doesn't recur or an open occurrence of the same
- *  series is already due on or after the next date (idempotent re-completes). */
+ *  series is already due on or after the next date (idempotent re-completes).
+ *  Dates follow nextOccurrence: a monthly series keeps its day (31 Jan → 28 Feb
+ *  → 31 Mar, carried in originalDueDate). Sub-tasks that repeat on their own
+ *  (and anything under them) stay behind: they spawn their own next occurrence. */
 export function buildRecurrence(t: Task, all: Task[], makeId: () => string = newTaskId): Task[] | null {
   if (!t.recurrence || t.recurrence === "none") return null;
-  const nextDue = nextDueDate(t.dueDate, t.recurrence);
+  const occ = nextOccurrence(t, t.id);
+  const nextDue = occ.dueDate!;
   const exists = all.some((x) => x.id !== t.id && x.status !== "done" && !x.archivedAt && (x.parentId ?? null) === (t.parentId ?? null)
     && x.title === t.title && x.projectId === t.projectId && (x.recurrence ?? "none") === t.recurrence
     && !!x.dueDate && x.dueDate >= nextDue);
   if (exists) return null;
   const delta = Math.round((midnight(nextDue).getTime() - midnight(t.dueDate).getTime()) / DAY);
   const shift = (iso?: string) => { if (!iso) return undefined; const d = midnight(iso); d.setDate(d.getDate() + delta); return toLocalISO(d); };
-  return cloneTaskTree(t, all, (x, isRoot) => ({
+  const ownSeries = descendantsOf([t.id], all).filter((d) => (d.recurrence ?? "none") !== "none");
+  const skip = new Set([...ownSeries.map((d) => d.id), ...descendantsOf(ownSeries.map((d) => d.id), all).map((d) => d.id)]);
+  return cloneTaskTree(t, skip.size ? all.filter((x) => !skip.has(x.id)) : all, (x, isRoot) => ({
     status: "todo", completedAt: undefined, archivedAt: undefined, loggedHours: undefined, reactions: {},
-    comments: 0, scheduled: null, planToday: false, dependencies: [], createdAt: undefined, originalDueDate: undefined,
-    dueDate: isRoot ? nextDue : shift(x.dueDate), startDate: shift(x.startDate), position: Date.now(),
+    comments: 0, scheduled: null, planToday: false, dependencies: [], createdAt: undefined,
+    originalDueDate: isRoot ? occ.originalDueDate : undefined,
+    dueDate: isRoot ? nextDue : shift(x.dueDate), startDate: isRoot ? occ.startDate : shift(x.startDate), position: Date.now(),
   }), makeId);
 }
 

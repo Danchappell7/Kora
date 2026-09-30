@@ -90,6 +90,23 @@ describe("buildRecurrence", () => {
     // a done or earlier one doesn't count
     expect(buildRecurrence(weekly, [weekly, { ...existing, status: "done" }])).not.toBeNull();
   });
+  it("keeps a monthly series on its day through a short month (31 Jan → 28 Feb → 31 Mar)", () => {
+    const jan = task({ id: "m1", recurrence: "monthly", dueDate: "2030-01-31", status: "done" });
+    const [feb] = buildRecurrence(jan, [jan])!;
+    expect(feb).toMatchObject({ dueDate: "2030-02-28", originalDueDate: "2030-01-31" });
+    const [mar] = buildRecurrence({ ...feb, status: "done" }, [feb])!;
+    expect(mar).toMatchObject({ dueDate: "2030-03-31" });
+  });
+  it("leaves behind sub-tasks that repeat on their own (they spawn their own next one)", () => {
+    const parent = task({ id: "p", recurrence: "weekly", dueDate: "2030-01-07", status: "done" });
+    const own = task({ id: "own", parentId: "p", recurrence: "daily", dueDate: "2030-01-06" });
+    const under = task({ id: "under", parentId: "own" });
+    const plain = task({ id: "plain", parentId: "p" });
+    const rows = buildRecurrence(parent, [parent, own, under, plain])!;
+    expect(rows.map((r) => r.title)).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ parentId: rows[0].id, status: "todo" });
+    expect(rows.some((r) => r.recurrence === "daily")).toBe(false);
+  });
   it("does nothing for non-recurring tasks", () => {
     expect(buildRecurrence(task({ id: "z" }), [])).toBeNull();
     expect(buildRecurrence(task({ id: "z", recurrence: "none" }), [])).toBeNull();

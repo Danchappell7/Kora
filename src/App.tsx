@@ -12,14 +12,15 @@ import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, type ThemeChoice } from "./components/SettingsModal";
 import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
-import { ImportTasksModal } from "./components/ImportTasksModal";
-import { exportTasksCsv, printTasks } from "./lib/exportTasks";
+import { ImportTasksModal, type ImportRow } from "./components/ImportTasksModal";
+import { exportTasksCsv, printTasks, type TaskExportOptions } from "./lib/exportTasks";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { TagManagerModal } from "./components/TagManagerModal";
+import { TAG_COLORS } from "./components/TagPicker";
 import { ListView } from "./components/tasks/ListView";
 import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./components/tasks/OtherViews";
 import { PlanView } from "./components/views/PlanView";
@@ -38,14 +39,18 @@ import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
 import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { store, type NewProject, type AppBanner, type Bootstrap } from "./data/store";
-import { offlineQueue } from "./lib/offlineQueue";
+import { store, keepOnScreen, getStrippedColumns, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange } from "./data/store";
+import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
+import { DAY_CHANGE_EVENT } from "./lib/liveClock";
+import { canArchiveProject } from "./lib/permissions";
+import { BUILTIN_PROJECT_TEMPLATES, projectTemplateTasks } from "./lib/templates";
+import { resolveTagId } from "./components/views/reportingUtils";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { QuickCapture } from "./components/QuickCapture";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
 import { taskMatchesQuery, toQuery } from "./lib/searchQuery";
 import {
-  STATUS_META, getProject, getMember, setReferenceData, toLocalISO, MEMBERS, dueState, KANBO_TODAY, energyOf,
+  STATUS_META, getProject, getMember, setReferenceData, toLocalISO, MEMBERS, dueState, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
 import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./data/types";
@@ -253,7 +258,7 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
       </div>
       <div style={{ flex: 1, minWidth: 160 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 5 }}><span className="kicker">Progress</span><span className="mono tnum" style={{ color: prog > 0 ? "var(--accent)" : "var(--ink-4)" }}>{prog}%</span></div>
-        <div style={{ height: 7, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}><div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: project.color, transition: "width .9s var(--ease)" }} /></div>
+        <div style={{ height: 7, borderRadius: 99, background: "var(--track, var(--surface-2))", overflow: "hidden" }}><div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: project.color, transition: "width .9s var(--ease)" }} /></div>
         <div style={{ display: "flex", gap: 12, marginTop: 9, flexWrap: "wrap" }}>
           {byStatus.map(({ s, n }) => (
             <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-3)" }}><StatusDot status={s} size={7} />{STATUS_META[s].label} <span className="mono" style={{ color: "var(--ink-4)" }}>{n}</span></span>
@@ -368,7 +373,7 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
   );
 }
 
-function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false }: {
+function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -403,6 +408,12 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
   filterScope?: string;
   /** a guest in this workspace: view + comment only (editing controls should hide) */
   readOnly?: boolean;
+  /** which board this is, so each board keeps its own WIP limits */
+  boardScope?: string;
+  /** the CSV file's name (the project's, or "my-tasks") */
+  exportName?: string;
+  /** what the CSV needs to fill its Section, Parent task and custom-field columns */
+  exportOpts?: TaskExportOptions;
 }) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [compact, setCompact] = useState(() => { try { return localStorage.getItem("kanbo-density") === "compact"; } catch { return false; } });
@@ -458,15 +469,17 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
     <>
       {header}
       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, padding: isMobile ? "10px 14px" : "12px 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, flexWrap: "wrap" }}>
-        <Segmented options={VIEW_OPTS} value={view} onChange={setView} />
+        <Segmented options={VIEW_OPTS} value={view} onChange={setView} ariaLabel="View" />
         {!isMobile && <div style={{ width: 1, height: 22, background: "var(--hairline)" }} />}
         {view === "list" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {!isMobile && <span className="kicker">Group</span>}
-            <Segmented options={GROUP_OPTS} value={groupBy} onChange={setGroupBy} />
+            <Segmented options={GROUP_OPTS} value={groupBy} onChange={setGroupBy} ariaLabel="Group by" />
           </div>
         )}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: isMobile ? 8 : 10 }}>
+        {/* wraps rather than running off the edge on a narrow window (a focused button out
+            there would scroll the whole app sideways) */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: isMobile ? 8 : 10, flexWrap: "wrap", justifyContent: "flex-end", minWidth: 0 }}>
         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
           <Icon name="search" size={14} style={{ position: "absolute", left: 10, color: "var(--ink-4)", pointerEvents: "none" }} />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter tasks…" aria-label="Filter tasks by title"
@@ -567,7 +580,7 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
         )}
         {!isMobile && (
           <>
-            <button onClick={() => exportTasksCsv(filtered, "tasks")} className="btn" title="Export these tasks to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
+            <button onClick={() => exportTasksCsv(filtered, exportName, exportOpts)} className="btn" title="Export these tasks to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
             <button onClick={() => printTasks(filtered, "Tasks export")} className="btn" title="Export these tasks to PDF (print)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> PDF</button>
             {onOpenImport && !readOnly && <button onClick={onOpenImport} className="btn" title="Import tasks (paste a list or upload a file)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="plus" size={15} /> Import</button>}
           </>
@@ -597,10 +610,11 @@ function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, set
           <button onClick={clearFilters} className="btn btn-ghost" style={{ padding: "4px 11px", fontSize: 12.5 }}>Clear filters</button>
         </div>
       )}
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId} />}
-      {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} />}
-      {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} />}
-      {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} />}
+      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId}
+        filtered={narrowed || showArchived} onClearFilters={clearFilters} readOnly={readOnly} />}
+      {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} />}
+      {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
+      {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
       {view === "files" && <FilesView tasks={filtered} onOpen={onOpen} />}
       {view === "matrix" && <MatrixView tasks={filtered} onOpen={onOpen} />}
     </>
@@ -661,10 +675,16 @@ export default function App() {
   const auth = useAuth();
   const { error: toastError, success: toastSuccess, action: toastAction, toast } = useToast();
   const toastInfo = useCallback((m: string) => toast(m, "info"), [toast]);
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    try { const s = localStorage.getItem("kanbo-theme"); if (s === "light" || s === "dark") return s; } catch { /* private mode */ }
+  // "system" follows the device (theme-init.js paints it before React mounts)
+  const [theme, setTheme] = useState<ThemeChoice>(() => {
+    try { const s = localStorage.getItem("kanbo-theme"); if (s === "light" || s === "dark" || s === "system") return s; } catch { /* private mode */ }
     return "dark"; // dark is the on-brand default; users can toggle to light
   });
+  const systemDark = useMediaQuery("(prefers-color-scheme: dark)");
+  const resolvedTheme: "light" | "dark" = theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  // the quick toggles (top bar, palette) always pick an explicit theme — worked out
+  // when clicked, not in a state updater (StrictMode re-runs those mid-render)
+  const flipTheme = useCallback(() => setTheme(resolvedThemeRef.current === "dark" ? "light" : "dark"), []);
   const [appearance, setAppearance] = useState<Appearance>(loadAppearance);
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -713,6 +733,8 @@ export default function App() {
   });
   const [smart, setSmart] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
+  // Search opened from the palette with its text already typed in (until you navigate)
+  const [searchPrefill, setSearchPrefill] = useState<{ text: string; key: string } | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const gPrefixRef = useRef(false);
@@ -730,6 +752,7 @@ export default function App() {
 
   /* ---- live views of state for stable callbacks ---- */
   const routeRef = useRef<Route>(route); routeRef.current = route;
+  const resolvedThemeRef = useRef(resolvedTheme); resolvedThemeRef.current = resolvedTheme;
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
@@ -740,6 +763,7 @@ export default function App() {
   const workspaceRef = useRef<string | null>(null); workspaceRef.current = workspace;
   const wsMembersRef = useRef<WorkspaceMember[]>([]); wsMembersRef.current = wsMembers;
   const activityRef = useRef<Activity[]>([]); activityRef.current = activity;
+  const savedSearchesRef = useRef<SavedSearch[]>([]); savedSearchesRef.current = savedSearches;
   const signedInRef = useRef(false); signedInRef.current = !auth.configured || !!auth.user;
 
   /* ---- write bookkeeping ----
@@ -859,23 +883,34 @@ export default function App() {
   useEffect(() => { store.activeBanner().then(setBanner).catch(() => {}); }, []);
   // offline write-replay queue: surface how many changes are waiting to sync
   useEffect(() => offlineQueue.subscribe(setPendingSync), []);
+  // a queued create was saved: swap its optimistic id for the server's
+  const onQueuedCreateSaved = useCallback((clientId: string, serverId: string, saved: Task) => {
+    // after an online reopen a queued-create task isn't in state yet — insert it
+    setTasks((ts) => {
+      if (!ts || ts.some((t) => t.id === clientId || t.id === serverId)) return ts;
+      return [{ ...saved, id: serverId }, ...ts];
+    });
+    remapTaskId(clientId, serverId);
+  }, [remapTaskId]);
   // replay queued task writes; swap any optimistic ids the server reassigned
   const flushOffline = useCallback(async () => {
     if (offlineQueue.size() === 0 || typeof navigator !== "undefined" && navigator.onLine === false) return;
     setSyncing(true);
     try {
-      const n = await store.flushQueue((clientId, serverId, saved) => {
-        // after an online reopen a queued-create task isn't in state yet — insert it
-        setTasks((ts) => {
-          if (!ts || ts.some((t) => t.id === clientId || t.id === serverId)) return ts;
-          return [{ ...saved, id: serverId }, ...ts];
-        });
-        remapTaskId(clientId, serverId);
-      });
+      const n = await store.flushQueue(onQueuedCreateSaved);
       if (n > 0) toastSuccess(`Synced ${plural(n, "offline change")}`);
     } catch (e) { reportError(e, { op: "flushOffline" }); }
     finally { setSyncing(false); }
-  }, [toastSuccess, remapTaskId]);
+  }, [toastSuccess, onQueuedCreateSaved]);
+  // changes the queue parked after several failed tries: say so, with Retry / Discard
+  const [deadLetters, setDeadLetters] = useState<DeadLetter[]>([]);
+  useEffect(() => offlineQueue.subscribeDeadLetters(setDeadLetters), []);
+  const retryDeadLetters = useCallback(() => { offlineQueue.retryDeadLetters(); flushOffline(); }, [flushOffline]);
+  const discardDeadLetters = useCallback(() => {
+    const n = offlineQueue.deadLetters().length;
+    if (!n || !window.confirm(`Discard ${plural(n, "change")} that couldn't be synced? ${n === 1 ? "It's" : "They're"} only on this device, so ${n === 1 ? "it's" : "they're"} gone for good.`)) return;
+    offlineQueue.discardDeadLetters();
+  }, []);
   // connection awareness — honest about offline, and drain the queue on reconnect
   useEffect(() => {
     const goOnline = () => { setOnline(true); toastSuccess("Back online"); flushOffline(); };
@@ -958,9 +993,10 @@ export default function App() {
   }, [inboxCount]);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.setAttribute("data-theme", resolvedTheme);
     try { localStorage.setItem("kanbo-theme", theme); } catch { /* private mode */ }
-  }, [theme]);
+    // (theme-init.js keeps <meta name="theme-color"> in step with data-theme)
+  }, [theme, resolvedTheme]);
   useEffect(() => { saveAppearance(appearance); }, [appearance]);
 
   /* ---- keyboard ---- */
@@ -1081,14 +1117,23 @@ export default function App() {
     recentCreatesRef.current.set(id, { seq: reloadSeqRef.current, until: Date.now() + 30000 });
   }, []);
 
+  /** Once per session: the database is missing columns this version writes
+   *  (a migration not run yet), so some fields are being dropped on save. */
+  const schemaNoticeRef = useRef(false);
+  const noteSchemaBehind = useCallback(() => {
+    if (schemaNoticeRef.current || !store.configured || getStrippedColumns().length === 0) return;
+    schemaNoticeRef.current = true;
+    toastInfo("The server needs an update — some fields aren't being saved yet.");
+  }, [toastInfo]);
+
   /** Apply a bootstrap result. Returns false when a newer run's data is already on screen. */
-  const applyBoot = useCallback((b: Bootstrap, seq: number, initial: boolean): boolean => {
+  const applyBoot = useCallback((loaded: Bootstrap, seq: number, initial: boolean): boolean => {
     if (initial) {
-      setCurrentUserId(b.currentUserId);
+      setCurrentUserId(loaded.currentUserId);
       // reopen where this person left off (if they're still in that workspace)
       let stored: string | null = null;
-      try { stored = localStorage.getItem(lastWorkspaceKey(b.currentUserId)); } catch { /* private mode */ }
-      setWorkspace(pickStartWorkspace(b.workspaces, b.defaultWorkspace, stored));
+      try { stored = localStorage.getItem(lastWorkspaceKey(loaded.currentUserId)); } catch { /* private mode */ }
+      setWorkspace(pickStartWorkspace(loaded.workspaces, loaded.defaultWorkspace, stored));
       // where we open isn't a choice to remember (a list that loaded short would otherwise pin Personal)
       skipWsPersistRef.current = true;
       bootedRef.current = true;
@@ -1099,6 +1144,10 @@ export default function App() {
       return false;
     }
     appliedSeqRef.current = seq;
+    // a reload where some best-effort parts failed keeps what's on screen for those
+    // parts. (The first load's parts are already the device's last good copy.)
+    const b = initial ? loaded : keepOnScreen(loaded, { projects: projectsRef.current, tags: tagsRef.current, workspaces: workspacesRef.current, members: wsMembersRef.current });
+    noteSchemaBehind();
     setTasks(mergeServerTasks(b.tasks));
     const tmpTags = Object.fromEntries(Object.entries(tagsRef.current).filter(([k]) => k.startsWith("tmp-")));
     // Projects and workspaces this snapshot can't be trusted to leave out: ones created
@@ -1108,12 +1157,12 @@ export default function App() {
     applyProjects(reloadProjects(b.projects, projectsRef.current, b.tasks, justMade)); applyTags({ ...b.tags, ...tmpTags });
     const ws = reloadWorkspaces(b.workspaces, workspacesRef.current, b.members, wsMembersRef.current, b.currentUserId, justMade);
     setWorkspaces(ws.workspaces); setReferenceData({ workspaces: ws.workspaces });
-    setWsMembers(ws.members); setProfile(b.profile);
+    setWsMembers(ws.members); setProfile((cur) => (!initial && b.partial?.profile ? cur : b.profile));
     setSections((cur) => keepTmp(b.sections, cur)); setCustomFields((cur) => keepTmp(b.customFields, cur)); setSavedSearches((cur) => keepTmp(b.savedSearches, cur));
     setGoals((cur) => keepTmp(b.goals, cur)); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
     setAutomationRules((cur) => keepTmp(b.automationRules, cur)); setForms((cur) => keepTmp(b.forms, cur));
     return true;
-  }, [mergeServerTasks, applyProjects, applyTags]);
+  }, [mergeServerTasks, applyProjects, applyTags, noteSchemaBehind]);
 
   useEffect(() => {
     if (auth.configured && !authUserId) {
@@ -1125,6 +1174,9 @@ export default function App() {
     }
     let cancelled = false;
     const seq = ++reloadSeqRef.current;
+    // retries the store schedules by itself (a request that died mid-flight) can
+    // swap optimistic ids too, even when the queue was empty at load
+    store.setRemapHandler(onQueuedCreateSaved);
     (async () => {
       try {
         const b = await store.bootstrap(auth.user);
@@ -1140,7 +1192,7 @@ export default function App() {
         if (!cancelled) { setTasks([]); toastError("Couldn't load your workspace. Please refresh."); }
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; store.setRemapHandler(null); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.configured, authUserId]);
 
@@ -1148,9 +1200,12 @@ export default function App() {
   // trailing debounce with a 3s max wait (steady traffic can't starve it), and
   // numbered runs so an older reload that finishes late can't overwrite a newer one.
   // One reload at a time: events that arrive while one runs queue a single follow-up.
+  // A resync (reconnected, back online, tab back after a while) runs at once; a
+  // change that only touches the inbox (activity rows) re-reads just the feed.
   useEffect(() => {
     if (!store.configured || !authUserId) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let feedTimer: ReturnType<typeof setTimeout> | undefined;
     let firstAt = 0, alive = true, running = false, dirty = false;
     const reload = async () => {
       if (running) { dirty = true; return; }
@@ -1173,14 +1228,29 @@ export default function App() {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => { firstAt = 0; timer = undefined; reload(); }, Math.max(0, Math.min(500, firstAt + 3000 - now)));
     };
+    const reloadNow = () => { if (timer) clearTimeout(timer); timer = undefined; firstAt = 0; reload(); };
+    const refreshFeed = () => {
+      if (feedTimer) return; // one feed read per burst
+      feedTimer = setTimeout(() => {
+        feedTimer = undefined;
+        const seq = appliedSeqRef.current;
+        store.listActivity().then((feed) => { if (alive && seq === appliedSeqRef.current) setActivity(mergeReadState(feed)); }, (e) => reportError(e, { op: "realtime-feed" }));
+      }, 400);
+    };
+    const onChange = (change?: RealtimeChange) => {
+      if (change?.kind === "resync") reloadNow();
+      else if (change?.kind === "row" && change.table === "activity") refreshFeed();
+      else schedule();
+    };
     requestReloadRef.current = schedule;
-    const unsub = store.subscribeToChanges(schedule);
-    return () => { alive = false; requestReloadRef.current = null; if (timer) clearTimeout(timer); unsub(); };
+    const unsub = store.subscribeToChanges(onChange);
+    return () => { alive = false; requestReloadRef.current = null; if (timer) clearTimeout(timer); if (feedTimer) clearTimeout(feedTimer); unsub(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUserId]);
 
   const setRoute = (r: Route) => {
     setRouteRaw(r);
+    setSearchPrefill(null);
     if (r.smart) setSmart(true);
     setDetailId(null);
     setSidebarOpen(false); // close the mobile drawer on navigation
@@ -1239,7 +1309,8 @@ export default function App() {
       return;
     }
     projMissRef.current = null;
-    if (p.archivedAt) { setRoute({ view: "home" }); toastInfo(`“${p.name}” was archived — restore it from the sidebar.`); }
+    // (only people who can archive see the sidebar's Restore)
+    if (p.archivedAt) { setRoute({ view: "home" }); toastInfo(canArchiveProject(p, { myRole: roleIn(p.workspaceId) }) ? `“${p.name}” was archived — restore it from the sidebar.` : `“${p.name}” was archived.`); }
     else if ((p.workspaceId ?? null) !== workspace) {
       setRoute({ view: "home" });
       // you switched workspace: nothing to explain. Otherwise (it was moved): say where it is.
@@ -1255,15 +1326,35 @@ export default function App() {
       .catch(reportError);
   }, []);
 
-  /* ---- inbox archiving ---- */
-  const archiveActivity = useCallback((id: string) => {
-    const removed = activityRef.current.find((a) => a.id === id);
-    setActivity((xs) => xs.filter((a) => a.id !== id)); // optimistic
-    store.archiveActivity(id).catch((e) => {
-      reportError(e); toastError("Couldn't archive that item.");
-      if (removed) setActivity((xs) => (xs.some((a) => a.id === id) ? xs : [removed, ...xs]));
+  /* ---- inbox archiving (with Undo) ---- */
+  const putBackActivity = useCallback((items: Activity[]) => {
+    setActivity((xs) => {
+      const have = new Set(xs.map((a) => a.id));
+      const back = items.filter((a) => !have.has(a.id));
+      return back.length ? [...back, ...xs].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : xs;
     });
-  }, [toastError]);
+  }, []);
+  /** Undo an archive: back on screen at once, and un-archived on the server once
+   *  the archive itself has landed (if the archive failed they're already back). */
+  const undoArchive = useCallback((items: Activity[], archived: Promise<void>) => {
+    if (!items.length) return;
+    const ids = items.map((a) => a.id);
+    putBackActivity(items);
+    archived.then(() => store.unarchiveActivity(ids).catch((e) => {
+      reportError(e, { op: "unarchiveActivity" });
+      const gone = new Set(ids);
+      setActivity((xs) => xs.filter((a) => !gone.has(a.id)));
+      toastError(ids.length === 1 ? "Couldn't bring that item back." : "Couldn't bring those items back.");
+    }), () => { /* the archive failed: nothing to undo */ });
+  }, [putBackActivity, toastError]);
+
+  const archiveActivity = useCallback((id: string) => {
+    const removed = activityRef.current.filter((a) => a.id === id);
+    setActivity((xs) => xs.filter((a) => a.id !== id)); // optimistic
+    const archived = store.archiveActivity(id);
+    archived.catch((e) => { reportError(e); toastError("Couldn't archive that item."); putBackActivity(removed); });
+    toastAction("Notification archived", "Undo", () => undoArchive(removed, archived), {});
+  }, [toastError, toastAction, putBackActivity, undoArchive]);
 
   // "Archive all" clears what the inbox is showing — this workspace, not every workspace
   const clearInbox = useCallback((ids?: unknown) => {
@@ -1272,16 +1363,17 @@ export default function App() {
     const set = new Set(list);
     const removed = activityRef.current.filter((a) => set.has(a.id));
     setActivity((xs) => xs.filter((a) => !set.has(a.id)));
-    store.clearInbox(list).then(() => toastSuccess("Inbox cleared")).catch((e) => {
-      reportError(e); toastError("Couldn't clear the inbox.");
-      setActivity((xs) => { const have = new Set(xs.map((a) => a.id)); return [...removed.filter((a) => !have.has(a.id)), ...xs]; });
-    });
-  }, [toastSuccess, toastError]);
+    const archived = store.clearInbox(list);
+    archived.catch((e) => { reportError(e); toastError("Couldn't clear the inbox."); putBackActivity(removed); });
+    toastAction(Array.isArray(ids) ? `Archived ${plural(list.length, "item")}` : "Inbox cleared", "Undo", () => undoArchive(removed, archived), {});
+  }, [toastError, toastAction, putBackActivity, undoArchive]);
 
   /* ---- profile ---- */
   const uploadAvatar = useCallback((file: File) => store.uploadAvatar(userIdRef.current, file), []);
 
-  const saveProfile = useCallback(async (draft: ProfileDraft) => {
+  // leave avatarUrl out to keep the saved photo (a stale copy of the profile —
+  // another tab, or before the photo loaded — must not put an old one back)
+  const saveProfile = useCallback(async (draft: Omit<ProfileDraft, "avatarUrl"> & { avatarUrl?: string | null }) => {
     const email = auth.user?.email ?? getMember(userIdRef.current)?.email ?? "";
     const saved = await store.saveProfile(userIdRef.current, { ...draft, email });
     setProfile(saved);
@@ -1334,8 +1426,9 @@ export default function App() {
 
   const deleteAccount = useCallback(async () => {
     await store.deleteAccount();
-    // wipe local state and bounce to the signed-out site
-    if (auth.configured) await auth.signOut();
+    // wipe local state and bounce to the signed-out site (a deleted account's
+    // unsynced edits can never sync, so don't ask about them)
+    if (auth.configured) await auth.signOut({ discardUnsynced: true });
   }, [auth]);
 
   /* ---- external calendars (Google / Microsoft) ---- */
@@ -1358,7 +1451,8 @@ export default function App() {
 
   const connectCalendar = useCallback(async (provider: CalProvider) => {
     try {
-      const url = await store.getCalendarAuthUrl(provider);
+      // the provider sends the browser back here (?calendar=finish) and the app finishes the connection
+      const url = await store.getCalendarAuthUrl(provider, { finishInApp: true });
       window.location.href = url; // full redirect to the provider's consent screen
     } catch (e) {
       reportError(e);
@@ -1412,13 +1506,27 @@ export default function App() {
     refreshCalendar();
     const params = new URLSearchParams(window.location.search);
     const cal = params.get("calendar");
-    if (cal === "connected") { toastSuccess("Calendar connected"); setRouteRaw({ view: "calendar" }); }
-    if (cal === "error") toastError("Couldn't connect that calendar. Please try again.");
+    const state = params.get("calendar_state"), code = params.get("calendar_code");
+    // clean the URL first, so a reload (or the back button) never replays the one-time code
     if (cal) {
-      params.delete("calendar"); params.delete("fresh");
+      ["calendar", "calendar_state", "calendar_code", "fresh"].forEach((k) => params.delete(k));
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
     }
+    if (cal === "finish") {
+      if (!state || !code) toastError("Couldn't connect that calendar. Please try again.");
+      else store.finishCalendarConnect(state, code).then(({ provider, accountEmail }) => {
+        toastSuccess(`${provider === "microsoft" ? "Outlook" : "Google"} calendar connected${accountEmail ? ` (${accountEmail})` : ""}`);
+        setRouteRaw({ view: "calendar" });
+        refreshCalendar();
+      }, (e) => {
+        reportError(e, { op: "finishCalendarConnect" });
+        toastError(e instanceof Error && e.message ? e.message : "Couldn't connect that calendar. Please try again.");
+      });
+    }
+    // the older hand-off, which the server still uses for legacy connections
+    if (cal === "connected") { toastSuccess("Calendar connected"); setRouteRaw({ view: "calendar" }); }
+    if (cal === "error") toastError("Couldn't connect that calendar. Please try again.");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUserId]);
 
@@ -1748,7 +1856,11 @@ export default function App() {
       if (a.type === "set_priority") next = { ...next, priority: a.value as Task["priority"] };
       else if (a.type === "set_assignee") next = { ...next, assigneeId: a.value };
       else if (a.type === "set_section") next = { ...next, sectionId: a.value };
-      else if (a.type === "add_tag") next = { ...next, tags: [...new Set([...(next.tags ?? []), a.value])] };
+      else if (a.type === "add_tag") {
+        // older rules stored the tag's name, not its id: resolve it when the rule runs
+        const tagId = tagsRef.current[a.value] ? a.value : (resolveTagId(a.value, tagsRef.current) ?? a.value);
+        next = { ...next, tags: [...new Set([...(next.tags ?? []), tagId])] };
+      }
     }
     return next;
   }, []);
@@ -1891,10 +2003,11 @@ export default function App() {
       retry: () => { const cur = tasksRef.current?.find((x) => x.id === id); if (cur && cur.status === t.status) toggleTask(id); },
     });
     if (completing) {
+      // its Undo always works (it puts the old fields back), so it can wait while you read
       toastAction(`Completed “${t.title}”`, "Undo", () => {
         unspawnRecurrence(id);
         updateTasks(new Map([[id, pickFields(t, Object.keys(patch))]]), { notify: false });
-      });
+      }, {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [denyGuest, confirmCompleteBlocked, onStatusChange, updateWithStatus, updateTasks, unspawnRecurrence, toastAction]);
@@ -1926,13 +2039,30 @@ export default function App() {
   patchTaskRef.current = patchTask;
 
   // follow/unfollow a task (followers get its activity in their inbox)
+  const followSeqRef = useRef(new Map<string, number>());
   const toggleFollow = useCallback((id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
     const uid = userIdRef.current;
-    const cur = t.followers ?? [];
-    const next = cur.includes(uid) ? cur.filter((f) => f !== uid) : [...cur, uid];
-    patchTask(id, { followers: next });
-  }, [patchTask]);
+    const mine = (f: string) => f.toLowerCase() === uid.toLowerCase();
+    const follow = !(t.followers ?? []).some(mine); // what the person asked for; the server never toggles
+    const apply = (list: string[], on: boolean) => (on ? (list.some(mine) ? list : [...list, uid]) : list.filter((f) => !mine(f)));
+    const now = () => tasksRef.current?.find((x) => x.id === id)?.followers ?? [];
+    const seq = (followSeqRef.current.get(id) ?? 0) + 1; followSeqRef.current.set(id, seq);
+    const latest = () => followSeqRef.current.get(id) === seq; // a quicker second click wins
+    applyLocal(new Map([[id, { followers: apply(t.followers ?? [], follow) }]]));
+    store.setTaskFollow(id, follow).then((followers) => {
+      if (!latest()) return;
+      if (followers) { applyLocal(new Map([[id, { followers }]])); return; }
+      // demo mode, offline or older edits to this task still queued, or 0042 not run yet:
+      // a normal save, rolled back to the list before the click (with Retry) if it fails
+      commit(new Map([[id, { followers: apply(now(), follow) }]]), new Map([[id, t]]));
+    }, (e) => {
+      reportError(e, { op: "setTaskFollow" });
+      if (!latest()) return;
+      applyLocal(new Map([[id, { followers: apply(now(), !follow) }]]));
+      toastError(follow ? `Couldn't follow “${t.title}”` : `Couldn't unfollow “${t.title}”`);
+    });
+  }, [applyLocal, commit, toastError]);
 
   // toggle the signed-in user's emoji reaction on a task itself
   const toggleTaskReaction = useCallback((id: string, emoji: string) => {
@@ -1990,7 +2120,7 @@ export default function App() {
       const back = new Map<string, Partial<Task>>();
       patches.forEach((p, id) => { const before = all.find((t) => t.id === id); if (before && present.has(id)) back.set(id, pickFields(before, Object.keys(p))); });
       updateTasks(back, { notify: false });
-    }, UNDO_MS);
+    }, {});
     if (notes.size === 1) toastInfo([...notes][0]);
     else if (notes.size > 1) toastInfo(`${plural(notes.size, "task")} ${notes.size === 1 ? "was" : "were"} reassigned to you — their assignees aren't in that workspace.`);
   }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
@@ -2027,7 +2157,7 @@ export default function App() {
     const kids = patches.size - 1;
     toastAction(kids ? `Archived “${t.title}” and ${plural(kids, "sub-task")}` : `Archived “${t.title}”`, "Undo", () => {
       updateTasks(new Map([...patches.keys()].map((k) => [k, { archivedAt: undefined }])), { notify: false });
-    });
+    }, {});
   }, [denyGuest, cascadeToDescendants, updateTasks, toastAction]);
   const unarchiveTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
@@ -2210,34 +2340,6 @@ export default function App() {
     noteElsewhere([projectId]);
   }, [denyGuest, persistTask, applyAutomation, noteElsewhere]);
 
-  // CSV / paste import: positions in file order, one summary. Each row is saved on
-  // its own (a few at a time), so one bad row only flags that row — the rest save,
-  // and Retry never re-inserts a row that already made it.
-  const importTasks = useCallback((rows: (Partial<Task> & { title: string })[]) => {
-    if (!rows.length) return;
-    const me = userIdRef.current, base = Date.now();
-    const today = toLocalISO(new Date());
-    const built = rows.map((r, i) => applyAutomation({ ...buildNewTask({ ...r, position: base + i }), planToday: false }))
-      .map((t) => ({
-        ...t, assigneeId: t.assigneeId === "m-self" ? me : t.assigneeId, workspaceId: projectWs(t.projectId),
-        completedAt: t.status === "done" ? t.completedAt ?? today : t.completedAt,
-      }));
-    if (denyGuest(built.map((t) => t.workspaceId))) return;
-    setTasks((ts) => (ts ? [...built, ...ts] : built));
-    pendingTasksRef.current = [...built.map((t) => ({ id: t.id, task: t, until: null })), ...pendingTasksRef.current];
-    const slot = createLimiter(6);
-    // assignment emails for what was imported for other people (bounded — the in-app notification covers every task)
-    let emails = 0;
-    const runs = built.map((t) => startCreate(t, { log: false, notify: !!t.assigneeId && t.assigneeId !== me && emails++ < 20, slot }));
-    Promise.all(runs).then((ids) => {
-      const saved = ids.filter((x): x is string => !!x);
-      if (saved.length) log("created", { id: saved[0], title: `Imported ${plural(saved.length, "task")}` }, `Imported ${plural(saved.length, "task")}`);
-    });
-    const projs = [...new Set(built.map((t) => t.projectId))];
-    toastSuccess(`Imported ${plural(built.length, "task")}${projs.length === 1 ? ` into “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
-    noteElsewhere(projs);
-  }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, noteElsewhere]);
-
   /* ---- optimistic tmp-* rows (projects, sections, goals, rules…) ----
      Edits or deletes made before the create returns its real id are queued and
      replayed once it does, instead of failing against the tmp id. */
@@ -2261,7 +2363,8 @@ export default function App() {
     if (denyGuest([input.workspaceId])) return;
     // optimistic: show it immediately, reconcile/rollback with the server
     const tmpId = "tmp-proj-" + Date.now();
-    const optimistic: Project = { id: tmpId, ...input };
+    const { templateId, ...fields } = input;
+    const optimistic: Project = { id: tmpId, ...fields };
     applyProjects([...projectsRef.current, optimistic]);
     store.createProject(input, userIdRef.current)
       .then((p) => {
@@ -2269,13 +2372,27 @@ export default function App() {
         if (!op.deleted) noteCreated(p.id); // a reload already under way doesn't know about it yet
         applyProjects(op.deleted ? projectsRef.current.filter((x) => x.id !== tmpId) : swapTmp(projectsRef.current, tmpId, { ...p, ...op.patch }));
         setRouteRaw((r) => (r.view === "project" && r.projectId === tmpId ? { ...r, projectId: p.id } : r));
+        // started from a built-in template: add its sections, then its starter tasks
+        const tpl = !op.deleted && templateId ? BUILTIN_PROJECT_TEMPLATES.find((t) => t.id === templateId) : undefined;
+        if (tpl?.tasks?.length) {
+          (async () => {
+            const sectionIds: Record<string, string> = {};
+            for (const [i, name] of (tpl.sections ?? []).entries()) {
+              const sec = await store.createSection({ projectId: p.id, workspaceId: p.workspaceId ?? null, name, position: Date.now() + i }, userIdRef.current);
+              sectionIds[name] = sec.id;
+              setSections((cur) => [...cur, sec]);
+            }
+            projectTemplateTasks(tpl, { projectId: p.id, workspaceId: p.workspaceId ?? null, assigneeId: userIdRef.current, sectionIds })
+              .forEach((t) => persistTask(t, { log: false, notify: false }));
+          })().catch((e) => { reportError(e, { op: "projectTemplate" }); toastError("Project created, but its starter tasks couldn't be added."); });
+        }
       })
       .catch((e) => {
         reportError(e, { op: "createProject" });
         applyProjects(projectsRef.current.filter((x) => x.id !== tmpId));
         toastError("Couldn't save the project: " + (e?.message || e));
       });
-  }, [denyGuest, applyProjects, settleTmp, noteCreated, toastError]);
+  }, [denyGuest, applyProjects, settleTmp, noteCreated, toastError, persistTask]);
 
   const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
@@ -2301,10 +2418,15 @@ export default function App() {
       applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, archivedAt: prevAt } : x));
       toastError("Couldn't update the project — change undone.");
     });
-    if (archived) { toastSuccess(`Archived “${p.name}”`); if (routeRef.current.view === "project" && routeRef.current.projectId === id) setRoute({ view: "home" }); }
+    if (archived) {
+      // one click in the sidebar hides a team project for everyone: make it easy to take back
+      toastAction(`Archived “${p.name}”`, "Undo", () => setProjectArchivedRef.current(id, false), {});
+      if (routeRef.current.view === "project" && routeRef.current.projectId === id) setRoute({ view: "home" });
+    }
     else toastSuccess(`Restored “${p.name}”`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, applyProjects, toastError, toastSuccess, toastInfo]);
+  }, [denyGuest, applyProjects, toastError, toastSuccess, toastInfo, toastAction]);
+  const setProjectArchivedRef = useRef(setProjectArchived); setProjectArchivedRef.current = setProjectArchived;
 
   // duplicate a project as a template: clones sections + tasks (statuses reset to
   // to-do, completion/scheduling/time/reactions/followers cleared, sections,
@@ -2410,8 +2532,9 @@ export default function App() {
       // moved tasks don't keep a stale one and vanish from view
       const targetWs = projectWs(targetId);
       const patches = new Map(affected.map((t) => [t.id, { projectId: targetId, workspaceId: targetWs, sectionId: undefined } as Partial<Task>]));
-      updateTasks(patches, { notify: false, op: "reassignOnProjectDelete" });
-      toastSuccess(`Deleted “${proj.name}”${affected.length ? ` — ${plural(affected.length, "task")} moved to “${getProject(targetId)?.name ?? "another project"}”` : ""}`);
+      // a move that fails is undone on screen with Retry (its own toast) — only claim what stuck
+      const moved = await updateTasks(patches, { notify: false, op: "reassignOnProjectDelete" });
+      if (moved) toastSuccess(`Deleted “${proj.name}”${affected.length ? ` — ${plural(affected.length, "task")} moved to “${getProject(targetId)?.name ?? "another project"}”` : ""}`);
       return;
     }
     const ids = new Set(affected.map((t) => t.id));
@@ -2424,10 +2547,11 @@ export default function App() {
 
   // ---- sections (ordered groupings within a project) ----
   const sectionWs = (s: Section | undefined) => (s ? s.workspaceId ?? projectWs(s.projectId) : null);
-  const createSection = useCallback((projectId: string, name: string) => {
+  /** Returns the new section's temporary id (tasks filed under it wait for the real one). */
+  const createSection = useCallback((projectId: string, name: string, position?: number): string | undefined => {
     const wsId = projectWs(projectId);
-    if (denyGuest([wsId])) return;
-    const pos = Date.now();
+    if (denyGuest([wsId])) return undefined;
+    const pos = position ?? Date.now();
     const tmp: Section = { id: `tmp-sec-${pos}-${Math.round(Math.random() * 1e4)}`, projectId, workspaceId: wsId, name, position: pos };
     setSections((s) => [...s, tmp]);
     const saving = store.createSection({ projectId, workspaceId: wsId, name, position: pos }, userIdRef.current).then((sec) => {
@@ -2446,6 +2570,7 @@ export default function App() {
       setSections((s) => s.filter((x) => x.id !== tmp.id));
       toastError("Couldn't add the section: " + (e?.message || e));
     }).finally(() => tmpSectionRef.current.delete(tmp.id));
+    return tmp.id;
   }, [denyGuest, settleTmp, toastError]);
   const renameSection = useCallback((id: string, name: string) => {
     const sec = sectionsRef.current.find((s) => s.id === id);
@@ -2466,6 +2591,79 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [denyGuest, updateTasks, deferTmp, saveFailed]);
 
+  // CSV / paste import: positions in file order, one summary. Each row is saved on
+  // its own (a few at a time), so one bad row only flags that row — the rest save,
+  // and Retry never re-inserts a row that already made it. Rows nested under
+  // another row become its sub-tasks; sections and tags the file names that
+  // don't exist yet are created.
+  const importTasks = useCallback((rows: ImportRow[]) => {
+    if (!rows.length) return;
+    const me = userIdRef.current, base = Date.now();
+    const today = toLocalISO(new Date());
+    const built: Task[] = rows.map((r, i) => applyAutomation({ ...buildNewTask({ ...r, position: base + i }), planToday: false }))
+      .map((t, i) => ({
+        ...t, assigneeId: t.assigneeId === "m-self" ? me : t.assigneeId, workspaceId: projectWs(t.projectId),
+        // the file's own date (Asana "Completed At", Jira "Resolved"), else it was done today
+        completedAt: t.status === "done" ? rows[i].completedAt ?? today : undefined,
+      }));
+    // sub-tasks: under their parent row, in the parent's project (a parent may come later in the file)
+    built.forEach((t, i) => { const pi = rows[i].parentIndex; if (pi !== undefined && pi !== i && built[pi]) t.parentId = built[pi].id; });
+    const byId = new Map(built.map((t) => [t.id, t]));
+    const moved = new Set<string>();
+    for (const level of parentsFirst(built)) for (const t of level) {
+      const parent = t.parentId ? byId.get(t.parentId) : undefined;
+      if (!parent || parent.projectId === t.projectId) continue;
+      Object.assign(t, { projectId: parent.projectId, workspaceId: parent.workspaceId, sectionId: undefined });
+      moved.add(t.id);
+    }
+    if (denyGuest(built.map((t) => t.workspaceId))) return;
+    // sections the file names that this project doesn't have yet (tasks wait for their real ids)
+    const newSections = new Map<string, string | undefined>();
+    built.forEach((t, i) => {
+      const name = rows[i].sectionName?.trim();
+      if (!name || t.sectionId || moved.has(t.id)) return;
+      const key = `${t.projectId}\u0000${name.toLowerCase()}`;
+      if (!newSections.has(key)) newSections.set(key, createSection(t.projectId, name, base + newSections.size));
+      t.sectionId = newSections.get(key);
+    });
+    setTasks((ts) => (ts ? [...built, ...ts] : built));
+    pendingTasksRef.current = [...built.map((t) => ({ id: t.id, task: t, until: null })), ...pendingTasksRef.current];
+    const slot = createLimiter(6);
+    // assignment emails for what was imported for other people (bounded — the in-app notification covers every task)
+    let emails = 0;
+    // parents first: a sub-task's insert waits for its parent's
+    const runs = parentsFirst(built).flat().map((t) => startCreate(t, { log: false, notify: !!t.assigneeId && t.assigneeId !== me && emails++ < 20, slot }));
+    // tags the file uses that don't exist yet: create them, then add them to their rows
+    const fresh = new Map<string, string>();
+    rows.forEach((r) => (r.newTags ?? []).forEach((l) => { const k = l.trim().toLowerCase(); if (k && !fresh.has(k)) fresh.set(k, l.trim()); }));
+    if (fresh.size) {
+      const wsId = workspaceRef.current;
+      Promise.all([...fresh.values()].map((label, i) => store.createTag(label, TAG_COLORS[i % TAG_COLORS.length].c, me, wsId)
+        .then((tag) => tag, (e) => { reportError(e, { op: "importTags" }); return null; })))
+        .then((made) => {
+          const ok = made.filter((x): x is NonNullable<typeof x> => !!x);
+          if (ok.length) applyTags({ ...tagsRef.current, ...Object.fromEntries(ok.map((tag) => [tag.id, { label: tag.label, color: tag.color }])) });
+          const idOf = new Map(ok.map((tag) => [tag.label.trim().toLowerCase(), tag.id]));
+          const patches = new Map<string, Partial<Task>>();
+          built.forEach((t, i) => {
+            const add = (rows[i].newTags ?? []).map((l) => idOf.get(l.trim().toLowerCase())).filter((x): x is string => !!x);
+            const cur = add.length ? tasksRef.current?.find((x) => x.id === t.id) : undefined;
+            if (cur) patches.set(cur.id, { tags: [...new Set([...cur.tags, ...add])] });
+          });
+          if (patches.size) updateTasks(patches, { notify: false, op: "importTags" });
+          const lost = made.length - ok.length;
+          if (lost) toastError(`${plural(lost, "new tag")} couldn't be created, so ${lost === 1 ? "it was" : "they were"} left off.`);
+        });
+    }
+    Promise.all(runs).then((ids) => {
+      const saved = ids.filter((x): x is string => !!x);
+      if (saved.length) log("created", { id: saved[0], title: `Imported ${plural(saved.length, "task")}` }, `Imported ${plural(saved.length, "task")}`);
+    });
+    const projs = [...new Set(built.map((t) => t.projectId))];
+    toastSuccess(`Imported ${plural(built.length, "task")}${projs.length === 1 ? ` into “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
+    noteElsewhere(projs);
+  }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
+
   // ---- saved searches (personal) ----
   const saveSearch = useCallback((name: string, query: Record<string, unknown>) => {
     const tmp: SavedSearch = { id: "tmp-ss-" + Date.now(), name, query };
@@ -2477,11 +2675,18 @@ export default function App() {
       })
       .catch((e) => { reportError(e, { op: "saveSearch" }); setSavedSearches((s) => s.filter((x) => x.id !== tmp.id)); toastError("Couldn't save the search."); });
   }, [settleTmp, toastError]);
-  const removeSavedSearch = useCallback((id: string) => {
+  // the Sidebar hides the row at once and calls this when its Undo window closes;
+  // a rejected promise brings the row back (the Sidebar says so), SearchView ignores it
+  const removeSavedSearch = useCallback((id: string): Promise<void> | undefined => {
+    const prev = savedSearchesRef.current.find((x) => x.id === id);
     setSavedSearches((s) => s.filter((x) => x.id !== id));
-    if (deferTmp(id)) return;
-    store.deleteSavedSearch(id).catch(saveFailed("deleteSavedSearch", "Couldn't delete the saved search."));
-  }, [deferTmp, saveFailed]);
+    if (deferTmp(id)) return undefined;
+    return store.deleteSavedSearch(id).catch((e) => {
+      reportError(e, { op: "deleteSavedSearch" });
+      if (prev) setSavedSearches((s) => (s.some((x) => x.id === id) ? s : [...s, prev]));
+      throw e;
+    });
+  }, [deferTmp]);
 
   // ---- goals / OKRs ----
   type GoalPatch = Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
@@ -2606,13 +2811,14 @@ export default function App() {
   }, [denyGuest, deferTmp, saveFailed]);
   // a form submission becomes a task (and runs the project's automation rules).
   // It goes to the project's owner by default — never silently to the submitter.
+  // A form that asks for an assignee sends "" for its explicit "Unassigned".
   const submitForm = useCallback((projectId: string, vals: FormValues) => {
     const proj = getProject(projectId);
     if (denyGuest([proj?.workspaceId ?? null])) return;
     createTask({
       id: newTaskId(),
       title: vals.title, description: vals.description ?? "", status: "todo", priority: (vals.priority as Task["priority"]) || "medium",
-      projectId, assigneeId: vals.assigneeId || proj?.ownerId || userIdRef.current, tags: [], dependencies: [], subtasks: [],
+      projectId, assigneeId: vals.assigneeId ?? (proj?.ownerId || userIdRef.current), tags: [], dependencies: [], subtasks: [],
       comments: 0, aiScore: 50, aiReason: undefined, focusMin: 30, dur: 30, scheduled: null, planToday: false,
       recurrence: "none", dueDate: vals.dueDate || undefined, position: Date.now(),
     });
@@ -2748,11 +2954,24 @@ export default function App() {
     store.listWorkspaceMembers().then(setWsMembers).catch((e) => reportError(e, { op: "refreshWorkspaceMembers" }));
   }, []);
 
-  const inviteMember = useCallback((workspaceId: string, email: string, role: Role = "member") => {
-    store.inviteMember(workspaceId, email, role)
-      .then((m) => setWsMembers((xs) => [...xs.filter((x) => x.id !== m.id), m]))
-      .catch((e) => { reportError(e, { op: "inviteMember" }); toastError("Couldn't send the invite: " + (e?.message || e)); });
-  }, [toastError]);
+  // TeamView awaits this: it shows the outcome — and how the invite email went — next
+  // to the field, so nothing is toasted here. Refusals the person can act on
+  // ("already a member", not allowed) aren't errors worth reporting.
+  const inviteMember = useCallback((workspaceId: string, email: string, role: Role = "member") =>
+    store.inviteMember(workspaceId, email, role).then((res) => {
+      const { inviteEmail, ...m } = res; // the email result isn't member state
+      setWsMembers((xs) => [...xs.filter((x) => x.id !== m.id), m]);
+      if (inviteEmail?.reason === "already_active") refreshWorkspaceMembers();
+      return res;
+    }, (e) => {
+      if (!/already a member|not authori[sz]ed|only the (workspace )?owner|only workspace owners|valid email|invalid role|choose a role/i.test(String(e?.message))) reportError(e, { op: "inviteMember" });
+      throw e;
+    }), [refreshWorkspaceMembers]);
+  // "Resend invite" only re-sends the email (the invite itself stands)
+  const resendInvite = useCallback((memberId: string) => store.sendInviteEmail(memberId).then((r) => {
+    if (r.reason === "already_active") refreshWorkspaceMembers();
+    return r;
+  }), [refreshWorkspaceMembers]);
 
   const removeMember = useCallback((memberId: string) => {
     const m = wsMembersRef.current.find((x) => x.id === memberId);
@@ -2837,6 +3056,9 @@ export default function App() {
       applyLocal(patches);
       patches.forEach((p, id) => { writeTask(id, p).catch(() => { /* scores are advisory — a failed write just recomputes next time */ }); });
       toastSuccess((res.source === "ai" ? "✨ " : "") + res.summary);
+      // ranked without AI because the server said why (daily limit, awaiting approval): tell them
+      const why = res.source === "heuristic" ? store.aiNotice() : null;
+      if (why) toastInfo(why);
     } catch (e) {
       reportError(e, { op: "autoPrioritize" });
       toastError("Couldn't prioritise right now.");
@@ -2869,6 +3091,50 @@ export default function App() {
     setDetailId(null); setFocusOpen(true); focus.setRunning(true);
   };
 
+  // Early-access gate: a platform admin is always let through — by the profile's
+  // is_admin flag, or else by asking the server (is_admin(), which also knows the
+  // founding account and, once 0042 is live, says no for a suspended admin).
+  // Only asked when the gate would otherwise stop someone.
+  const gated = auth.configured && !!profile && (profile.suspended === true || profile.approved === false);
+  const adminByFlag = !!profile?.isAdmin && profile.suspended !== true;
+  const [adminCheck, setAdminCheck] = useState<{ uid: string; admin: boolean } | null>(null);
+  useEffect(() => {
+    if (!gated || adminByFlag || !authUserId) return;
+    let alive = true;
+    store.amIAdmin().then((admin) => { if (alive) setAdminCheck({ uid: authUserId, admin }); }, () => { if (alive) setAdminCheck({ uid: authUserId, admin: false }); });
+    return () => { alive = false; };
+  }, [gated, adminByFlag, authUserId]);
+  const adminChecked = adminCheck?.uid === authUserId;
+  const letAdminIn = adminByFlag || (adminChecked && adminCheck!.admin);
+
+  // "today" moved on (a tab left open overnight): day-based counts are recomputed
+  const [dayKey, setDayKey] = useState(() => toLocalISO(KANBO_TODAY));
+  useEffect(() => {
+    const onDay = () => setDayKey(toLocalISO(KANBO_TODAY));
+    window.addEventListener(DAY_CHANGE_EVENT, onDay);
+    return () => window.removeEventListener(DAY_CHANGE_EVENT, onDay);
+  }, []);
+  // scope everything to the active workspace (memoised: the focus timer re-renders
+  // App every second, and the Sidebar's badge counts key off this list)
+  const allTasks = useMemo(() => {
+    const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
+    return (tasks ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
+  }, [tasks, projects, workspace]);
+  // Smart-list counts are computed over the SAME global task set the Search
+  // view filters (search spans every workspace), so the sidebar badge and the
+  // results it opens always agree. Saved searches become user-defined smart
+  // lists with live counts over the same set (one predicate, always in sync).
+  const { smartCounts, savedSearchCounts } = useMemo(() => {
+    const all = tasks ?? [];
+    const smart: Record<string, number> = {};
+    for (const sl of SMART_LISTS) smart[sl.id] = all.filter((t) => sl.match(t, currentUserId)).length;
+    const saved: Record<string, number> = {};
+    for (const ss of savedSearches) { const q = toQuery(ss.query); saved[ss.id] = all.filter((t) => taskMatchesQuery(t, q)).length; }
+    return { smartCounts: smart, savedSearchCounts: saved };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, projects, savedSearches, currentUserId, dayKey]);
+  useEffect(() => { if (route.view !== "search" && searchPrefill) setSearchPrefill(null); }, [route.view, searchPrefill]);
+
   // ---- auth / loading gates ----
   if (auth.recovery) return <UpdatePasswordScreen />;
   // still restoring the session: a loader, never a flash of the marketing site
@@ -2876,22 +3142,19 @@ export default function App() {
   if (auth.configured && !auth.user) return <PublicSite />;
   if (auth.loading || tasks === null) return <FullLoader />;
   // Early-access gate: a brand-new account stays in a waiting room until an admin
-  // approves it. Fail-open — only blocks when we KNOW approved === false, never on
-  // a load hiccup, and the admin is always let through.
-  if (auth.configured && profile && profile.suspended === true && (auth.user?.email ?? "") !== "danchappell7@gmail.com") {
-    return <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} suspended />;
-  }
-  if (auth.configured && profile && profile.approved === false && (auth.user?.email ?? "") !== "danchappell7@gmail.com") {
-    return <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} />;
+  // approves it. Fail-open — only blocks when we KNOW approved === false (or
+  // suspended), never on a load hiccup — and platform admins are let through.
+  if (gated && !letAdminIn) {
+    if (!adminByFlag && !adminChecked) return <FullLoader />; // asking the server whether this is an admin
+    return profile!.suspended === true
+      ? <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} suspended />
+      : <PendingApproval email={auth.user?.email} onSignOut={auth.signOut} />;
   }
   if (subscription && !hasAccess(subscription)) {
     const seats = Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1);
-    return <Paywall sub={subscription} seats={seats} busyPlan={checkoutBusy} onChoose={startCheckout} onSignOut={auth.configured ? auth.signOut : undefined} />;
+    return <Paywall sub={subscription} seats={seats} busyPlan={checkoutBusy} onChoose={startCheckout} onManageBilling={manageBilling} onSignOut={auth.configured ? auth.signOut : undefined} />;
   }
 
-  // scope everything to the active workspace
-  const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
-  const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
   // "mine": assigned to me or I'm a collaborator. Planning, Focus and My week are
   // personal — they never show (or schedule) teammates' work.
   const isMine = (t: Task) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId);
@@ -2899,17 +3162,10 @@ export default function App() {
   // "Show archived" follows the page: this project's archived tasks, or mine in My tasks
   const wsArchived = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
   const archivedTasks = route.view === "project" && route.projectId ? wsArchived.filter((t) => t.projectId === route.projectId) : wsArchived.filter(isMine);
-  // Smart-list counts are computed over the SAME global task set the Search
-  // view filters (search spans every workspace), so the sidebar badge and the
-  // results it opens always agree.
-  const smartCounts: Record<string, number> = {};
-  for (const s of SMART_LISTS) smartCounts[s.id] = tasks.filter((t) => s.match(t, currentUserId)).length;
-  // saved searches become user-defined smart lists in the sidebar, with live
-  // counts computed over the same global set (one predicate, always in sync).
-  const savedSearchCounts: Record<string, number> = {};
-  for (const s of savedSearches) savedSearchCounts[s.id] = tasks.filter((t) => taskMatchesQuery(t, toQuery(s.query))).length;
   const savedActive = route.list ? savedSearches.find((s) => s.id === route.list) : undefined;
-  const searchPreset = smartListQuery(route.list, currentUserId) ?? (savedActive ? (toQuery(savedActive.query) as unknown as Record<string, string>) : undefined);
+  const searchPreset = smartListQuery(route.list, currentUserId) ?? (savedActive ? (toQuery(savedActive.query) as unknown as Record<string, string>) : undefined)
+    ?? (searchPrefill ? { text: searchPrefill.text } : undefined);
+  const searchPresetKey = route.list ?? searchPrefill?.key;
 
   const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
   const myRole = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role;
@@ -2955,28 +3211,35 @@ export default function App() {
   const monthLabel = new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const wsKey = workspace ?? "personal";
   const canManageProject = (p: Project) => !activeReadOnly && (myRole === "owner" || myRole === "admin" || p.ownerId === currentUserId || !p.ownerId);
+  // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
+  const planProjectId = wsProjects.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
 
   const renderMain = () => {
     switch (route.view) {
-      case "plan": return <PlanView tasks={myTasks} onUpdate={patchTask} onCreate={createFromPlan} onOpen={setDetailId} externalEvents={calEvents} calendarConnected={calConnections.length > 0} />;
-      case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={patchTask} />;
-      // Home keeps the workspace's tasks: its project cards and "is this workspace empty?" are
-      // about the team's work (a new member with nothing assigned yet isn't on a clean slate)
-      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
-      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} />;
-      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} />;
-      case "search": return <SearchView tasks={tasks} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} preset={searchPreset} presetKey={route.list} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} />;
+      case "plan": return <PlanView tasks={myTasks} onUpdate={patchTask} onCreate={createFromPlan} onOpen={setDetailId} externalEvents={calEvents} calendarConnected={calConnections.length > 0} currentUserId={currentUserId} captureDefaults={{ projectId: planProjectId, assigneeId: currentUserId }} />;
+      case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={patchTask} currentUserId={currentUserId} />;
+      // Home keeps the workspace's tasks for its project cards and "is this workspace empty?"
+      // (a new member with nothing assigned yet isn't on a clean slate); its personal
+      // widgets — today's brief, focus queue, weekly chart — use yours
+      case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} />;
+      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} />;
+      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} />;
+      case "search": return <SearchView tasks={tasks} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch}
+        onDeleteSavedSearch={(id) => { removeSavedSearch(id)?.catch(() => toastError("Couldn't delete the saved search.")); }}
+        preset={searchPreset} presetKey={searchPresetKey} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
-      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />;
-      case "automations": return <AutomationsView key={wsKey} rules={automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId))} projects={wsProjects} members={assignees} sections={sections} onCreate={createRule} onUpdate={updateRule} onDelete={deleteRule} />;
+      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
+      case "automations": return <AutomationsView key={wsKey} rules={automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId))} projects={wsProjects} members={assignees} sections={sections} tags={tags} onCreate={createRule} onUpdate={updateRule} onDelete={deleteRule} />;
       case "forms": return <FormsView key={wsKey} forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
       case "inbox": return <InboxView activity={scopedActivity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
-      case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} />;
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
+      case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} readOnly={activeReadOnly} />;
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
       case "tasks":
       case "project":
         return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={route.view === "project" && route.projectId ? route.projectId : "my"} readOnly={activeReadOnly}
+          boardScope={route.view === "project" && route.projectId ? `project:${route.projectId}` : `my:${wsKey}`}
+          exportName={route.view === "project" && newProj ? newProj.name : "my-tasks"}
           tasks={scoped} allTasks={allTasks} projects={wsProjects} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
             // a reorder within the same column is not a status change (completedAt stays put)
             const prev = tasksRef.current?.find((t) => t.id === id);
@@ -2991,6 +3254,7 @@ export default function App() {
           sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
+          exportOpts={{ sections, customFields: route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields, allTasks }}
           header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={activeReadOnly ? undefined : postStatusUpdate} members={assignees} onDuplicate={activeReadOnly ? undefined : duplicateProject} onArchive={activeReadOnly ? undefined : (id) => setProjectArchived(id, true)} canManagePeople={canManageProject(newProj)} /> : undefined} />;
       default: return null;
     }
@@ -3016,11 +3280,13 @@ export default function App() {
   };
   const headerProps = headerMap[route.view];
 
+  // App keeps the open project valid (its route guard), so the Sidebar's own guard stays off
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} smartCounts={smartCounts}
-      savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch} />
+      savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch}
+      myRole={myRole} guardRoute={false} />
   );
 
   const bannerTone = (kind: string) => (kind === "warning" ? "var(--st-review)" : kind === "success" ? "var(--st-done)" : "var(--accent)");
@@ -3039,7 +3305,7 @@ export default function App() {
           </div>
         </>
       ) : sidebar}
-      <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
+      <main id="main" tabIndex={-1} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1, outline: "none" }}>
         {!online && (
           <div role="status" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 18px", background: "color-mix(in oklch, var(--st-review) 16%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--st-review) 30%, transparent)" }}>
             <Icon name="refresh" size={14} style={{ color: "var(--st-review)", flexShrink: 0 }} />
@@ -3053,6 +3319,17 @@ export default function App() {
             <Icon name="refresh" size={14} style={{ color: "var(--accent)", flexShrink: 0 }} className={syncing ? "spin" : undefined} />
             <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>{syncing ? `Syncing ${pendingSync || ""} offline change${pendingSync === 1 ? "" : "s"}…` : `${plural(pendingSync, "change")} waiting to sync`}</span>
             {!syncing && <button onClick={flushOffline} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "3px 10px", fontSize: 12 }}>Retry now</button>}
+          </div>
+        )}
+        {deadLetters.length > 0 && (
+          <div role="status" style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", padding: "7px 18px", background: "color-mix(in oklch, var(--st-blocked) 11%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--st-blocked) 26%, transparent)" }}>
+            <Icon name="refresh" size={14} style={{ color: "var(--st-blocked)", flexShrink: 0 }} />
+            <span style={{ flex: 1, minWidth: 200, fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>
+              {/* retryable: a server problem that may clear up; otherwise the server refused the change itself (e.g. no permission) */}
+              {plural(deadLetters.length, "change")} couldn't be synced{deadLetters.every((d) => !d.retryable) ? ` — the server turned ${deadLetters.length === 1 ? "it" : "them"} down` : ""}. {deadLetters.length === 1 ? "It's" : "They're"} kept on this device.
+            </span>
+            <button onClick={retryDeadLetters} disabled={!online || syncing} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12 }}>Retry</button>
+            <button onClick={discardDeadLetters} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12, color: "var(--ink-3)" }}>Discard</button>
           </div>
         )}
         {unsavedIds.length > 0 && (
@@ -3082,8 +3359,8 @@ export default function App() {
           );
         })()}
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
-        <Topbar {...headerProps} theme={theme} toggleTheme={() => setTheme((t) => t === "dark" ? "light" : "dark")}
-          hasUnread={inboxCount > 0} onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
+        <Topbar {...headerProps} theme={resolvedTheme} toggleTheme={flipTheme}
+          hasUnread={inboxCount > 0} unreadCount={inboxCount} canCreateProject={!activeReadOnly} onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
           onNewTask={() => openNewTask()} onNewProject={() => setNewProjectOpen(true)} onCommand={() => setCmdOpen(true)} onBell={() => setRoute({ view: "inbox" })}>
           {(route.view === "project") && newProj && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "0 4px" }}>
@@ -3098,12 +3375,23 @@ export default function App() {
       </main>
 
       <ImportTasksModal open={importOpen} onClose={() => setImportOpen(false)}
-        projects={wsProjects} members={assignees}
+        projects={wsProjects} members={assignees.map((a) => ({ ...a, email: wsMembers.find((m) => m.userId === a.id)?.email }))}
+        sections={sections.filter((s) => !s.id.startsWith("tmp-") && wsProjects.some((p) => p.id === s.projectId))}
         defaultProjectId={route.view === "project" ? route.projectId : undefined}
         defaultProjectName={route.view === "project" ? newProj?.name : undefined}
+        supports={{ details: true, subtasks: true, newTags: true, newSections: true }}
         onImport={importTasks} />
 
-      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={allTasks} onOpenTask={setDetailId} onAction={(s) => {
+      {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={tasks} onOpenTask={setDetailId}
+        projects={projects} workspaces={workspaces} canCreateProject={!activeReadOnly}
+        onOpenProject={(id) => {
+          const p = projects.find((x) => x.id === id);
+          if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null);
+          setRoute({ view: "project", projectId: id });
+        }}
+        onSearchAll={(text) => { setRoute({ view: "search" }); setSearchPrefill({ text, key: "q-" + Date.now() }); }}
+        onAction={(s) => {
         if (s.id === "new-task") openNewTask();
         else if (s.id === "quick-capture") openCapture();
         else if (s.id === "new-project") setNewProjectOpen(true);
@@ -3111,13 +3399,13 @@ export default function App() {
         else if (s.id === "focus") openFocus(true);
         else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
         else if (s.id === "manage-tags") setTagManagerOpen(true);
-        else if (s.id === "toggle-theme") setTheme((t) => t === "dark" ? "light" : "dark");
+        else if (s.id === "toggle-theme") flipTheme();
         else if (s.id === "settings") setSettingsOpen(true);
       }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
 
       <TagManagerModal open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} tags={tags}
         taskCounts={(() => { const c: Record<string, number> = {}; (tasks ?? []).forEach((t) => (t.tags || []).forEach((tg) => { c[tg] = (c[tg] || 0) + 1; })); return c; })()}
-        onUpdate={updateTag} onDelete={deleteTag} onMerge={mergeTags} />
+        onUpdate={updateTag} onDelete={deleteTag} onMerge={mergeTags} onCreate={createTag} />
       {shortcutsOpen && (
         <div onClick={() => setShortcutsOpen(false)} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 200, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
           <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" className="glass anim-scalein" style={{ width: 440, maxWidth: "94vw", borderRadius: 18, padding: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
@@ -3139,34 +3427,41 @@ export default function App() {
       )}
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
-          <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }} />
+          <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
+            readOnly={detailReadOnly} />
         </ErrorBoundary>
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
       {focusOpen && <FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...tasks.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
-      <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
+      <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
+        tagUsage={(id) => tasks.filter((t) => t.tags.includes(id)).length} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}
         canSkip={!!((profile?.firstName?.trim()) || (profile?.lastName?.trim()))}
-        onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null })}
+        onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "" })}
         name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined}
         initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
-        email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? "oklch(0.585 0.196 264)"}
+        email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? SELF_COLOR}
         onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount}
         notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs}
-        appearance={appearance} onChangeAppearance={setAppearance} />
+        appearance={appearance} onChangeAppearance={setAppearance}
+        theme={theme} onChangeTheme={setTheme} />
       <QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsProjects} members={assignees}
         defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);
         if (!proj) return null;
-        return <DeleteProjectModal project={proj} taskCount={allTasks.filter((t) => t.projectId === deleteProjectId).length} projects={projects}
+        // counted from every task (an archived project's tasks aren't in allTasks), so a
+        // project holding only archived tasks never claims to be empty
+        const own = tasks.filter((t) => t.projectId === deleteProjectId);
+        return <DeleteProjectModal project={proj} taskCount={own.filter((t) => !t.archivedAt).length} archivedCount={own.filter((t) => !!t.archivedAt).length} projects={projects}
+          onArchive={proj.archivedAt || !canArchiveProject(proj, { myRole: roleIn(proj.workspaceId) }) ? undefined : () => setProjectArchived(proj.id, true)}
           onConfirm={(mode, target) => { confirmDeleteProject(deleteProjectId, mode, target); }} onClose={() => setDeleteProjectId(null)} />;
       })()}
     </div>
