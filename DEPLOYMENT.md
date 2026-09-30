@@ -532,9 +532,11 @@ with `--no-verify-jwt` (step 4). The Google/Microsoft redirect URL is
 The old way of connecting could let someone connect a colleague's calendar
 to their own account by sending them the Google approval link. Switch it off
 once the app update that finishes calendar connections itself is live. You
-can tell the update is in when `grep -n "finish=app" src/data/store.ts`, run
-in the project folder, prints a line, and connecting a calendar on
-www.kanbo.co.uk still shows "Calendar connected". Then add this secret at
+can tell the update is in when `grep -n "finishInApp: true" src/App.tsx` and
+`grep -n "=== \"finish\"" src/App.tsx`, run in the project folder, both
+print a line, and connecting a calendar on www.kanbo.co.uk shows "Google
+calendar connected" (or "Outlook calendar connected"), with the provider's
+name. The old way says just "Calendar connected". Then add this secret at
 <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/secrets>:
 
 | Name | Value |

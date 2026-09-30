@@ -611,7 +611,11 @@ create policy "tags delete: personal or writer" on public.tags
     (workspace_id is null and user_id = auth.uid() and public.can_act())
     or (workspace_id is not null and public.can_write(workspace_id)));
 
--- account deletion (0041) keeps the team's work: now includes workspace tags
+-- account deletion (0041) keeps the team's work: now includes workspace tags,
+-- and a workspace is only ever handed to an admin or member — never a guest
+-- (a guest can view and comment; making one the owner would hand them the
+-- whole workspace). With only guests left, it goes with its owner, as 0041
+-- does for a workspace with nobody else in it.
 create or replace function public.before_user_delete() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -623,6 +627,7 @@ begin
   for w in select id from public.workspaces where owner_id = old.id loop
     select m.user_id into heir from public.workspace_members m
      where m.workspace_id = w.id and m.status = 'active' and m.user_id is not null and m.user_id <> old.id
+       and m.role <> 'guest'
      order by case m.role when 'admin' then 0 when 'member' then 1 else 2 end, m.created_at
      limit 1;
     if heir is not null then

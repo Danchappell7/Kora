@@ -117,6 +117,37 @@ describe("Toast", () => {
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
   });
 
+  it("a toast with the same key takes the earlier one's place, with a fresh clock", () => {
+    setup();
+    const first = vi.fn(); const second = vi.fn(); const expire1 = vi.fn(); const expire2 = vi.fn();
+    act(() => api.action("Notification archived", "Undo", first, { key: "inbox", onExpire: expire1 }));
+    act(() => { vi.advanceTimersByTime(8000); });
+    act(() => api.action("Archived 2 notifications", "Undo", second, { key: "inbox", onExpire: expire2 }));
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
+    expect(screen.queryByText("Notification archived")).not.toBeInTheDocument();
+    expect(expire1).toHaveBeenCalledTimes(1); // the replaced one ends as if dismissed
+    act(() => { vi.advanceTimersByTime(ACTION_TOAST_MIN_MS - 1); });
+    expect(screen.getByText("Archived 2 notifications")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    expect(expire2).not.toHaveBeenCalled();
+    // other keys (and toasts without one) still stack
+    act(() => { api.action("A", "Undo", () => {}, { key: "a" }); api.action("B", "Undo", () => {}, { key: "b" }); api.action("C", "Undo", () => {}, {}); });
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(3);
+  });
+
+  it("⌘Z runs a renewed toast's Undo when it is the newest, even though it keeps its slot", () => {
+    setup();
+    const older = vi.fn(); const other = vi.fn(); const renewed = vi.fn();
+    act(() => { api.action("Archived", "Undo", older, { key: "inbox" }); api.action("Deleted “H”", "Undo", other, {}); });
+    act(() => api.action("Archived 2", "Undo", renewed, { key: "inbox" }));
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    expect(renewed).toHaveBeenCalledTimes(1);
+    expect(other).not.toHaveBeenCalled();
+    expect(older).not.toHaveBeenCalled();
+  });
+
   it("never leaves a toast stuck on screen after a StrictMode remount", () => {
     function OnMount() { const t = useToast(); useEffect(() => { t.success("Welcome back"); }, [t]); return null; }
     render(<StrictMode><ToastProvider><OnMount /></ToastProvider></StrictMode>);

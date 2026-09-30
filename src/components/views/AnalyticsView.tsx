@@ -60,8 +60,9 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
   const [answer, setAnswer] = useState<string | null>(null);
   const [askBusy, setAskBusy] = useState(false);
   const today = toLocalISO(KANBO_TODAY);
-  const genSummary = async () => { setSummaryBusy(true); setAiSummary(null); const s = await store.aiSummary(tasks, today); setSummaryBusy(false); setAiSummary(s ?? "AI is unavailable right now. Try again shortly."); };
-  const ask = async () => { const q = question.trim(); if (!q) return; setAskBusy(true); setAnswer(null); const a = await store.aiAsk(q, tasks, today); setAskBusy(false); setAnswer(a ?? "AI is unavailable right now. Try again shortly."); };
+  // when AI can't answer, say why if the server told us (daily limit, awaiting approval)
+  const genSummary = async () => { setSummaryBusy(true); setAiSummary(null); const s = await store.aiSummary(tasks, today); setSummaryBusy(false); setAiSummary(s ?? store.aiNotice() ?? "AI is unavailable right now. Try again shortly."); };
+  const ask = async () => { const q = question.trim(); if (!q) return; setAskBusy(true); setAnswer(null); const a = await store.aiAsk(q, tasks, today); setAskBusy(false); setAnswer(a ?? store.aiNotice() ?? "AI is unavailable right now. Try again shortly."); };
   const setRate = (n: number) => { setBillRate(n); try { localStorage.setItem("kanbo-bill-rate", String(n)); } catch { /* private mode */ } };
 
   // names for people ids: active members first, then anyone we still know about

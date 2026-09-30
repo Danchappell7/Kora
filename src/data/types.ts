@@ -29,6 +29,7 @@ export interface Profile {
   avatarUrl: string | null;
   approved?: boolean;          // early-access gate (undefined when unknown → treated as allowed)
   suspended?: boolean;         // admin-suspended account → blocked at the gate
+  isAdmin?: boolean;           // platform admin flag (profiles.is_admin); the gate lets admins through
   notifyPrefs?: Record<string, boolean>;  // notification toggles, e.g. { assigned: true, mention_email: false }
 }
 

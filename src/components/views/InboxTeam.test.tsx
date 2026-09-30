@@ -345,6 +345,39 @@ describe("TeamView", () => {
     expect(screen.getByText("Invite refreshed")).toBeInTheDocument();
   });
 
+  it("with onResendInvite, Resend only re-sends the email and says how it went", async () => {
+    const onInvite = vi.fn();
+    const onResendInvite = vi.fn()
+      .mockResolvedValueOnce({ sent: false, reason: "not_sent" })
+      .mockResolvedValueOnce({ sent: true });
+    team([member({ id: "p1", email: "guest@partner.io", role: "guest", status: "invited" })], { onInvite, onResendInvite });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
+    expect(onResendInvite).toHaveBeenCalledWith("p1");
+    expect(onInvite).not.toHaveBeenCalled();
+    expect(screen.getByText(/the email couldn't be sent\. Share the sign-up link or resend it later/)).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
+    expect(screen.getByText("Invite sent")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Invite sent \(guest@partner\.io\) — you can resend in a minute/ })).toBeDisabled();
+  });
+
+  it("a resend the server throttled waits out the minute and says why", async () => {
+    const onResendInvite = vi.fn().mockResolvedValue({ sent: false, reason: "throttled", retryAfter: 40 });
+    team([member({ id: "p1", email: "guest@partner.io", role: "guest", status: "invited" })], { onResendInvite });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
+    expect(screen.getByText(/An invite email went to them less than a minute ago/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recently sent \(guest@partner\.io\)/ })).toBeDisabled();
+  });
+
+  it("a new invite whose email couldn't go says so next to the field (the invite still stands)", async () => {
+    const onInvite = vi.fn().mockResolvedValue({ id: "p9", email: "sam@partner.io", inviteEmail: { sent: false, reason: "email_not_configured" } });
+    team([], { onInvite });
+    const input = screen.getByLabelText("Invite email");
+    fireEvent.change(input, { target: { value: "sam@partner.io" } });
+    await act(async () => { fireEvent.submit(input.closest("form")!); });
+    expect(screen.getByText(/^Invite saved, but invite emails aren't set up yet/)).toBeInTheDocument();
+    expect(input).toHaveValue("");
+  });
+
   it("a fresh invite's card holds Resend off for a minute", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const onInvite = vi.fn().mockResolvedValue({});

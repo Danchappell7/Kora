@@ -6,7 +6,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Icon, chipInk, chipFill, chipEdge } from "./primitives";
 import type { TagDef } from "../data/types";
 
-const TAG_COLORS: { c: string; name: string }[] = [
+export const TAG_COLORS: { c: string; name: string }[] = [
   { c: "oklch(0.74 0.16 305)", name: "purple" }, { c: "oklch(0.74 0.14 230)", name: "blue" }, { c: "oklch(0.75 0.13 155)", name: "green" },
   { c: "oklch(0.78 0.15 70)", name: "amber" }, { c: "oklch(0.66 0.2 20)", name: "red" }, { c: "oklch(0.7 0.02 240)", name: "grey" },
 ];

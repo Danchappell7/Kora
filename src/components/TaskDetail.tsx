@@ -682,7 +682,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     if (subs.length) subs.forEach((s) => onAddSubtask(forTask, s));
     if (!alive.current) return;
     setAiSubBusy(false);
-    if (!subs.length) { setAiSubNote("AI couldn't suggest subtasks — add them manually."); window.setTimeout(() => { if (alive.current) setAiSubNote(null); }, 3000); }
+    // the server's reason (daily limit, awaiting approval) when it gave one — shown a little longer
+    const why = subs.length ? null : store.aiNotice();
+    if (!subs.length) { setAiSubNote(why ?? "AI couldn't suggest subtasks — add them manually."); window.setTimeout(() => { if (alive.current) setAiSubNote(null); }, why ? 6000 : 3000); }
   };
 
   // @mention autocomplete — suggest teammates as you type "@…". Picks are

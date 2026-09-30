@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 type ToastType = "error" | "success" | "info";
 interface ToastAction { label: string; run: () => void }
-interface ToastItem { id: number; message: string; type: ToastType; action?: ToastAction }
+interface ToastItem { id: number; message: string; type: ToastType; action?: ToastAction; renewed?: number }
 
 /**
  * Options for an action toast. Passing an options OBJECT (even `{}`) opts in to
@@ -23,10 +23,17 @@ interface ToastItem { id: number; message: string; type: ToastType; action?: Toa
  * `ms` (default 6s) with no pausing, because they may be committing on their
  * own timer of the same length — keeping the toast up longer would offer an
  * Undo that no longer works.
+ *
+ * `key`: a managed toast with the same key as one still on screen takes its
+ * place (same slot, so keyboard focus on it isn't lost, with a fresh clock)
+ * instead of stacking another. The one it replaces ends as if dismissed: its
+ * `onExpire` runs. Callers that want one running Undo (e.g. "Archived 3
+ * notifications") merge their own state and pass the same key each time.
  */
 export interface ToastActionOptions {
   ms?: number;
   onExpire?: () => void;
+  key?: string;
 }
 
 interface ToastApi {
@@ -53,6 +60,7 @@ interface Entry {
   timer: ReturnType<typeof setTimeout> | null;
   pausable: boolean;           // legacy action toasts keep a fixed lifetime
   onExpire?: () => void;
+  key?: string;                // a later toast with this key takes this one's place
 }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
@@ -124,13 +132,25 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, [push]);
 
   const action = useCallback((message: string, label: string, run: () => void, opts?: number | ToastActionOptions) => {
-    const item: ToastItem = { id: ++_id, message, type: "info", action: { label, run } };
     if (typeof opts === "object" && opts !== null) {
-      push(item, { remaining: Math.max(ACTION_TOAST_MIN_MS, opts.ms ?? 0), pausable: true, onExpire: opts.onExpire });
+      const entry = { remaining: Math.max(ACTION_TOAST_MIN_MS, opts.ms ?? 0), pausable: true, onExpire: opts.onExpire, key: opts.key };
+      // (looked up in the clocks, not the rendered list, so two calls in one tick still merge)
+      const prev = opts.key ? [...entries.current].find(([, e]) => e.key === opts.key) : undefined;
+      if (prev) {
+        const [id, old] = prev;
+        if (old.timer) clearTimeout(old.timer);
+        entries.current.set(id, { ...entry, startedAt: Date.now(), timer: null });
+        const renewed = ++_id; // counts as the newest Undo for ⌘Z, though it keeps its slot
+        setItems((xs) => xs.map((x) => (x.id === id ? { ...x, message, action: { label, run }, renewed } : x)));
+        if (old.onExpire) { try { old.onExpire(); } catch (err) { console.error(err); } }
+        if (!paused.current) start(id);
+        return;
+      }
+      push({ id: ++_id, message, type: "info", action: { label, run } }, entry);
     } else {
-      push(item, { remaining: typeof opts === "number" ? opts : LEGACY_ACTION_MS, pausable: false });
+      push({ id: ++_id, message, type: "info", action: { label, run } }, { remaining: typeof opts === "number" ? opts : LEGACY_ACTION_MS, pausable: false });
     }
-  }, [push]);
+  }, [push, start]);
 
   const runAction = useCallback((it: ToastItem) => {
     if (!it.action || !entries.current.has(it.id)) return;
@@ -149,7 +169,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "z") return;
       if (isEditable(e.target) || isEditable(document.activeElement)) return;
-      const latest = [...itemsRef.current].reverse().find((x) => x.action && isUndo(x.action.label));
+      const latest = itemsRef.current.filter((x) => x.action && isUndo(x.action.label))
+        .reduce<ToastItem | undefined>((best, x) => (!best || (x.renewed ?? x.id) > (best.renewed ?? best.id) ? x : best), undefined);
       if (!latest) return;
       e.preventDefault();
       runAction(latest);
