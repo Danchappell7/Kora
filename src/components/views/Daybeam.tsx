@@ -42,13 +42,13 @@ const BEAM_CSS = `
 .kbeam[data-drop="true"] .kbeam-track { box-shadow: 0 0 0 1.5px var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent)); }
 .kbeam-drop { position: absolute; top: 1px; bottom: 1px; z-index: 1; border-radius: 3px; pointer-events: none;
   background: var(--accent); box-shadow: 0 0 0 1.5px var(--bg); }
-/* the figures are data (mono); the words around them stay in the sentence's font */
-.kbeam-cap { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
-.kbeam-cap b { font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
-/* short of room: the bar takes the row, its two figures sit under either end */
+/* a data line, so mono */
+.kbeam-cap { flex-shrink: 0; font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+/* short of room: the bar takes the row, the caption sits under it */
 @container (max-width: 400px) {
-  .kbeam-row { flex-wrap: wrap; row-gap: 6px; justify-content: space-between; }
-  .kbeam-bar { order: -1; flex: 1 1 100%; }
+  .kbeam-row { flex-wrap: wrap; row-gap: 6px; }
+  .kbeam-bar { flex: 1 1 100%; }
+  .kbeam-cap { flex-shrink: 1; min-width: 0; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) { .kbeam-track { transition: none; } }
 `;
@@ -67,7 +67,7 @@ function summary(segs: BeamSegment[], from: number, to: number, nowMin: number, 
 export function Daybeam({ segments, nowMin, planned, free, compact, caption = true, drop }: {
   segments: BeamSegment[];
   nowMin: number;
-  /** minutes planned / free, for the caption ("1h 30m planned · 3h 55m free") */
+  /** minutes planned / free, for the mono caption ("1h 30m planned · 3h 55m free") */
   planned: number;
   free: number;
   /** the working day (08:00–18:00) instead of the whole canvas (DAY_START–DAY_END) */
@@ -89,11 +89,6 @@ export function Daybeam({ segments, nowMin, planned, free, compact, caption = tr
     <div className="kbeam" data-drop={drop ? true : undefined}>
       <style>{BEAM_CSS}</style>
       <div className="kbeam-row">
-        {caption && (
-          <span className="kbeam-cap" aria-hidden="true">
-            {planned > 0 ? <><b>{fmtDuration(planned)}</b> planned</> : "Nothing planned"}
-          </span>
-        )}
         <div className="kbeam-bar" role="img" aria-label={summary(segments, from, to, nowMin, planned, free)}
           data-daybeam="" data-from={from} data-to={to}>
           <div className="kbeam-track">
@@ -115,9 +110,10 @@ export function Daybeam({ segments, nowMin, planned, free, compact, caption = tr
           )}
           {nowIn && <span className="kbeam-now" style={{ left: pct(nowMin) }} />}
         </div>
+        {/* one data line: "1h 30m planned · 3h 55m free" */}
         {caption && (
           <span className="kbeam-cap" aria-hidden="true">
-            {free > 0 ? <><b>{fmtDuration(free)}</b> free</> : "No free time left"}
+            {planned > 0 ? `${fmtDuration(planned)} planned` : "Nothing planned"} · {free > 0 ? `${fmtDuration(free)} free` : "no free time left"}
           </span>
         )}
       </div>

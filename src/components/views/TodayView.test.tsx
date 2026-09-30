@@ -3,7 +3,8 @@ import { useState } from "react";
 import { render, screen, fireEvent, act, within, waitFor } from "@testing-library/react";
 import { TodayView, type TodayViewProps } from "./TodayView";
 import { ToastProvider } from "../Toast";
-import { localDayKey } from "./planCanvas";
+import { ghostPrefsKey, localDayKey } from "./planCanvas";
+import { EVENTS, setReferenceData } from "../../data/data";
 import type { Task } from "../../data/types";
 
 const task = (o: Partial<Task>): Task => ({
@@ -30,6 +31,13 @@ function renderToday(tasks: Task[], extra: Partial<TodayViewProps> = {}) {
   };
   const utils = render(<ToastProvider><TodayView {...props} /></ToastProvider>);
   return { ...utils, props };
+}
+
+/** Today at hh:mm as an ISO datetime (a connected calendar's event times). */
+function isoAt(h: number, m = 0) {
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d.toISOString();
 }
 
 const ghostButtons = () => screen.queryAllByRole("button", { name: /^Suggested:/ });
@@ -228,6 +236,35 @@ describe("TodayView: the suggested plan", () => {
     expect(props.onUpdate).not.toHaveBeenCalled();
   });
 
+  it("Re-plan never double-books: a block that no longer fits comes off the day, and Undo puts it back", async () => {
+    at(16);
+    const meeting = { id: "m", title: "Board prep", start: isoAt(16), end: isoAt(17), allDay: false, provider: "google" };
+    const a = task({ id: "A", title: "Tidy inbox", priority: "low", planToday: true, scheduled: 17 * 60, focusMin: 60 });
+    const b = task({ id: "B", title: "Fix the outage", priority: "urgent", dueDate: today(), focusMin: 60 });
+    const { props } = renderToday([a, b], { events: [meeting] });
+    // B doesn't fit around A, so the hero offers to re-plan
+    fireEvent.click(screen.getByRole("button", { name: /Re-plan/ }));
+    await waitFor(() => expect(props.onUpdate).toHaveBeenCalledTimes(2));
+    expect(props.onUpdate).toHaveBeenCalledWith("B", { scheduled: 17 * 60, planToday: true });
+    expect(props.onUpdate).toHaveBeenCalledWith("A", { scheduled: null });
+    expect(screen.getAllByText("Re-planned 1 task · 1h · 1 back to Unplanned").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(props.onUpdate).toHaveBeenCalledWith("B", { scheduled: null, planToday: false });
+    expect(props.onUpdate).toHaveBeenCalledWith("A", { scheduled: 17 * 60, planToday: true });
+  });
+
+  it("a block waved away earlier and then put on the day is still re-laid (never left under another)", async () => {
+    at(16);
+    const meeting = { id: "m", title: "Board prep", start: isoAt(16), end: isoAt(17), allDay: false, provider: "google" };
+    localStorage.setItem(ghostPrefsKey("me"), JSON.stringify({ day: today(), skipped: ["A"], hidden: false }));
+    const a = task({ id: "A", title: "Tidy inbox", priority: "low", planToday: true, scheduled: 17 * 60, focusMin: 60 });
+    const b = task({ id: "B", title: "Fix the outage", priority: "urgent", dueDate: today(), focusMin: 60 });
+    const { props } = renderToday([a, b], { events: [meeting] });
+    fireEvent.click(screen.getByRole("button", { name: /Re-plan/ }));
+    await waitFor(() => expect(props.onUpdate).toHaveBeenCalledWith("A", { scheduled: null }));
+    expect(props.onUpdate).toHaveBeenCalledWith("B", { scheduled: 17 * 60, planToday: true });
+  });
+
   it("an empty day has nothing to plan", () => {
     renderToday([]);
     expect(screen.getByRole("button", { name: /Plan my day/ })).toBeDisabled();
@@ -270,21 +307,176 @@ describe("TodayView: the canvas", () => {
     expect(screen.getByRole("button", { name: /^Placed, 11:00–11:30/ })).toBeInTheDocument();
   });
 
-  it("offers to connect a calendar when there are no meetings", () => {
+  it("a real account with no calendar connected is offered one; the demo day's meetings stand in for it", () => {
     const onConnectCalendar = vi.fn();
-    renderToday([], { calendarConnected: false, onConnectCalendar, events: [] });
-    // the demo day's meetings stand in until a calendar is connected (demo mode); a real account has none
-    const link = screen.queryByRole("button", { name: /Connect your calendar/ });
-    if (link) {
-      fireEvent.click(link);
-      expect(onConnectCalendar).toHaveBeenCalled();
+    const demo = EVENTS;
+    // demo mode: its illustrative meetings fill the day, so there's nothing to connect
+    const first = renderToday([], { calendarConnected: false, onConnectCalendar });
+    expect(screen.queryByRole("button", { name: /Connect your calendar/ })).not.toBeInTheDocument();
+    first.unmount();
+    // a real account starts with no meetings at all
+    setReferenceData({ events: [] });
+    try {
+      renderToday([], { calendarConnected: false, onConnectCalendar });
+      fireEvent.click(screen.getByRole("button", { name: "Connect your calendar to see meetings here" }));
+      expect(onConnectCalendar).toHaveBeenCalledTimes(1);
+    } finally {
+      setReferenceData({ events: demo });
     }
+  });
+
+  it("a connected calendar with a clear day doesn't ask to connect again", () => {
+    renderToday([], { calendarConnected: true, onConnectCalendar: vi.fn(), events: [] });
+    expect(screen.queryByRole("button", { name: /Connect your calendar/ })).not.toBeInTheDocument();
   });
 
   it("F on a block starts focus on it", () => {
     const { props } = renderToday([task({ id: "p", title: "Placed", planToday: true, scheduled: 11 * 60 })]);
     fireEvent.keyDown(screen.getByRole("button", { name: /^Placed, 11:00–11:30/ }), { key: "f" });
     expect(props.onStartFocus).toHaveBeenCalledWith("p");
+  });
+});
+
+describe("TodayView: the brief counts what the rail shows", () => {
+  it("a collaborator's task and a subtask aren't in the figures, or the one to start with", () => {
+    const mine = task({ id: "mine", title: "Mine due", dueDate: today(), aiScore: 10 });
+    const collab = task({ id: "collab", title: "Collab due", dueDate: today(), assigneeId: "maya", collaborators: ["me"], aiScore: 90 });
+    const sub = task({ id: "sub", title: "Subtask due", dueDate: today(), parentId: "mine", aiScore: 80 });
+    renderToday([mine, collab, sub]);
+    const brief = screen.getByRole("region", { name: "Your day in brief" });
+    expect(within(brief).getByRole("button", { name: "one thing due" })).toBeInTheDocument();
+    expect(within(brief).getByRole("button", { name: "Mine due" })).toBeInTheDocument();
+    expect(ghostButtons().map((b) => b.getAttribute("aria-label"))).toEqual([expect.stringMatching(/^Suggested: Mine due/)]);
+    fireEvent.click(within(brief).getByRole("button", { name: "one thing due" }));
+    const rail = screen.getByRole("complementary", { name: "Unplanned" });
+    expect(within(rail).getByText("Mine due")).toBeInTheDocument();
+    expect(within(rail).queryByText("Collab due")).not.toBeInTheDocument();
+  });
+
+  it("narrowed to what's due, the rail says how much of it is already on the day", () => {
+    renderToday([
+      task({ id: "a", title: "Due, unplaced", dueDate: today() }),
+      task({ id: "b", title: "Due, placed", dueDate: today(), planToday: true, scheduled: 14 * 60 }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "two things due" }));
+    expect(screen.getByText("Showing what's due today · 1 already on your day")).toBeInTheDocument();
+  });
+});
+
+describe("TodayView: after the working day", () => {
+  it("offers no suggestions and no plan, just the way to close the day", () => {
+    at(19);
+    const { props } = renderToday([task({ id: "d", title: "Due thing", dueDate: today() })]);
+    const brief = screen.getByRole("region", { name: "Your day in brief" });
+    expect(brief.textContent).toContain("Good evening, Daniel. The working day's done, with one thing due.");
+    expect(ghostButtons()).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /Plan my day|Re-plan/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Tomorrow's plan starts at 08:00")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /no free time left/ }).getAttribute("aria-label")).not.toMatch(/suggestion/);
+    // the rail marks it for tomorrow rather than suggesting an evening slot
+    expect(within(screen.getByRole("complementary", { name: "Unplanned" })).getByText("Tomorrow")).toBeInTheDocument();
+    // the hero closes the day (the rail's own link steps aside for it)
+    const shut = screen.getAllByRole("button", { name: "Shut down my day" });
+    expect(shut).toHaveLength(1);
+    fireEvent.click(shut[0]);
+    expect(props.onShutdown).toHaveBeenCalledTimes(1);
+    // P explains rather than planning into the evening
+    fireEvent.keyDown(document.body, { key: "p" });
+    expect(props.onRank).not.toHaveBeenCalled();
+    expect(screen.getAllByText("The working day's done. Tomorrow's plan starts at 08:00.").length).toBeGreaterThan(0);
+  });
+
+  it("before the working day starts, suggestions begin at 08:00", () => {
+    at(7, 10);
+    renderToday([task({ id: "d", title: "Due thing", dueDate: today(), energy: "deep" })]);
+    expect(ghostButtons().map((b) => b.getAttribute("aria-label"))).toEqual([expect.stringMatching(/^Suggested: Due thing, 08:00–08:30/)]);
+  });
+
+  it("a task due at a time is suggested before it, as the brief says", () => {
+    renderToday([task({ id: "c", title: "Send contract", dueDate: today(), dueTime: "11:00" })]);
+    expect(screen.getByRole("region", { name: "Your day in brief" }).textContent).toContain("Start with Send contract: it's due at 11:00.");
+    expect(ghostButtons().map((b) => b.getAttribute("aria-label"))).toEqual([expect.stringMatching(/^Suggested: Send contract, 09:00–09:30/)]);
+  });
+});
+
+describe("TodayView: waving suggestions away, and bringing them back", () => {
+  /** A host that applies every write, like the app does. */
+  function Host({ initial, onUpdate }: { initial: Task[]; onUpdate?: (id: string, p: Partial<Task>) => void }) {
+    const [ts, setTs] = useState(initial);
+    return (
+      <ToastProvider>
+        <TodayView tasks={ts} allTasks={ts} events={[]} calendarConnected currentUserId="me" captureDefaults={{ projectId: "p-personal", assigneeId: "me" }}
+          onUpdate={(id, p) => { onUpdate?.(id, p); setTs((prev) => prev.map((t) => (t.id === id ? { ...t, ...p } : t))); }}
+          onCreate={vi.fn()} onOpen={vi.fn()} onRank={async () => "ai" as const} ranking={false}
+          onStartFocus={vi.fn()} onShutdown={vi.fn()} setup={[]} showSuggestions />
+      </ToastProvider>
+    );
+  }
+
+  it("the mouse can hide and show the suggestions, as H does", () => {
+    renderToday([task({ id: "a", title: "Send the brief", dueDate: today() })]);
+    expect(ghostButtons()).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Hide suggestions for today" }));
+    expect(ghostButtons()).toHaveLength(0);
+    // the hint still says what P will do; the switch says how to see it again
+    expect(screen.getByText("Places 1 task · 30m")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show suggestions" }));
+    expect(ghostButtons()).toHaveLength(1);
+  });
+
+  it("with nothing to suggest there's no switch to show", () => {
+    renderToday([task({ id: "p", title: "Placed", planToday: true, scheduled: 14 * 60 })]);
+    expect(screen.queryByRole("button", { name: /suggestions/ })).not.toBeInTheDocument();
+  });
+
+  it("Not today, then Undo: the task is on today's list and a suggestion again (Plan my day can place it)", () => {
+    render(<Host initial={[task({ id: "x", title: "Expenses", planToday: true })]} />);
+    expect(ghostButtons()).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /Not today: take “Expenses”/ }));
+    expect(ghostButtons()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(ghostButtons()).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Plan my day/ })).toBeEnabled();
+    expect(screen.getByText("Places 1 task · 30m")).toBeInTheDocument();
+  });
+
+  it("Not today on work that's only due today still offers an Undo", () => {
+    render(<Host initial={[task({ id: "d", title: "Due thing", dueDate: today() })]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Not today: take “Due thing”/ }));
+    expect(ghostButtons()).toHaveLength(0);
+    expect(screen.getAllByText("Took “Due thing” off today.").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(ghostButtons()).toHaveLength(1);
+  });
+
+  it("with the only suggestion set aside, the hint says so rather than 'nothing to place'", () => {
+    render(<Host initial={[task({ id: "x", title: "Expenses", planToday: true })]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Not now: hide the suggestion for “Expenses”/ }));
+    expect(screen.getByText("Nothing to place · 1 set aside for today")).toBeInTheDocument();
+  });
+
+  it("Not now has an Undo too", () => {
+    render(<Host initial={[task({ id: "d", title: "Due thing", dueDate: today() })]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Not now: hide the suggestion for “Due thing”/ }));
+    expect(ghostButtons()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(ghostButtons()).toHaveLength(1);
+  });
+
+  it("putting a waved-away task back on today's list from elsewhere makes it a suggestion again", () => {
+    const d = task({ id: "d", title: "Due thing", dueDate: today() });
+    const props: TodayViewProps = {
+      tasks: [d], allTasks: [d], events: [], calendarConnected: true, currentUserId: "me", captureDefaults: { projectId: "p-personal", assigneeId: "me" },
+      onUpdate: vi.fn(), onCreate: vi.fn(), onOpen: vi.fn(), onRank: vi.fn(async () => "ai" as const), ranking: false,
+      onStartFocus: vi.fn(), onShutdown: vi.fn(), setup: [], showSuggestions: true,
+    };
+    const { rerender } = render(<ToastProvider><TodayView {...props} /></ToastProvider>);
+    fireEvent.click(screen.getByRole("button", { name: /Not now: hide the suggestion for “Due thing”/ }));
+    expect(ghostButtons()).toHaveLength(0);
+    // e.g. "On Today" in the task panel
+    const back = { ...d, planToday: true };
+    rerender(<ToastProvider><TodayView {...props} tasks={[back]} allTasks={[back]} /></ToastProvider>);
+    expect(ghostButtons()).toHaveLength(1);
   });
 });
 

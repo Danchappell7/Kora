@@ -105,10 +105,33 @@ describe("PlanView", () => {
     expect(screen.queryByText("Already done")).not.toBeInTheDocument();
   });
 
-  it("'Not today' takes a card off today's list", () => {
+  it("'Not today' takes a card off today's list, with an Undo", () => {
     const { onUpdate } = renderPlan([task({ id: "i1", title: "Expenses", planToday: true, scheduled: null })]);
     fireEvent.click(screen.getByRole("button", { name: /Not today: take “Expenses”/ }));
     expect(onUpdate).toHaveBeenCalledWith("i1", { planToday: false });
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onUpdate).toHaveBeenLastCalledWith("i1", { planToday: true });
+  });
+
+  it("on its own (no list of waved-away tasks) it only offers 'Not today' for what's on today's list", () => {
+    const today = localDayKey();
+    renderPlan([
+      task({ id: "due", title: "Due only", dueDate: today }),
+      task({ id: "listed", title: "Listed", planToday: true }),
+    ]);
+    expect(screen.queryByRole("button", { name: /Not today: take “Due only”/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Not today: take “Listed”/ })).toBeInTheDocument();
+  });
+
+  it("the parse line names a day further off in full (Fri 2 Oct)", () => {
+    renderPlan([]);
+    const input = screen.getByLabelText("Capture a task for today");
+    const line = () => document.getElementById(input.getAttribute("aria-describedby")!)!;
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    const short = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+    const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()];
+    fireEvent.change(input, { target: { value: "Call supplier next week 30m" } });
+    expect(line().textContent).toContain(`${short} ${d.getDate()} ${month} · 30m`);
   });
 
   it("moves a block from the keyboard in one write, and Delete unplans it", () => {

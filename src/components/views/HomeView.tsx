@@ -199,14 +199,14 @@ export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, s
           </div>
           <div>
             {today.length === 0 && (
-              <div style={{ padding: "20px 16px", borderTop: "1px solid var(--hairline)", fontSize: 13, color: "var(--ink-3)" }}>
+              <div style={{ padding: "12px 16px 20px", fontSize: 13, color: "var(--ink-3)" }}>
                 Nothing due or overdue — you're clear. Plan ahead or pull from your backlog.
               </div>
             )}
             {today.slice(0, 4).map((t, i) => {
               const proj = getProject(t.projectId);
               return (
-                <button key={t.id} type="button" onClick={() => onOpen(t.id)} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", minHeight: 44, padding: "0 16px", border: "none", borderTop: "1px solid var(--hairline)", background: "transparent", cursor: "pointer", textAlign: "left", font: "inherit" }}>
+                <button key={t.id} type="button" onClick={() => onOpen(t.id)} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", minHeight: 44, padding: "0 12px", border: "none", borderRadius: "var(--r-sm, 6px)", background: "transparent", cursor: "pointer", textAlign: "left", font: "inherit" }}>
                   <span className="mono tnum" style={{ fontSize: 11, color: "var(--ink-3)", width: 12 }}>{i + 1}</span>
                   <StatusGlyph status={t.status} size={14} readOnly />
                   <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: "var(--ink)" }} className="truncate">{t.title}</span>

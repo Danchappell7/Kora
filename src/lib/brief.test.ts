@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   composeBrief, countOf, countWord, freeGaps, freeMinutes, ghostCandidates, ghostPlan, momentum, momentumCounts,
-  placesHint, plannedMinutes, reasonFor, topTask, WORK_END,
+  placesHint, plannedMinutes, reasonFor, topTask, WORK_END, WORK_START,
 } from "./brief";
 import type { CalEvent, Task } from "../data/types";
 
@@ -142,6 +142,20 @@ describe("composeBrief: where to start", () => {
   it("no work for today, no suggestion", () => {
     expect(brief({ tasks: [task({ dueDate: day(4) })] }).plain).not.toContain("Start with");
   });
+
+  it("counts the work the rail and the suggestions show: mine, or on today's list — not a collaborator's, not a subtask", () => {
+    const mine = task({ title: "Mine due", dueDate: TODAY, aiScore: 10 });
+    const collab = task({ title: "Collab due", dueDate: TODAY, assigneeId: "maya", collaborators: ["me"], priority: "urgent", aiScore: 90 });
+    const sub = task({ title: "Subtask due", dueDate: TODAY, parentId: mine.id, aiScore: 80 });
+    const listed = task({ title: "Maya's, on my list", dueDate: day(-1), assigneeId: "maya", planToday: true, aiScore: 5 });
+    const b = brief({ me: "me", tasks: [mine, collab, sub, listed] });
+    expect(b.plain).toContain("one thing due and one overdue.");
+    expect(b.plain).toContain("Start with Mine due:");
+    // the same set ghostCandidates works from
+    const ids = ghostCandidates([mine, collab, sub, listed], { today: TODAY, me: "me" }).map((t) => t.id);
+    expect(ids.sort()).toEqual([mine.id, listed.id].sort());
+    expect(topTask([mine, collab, sub], TODAY, "me")?.id).toBe(mine.id);
+  });
 });
 
 describe("composeBrief: risks and the evening", () => {
@@ -200,6 +214,17 @@ describe("free time, planned time and momentum", () => {
     expect(momentum(tasks, TODAY)).toBe(0.5);
     expect(momentum([task({ dueDate: day(2) })], TODAY)).toBeNull();
   });
+
+  it("with me, momentum counts only the work Today shows me", () => {
+    const tasks = [
+      task({ status: "done", completedAt: TODAY }),
+      task({ dueDate: TODAY }),
+      task({ status: "done", completedAt: TODAY, assigneeId: "maya", collaborators: ["me"] }), // theirs
+      task({ dueDate: TODAY, assigneeId: "maya", collaborators: ["me"] }),                     // theirs
+      task({ dueDate: TODAY, assigneeId: "maya", planToday: true }),                           // on my list
+    ];
+    expect(momentumCounts(tasks, TODAY, "me")).toEqual({ done: 1, total: 3 });
+  });
 });
 
 describe("ghostPlan", () => {
@@ -249,8 +274,51 @@ describe("ghostPlan", () => {
     const plan = ghostPlan([big], [], H(16, 30), opts);
     expect(plan.suggestions).toEqual([]);
     expect(plan.unplaced.map((t) => t.id)).toEqual([big.id]);
-    // working late: the evening is offered once the working day is over
-    expect(ghostPlan([big], [], H(18, 30), opts).suggestions).toHaveLength(1);
+  });
+
+  it("once the working day is over nothing is suggested: it's all tomorrow's (as the brief and the Daybeam say)", () => {
+    const small = task({ dueDate: TODAY, focusMin: 30 });
+    const plan = ghostPlan([small], [], H(19), opts);
+    expect(plan.suggestions).toEqual([]);
+    expect(plan.unplaced.map((t) => t.id)).toEqual([small.id]);
+    expect(ghostPlan([small], [], WORK_END, opts).suggestions).toEqual([]);
+  });
+
+  it("never suggests anything before the working day starts", () => {
+    const { suggestions } = ghostPlan([task({ dueDate: TODAY, energy: "deep" })], [], H(7), opts);
+    expect(suggestions[0].start).toBe(WORK_START);
+    expect(freeGaps([], [], H(7))[0].start).toBe(WORK_START);
+  });
+
+  it("work due at a time today is suggested to finish by then, not after", () => {
+    // an admin task would otherwise wait for the afternoon (13:00)
+    const contract = task({ title: "Send contract", dueDate: TODAY, dueTime: "11:00", focusMin: 30 });
+    const { suggestions } = ghostPlan([contract], [], H(9), opts);
+    expect(suggestions).toEqual([{ id: contract.id, start: H(9), end: H(9, 30), overdue: false }]);
+    // the brief says the same thing
+    expect(brief({ nowMin: H(9), tasks: [contract] }).plain).toContain("Start with Send contract: it's due at 11:00.");
+  });
+
+  it("a timed task goes around meetings, and ahead of other work that wanted its slot", () => {
+    const urgent = task({ dueDate: TODAY, priority: "urgent", focusMin: 60, energy: "deep", aiScore: 99 });
+    const timed = task({ dueDate: TODAY, dueTime: "10:30", focusMin: 30 });
+    const { suggestions } = ghostPlan([urgent, timed], [meeting(H(9), H(9, 30), "Standup")], H(9), opts);
+    const at = (id: string) => suggestions.find((s) => s.id === id)!;
+    expect(at(timed.id).start).toBe(H(9, 30));
+    expect(at(timed.id).end).toBeLessThanOrEqual(H(10, 30));
+    expect(at(urgent.id).start).toBeGreaterThanOrEqual(at(timed.id).end);
+  });
+
+  it("a deadline that can't be met any more is still today's: as soon as there's room", () => {
+    // due 11:00, but the morning is taken until 10:45: it goes straight after
+    const late = task({ dueDate: TODAY, dueTime: "11:00", focusMin: 30 });
+    const s1 = ghostPlan([late], [meeting(H(9), H(10, 45))], H(9), opts).suggestions[0];
+    expect(s1.start).toBe(H(10, 45));
+    expect(s1.overdue).toBe(false);
+    // and once 11:00 has gone it's overdue, and first thing
+    const s2 = ghostPlan([late], [], H(12, 10), opts).suggestions[0];
+    expect(s2.start).toBe(H(12, 10));
+    expect(s2.overdue).toBe(true);
   });
 
   it("uses a gap the focus break held back before calling anything tomorrow's", () => {

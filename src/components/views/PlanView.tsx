@@ -27,11 +27,11 @@ import { parseTask, type NlpSpan } from "../../lib/nlp";
 import { uiZoom } from "../../lib/appearance";
 import type { Task, CalEvent, EnergyKind, ExternalEvent } from "../../data/types";
 import {
-  durOf, energyKindOf, layoutLanes, isMine, isPlaced, todaysEvents, fmtTime, fmtTimeRange, fmtDuration, parseDay, daysBetween, weekdayShort, dayMonth,
+  durOf, energyKindOf, layoutLanes, isPlaced, todaysEvents, fmtTime, fmtTimeRange, fmtDuration, parseDay, daysBetween, weekdayShort, dayMonth, dayLong,
   localDayKey, planSeenKey, readSeen, writeSeen, carryOver, recordSeen, markSeen, touchSeen, carryLabel,
 } from "./planCanvas";
 import type { Lane, SeenMap } from "./planCanvas";
-import { freeGaps as freeGapsOf, type GhostBlock } from "../../lib/brief";
+import { freeGaps as freeGapsOf, isTodaysScope, WORK_START, type GhostBlock } from "../../lib/brief";
 
 const SNAP = 15;            // drags land on the quarter hour
 const MOUSE_SLOP = 4;       // px a mouse press must travel before it becomes a drag — a click never writes
@@ -129,6 +129,14 @@ function dueLabel(iso: string | undefined, today: string): string | null {
   return dayMonth(date);
 }
 
+/** The capture's parse line names the day in full: "Today", "Tomorrow", else "Fri 2 Oct". */
+function captureDayLabel(iso: string | undefined, today: string): string | null {
+  const date = parseDay(iso);
+  if (!date) return null;
+  const diff = daysBetween(today, iso!);
+  return diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : dayLong(date);
+}
+
 type DragSource = "intake" | "canvas" | "ghost";
 interface DragState {
   taskId: string;
@@ -206,7 +214,11 @@ const PLAN_CSS = `
 .kday-event[data-kind="meeting"] { background: var(--bg-deep); box-shadow: inset 2px 0 0 var(--kp-icon-quiet), inset 0 0 0 1px var(--hairline); }
 .kday-event[data-kind="break"] { border: 1px dashed var(--hairline-strong); }
 .kday-event[data-tall="true"] { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding-top: 6px; }
-.kday-event[data-past="true"] { opacity: 0.55; }
+/* the past recedes by its surface, never its words: the canvas's own colour (opaque, so hour
+   rules don't run through it), a quiet edge, and text-safe inks */
+.kday-event[data-kind="meeting"][data-past="true"] { background: var(--bg); box-shadow: inset 2px 0 0 var(--hairline-strong), inset 0 0 0 1px var(--hairline); }
+.kday-event[data-past="true"] .kday-event-title { color: var(--ink-3); }
+.kday-event[data-past="true"] .kday-event-meta { color: var(--ink-4); }
 .kday-event[data-kind="meeting"][data-now="true"] { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--kp-accent-line); }
 /* short of room, the time and people give way before the meeting's name does */
 .kday-event-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/16px var(--kp-ui); color: var(--ink-2); }
@@ -226,11 +238,18 @@ const PLAN_CSS = `
 .kday-block:hover { box-shadow: var(--kp-e2); }
 .kday-block[data-now="true"] { box-shadow: var(--kp-e1), 0 0 0 1px var(--kp-accent-line); }
 .kday-block[data-ring="true"] { box-shadow: 0 0 0 2px var(--accent), var(--kp-e2); }
-.kday-block[data-past="true"] { opacity: 0.55; }
-.kday-block[data-past="true"]:hover, .kday-block[data-past="true"]:focus-within { opacity: 0.9; }
+/* a block that's behind you (or just ticked off) lies flat on the canvas: no raise, its
+   edge faded, its words in text-safe inks. Hover or focus lifts it back. */
+.kday-block:is([data-past="true"], [data-done="true"]) { background: var(--bg); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kday-block:is([data-past="true"], [data-done="true"])::before { opacity: 0.45; }
+.kday-block:is([data-past="true"], [data-done="true"]) .kday-block-title { color: var(--ink-3); }
+.kday-block:is([data-past="true"], [data-done="true"]) .kday-block-meta,
+.kday-block:is([data-past="true"], [data-done="true"]) .kday-proj { color: var(--ink-4); }
+.kday-block[data-past="true"]:is(:hover, :focus-within) { background: var(--surface-raised); box-shadow: var(--kp-e2); }
+.kday-block[data-past="true"]:is(:hover, :focus-within)::before { opacity: 1; }
+.kday-block[data-ring="true"]:is([data-past="true"], [data-done="true"]) { box-shadow: 0 0 0 2px var(--accent), var(--kp-e2); }
 .kday-block[data-dragging="true"] { opacity: 0.4; touch-action: none; }
-.kday-block[data-done="true"] { opacity: 0.6; }
-.kday-block[data-done="true"] .kday-block-title { text-decoration: line-through; text-decoration-color: var(--ink-4); color: var(--ink-3); }
+.kday-block[data-done="true"] .kday-block-title { text-decoration: line-through; text-decoration-color: var(--ink-4); }
 .kday-block[data-tall="true"] { justify-content: flex-start; padding-top: 5px; }
 /* a short block grows over its neighbours while you're on it, so its actions fit */
 .kday-block[data-short="true"]:hover, .kday-block[data-short="true"]:focus-within,
@@ -283,6 +302,8 @@ const PLAN_CSS = `
 .kday-ghost:hover .kday-ghost-title, .kday-ghost:focus-within .kday-ghost-title { color: var(--ink); }
 .kday-ghost:hover .kday-ghost-tag, .kday-ghost:focus-within .kday-ghost-tag { opacity: 0; }
 .kday-ghost:hover .kday-ghost-acts, .kday-ghost:focus-within .kday-ghost-acts { opacity: 1; pointer-events: auto; }
+/* with a mouse the actions are words ("Accept ⏎", "Not now"); their icons are for touch */
+.kday-ghost-acts .kbtn > svg { display: none; }
 .kday-ghost[data-dragging="true"] { opacity: 0.4; }
 .kday-ghost[data-ring="true"] { box-shadow: 0 0 0 2px var(--accent), var(--kp-e2); }
 
@@ -298,10 +319,11 @@ const PLAN_CSS = `
   transition: background var(--kp-d2) var(--ease), box-shadow var(--kp-d2) var(--ease); }
 .kday-free-label { white-space: nowrap; }
 .kday-free-label .mono { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; }
-/* the brief's "free" figure: every free stretch outlined for a moment, over any suggestion in it */
-@keyframes kdayOpen { 0% { opacity: 0; } 15%, 75% { opacity: 1; } 100% { opacity: 0; } }
+/* the brief's "free" figure: every free stretch outlined for a moment, over any suggestion
+   in it — the outline comes and goes in 160ms, and holds long enough to be seen between */
+@keyframes kdayOpen { 0% { opacity: 0; } 13.3%, 86.7% { opacity: 1; } 100% { opacity: 0; } }
 .kday-openpulse { position: absolute; left: ${LANE_LEFT}px; right: 0; z-index: 7; pointer-events: none; border-radius: var(--kp-r-sm);
-  border: 1.5px dashed var(--accent); background: color-mix(in oklch, var(--accent) 6%, transparent); animation: kdayOpen 1200ms var(--ease) both; }
+  box-shadow: inset 0 0 0 1.5px var(--accent); background: color-mix(in oklch, var(--accent) 6%, transparent); animation: kdayOpen 1200ms linear both; }
 .kday-drop { position: absolute; left: ${LANE_LEFT}px; right: 0; z-index: 5; display: flex; align-items: flex-start; padding: 5px 10px; pointer-events: none;
   border-radius: var(--kp-r-sm); border: 1.5px dashed var(--accent); background: var(--kp-accent-tint); }
 .kday-drop span { font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--accent-text, var(--accent)); }
@@ -332,7 +354,9 @@ const PLAN_CSS = `
   border-radius: var(--kp-r-md); background: var(--field-bg, var(--surface)); cursor: text;
   box-shadow: inset 0 0 0 1px var(--field-border, var(--hairline-strong)); transition: box-shadow var(--kp-d1) var(--ease); }
 .krail-cap:hover { box-shadow: inset 0 0 0 1px var(--field-border-hover, var(--hairline-strong)); }
-.krail-cap[data-focused="true"] { box-shadow: inset 0 0 0 1px var(--kp-accent-line), 0 0 0 4px var(--kp-accent-tint); }
+/* the field is the ring's owner (the input inside it sits over a highlight layer):
+   the same 2px accent ring every text field wears */
+.krail-cap[data-focused="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
 .krail-cap > svg { flex-shrink: 0; color: var(--kp-icon-quiet); }
 .krail-cap[data-focused="true"] > svg { color: var(--accent-text, var(--accent)); }
 .krail-cap-box { position: relative; flex: 1; min-width: 0; height: 100%; }
@@ -355,7 +379,7 @@ const PLAN_CSS = `
 .krail-head .kbtn { margin-left: auto; }
 .krail-head[data-first="true"] { margin-top: 0; padding-top: 0; border-top: 0; }
 .kplan[data-stacked="true"] .krail-head + div > .krail-cap { margin-top: 4px; }
-.krail-filter { display: flex; align-items: center; gap: 8px; margin: 4px 0 4px; font: 500 12px/16px var(--kp-ui); color: var(--ink-3); }
+.krail-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: 4px 0 4px; font: 500 12px/16px var(--kp-ui); color: var(--ink-3); }
 .krail-filter button { border: 0; background: none; padding: 0; font: inherit; color: var(--accent-text, var(--accent)); cursor: pointer; }
 .krail-filter button:hover { text-decoration: underline; text-underline-offset: 3px; }
 .krail-group { padding-top: 8px; }
@@ -430,6 +454,15 @@ const PLAN_CSS = `
 @media (hover: none) {
   .krail-cap .kkbd { display: none; }
   .kday-acts, .kday-event-act { opacity: 1; }
+  /* a tap on a suggestion opens it, so Accept and Not now can't wait for a hover:
+     they're always there, as two icons where the "suggested" tag was */
+  .kday-ghost-tag { display: none; }
+  .kday-ghost-row { padding-right: 60px; }
+  .kday-ghost-acts { opacity: 1; pointer-events: auto; }
+  .kday-ghost-acts .kbtn { width: 24px; height: 24px; padding: 0; justify-content: center; }
+  .kday-ghost-acts .kbtn > svg { display: inline; }
+  .kday-ghost-acts :is(.kday-mini-label, .kkbd) { display: none; }
+  .kday-ghost[data-short="true"] { min-height: 26px; z-index: 5; }
   /* touch: the slot and "Not today" side by side, always there */
   .krail-acts { position: static; opacity: 1; pointer-events: auto; }
   .krail-item[data-slot="true"] .iadd-place { display: none; }
@@ -532,7 +565,7 @@ function TaskBlock({ task, start, lane, win, nowMin, helpId, readOnly, onStartDr
       </div>
       {tall && (
         <div className="kday-block-meta" aria-hidden="true">
-          <span>{range} · {fmtDuration(dur)}</span>
+          <span>{fmtTime(start)} · {fmtDuration(dur)}</span>
           {proj && <span className="kday-proj"><ProjectDot color={proj.color} />{proj.name}</span>}
         </div>
       )}
@@ -580,12 +613,13 @@ function GhostView({ task, ghost, lane, win, helpId, onStartDrag, onOpen, onAcce
           {proj && <span className="kday-proj"><ProjectDot color={proj.color} />{proj.name}</span>}
         </div>
       )}
+      {/* with a mouse they appear on hover or focus; on touch they're always there, as icons */}
       <span className="kday-ghost-acts" onPointerDown={stop}>
-        <Button size="sm" className="kday-mini" kbd="⏎" aria-label={`Accept: ${task.title} at ${fmtTime(ghost.start)}`}
-          onClick={(ev) => { ev.stopPropagation(); onAccept(ghost, ev.detail === 0); }}>Accept</Button>
+        <Button size="sm" className="kday-mini" kbd="⏎" icon="check" aria-label={`Accept: ${task.title} at ${fmtTime(ghost.start)}`}
+          onClick={(ev) => { ev.stopPropagation(); onAccept(ghost, ev.detail === 0); }}><span className="kday-mini-label">Accept</span></Button>
         {onSkip && (
-          <Button size="sm" variant="ghost" className="kday-mini" aria-label={`Not now: hide the suggestion for “${task.title}” today`}
-            onClick={(ev) => { ev.stopPropagation(); onSkip(task.id, ev.detail === 0); }}>Not now</Button>
+          <Button size="sm" variant="ghost" className="kday-mini" icon="x" aria-label={`Not now: hide the suggestion for “${task.title}” today`}
+            onClick={(ev) => { ev.stopPropagation(); onSkip(task.id, ev.detail === 0); }}><span className="kday-mini-label">Not now</span></Button>
         )}
       </span>
     </div>
@@ -754,7 +788,7 @@ function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, pro
   marked.push(text.slice(at));
 
   const bits: string[] = [];
-  if (cap?.dueDate || nl?.dueDate) bits.push(dueLabel(nl?.dueDate ?? cap?.dueDate, today) ?? "");
+  if (cap?.dueDate || nl?.dueDate) bits.push(captureDayLabel(nl?.dueDate ?? cap?.dueDate, today) ?? "");
   if (nl?.dueTime) bits.push(nl.dueTime);
   if (cap) bits.push(fmtDuration(durOf(cap)));
   if (nl?.assigneeId) bits.push(members.find((m) => m.id === nl.assigneeId)?.name ?? "");
@@ -829,11 +863,13 @@ function OrderMenu({ value, onChange }: { value: RailOrder; onChange: (o: RailOr
   );
 }
 
-function RailItem({ task, today, me, slot, tomorrow, readOnly, dragging, onStartDrag, onOpen, onToggle, onAccept, onSchedule, onNotToday }: {
+function RailItem({ task, today, me, slot, tomorrow, readOnly, dragging, canSkip, onStartDrag, onOpen, onToggle, onAccept, onSchedule, onNotToday }: {
   task: Task; today: string; me?: string;
   /** Kanbo's suggested start ("→ 14:00"), or "Tomorrow" when it doesn't fit */
   slot?: GhostBlock; tomorrow?: boolean;
   readOnly?: boolean; dragging?: boolean;
+  /** today's list can wave away what isn't on it (Today does; a bare PlanView can't) */
+  canSkip?: boolean;
   onStartDrag: (ev: ReactPointerEvent, task: Task, source: DragSource) => void;
   onOpen: (id: string) => void;
   onToggle: (task: Task) => void;
@@ -873,10 +909,12 @@ function RailItem({ task, today, me, slot, tomorrow, readOnly, dragging, onStart
               onClick={(ev) => { ev.stopPropagation(); onSchedule(task.id, ev.detail === 0); }}>
               <Icon name="plus" size={16} sw={1.75} />
             </button>
-            <button type="button" className="kibtn" data-size="sm" data-tone="danger" title="Not today" aria-label={`Not today: take “${task.title}” off today's list`}
-              onClick={(ev) => { ev.stopPropagation(); onNotToday(task, ev); }}>
-              <Icon name="x" size={16} sw={1.75} />
-            </button>
+            {(task.planToday || canSkip) && (
+              <button type="button" className="kibtn" data-size="sm" data-tone="danger" title="Not today" aria-label={`Not today: take “${task.title}” off today's list`}
+                onClick={(ev) => { ev.stopPropagation(); onNotToday(task, ev); }}>
+                <Icon name="x" size={16} sw={1.75} />
+              </button>
+            )}
           </span>
         )}
       </div>
@@ -912,6 +950,8 @@ export interface PlanViewProps {
   /** ids waved away for today ("Not now"): they wait under Later */
   skipped?: string[];
   onSkip?: (id: string) => void;
+  /** brings a waved-away task back (the Undo on "Not today" and "Not now") */
+  onUnskip?: (id: string) => void;
   /** blocks Plan my day just committed → their stagger index (they land 40ms apart) */
   landing?: Record<string, number>;
   /** guests: a read-only day (no capture, no dragging, no ticking off) */
@@ -935,7 +975,7 @@ export interface PlanViewProps {
 
 export function PlanView({
   tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false, currentUserId, captureDefaults,
-  lede, events: eventsProp, nowMin: nowProp, ghosts = [], tomorrowIds, skipped, onSkip, landing, readOnly = false,
+  lede, events: eventsProp, nowMin: nowProp, ghosts = [], tomorrowIds, skipped, onSkip, onUnskip, landing, readOnly = false,
   onStartFocus, onExtractFromMeeting, onConnectCalendar, railFocus = null, onRailFocus, freePulse, big3, onOpenMyTasks, onShutdown,
   members: membersProp, projects: projectsProp,
 }: PlanViewProps) {
@@ -1115,7 +1155,7 @@ export function PlanView({
     list.forEach((p) => onUpdate(p.id, mode === "carry" ? { scheduled: null } : { scheduled: null, planToday: false }));
     const noun = `${list.length} block${list.length === 1 ? "" : "s"}`;
     const msg = mode === "carry" ? `Brought ${noun} back to re-plan.` : `Cleared ${noun} from today.`;
-    if (toast) toast.action(msg, "Undo", () => list.forEach((p) => onUpdate(p.id, { scheduled: p.scheduled, planToday: true })), 8000);
+    if (toast) toast.action(msg, "Undo", () => list.forEach((p) => onUpdate(p.id, { scheduled: p.scheduled, planToday: true })), { ms: 10000 });
     else announce(msg);
     requestAnimationFrame(() => (mode === "carry" ? intakeHeadingRef.current : dayHeadingRef.current)?.focus());
   };
@@ -1161,11 +1201,17 @@ export function PlanView({
   const skipGhost = useCallback((id: string, viaKeyboard: boolean) => {
     const t = tasksRef.current.find((x) => x.id === id);
     onSkip?.(id);
-    if (t) announce(`Hid the suggestion for “${t.title}” for today.`);
+    if (t) {
+      const msg = `Hid the suggestion for “${t.title}” today.`;
+      if (toast && onUnskip) toast.action(msg, "Undo", () => onUnskip(id), { ms: 10000 });
+      else announce(msg);
+    }
     if (viaKeyboard) requestAnimationFrame(() => dayHeadingRef.current?.focus());
-  }, [onSkip, announce]);
+  }, [onSkip, onUnskip, toast, announce]);
 
   const notToday = useCallback((task: Task, ev: ReactMouseEvent<HTMLButtonElement>) => {
+    const wasPlanned = !!task.planToday;
+    if (!wasPlanned && !onSkip) return; // nothing to take off (and the button isn't offered)
     const viaKeyboard = ev.detail === 0;
     let next: HTMLElement | null = null;
     if (viaKeyboard) {
@@ -1173,15 +1219,16 @@ export function PlanView({
       const sib = (card?.nextElementSibling ?? card?.previousElementSibling) as HTMLElement | null;
       next = sib?.querySelector<HTMLElement>("[data-intake-open]") ?? null;
     }
-    const wasPlanned = !!task.planToday;
     if (wasPlanned) onUpdate(task.id, { planToday: false });
     onSkip?.(task.id);
     touchBlock(task.id, null);
     const msg = `Took “${task.title}” off today.`;
-    if (toast && wasPlanned) toast.action(msg, "Undo", () => onUpdate(task.id, { planToday: true }));
+    // Undo puts it all back: on today's list if it was, and a candidate for the plan again
+    const undo = () => { if (wasPlanned) onUpdate(task.id, { planToday: true }); onUnskip?.(task.id); };
+    if (toast && (wasPlanned || onUnskip)) toast.action(msg, "Undo", undo, { ms: 10000 });
     else announce(msg);
     if (viaKeyboard) requestAnimationFrame(() => (next ?? intakeHeadingRef.current)?.focus());
-  }, [onUpdate, onSkip, touchBlock, toast, announce]);
+  }, [onUpdate, onSkip, onUnskip, touchBlock, toast, announce]);
 
   // a newly placed block scrolls into view; from the keyboard it also takes focus
   useEffect(() => {
@@ -1193,13 +1240,16 @@ export function PlanView({
     if (r.focus) el.focus();
   });
 
-  /** The first slot today that fits this task (around meetings and what's placed). */
+  /** The first slot today that fits this task (around meetings and what's placed; never
+   *  before the working day starts, like the suggestions). You asked for it, so after
+   *  18:00 the evening is fair game. */
   const slotFor = useCallback((target: Task): number | null => {
     const cur = tasksRef.current;
     const others = cur
       .filter((t) => t.id !== target.id && isPlaced(t) && t.status !== "done" && !t.archivedAt)
       .map((t) => ({ id: "busy-" + t.id, title: t.title, start: t.scheduled!, end: t.scheduled! + durOf(t), kind: "meeting" as const }));
-    const placed = planDay([{ ...target, energy: energyKindOf(target), dur: durOf(target), scheduled: null }], [...dayEvents, ...others]);
+    const placed = planDay([{ ...target, energy: energyKindOf(target), dur: durOf(target), scheduled: null }], [...dayEvents, ...others],
+      { nowMin: Math.max(readClock().nowMin, WORK_START) });
     return placed[target.id] ?? null;
   }, [dayEvents]);
 
@@ -1463,8 +1513,8 @@ export function PlanView({
   const groups = useMemo(() => {
     const sort = byOrder[order];
     const dayCut = Date.now() - 24 * 3600_000;
-    const pool = live.filter((t) => (t.status !== "done" || linger.has(t.id)) && !isPlaced(t)
-      && (t.planToday || (!t.parentId && isMine(t, me))));
+    // the same set the brief counts and the suggestions come from
+    const pool = live.filter((t) => (t.status !== "done" || linger.has(t.id)) && !isPlaced(t) && isTodaysScope(t, me));
     const overdue: Task[] = [], today: Task[] = [], week: Task[] = [], inbox: Task[] = [], later: Task[] = [];
     for (const t of pool) {
       const due = t.dueDate?.slice(0, 10);
@@ -1495,9 +1545,14 @@ export function PlanView({
   const renderGroup = (key: string, label: string, list: Task[], tone?: "signal") => list.length === 0 ? null : (
     <section key={key} className="krail-group" aria-labelledby={`${helpId}-${key}`}>
       <SectionLabel id={`${helpId}-${key}`} tone={tone} count={list.length}>{label}</SectionLabel>
-      {list.map((t) => <RailItem key={t.id} task={t} {...itemProps} slot={ghostById.get(t.id)} tomorrow={tomorrow.has(t.id)} dragging={drag?.taskId === t.id} />)}
+      {list.map((t) => <RailItem key={t.id} task={t} {...itemProps} canSkip={!!onSkip} slot={ghostById.get(t.id)} tomorrow={tomorrow.has(t.id)} dragging={drag?.taskId === t.id} />)}
     </section>
   );
+  // narrowed by the brief's figure: what of it is already on the day (the brief counts that too)
+  const focusOnDay = railFocus ? blocks.filter((b) => {
+    const due = b.task.dueDate?.slice(0, 10);
+    return b.task.status !== "done" && !!due && (railFocus === "due" ? due === day : due < day);
+  }).length : 0;
 
   const railEmpty = unplannedCount === 0 && groups.later.length === 0 && carryTasks.length === 0;
   const floatEdge = drag ? (() => {
@@ -1581,7 +1636,7 @@ export function PlanView({
           {stacked && big3Section}
           {railFocus && (
             <div className="krail-filter" role="status">
-              <span>Showing {railFocus === "due" ? "what's due today" : "what's overdue"}</span>
+              <span>Showing {railFocus === "due" ? "what's due today" : "what's overdue"}{focusOnDay > 0 ? ` · ${focusOnDay} already on your day` : ""}</span>
               <button type="button" onClick={() => onRailFocus?.(null)}>Show all</button>
             </div>
           )}

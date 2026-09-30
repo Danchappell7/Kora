@@ -37,6 +37,11 @@ const isDueToday = (t: Task, today: string) => day10(t.dueDate) === today;
 const isOverdue = (t: Task, today: string) => !!t.dueDate && day10(t.dueDate) < today;
 const doneToday = (t: Task, today: string) => t.status === "done" && !t.archivedAt && day10(t.completedAt) === today;
 
+/** Today's work, as the rail, the suggestions and the brief all count it:
+ *  anything you've put on today's list (whoever it belongs to), and your own
+ *  top-level tasks (not a collaborator's, not a subtask). */
+export const isTodaysScope = (t: Task, me?: string | null): boolean => !!t.planToday || (!t.parentId && isMine(t, me));
+
 /** Placed blocks on today's canvas, as busy time. */
 function blockSpans(tasks: Task[]): Interval[] {
   return tasks.filter((t) => isPlaced(t) && isOpen(t)).map((t) => ({ start: t.scheduled!, end: t.scheduled! + durOf(t) }));
@@ -71,11 +76,12 @@ export function plannedMinutes(tasks: Task[]): number {
 }
 
 /** Today's work done vs. the whole of today's work: finished today, plus what's
- *  still open and due today, planned for today or on today's canvas. */
-export function momentumCounts(tasks: Task[], today: string): { done: number; total: number } {
+ *  still open and due today, planned for today or on today's canvas. With `me`,
+ *  only the work Today shows you (yours, or on today's list) counts. */
+export function momentumCounts(tasks: Task[], today: string, me?: string | null): { done: number; total: number } {
   let done = 0, open = 0;
   for (const t of tasks) {
-    if (t.parentId) continue;
+    if (t.parentId || !isTodaysScope(t, me)) continue;
     if (doneToday(t, today)) done++;
     else if (isOpen(t) && (isDueToday(t, today) || !!t.planToday || isPlaced(t))) open++;
   }
@@ -83,8 +89,8 @@ export function momentumCounts(tasks: Task[], today: string): { done: number; to
 }
 
 /** 0..1 for the momentum line under Today's header, or null when there's nothing on today. */
-export function momentum(tasks: Task[], today: string): number | null {
-  const { done, total } = momentumCounts(tasks, today);
+export function momentum(tasks: Task[], today: string, me?: string | null): number | null {
+  const { done, total } = momentumCounts(tasks, today, me);
   return total > 0 ? done / total : null;
 }
 
@@ -118,40 +124,84 @@ export interface GhostOptions {
  *  planned for today, or yours and due today or overdue. */
 export function ghostCandidates(tasks: Task[], opts: GhostOptions): Task[] {
   const skip = new Set(opts.skip ?? []);
-  return tasks.filter((t) => isOpen(t) && !isPlaced(t) && !skip.has(t.id)
-    && (!!t.planToday || (!t.parentId && isMine(t, opts.me) && (isDueToday(t, opts.today) || isOverdue(t, opts.today)))));
+  return tasks.filter((t) => isOpen(t) && !isPlaced(t) && !skip.has(t.id) && isTodaysScope(t, opts.me)
+    && (!!t.planToday || isDueToday(t, opts.today) || isOverdue(t, opts.today)));
 }
 
-/** Kanbo's suggested plan for the rest of today: the candidates laid into the
- *  free gaps by planDayDetailed (due date and priority first, deep work in the
- *  morning, a break after 90 minutes of focus), with Kanbo's score breaking
- *  ties. Nothing is written — the canvas draws these as dashed ghosts. */
+/** "15:00" (or "15:00:00") → 900; null when there's no usable time. */
+export function dueMinutes(t: Task): number | null {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t.dueTime ?? "");
+  if (!m) return null;
+  const v = Number(m[1]) * 60 + Number(m[2]);
+  return v >= 0 && v <= 24 * 60 ? v : null;
+}
+
+const SLOT = 5; // the planner's grid
+/** The earliest start on the 5-minute grid in [lo, hi] where `dur` fits clear of `busy`. */
+function firstFit(busy: Interval[], lo: number, hi: number, dur: number): number | null {
+  for (let s = Math.ceil(lo / SLOT) * SLOT; s + dur <= hi; s += SLOT) {
+    const clash = busy.find((b) => s < b.end && s + dur > b.start);
+    if (!clash) return s;
+    s = Math.ceil(clash.end / SLOT) * SLOT - SLOT; // jump past it
+  }
+  return null;
+}
+
+/** Kanbo's suggested plan for the rest of the working day: the candidates laid
+ *  into the free gaps. Work due at a time today goes first, in the earliest
+ *  slot that still finishes by then (or, when none does, as soon as it can).
+ *  The rest goes through planDayDetailed (due date and priority first, deep
+ *  work in the morning, a break after 90 minutes of focus), with Kanbo's score
+ *  breaking ties. Only the working day is offered (from 08:00, never after
+ *  18:00); once it's over, everything waits for tomorrow. Nothing is written —
+ *  the canvas draws these as dashed ghosts. */
 export function ghostPlan(tasks: Task[], events: CalEvent[], nowMin: number, opts: GhostOptions): GhostPlan {
   const cand = ghostCandidates(tasks, opts);
   if (!cand.length) return { suggestions: [], unplaced: [] };
-  const workEnd = opts.workEnd ?? WORK_END;
+  const workEnd = Math.min(opts.workEnd ?? WORK_END, DAY_END);
+  // the working day's over: nothing more is suggested for today
+  if (nowMin >= workEnd) return { suggestions: [], unplaced: cand };
+  const from = Math.max(nowMin, WORK_START);
   const busy: CalEvent[] = [
     ...events,
     ...tasks.filter((t) => isPlaced(t) && isOpen(t))
       .map((t) => ({ id: "busy-" + t.id, title: t.title, start: t.scheduled!, end: t.scheduled! + durOf(t), kind: "meeting" as const })),
   ];
-  // while the working day is still ahead, the evening isn't offered
-  if (nowMin < workEnd && workEnd < DAY_END) busy.push({ id: "busy-evening", title: "Evening", start: workEnd, end: DAY_END, kind: "break" });
-  // planDayDetailed sorts by due date then priority (stably), so score order is the tie-break
-  const ordered = [...cand].sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0))
+  // the evening isn't offered
+  if (workEnd < DAY_END) busy.push({ id: "busy-evening", title: "Evening", start: workEnd, end: DAY_END, kind: "break" });
+  const byScore = [...cand].sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0));
+  const placed: Record<string, number> = {};
+  const lateIds = new Set<string>();
+  const taken = () => Object.entries(placed).map(([id, start]) => {
+    const t = cand.find((x) => x.id === id)!;
+    return { id: "sugg-" + id, title: t.title, start, end: start + durOf(t), kind: "meeting" as const };
+  });
+
+  // 1. Due at a time today: before that time. A deadline that's gone, or can't be
+  //    met any more, is still today's: as soon as there's room.
+  const timed = byScore.filter((t) => isDueToday(t, opts.today) && dueMinutes(t) != null)
+    .sort((a, b) => dueMinutes(a)! - dueMinutes(b)!);
+  for (const t of timed) {
+    const by = dueMinutes(t)!, dur = durOf(t);
+    const spans = [...busy, ...taken()];
+    const at = firstFit(spans, from, Math.min(by, workEnd), dur) ?? firstFit(spans, from, workEnd, dur);
+    if (at == null) continue; // doesn't fit today at all: the planner below says so
+    placed[t.id] = at;
+    if (by <= nowMin) lateIds.add(t.id);
+  }
+
+  // 2. Everything else. planDayDetailed sorts by due date then priority (stably),
+  //    so score order is the tie-break.
+  const ordered = byScore.filter((t) => placed[t.id] == null)
     .map((t) => ({ ...t, energy: energyKindOf(t), dur: durOf(t), scheduled: null }));
-  const plan = planDayDetailed(ordered, busy, { nowMin });
-  const placed = { ...plan.placed };
+  const plan = planDayDetailed(ordered, [...busy, ...taken()], { nowMin: from });
+  Object.assign(placed, plan.placed);
   // A second pass for what didn't fit: the breaks the planner holds back after
   // long runs of focus can leave a visible "Free · 40m" that a 30m task could
   // use. Offer those gaps before calling anything tomorrow's.
   const unplaced: Task[] = [];
   for (const t of plan.unplaced) {
-    const taken = Object.entries(placed).map(([id, start]) => {
-      const o = ordered.find((x) => x.id === id)!;
-      return { id: "sugg-" + id, title: o.title, start, end: start + o.dur, kind: "meeting" as const };
-    });
-    const again = planDayDetailed([t], [...busy, ...taken], { nowMin }).placed[t.id];
+    const again = planDayDetailed([t], [...busy, ...taken()], { nowMin: from }).placed[t.id];
     if (again != null) placed[t.id] = again;
     else unplaced.push(t);
   }
@@ -159,7 +209,7 @@ export function ghostPlan(tasks: Task[], events: CalEvent[], nowMin: number, opt
   const suggestions = Object.entries(placed)
     .map(([id, start]) => {
       const t = byId.get(id)!;
-      return { id, start, end: start + durOf(t), overdue: isOverdue(t, opts.today) };
+      return { id, start, end: start + durOf(t), overdue: isOverdue(t, opts.today) || lateIds.has(id) };
     })
     .sort((a, b) => a.start - b.start);
   return { suggestions, unplaced: unplaced.map((t) => byId.get(t.id) ?? t) };
@@ -184,6 +234,9 @@ export interface BriefInput {
   riskCount?: number;
   /** the whole workspace, to count what the top task is holding up (defaults to `tasks`) */
   allTasks?: Task[];
+  /** the signed-in person: the brief counts the work the rail and the suggestions
+   *  show (yours, or on today's list), not a collaborator's or a subtask */
+  me?: string | null;
 }
 
 /** "Mon" within the week, else "12 Sep". */
@@ -205,8 +258,8 @@ function cleanReason(r?: string): string | null {
 const rank = (t: Task) => PRIORITY_META[t.priority]?.rank ?? 0;
 
 /** What to start with: the day's work ranked by Kanbo's score, then due date, then priority. */
-export function topTask(tasks: Task[], today: string): Task | null {
-  const pool = tasks.filter((t) => isOpen(t) && (isDueToday(t, today) || isOverdue(t, today) || !!t.planToday));
+export function topTask(tasks: Task[], today: string, me?: string | null): Task | null {
+  const pool = tasks.filter((t) => isOpen(t) && isTodaysScope(t, me) && (isDueToday(t, today) || isOverdue(t, today) || !!t.planToday));
   if (!pool.length) return null;
   return [...pool].sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0)
     || (day10(a.dueDate) || "9999").localeCompare(day10(b.dueDate) || "9999")
@@ -229,12 +282,14 @@ const shorten = (s: string) => (s.length > TITLE_MAX ? s.slice(0, TITLE_MAX - 1)
 /** Today's brief, as parts: plain strings and the live figures (free time,
  *  due, overdue, the task to start with, risks) that the view renders as
  *  buttons. `plain` is the whole thing as one string. */
-export function composeBrief({ tasks, events, nowMin, today, userName, riskCount = 0, allTasks }: BriefInput): Brief {
+export function composeBrief({ tasks: given, events, nowMin, today, userName, riskCount = 0, allTasks, me }: BriefInput): Brief {
   const parts: BriefPart[] = [];
   const hour = Math.floor(nowMin / 60);
   const name = userName && !userName.includes("@") ? userName.trim().split(/\s+/)[0] : "";
   parts.push(`${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${name || "there"}. `);
 
+  // the same set the rail and the suggestions work from
+  const tasks = given.filter((t) => isTodaysScope(t, me));
   const open = tasks.filter(isOpen);
   const due = open.filter((t) => isDueToday(t, today)).length;
   const over = open.filter((t) => isOverdue(t, today)).length;
@@ -264,8 +319,8 @@ export function composeBrief({ tasks, events, nowMin, today, userName, riskCount
       else if (due) parts.push(" and ", { kind: "due", text: `${countOf(due, "thing")} due` }, ".");
       else parts.push(" and ", { kind: "overdue", text: `${countOf(over, "thing")} overdue` }, ".");
     }
-    const top = topTask(tasks, today);
-    if (top) parts.push(" Start with ", { kind: "task", text: shorten(top.title), taskId: top.id }, `: ${reasonFor(top, allTasks ?? tasks, today)}.`);
+    const top = topTask(tasks, today, me);
+    if (top) parts.push(" Start with ", { kind: "task", text: shorten(top.title), taskId: top.id }, `: ${reasonFor(top, allTasks ?? given, today)}.`);
   }
 
   if (riskCount > 0) {

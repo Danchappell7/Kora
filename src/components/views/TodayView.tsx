@@ -10,17 +10,17 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PlanView, useDayClock, dayEventsFor } from "./PlanView";
 import { Daybeam, type BeamSegment } from "./Daybeam";
-import { Button, Icon, StatusGlyph } from "../primitives";
+import { Button, Icon, Kbd, StatusGlyph } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useToast } from "../Toast";
 import { getProject } from "../../data/data";
 import type { CaptureOptions } from "../../data/data";
 import type { Task, ExternalEvent } from "../../data/types";
 import {
-  composeBrief, ghostPlan, freeMinutes, plannedMinutes, placesHint, type BriefPart,
+  composeBrief, ghostCandidates, ghostPlan, freeMinutes, plannedMinutes, placesHint, WORK_START, WORK_END, type BriefPart,
 } from "../../lib/brief";
 import { readBig3 } from "../../lib/rituals";
-import { durOf, fmtDuration, isPlaced, ghostPrefsKey, readGhostPrefs, writeGhostPrefs, type GhostPrefs } from "./planCanvas";
+import { durOf, fmtDuration, fmtTime, isPlaced, ghostPrefsKey, readGhostPrefs, writeGhostPrefs, type GhostPrefs } from "./planCanvas";
 
 export interface TodayViewProps {
   tasks: Task[];
@@ -76,13 +76,22 @@ const TODAY_CSS = `
 .ktoday-fig:hover, .ktoday-fig[aria-pressed="true"] { color: var(--accent-text, var(--accent)); text-decoration-color: currentColor; }
 .ktoday-fig:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ktoday-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; min-height: 40px; margin-top: 20px; }
-.ktoday-hint { display: inline-flex; align-items: center; gap: 8px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
+/* what Plan my day will do, and under it the one quiet switch for the suggestions (H's mouse path) */
+.ktoday-hint { display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; min-height: 40px;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
+.ktoday-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0 -4px; padding: 0 4px; min-height: 20px; border: 0; border-radius: var(--r-xs, 4px);
+  background: none; cursor: pointer; font: inherit; color: var(--ink-3); transition: color var(--d-1, 90ms) var(--ease); }
+.ktoday-toggle > span { text-decoration: underline dotted var(--ink-4); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.ktoday-toggle:hover { color: var(--accent-text, var(--accent)); }
+.ktoday-toggle:hover > span { text-decoration-color: currentColor; }
+.ktoday-toggle .kkbd { height: 16px; min-width: 16px; padding: 0 4px; }
+@media (hover: none) { .ktoday-toggle .kkbd { display: none; } }
 /* the button holds its idle and busy labels in one cell, so it keeps its width while
    Kanbo orders the day and nothing beside it jumps to a new line */
 .ktoday-hero-label { display: inline-grid; }
 .ktoday-hero-label > span { grid-area: 1 / 1; text-align: start; }
 .ktoday-hero-label > [aria-hidden="true"] { visibility: hidden; }
-.ktoday-beam { flex: 1 1 200px; min-width: 200px; max-width: 460px; margin-left: auto; }
+.ktoday-beam { flex: 1 1 200px; min-width: 200px; max-width: 420px; margin-left: auto; }
 .ktoday-setup { display: flex; margin-top: 12px; }
 .ktoday-setup .kpill svg { margin-right: -2px; }
 .ktoday-steps { padding: 6px 6px 4px; min-width: 268px; }
@@ -117,7 +126,7 @@ const TODAY_CSS = `
   .ktoday-actions > .kbtn { flex: 1 1 100%; height: var(--h-touch, 44px); }
   .ktoday-actions > .kbtn .kkbd { display: none; } /* no keyboard to press it on */
   .ktoday-hero-label > span { text-align: center; }
-  .ktoday-hint { flex: 1; }
+  .ktoday-hint { flex: 1; min-height: 0; }
   .ktoday-beam { flex: 1 1 100%; max-width: none; margin-left: 0; }
   .ktoday-skeleton .ktoday-actions > .skel { flex: 1 1 100%; height: var(--h-touch, 44px) !important; }
   .ktoday-skeleton { --kp-gutter: var(--gutter, 16px); }
@@ -251,13 +260,38 @@ function TodayDay({
     const p = prefsRef.current;
     if (!p.skipped.includes(id)) setPrefs({ ...p, skipped: [...p.skipped, id] });
   }, [setPrefs]);
+  const unskip = useCallback((ids: string[]) => {
+    const p = prefsRef.current;
+    if (ids.some((id) => p.skipped.includes(id))) setPrefs({ ...p, skipped: p.skipped.filter((id) => !ids.includes(id)) });
+  }, [setPrefs]);
+  const unskipOne = useCallback((id: string) => unskip([id]), [unskip]);
+  // Waving a task away lasts until you bring it back: put it (back) on today's
+  // list — an Undo, "On Today" in the panel, Inbox's "Add to Today" — or onto the
+  // day itself, and it's a candidate again.
+  const planWas = useRef<Map<string, boolean> | null>(null);
+  useEffect(() => {
+    const was = planWas.current;
+    planWas.current = new Map(tasks.map((t) => [t.id, !!t.planToday]));
+    if (!was || prefsRef.current.skipped.length === 0) return;
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    unskip(prefsRef.current.skipped.filter((id) => {
+      const t = byId.get(id);
+      return !!t && (isPlaced(t) || (!!t.planToday && was.get(id) === false));
+    }));
+  }, [tasks, unskip]);
   const ghostsOff = !showSuggestions || prefs.hidden;
 
   /* ----- the plan, the brief and the beam ----- */
   const plan = useMemo(() => ghostPlan(tasks, dayEvents, nowMin, { today: day, me, skip: prefs.skipped }), [tasks, dayEvents, nowMin, day, me, prefs.skipped]);
   const ghosts = readOnly || ghostsOff ? [] : plan.suggestions;
-  const brief = useMemo(() => composeBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks }),
-    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks]);
+  // today's work you've waved away ("Not now", "Not today"): Plan my day leaves it be
+  const setAside = useMemo(() => {
+    if (!prefs.skipped.length) return 0;
+    const skipped = new Set(prefs.skipped);
+    return ghostCandidates(tasks, { today: day, me }).filter((t) => skipped.has(t.id)).length;
+  }, [tasks, day, me, prefs.skipped]);
+  const brief = useMemo(() => composeBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me }),
+    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me]);
   const planned = plannedMinutes(tasks);
   const free = freeMinutes(tasks, dayEvents, nowMin);
   const placedOpen = tasks.filter((t) => isPlaced(t) && t.status !== "done" && !t.archivedAt);
@@ -273,9 +307,14 @@ function TodayDay({
   // pinned to a time, are laid out afresh around what's changed. A day whose only
   // blocks are under way or behind you still reads as planned (Re-plan then just
   // re-orders and says nothing needed moving); only an empty day has nothing to do.
+  // Once the working day is over there's nothing more to plan for today: the
+  // brief counts what you finished, and the one action left is to close the day.
   const replannable = placedOpen.filter((t) => t.scheduled! > nowMin && !t.dueTime);
-  const mode: "plan" | "replan" | "none" = plan.suggestions.length > 0 || (plan.unplaced.length > 0 && replannable.length === 0) ? "plan"
+  const evening = nowMin >= WORK_END;
+  const mode: "plan" | "replan" | "none" | "evening" = evening ? "evening"
+    : plan.suggestions.length > 0 || (plan.unplaced.length > 0 && replannable.length === 0) ? "plan"
     : placedOpen.length > 0 ? "replan" : "none";
+  const tomorrowsPlan = `Tomorrow's plan starts at ${fmtTime(WORK_START)}`;
   const [ordering, setOrdering] = useState(false);
   const [landing, setLanding] = useState<Record<string, number> | undefined>();
   const [srMsg, setSrMsg] = useState("");
@@ -290,45 +329,63 @@ function TodayDay({
   // has rendered what the ranking changed: its updates were queued ahead of this
   // request, so the render that carries the request carries the new scores too.
   const [commitReq, setCommitReq] = useState<{ source: RankSource } | null>(null);
+  const notice = useCallback((msg: string) => { if (toast) toast.toast(msg); say(msg); }, [toast, say]);
   const planMyDay = useCallback(async () => {
-    if (readOnly || busyRef.current || live.current.mode === "none") return;
+    if (readOnly || busyRef.current) return;
+    if (live.current.mode === "evening") { notice(`The working day's done. ${tomorrowsPlan}.`); return; }
+    if (live.current.mode === "none") return;
     busyRef.current = true; setOrdering(true);
     let source: RankSource = "none";
     try { source = await onRank(); } catch { /* ordering is a nicety: plan with the scores we have */ }
     setCommitReq({ source });
-  }, [readOnly, onRank]);
+  }, [readOnly, onRank, notice, tomorrowsPlan]);
 
   const commitPlan = (source: RankSource) => {
+    busyRef.current = false; setOrdering(false);
     // plan from the latest tasks and the clock as it is now
     const { tasks: cur, dayEvents: evs, day: today, me: who, mode: m, replannable: again } = live.current;
     const d = new Date(), now = d.getHours() * 60 + d.getMinutes();
+    // the working day ended while Kanbo was ordering it: plan nothing (a Re-plan
+    // now would find no room and take every block ahead off the day)
+    if (m === "evening" || now >= WORK_END) { notice(`The working day's done. ${tomorrowsPlan}.`); return; }
     const lift = new Set(m === "replan" ? again.map((t) => t.id) : []);
     const pool = lift.size ? cur.map((t) => (lift.has(t.id) ? { ...t, scheduled: null } : t)) : cur;
-    const next = ghostPlan(pool, evs, now, { today, me: who, skip: prefsRef.current.skipped });
+    // a block being re-laid is always a candidate, even one waved away earlier
+    const next = ghostPlan(pool, evs, now, { today, me: who, skip: prefsRef.current.skipped.filter((id) => !lift.has(id)) });
     const byId = new Map(cur.map((t) => [t.id, t]));
     const moves = next.suggestions.filter((s) => byId.get(s.id)?.scheduled !== s.start || !byId.get(s.id)?.planToday);
-    const before = new Map(moves.map((s) => { const t = byId.get(s.id)!; return [s.id, { scheduled: t.scheduled ?? null, planToday: !!t.planToday }] as const; }));
+    // A block that was lifted to be re-laid and no longer fits comes off the day,
+    // back to Unplanned: left where it was, it would sit under whatever took its time.
+    const bumped = next.unplaced.filter((t) => lift.has(t.id)).map((t) => t.id);
+    const before = new Map([...moves.map((s) => s.id), ...bumped].map((id) => {
+      const t = byId.get(id)!;
+      return [id, { scheduled: t.scheduled ?? null, planToday: !!t.planToday }] as const;
+    }));
     moves.forEach((s) => onUpdate(s.id, { scheduled: s.start, planToday: true }));
-    busyRef.current = false; setOrdering(false);
+    bumped.forEach((id) => onUpdate(id, { scheduled: null }));
 
-    const n = moves.length, left = next.unplaced.length;
+    const n = moves.length, off = bumped.length, left = next.unplaced.length - off;
     const mins = moves.reduce((a, s) => a + (s.end - s.start), 0);
     // a non-breaking hyphen: the toast wraps before "(on‑device", never inside it
     const onDevice = source === "heuristic" ? " (on‑device ordering)" : "";
-    if (n > 0) {
-      setLanding(Object.fromEntries(moves.map((s, i) => [s.id, i])));
-      window.clearTimeout(landTimer.current);
-      landTimer.current = window.setTimeout(() => setLanding(undefined), 240 + 40 * n + 80);
-      const msg = `${lift.size ? "Re-planned" : "Planned"} ${n} task${n === 1 ? "" : "s"} · ${fmtDuration(mins)}${left ? ` · ${left} for tomorrow` : ""}${onDevice}`;
+    if (n > 0 || off > 0) {
+      if (n > 0) {
+        setLanding(Object.fromEntries(moves.map((s, i) => [s.id, i])));
+        window.clearTimeout(landTimer.current);
+        landTimer.current = window.setTimeout(() => setLanding(undefined), 240 + 40 * n + 80);
+      }
+      const bits: string[] = [];
+      if (n > 0) bits.push(`${lift.size ? "Re-planned" : "Planned"} ${n} task${n === 1 ? "" : "s"} · ${fmtDuration(mins)}`);
+      if (off > 0) bits.push(n > 0 ? `${off} back to Unplanned` : `Moved ${off} task${off === 1 ? "" : "s"} back to Unplanned`);
+      if (left > 0) bits.push(`${left} for tomorrow`);
+      const msg = bits.join(" · ") + onDevice;
       const undo = () => before.forEach((p, id) => onUpdate(id, p));
       if (toast) toast.action(msg, "Undo", undo, { ms: 10000 });
       say(msg);
     } else {
-      const msg = left > 0
+      notice(left > 0
         ? `Your day's full — ${left} task${left === 1 ? "" : "s"} moved to tomorrow's suggestions.`
-        : "Your day is planned — nothing needed moving.";
-      if (toast) toast.toast(msg);
-      say(msg);
+        : "Your day is planned — nothing needed moving.");
     }
   };
   const commitRef = useRef(commitPlan); commitRef.current = commitPlan;
@@ -339,19 +396,14 @@ function TodayDay({
   }, [commitReq]);
 
   const toggleSuggestions = useCallback(() => {
-    if (!showSuggestions) {
-      // switched off for good in Settings: H can't bring them back, so say where they live
-      const msg = "Suggestions are switched off in Settings › Appearance.";
-      if (toast) toast.toast(msg);
-      say(msg);
-      return;
-    }
+    // switched off for good in Settings: H can't bring them back, so say where they live
+    if (!showSuggestions) { notice("Suggestions are switched off in Settings › Appearance."); return; }
+    // nothing is suggested once the working day is over
+    if (live.current.mode === "evening") { notice(`The working day's done. ${tomorrowsPlan}.`); return; }
     const p = prefsRef.current;
     setPrefs({ ...p, hidden: !p.hidden });
-    const msg = p.hidden ? "Suggestions are back." : "Suggestions hidden for today. Press H to bring them back.";
-    if (toast) toast.toast(msg);
-    say(msg);
-  }, [showSuggestions, setPrefs, toast, say]);
+    notice(p.hidden ? "Suggestions are back." : "Suggestions hidden for today. Press H or choose Show suggestions to bring them back.");
+  }, [showSuggestions, setPrefs, notice, tomorrowsPlan]);
 
   // P plans the day; H hides (or brings back) the suggestions. Never while typing,
   // with a modifier held, over a dialog, or when something else took the key ("g p").
@@ -384,12 +436,18 @@ function TodayDay({
 
   const busy = ordering || ranking;
   const wontFit = plan.unplaced.length;
-  const hint = mode === "plan" ? (ghostsOff ? (prefs.hidden && showSuggestions ? "Suggestions hidden · H shows them" : "Plan my day places tasks in your free time")
+  const hidden = showSuggestions && prefs.hidden;
+  const hint = mode === "evening" ? tomorrowsPlan
+    : mode === "plan" ? (!showSuggestions ? "Plan my day places tasks in your free time"
       // there may be free time, just not enough of it in one piece for what's left
       : plan.suggestions.length === 0 ? `${wontFit} ${wontFit === 1 ? "task won't" : "tasks won't"} fit today`
+      // (hidden or not, this is what P will do)
       : placesHint(plan.suggestions.length, plan.suggestions.reduce((a, s) => a + s.end - s.start, 0)))
     : mode === "replan" ? "Your day is planned"
+    : setAside > 0 ? `Nothing to place · ${setAside} set aside for today`
     : "Nothing to place yet";
+  // H's mouse path, under the hint while there are suggestions to hide or show
+  const toggle = mode === "plan" && showSuggestions && plan.suggestions.length > 0;
   const idleLabel = mode === "replan" ? "Re-plan" : "Plan my day";
   const busyLabel = mode === "replan" ? "Re-planning…" : "Ordering your day…";
 
@@ -407,7 +465,10 @@ function TodayDay({
           ))}
       </p>
       <div className="ktoday-actions">
-        {!readOnly && (
+        {!readOnly && (mode === "evening" ? (
+          // the working day's over: closing it is what's left (the rail's own link steps aside)
+          <Button variant="secondary" size="lg" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
+        ) : (
           <Button variant={mode === "plan" ? "hero" : "secondary"} size="lg" kbd="P" loading={busy} disabled={!busy && mode === "none"}
             icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()}>
             <span className="ktoday-hero-label">
@@ -415,8 +476,18 @@ function TodayDay({
               <span aria-hidden={!busy || undefined}>{busyLabel}</span>
             </span>
           </Button>
+        ))}
+        {!readOnly && hint && (
+          <span className="ktoday-hint">
+            <span>{hint}</span>
+            {toggle && (
+              <button type="button" className="ktoday-toggle" aria-keyshortcuts="H" onClick={toggleSuggestions}
+                aria-label={hidden ? "Show suggestions" : "Hide suggestions for today"}>
+                <span>{hidden ? "Show suggestions" : "Hide suggestions"}</span><Kbd>H</Kbd>
+              </button>
+            )}
+          </span>
         )}
-        {!readOnly && hint && <span className="ktoday-hint">{hint}</span>}
         <div className="ktoday-beam">
           {/* the working day, unless something's planned outside it */}
           <Daybeam segments={segments} nowMin={nowMin} planned={planned} free={free} drop={drop}
@@ -432,9 +503,9 @@ function TodayDay({
     <PlanView tasks={tasks} onUpdate={onUpdate} onCreate={onCreate} onOpen={onOpen} externalEvents={events}
       calendarConnected={calendarConnected} currentUserId={currentUserId} captureDefaults={captureDefaults}
       lede={lede} events={dayEvents} nowMin={nowMin} ghosts={ghosts} tomorrowIds={ghostsOff ? [] : plan.unplaced.map((t) => t.id)}
-      skipped={prefs.skipped} onSkip={skip} landing={landing} readOnly={readOnly}
+      skipped={prefs.skipped} onSkip={skip} onUnskip={unskipOne} landing={landing} readOnly={readOnly}
       onStartFocus={onStartFocus} onExtractFromMeeting={onExtractFromMeeting} onConnectCalendar={onConnectCalendar}
       railFocus={railFocus} onRailFocus={setRailFocus} freePulse={freePulse} big3={big3}
-      onOpenMyTasks={onOpenMyTasks} onShutdown={onShutdown} members={members} projects={projects} />
+      onOpenMyTasks={onOpenMyTasks} onShutdown={evening ? undefined : onShutdown} members={members} projects={projects} />
   );
 }
