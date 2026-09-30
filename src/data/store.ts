@@ -12,9 +12,10 @@ import { reportError } from "../lib/monitoring";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, SELF_COLOR,
+  DEMO_ACTIVITY, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
 } from "./data";
 import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent } from "./types";
-import type { AiOutcome, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
+import type { AiOutcome, AskAction, AskContext, AskPatch, AskResult, ExtractedTask } from "../lib/askTypes";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -133,6 +134,8 @@ const queueOwner = (): string | null => offlineQueue.currentUser();
 /* ---------- DB row <-> Task mapping (Supabase) ---------- */
 interface TaskRow {
   id: string;
+  /** the creator; set once, on insert, and never written again */
+  user_id?: string | null;
   title: string;
   description: string | null;
   status: Status;
@@ -213,7 +216,17 @@ function rowToTask(r: TaskRow): Task {
     workspaceId: r.workspace_id ?? null,
     recurrence: r.recurrence ?? "none",
     position: r.position ?? 0,
+    createdBy: r.user_id ?? undefined,
   };
+}
+
+/** A task as the signed-in person creates it: tasks.user_id (read back as
+ *  createdBy) is always whoever inserts the row, so a copied task — a
+ *  recurrence, a duplicate, an import — carries its new creator rather than
+ *  the original's. For the caller's optimistic copy too, so "Waiting on"
+ *  lists a task the moment it's made. Never written from a patch. */
+export function stampCreator(t: Task, userId: string): Task {
+  return !userId || t.createdBy === userId ? t : { ...t, createdBy: userId };
 }
 
 interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; archived_at?: string | null; }
@@ -294,8 +307,16 @@ let demoProfile: Profile | null = null;
 let demoWorkspaces: Workspace[] = [];
 let demoMembers: WorkspaceMember[] = [];
 const demoAttachments: Record<string, Attachment[]> = {};
+// the seeded inbox goes in once per page session, so reading or clearing it
+// sticks across reloads of the demo workspace
+let demoInboxSeeded = false;
+/** Deep copies of seed rows (plain data), so nothing the app does to its
+ *  lists can reach back into the seed or into another load's copy. */
+const seedCopy = <T>(rows: readonly T[]): T[] => rows.map((r) => JSON.parse(JSON.stringify(r)) as T);
+const newestFirst = (a: { createdAt: string }, b: { createdAt: string }) => Date.parse(b.createdAt) - Date.parse(a.createdAt);
 
-/* camelCase patch -> snake_case task row */
+/* camelCase patch -> snake_case task row. createdBy (tasks.user_id) is never
+   in here: the creator is fixed on insert and no edit may change it. */
 function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   if ("status" in patch) row.status = patch.status;
@@ -688,13 +709,18 @@ async function fnErrorBody(error: unknown): Promise<{ status?: number; body: Rec
 /* Why the last AI request didn't produce an answer, when the server said so
    in words worth showing (the daily limit, an account awaiting approval). */
 let aiNoticeText: string | null = null;
-async function noteAiRefusal(error: unknown): Promise<void> {
+/** Records why the server refused (see aiNotice) and says which refusal it was. */
+async function noteAiRefusal(error: unknown): Promise<"limit" | "not_allowed" | null> {
   const { status, body } = await fnErrorBody(error);
   if (body.error === "daily_limit" || status === 429) {
     aiNoticeText = typeof body.detail === "string" && body.detail ? body.detail : "You've used today's AI requests. They reset at midnight (UK time).";
-  } else if (body.error === "not_allowed") {
-    aiNoticeText = "Your account is still awaiting approval, so AI isn't available yet.";
+    return "limit";
   }
+  if (body.error === "not_allowed") {
+    aiNoticeText = "Your account is still awaiting approval, so AI isn't available yet.";
+    return "not_allowed";
+  }
+  return null;
 }
 
 /** invite_member's guard messages, in the app's voice. Anything unrecognised
@@ -745,6 +771,188 @@ function aiTaskContext(tasks: Task[], today: string) {
     assignee: getMember(t.assigneeId)?.name ?? null,
     project: getProject(t.projectId)?.name ?? null,
   }));
+}
+
+/* ---------- the redesign's AI modes (Ask Kanbo, notes → tasks, standup, status) ----------
+   Every call answers with an AiOutcome: the model's checked answer, or
+   "unavailable" / "limit" so the caller falls back to its on-device rules.
+   The server checks each reply (supabase/functions/ai-assist/prompts.ts);
+   the checks here repeat that against what this app actually sent, so a
+   stale or misbehaving function can never propose changes to tasks it
+   wasn't shown, or fields Ask may not touch. */
+const AI_COMMAND_CAP = 300;   // tasks Ask sends at most
+const AI_TIMEOUT_MS = 45_000; // past this, the on-device answer is the better one
+const MAX_ASK_ACTIONS = 25;
+const ASK_STATUSES: ReadonlySet<string> = new Set<Status>(["todo", "progress", "review", "blocked", "done"]);
+const ASK_PRIORITIES: ReadonlySet<string> = new Set<Priority>(["low", "medium", "high", "urgent"]);
+const STATUS_KINDS: ReadonlySet<string> = new Set<StatusKind>(["on_track", "at_risk", "off_track"]);
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** YYYY-MM-DD for a real calendar day (not 2026-02-30, not 2026-13-01). */
+const isoDay = (v: unknown): v is string => {
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const t = Date.parse(v + "T12:00:00Z");
+  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === v;
+};
+const oneLine = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
+
+/** The tasks Ask sends with a question: at most AI_COMMAND_CAP, most relevant
+ *  first — open work due within the week (or in flight, or blocked), mine
+ *  before others', then the rest of what's open, then what was finished in
+ *  the last 14 days. People and projects by name, so the model can answer
+ *  "who's on the launch deck?"; ids stay so it can propose changes. */
+function aiCommandContext(tasks: Task[], ctx: AskContext) {
+  const base = new Date(`${(ctx.today || "").slice(0, 10)}T00:00:00`);
+  const day0 = Number.isNaN(base.getTime()) ? new Date() : base;
+  const shift = (n: number) => { const d = new Date(day0); d.setDate(d.getDate() + n); return toLocalISO(d); };
+  const weekAhead = shift(7), since = shift(-14);
+  const people = new Map(ctx.members.map((m) => [m.id, m.name]));
+  const projectNames = new Map(ctx.projects.map((p) => [p.id, p.name]));
+  const nameOf = (id?: string | null) => (id ? people.get(id) ?? getMember(id)?.name ?? null : null);
+  const mine = (t: Task) => t.assigneeId === ctx.me || (t.collaborators ?? []).includes(ctx.me);
+  const pressing = (t: Task) => {
+    const due = t.dueDate?.slice(0, 10);
+    return (!!due && due <= weekAhead) || t.status === "blocked" || t.status === "progress" || t.status === "review";
+  };
+  const rank = (t: Task) => (t.status === "done" ? 4 : (pressing(t) ? 0 : 2) + (mine(t) ? 0 : 1));
+  const picked = tasks
+    .filter((t) => !t.archivedAt && (t.status !== "done" || (t.completedAt ?? "").slice(0, 10) >= since))
+    .sort((a, b) => rank(a) - rank(b)
+      || (a.status === "done" ? (b.completedAt ?? "").localeCompare(a.completedAt ?? "") : (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"))
+      || (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9))
+    .slice(0, AI_COMMAND_CAP);
+  return picked.map((t) => {
+    const collaborators = (t.collaborators ?? []).map(nameOf).filter((n): n is string => !!n);
+    const creator = nameOf(t.createdBy);
+    const description = oneLine(t.description, 200);
+    return {
+      id: t.id, title: t.title, status: t.status, priority: t.priority,
+      dueDate: t.dueDate ?? null,
+      ...(t.dueTime ? { dueTime: t.dueTime } : {}),
+      ...(t.startDate ? { startDate: t.startDate } : {}),
+      ...(t.status === "done" && t.completedAt ? { completedAt: t.completedAt } : {}),
+      assignee: nameOf(t.assigneeId),
+      projectName: projectNames.get(t.projectId) ?? getProject(t.projectId)?.name ?? null,
+      ...(collaborators.length ? { collaborators } : {}),
+      ...(creator ? { createdBy: creator } : {}),
+      ...(description ? { description } : {}),
+      ...(t.dependencies?.length ? { blockedBy: t.dependencies.slice(0, 20) } : {}),
+    };
+  });
+}
+
+/** An Ask patch holding only the fields Ask may change, with valid values;
+ *  a null date or time clears it, and a null or empty assignee unassigns. */
+function askPatchFrom(raw: unknown, ctx: AskContext): AskPatch {
+  const p = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const out: AskPatch = {};
+  const memberIds = new Set([ctx.me, ...ctx.members.map((m) => m.id)]);
+  if (typeof p.status === "string" && ASK_STATUSES.has(p.status)) out.status = p.status as Status;
+  if (typeof p.priority === "string" && ASK_PRIORITIES.has(p.priority)) out.priority = p.priority as Priority;
+  if (p.dueDate === null) out.dueDate = undefined;
+  else if (isoDay(p.dueDate)) out.dueDate = p.dueDate;
+  if (p.dueTime === null) out.dueTime = undefined;
+  else if (typeof p.dueTime === "string" && HHMM_RE.test(p.dueTime)) out.dueTime = p.dueTime;
+  if (p.assigneeId === null || p.assigneeId === "") out.assigneeId = "";
+  else if (typeof p.assigneeId === "string" && memberIds.has(p.assigneeId)) out.assigneeId = p.assigneeId;
+  if (typeof p.planToday === "boolean") out.planToday = p.planToday;
+  if (typeof p.projectId === "string" && ctx.projects.some((x) => x.id === p.projectId)) out.projectId = p.projectId;
+  const title = oneLine(p.title, 300);
+  if (title) out.title = title;
+  return out;
+}
+
+/** Ask's proposed changes, checked against what was sent: updates only to
+ *  tasks it was shown, creates only with a title, nothing else (never a
+ *  delete), at most MAX_ASK_ACTIONS. */
+function askActionsFrom(raw: unknown, sent: ReadonlySet<string>, ctx: AskContext): AskAction[] {
+  const out: AskAction[] = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    if (out.length >= MAX_ASK_ACTIONS) break;
+    const a = (item ?? {}) as Record<string, unknown>;
+    if (a.op === "update" && typeof a.id === "string" && sent.has(a.id)) {
+      const patch = askPatchFrom(a.patch, ctx);
+      if (Object.keys(patch).length) out.push({ op: "update", id: a.id, patch });
+    } else if (a.op === "create") {
+      const { title, ...rest } = askPatchFrom(a.task, ctx);
+      if (title) out.push({ op: "create", task: { title, ...rest } });
+    }
+  }
+  return out;
+}
+
+/** The member a written name refers to: the full name, or a first name only
+ *  one member has. */
+function memberNamed(name: string, members: { id: string; name: string }[]) {
+  const n = name.trim().toLowerCase();
+  if (!n) return undefined;
+  const exact = members.find((m) => m.name.toLowerCase() === n);
+  if (exact || n.includes(" ")) return exact;
+  const first = members.filter((m) => m.name.toLowerCase().split(/\s+/)[0] === n);
+  return first.length === 1 ? first[0] : undefined;
+}
+
+function extractedFrom(raw: unknown, ctx: AskContext): ExtractedTask[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: ExtractedTask[] = [];
+  for (const item of raw.slice(0, 50)) {
+    const r = (item ?? {}) as Record<string, unknown>;
+    const title = oneLine(r.title, 200);
+    if (!title) continue;
+    const t: ExtractedTask = { title };
+    const who = oneLine(r.assigneeName, 80);
+    if (who) {
+      const m = memberNamed(who, ctx.members);
+      // someone this workspace doesn't have stays a name, for the sheet to flag
+      if (m) { t.assigneeId = m.id; t.assigneeName = m.name; } else t.assigneeName = who;
+    }
+    if (isoDay(r.dueDate)) t.dueDate = r.dueDate;
+    if (typeof r.dueTime === "string" && HHMM_RE.test(r.dueTime)) t.dueTime = r.dueTime;
+    if (typeof r.priority === "string" && ASK_PRIORITIES.has(r.priority)) t.priority = r.priority as Priority;
+    const note = oneLine(r.note, 240);
+    if (note) t.note = note;
+    out.push(t);
+  }
+  return out;
+}
+
+const usageOf = (v: unknown): { used: number; limit: number } | undefined => {
+  const u = (v ?? {}) as { used?: unknown; limit?: unknown };
+  return typeof u.used === "number" && typeof u.limit === "number" && Number.isFinite(u.used) && Number.isFinite(u.limit) ? { used: u.used, limit: u.limit } : undefined;
+};
+
+// Set when the deployed ai-assist predates these modes: it answers any mode it
+// doesn't know as "prioritise" ({ items, summary }). Until the function is
+// redeployed, skip it for the rest of the session rather than pay for (and
+// wait on) answers that can't be used — the on-device rules answer instead.
+let aiModesMissing = false;
+const AI_UNAVAILABLE = { data: null, source: "unavailable" } as const;
+
+/** One call to ai-assist in one of the redesign's modes. `pick` turns the
+ *  reply into the caller's data, or null when it isn't usable. */
+async function callAiMode<T>(body: Record<string, unknown>, pick: (d: Record<string, unknown>) => T | null): Promise<AiOutcome<T>> {
+  aiNoticeText = null;
+  if (!supabase || isOffline() || aiModesMissing) return AI_UNAVAILABLE;
+  try {
+    const { data, error } = await supabase.functions.invoke("ai-assist", { body, timeout: AI_TIMEOUT_MS });
+    if (error) {
+      const refused = await noteAiRefusal(error);
+      if (refused === "limit") return { data: null, source: "limit", detail: aiNoticeText ?? undefined };
+      return aiNoticeText ? { ...AI_UNAVAILABLE, detail: aiNoticeText } : AI_UNAVAILABLE;
+    }
+    const d = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+    if (!d) return AI_UNAVAILABLE;
+    if (Array.isArray(d.items)) {
+      aiModesMissing = true;
+      console.info("[kanbo] The ai-assist function needs redeploying for Ask Kanbo, notes → tasks, standups and status drafts; using on-device rules until then.");
+      return AI_UNAVAILABLE;
+    }
+    const picked = pick(d);
+    if (picked === null) return AI_UNAVAILABLE;
+    const usage = usageOf(d.usage);
+    return usage ? { data: picked, source: "ai", usage } : { data: picked, source: "ai" };
+  } catch {
+    return AI_UNAVAILABLE;
+  }
 }
 
 /** Create failed for some rows of an import; the rest were saved. */
@@ -813,7 +1021,7 @@ async function replayQueue(client: SupabaseClient, remap?: RemapFn): Promise<num
         // under the same id (a no-op if it landed) instead of creating a twin
         const id = m.serverId ?? (isUuid(m.task.id) ? m.task.id : uuidv4());
         if (m.serverId !== id) offlineQueue.setServerId(m.id, id);
-        const saved = await insertTaskRow(client, m.task, id, uid);
+        const saved = stampCreator(await insertTaskRow(client, m.task, id, uid), uid);
         // deleted while the request was in flight: its delete is already queued
         if (!offlineQueue.ack(m.id)) continue;
         if (saved.id !== m.task.id) offlineQueue.remapId(m.task.id, saved.id);
@@ -916,11 +1124,19 @@ export const store = {
           role: m.type === "self" ? "owner" as const : "member" as const, status: "active" as const,
         }));
       }
+      // a living inbox from the first load (anything already logged this session stays)
+      if (!demoInboxSeeded) {
+        demoInboxSeeded = true;
+        const logged = new Set(demoActivity.map((a) => a.id));
+        demoActivity = [...demoActivity, ...seedCopy(DEMO_ACTIVITY).filter((a) => !logged.has(a.id))].sort(newestFirst);
+      }
       return {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
-        sections: [], customFields: [], savedSearches: [], goals: [], portfolios: [], statusUpdates: [], automationRules: [], forms: [],
+        sections: [], customFields: [], savedSearches: [],
+        goals: seedCopy(DEMO_GOALS), portfolios: seedCopy(DEMO_PORTFOLIOS), statusUpdates: seedCopy(DEMO_STATUS_UPDATES),
+        automationRules: seedCopy(DEMO_RULES), forms: seedCopy(DEMO_FORMS),
       };
     }
     // resolve the REAL authenticated user from the live session — robust to a
@@ -1281,18 +1497,24 @@ export const store = {
    *  the rest are still saved and a BatchCreateError lists both. */
   async createTasksBatch(tasks: Task[], userId: string): Promise<Task[]> {
     if (!tasks.length) return [];
-    if (!supabase) return tasks.slice();
+    if (!supabase) return tasks.map((t) => stampCreator(t, userId));
     const client = supabase;
     const idMap = new Map<string, string>();
     for (const t of tasks) if (!isUuid(t.id) && !idMap.has(t.id)) idMap.set(t.id, uuidv4());
-    const prepared = tasks.map((t) => {
+    const withIds = tasks.map((t) => {
       const id = idMap.get(t.id) ?? t.id;
       const parentId = t.parentId ? (idMap.get(t.parentId) ?? t.parentId) : t.parentId;
       return id === t.id && parentId === t.parentId ? t : { ...t, id, parentId };
     });
     // offline: queue before anything is awaited (see queueOwner)
-    if (isOffline()) { offlineQueue.enqueueCreates(prepared, queueOwner() ?? await authUid(userId)); return prepared; }
+    if (isOffline()) {
+      const owner = queueOwner() ?? await authUid(userId);
+      const mine = withIds.map((t) => stampCreator(t, owner));
+      offlineQueue.enqueueCreates(mine, owner);
+      return mine;
+    }
     const uid = await authUid(userId);
+    const prepared = withIds.map((t) => stampCreator(t, uid));
 
     const saved: Task[] = [];
     const failed: { task: Task; message: string }[] = [];
@@ -1336,28 +1558,33 @@ export const store = {
     return saved;
   },
 
+  /** Save a new task. The copy handed back carries its final id and its
+   *  creator (createdBy: the signed-in user; see stampCreator). */
   async createTask(t: Task, userId: string): Promise<Task> {
-    if (!supabase) return t; // demo mode keeps the optimistic copy
+    if (!supabase) return stampCreator(t, userId); // demo mode keeps the optimistic copy
     // offline — or queued ops on this id still waiting (e.g. an undone
     // delete): queue behind them so they apply in order, and keep the client
     // id. Queued before anything is awaited (see queueOwner).
     if (isOffline() || offlineQueue.hasPending(t.id)) {
-      offlineQueue.enqueueCreate(t, queueOwner() ?? await authUid(userId));
+      const owner = queueOwner() ?? await authUid(userId);
+      const mine = stampCreator(t, owner);
+      offlineQueue.enqueueCreate(mine, owner);
       if (!isOffline()) scheduleFlush();
-      return t;
+      return mine;
     }
     const uid = await authUid(userId);
+    const mine = stampCreator(t, uid);
     // the row id is fixed before sending, so a retry can never make a twin
     const id = isUuid(t.id) ? t.id : uuidv4();
     try {
-      return await insertTaskRow(supabase, t, id, uid);
+      return await insertTaskRow(supabase, mine, id, uid);
     } catch (e) {
       // dropped mid-flight — it may or may not have landed, so queue it under
       // the same id (the replay is a no-op if it did). That id is handed back
       // now, so the caller swaps it in at once and later edits queue behind
       // this create, rather than waiting on a replay callback to learn it.
       if (isNetworkError(e)) {
-        const pinned = id === t.id ? t : { ...t, id };
+        const pinned = id === t.id ? mine : { ...mine, id };
         offlineQueue.enqueueCreate(pinned, queueOwner() ?? uid, id);
         scheduleFlush();
         return pinned;
@@ -1761,7 +1988,11 @@ export const store = {
   },
   // per-task change history (status/assignee/due/priority). [] if not installed.
   async listTaskEvents(taskId: string): Promise<TaskEvent[]> {
-    if (!supabase) return [];
+    if (!supabase) {
+      // the seeded history (a date that slipped twice, who moved what)
+      return seedCopy(DEMO_TASK_EVENTS).filter((e) => e.taskId === taskId).sort(newestFirst)
+        .map((e) => ({ id: e.id, actorName: e.actorName, field: e.field, oldValue: e.oldValue, newValue: e.newValue, createdAt: e.createdAt }));
+    }
     try {
       const { data, error } = await supabase.from("task_events").select("*").eq("task_id", taskId).order("created_at", { ascending: false }).limit(80);
       if (error || !data) return [];
@@ -2208,28 +2439,85 @@ export const store = {
    *  unavailable. Reset at the start of every AI request. */
   aiNotice(): string | null { return aiNoticeText; },
 
-  /* ---------- redesign contracts (W0 stubs: P13 fills them in) ----------
-     Each answers "unavailable" (or nothing) until then, and every caller
-     falls back to on-device rules, so nothing depends on them yet. */
-  /** The workspace's task_events since a moment (Pulse, Radar), newest first. */
-  async listWorkspaceEventsSince(_workspaceId: string | null, _sinceISO: string, _limit = 500): Promise<WorkspaceEvent[]> {
-    return [];
+  /* ---------- the redesign's data and AI calls ----------
+     The AI calls never throw and never use `this` (App hands them around as
+     plain functions): each answers with an AiOutcome, and "unavailable" (demo
+     mode, offline, a failed or refused call) or "limit" sends the caller to
+     its on-device rules. */
+
+  /** The workspace's change history (task_events) since a moment, newest
+   *  first, for Pulse and Radar. `null` is the Personal workspace (your own
+   *  tasks there). Rejects on error, so Pulse can say it couldn't load. */
+  async listWorkspaceEventsSince(workspaceId: string | null, sinceISO: string, limit = 500): Promise<WorkspaceEvent[]> {
+    const max = Math.max(1, Math.min(1000, Math.floor(limit) || 500));
+    if (!supabase) {
+      const since = Date.parse(sinceISO);
+      const wsOf = (taskId: string) => {
+        const task = TASKS.find((t) => t.id === taskId);
+        return task ? PROJECTS.find((p) => p.id === task.projectId)?.workspaceId ?? null : undefined;
+      };
+      return seedCopy(DEMO_TASK_EVENTS)
+        .filter((e) => !(Date.parse(e.createdAt) < since) && wsOf(e.taskId) === (workspaceId || null))
+        .sort(newestFirst)
+        .slice(0, max);
+    }
+    let q = supabase.from("task_events")
+      .select("id, task_id, actor_id, actor_name, field, old_value, new_value, created_at, tasks!inner(workspace_id, user_id)");
+    if (workspaceId) q = q.eq("tasks.workspace_id", workspaceId);
+    else q = q.is("tasks.workspace_id", null).eq("tasks.user_id", await authUid(""));
+    const { data, error } = await q.gte("created_at", sinceISO).order("created_at", { ascending: false }).limit(max);
+    if (error) throw error;
+    return ((data as { id: string; task_id: string; actor_id: string | null; actor_name: string | null; field: string; old_value: string | null; new_value: string | null; created_at: string }[] | null) ?? [])
+      .map((r) => ({ id: r.id, taskId: r.task_id, actorId: r.actor_id, actorName: r.actor_name || "Someone", field: r.field, oldValue: r.old_value, newValue: r.new_value, createdAt: r.created_at }));
   },
-  /** Ask Kanbo: answer a question about the tasks and propose changes. */
-  async aiCommand(_question: string, _tasks: Task[], _ctx: AskContext): Promise<AiOutcome<AskResult>> {
-    return { data: null, source: "unavailable" };
+
+  /** Ask Kanbo: answer a question about these tasks and propose changes
+   *  (never applied here). Sends up to 300 tasks, most relevant first. */
+  async aiCommand(question: string, tasks: Task[], ctx: AskContext): Promise<AiOutcome<AskResult>> {
+    const q = question.trim();
+    if (!q) return AI_UNAVAILABLE;
+    const payload = aiCommandContext(tasks, ctx);
+    const sent = new Set(payload.map((t) => t.id));
+    const me = ctx.members.find((m) => m.id === ctx.me)?.name ?? getMember(ctx.me)?.name ?? "";
+    const out = await callAiMode<AskResult>(
+      { mode: "command", question: q.slice(0, 4000), today: ctx.today, me, meId: ctx.me, members: ctx.members, projects: ctx.projects, tasks: payload },
+      (d) => {
+        const answer = typeof d.answer === "string" ? d.answer.trim() : "";
+        if (!answer) return null;
+        const cites = [...new Set((Array.isArray(d.cites) ? d.cites : []).filter((c): c is string => typeof c === "string" && sent.has(c)))].slice(0, 25);
+        return { answer, actions: askActionsFrom(d.actions, sent, ctx), cites, source: "ai" };
+      },
+    );
+    return out.source === "ai" && out.usage ? { ...out, data: { ...out.data, usage: out.usage } } : out;
   },
-  /** Read tasks out of pasted notes. */
-  async aiExtract(_text: string, _ctx: AskContext & { hint?: string }): Promise<AiOutcome<ExtractedTask[]>> {
-    return { data: null, source: "unavailable" };
+
+  /** Read tasks out of pasted notes (up to 20,000 characters). People are
+   *  matched to members by name; anyone else keeps just their name. */
+  async aiExtract(text: string, ctx: AskContext & { hint?: string }): Promise<AiOutcome<ExtractedTask[]>> {
+    const notes = text.trim();
+    if (!notes) return AI_UNAVAILABLE;
+    return callAiMode(
+      { mode: "extract", text: notes.slice(0, 20_000), today: ctx.today, members: ctx.members, projects: ctx.projects, hint: ctx.hint ?? "" },
+      (d) => extractedFrom(d.tasks, ctx),
+    );
   },
-  /** Write the team's standup from Pulse's facts. */
-  async aiStandup(_facts: unknown): Promise<AiOutcome<string>> {
-    return { data: null, source: "unavailable" };
+
+  /** Write the team's standup (5 short lines) from Pulse's facts. */
+  async aiStandup(facts: unknown): Promise<AiOutcome<string>> {
+    if (facts == null) return AI_UNAVAILABLE;
+    return callAiMode({ mode: "standup", facts, today: toLocalISO(new Date()) }, (d) => {
+      const text = typeof d.text === "string" ? d.text.trim() : "";
+      return text || null;
+    });
   },
-  /** Draft a project status update from its facts. */
-  async aiStatus(_facts: unknown): Promise<AiOutcome<{ summary: string; status: StatusKind }>> {
-    return { data: null, source: "unavailable" };
+
+  /** Draft a project status update (2–4 sentences and a status) from its facts. */
+  async aiStatus(facts: unknown): Promise<AiOutcome<{ summary: string; status: StatusKind }>> {
+    if (facts == null) return AI_UNAVAILABLE;
+    return callAiMode({ mode: "status", facts, today: toLocalISO(new Date()) }, (d) => {
+      const summary = typeof d.summary === "string" ? d.summary.trim() : "";
+      return summary && typeof d.status === "string" && STATUS_KINDS.has(d.status) ? { summary, status: d.status as StatusKind } : null;
+    });
   },
 
   /* ---------- activity feed (Inbox) ---------- */
