@@ -1,21 +1,354 @@
-import { describe, it, expect } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
+import { store } from "./data/store";
+import { isTaskId } from "./lib/taskOps";
+
+const renderApp = () => render(
+  <ToastProvider>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </ToastProvider>,
+);
+// bootstrap is async; wait for the sidebar nav to appear
+const boot = async () => { renderApp(); await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument()); };
+const key = (k: string, opts: Record<string, unknown> = {}) => fireEvent.keyDown(document.body, { key: k, ...opts });
+const openTask = async (title: string) => { fireEvent.click((await screen.findAllByText(title))[0]); return screen.findByRole("dialog", { name: `Task: ${title}` }); };
+const DECK = "Finalize Q3 launch narrative deck"; // seeded demo task t-1, mine, in Foundrise
+const lastOf = <T,>(xs: T[]): T => xs[xs.length - 1];
+const projectButton = (name: string) => {
+  const btn = screen.getAllByText(name, { selector: ".kproj *" })[0]?.closest("button");
+  if (!btn) throw new Error(`no sidebar project “${name}”`);
+  return btn;
+};
+
+// restore only our own spies (restoreAllMocks would also wipe the test setup's matchMedia mock)
+const spies: { mockRestore: () => void }[] = [];
+const track = <T extends { mockRestore: () => void }>(s: T): T => { spies.push(s); return s; };
+afterEach(() => {
+  spies.splice(0).forEach((s) => s.mockRestore());
+  localStorage.clear();
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+});
 
 describe("App (demo mode)", () => {
   it("boots and renders the workspace shell", async () => {
-    render(
-      <ToastProvider>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </ToastProvider>,
-    );
-    // bootstrap is async; wait for the sidebar nav to appear
-    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    await boot();
     expect(screen.getByText("My tasks")).toBeInTheDocument();
     expect(screen.getByText("Analytics")).toBeInTheDocument();
+  });
+
+  it("quick capture saves a task with a stable id, the parsed estimate, and keeps it out of today's plan", async () => {
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    key("q");
+    const input = await screen.findByLabelText("Quick capture a task");
+    fireEvent.change(input, { target: { value: "Write board memo 90m" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    const t = create.mock.calls[0][0];
+    expect(isTaskId(t.id)).toBe(true);
+    expect(t).toMatchObject({ title: "Write board memo", focusMin: 90, dur: 90, planToday: false, workspaceId: "ws-foundrise" });
+    expect(t.energy).toBeTruthy();
+  });
+
+  it("emails the assignee when a task is created for someone else", async () => {
+    const notify = track(vi.spyOn(store, "notify"));
+    await boot();
+    key("q");
+    const input = await screen.findByLabelText("Quick capture a task");
+    fireEvent.change(input, { target: { value: "Call supplier @maya" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: "assigned", recipientIds: ["m-1"] })));
+  });
+
+  it("pauses single-key shortcuts while a dialog is open", async () => {
+    await boot();
+    key("?");
+    expect(await screen.findByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+    key("c");
+    expect(screen.queryByRole("dialog", { name: "New task" })).not.toBeInTheDocument();
+    key("Escape");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument());
+    key("c");
+    expect(await screen.findByRole("dialog", { name: "New task" })).toBeInTheDocument();
+  });
+
+  it("Escape closes only the top-most overlay, not the task panel underneath", async () => {
+    await boot();
+    key("g"); key("t");
+    await openTask(DECK);
+    key("k", { ctrlKey: true });
+    expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    key("Escape");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: `Task: ${DECK}` })).toBeInTheDocument();
+  });
+
+  const deleteDeck = async () => {
+    key("g"); key("t");
+    await openTask(DECK);
+    fireEvent.click(await screen.findByTitle("Delete task"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: `Task: ${DECK}` })).not.toBeInTheDocument());
+  };
+  const hideTab = () => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  /** Pretend to be a phone (touch screen, no hover) for effects that read it on mount. */
+  const asPhone = () => {
+    const orig = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ ...orig(q), matches: q.includes("pointer: coarse") })) as typeof window.matchMedia;
+    track({ mockRestore: () => { window.matchMedia = orig; } });
+  };
+
+  it("sends a pending delete straight away when the page is closed", async () => {
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    await boot();
+    await deleteDeck();
+    expect(del).not.toHaveBeenCalled(); // still inside the Undo window
+    window.dispatchEvent(new Event("pagehide"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
+  });
+
+  it("a quick switch to another tab on a computer keeps Undo lossless (nothing is sent or re-created)", async () => {
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await deleteDeck();
+    hideTab();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(del).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findAllByText(DECK)).not.toHaveLength(0);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("on a phone a hidden tab sends the delete; Undo restores a copy with its checklist and blocked-by links, and says so", async () => {
+    asPhone();
+    const real = store.bootstrap.bind(store);
+    // t-3 is blocked by the deck
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-3" ? { ...t, dependencies: ["t-1"] } : t)) };
+    }));
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    const create = track(vi.spyOn(store, "createTask"));
+    const addSub = track(vi.spyOn(store, "addSubtask"));
+    const tick = track(vi.spyOn(store, "setSubtaskDone"));
+    const link = track(vi.spyOn(store, "addDependency"));
+    await boot();
+    await deleteDeck();
+    hideTab();
+    await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText(/Restored “Finalize Q3 launch narrative deck” as a copy — it has a new link/)).toBeInTheDocument();
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ title: DECK, comments: 0 }), expect.anything()));
+    await waitFor(() => expect(addSub).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(tick).toHaveBeenCalledTimes(2)); // the two ticked checklist items stay ticked
+    const newId = create.mock.calls.find((c) => c[0].title === DECK)![0].id;
+    await waitFor(() => expect(link).toHaveBeenCalledWith("t-3", newId));
+  });
+
+  it("Undo after an early send doesn't re-create a task whose delete failed (it's still on the server)", async () => {
+    asPhone();
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask")).mockRejectedValue(new Error("permission denied"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await deleteDeck();
+    hideTab();
+    await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
+    fireEvent.click(screen.getAllByRole("button", { name: "Undo" })[0]);
+    expect(await screen.findAllByText(DECK)).not.toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("Escape cancels an inline “Add task” draft instead of saving it", async () => {
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    key("g"); key("t");
+    fireEvent.click((await screen.findAllByText("Add task"))[0].closest("button")!);
+    const input = await screen.findByPlaceholderText("Task name, then Enter…");
+    input.focus();
+    fireEvent.change(input, { target: { value: "Draft I meant to cancel" } });
+    // real browser order: React's root listener, then the window listener, for the same event
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(create).not.toHaveBeenCalled();
+    expect(screen.queryByText("Draft I meant to cancel")).not.toBeInTheDocument();
+  });
+
+  it("Home shows the team's projects to a member with nothing assigned yet (not the empty-account screen)", async () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => ({ ...t, assigneeId: t.assigneeId === "m-self" ? "m-1" : t.assigneeId, collaborators: [] })) };
+    }));
+    await boot();
+    expect(await screen.findByText("Active projects")).toBeInTheDocument();
+    expect(screen.queryByText(/Your workspace is a clean slate/)).not.toBeInTheDocument();
+  });
+
+  it("Home's “Start focus block” starts the timer", async () => {
+    await boot();
+    fireEvent.click((await screen.findByText("Start focus block")).closest("button")!);
+    expect(await screen.findByText(/Deep Work · Focus mode/)).toBeInTheDocument();
+    expect(screen.getByText(/In flow/)).toBeInTheDocument();
+  });
+
+  const importText = async (text: string) => {
+    key("g"); key("t");
+    fireEvent.click(await screen.findByTitle(/Import tasks/));
+    const dialog = await screen.findByRole("dialog", { name: "Import tasks" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: text } });
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: /^Import \d+ tasks?$/ })); });
+  };
+
+  it("import: one failed row is flagged on its own, and Retry sends only that row", async () => {
+    const real = store.createTask.bind(store);
+    let n = 0;
+    const create = track(vi.spyOn(store, "createTask").mockImplementation(async (t, u) => { n++; if (n === 2) throw new Error("boom"); return real(t, u); }));
+    await boot();
+    await importText("Alpha import row\nBeta import row\nGamma import row");
+    expect(await screen.findByText(/^1 task couldn't be saved/)).toBeInTheDocument();
+    expect(create.mock.calls.map((c) => c[0].title).sort()).toEqual(["Alpha import row", "Beta import row", "Gamma import row"]);
+    await act(async () => { fireEvent.click(within(screen.getByText(/^1 task couldn't be saved/).parentElement!).getByRole("button", { name: "Retry" })); });
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(4));
+    expect(create.mock.calls[3][0].title).toBe("Beta import row");
+    await waitFor(() => expect(screen.queryByText(/couldn't be saved/)).not.toBeInTheDocument());
+  });
+
+  it("a task imported as done keeps its completion date on the server", async () => {
+    const update = track(vi.spyOn(store, "updateTask"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await importText("Title,Status\nShipped the thing,done\nPlan the next thing,todo");
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    const shipped = create.mock.calls.find((c) => c[0].title === "Shipped the thing")![0];
+    await waitFor(() => expect(update).toHaveBeenCalledWith(shipped.id, { completedAt: shipped.completedAt }));
+    expect(shipped.completedAt).toBeTruthy();
+    expect(update.mock.calls.some((c) => c[0] === create.mock.calls.find((x) => x[0].title === "Plan the next thing")![0].id)).toBe(false);
+  });
+
+  it("a completion that fails to save takes back its next recurrence and logs nothing", async () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-1" ? { ...t, recurrence: "weekly" as const } : t)) };
+    }));
+    track(vi.spyOn(store, "updateTask")).mockRejectedValue(new Error("502"));
+    const create = track(vi.spyOn(store, "createTask"));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    const logged = track(vi.spyOn(store, "logActivity"));
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    const status = within(panel).getAllByRole("combobox").find((el) => (el as HTMLSelectElement).value === "progress")!;
+    fireEvent.change(status, { target: { value: "done" } });
+    expect(await screen.findByText(/Couldn't save — change undone/)).toBeInTheDocument();
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ title: DECK, status: "todo" }), expect.anything()));
+    const next = create.mock.calls.find((c) => c[0].title === DECK)![0];
+    await waitFor(() => expect(del).toHaveBeenCalledWith(next.id));
+    expect((status as HTMLSelectElement).value).toBe("progress");
+    expect(logged.mock.calls.some((c) => c[0].kind === "completed")).toBe(false);
+  });
+
+  it("members can archive a team project; guests can read its status updates but not post or archive", async () => {
+    const real = store.bootstrap.bind(store);
+    let role: "member" | "guest" = "member";
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      const brand = b.projects.find((p) => p.name === "Brand Refresh")!;
+      return {
+        ...b,
+        projects: b.projects.map((p) => (p.id === brand.id ? { ...p, ownerId: "m-1" } : p)),
+        members: b.members.map((m) => (m.userId === "m-self" ? { ...m, role } : m)),
+        statusUpdates: [{ id: "su-1", projectId: brand.id, summary: "Logo round two is with the client", status: "on_track" as const, createdAt: new Date().toISOString() }],
+      };
+    }));
+    const { unmount } = renderApp();
+    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    fireEvent.click(projectButton("Brand Refresh"));
+    expect(await screen.findByTitle("Archive this project")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Post update" })).toBeInTheDocument();
+    unmount();
+    role = "guest";
+    await boot();
+    fireEvent.click(projectButton("Brand Refresh"));
+    expect(await screen.findByText("Logo round two is with the client")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Post update" })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Archive this project")).not.toBeInTheDocument();
+  });
+
+  it("keeps filters per page: a filter set in My tasks doesn't hide a project's tasks", async () => {
+    await boot();
+    key("g"); key("t");
+    fireEvent.click(await screen.findByRole("button", { name: "High priority" }));
+    expect(screen.getByRole("button", { name: /Filter · on/ })).toBeInTheDocument();
+    fireEvent.click(projectButton("Brand Refresh"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Filter$/ })).toBeInTheDocument());
+    key("g"); key("t");
+    expect(await screen.findByRole("button", { name: /Filter · on/ })).toBeInTheDocument();
+  });
+
+  it("keeps a status update draft until it is actually saved", async () => {
+    const post = track(vi.spyOn(store, "createStatusUpdate")).mockRejectedValueOnce(new Error("offline"));
+    await boot();
+    fireEvent.click(projectButton("Brand Refresh"));
+    fireEvent.click(await screen.findByRole("button", { name: "Post update" }));
+    const box = screen.getByPlaceholderText(/What's the latest/);
+    fireEvent.change(box, { target: { value: "Logo round two is with the client" } });
+    fireEvent.click(lastOf(screen.getAllByRole("button", { name: "Post update" })));
+    expect(await screen.findByText(/Couldn't post the update — your text is still there/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/What's the latest/)).toHaveValue("Logo round two is with the client");
+    fireEvent.click(lastOf(screen.getAllByRole("button", { name: "Post update" })));
+    await waitFor(() => expect(screen.queryByPlaceholderText(/What's the latest/)).not.toBeInTheDocument());
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Logo round two is with the client")).toBeInTheDocument();
+  });
+
+  it("deletes a project first and only then its tasks — a refused delete changes nothing", async () => {
+    const delProject = track(vi.spyOn(store, "deleteProject")).mockRejectedValueOnce(new Error("permission denied"));
+    const delTask = track(vi.spyOn(store, "deleteTask"));
+    await boot();
+    const tryDelete = async () => {
+      fireEvent.click(within(projectButton("Brand Refresh").parentElement!).getByTitle("Delete project"));
+      const dialog = await screen.findByRole("dialog", { name: "Delete project" });
+      fireEvent.click(within(dialog).getByText(/too$/));
+      // the delete is async (server first, then tasks) — let it settle inside act
+      await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: /Delete project/ })); });
+    };
+    await tryDelete();
+    expect(await screen.findByText(/Couldn't delete “Brand Refresh” — nothing was changed/)).toBeInTheDocument();
+    expect(projectButton("Brand Refresh")).toBeInTheDocument();
+    expect(delTask).not.toHaveBeenCalled();
+    await tryDelete();
+    await waitFor(() => expect(screen.queryByText("Brand Refresh", { selector: ".kproj *" })).not.toBeInTheDocument());
+    expect(delProject).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(delTask).toHaveBeenCalled());
+    expect(await screen.findByText(/^Deleted “Brand Refresh” and \d+ tasks?$/)).toBeInTheDocument();
+  });
+
+  it("guests can look but not edit: no optimistic change, one friendly toast", async () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, members: b.members.map((m) => (m.userId === "m-self" ? { ...m, role: "guest" as const } : m)) };
+    }));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    expect(screen.getByText(/You're a guest in Foundrise/)).toBeInTheDocument();
+    key("c");
+    expect(await screen.findByText(/Guests can view and comment — ask a workspace admin/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New task" })).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
   });
 });
