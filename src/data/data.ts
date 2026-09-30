@@ -68,12 +68,14 @@ function shiftISO(iso: string, days: number): string {
    Monthly keeps to its day of the month and clamps to the last day of shorter
    months (31 Jan → 28/29 Feb, 31 Aug → 30 Sep) instead of overflowing into the
    next month. Pass `anchorDay` — the day the series was set up on — so a series
-   that was clamped finds its way back (28 Feb → 31 Mar); without it the anchor
-   is the base date's own day. */
+   that was clamped finds its way back (28 Feb → 31 Mar); without it (or if it
+   isn't a number, e.g. derived from a bad date) the anchor is the base date's
+   own day. */
 export function nextDueDate(iso: string | undefined, recurrence: Recurrence, anchorDay?: number): string {
   const base = (iso && parseLocalDay(iso)) || new Date(KANBO_TODAY);
   const d = new Date(base);
-  const anchor = Math.min(31, Math.max(1, Math.round(anchorDay ?? base.getDate())));
+  const a = anchorDay != null && Number.isFinite(anchorDay) ? anchorDay : base.getDate();
+  const anchor = Math.min(31, Math.max(1, Math.round(a)));
   const step = () => {
     if (recurrence === "daily") d.setDate(d.getDate() + 1);
     else if (recurrence === "weekdays") { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
@@ -95,23 +97,45 @@ export function nextDueDate(iso: string | undefined, recurrence: Recurrence, anc
   return toLocalISO(d);
 }
 
+/* The day of the month a monthly series belongs on, for nextDueDate's
+   `anchorDay`. It's the due date's own day, unless that date sits on the last
+   day of a short month (so it may have been clamped: 31 Jan → 28 Feb) and
+   `originalDueDate` remembers a later day, which then wins (→ 31 Mar). A due
+   date the user moved to mid-month is never clamped, so the series follows it.
+   nextOccurrence keeps originalDueDate pointing at the series' day. */
+export function seriesAnchorDay(t: { dueDate?: string; originalDueDate?: string }): number | undefined {
+  const due = t.dueDate ? parseLocalDay(t.dueDate) : null;
+  if (!due) return undefined;
+  const day = due.getDate();
+  const orig = t.originalDueDate ? parseLocalDay(t.originalDueDate) : null;
+  const atMonthEnd = day === daysInMonth(due.getFullYear(), due.getMonth());
+  return orig && atMonthEnd && orig.getDate() > day ? orig.getDate() : day;
+}
+
 /* The next instance of a recurring task: same work and people, fresh state.
    Everything that belonged to the finished occurrence is reset — time logged
    (so timesheets and billable totals don't double count), reactions, comment
    count, the plan slot, completion/archive stamps and dependencies (they point
    at this occurrence's blockers and aren't persisted on insert). startDate
    moves by the same number of days as the due date, so a Timeline bar keeps
-   its length instead of stretching back to the first occurrence. */
+   its length instead of stretching back to the first occurrence. A monthly
+   series carries its day in originalDueDate (see seriesAnchorDay), so one due
+   on the 31st goes 31 Jan → 28 Feb → 31 Mar, not 28 Feb → 28 Mar for good. */
 export function nextOccurrence(t: Task, id: string, anchorDay?: number): Task {
-  const dueDate = nextDueDate(t.dueDate, t.recurrence ?? "none", anchorDay);
+  const recurrence = t.recurrence ?? "none";
+  const anchor = anchorDay != null && Number.isFinite(anchorDay) ? anchorDay : seriesAnchorDay(t);
+  const dueDate = nextDueDate(t.dueDate, recurrence, anchor);
   const shift = daysBetweenISO(t.dueDate ?? toLocalISO(KANBO_TODAY), dueDate);
+  // the date that holds the series' day: the remembered one if it's the anchor, else this due date
+  const dayOf = (iso?: string): number | undefined => (iso ? parseLocalDay(iso)?.getDate() : undefined);
+  const seriesDate = t.originalDueDate && dayOf(t.originalDueDate) === anchor ? t.originalDueDate : t.dueDate;
   return {
     ...t,
     id,
     status: "todo",
     dueDate,
     startDate: t.startDate ? shiftISO(t.startDate, shift) : undefined,
-    originalDueDate: undefined,
+    originalDueDate: recurrence === "monthly" ? seriesDate : undefined,
     completedAt: undefined,
     archivedAt: undefined,
     createdAt: undefined,
@@ -128,11 +152,13 @@ export function nextOccurrence(t: Task, id: string, anchorDay?: number): Task {
 /* Carry a recurring task's sub-tasks (child tasks) to its next occurrence:
    fresh ids, back to to-do, re-parented onto `next`, and their dates moved by
    the same number of days as the parent's due date. Archived children stay
-   behind. `next.id` must be the new parent's SAVED id. */
+   behind, and so do children that repeat on their own: they already spawn
+   their own next occurrence under the old parent, so cloning them here would
+   duplicate them. `next.id` must be the new parent's SAVED id. */
 export function nextOccurrenceChildren(children: Task[], prev: Task, next: Task, makeId: () => string): Task[] {
   const shift = daysBetweenISO(prev.dueDate ?? toLocalISO(KANBO_TODAY), next.dueDate ?? toLocalISO(KANBO_TODAY));
   return children
-    .filter((c) => c.parentId === prev.id && !c.archivedAt)
+    .filter((c) => c.parentId === prev.id && !c.archivedAt && (c.recurrence ?? "none") === "none")
     .map((c) => ({
       ...c,
       id: makeId(),
@@ -494,36 +520,53 @@ export function planDay(tasks: Task[], events: CalEvent[], opts: { nowMin?: numb
 }
 
 /* ---- natural-language tokens shared by both parsers ----
-   Each token must stand on its own: preceded by start/space, and not followed
-   by a letter, digit or apostrophe — so "Q3", "3pm" and "today's numbers" are
-   left alone. Removing a token keeps its leading space so words don't fuse. */
-const HOURS_RE = /(^|\s)(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)(?:(\d{1,2})(?:m|mins?|minutes?)?|\s+(\d{1,2})\s*(?:m|mins?|minutes?))?(?![\w'’])/i;
-const MINS_RE = /(^|\s)(\d+)\s*(?:m|mins?|minutes?)(?![\w'’])/i;
+   Each token must stand on its own: preceded by the start, a space or an
+   opening bracket (words also after a comma — not durations, or "10,000
+   hours" would read as 0), and not followed by a letter, digit or
+   apostrophe — so "Q3", "3pm" and "today's numbers" are left alone while
+   "(2h)" and "[tomorrow]" still count. Removing a token keeps what led into
+   it plus a space, so words don't fuse; tidyTitle then drops the "()" it
+   may leave behind. */
+const HOURS_RE = /(^|[\s(\[])(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)(?:(\d{1,2})(?:m|mins?|minutes?)?|\s+(\d{1,2})\s*(?:m|mins?|minutes?))?(?![\w'’])/i;
+const MINS_RE = /(^|[\s(\[])(\d+)\s*(?:m|mins?|minutes?)(?![\w'’])/i;
+/* Cut a match out of `s` AT ITS POSITION, putting `keep` in its place.
+   (`s.replace(m[0], …)` would cut the first literal copy instead — which can
+   be one the regex deliberately skipped: the " today" inside "today's" in
+   "Review today's numbers today".) */
+function cutMatch(s: string, m: RegExpMatchArray, keep = " "): string {
+  const at = m.index ?? s.indexOf(m[0]);
+  return s.slice(0, at) + keep + s.slice(at + m[0].length);
+}
 /* "90m", "45 mins", "1.5h", "3 hrs", "2 hours", "1h30", "1h 30m" → minutes */
 function takeDuration(s: string): { min: number; rest: string } | null {
   const h = s.match(HOURS_RE);
   if (h) {
     const min = Math.round(parseFloat(h[2]) * 60) + parseInt(h[3] ?? h[4] ?? "0", 10);
-    return { min, rest: s.replace(h[0], h[1] + " ") };
+    return { min, rest: cutMatch(s, h, h[1] + " ") };
   }
   const m = s.match(MINS_RE);
-  if (m) return { min: parseInt(m[2], 10), rest: s.replace(m[0], m[1] + " ") };
+  if (m) return { min: parseInt(m[2], 10), rest: cutMatch(s, m, m[1] + " ") };
   return null;
 }
 /* "today" / "tomorrow" / "next week", with an optional lead-in ("by", "due",
    "for") that goes with it: "Send invoice by tomorrow" → "Send invoice". */
-const DUE_WORD_RE = /(^|\s)(?:(?:by|due|for)\s+)?(today|tomorrow|next\s+week)(?![\w'’])/i;
+const DUE_WORD_RE = /(^|[\s(\[,;])(?:(?:by|due|for)\s+)?(today|tomorrow|next\s+week)(?![\w'’])/i;
 function takeDueWord(s: string): { offset: number; rest: string } | null {
   const m = s.match(DUE_WORD_RE);
   if (!m) return null;
   const w = m[2].toLowerCase();
-  return { offset: w === "today" ? 0 : w === "tomorrow" ? 1 : 7, rest: s.replace(m[0], m[1] + " ") };
+  return { offset: w === "today" ? 0 : w === "tomorrow" ? 1 : 7, rest: cutMatch(s, m, m[1] + " ") };
 }
 /* energy words: "deep work" / "focus time" / "focus block" anywhere, or a bare
    "deep" / "focus" as the last word. "Focus group prep" or "Deep dive into
    churn" are titles, not energy. */
-const DEEP_RE = /(^|\s)(deep|focus)(?:[\s-]+(?:work|time|block)(?![\w'’])|(?=[\s.,;:!?]*$))/i;
-const tidyTitle = (s: string): string => s.replace(/\s{2,}/g, " ").replace(/^[\s,;:–—-]+|[\s,;:–—-]+$/g, "").trim();
+const DEEP_RE = /(^|[\s(\[,;])(deep|focus)(?:[\s-]+(?:work|time|block)(?![\w'’])|(?=[\s.,;:!?)\]]*$))/i;
+/* what's left once tokens are cut out: a "()" / "[]" a token sat in (only a
+   free-standing one — "parseDate()" keeps its brackets), doubled spaces and
+   separators stranded at either end (`edge`) */
+const EDGE_SEPARATORS = /^[\s,;:–—-]+|[\s,;:–—-]+$/g;
+const tidyTitle = (s: string, edge: RegExp = EDGE_SEPARATORS): string =>
+  s.replace(/(^|\s)(?:\(\s*\)|\[\s*\])(?=[\s.,;:!?]|$)/g, "$1").replace(/\s{2,}/g, " ").replace(edge, "").trim();
 /* the signed-in user (demo: "m-self") — the store maps it on insert anyway,
    but using the real id keeps the task in My Week before the next reload */
 const selfMemberId = (): string => MEMBERS.find((m) => m.type === "self")?.id ?? "m-self";
@@ -545,15 +588,15 @@ export function parseCapture(text: string, opts: CaptureOptions = {}): Task | nu
   if (d) { dur = Math.max(SLOT_MIN, d.min); s = d.rest; }
   const due = takeDueWord(s);
   if (due) { dueDate = dayOffset(due.offset); s = due.rest; }
-  const pm = s.match(/(^|\s)(?:urgent|asap)(?![\w'’])|!{2,}/i);
-  if (pm) { priority = "high"; s = s.replace(pm[0], (pm[1] ?? "") + " "); }
+  const pm = s.match(/(^|[\s(\[,;])(?:urgent|asap)(?![\w'’])|!{2,}/i);
+  if (pm) { priority = "high"; s = cutMatch(s, pm, (pm[1] ?? "") + " "); }
   const deep = s.match(DEEP_RE);
   if (deep) {
     energy = "deep"; tag = "writing";
     const at = (deep.index ?? 0) + deep[1].length;
     // a leading "Deep work on the pricing model" IS the title — keep it;
     // elsewhere it's an annotation ("Draft deck deep work") — drop it
-    if (at > 0 && s.slice(0, at).trim()) s = s.replace(deep[0], deep[1] + " ");
+    if (at > 0 && s.slice(0, at).trim()) s = cutMatch(s, deep, deep[1] + " ");
   }
   else if (/\bdesign|creativ/i.test(s)) { energy = "create"; tag = "design"; }
   else if (/\bcall\b|\bmeet|\binterview/i.test(s)) { energy = "collab"; tag = "research"; }
@@ -579,14 +622,15 @@ export function parseTaskTokens(text: string, projects: { id: string; name: stri
   const dur = takeDuration(s);
   if (dur) { out.focusMin = dur.min; s = dur.rest; }
   const pw = s.match(/(^|\s)!(urgent|high|medium|med|low)\b/i);
-  if (pw) { const w = pw[2].toLowerCase(); out.priority = (w === "med" ? "medium" : w) as Priority; s = s.replace(pw[0], " "); }
-  else { const bang = s.match(/(^|\s)(!{1,3})(?=\s|$)/); if (bang) { out.priority = bang[2].length >= 3 ? "urgent" : bang[2].length === 2 ? "high" : "medium"; s = s.replace(bang[0], " "); } }
+  if (pw) { const w = pw[2].toLowerCase(); out.priority = (w === "med" ? "medium" : w) as Priority; s = cutMatch(s, pw); }
+  else { const bang = s.match(/(^|\s)(!{1,3})(?=\s|$)/); if (bang) { out.priority = bang[2].length >= 3 ? "urgent" : bang[2].length === 2 ? "high" : "medium"; s = cutMatch(s, bang); } }
   const due = takeDueWord(s);
   if (due) { out.dueDate = dayOffset(due.offset); s = due.rest; }
   const projM = s.match(/(^|\s)#([\w-]+)/);
-  if (projM) { const q = projM[2].toLowerCase(); const p = projects.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || projects.find((x) => x.name.toLowerCase().includes(q)); if (p) { out.projectId = p.id; s = s.replace(projM[0], " "); } }
+  if (projM) { const q = projM[2].toLowerCase(); const p = projects.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || projects.find((x) => x.name.toLowerCase().includes(q)); if (p) { out.projectId = p.id; s = cutMatch(s, projM); } }
   const asM = s.match(/(^|\s)@([\w-]+)/);
-  if (asM) { const q = asM[2].toLowerCase(); const m = members.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || members.find((x) => x.name.toLowerCase().includes(q)); if (m) { out.assigneeId = m.id; s = s.replace(asM[0], " "); } }
-  out.title = s.replace(/\s{2,}/g, " ").trim();
+  if (asM) { const q = asM[2].toLowerCase(); const m = members.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || members.find((x) => x.name.toLowerCase().includes(q)); if (m) { out.assigneeId = m.id; s = cutMatch(s, asM); } }
+  // gentler edges than capture: a title may well start with "-" or end in ":"
+  out.title = tidyTitle(s, /^[\s,;]+|[\s,;]+$/g);
   return out;
 }

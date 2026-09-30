@@ -4,6 +4,7 @@ import {
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
   DAY_START, DAY_END, nextDueDate, nextOccurrence, nextOccurrenceChildren,
   refreshClock, KANBO_TODAY, NOW_MIN, presetDate, todayISO, parseTaskTokens,
+  seriesAnchorDay,
 } from "./data";
 import type { Task } from "./types";
 
@@ -229,6 +230,15 @@ describe("nextDueDate monthly clamping", () => {
     // garbage in → today-based, never "NaN-NaN-NaN"
     expect(nextDueDate("not-a-date", "daily")).toBe("2026-01-02");
   });
+
+  it("ignores an anchor that isn't a number", () => {
+    // e.g. new Date(badValue).getDate() from stored data
+    refreshClock(new Date(2026, 8, 1, 9, 0));
+    expect(nextDueDate("2026-09-30", "monthly", NaN)).toBe("2026-10-30");
+    expect(nextDueDate("2026-09-30", "monthly", Infinity)).toBe("2026-10-30");
+    // rolled forward past today on its own day (31st), clamped to 30 Sep
+    expect(nextDueDate("2026-01-31", "monthly", NaN)).toBe("2026-09-30");
+  });
 });
 
 describe("nextOccurrence", () => {
@@ -273,6 +283,40 @@ describe("nextOccurrence", () => {
     expect(nextOccurrence(feb, "m2", 31).dueDate).toBe("2026-03-31");
   });
 
+  it("remembers a month-end series' day across short months without being told", () => {
+    // spawned occurrence after occurrence, as App does — no anchor passed in
+    refreshClock(new Date(2026, 0, 5, 9, 0));
+    let cur = task({ id: "r0", recurrence: "monthly", dueDate: "2026-01-31" });
+    const dues: string[] = [];
+    for (let i = 1; i <= 5; i++) { cur = nextOccurrence(cur, "r" + i); dues.push(cur.dueDate!); }
+    expect(dues).toEqual(["2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31", "2026-06-30"]);
+    expect(cur.originalDueDate).toBe("2026-01-31");
+  });
+
+  it("keeps a 28th series on the 28th, and follows a date the user moved", () => {
+    refreshClock(new Date(2026, 0, 5, 9, 0));
+    // payday on the 28th: 28 Feb is the end of the month, but the series' day is 28
+    let pay = task({ id: "p0", recurrence: "monthly", dueDate: "2026-01-28" });
+    pay = nextOccurrence(pay, "p1");
+    expect(pay.dueDate).toBe("2026-02-28");
+    expect(nextOccurrence(pay, "p2").dueDate).toBe("2026-03-28");
+    // someone moved this occurrence to the 15th: the series moves with it
+    const moved = task({ id: "x", recurrence: "monthly", dueDate: "2026-03-15", originalDueDate: "2026-01-31" });
+    const after = nextOccurrence(moved, "x2");
+    expect(after.dueDate).toBe("2026-04-15");
+    expect(after.originalDueDate).toBe("2026-03-15");
+  });
+
+  it("seriesAnchorDay only trusts originalDueDate for a date that may have been clamped", () => {
+    expect(seriesAnchorDay({ dueDate: "2026-02-28", originalDueDate: "2026-01-31" })).toBe(31);
+    expect(seriesAnchorDay({ dueDate: "2026-04-30", originalDueDate: "2026-01-31" })).toBe(31);
+    expect(seriesAnchorDay({ dueDate: "2026-02-27", originalDueDate: "2026-01-31" })).toBe(27);
+    expect(seriesAnchorDay({ dueDate: "2026-02-28", originalDueDate: "2026-01-20" })).toBe(28);
+    expect(seriesAnchorDay({ dueDate: "2026-02-28" })).toBe(28);
+    expect(seriesAnchorDay({})).toBeUndefined();
+    expect(seriesAnchorDay({ dueDate: "rubbish" })).toBeUndefined();
+  });
+
   it("carries child sub-tasks over, reset and re-parented", () => {
     refreshClock(new Date(2026, 0, 5, 9, 0));
     const parent = task({ id: "p1", recurrence: "weekly", dueDate: "2026-01-09", projectId: "p-launch", workspaceId: "ws-1" });
@@ -291,6 +335,23 @@ describe("nextOccurrence", () => {
     expect(clones[0].loggedHours).toBeUndefined();
     expect(clones[0].completedAt).toBeUndefined();
     expect(clones[1].dueDate).toBeUndefined();
+  });
+
+  it("leaves sub-tasks that repeat on their own to their own series", () => {
+    refreshClock(new Date(2026, 0, 5, 9, 0));
+    const parent = task({ id: "p1", recurrence: "monthly", dueDate: "2026-01-30" });
+    const kids = [
+      // a weekly check-in under the monthly parent: done once, and its own next
+      // occurrence was already spawned under the same parent
+      task({ id: "w1", parentId: "p1", recurrence: "weekly", status: "done", dueDate: "2026-01-09" }),
+      task({ id: "w2", parentId: "p1", recurrence: "weekly", status: "todo", dueDate: "2026-01-16" }),
+      task({ id: "c1", parentId: "p1", recurrence: "none", title: "Checklist item" }),
+      task({ id: "c2", parentId: "p1", title: "No recurrence field" }),
+    ];
+    const next = { ...nextOccurrence(parent, "tmp"), id: "p2" };
+    let n = 0;
+    const clones = nextOccurrenceChildren(kids, parent, next, () => "k" + (++n));
+    expect(clones.map((c) => c.title)).toEqual(["Checklist item", "No recurrence field"]);
   });
 });
 
@@ -447,6 +508,36 @@ describe("parseCapture phrases", () => {
       vi.doUnmock("../lib/supabase");
       vi.resetModules();
     }
+  });
+});
+
+describe("capture tokens are cut where they were found", () => {
+  it("keeps an earlier look-alike word in the title", () => {
+    expect(parseCapture("Review today's numbers today")!).toMatchObject({ title: "Review today's numbers", dueDate: dayOffset(0) });
+    expect(parseCapture("Prep tomorrow's agenda tomorrow")!).toMatchObject({ title: "Prep tomorrow's agenda", dueDate: dayOffset(1) });
+    expect(parseCapture("Send next week's rota next week")!).toMatchObject({ title: "Send next week's rota", dueDate: dayOffset(7) });
+    expect(parseCapture("Upload 30mb file 30m")!).toMatchObject({ title: "Upload 30mb file", dur: 30 });
+    expect(parseCapture("Chase asaparagus supplier asap")!).toMatchObject({ title: "Chase asaparagus supplier", priority: "high" });
+    expect(parseTaskTokens("Review today's numbers today")).toMatchObject({ title: "Review today's numbers", dueDate: dayOffset(0) });
+    expect(parseTaskTokens("Upload 30mb file 30m")).toMatchObject({ title: "Upload 30mb file", focusMin: 30 });
+    expect(parseTaskTokens("Fix !highway sign !high")).toMatchObject({ title: "Fix !highway sign", priority: "high" });
+  });
+
+  it("reads tokens in brackets or after a comma, and tidies what's left", () => {
+    expect(parseCapture("Write report (2h)")!).toMatchObject({ title: "Write report", dur: 120 });
+    expect(parseCapture("Standup (15m) today")!).toMatchObject({ title: "Standup", dur: 15, dueDate: dayOffset(0) });
+    expect(parseCapture("Book dentist [tomorrow]")!).toMatchObject({ title: "Book dentist", dueDate: dayOffset(1) });
+    expect(parseCapture("Draft deck (deep work)")!).toMatchObject({ title: "Draft deck", energy: "deep" });
+    expect(parseCapture("Call supplier,today")!).toMatchObject({ title: "Call supplier", dueDate: dayOffset(0) });
+    expect(parseCapture("Call supplier (by tomorrow)")!).toMatchObject({ title: "Call supplier", dueDate: dayOffset(1) });
+    expect(parseTaskTokens("Write report (2h), tomorrow")).toMatchObject({ title: "Write report", focusMin: 120, dueDate: dayOffset(1) });
+    expect(parseCapture("Practise 10,000 hours")!).toMatchObject({ title: "Practise 10,000 hours", dur: 30 });
+    // brackets that aren't a token's are left alone
+    expect(parseCapture("Fix parseDate() crash")!.title).toBe("Fix parseDate() crash");
+    expect(parseTaskTokens("Fix parseDate() crash tomorrow").title).toBe("Fix parseDate() crash");
+    expect(parseCapture("Plan (Q3) offsite")!.title).toBe("Plan (Q3) offsite");
+    // quick-add keeps a leading dash or trailing colon a title may need
+    expect(parseTaskTokens("-5% churn: tomorrow").title).toBe("-5% churn:");
   });
 });
 
