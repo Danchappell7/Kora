@@ -1,0 +1,65 @@
+# Supabase CLI settings for Kanbo's Edge Functions.
+#
+# Only per-function settings live here — everything else keeps the CLI's
+# defaults. `supabase functions deploy <name>` reads the verify_jwt value below,
+# so a deploy can't accidentally flip a function's gateway check.
+#
+#   verify_jwt = true   Supabase's gateway rejects requests that don't carry a
+#                       valid JWT (the app's anon key or a signed-in user's
+#                       token). The function then checks WHO the user is.
+#   verify_jwt = false  The function has no Supabase JWT to check and
+#                       authenticates the caller itself: public signed-out
+#                       forms, the daily cron job (x-cron-secret), the calendar
+#                       OAuth callback, Stripe's webhook and the metrics token.
+#
+# project_id is only a local label (Docker container names); deploys go to the
+# project given by --project-ref (htnchiljplrnjkwimgla).
+project_id = "kanbo"
+
+# ---- signed-in app features: gateway JWT check ON ----
+[functions.ai-assist]
+verify_jwt = true
+
+[functions.approve-access]
+verify_jwt = true
+
+[functions.create-checkout]
+verify_jwt = true
+
+[functions.customer-portal]
+verify_jwt = true
+
+[functions.delete-account]
+verify_jwt = true
+
+[functions.invite-member]
+verify_jwt = true
+
+[functions.notify]
+verify_jwt = true
+
+# ---- no JWT to verify: these authenticate callers themselves ----
+# signed-out "request early access" form (throttled per email / IP)
+[functions.request-access]
+verify_jwt = false
+
+# signed-out "forgot password" form (throttled per email / IP)
+[functions.reset-password]
+verify_jwt = false
+
+# called by pg_cron with the CRON_SECRET header; 401 for anyone else
+[functions.daily-reminders]
+verify_jwt = false
+
+# Google / Microsoft redirect back to /calendar/callback without a JWT;
+# every other action verifies the user's JWT inside the function
+[functions.calendar]
+verify_jwt = false
+
+# Stripe calls this; every event's signature is verified with STRIPE_WEBHOOK_SECRET
+[functions.stripe-webhook]
+verify_jwt = false
+
+# external dashboard sends its own METRICS_TOKEN, not a Supabase JWT
+[functions.metrics]
+verify_jwt = false

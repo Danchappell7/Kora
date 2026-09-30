@@ -10,10 +10,15 @@
 // only says which task and what happened — so this can't be used to send
 // arbitrary Kanbo-branded mail to arbitrary people.
 //
+// Volume cap: 150 calls per person per 10 minutes (room for bulk
+// reassignments), then 429 — in-app notifications still arrive via triggers.
+// Uses rate_limits from migration 0042; fails open without it.
+//
 // Deploy:  supabase functions deploy notify        (Verify JWT: ON)
 // Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL   (already set for reminders)
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { hit, KEY_PREFIX } from "../_shared/limits.ts";
 
 const COPY: Record<string, { subj: (t: string) => string; line: string }> = {
   assigned: { subj: (t) => `You were assigned: ${t}`, line: "assigned you a task" },
@@ -60,6 +65,8 @@ Deno.serve(async (req) => {
     if (!actorId) return json({ error: "sign in required" }, 401);
     const { data: ap } = await supa.from("profiles").select("first_name,last_name,approved,suspended").eq("id", actorId).maybeSingle();
     if (ap && (ap.suspended || ap.approved === false)) return json({ error: "not allowed" }, 403);
+    const volume = await hit(supa, `${KEY_PREFIX}notify:${actorId}`, { windowSec: 600, max: 150 });
+    if (!volume.allowed) return json({ error: "too many notifications — slow down", retryAfter: volume.retryAfter }, 429);
     const actorName = `${ap?.first_name ?? ""} ${ap?.last_name ?? ""}`.trim() || who?.user?.email || "Someone";
 
     // the task — title/recipients come from here, never from the request

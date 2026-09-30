@@ -7,15 +7,21 @@
 // (Authorization: Bearer <service-role-key>) or the CRON_SECRET secret
 // (x-cron-secret header). Anyone else gets 401.
 //
+// Idempotent per day: each person gets at most one digest per date, even if
+// the job is triggered twice (a retry, a manual run). Uses rate_limits from
+// migration 0042; without it every run sends (fails open).
+//
 // Deploy:  supabase functions deploy daily-reminders --no-verify-jwt
 // Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL
 //          optional: CRON_SECRET, REMINDER_TZ (default Europe/London)
-// Schedule (Supabase Dashboard → Integrations → Cron → new job, HTTP request):
+// Schedule: pg_cron + pg_net, with the secret read from Vault — the exact SQL
+//   is in DEPLOYMENT.md ("Schedule the daily reminder email").
 //   POST https://<project>.supabase.co/functions/v1/daily-reminders
 //   header x-cron-secret: <CRON_SECRET>      (daily, e.g. 07:30)
 // ============================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -90,7 +96,8 @@ Deno.serve(async (req) => {
     (byAssignee.get(a) ?? byAssignee.set(a, []).get(a)!).push(t);
   }
 
-  let sent = 0, skipped = 0, failed = 0;
+  let sent = 0, skipped = 0, failed = 0, already = 0;
+  await sweep(supa);
   for (const [userId, list] of byAssignee) {
     // respect Settings → Notifications → "Due-date reminders" email toggle; skip locked accounts
     const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended,approved").eq("id", userId).maybeSingle();
@@ -99,6 +106,9 @@ Deno.serve(async (req) => {
     const { data: u } = await supa.auth.admin.getUserById(userId);
     const email = u?.user?.email;
     if (!email) { skipped++; continue; }
+    // one digest per person per day, however many times the job runs
+    const dayKey = `${KEY_PREFIX}digest:${userId}:${today}`;
+    if (!(await hit(supa, dayKey, { windowSec: 36 * 3600 })).allowed) { already++; continue; }
 
     const sorted = list.sort((a, b) => a.due_date.localeCompare(b.due_date));
     const rows = sorted.slice(0, 50).map((t) => {
@@ -121,19 +131,30 @@ Deno.serve(async (req) => {
 
     // Resend allows ~2 requests/second on the default plan — pace + one retry on 429
     for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ from, to: email, subject: `${sorted.length} task${sorted.length === 1 ? "" : "s"} due on Kanbo`, html }),
-      });
+      let r: Response;
+      try {
+        r = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ from, to: email, subject: `${sorted.length} task${sorted.length === 1 ? "" : "s"} due on Kanbo`, html }),
+        });
+      } catch (e) {
+        // network error / timeout: count it, free today's slot and carry on
+        // with everyone else rather than failing the whole run
+        failed++; console.error("resend fetch", String((e as Error)?.message ?? e));
+        await release(supa, dayKey);
+        break;
+      }
       if (r.ok) { sent++; break; }
       if (r.status === 429 && attempt === 0) { await sleep(1500); continue; }
-      failed++; console.error("resend", r.status, await r.text().catch(() => "")); break;
+      failed++; console.error("resend", r.status, await r.text().catch(() => ""));
+      await release(supa, dayKey); // not sent — a re-run today may try again
+      break;
     }
     await sleep(550);
   }
 
-  return json({ sent, skipped, failed, people: byAssignee.size, tasks: tasks.length });
+  return json({ sent, skipped, failed, alreadySentToday: already, people: byAssignee.size, tasks: tasks.length });
 });
 
 function safeEq(a: string, b: string) {

@@ -1,123 +1,563 @@
 # Deploying Kanbo
 
-Everything code-side for production is in place (CI, tests, monitoring hooks,
-error handling, real-time sync, auth flows, responsive + a11y). The steps below
-are the ones that need **your accounts** — they can't be done from the codebase.
+This is the checklist for putting Kanbo live for whole teams. Work through the
+**Rollout runbook** from top to bottom. Each step has a link that opens the
+right page, and any SQL or Terminal command is in its own box so you can copy
+it in one go.
 
-## 1. Deploy to Vercel (frontend)
+- **Supabase project:** `htnchiljplrnjkwimgla`
+- **App:** <https://www.kanbo.co.uk>
+- **Time needed:** about 45 minutes, plus a quick test the next morning (step 5).
 
-The app is a static Vite SPA — any static host works; these are Vercel steps.
+Everything below fails safe. If a step hasn't been done yet, that feature
+stays switched off; nothing else breaks. For example, until migration 0042 has
+run, the new limits are simply skipped, and if an email can't be sent through
+Resend, password reset uses Supabase's own email instead.
 
-1. Push this repo to GitHub.
-2. In Vercel: **New Project → import the repo**. Framework preset = **Vite**
-   (the included `vercel.json` already sets build command, output dir, and SPA
-   rewrites).
-3. Add **Environment Variables** (Project → Settings → Environment Variables):
-   | Name | Value |
-   |---|---|
-   | `VITE_SUPABASE_URL` | `https://htnchiljplrnjkwimgla.supabase.co` |
-   | `VITE_SUPABASE_ANON_KEY` | your anon key |
-   | `VITE_SENTRY_DSN` | (optional) your Sentry DSN |
-   | `VITE_APP_ENV` | `production` |
-   Set these for **Production** (and a separate set for **Preview** if you want a
-   staging Supabase project — that's the env separation).
-4. Deploy. Add a custom domain under Project → Domains.
+---
 
-**Important:** after you have the deployed URL, set it in Supabase →
-**Authentication → URL Configuration → Site URL** (and add it to Redirect URLs),
-so email-confirm / password-reset / Google links return to the live app.
+## Before you start
 
-## 2. Supabase dashboard (auth polish)
+1. **The new app must be live.** Make sure the latest `main` shows **Ready** on
+   Vercel: <https://vercel.com/danchappell7-gmailcoms-projects/kora/deployments>.
+   The new emails link to a "Set your password" page that only exists in the
+   new app. To check it, open
+   <https://www.kanbo.co.uk/?token_hash=test&type=recovery>. You should see
+   Kanbo's set-password screen, not the normal home page. (If you press
+   Continue it will say the link isn't valid. That's expected for this test.)
+2. **Create a Supabase access token** for the Terminal commands at
+   <https://supabase.com/dashboard/account/tokens> (**Generate new token**,
+   name it "Kanbo deploy"). Wherever a command below says `<token>`, paste
+   this token instead. Treat it like a password.
+3. **Open Terminal in the project folder** and fetch the latest code:
 
-- **Email templates** (Authentication → Email Templates): brand the confirm /
-  reset / magic-link emails. Right now they use Supabase's defaults.
-- **SMTP** (Authentication → Emails → SMTP): connect Resend/Postmark/SES so mail
-  comes from your domain and isn't rate-limited. *(Required before real traffic.)*
-- **Google provider** (Authentication → Providers → Google): add your OAuth
-  client ID/secret + redirect URL to light up the "Continue with Google" button.
-- The password-reset flow is already built in the app — it just needs the Site
-  URL (above) set so the reset link lands back here.
-
-## 3. Sentry (error monitoring) — optional but recommended
-
-1. Create a Sentry project (React).
-2. Put its DSN in `VITE_SENTRY_DSN` (Vercel env).
-   The app already initializes Sentry, reports caught errors, attaches the user,
-   and has a top-level error boundary. With no DSN it's a silent no-op.
-
-## 4. CI
-
-`.github/workflows/ci.yml` runs typecheck + tests + build on every push/PR to
-`main`. No setup needed beyond pushing to GitHub. For auto-deploy, connecting the
-repo to Vercel (step 1) gives you preview deploys per PR automatically.
-
-## Edge Functions (AI + email reminders) — optional
-
-These add real LLM prioritization and daily reminder emails. The app works
-without them (AI falls back to a local heuristic; reminders simply don't send).
-Requires the Supabase CLI (`brew install supabase/tap/supabase`).
-
-**Real AI (`ai-assist`)** — Claude-backed task prioritization:
 ```bash
-supabase functions deploy ai-assist
-supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+cd ~/Downloads/kora-app && git pull
 ```
-Once deployed, "Auto-prioritize my day" and the ⌘K palette use Claude; otherwise
-they use the built-in heuristic automatically.
 
-**Daily reminders (`daily-reminders`)** — emails each user their due/overdue tasks:
+---
+
+## Rollout runbook
+
+### Step 1: Back up the database
+
+1. **Be on the Pro plan.** The Free plan pauses the project when it's quiet
+   (that's what took Kanbo offline on 29 September) and has no backups. You
+   can upgrade here: <https://supabase.com/dashboard/org/_/billing>
+2. **Confirm there's a recent backup:**
+   <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/database/backups/scheduled>.
+   You should see one dated today or yesterday. If you've only just upgraded,
+   wait for the first daily backup to appear before carrying on.
+
+### Step 2: Check migrations 0036–0041 are applied
+
+As of 30 September these are all live, so this is just a check. Open the SQL
+editor at <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>,
+paste the query below and press **Run**. Every row should say `ok`.
+
+```sql
+select check_name, case when ok then 'ok' else 'MISSING' end as status
+from (values
+  ('0036 recurrence options', exists (select 1 from pg_constraint where conname = 'tasks_recurrence_check' and pg_get_constraintdef(oid) like '%weekdays%')),
+  ('0037 notification settings', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'notify_prefs')),
+  ('0038 task history', to_regclass('public.task_events') is not null),
+  ('0039 project archive', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'projects' and column_name = 'archived_at')),
+  ('0040 comment threads', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'comments' and column_name = 'parent_id')),
+  ('0041 security hardening', to_regclass('public.approved_domains') is not null
+                              and to_regprocedure('public.can_act()') is not null
+                              and exists (select 1 from pg_trigger where tgname = 'trg_before_user_delete'))
+) as t(check_name, ok);
+```
+
+If a row says `MISSING`, open that file in `supabase/migrations/`, copy the
+whole file into a new SQL editor tab and press **Run**. They're all safe to
+re-run, **except `0026_access_requests.sql`. Never re-run 0026 as it is**,
+because it would approve everyone who is waiting.
+
+### Step 3: Email sending and secrets
+
+**3a. Check the sending domain in Resend.** Open <https://resend.com/domains>.
+`kanbo.co.uk` should say **Verified**. If it doesn't, Resend will only deliver
+to your own address, and colleagues will never get invite or reset emails.
+Add the DNS records Resend shows at GoDaddy, then wait for it to verify.
+
+**3b. Generate a cron secret.** This is a long random password that only the
+daily reminder job knows. Run the command below and copy what it prints. You'll
+paste it twice: once in 3c and once in step 5.
+
 ```bash
-supabase functions deploy daily-reminders --no-verify-jwt
-supabase secrets set RESEND_API_KEY=re_...           # resend.com
-supabase secrets set REMINDER_FROM="Kanbo <no-reply@yourdomain.com>"
-supabase secrets set APP_URL=https://your-app.vercel.app
+openssl rand -hex 32
 ```
-Then schedule it daily (Supabase Dashboard → Database → Cron, or pg_cron) — the
-exact SQL is in the header comment of `supabase/functions/daily-reminders/index.ts`.
 
-## Billing (Stripe) — 7-day trial then Personal/Team plans
+**3c. Set the secrets.** Go to
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/secrets>,
+choose **Add new secret** for each row, then **Save**. Some may already be
+there. If so, just check the value.
 
-The trial works with no setup (every account gets 7 days). To actually charge,
-connect Stripe:
+| Name | Value | Notes |
+|---|---|---|
+| `RESEND_API_KEY` | `re_…` from <https://resend.com/api-keys> | Probably already set |
+| `REMINDER_FROM` | `Kanbo <no-reply@kanbo.co.uk>` | Must use the verified domain from 3a |
+| `APP_URL` | `https://www.kanbo.co.uk` | No slash at the end |
+| `ANTHROPIC_API_KEY` | `sk-ant-…` from <https://console.anthropic.com/settings/keys> | Powers the AI features |
+| `CRON_SECRET` | the string from 3b | **New.** Guards the daily reminder email |
+| `ADMIN_NOTIFY_EMAIL` | e.g. `danchappell7@gmail.com` | Optional. Who gets "new access request" emails. Every platform admin gets them anyway; separate several addresses with commas |
+| `AI_DAILY_LIMIT` | `200` | Optional. AI requests per person per day (UK time). Default 200 |
 
-1. **Stripe products** — in the Stripe Dashboard create two recurring prices:
-   a **Personal** monthly price and a **Team** monthly price (set as *per-seat* /
-   "per unit"). Copy both **price IDs** (`price_...`).
-2. **Deploy the functions:**
-   ```bash
-   supabase functions deploy create-checkout
-   supabase functions deploy customer-portal
-   supabase functions deploy stripe-webhook --no-verify-jwt
-   ```
-3. **Set secrets:**
-   ```bash
-   supabase secrets set STRIPE_SECRET_KEY=sk_live_...
-   supabase secrets set STRIPE_PRICE_PERSONAL=price_...
-   supabase secrets set STRIPE_PRICE_TEAM=price_...
-   supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...
-   ```
-4. **Webhook** — in Stripe → Developers → Webhooks, add the `stripe-webhook`
-   function URL and subscribe to `checkout.session.completed`,
-   `customer.subscription.updated`, `customer.subscription.deleted`. Put the
-   signing secret in `STRIPE_WEBHOOK_SECRET` (step 3).
-5. Run migration `0009_billing.sql`.
+You don't need to set `SUPABASE_URL` or the Supabase keys. Supabase adds
+those automatically.
 
-Until Stripe is connected, "Choose plan" shows a friendly "checkout isn't
-connected yet" message and the trial still counts down. Team plans bill for the
-number of active workspace members (seats) automatically.
+### Step 4: Deploy the edge functions
 
-## Database migrations
+Run each command below in Terminal, one at a time, replacing `<token>` with
+the token from "Before you start". Each one ends with **Deployed Function**.
+The flags matter: `--no-verify-jwt` goes **only** on `request-access`,
+`reset-password`, `daily-reminders` and `calendar`, the functions that are
+called without a signed-in user. The same settings are recorded in
+`supabase/config.toml`.
 
-Apply `supabase/migrations/*.sql` in order in the Supabase SQL editor (or
-`supabase db push`). `0001`–`0005` are already applied on your project; re-running
-them is safe (they use `if not exists` / `add table`).
+`invite-member` is new. It emails people when a team owner or admin invites
+them.
 
-## Local development
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy invite-member --project-ref htnchiljplrnjkwimgla
+```
+
+`ai-assist` now has per-person daily limits and blocks unapproved or
+suspended accounts.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy ai-assist --project-ref htnchiljplrnjkwimgla
+```
+
+`approve-access` handles admin approvals. It now sends link-scanner-safe
+"set your password" emails.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy approve-access --project-ref htnchiljplrnjkwimgla
+```
+
+`notify` sends assignment, mention and comment emails.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy notify --project-ref htnchiljplrnjkwimgla
+```
+
+`delete-account` is redeployed so the live copy matches the code.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy delete-account --project-ref htnchiljplrnjkwimgla
+```
+
+`request-access` backs the public "request early access" form, so it runs
+**without** a JWT check.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy request-access --project-ref htnchiljplrnjkwimgla --no-verify-jwt
+```
+
+`reset-password` backs the public "Forgot password?" form, so it also runs
+**without** a JWT check.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy reset-password --project-ref htnchiljplrnjkwimgla --no-verify-jwt
+```
+
+`daily-reminders` is called by the scheduled job using `CRON_SECRET`, so it
+runs **without** a JWT check.
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy daily-reminders --project-ref htnchiljplrnjkwimgla --no-verify-jwt
+```
+
+Only deploy `calendar` if you've set up Google or Microsoft calendar
+connections (see `CALENDAR_SETUP.md`). It also runs **without** a JWT check.
+It works with the app as it is today: connecting a calendar behaves exactly as
+before. It also has a safer way to finish connecting, which the app will start
+using in a later update (see **Calendar sync** under Reference).
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy calendar --project-ref htnchiljplrnjkwimgla --no-verify-jwt
+```
+
+To check it worked, open
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions>. Each
+function above should show an update from a few minutes ago. Then run this
+command. It should print `401`, which means strangers can't trigger the
+reminder emails:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://htnchiljplrnjkwimgla.supabase.co/functions/v1/daily-reminders
+```
+
+### Step 5: Schedule the daily reminder email
+
+Do each part in the SQL editor
+(<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>). Paste
+one box, press **Run**, then do the next.
+
+**5a. Switch on the scheduler.** These are safe to run even if they're already
+on. (You can also do this at
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/database/extensions>
+by switching on `pg_cron` and `pg_net`.)
+
+```sql
+create extension if not exists pg_cron;
+create extension if not exists pg_net with schema extensions;
+```
+
+**5b. Remove any old reminder job.** An old job doesn't send the secret, so it
+would now fail every day.
+
+```sql
+select cron.unschedule(jobid) from cron.job where command ilike '%daily-reminders%';
+```
+
+**5c. Store the cron secret in the Vault.** Replace
+`PASTE-THE-CRON-SECRET-HERE` with the string from step 3b, keeping the quotes.
+
+```sql
+delete from vault.secrets where name = 'kanbo_cron_secret';
+select vault.create_secret('PASTE-THE-CRON-SECRET-HERE', 'kanbo_cron_secret', 'x-cron-secret header for the daily-reminders function');
+```
+
+**5d. Schedule the job.** The scheduler runs on UTC, so `30 6 * * *` means
+07:30 in UK summer time and 06:30 in winter. Use `30 7 * * *` if you'd rather
+send at 07:30 during the winter.
+
+```sql
+select cron.schedule(
+  'kanbo-daily-reminders',
+  '30 6 * * *',
+  $$
+  select net.http_post(
+    url := 'https://htnchiljplrnjkwimgla.supabase.co/functions/v1/daily-reminders',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'kanbo_cron_secret')
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 120000
+  );
+  $$
+);
+```
+
+**5e. Check it the morning after.** Run the query below. The latest `status`
+should be `succeeded`. You can also see the job at
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/integrations/cron/jobs>.
+
+```sql
+select start_time, status, return_message
+from cron.job_run_details
+where jobid = (select jobid from cron.job where jobname = 'kanbo-daily-reminders')
+order by start_time desc limit 5;
+```
+
+Then open the function's logs at
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/daily-reminders/logs>.
+A good run returns something like `{"sent":12,"skipped":1,"failed":0,…}`. A
+`401` means the Vault secret and the `CRON_SECRET` secret don't match. Redo 5c
+with the exact same string.
+
+### Step 6: Run migration 0042
+
+In a new SQL editor tab
+(<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>), paste
+the whole of `supabase/migrations/0042_rollout_hardening.sql` and press
+**Run**. It's safe to re-run. It adds:
+
+- the tables the functions use for limits: one reset or request email per
+  address per minute, the daily AI allowance, and one reminder email per
+  person per day
+- the remaining security fixes
+
+### Step 7: Turn on "Confirm email"
+
+Do these parts **in this order**. Without 7a, confirmation emails never
+arrive and new people can't get in.
+
+**7a. Send Supabase's own emails through Resend (custom SMTP).** Go to
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/smtp>,
+switch on **Enable custom SMTP** and fill in:
+
+| Field | Value |
+|---|---|
+| Sender email | `no-reply@kanbo.co.uk` |
+| Sender name | `Kanbo` |
+| Host | `smtp.resend.com` |
+| Port | `465` |
+| Username | `resend` |
+| Password | a Resend API key. Create one called "Supabase SMTP" at <https://resend.com/api-keys> |
+
+**7b. Raise the sign-in limits for shared office networks.** A whole office
+often shares one internet address, so on Monday morning everyone can look like
+the same person. Go to
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/rate-limits>
+and set:
+
+| Setting | Value |
+|---|---|
+| Emails sent per hour | `100` |
+| Sign-ups and sign-ins (per 5 min, per IP) | `150` |
+| Token verifications (per 5 min, per IP) | `150` |
+| Token refreshes (per 5 min, per IP) | `1800` |
+
+**7c. Make email links last 24 hours.** Go to
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/providers>,
+open **Email** and set **Email OTP Expiration** to `86400`. This is the longest
+Supabase allows. If someone's link does expire, **Sign in → Forgot password?**
+sends them a fresh one.
+
+**7d. Make Supabase's own emails safe from link scanners (recommended).**
+Company email filters such as Microsoft Safe Links open links before the person
+does, which uses up one-time links. Kanbo's own emails already avoid this. To
+make Supabase's built-in emails do the same, go to
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/templates>
+and replace the message body of these three templates. Do **Confirm signup**
+before 7e: once "Confirm email" is on, it's the email every new colleague
+gets, and without this change their company's mail filter can use up the
+link before they click it.
+
+For **Confirm signup**:
+
+```html
+<h2>Confirm your email for Kanbo</h2>
+<p>Press the button below to confirm your email address and finish signing up.</p>
+<p><a href="{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=email">Confirm your email</a></p>
+<p>If you didn't sign up for Kanbo, you can ignore this email.</p>
+```
+
+For **Reset password**:
+
+```html
+<h2>Reset your Kanbo password</h2>
+<p>Press the button below to choose a new password. You'll be signed straight in.</p>
+<p><a href="{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=recovery">Set a new password</a></p>
+<p>If you didn't ask for this, you can ignore this email. Your password won't change.</p>
+```
+
+For **Invite user**, which is only used if you invite someone from the
+Supabase dashboard:
+
+```html
+<h2>You've been invited to Kanbo</h2>
+<p>Accept the invite, choose a password and you'll go straight in.</p>
+<p><a href="{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=invite">Accept invite &amp; set password</a></p>
+```
+
+While you're in Authentication, open **URL Configuration** at
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/url-configuration>.
+**Site URL** should be `https://www.kanbo.co.uk`, and **Redirect URLs** should
+include `https://www.kanbo.co.uk/**` and `https://kanbo.co.uk/**`.
+
+**7e. Turn it on.** Go to
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/providers>,
+open **Email**, switch on **Confirm email** and press **Save**. Then sign up
+with a spare address. You should get a confirmation email within a minute, and
+the sign-up screen should tell you to check your inbox.
+
+### Step 8: Approve your company's email domain
+
+Anyone who signs up with an approved domain gets in straight away, with no
+waiting for approval.
+
+The easiest way: go to <https://www.kanbo.co.uk/admin>, open **Approved
+domains** and add your company's domain (for example `yourcompany.co.uk`).
+
+Or use the SQL editor. Change the domain first:
+
+```sql
+insert into public.approved_domains (domain) values ('yourcompany.co.uk') on conflict (domain) do nothing;
+```
+
+Then let in anyone from those domains who signed up earlier and is still
+waiting:
+
+```sql
+update public.profiles set approved = true
+where approved = false and not suspended
+  and split_part(lower(email), '@', 2) in (select domain from public.approved_domains);
+```
+
+### Step 9: Final check
+
+Paste this into the SQL editor and press **Run**. Every row should say `ok`.
+Anything else tells you which step to revisit.
+
+```sql
+create or replace function pg_temp.kanbo_n(q text) returns bigint language plpgsql as $f$
+declare r bigint;
+begin
+  execute q into r;
+  return r;
+exception when others then
+  return null;  -- table / schema not there yet
+end $f$;
+
+select check_name,
+       case when ok then 'ok' else 'CHECK: ' || fix end as status,
+       detail
+from (values
+  ('Migrations 0036–0041',
+     to_regclass('public.approved_domains') is not null and to_regclass('public.task_events') is not null,
+     'step 2', ''),
+  ('Migration 0042 recorded',
+     coalesce(pg_temp.kanbo_n('select count(*) from public.schema_migrations where version = ''0042''') > 0, false),
+     'step 6', ''),
+  ('Throttle table (rate_limits)',
+     pg_temp.kanbo_n('select count(*) from public.rate_limits') is not null,
+     'step 6', coalesce(pg_temp.kanbo_n('select count(*) from public.rate_limits')::text || ' rows', '')),
+  ('AI allowance table (ai_usage)',
+     pg_temp.kanbo_n('select count(*) from public.ai_usage') is not null,
+     'step 6', coalesce(pg_temp.kanbo_n('select coalesce(sum(calls),0) from public.ai_usage where day = current_date')::text || ' AI calls today', '')),
+  ('Team tags (tags.workspace_id)',
+     exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'tags' and column_name = 'workspace_id'),
+     'step 6', ''),
+  ('Daily reminder job scheduled',
+     coalesce(pg_temp.kanbo_n('select count(*) from cron.job where jobname = ''kanbo-daily-reminders'' and active') = 1, false),
+     'step 5d', ''),
+  ('No old reminder jobs left',
+     coalesce(pg_temp.kanbo_n('select count(*) from cron.job where command ilike ''%daily-reminders%'' and jobname is distinct from ''kanbo-daily-reminders''') = 0, true),
+     'step 5b', ''),
+  ('Cron secret stored in Vault',
+     coalesce(pg_temp.kanbo_n('select count(*) from vault.decrypted_secrets where name = ''kanbo_cron_secret'' and length(decrypted_secret) >= 32') = 1, false),
+     'step 5c', ''),
+  ('Approved company domains',
+     (select count(*) from public.approved_domains) > 0,
+     'step 8', (select string_agg(domain, ', ') from public.approved_domains)),
+  ('Nobody on an approved domain stuck waiting',
+     not exists (select 1 from public.profiles p where p.approved = false and not p.suspended
+                   and split_part(lower(p.email), '@', 2) in (select domain from public.approved_domains)),
+     'step 8 (second query)', ''),
+  ('Platform admins (get access-request emails)',
+     exists (select 1 from public.profiles where is_admin and not suspended),
+     'mark an admin in /admin', (select string_agg(email, ', ') from public.profiles where is_admin and not suspended))
+) as t(check_name, ok, fix, detail);
+```
+
+The secrets, the SMTP settings and the "Confirm email" switch can't be seen
+from SQL. Step 10 tests those.
+
+### Step 10: Five-minute smoke test
+
+1. **Invite:** in Kanbo, go to **Team → Invite** and invite a personal email
+   address. An email titled "*Your name* invited you to *workspace name* on
+   Kanbo" should arrive. Its button should open the set-password screen, and after choosing
+   a password you should land in the workspace.
+2. **Password reset:** sign out, then choose **Sign in → Forgot password?**.
+   One email should arrive and its link should work. Press the send button
+   twice quickly: you should still get only one email.
+3. **Request access:** signed out, use the landing page's request form with
+   another address. The admins should receive "New early-access request".
+4. **Sign up on your company domain:** in a private window, sign up with an
+   address on a domain from step 8. A "Confirm your email" email should
+   arrive. Its button should open Kanbo with a **Continue** button, and after
+   pressing it you should be signed straight in, with no waiting for approval.
+5. **AI:** go to **Analytics**, type a question in the **Ask Kanbo** box and
+   press **Ask**. You should get an answer. The next day,
+   `select * from public.ai_usage order by day desc limit 10;` shows usage per
+   person.
+6. If anything misbehaves, the function's logs say why:
+   `https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/<function-name>/logs`
+   (for example `…/functions/invite-member/logs`).
+
+---
+
+## Reference
+
+### Which functions check for a signed-in user
+
+This matches `supabase/config.toml`. Deploy the "no" rows with
+`--no-verify-jwt`.
+
+| Function | Gateway JWT check | Who calls it |
+|---|---|---|
+| `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify` | yes | the signed-in app |
+| `request-access`, `reset-password` | no | signed-out forms (throttled per email and per network) |
+| `daily-reminders` | no | pg_cron with `x-cron-secret` (anyone else gets 401) |
+| `calendar` | no | Google/Microsoft redirect back without a JWT. Every other action checks the user itself |
+| `stripe-webhook` | no | Stripe, checked by signature |
+| `metrics` | no | an external dashboard with `METRICS_TOKEN` |
+
+### Vercel (the app)
+
+These are set under Project → Settings → Environment Variables at
+<https://vercel.com/danchappell7-gmailcoms-projects/kora/settings/environment-variables>.
+The app redeploys automatically on every push to `main`.
+
+| Name | Value |
+|---|---|
+| `VITE_SUPABASE_URL` | `https://htnchiljplrnjkwimgla.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | the project's anon key |
+| `VITE_SENTRY_DSN` | optional, for error monitoring |
+| `VITE_APP_ENV` | `production` |
+| `VITE_BILLING_ENABLED` | leave unset to keep billing off |
+| `VITE_DISABLE_SIGNUP` | set to `true` for invite-only |
+| `VITE_ENABLE_GOOGLE` | set only once the Google provider is configured in Supabase |
+
+### Billing (Stripe), when you switch it on
+
+1. In Stripe, create a monthly **Personal** price and a per-seat **Team**
+   price, and copy both `price_…` IDs.
+2. Add the secrets `STRIPE_SECRET_KEY`, `STRIPE_PRICE_PERSONAL`,
+   `STRIPE_PRICE_TEAM` and `STRIPE_WEBHOOK_SECRET` at
+   <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/secrets>.
+3. Deploy the three billing functions:
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy create-checkout --project-ref htnchiljplrnjkwimgla
+```
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy customer-portal --project-ref htnchiljplrnjkwimgla
+```
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy stripe-webhook --project-ref htnchiljplrnjkwimgla --no-verify-jwt
+```
+
+4. In Stripe, go to **Developers → Webhooks** and add
+   `https://htnchiljplrnjkwimgla.supabase.co/functions/v1/stripe-webhook` for
+   `checkout.session.completed`, `customer.subscription.updated` and
+   `customer.subscription.deleted`.
+5. Set `VITE_BILLING_ENABLED=true` in Vercel and redeploy.
+
+### Calendar sync
+
+The Google and Microsoft set-up is in `CALENDAR_SETUP.md`. Deploy `calendar`
+with `--no-verify-jwt` (step 4). The Google/Microsoft redirect URL is
+`https://htnchiljplrnjkwimgla.supabase.co/functions/v1/calendar/callback`.
+
+The old way of connecting could let someone connect a colleague's calendar
+to their own account by sending them the Google approval link. Switch it off
+once the app update that finishes calendar connections itself is live. You
+can tell the update is in when `grep -n "finish=app" src/data/store.ts`, run
+in the project folder, prints a line, and connecting a calendar on
+www.kanbo.co.uk still shows "Calendar connected". Then add this secret at
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/secrets>:
+
+| Name | Value |
+|---|---|
+| `CALENDAR_APP_FINISH_ONLY` | `true` |
+
+Don't add it before that app update is live, or connecting a calendar will
+fail with "Couldn't connect that calendar".
+
+### Local development
 
 ```bash
 npm install
-cp .env.example .env   # fill in Supabase values (or leave blank for demo mode)
+```
+
+```bash
+cp .env.example .env
+```
+
+```bash
 npm run dev
 ```
 
-Scripts: `npm test` (watch), `npm run test:run`, `npm run build`, `npm run ci`.
+Checks before pushing: `npx tsc --noEmit -p .`, `npx vitest run` and
+`npx vite build`. If the Supabase values in `.env` are left blank, the app
+runs in demo mode.
