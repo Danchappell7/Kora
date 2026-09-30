@@ -8,7 +8,7 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
 import { ACCENTS, accentSwatch, type Appearance, type TextSize } from "../lib/appearance";
-import { AVATAR_ACCEPT, prepareAvatarFile, removeAvatarObjects } from "../lib/avatarUpload";
+import { AVATAR_ACCEPT, avatarObjectPath, prepareAvatarFile, removeAvatarObjects } from "../lib/avatarUpload";
 import { PASSWORD_MIN, passwordIssue, friendlyPasswordError, friendlySignOutError } from "../lib/accountSecurity";
 
 const PRONOUN_SUGGESTIONS = ["she/her", "he/him", "they/them", "she/they", "he/they", "ze/zir"];
@@ -42,6 +42,9 @@ const NOTIF_ROWS: { key: string; label: string }[] = [
 ];
 
 const DELETE_WORD = "DELETE";
+// Set in user_metadata once a Google-only account adds a password: Supabase
+// doesn't add "email" to app_metadata.providers when it does.
+const PASSWORD_SET_FLAG = "kanbo_password_set";
 
 export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance }: {
   open: boolean;
@@ -137,9 +140,11 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     if (!open || !supabase) return;
     let on = true;
     supabase.auth.getSession().then(({ data }) => {
-      const meta = data.session?.user?.app_metadata as { provider?: string; providers?: string[] } | undefined;
+      const u = data.session?.user;
+      const meta = u?.app_metadata as { provider?: string; providers?: string[] } | undefined;
       const providers = meta?.providers ?? (meta?.provider ? [meta.provider] : []);
-      if (on) setHasPassword(providers.length ? providers.includes("email") : null);
+      const setHere = u?.user_metadata?.[PASSWORD_SET_FLAG] === true;
+      if (on) setHasPassword(providers.length ? providers.includes("email") || setHere : null);
     }).catch(() => { /* keep the default wording */ });
     return () => { on = false; };
   }, [open]);
@@ -173,13 +178,29 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     }
   };
 
+  // The photo the profile points at right now. Profiles aren't live-synced,
+  // so another tab or device may have changed it since this dialog opened
+  // (and removed the one we were shown). undefined = couldn't tell.
+  const storedAvatarUrl = async (): Promise<string | null | undefined> => {
+    if (!supabase || !uid) return undefined;
+    try {
+      const { data, error: err } = await supabase.from("profiles").select("avatar_url").eq("id", uid).maybeSingle();
+      if (err || !data) return undefined;
+      return (data as { avatar_url: string | null }).avatar_url ?? null;
+    } catch { return undefined; }
+  };
+
   const save = async () => {
     setSaving(true); setError(null);
     try {
-      await onSave({ firstName: firstName.trim(), lastName: lastName.trim(), pronouns: pronouns.trim(), avatarUrl });
-      // the profile now points at `avatarUrl`: the photo it replaced and any
+      const stored = await storedAvatarUrl();
+      // photo untouched here: keep whatever is stored now rather than
+      // pointing the profile back at a photo another tab replaced
+      const nextAvatar = avatarUrl === initial.avatarUrl && stored !== undefined ? stored : avatarUrl;
+      await onSave({ firstName: firstName.trim(), lastName: lastName.trim(), pronouns: pronouns.trim(), avatarUrl: nextAvatar });
+      // the profile now points at `nextAvatar`: the photo it replaced and any
       // other uploads from this session are unused
-      const unused = [...uploadsRef.current, initial.avatarUrl].filter((u) => u && u !== avatarUrl);
+      const unused = [...uploadsRef.current, initial.avatarUrl, stored].filter((u) => u && u !== nextAvatar);
       uploadsRef.current = [];
       void removeAvatarObjects(unused, uid);
       onClose();
@@ -192,6 +213,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
 
   const longEnough = pw.length >= PASSWORD_MIN;
   const mismatch = pw2.length > 0 && pw2 !== pw && (pwTried || pw2.length >= pw.length);
+  // submitted with the confirmation left empty
+  const confirmMissing = pwTried && longEnough && pw2.length === 0;
+  const confirmHint = mismatch ? "The two passwords don't match." : confirmMissing ? "Type your new password again to confirm it." : null;
   // after a panel swaps back to its trigger button, put focus on that button
   const focusSoon = (el: React.RefObject<HTMLElement>) => { window.setTimeout(() => el.current?.focus(), 0); };
   // Focus a control inside a Collapse once it has mounted. preventScroll stops
@@ -223,9 +247,10 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     if (problem) {
       // length and mismatch are already spelled out next to their fields;
       // anything else (too long, only spaces) goes in the error line
-      if (!longEnough) pwInputRef.current?.focus();
-      else if (pw2 !== pw) pw2InputRef.current?.focus();
-      else { setPwError(problem); pwInputRef.current?.focus(); }
+      // (focus after the re-render, so the field's hint is read out with it)
+      if (!longEnough) focusSoon(pwInputRef);
+      else if (pw2 !== pw) focusSoon(pw2InputRef);
+      else { setPwError(problem); focusSoon(pwInputRef); }
       return;
     }
     setPwBusy(true);
@@ -234,24 +259,32 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     catch (err) { failure = err instanceof Error ? err.message : String(err); }
     setPwBusy(false);
     if (failure != null) { setPwError(friendlyPasswordError(failure)); return; }
+    // remember that this Google account now has a password too (best effort)
+    if (hasPassword === false && supabase) void supabase.auth.updateUser({ data: { [PASSWORD_SET_FLAG]: true } }).catch(() => { /* wording only */ });
     setPwOpen(false); setPw(""); setPw2(""); setShowPw(false); setPwTried(false); setHasPassword(true);
     setPwDone("Password updated. Use it the next time you sign in.");
     focusSoon(pwButtonRef);
   };
 
   const signOutEverywhere = async () => {
+    if (!supabase || signingOut) return; // the row isn't offered in demo mode
     setSigningOut(true); setSignOutError(null);
+    // Photos uploaded in this visit but never saved go first, while this
+    // session can still delete them: once signed out, the storage policy
+    // refuses and they'd be left in the public bucket.
+    const unused = uploadsRef.current;
+    uploadsRef.current = [];
+    await removeAvatarObjects(unused, uid);
     try {
-      if (supabase) {
-        // scope "global" revokes every refresh token for this account, so
-        // other browsers and phones are signed out when their session next
-        // refreshes (within the hour at most)
-        const { error: err } = await supabase.auth.signOut({ scope: "global" });
-        if (err) throw err;
-      }
-      discardUploads();
+      // scope "global" revokes every refresh token for this account, so
+      // other browsers and phones are signed out when their session next
+      // refreshes (within the hour at most)
+      const { error: err } = await supabase.auth.signOut({ scope: "global" });
+      if (err) throw err;
       await auth.signOut(); // local state; the app returns to the sign-in page
     } catch (err) {
+      // still here: the preview can't point at a photo that was just removed
+      if (avatarUrl && unused.includes(avatarUrl)) setAvatarUrl(initial.avatarUrl);
       setSignOutError(friendlySignOutError(err instanceof Error ? err.message : String(err)));
       setSigningOut(false);
     }
@@ -261,8 +294,23 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const deleteAccount = async () => {
     if (!deleteConfirmed || deleting) return;
     setDeleting(true); setDeleteError(null);
+    // The face photo lives in a public bucket and doesn't go with the account,
+    // so remove it (and anything uploaded in this visit) while this session
+    // can. Only this person's own "<uid>/avatar-*" files are touched.
+    const photos = [...uploadsRef.current, initial.avatarUrl, avatarUrl];
+    uploadsRef.current = [];
+    await removeAvatarObjects(photos, uid);
     try { await onDeleteAccount(); }
-    catch (err) { setDeleteError(err instanceof Error ? err.message : "Couldn't delete your account."); setDeleting(false); }
+    catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "Couldn't delete your account.";
+      setDeleting(false);
+      if (avatarObjectPath(avatarUrl, uid)) setAvatarUrl(null);
+      if (!avatarObjectPath(initial.avatarUrl, uid)) { setDeleteError(message); return; }
+      // the account is still here but its saved photo is gone: stop the
+      // profile pointing at it so nobody sees a broken image
+      try { await onSave({ firstName: initial.firstName, lastName: initial.lastName, pronouns: initial.pronouns, avatarUrl: null }); } catch { /* shown below either way */ }
+      setDeleteError(`${message} Your profile photo was already removed; you can add it again.`);
+    }
   };
 
   const previewName = [firstName, lastName].filter(Boolean).join(" ") || email;
@@ -380,9 +428,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
               <label htmlFor="kanbo-confirm-password" style={{ ...labelStyle, marginTop: 14 }}>Confirm new password</label>
               <input ref={pw2InputRef} id="kanbo-confirm-password" name="confirm-password" type={showPw ? "text" : "password"} autoComplete="new-password"
                 value={pw2} onChange={(e) => { setPw2(e.target.value); setPwError(null); }}
-                aria-invalid={mismatch || undefined} aria-describedby={mismatch ? "kanbo-confirm-password-hint" : undefined}
+                aria-invalid={confirmHint ? true : undefined} aria-describedby={confirmHint ? "kanbo-confirm-password-hint" : undefined}
                 style={inputStyle} />
-              {mismatch && <p id="kanbo-confirm-password-hint" style={{ ...hintStyle, color: "var(--prio-urgent)" }}>The two passwords don't match.</p>}
+              {confirmHint && <p id="kanbo-confirm-password-hint" style={{ ...hintStyle, color: "var(--prio-urgent)" }}>{confirmHint}</p>}
               {pwError && <p role="alert" style={{ ...hintStyle, marginTop: 10, color: "var(--prio-urgent)", fontSize: 12.5 }}>{pwError}</p>}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
                 <button type="button" className="btn btn-ghost" onClick={closePassword} disabled={pwBusy}>Cancel</button>
@@ -393,31 +441,36 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
             </form>
           </Collapse>
 
-          <div style={{ ...securityRow, marginTop: 16 }}>
-            <span style={securityText}>
-              <span style={rowTitle}>Sign out of all devices</span>
-              <span style={rowSub}>Lost a laptop or phone, or used a shared computer? End every session, including this one.</span>
-            </span>
-            {!confirmSignOut && (
-              <button ref={signOutButtonRef} className="btn btn-ghost" onClick={openSignOut} style={{ flexShrink: 0 }}>
-                <Icon name="logout" size={15} /> Sign out everywhere
-              </button>
-            )}
-          </div>
-          <Collapse open={confirmSignOut}>
-            <div ref={signOutPanelRef} role="group" aria-label="Confirm signing out of all devices" style={{ marginTop: 12, padding: 14, borderRadius: 12, border: "1px solid var(--hairline)", background: "var(--fill-1, var(--surface))" }}>
-              <p style={{ margin: "0 0 12px", fontSize: 13, lineHeight: 1.5, color: "var(--ink-2)" }}>
-                You'll be signed out on every browser and device, including this one. Other devices lose access within the hour at the latest. Your work isn't affected.
-              </p>
-              {signOutError && <p role="alert" style={{ margin: "0 0 12px", fontSize: 12.5, color: "var(--prio-urgent)" }}>{signOutError}</p>}
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                <button ref={signOutCancelRef} className="btn btn-ghost" onClick={() => { setConfirmSignOut(false); focusSoon(signOutButtonRef); }} disabled={signingOut}>Cancel</button>
-                <button className="btn btn-accent" onClick={signOutEverywhere} disabled={signingOut} aria-busy={signingOut || undefined} style={{ opacity: signingOut ? 0.6 : 1 }}>
-                  <Icon name="logout" size={15} /> {signingOut ? "Signing out…" : "Sign out everywhere"}
-                </button>
+          {/* demo mode has no sessions to end (App hides Sign out there too) */}
+          {auth.configured && (
+            <>
+              <div style={{ ...securityRow, marginTop: 16 }}>
+                <span style={securityText}>
+                  <span style={rowTitle}>Sign out of all devices</span>
+                  <span style={rowSub}>Lost a laptop or phone, or used a shared computer? End every session, including this one.</span>
+                </span>
+                {!confirmSignOut && (
+                  <button ref={signOutButtonRef} className="btn btn-ghost" onClick={openSignOut} style={{ flexShrink: 0 }}>
+                    <Icon name="logout" size={15} /> Sign out everywhere
+                  </button>
+                )}
               </div>
-            </div>
-          </Collapse>
+              <Collapse open={confirmSignOut}>
+                <div ref={signOutPanelRef} role="group" aria-label="Confirm signing out of all devices" style={{ marginTop: 12, padding: 14, borderRadius: 12, border: "1px solid var(--hairline)", background: "var(--fill-1, var(--surface))" }}>
+                  <p style={{ margin: "0 0 12px", fontSize: 13, lineHeight: 1.5, color: "var(--ink-2)" }}>
+                    You'll be signed out on every browser and device, including this one. Other devices lose access within the hour at the latest. Your work isn't affected.
+                  </p>
+                  {signOutError && <p role="alert" style={{ margin: "0 0 12px", fontSize: 12.5, color: "var(--prio-urgent)" }}>{signOutError}</p>}
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                    <button ref={signOutCancelRef} className="btn btn-ghost" onClick={() => { setConfirmSignOut(false); focusSoon(signOutButtonRef); }} disabled={signingOut}>Cancel</button>
+                    <button className="btn btn-accent" onClick={signOutEverywhere} disabled={signingOut} aria-busy={signingOut || undefined} style={{ opacity: signingOut ? 0.6 : 1 }}>
+                      <Icon name="logout" size={15} /> {signingOut ? "Signing out…" : "Sign out everywhere"}
+                    </button>
+                  </div>
+                </div>
+              </Collapse>
+            </>
+          )}
 
           {/* appearance */}
           {appearance && onChangeAppearance && (
@@ -512,9 +565,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                 Delete your account? This can't be undone.
               </p>
               <ul style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-2)" }}>
-                <li><strong>Deleted for good:</strong> your profile and your personal tasks and projects.</li>
-                <li><strong>Kept for your team:</strong> tasks and projects you created in team workspaces stay where they are, and your comments remain without your name.</li>
-                <li><strong>Workspaces you own</strong> pass to their next admin, or to the longest-standing member if there's no admin. A workspace with nobody else in it is deleted.</li>
+                <li><strong>Deleted for good:</strong> your profile, your profile photo, and your personal tasks and projects.</li>
+                <li><strong>Kept for your team:</strong> tasks and projects you created in team workspaces stay where they are. Your comments stay too, still showing your name.</li>
+                <li><strong>Workspaces you own</strong> pass to their next admin or, if there isn't one, to the longest-standing person left in the workspace. A workspace with nobody else in it is deleted.</li>
               </ul>
               <p style={{ margin: "0 0 12px", fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
                 Want a copy first?{" "}

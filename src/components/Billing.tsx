@@ -107,7 +107,9 @@ export function Paywall({ sub, seats, busyPlan, onChoose, onSignOut, onManageBil
   // Stripe is still retrying a past-due subscription; buying a new plan would
   // leave the customer with two. Send them to fix the card instead.
   const fixCard = pastDue && !!onManageBilling;
-  const heading = pastDue ? "Your last payment didn't go through"
+  // Without the portal a past-due customer can only be shown plans, so don't
+  // suggest that picking one fixes the failed payment.
+  const heading = fixCard ? "Your last payment didn't go through"
     : sub.status === "trialing" ? "Your free trial has ended"
     : "Your subscription is inactive";
   const body = fixCard

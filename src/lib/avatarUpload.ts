@@ -3,10 +3,12 @@
    - Mirrors the avatars bucket's allow-list on the client: PNG, JPEG, GIF
      or WebP, up to 5 MB. SVG (can carry script) and HEIC (Chrome can't
      show it) are refused with a clear message.
-   - Photos are downscaled and re-encoded before upload. Avatars never
-     render large, and re-encoding drops EXIF metadata such as the GPS
-     location a phone photo carries. That matters because the bucket is
-     public.
+   - PNG, JPEG and WebP photos are always redrawn on a canvas (downscaled
+     when large) and re-encoded before upload, which drops embedded metadata
+     such as the GPS location a phone photo carries. That matters because
+     the bucket is public. If the browser can't redraw the image we refuse
+     it rather than upload the original bytes. GIFs go up unchanged so they
+     keep their animation.
    - The file extension comes from the MIME type, never from the name the
      user's file happens to have.
    - Replaced photos are removed from storage (only our own
@@ -56,6 +58,9 @@ export const AVATAR_MESSAGES = {
   type: "Choose a PNG, JPG, GIF or WebP image.",
   size: "That image is over 5 MB. Choose a smaller one.",
   empty: "That file is empty. Choose another image.",
+  unreadable: "Couldn't read that image. Choose another PNG, JPG or WebP.",
+  prepare: "Your browser couldn't prepare that image. Try another image, or a different browser.",
+  large: "That image is too large to use as a profile photo. Choose a smaller one.",
 } as const;
 
 /** Why this file can't be uploaded as it is, in words for the user, or null when it's fine. */
@@ -91,24 +96,21 @@ function loadImage(file: Blob): Promise<HTMLImageElement> {
 }
 
 /**
- * Downscale + re-encode a still image. Returns null when the browser can't
- * (no canvas, can't decode the format); the caller then decides whether the
- * original can go up as it is. Drawing an <img> applies EXIF orientation, so
- * sideways phone photos come out upright.
+ * Redraw a still image on a canvas (downscaled when large) and encode it
+ * afresh, so none of the original file's metadata survives. Drawing an <img>
+ * applies EXIF orientation, so sideways phone photos come out upright.
+ * Throws an Error with a message for the user when the browser can't do it;
+ * the original bytes are never uploaded instead.
  */
-async function reencode(file: File, mime: string): Promise<File | null> {
-  if (typeof document === "undefined") return null;
-  const canvas = document.createElement("canvas");
+async function reencode(file: File, mime: string): Promise<File> {
   let ctx: CanvasRenderingContext2D | null = null;
-  try { ctx = canvas.getContext("2d"); } catch { ctx = null; }
-  if (!ctx) return null;
-  const img = await loadImage(file);
-  const w = img.naturalWidth, h = img.naturalHeight;
-  if (!w || !h) return null;
+  const canvas = typeof document === "undefined" ? null : document.createElement("canvas");
+  try { ctx = canvas?.getContext("2d") ?? null; } catch { ctx = null; }
+  if (!canvas || !ctx) throw new Error(isHeic(mime) ? AVATAR_MESSAGES.heic : AVATAR_MESSAGES.prepare);
+  const img = await loadImage(file).catch(() => null);
+  const w = img?.naturalWidth ?? 0, h = img?.naturalHeight ?? 0;
+  if (!img || !w || !h) throw new Error(isHeic(mime) ? AVATAR_MESSAGES.heic : AVATAR_MESSAGES.unreadable);
   const scale = Math.min(1, AVATAR_EDGE / Math.min(w, h));
-  // A small PNG/WebP has no location data worth stripping, and re-encoding
-  // it can make it bigger: keep the original bytes.
-  if (scale === 1 && (mime === "image/png" || mime === "image/webp")) return asAvatarFile(file, mime);
   canvas.width = Math.max(1, Math.round(w * scale));
   canvas.height = Math.max(1, Math.round(h * scale));
   // keep transparency for PNG/WebP; everything else (JPEG, HEIC) becomes JPEG
@@ -117,10 +119,13 @@ async function reencode(file: File, mime: string): Promise<File | null> {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, target, 0.9));
+  const blob = await new Promise<Blob | null>((res) => {
+    try { canvas.toBlob(res, target, 0.9); } catch { res(null); }
+  });
   // a browser that can't encode the requested type hands back PNG, which is fine
   const outMime = blob ? avatarMime(blob) : "";
-  if (!blob || !avatarExtension(outMime) || blob.size <= 0 || blob.size > AVATAR_MAX_BYTES) return null;
+  if (!blob || !avatarExtension(outMime) || blob.size <= 0) throw new Error(AVATAR_MESSAGES.prepare);
+  if (blob.size > AVATAR_MAX_BYTES) throw new Error(AVATAR_MESSAGES.large);
   return asAvatarFile(blob, outMime);
 }
 
@@ -130,8 +135,7 @@ async function reencode(file: File, mime: string): Promise<File | null> {
  */
 export async function prepareAvatarFile(file: File): Promise<File> {
   const mime = avatarMime(file);
-  const heic = isHeic(mime);
-  if (heic) {
+  if (isHeic(mime)) {
     // never uploaded as HEIC, but a browser that can decode it (Safari)
     // turns it into a JPEG below
     if (file.size <= 0) throw new Error(AVATAR_MESSAGES.empty);
@@ -141,10 +145,7 @@ export async function prepareAvatarFile(file: File): Promise<File> {
     if (problem) throw new Error(problem);
   }
   if (mime === "image/gif") return asAvatarFile(file, mime); // keep the animation
-  const out = await reencode(file, mime).catch(() => null);
-  if (out) return out;
-  if (heic) throw new Error(AVATAR_MESSAGES.heic);
-  return asAvatarFile(file, mime);
+  return reencode(file, mime);
 }
 
 /**

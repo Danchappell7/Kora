@@ -31,5 +31,8 @@ describe("Paywall", () => {
   it("still shows plans for past-due when no billing portal is wired up", () => {
     render(<Paywall sub={sub({})} seats={1} busyPlan={null} onChoose={vi.fn()} />);
     expect(screen.getByRole("button", { name: /choose personal/i })).toBeInTheDocument();
+    // plan cards must not sit under a heading that implies they fix the payment
+    expect(screen.getByRole("heading", { name: /subscription is inactive/i })).toBeInTheDocument();
+    expect(screen.queryByText(/last payment didn't go through/i)).not.toBeInTheDocument();
   });
 });

@@ -45,12 +45,40 @@ describe("prepareAvatarFile", () => {
     expect(out.type).toBe("image/gif");
   });
 
-  it("uploads the original (renamed) when the browser can't re-encode it", async () => {
+  it("never uploads a still photo's original bytes (they can carry GPS) when the browser can't redraw it", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    const out = await prepareAvatarFile(file("me.jpeg.exe", "image/jpeg", 2048));
-    expect(out.name).toBe("avatar.jpg");
-    expect(out.type).toBe("image/jpeg");
-    expect(out.size).toBe(2048);
+    await expect(prepareAvatarFile(file("me.jpeg.exe", "image/jpeg", 2048))).rejects.toThrow(AVATAR_MESSAGES.prepare);
+    // small PNG and WebP files are redrawn too, not passed through
+    await expect(prepareAvatarFile(file("tiny.png", "image/png", 200))).rejects.toThrow(AVATAR_MESSAGES.prepare);
+    await expect(prepareAvatarFile(file("tiny.webp", "image/webp", 200))).rejects.toThrow(AVATAR_MESSAGES.prepare);
+  });
+
+  it("uploads the redrawn image, named from its type", async () => {
+    const ctx = { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn(), imageSmoothingEnabled: false, imageSmoothingQuality: "low" };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(ctx as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(function (this: HTMLCanvasElement, cb: BlobCallback, type?: string) {
+      cb(new Blob([new Uint8Array(321)], { type: type ?? "image/png" }));
+    });
+    // jsdom never decodes images, so stand in a 1024x768 photo
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:photo");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const RealImage = window.Image;
+    class FakeImage { naturalWidth = 1024; naturalHeight = 768; onload: (() => void) | null = null; onerror: (() => void) | null = null;
+      set src(_: string) { setTimeout(() => this.onload?.(), 0); } }
+    window.Image = FakeImage as unknown as typeof Image;
+    try {
+      const small = await prepareAvatarFile(file("tiny.png", "image/png", 200));
+      expect(small.name).toBe("avatar.png");
+      expect(small.size).toBe(321); // the redrawn bytes, not the original 200
+      const photo = await prepareAvatarFile(file("IMG_0001.JPG", "image/jpeg", 4096));
+      expect(photo.name).toBe("avatar.jpg");
+      expect(photo.type).toBe("image/jpeg");
+      expect(photo.size).toBe(321);
+      // shorter side scaled to 512
+      expect(ctx.drawImage).toHaveBeenLastCalledWith(expect.anything(), 0, 0, 683, 512);
+    } finally {
+      window.Image = RealImage;
+    }
   });
 
   it("refuses SVG, oversized files, and HEIC this browser can't convert", async () => {

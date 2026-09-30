@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SettingsModal } from "./SettingsModal";
 import { AuthProvider } from "../auth/AuthProvider";
 
@@ -43,12 +43,22 @@ describe("Settings → Password & sign-in", () => {
     await waitFor(() => expect(screen.getByText(/password updated/i)).toBeInTheDocument());
   });
 
-  it("asks before signing out of every device", async () => {
+  it("says so when the confirmation is left empty", async () => {
     renderSettings();
-    fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
-    const panel = screen.getByRole("group", { name: /confirm signing out of all devices/i });
-    expect(within(panel).getByText(/every browser and device, including this one/i)).toBeInTheDocument();
-    await waitFor(() => expect(within(panel).getByRole("button", { name: /cancel/i })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: /change password/i }));
+    const pw = await screen.findByLabelText("New password");
+    const confirm = screen.getByLabelText("Confirm new password");
+    fireEvent.change(pw, { target: { value: "correct horse battery" } });
+    fireEvent.click(screen.getByRole("button", { name: /update password/i }));
+    expect(screen.getByText("Type your new password again to confirm it.")).toBeInTheDocument();
+    expect(confirm).toHaveAttribute("aria-invalid", "true");
+    await waitFor(() => expect(confirm).toHaveFocus());
+    expect(screen.queryByText(/password updated/i)).not.toBeInTheDocument();
+  });
+
+  it("doesn't offer signing out of every device in demo mode (there are no sessions)", () => {
+    renderSettings();
+    expect(screen.queryByRole("button", { name: /sign out everywhere/i })).not.toBeInTheDocument();
   });
 });
 
@@ -56,8 +66,9 @@ describe("Settings → Delete account", () => {
   it("explains what happens to personal and team work, and needs DELETE typed", async () => {
     const props = renderSettings();
     fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
-    expect(screen.getByText(/your profile and your personal tasks and projects/i)).toBeInTheDocument();
+    expect(screen.getByText(/your profile, your profile photo, and your personal tasks and projects/i)).toBeInTheDocument();
     expect(screen.getByText(/stay where they are/i)).toBeInTheDocument();
+    expect(screen.getByText(/still showing your name/i)).toBeInTheDocument();
     expect(screen.getByText(/pass to their next admin/i)).toBeInTheDocument();
 
     const forever = screen.getByRole("button", { name: /delete forever/i });
