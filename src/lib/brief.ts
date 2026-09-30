@@ -397,6 +397,8 @@ export interface TodayBriefInput extends BriefInput {
   members?: { id: string; name: string }[];
   /** the projects the one big thing may belong to (its chip in "due today for …"); Personal is never named */
   projects?: { id: string; name: string }[];
+  /** you've shut down today: the evening says the day's closed and what's lined up next */
+  dayClosed?: boolean;
 }
 
 const FOCUS_MAX = 44;
@@ -467,7 +469,7 @@ export function clearestStretch(tasks: Task[], events: CalEvent[], nowMin: numbe
 }
 
 /** Today's brief card (see the section note above). */
-export function composeTodayBrief({ tasks: given, events, nowMin, today, userName, riskCount = 0, allTasks, me, members = [], projects = [] }: TodayBriefInput): TodayBrief {
+export function composeTodayBrief({ tasks: given, events, nowMin, today, userName, riskCount = 0, allTasks, me, members = [], projects = [], dayClosed = false }: TodayBriefInput): TodayBrief {
   const all = allTasks ?? given;
   const name = firstName(userName);
   const nameOf = (id: string) => firstName(members.find((m) => m.id === id)?.name) || "a teammate";
@@ -486,13 +488,14 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
   const weekday = parseDay(today)?.getDay();
   const hour = nowMin / 60;
 
-  const variant: TodayVariant = nowMin >= WORK_END ? "evening"
+  // (a day you've shut down is closed, whatever the clock says)
+  const variant: TodayVariant = nowMin >= WORK_END || dayClosed ? "evening"
     : todaysWork.length === 0 ? "empty"
     : unplacedNeed >= 60 && unplacedNeed > free + 30 ? "overloaded"
     : weekday === 1 && hour < 12 ? "monday"
     : hour < 12 ? "morning" : "afternoon";
 
-  const part = variant === "evening" ? "Evening" : hour < 12 ? "Morning" : "Afternoon";
+  const part = nowMin >= WORK_END ? "Evening" : hour < 12 ? "Morning" : "Afternoon";
   const greeting = name ? `${part}, ${name}.` : `Good ${part.toLowerCase()}.`;
   const headline: BriefSpan[] = [];
   const prose: BriefSpan[] = [];
@@ -543,13 +546,27 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
       w.waiting.length > 1 ? ` and ${countOf(w.waiting.length - 1, "other task")}.` : ".");
   };
 
-  if (variant === "evening") {
+  if (variant === "evening" && dayClosed) {
+    // shut down: what moved went to tomorrow (it isn't "done"), so say what's lined up there
+    const finished = scope.filter((t) => doneToday(t, today)).length;
+    headline.push(finished > 0 ? `You finished ${countOf(finished, "thing")} today, and the day's closed.` : "The day's closed.");
+    const left = todaysWork.length;
+    const tmr = dayAfter(today, 1);
+    const dueTmr = open.filter((t) => !t.parentId && day10(t.dueDate) === tmr).length;
+    // what Kanbo would start tomorrow with (the evening's Tomorrow card leads with it too)
+    const first = tomorrowPreview(given, [], today, me).top[0];
+    if (left > 0) prose.push(`${capitalise(countOf(left, "thing"))} ${left === 1 ? "is" : "are"} still on today's list. `);
+    if (dueTmr > 0) prose.push(`${capitalise(countOf(dueTmr, "thing"))} ${dueTmr === 1 ? "is" : "are"} due tomorrow`);
+    if (first) prose.push(dueTmr > 0 ? "; first up: " : "First up tomorrow: ", { kind: "task", text: shorten(first.title), taskId: first.id, status: first.status }, ".");
+    else if (dueTmr > 0) prose.push(".");
+    else if (left === 0) prose.push("Nothing's lined up for tomorrow yet.");
+  } else if (variant === "evening") {
     const finished = scope.filter((t) => doneToday(t, today)).length;
     headline.push(finished > 0 ? `You finished ${countOf(finished, "thing")} today.` : "The working day's done.");
     const left = todaysWork.length;
     prose.push(left > 0
       ? `${capitalise(countOf(left, "thing"))} ${left === 1 ? "is" : "are"} still open. Shut down to close the day and pick tomorrow's first thing.`
-      : "Everything for today is done. Shut down to close the day and pick tomorrow's first thing.");
+      : `${finished > 0 ? "Everything on today's list is done." : "Nothing's left on today's list."} Shut down to close the day and pick tomorrow's first thing.`);
   } else if (variant === "empty") {
     headline.push("A clear day. Want to pull something forward?");
     const next = open.filter((t) => !!t.dueDate && day10(t.dueDate) > today && day10(t.dueDate) <= dayAfter(today, 14))

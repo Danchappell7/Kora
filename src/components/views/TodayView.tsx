@@ -60,6 +60,10 @@ export interface TodayViewProps {
   risks?: Risk[];
   /** "or tell Kanbo what's different today": opens Ask (⌘K) */
   onAsk?: () => void;
+  /** you've shut down today: the brief says the day's closed, and the hero steps down */
+  dayClosed?: boolean;
+  /** after a shut down, the evening's (quiet) next step: tomorrow in Today › Week */
+  onPlanTomorrow?: () => void;
 }
 
 /** "Not now" on a noticed card lasts the day, per person, on this device. */
@@ -228,7 +232,7 @@ export function TodayView(props: TodayViewProps) {
 function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
-  riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk,
+  riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -280,8 +284,8 @@ function TodayDay({
     const skipped = new Set(prefs.skipped);
     return ghostCandidates(tasks, { today: day, me }).filter((t) => skipped.has(t.id)).length;
   }, [tasks, day, me, prefs.skipped]);
-  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members, projects }),
-    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, members, projects]);
+  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members, projects, dayClosed }),
+    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, members, projects, dayClosed]);
   const planned = plannedMinutes(tasks);
   const free = freeMinutes(tasks, dayEvents, nowMin);
   const placedOpen = tasks.filter((t) => isPlaced(t) && t.status !== "done" && !t.archivedAt);
@@ -303,11 +307,13 @@ function TodayDay({
   // Once the working day is over there's nothing more to plan for today: the
   // brief counts what you finished, and the one action left is to close the day.
   const replannable = placedOpen.filter((t) => t.scheduled! > nowMin && !t.dueTime);
-  const evening = nowMin >= WORK_END;
+  // after the working day, or once you've shut it down: tomorrow takes over
+  const evening = nowMin >= WORK_END || dayClosed;
   const mode: "plan" | "replan" | "none" | "evening" = evening ? "evening"
     : plan.suggestions.length > 0 || (plan.unplaced.length > 0 && replannable.length === 0) ? "plan"
     : placedOpen.length > 0 ? "replan" : "none";
   const tomorrowsPlan = `Tomorrow's plan starts at ${fmtTime(WORK_START)}`;
+  const dayOver = dayClosed ? "You've closed today" : "The working day's done";
   const [ordering, setOrdering] = useState(false);
   const [landing, setLanding] = useState<Record<string, number> | undefined>();
   const [srMsg, setSrMsg] = useState("");
@@ -325,13 +331,13 @@ function TodayDay({
   const notice = useCallback((msg: string) => { if (toast) toast.toast(msg); say(msg); }, [toast, say]);
   const planMyDay = useCallback(async () => {
     if (readOnly || busyRef.current) return;
-    if (live.current.mode === "evening") { notice(`The working day's done. ${tomorrowsPlan}.`); return; }
+    if (live.current.mode === "evening") { notice(`${dayOver}. ${tomorrowsPlan}.`); return; }
     if (live.current.mode === "none") return;
     busyRef.current = true; setOrdering(true);
     let source: RankSource = "none";
     try { source = await onRank(); } catch { /* ordering is a nicety: plan with the scores we have */ }
     setCommitReq({ source });
-  }, [readOnly, onRank, notice, tomorrowsPlan]);
+  }, [readOnly, onRank, notice, tomorrowsPlan, dayOver]);
 
   const commitPlan = (source: RankSource) => {
     busyRef.current = false; setOrdering(false);
@@ -340,7 +346,7 @@ function TodayDay({
     const d = new Date(), now = d.getHours() * 60 + d.getMinutes();
     // the working day ended while Kanbo was ordering it: plan nothing (a Re-plan
     // now would find no room and take every block ahead off the day)
-    if (m === "evening" || now >= WORK_END) { notice(`The working day's done. ${tomorrowsPlan}.`); return; }
+    if (m === "evening" || now >= WORK_END) { notice(`${dayOver}. ${tomorrowsPlan}.`); return; }
     const lift = new Set(m === "replan" ? again.map((t) => t.id) : []);
     const pool = lift.size ? cur.map((t) => (lift.has(t.id) ? { ...t, scheduled: null } : t)) : cur;
     // a block being re-laid is always a candidate, even one waved away earlier
@@ -392,11 +398,11 @@ function TodayDay({
     // switched off for good in Settings: H can't bring them back, so say where they live
     if (!showSuggestions) { notice("Suggestions are switched off in Settings › Appearance."); return; }
     // nothing is suggested once the working day is over
-    if (live.current.mode === "evening") { notice(`The working day's done. ${tomorrowsPlan}.`); return; }
+    if (live.current.mode === "evening") { notice(`${dayOver}. ${tomorrowsPlan}.`); return; }
     const p = prefsRef.current;
     setPrefs({ ...p, hidden: !p.hidden });
     notice(p.hidden ? "Suggestions are back." : "Suggestions hidden for today. Press H or choose Show suggestions to bring them back.");
-  }, [showSuggestions, setPrefs, notice, tomorrowsPlan]);
+  }, [showSuggestions, setPrefs, notice, tomorrowsPlan, dayOver]);
 
   // P plans the day; H hides (or brings back) the suggestions. Never while typing,
   // with a modifier held, over a dialog, or when something else took the key ("g p").
@@ -480,8 +486,11 @@ function TodayDay({
   const busyLabel = mode === "replan" ? "Re-planning…" : "Ordering your day…";
 
   const hero = readOnly ? null : mode === "evening" ? (
-    // the working day's over: closing it is what's left (the rail's own link steps aside)
-    <Button variant="hero" size="lg" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
+    dayClosed
+      // closed: nothing left to push for today, so no gradient; tomorrow is the quiet next step
+      ? onPlanTomorrow ? <Button variant="secondary" size="lg" icon="calendar" onClick={onPlanTomorrow}>Plan tomorrow</Button> : null
+      // the working day's over: closing it is what's left (the rail's own link steps aside)
+      : <Button variant="hero" size="lg" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
   ) : (
     <Button variant={mode === "plan" ? "hero" : "secondary"} size="lg" kbd="P" loading={busy} disabled={!busy && mode === "none"}
       icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()}>

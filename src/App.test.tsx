@@ -618,6 +618,33 @@ describe("App (demo mode)", () => {
     expect(document.title).toMatch(/Q3 Product Launch · Kanbo$/);
   });
 
+  it("a project's tab is its address: it never inherits My tasks' view, never changes it, and Back comes back to the tab you left", async () => {
+    at("/tasks");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "View: List" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Timeline/ }));
+    expect(await screen.findByRole("button", { name: "View: Timeline" })).toBeInTheDocument();
+    // a project you've never opened opens on List, not My tasks' Timeline
+    fireEvent.click(screen.getAllByText("Q3 Product Launch", { selector: ".kproj *" })[0].closest("button")!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/p/p-launch/list"));
+    expect(screen.getByRole("tab", { name: "List" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    await waitFor(() => expect(address()).toBe("/p/p-launch/board"));
+    expect(await screen.findByRole("group", { name: "To do column" })).toBeInTheDocument();
+    // Back is the List you left, not the Board you're on
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(address()).toBe("/p/p-launch/list"));
+    expect(screen.getByRole("tab", { name: "List" })).toHaveAttribute("aria-selected", "true");
+    // My tasks is still on its own Timeline
+    key("g"); key("t");
+    expect(await screen.findByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View: Timeline" })).toBeInTheDocument();
+    expect(localStorage.getItem("kanbo-view")).toBe("timeline");
+    // and the project remembers where it was last shown: a bare address opens it there
+    expect(JSON.parse(localStorage.getItem("kanbo-pview-p-launch") || "{}").view).toBe("list");
+  });
+
   it("Back and Forward follow the address: Today, then My tasks, then Back is Today again", async () => {
     await boot();
     await waitFor(() => expect(address()).toBe("/today"));
@@ -665,7 +692,8 @@ describe("App (demo mode)", () => {
     await boot();
     expect(await screen.findByRole("heading", { level: 1, name: "Growth Experiments" })).toBeInTheDocument();
     expect(await screen.findByText("Growth Experiments", { selector: ".kproj *" })).toBeInTheDocument();
-    expect(address()).toBe("/p/p-growth");
+    // (a project's address names its tab: the one it was last shown in, List the first time)
+    await waitFor(() => expect(address()).toBe("/p/p-growth/list"));
   });
 
   it("a project address that leads nowhere says so and lands on Today", async () => {
@@ -774,7 +802,7 @@ describe("App (demo mode)", () => {
     at("/p/p-launch/rules");
     renderApp();
     expect(await screen.findByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
-    await waitFor(() => expect(address()).toBe("/p/p-launch"));
+    await waitFor(() => expect(address()).toBe("/p/p-launch/list"));
   });
 
   it("Today › Week offers the weekly review (not to guests)", async () => {

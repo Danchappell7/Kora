@@ -1313,7 +1313,7 @@ button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparen
 .ktoggle[data-disabled="true"] { opacity: 0.45; }
 .ktoggle[data-disabled="true"] :is(.ktoggle-label, .ktoggle-switch) { cursor: not-allowed; }
 
-/* ---- Toast: bottom-left, a raised 40px strip; the Undo carries ⌘Z ---- */
+/* ---- Toast: bottom-left of the page (beside the sidebar), a raised 40px strip; the Undo carries ⌘Z ---- */
 .ktoasts {
   /* above every overlay layer still in use (Quick capture 1000, popovers 1100) */
   position: fixed; left: 24px; bottom: 24px; z-index: 1200;
@@ -1334,6 +1334,11 @@ button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparen
 .ktoast-msg { flex: 1; min-width: 0; margin: 0; padding: 4px 0; overflow-wrap: anywhere; }
 .ktoast-acts { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .ktoast .kbtn[data-variant="ghost"] { color: var(--accent-text); }
+/* beside the sidebar, never over its footer (Focus, the account row, theme, Settings):
+   an Undo can stay up for 10s, and those controls must stay usable under it */
+@media (min-width: 860px) {
+  body:has(aside.ksb) .ktoasts { left: calc(var(--sidebar-w, 232px) + 24px); max-width: calc(100vw - var(--sidebar-w, 232px) - 48px); }
+}
 @media (max-width: 859px) {
   .ktoasts { left: 16px; right: 16px; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); max-width: none; align-items: stretch; }
   .ktoast { width: auto; }

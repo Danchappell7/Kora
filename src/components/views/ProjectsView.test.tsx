@@ -150,7 +150,8 @@ describe("ProjectsView (the directory as a table)", () => {
     expect(within(brand).getByText("No milestone")).toHaveClass("sr-only");
   });
 
-  it("gives touch screens the gallery, each card with its own Draft and Post update (there's no hover to reveal a row's)", () => {
+  it("gives touch screens the gallery, each card's Draft and Post update behind one ⋯ (nothing but the tile on a cover)", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
     const mm = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({
       matches: q === "(hover: none)", media: q, onchange: null, addEventListener: vi.fn(), removeEventListener: vi.fn(),
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
@@ -164,12 +165,21 @@ describe("ProjectsView (the directory as a table)", () => {
       const list = screen.getByRole("list", { name: "Projects" });
       const infra = within(list).getByRole("link", { name: "Infra" }).closest("li") as HTMLElement;
       expect(infra).toHaveTextContent("2 open · 1 overdue · No update yet");
-      fireEvent.click(within(infra).getByRole("button", { name: "Post update for Infra" }));
+      // the cover's buttons are behind a menu, not laid over it
+      expect(within(infra).queryByRole("button", { name: "Post update for Infra" })).not.toBeInTheDocument();
+      expect(infra.querySelector(".kpj-gcard-acts")).toBeNull();
+      const more = within(infra).getByRole("button", { name: "Update Infra" });
+      expect(more).toHaveAttribute("aria-haspopup", "menu");
+      fireEvent.click(more);
+      const menu = screen.getByRole("menu", { name: "Update Infra" });
+      expect(within(menu).getByRole("menuitem", { name: /Draft update/ })).toBeInTheDocument();
+      fireEvent.click(within(menu).getByRole("menuitem", { name: /Post update/ }));
+      act(() => { vi.runOnlyPendingTimers(); });
       expect(screen.getByRole("textbox", { name: "Update" })).toHaveValue("");
       expect(onOpenProject).not.toHaveBeenCalled();
       fireEvent.click(within(list).getByRole("link", { name: "Brand" }));
       expect(onOpenProject).toHaveBeenCalledWith("p-brand");
-    } finally { mm.mockRestore(); }
+    } finally { mm.mockRestore(); vi.useRealTimers(); }
   });
 
   it("filters to the projects at risk, and to yours", () => {

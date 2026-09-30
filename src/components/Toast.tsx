@@ -1,6 +1,7 @@
 /* ============================================================
    KANBO — toast notifications (replaces alert())
-   Bottom-left, a raised 40px strip; 5s, 7s for an error, at least 10s with
+   Bottom-left of the page (beside the sidebar, never over its footer), a
+   raised 40px strip; 5s, 7s for an error, at least 10s with
    an Undo. At most three on screen. A toast that's up stays up until it
    goes (so the one you're reading or focused on never vanishes); later ones
    wait their turn with their clocks stopped, so a Retry or an Undo is always

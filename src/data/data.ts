@@ -9,7 +9,7 @@ import type {
   Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/supabase";
-import { parseTask, tidyTitle, type NlpKind } from "../lib/nlp";
+import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
@@ -703,6 +703,43 @@ let _capId = 1000;
 export function parseCapture(text: string, opts: CaptureOptions = {}): Task | null {
   if (!text.trim()) return null;
   const p = parseTask(text, { today: KANBO_TODAY, kinds: CAPTURE_KINDS, nextWeek: "+7", priorityWords: true });
+  return captureTask(p, opts);
+}
+
+/* Today's capture reads the whole grammar, as quick capture does: a time
+   ("3pm"), an estimate ("~30m", which is also how long the block is when no
+   length is typed), "@person", "#project", "every mon", "from mon". Every
+   word it reads comes out of the title, so what the parse line promised is
+   what's created. A task for a later day is filed for that day, not today's
+   plan; one for someone else starts off their day (App keeps it off it). */
+export interface TodayCaptureOptions extends CaptureOptions {
+  projects?: { id: string; name: string }[];
+  members?: { id: string; name: string }[];
+}
+export function parseTodayCapture(text: string, opts: TodayCaptureOptions = {}): { task: Task; parsed: ParsedTask } | null {
+  if (!text.trim()) return null;
+  const p = parseTask(text, { today: KANBO_TODAY, projects: opts.projects, members: opts.members, priorityWords: true });
+  const estimateMin = p.effortHours != null ? Math.round(p.effortHours * 60) : undefined;
+  const task = captureTask(p.focusMin == null && estimateMin ? { ...p, focusMin: estimateMin } : p, {
+    projectId: p.projectId || opts.projectId,
+    assigneeId: p.assigneeId || opts.assigneeId,
+  });
+  const today = toLocalISO(KANBO_TODAY);
+  const later = (d?: string) => !!d && d > today;
+  return {
+    task: {
+      ...task,
+      ...(p.dueTime ? { dueTime: p.dueTime } : {}),
+      ...(p.startDate ? { startDate: p.startDate } : {}),
+      ...(p.recurrence ? { recurrence: p.recurrence } : {}),
+      ...(p.effortHours != null ? { effortHours: p.effortHours } : {}),
+      planToday: !later(task.dueDate) && !later(p.startDate),
+    },
+    parsed: p,
+  };
+}
+
+function captureTask(p: ParsedTask, opts: CaptureOptions): Task {
   let s = tidyTitle(p.title, EDGE_SEPARATORS);
   const dur = p.focusMin != null ? Math.max(SLOT_MIN, p.focusMin) : 30;
   let energy: EnergyKind = "admin";

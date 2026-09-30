@@ -190,3 +190,24 @@ describe("Paper & Navy restyle (same props, same names)", () => {
     expect(screen.getByRole("img", { name: "Kanbo" })).toBe(svgs[2]);
   });
 });
+
+describe("AvatarStack", () => {
+  it("tucks each disc under the last only as far as keeps its initials whole (clear of that disc and its 1.5px ring)", async () => {
+    const { avatarStackOverlap } = await import("./index");
+    for (const size of [20, 22, 24, 28, 32, 40]) {
+      const type = Math.max(10, Math.round(size * 0.42));
+      const margin = (size - type * 1.4) / 2;          // the clear space beside two initials
+      const o = avatarStackOverlap(size);
+      expect(o).toBeGreaterThanOrEqual(1);              // still reads as a stack
+      expect(o).toBeLessThanOrEqual(size * 0.25);
+      expect(o + 1.5).toBeLessThanOrEqual(margin + 0.25);
+    }
+  });
+
+  it("stacks with that overlap", () => {
+    const { container } = render(<AvatarStack ids={["m-self", "m-1", "m-2"]} size={20} />);
+    const discs = container.firstElementChild!.children;
+    expect((discs[0] as HTMLElement).style.marginLeft).toBe("0px");
+    expect((discs[1] as HTMLElement).style.marginLeft).toBe("-1.5px");
+  });
+});

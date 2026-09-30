@@ -25,5 +25,8 @@ export default defineConfig({
     // billing on so the trial/paywall math is exercised by Billing.test.ts
     env: { VITE_SUPABASE_URL: "", VITE_SUPABASE_ANON_KEY: "", VITE_BILLING_ENABLED: "true" },
     coverage: { provider: "v8", reporter: ["text", "html"] },
+    // lets `--maxWorkers=N` cap a busy machine on its own (with the default minimum,
+    // a small cap fails: "minThreads and maxThreads must not conflict")
+    minWorkers: 1,
   },
 });

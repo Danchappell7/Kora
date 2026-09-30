@@ -149,6 +149,25 @@ describe("ProjectActions — posting an update", () => {
     expect(aiStatus).toHaveBeenCalledTimes(1);
   });
 
+  it("on the Updates tab, Draft and Post update fill and focus the page's composer: one editor, one filled Post update", async () => {
+    const aiStatus = vi.fn().mockResolvedValue({ source: "ai", data: { summary: "Kanbo's words", status: "at_risk" } });
+    render(<><ProjectPanels {...panelProps()} /><ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus })} /></>);
+    const draft = screen.getByRole("button", { name: "Draft update" });
+    expect(draft).not.toHaveAttribute("aria-haspopup");
+    fireEvent.click(draft);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();                   // no popover over the page's composer
+    const fields = screen.getAllByRole("textbox", { name: "Update" });
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toHaveFocus();
+    await waitFor(() => expect(fields[0]).toHaveValue("Kanbo's words"));
+    // the header's Post update is the quiet one; the page's is the only filled one
+    const posts = screen.getAllByRole("button", { name: /^Post update/ });
+    expect(posts.filter((b) => b.getAttribute("data-variant") === "primary")).toHaveLength(1);
+    fireEvent.click(posts.find((b) => b.getAttribute("data-variant") === "secondary")!);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("textbox", { name: "Update" })[0]).toHaveFocus();
+  });
+
   it("drafts from today's facts after the day rolls over in a tab left open", () => {
     const aiStatus = vi.fn(() => new Promise<never>(() => {}));
     const { rerender } = render(<ProjectActions {...actionProps({ onPostStatus: vi.fn(), aiStatus: aiStatus as never })} />);
@@ -340,11 +359,13 @@ describe("ProjectPanels", () => {
     expect(screen.queryByRole("textbox", { name: "Update" })).not.toBeInTheDocument();
     rerender(<ProjectPanels {...base({ tab: "updates" })} />);
     expect(box()).toHaveValue("My careful update about the launch");
+    // away from the Updates tab, the header's composer holds the same words
+    rerender(<ProjectPanels {...base({ tab: "about" })} />);
     const header = render(<ProjectActions {...actionProps({ onPostStatus: vi.fn() })} />);
     fireEvent.click(within(header.container).getByRole("button", { name: "Post update" }));
     const fields = screen.getAllByRole("textbox", { name: "Update" });
-    expect(fields).toHaveLength(2);                                     // the Updates tab's and the header popover's
-    fields.forEach((t) => expect(t).toHaveValue("My careful update about the launch"));
+    expect(fields).toHaveLength(1);                                     // the header popover's
+    expect(fields[0]).toHaveValue("My careful update about the launch");
   });
 
   it("Updates: guests read the history without a composer", () => {

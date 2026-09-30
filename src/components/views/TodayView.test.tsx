@@ -463,6 +463,24 @@ describe("TodayView: after the working day", () => {
     expect(screen.getAllByText("The working day's done. Tomorrow's plan starts at 08:00.").length).toBeGreaterThan(0);
   });
 
+  it("once you've shut down, the day reads as closed: no gradient Shut down, a quiet Plan tomorrow", () => {
+    at(21, 44);
+    const onPlanTomorrow = vi.fn();
+    const { props } = renderToday([task({ id: "m", title: "Moved thing", dueDate: localDayKey(new Date(Date.now() + 86400000)) })], { dayClosed: true, onPlanTomorrow });
+    const brief = screen.getByRole("region", { name: "Your day in brief" });
+    expect(within(brief).getByRole("heading", { level: 2 }).textContent).toBe("Evening, Daniel. The day's closed.");
+    expect(brief.textContent).toContain("One thing is due tomorrow; first up: Moved thing.");
+    expect(brief.textContent).not.toMatch(/Everything|Shut down to close/);
+    expect(screen.queryByRole("button", { name: "Shut down my day" })).not.toBeInTheDocument();
+    const next = screen.getByRole("button", { name: "Plan tomorrow" });
+    expect(next).toHaveAttribute("data-variant", "secondary");
+    fireEvent.click(next);
+    expect(onPlanTomorrow).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document.body, { key: "p" });
+    expect(props.onRank).not.toHaveBeenCalled();
+    expect(screen.getAllByText("You've closed today. Tomorrow's plan starts at 08:00.").length).toBeGreaterThan(0);
+  });
+
   it("before the working day starts, suggestions begin at 08:00", () => {
     at(7, 10);
     renderToday([task({ id: "d", title: "Due thing", dueDate: today(), energy: "deep" })]);

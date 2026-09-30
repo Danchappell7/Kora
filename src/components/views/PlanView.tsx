@@ -20,10 +20,10 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useToast } from "../Toast";
 import { useAuth } from "../../auth/AuthProvider";
 import {
-  getProject, getMember, parseCapture, planDay, ENERGY, EVENTS, DAY_START, DAY_END, MEMBERS, PROJECTS, PRIORITY_META,
+  getProject, getMember, parseTodayCapture, planDay, ENERGY, EVENTS, DAY_START, DAY_END, MEMBERS, PROJECTS, PRIORITY_META,
 } from "../../data/data";
 import type { CaptureOptions } from "../../data/data";
-import { parseTask, type NlpSpan } from "../../lib/nlp";
+import type { NlpSpan } from "../../lib/nlp";
 import { uiZoom } from "../../lib/appearance";
 import type { Task, CalEvent, EnergyKind, ExternalEvent } from "../../data/types";
 import {
@@ -752,25 +752,17 @@ function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, pro
   const mirrorRef = useRef<HTMLSpanElement>(null);
   const parseId = useId();
   const projectId = defaults?.projectId, assigneeId = defaults?.assigneeId;
-  // "today" / "fri" resolve against the date, so the parse re-reads it when the day changes under a half-typed capture
-  const nl = useMemo(() => (text.trim() ? parseTask(text, { projects, members }) : null), [text, today, projects, members]);
-  const cap = useMemo(() => (text.trim().length > 1 ? parseCapture(text, { projectId, assigneeId }) : null), [text, today, projectId, assigneeId]);
+  // one reading of the text for the highlight, the parse line and the task, so what the
+  // line promises is what's created ("today" / "fri" resolve against the date, so it's
+  // re-read when the day changes under a half-typed capture)
+  const read = useMemo(() => parseTodayCapture(text, { projectId, assigneeId, projects, members }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [text, today, projectId, assigneeId, projects, members]);
 
-  const build = (): Task | null => {
-    const t = parseCapture(text, { projectId, assigneeId });
-    if (!t) return null;
-    // the one grammar knows a few things the capture parser doesn't (yet): a time, @person, #project
-    const p = parseTask(text, { projects, members });
-    return {
-      ...t,
-      ...(p.dueTime ? { dueTime: p.dueTime } : {}),
-      ...(p.assigneeId ? { assigneeId: p.assigneeId } : {}),
-      ...(p.projectId ? { projectId: p.projectId } : {}),
-    };
-  };
   const submit = (plan: boolean) => {
-    const t = build(); if (!t) return;
-    (plan ? onCapturePlan : onCapture)(t);
+    const r = parseTodayCapture(text, { projectId, assigneeId, projects, members });
+    if (!r) return;
+    (plan ? onCapturePlan : onCapture)(r.task);
     setText("");
   };
 
@@ -781,7 +773,7 @@ function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, pro
   };
   useLayoutEffect(syncScroll);
 
-  const spans = (nl?.spans ?? []).filter((s: NlpSpan) => s.end > s.start).sort((a, b) => a.start - b.start);
+  const spans = (read?.parsed.spans ?? []).filter((s: NlpSpan) => s.end > s.start).sort((a, b) => a.start - b.start);
   const marked: ReactNode[] = [];
   let at = 0;
   for (const s of spans) {
@@ -792,11 +784,16 @@ function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, pro
   marked.push(text.slice(at));
 
   const bits: string[] = [];
-  if (cap?.dueDate || nl?.dueDate) bits.push(captureDayLabel(nl?.dueDate ?? cap?.dueDate, today) ?? "");
-  if (nl?.dueTime) bits.push(nl.dueTime);
-  if (cap) bits.push(fmtDuration(durOf(cap)));
-  if (nl?.assigneeId) bits.push(members.find((m) => m.id === nl.assigneeId)?.name ?? "");
-  if (nl?.projectId) bits.push(projects.find((p) => p.id === nl.projectId)?.name ?? "");
+  if (read) {
+    const { task: t, parsed: p } = read;
+    if (t.dueDate) bits.push(captureDayLabel(t.dueDate, today) ?? "");
+    if (t.dueTime) bits.push(t.dueTime);
+    bits.push(fmtDuration(durOf(t)));
+    const repeat = p.spans.find((s) => s.kind === "repeat");
+    if (repeat) bits.push(repeat.label);
+    if (p.assigneeId) bits.push(members.find((m) => m.id === p.assigneeId)?.name ?? "");
+    if (p.projectId) bits.push(projects.find((x) => x.id === p.projectId)?.name ?? "");
+  }
   const line = bits.filter(Boolean).join(" · ");
 
   return (
@@ -1280,12 +1277,32 @@ export function PlanView({
     }
   }, [ghostById, slotFor, place, notify]);
 
-  const capture = useCallback((t: Task) => { onCreate(t); announce(`Added “${t.title}” to today.`); }, [onCreate, announce]);
+  /** Where a capture went when it isn't on your day: "for Fri 2 Oct, 15:00", "for Maya Lin".
+   *  Those leave the page, so they're said out loud (a toast); today's show up in the rail. */
+  const elsewhere = useCallback((t: Task): string | null => {
+    const theirs = !!me && !!t.assigneeId && t.assigneeId !== me;
+    const who = theirs ? (members.find((m) => m.id === t.assigneeId)?.name ?? getMember(t.assigneeId)?.name ?? "a teammate") : null;
+    const when = t.dueDate && t.dueDate > day ? [captureDayLabel(t.dueDate, day), t.dueTime].filter(Boolean).join(", ") : null;
+    if (who) return `for ${who}${when ? `, due ${when}` : ""}`;
+    if (t.planToday) return null;
+    if (when) return `for ${when}`;
+    return t.startDate && t.startDate > day ? `starting ${captureDayLabel(t.startDate, day)}` : "to My tasks";
+  }, [me, members, day]);
+  const capture = useCallback((t: Task) => {
+    onCreate(t);
+    const where = elsewhere(t);
+    if (where) notify(`Added “${t.title}” ${where}.`);
+    else announce(`Added “${t.title}” to today${t.dueTime ? ` at ${t.dueTime}` : ""}.`);
+  }, [onCreate, announce, notify, elsewhere]);
   const captureAndPlan = useCallback((t: Task) => {
-    const at = slotFor(t);
+    // only your own work for today goes on your day; the rest is filed where it belongs
+    if (elsewhere(t)) { capture(t); return; }
+    // a time you typed is where it goes; otherwise the first slot that fits
+    const typed = t.dueTime && (!t.dueDate || t.dueDate === day) ? /^(\d{1,2}):(\d{2})$/.exec(t.dueTime) : null;
+    const at = typed ? +typed[1] * 60 + +typed[2] : slotFor(t);
     onCreate(at != null ? { ...t, scheduled: at } : t);
     announce(at != null ? `Added “${t.title}” and planned it for ${fmtTimeRange(at, at + durOf(t))}.` : `Added “${t.title}”. It doesn’t fit today, so it waits in Unplanned.`);
-  }, [slotFor, onCreate, announce]);
+  }, [elsewhere, capture, day, slotFor, onCreate, announce]);
 
   /* ----- keyboard: move a focused block by 15 minutes (Shift: an hour), Delete to unplan, F to focus ----- */
   const flushKb = useCallback(() => {

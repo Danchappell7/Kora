@@ -333,12 +333,16 @@ export interface InboxViewProps {
   /** the feed couldn't be loaded: says so (with Try again) instead of "Inbox zero" */
   loadError?: boolean;
   onRetry?: () => void;
+  /** How many items are new on this visit and still in the Inbox (the rows with a
+   *  dot): told on every change, so the page header and the Inbox badges show the
+   *  same number as the list — falling as items are opened, archived or snoozed. */
+  onNewCount?: (n: number) => void;
 }
 
 export function InboxView({
   activity, tasks, onOpen, onArchive, onClearAll,
   currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
-  loading, loadError, onRetry,
+  loading, loadError, onRetry, onNewCount,
 }: InboxViewProps) {
   const entrance = useEntrance();
   const toast = useOptionalToast();
@@ -462,6 +466,9 @@ export function InboxView({
         .filter((s) => s.items.length > 0)
     : [];
   const ordered = segment === "inbox" ? sections.flatMap((s) => s.items) : segment === "snoozed" ? snoozedItems : archivedItems;
+  // new on this visit and still here: the dots, and the number App shows beside them
+  const newCount = visible.reduce((n, a) => (unread.has(a.id) || backAt(a.id) > 0 ? n + 1 : n), 0);
+  useEffect(() => { onNewCount?.(newCount); }, [newCount, onNewCount]);
   const fyiShown = segment === "inbox" ? groups.fyi : [];
 
   // the snoozed/archived item vanished (filter change, realtime archive…) → drop its menus

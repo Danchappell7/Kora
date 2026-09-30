@@ -18,7 +18,7 @@ import type { ProjectTab } from "../../app-types";
 import type { Risk } from "../../lib/radar";
 import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS } from "../../lib/statusDraft";
 import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
-import { ComposerPanel, ComposerPopover, POP_STYLE, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
+import { ComposerPanel, ComposerPopover, POP_STYLE, focusInPageComposer, useHasInPageComposer, useInPageComposer, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
 import { DraftInput } from "./DraftInput";
 import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
 import "./projects.css";
@@ -169,7 +169,10 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   const postRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus, onPosted: () => setOpen(null) });
+  // on the Updates tab the page has the composer: the buttons fill and focus that one (no popover)
+  const inPage = useHasInPageComposer(project.id);
   useEffect(() => { setOpen(null); setMenuOpen(false); setSaved(null); setIdentityOpen(false); }, [project.id]);
+  useEffect(() => { if (inPage) setOpen(null); }, [inPage]);
   useEffect(() => {
     if (saved !== "saved") return;
     const t = window.setTimeout(() => { setSaved(null); setMenuOpen(false); }, 1200);
@@ -177,11 +180,13 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   }, [saved]);
 
   const openDraft = () => {
+    if (inPage) { c.ensureDraft(); focusInPageComposer(project.id); return; }
     if (open === "draft") { setOpen(null); return; }
     setOpen("draft");
     c.ensureDraft();
   };
   const openPost = () => {
+    if (inPage) { c.startFresh(); focusInPageComposer(project.id); return; }
     if (open === "post") { setOpen(null); return; }
     setOpen("post");
     c.startFresh();
@@ -220,16 +225,16 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
       {canPost && (
         <>
           <Button ref={draftRef} variant="ghost" size="sm" className="kpj-hide-phone" onClick={openDraft}
-            aria-haspopup="dialog" aria-expanded={open === "draft"}>
+            aria-haspopup={inPage ? undefined : "dialog"} aria-expanded={inPage ? undefined : open === "draft"}>
             <span className="kpj-btn-mark"><AiMark size={14} thinking={c.drafting} />Draft update</span>
           </Button>
           <Button ref={postRef} variant="secondary" size="sm" onClick={openPost}
-            aria-haspopup="dialog" aria-expanded={open === "post"}>Post update</Button>
+            aria-haspopup={inPage ? undefined : "dialog"} aria-expanded={inPage ? undefined : open === "post"}>Post update</Button>
         </>
       )}
       <IconButton ref={moreRef} icon="more" label="Project actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen}
         onClick={() => setMenuOpen((v) => !v)} />
-      {canPost && <ComposerPopover open={open !== null} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} />}
+      {canPost && <ComposerPopover open={open !== null && !inPage} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} />}
       <Popover open={menuOpen} anchorRef={moreRef} onClose={() => { setMenuOpen(false); setSaved(null); }} role="menu" label={`Actions for ${project.name}`}
         align="end" minWidth={208} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
         {items.flatMap((it) => [
@@ -327,6 +332,8 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
 }) {
   const canPost = !readOnly && !!onPostStatus;
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus });
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  useInPageComposer(project.id, textRef, canPost);
   const history = useMemo(() => projectUpdates(statusUpdates, project.id), [statusUpdates, project.id]);
   const [shown, setShown] = useState(HISTORY_PAGE);
   // draft first: the composer opens on the on-device draft of this week (the AI one is a click away),
@@ -344,7 +351,7 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
       <div className="kpj-wrap kpj-readw kpj-panel">
         {canPost && (
           <section className="kpj-composer-card" aria-label="Post an update">
-            <ComposerPanel c={c} title="Post an update" />
+            <ComposerPanel c={c} title="Post an update" textRef={textRef} />
           </section>
         )}
         {history.length === 0 ? (

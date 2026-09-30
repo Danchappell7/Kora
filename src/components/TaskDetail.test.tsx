@@ -817,3 +817,43 @@ describe("TaskDetail — people", () => {
     expect(screen.queryByRole("dialog", { name: "Assignee" })).toBeNull();
   });
 });
+
+describe("TaskDetail — Kanbo AI switched off", () => {
+  afterEach(() => { localStorage.clear(); });
+
+  it("with AI off, the panel offers no Break it down and never calls the AI service", async () => {
+    const spy = vi.spyOn(store, "aiBreakdown").mockResolvedValue(["One", "Two"]);
+    try {
+      await setup({ ai: false });
+      expect(screen.queryByRole("button", { name: /Break it down/ })).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /^Sub-tasks/ })).toBeInTheDocument();       // sub-tasks by hand still work
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("follows the saved setting when App doesn't say (off in Settings › Appearance)", async () => {
+    localStorage.setItem("kanbo-ai", "off");
+    await setup();
+    expect(screen.queryByRole("button", { name: /Break it down/ })).not.toBeInTheDocument();
+  });
+
+  it("with AI on, Break it down asks Kanbo and adds what comes back", async () => {
+    const spy = vi.spyOn(store, "aiBreakdown").mockResolvedValue(["Outline", "Draft"]);
+    try {
+      const { props } = await setup({ ai: true });
+      fireEvent.click(screen.getByRole("button", { name: /Break it down/ }));
+      await waitFor(() => expect(props.onAddSubtask).toHaveBeenCalledTimes(2));
+      expect(spy).toHaveBeenCalledWith("Write brief", "Old text");
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe("TaskDetail — the description's Edit button", () => {
+  it("has its own gutter beside the text, so it never sits on the words (it's always shown on touch)", async () => {
+    await setup();
+    const edit = screen.getByRole("button", { name: "Edit description" });
+    const desc = edit.closest(".ktd-desc") as HTMLElement;
+    expect(desc).toHaveAttribute("data-edit", "true");
+    expect(desc.querySelector(".ktd-desc-view")).toHaveTextContent("Old text");
+  });
+});

@@ -54,6 +54,42 @@ const patchEntry = (pid: string, patch: Partial<Entry>) => {
 };
 const writeDraft = (pid: string, patch: Partial<Draft>) => patchEntry(pid, { draft: { ...(entries.get(pid)?.draft ?? EMPTY), ...patch } });
 
+/* ---------------- the Updates tab's composer, per project ----------------
+   While it's on the page, the header's Draft and Post update fill and focus it
+   rather than opening a second composer over it (one editor, one Post update). */
+const inPage = new Map<string, () => void>();
+const inPageListeners = new Set<() => void>();
+const subscribeInPage = (fn: () => void) => { inPageListeners.add(fn); return () => { inPageListeners.delete(fn); }; };
+/** The Updates tab registers its composer's field while it's showing. */
+export function useInPageComposer(projectId: string, textRef: RefObject<HTMLTextAreaElement>, on: boolean): void {
+  useEffect(() => {
+    if (!on) return;
+    const focus = () => {
+      const el = textRef.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView?.({ block: "nearest" });
+    };
+    inPage.set(projectId, focus);
+    inPageListeners.forEach((fn) => fn());
+    return () => {
+      if (inPage.get(projectId) === focus) inPage.delete(projectId);
+      inPageListeners.forEach((fn) => fn());
+    };
+  }, [projectId, textRef, on]);
+}
+/** Is this project's composer on the page (the Updates tab)? */
+export function useHasInPageComposer(projectId: string): boolean {
+  return useSyncExternalStore(subscribeInPage, () => inPage.has(projectId), () => false);
+}
+/** Focus it; false when it isn't on the page. */
+export function focusInPageComposer(projectId: string): boolean {
+  const f = inPage.get(projectId);
+  if (!f) return false;
+  f();
+  return true;
+}
+
 /** Forget every draft (tests start from a clean slate). */
 export function clearStatusDrafts(): void {
   entries.clear();

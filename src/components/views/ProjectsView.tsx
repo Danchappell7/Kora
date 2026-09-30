@@ -10,7 +10,7 @@
    each card's buttons shown.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { AiMark, Avatar, AvatarStack, Button, EmptyState, Icon, Meter, Pill, ProgressRing, ProjectCover, ProjectTile, Segmented, projectIdentity } from "../primitives";
+import { AiMark, Avatar, AvatarStack, Button, EmptyState, Icon, IconButton, Meter, Pill, ProgressRing, ProjectCover, ProjectTile, Segmented, projectIdentity } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { getMember, KANBO_TODAY, todayISO } from "../../data/data";
@@ -162,11 +162,25 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   const canPost = !!onPostUpdate;
   const anchorRef = useRef<HTMLElement | null>(null);
   const [composer, setComposer] = useState<{ id: string; open: boolean; mode: "draft" | "post"; seq: number } | null>(null);
-  const openComposer = (e: ReactMouseEvent<HTMLElement>, id: string, mode: "draft" | "post") => {
-    e.stopPropagation();
-    anchorRef.current = e.currentTarget;
+  const openComposerAt = (anchor: HTMLElement | null, id: string, mode: "draft" | "post") => {
+    anchorRef.current = anchor;
     setComposer((c) => ({ id, open: true, mode, seq: (c?.seq ?? 0) + 1 }));
   };
+  const openComposer = (e: ReactMouseEvent<HTMLElement>, id: string, mode: "draft" | "post") => {
+    e.stopPropagation();
+    openComposerAt(e.currentTarget, id, mode);
+  };
+  // touch: there's no hover to reveal a card's Draft and Post update, and a cover carries
+  // nothing but its tile, so on touch they wait behind one quiet ⋯ on the cover
+  const [cardMenu, setCardMenu] = useState<string | null>(null);
+  const cardMenuRef = useRef<HTMLElement | null>(null);
+  const pickFromCardMenu = (mode: "draft" | "post") => {
+    const id = cardMenu, at = cardMenuRef.current;
+    setCardMenu(null);
+    // once the menu has handed focus back to the ⋯, the composer opens from it
+    if (id) window.setTimeout(() => openComposerAt(at, id, mode), 0);
+  };
+  const cardMenuName = cardMenu ? real.find((p) => p.id === cardMenu)?.name ?? "" : "";
   const composerProject = composer ? real.find((p) => p.id === composer.id) : undefined;
 
   const openRow = (id: string) => {
@@ -292,7 +306,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
             body={query ? `Nothing here is called “${query.trim()}”.` : scope === "risk" ? "Every project is on track, with nothing overdue or blocked." : "Projects you own, help with or have open tasks in show up here."}
             action={<Button variant="ghost" size="sm" onClick={reset}>Show all projects</Button>} />
         ) : cards ? (
-          <ul className="kpj-gallery" aria-label="Projects" data-touch={!tableFits || undefined}>
+          <ul className="kpj-gallery" aria-label="Projects">
             {shown.map((r) => {
               const people = projectPeople(r.p);
               const names = people.map((id) => getMember(id)?.name).filter(Boolean).join(", ");
@@ -325,7 +339,13 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
                       )}
                     </div>
                   </div>
-                  {canPost && <div className="kpj-gcard-acts">{updateButtons(r)}</div>}
+                  {canPost && (touch ? (
+                    <div className="kpj-gcard-more">
+                      <IconButton icon="more" size="sm" label={`Update ${r.p.name}`} aria-haspopup="menu"
+                        aria-expanded={cardMenu === r.p.id || (!!composer?.open && composer.id === r.p.id)}
+                        onClick={(e) => { e.stopPropagation(); cardMenuRef.current = e.currentTarget; setCardMenu((m) => (m === r.p.id ? null : r.p.id)); }} />
+                    </div>
+                  ) : <div className="kpj-gcard-acts">{updateButtons(r)}</div>)}
                 </li>
               );
             })}
@@ -354,6 +374,15 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           </div>
         )}
       </div>
+      <Popover open={!!cardMenu} anchorRef={cardMenuRef} onClose={() => setCardMenu(null)} role="menu" label={`Update ${cardMenuName}`}
+        align="end" minWidth={200} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
+        <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("draft")}>
+          <AiMark size={16} />Draft update
+        </button>
+        <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("post")}>
+          <Icon name="send" size={16} sw={1.75} />Post update
+        </button>
+      </Popover>
       {composer && composerProject && (
         <RowComposer project={composerProject} tasks={tasks} statusUpdates={statusUpdates} onPost={onPostUpdate} aiStatus={aiStatus}
           request={composer} anchorRef={anchorRef} onClose={() => setComposer((c) => (c ? { ...c, open: false } : c))} />

@@ -87,6 +87,21 @@ describe("InboxView — unread snapshot", () => {
     expect(screen.getByRole("button", { name: /^Unread: Theo Vance mentioned you in/ })).toBeInTheDocument();
   });
 
+  it("tells App how many are new on this visit, falling as they're opened or archived (the header and badges show it)", () => {
+    const onNewCount = vi.fn();
+    const rows = [act_({ id: "u1", kind: "mention", detail: "Theo Vance", readAt: undefined }), act_({ id: "u2", kind: "assigned", detail: "Sana Rao", readAt: undefined }), act_({ id: "r1", kind: "comment", detail: "Maya Lin" })];
+    const { rerender, props } = inbox(rows, { onNewCount });
+    expect(onNewCount).toHaveBeenLastCalledWith(2);
+    // App marks them read right away: they're still new on this visit
+    rerender(<InboxView {...props} activity={rows.map((a) => ({ ...a, readAt: iso() }))} onNewCount={onNewCount} />);
+    expect(onNewCount).toHaveBeenLastCalledWith(2);
+    fireEvent.click(screen.getByRole("button", { name: /^Unread: Theo Vance mentioned you in/ }));
+    expect(onNewCount).toHaveBeenLastCalledWith(1);
+    // archived (gone from the feed): nothing new is left
+    rerender(<InboxView {...props} activity={rows.filter((a) => a.id !== "u2").map((a) => ({ ...a, readAt: iso() }))} onNewCount={onNewCount} />);
+    expect(onNewCount).toHaveBeenLastCalledWith(0);
+  });
+
   it("flags items that arrive while the inbox is open, and clears the flag when opened", () => {
     const { rerender, props } = inbox([act_({ id: "r1", kind: "assigned", detail: "Sana Rao" })]);
     const next = [act_({ id: "n1", kind: "mention", detail: "Theo Vance", readAt: undefined, createdAt: iso() }), ...props.activity];

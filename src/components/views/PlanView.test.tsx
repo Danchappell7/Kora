@@ -27,6 +27,12 @@ const task = (o: Partial<Task>): Task => ({
 });
 
 const yesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); return localDayKey(d); };
+/** Fix the clock at hh:mm today (a capture's slot and "now" follow it). */
+const atToday = (h: number, m = 0) => {
+  const d = new Date(); d.setHours(h, m, 0, 0);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(d);
+};
 
 function renderPlan(tasks: Task[], extra: Partial<Parameters<typeof PlanView>[0]> = {}) {
   const onUpdate = vi.fn();
@@ -73,6 +79,8 @@ describe("PlanView", () => {
   });
 
   it("Tab adds the capture and puts it on the day", () => {
+    // mid-morning, so there's a slot left today whenever the suite runs
+    atToday(10);
     const onCreate = vi.fn();
     renderPlan([], { onCreate });
     const input = screen.getByLabelText("Capture a task for today");
@@ -84,6 +92,52 @@ describe("PlanView", () => {
     const e = fireEvent.keyDown(input, { key: "Tab" });
     expect(e).toBe(true);
     expect(onCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("files the placeholder's own example as it reads: title “Call Sana”, Fri · 15:00 · 30m, and says where it went", () => {
+    atToday(10);
+    const onCreate = vi.fn();
+    renderPlan([], { onCreate });
+    const input = screen.getByLabelText("Capture a task for today");
+    expect(input).toHaveAttribute("placeholder", "Add a task — try “call Sana fri 3pm ~30m”");
+    const line = () => document.getElementById(input.getAttribute("aria-describedby")!)!;
+    fireEvent.change(input, { target: { value: "call Sana fri 3pm ~30m" } });
+    // what the line promises…
+    // ("fri" is the next Friday after today)
+    const ahead = ((5 - new Date().getDay() + 7) % 7) || 7;
+    const fri = new Date(); fri.setDate(fri.getDate() + ahead);
+    const dayWord = ahead === 1 ? "Tomorrow"
+      : `Fri ${fri.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][fri.getMonth()]}`;
+    expect(line().textContent).toContain(`${dayWord} · 15:00 · 30m`);
+    fireEvent.keyDown(input, { key: "Enter" });
+    // …is what's made: every word it read is out of the title, and it's filed for Friday, not today
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Call Sana", dueDate: localDayKey(fri), dueTime: "15:00", effortHours: 0.5, focusMin: 30, dur: 30, planToday: false,
+    }));
+    expect(screen.getByText(`Added “Call Sana” for ${dayWord}, 15:00.`)).toBeInTheDocument();
+  });
+
+  it("Tab puts a capture with a time today at that time", () => {
+    atToday(9);
+    const onCreate = vi.fn();
+    renderPlan([], { onCreate });
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "Call supplier 2pm 45m" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Call supplier", dueTime: "14:00", planToday: true, scheduled: 14 * 60, focusMin: 45 }));
+  });
+
+  it("a capture for someone else is theirs, and off your day even with Tab", () => {
+    atToday(10);
+    const onCreate = vi.fn();
+    renderPlan([], { onCreate, members: [{ id: "m-self", name: "Daniel Okai" }, { id: "m-1", name: "Maya Lin" }] });
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "@Maya call the printer" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    const made = onCreate.mock.calls[0][0] as Task;
+    expect(made).toMatchObject({ title: "Call the printer", assigneeId: "m-1" });
+    expect(made.scheduled ?? null).toBeNull();
+    expect(screen.getByText("Added “Call the printer” for Maya Lin.")).toBeInTheDocument();
   });
 
   it("doesn't crash on a quick-added task with no energy or duration", () => {

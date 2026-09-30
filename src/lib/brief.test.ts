@@ -423,6 +423,36 @@ describe("composeTodayBrief: the variants", () => {
     expect(b.facts.map((f) => f.kind)).not.toContain("free");
   });
 
+  it("after a shut down the day is closed: what moved is lined up for tomorrow, never called done", () => {
+    const b = today2({
+      tasks: [
+        task({ status: "done", completedAt: TODAY }),
+        task({ id: "brief", title: "Write the brief", dueDate: day(1), aiScore: 80 }),
+        task({ id: "printer", title: "Call the printer", dueDate: day(1), aiScore: 20 }),
+      ],
+      nowMin: H(21, 44), dayClosed: true,
+    });
+    expect(b.variant).toBe("evening");
+    expect(b.greeting).toBe("Evening, Daniel.");
+    expect(text(b.headline)).toBe("You finished one thing today, and the day's closed.");
+    expect(text(b.prose)).toBe("Two things are due tomorrow; first up: Write the brief.");
+    expect(ents(b.prose, "task")).toEqual([expect.objectContaining({ taskId: "brief" })]);
+    expect(b.plain).not.toMatch(/Everything|done\. Shut down|Shut down/);
+  });
+
+  it("a closed day with something kept on today's list says so, and closes early if you shut down early", () => {
+    const b = today2({ tasks: [task({ title: "Expenses", planToday: true })], nowMin: H(16), dayClosed: true });
+    expect(b.variant).toBe("evening");
+    expect(b.greeting).toBe("Afternoon, Daniel.");
+    expect(text(b.headline)).toBe("The day's closed.");
+    expect(text(b.prose)).toBe("One thing is still on today's list. First up tomorrow: Expenses.");
+  });
+
+  it("the evening only says everything's done when something was", () => {
+    expect(text(today2({ tasks: [], nowMin: H(19) }).prose)).toMatch(/^Nothing's left on today's list\. /);
+    expect(text(today2({ tasks: [task({ status: "done", completedAt: TODAY })], nowMin: H(19) }).prose)).toMatch(/^Everything on today's list is done\. /);
+  });
+
   it("greets without a name when there isn't one", () => {
     expect(today2({ userName: "dan@kanbo.app" }).greeting).toBe("Good morning.");
   });

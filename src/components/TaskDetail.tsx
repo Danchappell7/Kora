@@ -23,6 +23,7 @@ import { store } from "../data/store";
 import { renderRich } from "../lib/richtext";
 import { saveTemplate } from "../lib/templates";
 import { reportError } from "../lib/monitoring";
+import { loadAppearance } from "../lib/appearance";
 import {
   getProject, getMember, dueState, fmtDue, KANBO_TODAY, ENERGY, DEMO_TASK_EVENTS,
   STATUS_META, STATUS_ORDER, PRIORITY_META, nextDueDate, nextOccurrence, seriesAnchorDay,
@@ -101,7 +102,9 @@ const PANEL_CSS = `
 .ktd-crumb-sep { color: var(--ink-4); flex-shrink: 0; }
 .ktd-crumb-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ktd-presence { display: inline-flex; align-items: center; margin-right: 6px; }
-.ktd-presence > span + span { margin-left: -6px; }
+/* side by side, rings touching: a 20px disc has no room to tuck under its neighbour's
+   3px ring and keep its initials whole */
+.ktd-presence > span + span { margin-left: 0; }
 .ktd-presence-more { margin-left: 4px; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
 .ktd-vsep { width: 1px; height: 16px; margin: 0 6px; background: var(--hairline-strong); flex-shrink: 0; }
 .ktd-head [data-tip]::after { top: calc(100% + 6px); bottom: auto; }
@@ -238,6 +241,8 @@ textarea.ktd-title:focus { background: transparent; }
 .ktd-desc-view[data-empty="true"] { color: var(--ink-4); }
 .ktd-desc-view a { color: var(--accent-text, var(--accent)); text-underline-offset: 2px; }
 .ktd-desc-edit { position: absolute; top: 2px; right: -4px; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
+/* the Edit button has its own gutter, so it never sits on the text (on touch it's always shown) */
+.ktd-desc[data-edit="true"] .ktd-desc-view { padding-right: 56px; }
 .ktd-desc:hover .ktd-desc-edit, .ktd-desc:focus-within .ktd-desc-edit { opacity: 1; }
 .ktd-mdbar { display: flex; gap: 2px; margin-bottom: 6px; }
 .ktd-md { display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: var(--r-sm, 6px); background: transparent; font: 600 13px/1 ${UI}; color: var(--ink-3); cursor: pointer; }
@@ -820,6 +825,9 @@ export interface TaskDetailProps {
   onStartFocus?: (id: string) => void;
   /** the breadcrumb's project: the panel closes and this opens the project */
   onOpenProject?: (projectId: string) => void;
+  /** Settings › "Use Kanbo AI". Off: nothing in the panel calls the AI service ("Break it
+   *  down" isn't offered). Default: the saved setting. */
+  ai?: boolean;
 }
 
 /** A task opened from inside the panel (a sub-task, a blocker, the parent)
@@ -889,7 +897,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -1268,7 +1276,10 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     setSectionName(""); setAddingSection(false);
   };
   const addSub = () => { const v = newSub.trim(); if (v) { onAddSubtask(task.id, v); setNewSub(""); } };
+  // AI switched off in Settings: the panel sends nothing to the AI service
+  const aiAllowed = ai ?? loadAppearance().ai !== false;
   const aiBreakdown = async () => {
+    if (!aiAllowed) return;
     const forTask = task.id;
     setAiSubBusy(true);
     let subs: string[] = [];
@@ -1972,7 +1983,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
 
         {/* ================= description ================= */}
         {(!readOnly || desc) && (
-          <div className="ktd-desc">
+          <div className="ktd-desc" data-edit={(!readOnly && !descEditing && !!desc) || undefined}>
             <h3 className="sr-only" id={ids.desc}>Description</h3>
             {!readOnly && !descEditing && desc && (
               <Button ref={descEditBtnRef} variant="ghost" size="sm" className="ktd-desc-edit" aria-label="Edit description" onClick={startDescEdit}>Edit</Button>
@@ -2044,7 +2055,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
                 Sub-tasks{subTotal > 0 && <span className="ksection-count">{subDone}/{subTotal}</span>}
               </h3>
               {subTotal > 0 && <Meter value={subDone} max={subTotal} width={56} height={4} label={`${subDone} of ${subTotal} sub-tasks done`} />}
-              {!readOnly && (
+              {!readOnly && aiAllowed && (
                 <div className="ksection-action">
                   <Button variant="ghost" size="sm" onClick={aiBreakdown} disabled={aiSubBusy} aria-busy={aiSubBusy || undefined} title="Let Kanbo break this into sub-tasks" style={{ color: "var(--ink-2)" }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><AiMark size={14} thinking={aiSubBusy} />{aiSubBusy ? "Breaking it down…" : "Break it down"}</span>

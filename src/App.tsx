@@ -157,6 +157,17 @@ function RenderView({ render }: { render: () => React.ReactNode }) { return <>{r
 
 const TASK_VIEWS: readonly TaskView[] = ["list", "board", "timeline", "calendar", "files", "matrix"];
 const isTaskView = (v: string | undefined): v is TaskView => !!v && (TASK_VIEWS as readonly string[]).includes(v);
+const GROUP_BYS: readonly GroupBy[] = ["status", "section", "due", "priority", "project", "none"];
+const isGroupBy = (v: unknown): v is GroupBy => typeof v === "string" && (GROUP_BYS as readonly string[]).includes(v);
+/** A project's own view and grouping, remembered per project (and apart from My tasks'). */
+type ProjectPrefs = { view: TaskView; groupBy: GroupBy };
+const projectPrefsKey = (id: string) => `kanbo-pview-${id}`;
+function readProjectPrefs(id: string): ProjectPrefs {
+  try {
+    const c = JSON.parse(localStorage.getItem(projectPrefsKey(id)) || "{}") as { view?: string; groupBy?: unknown };
+    return { view: isTaskView(c.view) ? c.view : "list", groupBy: isGroupBy(c.groupBy) ? c.groupBy : "status" };
+  } catch { return { view: "list", groupBy: "status" }; }
+}
 type DueFocus = "today" | "overdue" | "week";
 const isDueFocus = (v: string | undefined): v is DueFocus => v === "today" || v === "overdue" || v === "week";
 
@@ -179,7 +190,11 @@ const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.projectId ?? "
 function normaliseRoute(r: Route, ctx: { personal: boolean; guest: boolean }): Route {
   if (ctx.personal && r.view === "pulse") return { view: "analytics" };
   if (ctx.guest && r.view === "automations") return { view: "projects" };
-  if (ctx.guest && r.view === "project" && r.tab === "rules") return { view: "project", projectId: r.projectId };
+  // a project's address always names its tab: a bare /p/:id opens the view the project
+  // was last shown in (List the first time), so Back and a reload come back to it
+  if (r.view === "project" && r.projectId && (!r.tab || (ctx.guest && r.tab === "rules"))) {
+    return { view: "project", projectId: r.projectId, tab: readProjectPrefs(r.projectId).view };
+  }
   return r;
 }
 /** One page: a place, or one project in it (its tabs are the same page). */
@@ -187,6 +202,18 @@ const pageOf = (r: Route) => `${placeOf(r)}:${r.view === "project" ? r.projectId
 /** Whose plan a task carries once a change lands: a change that hands the task to
  *  someone (you included) decides, otherwise its assignee. */
 const ownerAfter = (t: Task, patch: Partial<Task>) => ("assigneeId" in patch ? patch.assigneeId : t.assigneeId);
+/** The row's plan (its slot, "on today", My-tasks section) is its assignee's, so a change
+ *  of assignee that doesn't set them itself clears them: a task you hand on never lands in
+ *  your slot on their day, and one you take never brings their plan with it. These are
+ *  the fields to clear alongside `patch` (Kanbo's score stays: a ranking hint, not a plan). */
+const releasedPlan = (t: Task, patch: Partial<Task>): Partial<Task> => {
+  if (!("assigneeId" in patch) || (patch.assigneeId ?? null) === (t.assigneeId ?? null)) return {};
+  const out: Partial<Task> = {};
+  if (!("planToday" in patch) && t.planToday) out.planToday = false;
+  if (!("scheduled" in patch) && t.scheduled != null) out.scheduled = null;
+  if (!("mySectionId" in patch) && t.mySectionId) out.mySectionId = undefined;
+  return out;
+};
 /** What a guarded change replaced: the row's own fields, and your plan on someone else's task. */
 type GuardedUndo = { id: string; row: Partial<Task>; plan: Partial<Pick<Task, PersonalKey>> | null };
 type BulkOpts = { patchFor?: (t: Task) => Partial<Task>; undoAlso?: () => void };
@@ -507,21 +534,28 @@ export default function App() {
   // (the tour's last step is "Your five places", so "What moved" has nothing to add)
   const finishOnboarding = useCallback(() => { try { localStorage.setItem(`kanbo-onboarded:${userIdRef.current}`, "1"); } catch { /* ignore */ } markWhatMovedSeen(); setOnboardOpen(false); }, []);
 
+  // My tasks' view and grouping (a project's are its own, below)
   useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
   useEffect(() => { try { localStorage.setItem("kanbo-groupby", groupBy); } catch { /* private mode */ } }, [groupBy]);
-  // saved views per project: remember each project's view + grouping
-  const pviewKey = route.view === "project" && route.projectId ? `kanbo-pview-${route.projectId}` : null;
-  const skipPviewSave = useRef(false);
+  // each project's view and grouping, remembered per project. The address is the source of
+  // truth for the view (/p/:id/board); this is where a bare /p/:id goes next time. Opening a
+  // project never changes how My tasks looks, and a project never inherits My tasks' view.
+  const [projectPrefs, setProjectPrefs] = useState<Record<string, ProjectPrefs>>({});
+  const openProjectId = route.view === "project" ? route.projectId : undefined;
+  const openPrefs: ProjectPrefs | null = openProjectId ? projectPrefs[openProjectId] ?? readProjectPrefs(openProjectId) : null;
+  const saveProjectPrefs = useCallback((id: string, patch: Partial<ProjectPrefs>) => {
+    setProjectPrefs((m) => {
+      const cur = m[id] ?? readProjectPrefs(id);
+      if (Object.entries(patch).every(([k, v]) => cur[k as keyof ProjectPrefs] === v)) return m;
+      const next = { ...cur, ...patch };
+      try { localStorage.setItem(projectPrefsKey(id), JSON.stringify(next)); } catch { /* private mode */ }
+      return { ...m, [id]: next };
+    });
+  }, []);
+  // the view in the address is the one this project was last shown in
   useEffect(() => {
-    if (!pviewKey) return;
-    try { const s = localStorage.getItem(pviewKey); if (s) { const c = JSON.parse(s); skipPviewSave.current = true; if (c.view) setView(c.view); if (c.groupBy) setGroupBy(c.groupBy); } } catch { /* private mode */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pviewKey]);
-  useEffect(() => {
-    if (!pviewKey) return;
-    if (skipPviewSave.current) { skipPviewSave.current = false; return; }
-    try { localStorage.setItem(pviewKey, JSON.stringify({ view, groupBy })); } catch { /* private mode */ }
-  }, [view, groupBy, pviewKey]);
+    if (openProjectId && isTaskView(route.tab)) saveProjectPrefs(openProjectId, { view: route.tab });
+  }, [openProjectId, route.tab, saveProjectPrefs]);
 
   /* ---- inbox: scoped to the active workspace; the badge is the server's read_at ---- */
   const scopedActivity = useMemo(() => {
@@ -543,15 +577,18 @@ export default function App() {
   }, [route.view]);
   // while the inbox is on screen, what it shows (this workspace only) is read —
   // including anything that arrives while you're looking at it
-  // what was unread when this inbox visit began (and anything that lands during
-  // it): the page's "3 new" counts these, as its rows keep their dots for the visit
-  const [inboxVisitNew, setInboxVisitNew] = useState<ReadonlySet<string>>(() => new Set());
-  useEffect(() => { if (route.view !== "inbox") setInboxVisitNew((s) => (s.size ? new Set() : s)); }, [route.view, workspace]);
+  // On the Inbox, "new" is what the list shows as new: what was unread when this visit
+  // began (or landed during it), less what you've opened, archived or snoozed since. The
+  // page header, the sidebar and phone badges and the tab title all show that one number
+  // (InboxView reports it), so they fall together and reach zero at Inbox zero. Anywhere
+  // else it's the unread count; leaving the Inbox, what you saw there has been read.
+  const [inboxLiveNew, setInboxLiveNew] = useState<number | null>(null);
+  useEffect(() => { if (route.view !== "inbox") setInboxLiveNew(null); }, [route.view]);
+  const newCount = route.view === "inbox" && inboxLiveNew !== null ? inboxLiveNew : inboxCount;
   useEffect(() => {
     if (route.view !== "inbox") return;
     const unread = scopedActivity.filter((a) => !a.readAt).map((a) => a.id);
     if (!unread.length) return;
-    setInboxVisitNew((s) => { const n = new Set(s); unread.forEach((id) => n.add(id)); return n; });
     const stamp = new Date().toISOString();
     const ids = new Set(unread);
     unread.forEach((id) => readLocallyRef.current.set(id, stamp));
@@ -1735,6 +1772,7 @@ export default function App() {
     if (patch.status === "done" && !confirmCompleteBlocked([prev])) return;
     const note = retarget(prev, patch);
     if ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null) && denyGuest([patch.workspaceId])) return;
+    Object.assign(patch, releasedPlan(prev, patch));
     const fx = newStatusFx();
     if (patch.status) Object.assign(patch, onStatusChange(prev, { ...prev, ...patch }, fx));
     if (!Object.keys(patch).length) return;
@@ -1813,6 +1851,7 @@ export default function App() {
       // per task: completedAt only moves for tasks whose status really changes
       if ("status" in p && (!p.status || p.status === prev.status)) { delete p.status; delete p.completedAt; }
       const note = retarget(prev, p); if (note) notes.add(note);
+      Object.assign(p, releasedPlan(prev, p));
       if (p.status) { if (p.status === "done") completed.push(prev.id); Object.assign(p, onStatusChange(prev, { ...prev, ...p }, fx)); }
       if (Object.keys(p).length) { patches.set(prev.id, p); cascadeToDescendants(prev, p, all, patches); }
     }
@@ -1867,9 +1906,11 @@ export default function App() {
    *  Undo can put back exactly that (see undoGuarded). */
   const guardedWrite = useCallback((id: string, patch: Partial<Task>): GuardedUndo | null => {
     const t = tasksRef.current?.find((x) => x.id === id); if (!t) return null;
+    // (the Undo also puts back a plan a change of assignee cleared)
+    const rowKeys = (p: Partial<Task>) => [...Object.keys(p), ...Object.keys(releasedPlan(t, p))];
     if (ownerAfter(t, patch) === userIdRef.current) {
       patchTask(id, patch);
-      return { id, row: pickFields(t, Object.keys(patch)), plan: null };
+      return { id, row: pickFields(t, rowKeys(patch)), plan: null };
     }
     const { personal, shared } = splitPersonal(patch);
     let plan: GuardedUndo["plan"] = null;
@@ -1881,7 +1922,7 @@ export default function App() {
       writeOverlay(t, personal);
     }
     if (Object.keys(shared).length) patchTask(id, shared);
-    return { id, row: pickFields(t, Object.keys(shared)), plan };
+    return { id, row: pickFields(t, rowKeys(shared)), plan };
   }, [patchTask, denyGuest, writeOverlay]);
   const guardedPatch = useCallback((id: string, patch: Partial<Task>) => { guardedWrite(id, patch); }, [guardedWrite]);
   /** Put back what a guarded change replaced: the row's own fields that no longer
@@ -1891,6 +1932,9 @@ export default function App() {
     const row: Record<string, unknown> = {};
     const cur = now as unknown as Record<string, unknown>;
     for (const [k, v] of Object.entries(u.row)) if (cur[k] !== v) row[k] = v;
+    // handing a task back gives it back its whole plan, even the parts that match now
+    // (left out, the change of assignee would clear them)
+    if ("assigneeId" in row) for (const k of ["planToday", "scheduled", "mySectionId"]) if (k in u.row) row[k] = (u.row as Record<string, unknown>)[k];
     if (Object.keys(row).length) patchTask(u.id, row as Partial<Task>);
     if (u.plan) writeOverlay(now, u.plan);
   }, [patchTask, writeOverlay]);
@@ -2107,7 +2151,8 @@ export default function App() {
   /** A task's plan is its assignee's: a new task that ends up with someone else
    *  (as asked, or by a rule) starts off their day, whatever the page it came from. */
   const unplanIfTheirs = useCallback((t: Task): Task => (
-    (t.planToday || t.scheduled != null) && t.assigneeId && t.assigneeId !== userIdRef.current ? { ...t, planToday: false, scheduled: null } : t
+    (t.planToday || t.scheduled != null || t.mySectionId) && t.assigneeId && t.assigneeId !== userIdRef.current
+      ? { ...t, planToday: false, scheduled: null, mySectionId: undefined } : t
   ), []);
 
   // inline quick-add + quick capture
@@ -2127,7 +2172,9 @@ export default function App() {
     persistTask(unplanIfTheirs(applyAutomation({ ...t, planToday: routeRef.current.view === "plan" ? (t.planToday ?? true) : false })));
   }, [denyGuest, persistTask, applyAutomation, unplanIfTheirs]);
 
-  // Plan my day capture: yours, and in the workspace you're planning
+  // Today's capture: in the workspace you're planning; yours unless you named someone
+  // (@person); on today's plan unless it's for a later day. Like every new task, it never
+  // plans a teammate's day, whoever it ends up with (you named them, or a rule did).
   const createFromPlan = useCallback((t: Task) => {
     const wsId = workspaceRef.current;
     let projectId = t.projectId;
@@ -2135,9 +2182,11 @@ export default function App() {
       projectId = projectsRef.current.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id ?? projectId;
     }
     if (denyGuest([projectWs(projectId)])) return;
-    persistTask(applyAutomation({ ...t, id: newTaskId(), projectId, assigneeId: userIdRef.current, planToday: true }));
+    persistTask(unplanIfTheirs(applyAutomation({
+      ...t, id: newTaskId(), projectId, assigneeId: t.assigneeId || userIdRef.current, planToday: t.planToday ?? true,
+    })));
     noteElsewhere([projectId]);
-  }, [denyGuest, persistTask, applyAutomation, noteElsewhere]);
+  }, [denyGuest, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs]);
 
   /* ---- optimistic tmp-* rows (projects, sections, goals, rules…) ----
      Edits or deletes made before the create returns its real id are queued and
@@ -3133,8 +3182,8 @@ export default function App() {
   const baseTitleRef = useRef(typeof document !== "undefined" ? document.title.replace(/^\(\d+\)\s*/, "") : "Kanbo");
   const pageTitle = route.view === "project" ? projects.find((p) => p.id === route.projectId)?.name || "Project" : titleOf(route, { personal: workspace === null });
   useEffect(() => {
-    document.title = shellShown ? `${inboxCount > 0 ? `(${inboxCount}) ` : ""}${pageTitle} · Kanbo` : baseTitleRef.current;
-  }, [shellShown, pageTitle, inboxCount]);
+    document.title = shellShown ? `${newCount > 0 ? `(${newCount}) ` : ""}${pageTitle} · Kanbo` : baseTitleRef.current;
+  }, [shellShown, pageTitle, newCount]);
   // Screen readers hear where you've gone: a new page (a place, or another project) is
   // announced by name. A tab switch isn't: the tab you pressed already says so.
   const [announced, setAnnounced] = useState("");
@@ -3244,12 +3293,12 @@ export default function App() {
   const projUpdates = openProject ? statusUpdates.filter((u) => u.projectId === openProject.id) : [];
   const projRules = openProject ? automationRules.filter((r) => r.projectId === openProject.id) : [];
   const projForms = openProject ? forms.filter((f) => f.projectId === openProject.id) : [];
-  // the tab in the address, else the view this project was last shown in
-  const taskView: TaskView = openProject && isTaskView(route.tab) ? route.tab : view;
-  const projectTab = openProject ? route.tab ?? view : undefined;
+  // the tab in the address (a bare /p/:id is given the one it was last shown in); My tasks' view is its own
+  const projectView: TaskView = isTaskView(route.tab) ? route.tab : openPrefs?.view ?? "list";
+  const taskView: TaskView = openProject ? projectView : view;
+  const projectTab = openProject ? route.tab ?? projectView : undefined;
   const goProjectTab = (tab: ProjectTab | string) => {
     if (!openProject) return;
-    if (isTaskView(tab)) setView(tab);
     setRoute({ view: "project", projectId: openProject.id, tab }, { keepPanel: true });
   };
   const projectHref = (tab: string) => (openProject ? pathOf({ view: "project", projectId: openProject.id, tab }) : undefined);
@@ -3295,8 +3344,7 @@ export default function App() {
         };
       }
       case "inbox": {
-        const fresh = inboxVisitNew.size + inboxCount;
-        return { title: "Inbox", meta: fresh > 0 ? `${fresh} new` : "Nothing new" };
+        return { title: "Inbox", meta: newCount > 0 ? `${newCount} new` : "Nothing new" };
       }
       case "tasks": {
         // a smart list or saved view names itself
@@ -3377,7 +3425,8 @@ export default function App() {
         onConnectCalendar={() => openSettings("calendar")} setup={setup} showSuggestions={appearance.suggestions !== false}
         riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={activeReadOnly}
         members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
-        risks={risks} onAsk={() => openPalette()} />;
+        risks={risks} onAsk={() => openPalette()}
+        dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })} />;
       case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} readOnly={activeReadOnly} />;
       // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
       // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
@@ -3395,7 +3444,7 @@ export default function App() {
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)
-      case "inbox": return <InboxView activity={scopedActivity} tasks={allSeen} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox}
+      case "inbox": return <InboxView activity={scopedActivity} tasks={allSeen} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} onNewCount={setInboxLiveNew}
         currentUserId={currentUserId} members={assignees} readOnly={activeReadOnly} archived={inboxArchived} onUnarchive={unarchiveInbox}
         // a reply to someone mentions them, so they hear about it
         onReply={(taskId, body, mentions) => addComment(taskId, body, mentions ?? [])}
@@ -3422,7 +3471,8 @@ export default function App() {
         return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
-          tasks={scoped} allTasks={allTasks} projects={wsProjects} view={taskView} setView={inProject ? goProjectTab : setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
+          tasks={scoped} allTasks={allTasks} projects={wsProjects} view={taskView} setView={inProject ? goProjectTab : setView}
+          groupBy={inProject ? openPrefs?.groupBy ?? "status" : groupBy} setGroupBy={inProject ? (g: GroupBy) => saveProjectPrefs(openProject.id, { groupBy: g }) : setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
             // a reorder within the same column is not a status change (completedAt stays put)
             const prev = tasksRef.current?.find((t) => t.id === id);
             const patch: Partial<Task> = {};
@@ -3465,7 +3515,7 @@ export default function App() {
 
   // App keeps the open project valid (its route guard), so the Sidebar's own guard stays off
   const sidebar = (
-    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
+    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={newCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => openSettings()} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling}
       savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch}
@@ -3546,7 +3596,7 @@ export default function App() {
         </div>
         {isMobile && (
           <div style={{ position: "sticky", bottom: 0, zIndex: "var(--z-header, 10)" }}>
-            <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} personal={personal}
+            <MobileNav route={route} setRoute={setRoute} inboxCount={newCount} personal={personal}
               onCapture={activeReadOnly ? undefined : openCapture} onMore={() => setSidebarOpen(true)} moreOpen={sidebarOpen} />
           </div>
         )}
@@ -3594,7 +3644,7 @@ export default function App() {
 
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
-          <TaskDetail taskId={detailId} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
+          <TaskDetail taskId={detailId} ai={aiOn} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
             readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />
         </ErrorBoundary>
       )}

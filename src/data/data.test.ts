@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  parseCapture, planDay, planDayDetailed, dueState, fmtDue, dueOffset, energyOf,
+  parseCapture, parseTodayCapture, planDay, planDayDetailed, dueState, fmtDue, dueOffset, energyOf,
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
   DAY_START, DAY_END, nextDueDate, nextOccurrence, nextOccurrenceChildren,
   refreshClock, KANBO_TODAY, NOW_MIN, presetDate, todayISO, parseTaskTokens,
@@ -13,6 +13,37 @@ const task = (o: Partial<Task>): Task => ({
   id: "t", title: "x", description: "", status: "todo", priority: "medium",
   projectId: "p-personal", assigneeId: "m-self", tags: [], dependencies: [],
   subtasks: [], focusMin: 30, comments: 0, aiScore: 0, ...o,
+});
+
+describe("parseTodayCapture (Today's capture: the whole grammar)", () => {
+  const members = [{ id: "m-self", name: "Daniel Okai" }, { id: "m-1", name: "Maya Lin" }, { id: "m-2", name: "Sana Rao" }];
+  const projects = [{ id: "p-launch", name: "Q3 Product Launch" }];
+  const read = (text: string) => parseTodayCapture(text, { projectId: "p-personal", assigneeId: "m-self", members, projects })!;
+
+  it("takes every word it reads out of the title: a time, an estimate, a day", () => {
+    const { task, parsed } = read("call Sana fri 3pm ~30m");
+    expect(task.title).toBe("Call Sana");
+    expect(task.dueTime).toBe("15:00");
+    expect(task.effortHours).toBe(0.5);
+    expect(task.focusMin).toBe(30);                                  // the estimate is how long the block is
+    expect(parsed.spans.map((s) => s.kind)).toEqual(["date", "time", "estimate"]);
+    expect(task.planToday).toBe(false);                             // Friday's, not today's
+  });
+
+  it("a typed length wins over an estimate; a time with no day is today's, and on today's plan", () => {
+    const { task } = read("Write the brief 45m ~2h 4pm");
+    expect(task).toMatchObject({ title: "Write the brief", focusMin: 45, effortHours: 2, dueTime: "16:00", planToday: true });
+  });
+
+  it("reads @person and #project, and leaves neither in the title", () => {
+    const { task } = read("@Maya call the printer #launch");
+    expect(task).toMatchObject({ title: "Call the printer", assigneeId: "m-1", projectId: "p-launch" });
+  });
+
+  it("falls back to where it's filed, and to you", () => {
+    expect(read("Tidy the backlog").task).toMatchObject({ title: "Tidy the backlog", projectId: "p-personal", assigneeId: "m-self", planToday: true, focusMin: 30 });
+    expect(parseTodayCapture("   ")).toBeNull();
+  });
 });
 
 describe("parseCapture", () => {

@@ -96,11 +96,22 @@ export function Avatar({ id, size = 24, ring }: { id: string; size?: number; rin
   );
 }
 
+/** How far each disc in a stack tucks under the one before it: only as far as keeps its
+ *  initials clear of that disc and its 1.5px ring. Two letters nearly fill a small disc
+ *  (about 1.4× the type size at 600), so a 20px stack barely overlaps and a 32px one
+ *  overlaps more; never more than a quarter of the disc. */
+export function avatarStackOverlap(size: number): number {
+  const type = Math.max(10, Math.round(size * 0.42));
+  const clear = (size - type * 1.4) / 2 - 1.5;
+  return Math.round(Math.max(1, Math.min(size * 0.25, clear)) * 2) / 2;
+}
+
 export function AvatarStack({ ids, size = 22 }: { ids: string[]; size?: number }) {
+  const overlap = avatarStackOverlap(size);
   return (
     <span style={{ display: "inline-flex" }}>
       {ids.map((id, i) => (
-        <span key={id} style={{ marginLeft: i ? -size * 0.32 : 0, zIndex: ids.length - i }}>
+        <span key={id} style={{ marginLeft: i ? -overlap : 0, zIndex: ids.length - i }}>
           <Avatar id={id} size={size} />
         </span>
       ))}

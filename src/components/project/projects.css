@@ -151,7 +151,7 @@ select.kpj-field { cursor: pointer; }
    narrow column): one card per project in its identity. Its cover, its tile over the
    cover's edge with the status beside it, the name, Kanbo's read, then progress, the
    work and its freshness, and the people. The name is the link, stretched over the
-   card; Draft and Post update sit on the cover (shown on hover, focus, or on touch). */
+   card; Draft and Post update sit on the cover, shown on hover or focus (on touch, behind a ⋯). */
 .kpj-gallery {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 16px;
   margin: 4px 0 0; padding: 0; list-style: none;
@@ -193,7 +193,11 @@ select.kpj-field { cursor: pointer; }
 .kpj-gcard-acts .kbtn[data-variant] { border-color: transparent; background: var(--surface-raised); box-shadow: 0 0 0 1px var(--hairline-strong), var(--e1, var(--kpj-e1)); color: var(--ink); }
 .kpj-gcard-acts .kbtn[data-variant]:hover { background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised); color: var(--ink); }
 .kpj-gcard:hover .kpj-gcard-acts, .kpj-gcard:has(:focus-visible) .kpj-gcard-acts,
-.kpj-gcard[data-open="true"] .kpj-gcard-acts, .kpj-gallery[data-touch] .kpj-gcard-acts { opacity: 1; visibility: visible; transition-delay: 0s; }
+.kpj-gcard[data-open="true"] .kpj-gcard-acts { opacity: 1; visibility: visible; transition-delay: 0s; }
+/* touch: one quiet ⋯ on the cover instead (Draft and Post update are in its menu) */
+.kpj-gcard-more { position: absolute; top: 8px; right: 8px; z-index: 1; }
+.kpj-gcard-more .kibtn { border-radius: 999px; background: var(--surface-raised); color: var(--ink-2);
+  box-shadow: 0 0 0 1px var(--hairline-strong), var(--e1, var(--kpj-e1)); }
 @media (max-width: 859px) { .kpj-gallery { gap: 12px; } }
 @media (prefers-reduced-motion: reduce) { .kpj-gcard, .kpj-gcard:hover { transform: none; transition: none; } }
 

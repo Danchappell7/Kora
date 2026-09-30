@@ -78,6 +78,34 @@ describe("App: the details the owner noticed", () => {
     await waitFor(() => expect(screen.getByText("Nothing new")).toBeInTheDocument());      // read on the last visit
   });
 
+  it("Inbox's header, badges and dots tell one story: they fall together, to “Nothing new” at Inbox zero", async () => {
+    const now = new Date().toISOString();
+    spies.push(vi.spyOn(store, "listActivity").mockResolvedValue([
+      { id: "a-1", taskId: "t-1", taskTitle: "Deck", kind: "mention", detail: "Sana Rao", createdAt: now },
+      { id: "a-2", taskId: "t-1", taskTitle: "Deck", kind: "assigned", detail: "Maya Lin", createdAt: now },
+      { id: "a-3", taskId: "t-1", taskTitle: "Deck", kind: "comment", detail: "Theo Vance", createdAt: now, readAt: now },
+    ]));
+    spies.push(vi.spyOn(store, "markActivityRead").mockResolvedValue());
+    spies.push(vi.spyOn(store, "clearInbox").mockResolvedValue(undefined as never));
+    await boot();
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    await waitFor(() => expect(within(nav).getByRole("button", { name: "Inbox, 2 unread" })).toBeInTheDocument());
+    key("g"); key("i");
+    expect(await screen.findByRole("heading", { level: 1, name: "Inbox" })).toBeInTheDocument();
+    // marked read on the server as you look, but what's new here still reads as new, everywhere
+    await waitFor(() => expect(screen.getByText("2 new")).toBeInTheDocument());
+    expect(within(nav).getByRole("button", { name: "Inbox, 2 unread" })).toBeInTheDocument();
+    expect(document.title).toMatch(/^\(2\) Inbox · Kanbo$/);
+    expect(screen.getAllByRole("button", { name: /^Unread: / })).toHaveLength(2);
+    // Archive all: Inbox zero, and nothing claims anything's new
+    fireEvent.click(screen.getByRole("button", { name: "Archive all" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Confirm archive" })).getByRole("button", { name: "Archive" }));
+    await waitFor(() => expect(screen.getByText("Nothing new")).toBeInTheDocument());
+    expect(screen.queryByText("2 new")).not.toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Inbox" })).toBeInTheDocument();
+    expect(document.title).toBe("Inbox · Kanbo");
+  });
+
   it("Settings › Profile shows the demo person's name, in the sidebar's initials", async () => {
     await boot();
     key(",", { metaKey: true });

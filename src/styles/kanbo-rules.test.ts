@@ -205,3 +205,14 @@ describe("project identity", () => {
     expect(bodyOf(".kpchip")).toMatch(/background:\s*transparent/);
   });
 });
+
+describe("toasts", () => {
+  it("sit beside the sidebar on desktop, never over its footer (Focus, the account row, theme, Settings)", () => {
+    const desktop = mediaBlocks(css).find((b) => /min-width:\s*860px/.test(b.query) && /\.ktoasts/.test(b.body));
+    expect(desktop).toBeDefined();
+    expect(desktop!.body).toMatch(/:has\(aside\.ksb\)\s+\.ktoasts\s*\{[^}]*left:\s*calc\(var\(--sidebar-w[^)]*\)\s*\+\s*24px\)/);
+    // phones keep theirs above the bottom bar
+    const phone = mediaBlocks(css).find((b) => /max-width:\s*859px/.test(b.query) && /\.ktoasts/.test(b.body));
+    expect(phone!.body).toMatch(/\.ktoasts\s*\{[^}]*bottom:\s*calc\(72px/);
+  });
+});

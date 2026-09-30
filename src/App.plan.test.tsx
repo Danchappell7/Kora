@@ -14,13 +14,13 @@ import type { AskAction } from "./lib/askTypes";
 
 const seen = vi.hoisted(() => ({
   palette: null as null | { tasks?: Task[]; onApplyAsk?: (a: AskAction[]) => void },
-  pulse: null as null | { tasks: Task[] },
+  pulse: null as null | { tasks: Task[]; onPatch?: (id: string, patch: Partial<Task>) => void },
 }));
 vi.mock("./components/CommandPalette", () => ({
   CommandPalette: (p: { tasks?: Task[]; onApplyAsk?: (a: AskAction[]) => void }) => { seen.palette = p; return null; },
 }));
 vi.mock("./components/views/TeamPulse", () => ({
-  TeamPulse: (p: { tasks: Task[] }) => { seen.pulse = p; return <p>Team pulse stand-in</p>; },
+  TeamPulse: (p: { tasks: Task[]; onPatch?: (id: string, patch: Partial<Task>) => void }) => { seen.pulse = p; return <p>Team pulse stand-in</p>; },
 }));
 
 const today = toLocalISO(KANBO_TODAY);
@@ -109,5 +109,90 @@ describe("App: your plan and theirs", () => {
     // "on today" for Maya's new task went to your own plan instead
     const venue = made.find((t) => t.title === "Book the venue")!;
     expect(myPlan()[venue.id]).toMatchObject({ planToday: true });
+  });
+});
+
+describe("App: a task's plan goes with its assignee", () => {
+  /** t-2 is yours, planned for 10:00 today in one of your My-tasks sections */
+  function myPlannedTask() {
+    const real = store.bootstrap.bind(store);
+    spies.push(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-2" ? { ...t, assigneeId: "m-self", collaborators: [], status: "todo" as const, dependencies: [], planToday: true, scheduled: 600, mySectionId: "ms-1", aiScore: 91 } : t)) };
+    }));
+  }
+  const pulseRow = async (id: string) => {
+    key("g"); key("e");
+    await screen.findByText("Team pulse stand-in");
+    return seen.pulse!.tasks.find((t) => t.id === id)!;
+  };
+
+  it("handing on a task you'd planned never puts it in your slot on their day; Undo gives you your plan back", async () => {
+    myPlannedTask();
+    const update = vi.spyOn(store, "updateTask"); spies.push(update);
+    await boot();
+    ask([{ op: "update", id: "t-2", patch: { assigneeId: "m-1" } }]);
+    await waitFor(() => expect(update).toHaveBeenCalledWith("t-2", expect.objectContaining({ assigneeId: "m-1", planToday: false, scheduled: null, mySectionId: undefined })));
+    expect(await pulseRow("t-2")).toMatchObject({ assigneeId: "m-1", planToday: false, scheduled: null, mySectionId: undefined });
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(seen.pulse!.tasks.find((t) => t.id === "t-2")).toMatchObject({ assigneeId: "m-self", planToday: true, scheduled: 600, mySectionId: "ms-1" }));
+  });
+
+  it("Radar's Assign hands the task on without its old plan", async () => {
+    myPlannedTask();
+    await boot();
+    const row = await pulseRow("t-2");
+    expect(row).toMatchObject({ planToday: true, scheduled: 600 });
+    act(() => { seen.pulse!.onPatch!("t-2", { assigneeId: "m-1" }); });
+    await waitFor(() => expect(seen.pulse!.tasks.find((t) => t.id === "t-2")).toMatchObject({ assigneeId: "m-1", planToday: false, scheduled: null }));
+  });
+
+  it("taking a teammate's task doesn't bring their plan with it", async () => {
+    mayasTask();
+    await boot();
+    ask([{ op: "update", id: "t-2", patch: { assigneeId: "m-self" } }]);
+    await waitFor(() => expect(seenTask("t-2")).toMatchObject({ assigneeId: "m-self", planToday: false, scheduled: null }));
+  });
+});
+
+describe("App: Today's capture", () => {
+  it("a rule that hands the new task to someone else never plans their day", async () => {
+    const real = store.bootstrap.bind(store);
+    spies.push(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      const automationRules = b.projects.map((p, i) => ({ id: `r-maya-${i}`, projectId: p.id, name: "To Maya", trigger: "task_created", enabled: true, actions: [{ type: "set_assignee", value: "m-1" }] }));
+      return { ...b, automationRules } as typeof b;
+    }));
+    const create = vi.spyOn(store, "createTask"); spies.push(create);
+    await boot();
+    const input = await screen.findByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "Order the banners" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({ title: "Order the banners", assigneeId: "m-1", planToday: false, scheduled: null });
+  });
+
+  it("@person hands the task to them (off everyone's day) with the name out of its title", async () => {
+    const create = vi.spyOn(store, "createTask"); spies.push(create);
+    await boot();
+    const input = await screen.findByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "@Maya call the printer" } });
+    expect(document.querySelector(".krail-parse-bits")?.textContent).toContain("Maya Lin");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({ title: "Call the printer", assigneeId: "m-1", planToday: false });
+    expect(await screen.findByText("Added “Call the printer” for Maya Lin.")).toBeInTheDocument();
+  });
+
+  it("the placeholder's own example is filed as it reads: “Call Sana”, Friday at 15:00, a 30-minute estimate", async () => {
+    const create = vi.spyOn(store, "createTask"); spies.push(create);
+    await boot();
+    const input = await screen.findByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "call Sana fri 3pm ~30m" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    const t = create.mock.calls[0][0] as Task;
+    expect(t).toMatchObject({ title: "Call Sana", dueTime: "15:00", effortHours: 0.5, focusMin: 30, assigneeId: "m-self" });
+    expect(new Date(t.dueDate + "T00:00:00").getDay()).toBe(5);
   });
 });
