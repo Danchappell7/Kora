@@ -94,6 +94,37 @@ describe("WorkloadView", () => {
     expect(screen.queryByText(/Over capacity/)).toBeNull();
     expect(screen.getByText("(former member)")).toBeInTheDocument();
   });
+  it("compares hours as shown, so 40.03h reads 40h / 40h and isn't flagged over capacity", () => {
+    const wk = startOfWeekMon(KANBO_TODAY);
+    render(<WorkloadView members={[{ id: "m-1", name: "Maya Lin" }]} onOpen={() => {}} tasks={[
+      task({ assigneeId: "m-1", dueDate: toLocalISO(addDays(wk, 6)), effortHours: 40 }),
+      // Mon this week → Fri in 4 weeks = 25 working days; this week's share is 0.03h
+      task({ assigneeId: "m-1", startDate: toLocalISO(wk), dueDate: toLocalISO(addDays(wk, 32)), effortHours: 0.15 }),
+    ]} />);
+    expect(screen.getByText(/40h \/ 40h · 2 tasks/)).toBeInTheDocument();
+    expect(screen.queryByText(/Over capacity/)).toBeNull();
+    expect(screen.queryByText(/overloaded/)).toBeNull();
+  });
+  it("reverts a rejected capacity (blank or 0) to the capacity in use, and saves a valid one", () => {
+    try { localStorage.removeItem("kanbo-capacity"); } catch { /* no storage */ }
+    render(<WorkloadView members={[{ id: "m-1", name: "Maya Lin" }]} onOpen={() => {}} tasks={[task({ assigneeId: "m-1", dueDate: day(0), effortHours: 4 })]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    const cap = screen.getByLabelText("Weekly capacity for Maya Lin, in hours") as HTMLInputElement;
+    for (const bad of ["", "0", "-5", "500"]) {
+      fireEvent.focus(cap);
+      fireEvent.change(cap, { target: { value: bad } });
+      fireEvent.blur(cap);
+      expect(cap.value).toBe("40");
+      expect(screen.getByText(/4h \/ 40h · 1 task/)).toBeInTheDocument();
+    }
+    fireEvent.focus(cap);
+    fireEvent.change(cap, { target: { value: "32" } });
+    fireEvent.blur(cap);
+    expect(cap.value).toBe("32");
+    expect(screen.getByText(/4h \/ 32h · 1 task/)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kanbo-capacity") || "{}")).toEqual({ "m-1": 32 });
+    localStorage.removeItem("kanbo-capacity");
+  });
 });
 
 describe("GoalsView", () => {
@@ -126,6 +157,48 @@ describe("GoalsView", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith("G", { name: "Grow revenue" });
   });
+  it("never writes back a stale value when a focused field is left without typing", () => {
+    const onUpdate = vi.fn();
+    const goal = (o: Partial<Goal>): Goal => ({ id: "G", name: "Grow", status: "on_track", current: 10, target: 100, ...o });
+    const { rerender } = render(<GoalsView {...base} goals={[goal({})]} onUpdate={onUpdate} />);
+    const nameBox = screen.getByLabelText("Goal name: Grow") as HTMLInputElement;
+    const current = screen.getByLabelText("Current value for Grow") as HTMLInputElement;
+    fireEvent.focus(nameBox);
+    fireEvent.focus(current);
+    // a teammate's rename and new figure arrive by realtime while the fields have focus
+    rerender(<GoalsView {...base} goals={[goal({ name: "Grow revenue 20%", current: 55 })]} onUpdate={onUpdate} />);
+    expect(nameBox.value).toBe("Grow revenue 20%");
+    expect(current.value).toBe("55");
+    fireEvent.blur(nameBox);
+    fireEvent.blur(current);
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(nameBox.value).toBe("Grow revenue 20%");
+    expect(current.value).toBe("55");
+  });
+  it("keeps what the user typed when a teammate's change arrives mid-edit, and Escape reverts to the latest", () => {
+    const onUpdate = vi.fn();
+    const goal = (name: string): Goal => ({ id: "G", name, status: "on_track" });
+    const { rerender } = render(<GoalsView {...base} goals={[goal("Grow")]} onUpdate={onUpdate} />);
+    const nameBox = screen.getByLabelText("Goal name: Grow") as HTMLInputElement;
+    fireEvent.focus(nameBox);
+    fireEvent.change(nameBox, { target: { value: "Grow ARR" } });
+    rerender(<GoalsView {...base} goals={[goal("Grow revenue")]} onUpdate={onUpdate} />);
+    expect(nameBox.value).toBe("Grow ARR");
+    fireEvent.keyDown(nameBox, { key: "Escape" });
+    fireEvent.blur(nameBox);
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(nameBox.value).toBe("Grow revenue");
+  });
+  it("keeps a parent's own current / target visible and in charge once it has sub-goals", () => {
+    const goals: Goal[] = [
+      { id: "P", name: "Company revenue", status: "on_track", current: 40, target: 100 },
+      { id: "S", name: "EMEA", status: "on_track", current: 0, target: 100, parentId: "P" },
+    ];
+    render(<GoalsView {...base} goals={goals} onUpdate={() => {}} />);
+    expect((screen.getByLabelText("Current value for Company revenue") as HTMLInputElement).value).toBe("40");
+    expect(screen.getByRole("progressbar", { name: "Company revenue progress" })).toHaveAttribute("aria-valuenow", "40");
+    expect(screen.getByText(/Own value · 1 sub-goal average 0%/)).toBeInTheDocument();
+  });
 });
 
 describe("AutomationsView", () => {
@@ -155,5 +228,14 @@ describe("FormsView", () => {
     fireEvent.change(screen.getByLabelText("New form name"), { target: { value: "Bug report" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(onCreate).toHaveBeenCalledWith("pb", "Bug report", ["description", "priority"]);
+  });
+  it("sends an explicit empty assignee when the submitter picks Unassigned", () => {
+    const onSubmit = vi.fn();
+    const form: FormDef = { id: "f1", projectId: "pa", name: "Bug", fields: ["assignee"] };
+    render(<FormsView forms={[form]} projects={[proj("pa", "Alpha")]} members={[{ id: "m-1", name: "Maya Lin" }]} onCreate={() => {}} onUpdate={() => {}} onDelete={() => {}} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open form Bug" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Printer jammed" } });
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
+    expect(onSubmit).toHaveBeenCalledWith("pa", expect.objectContaining({ title: "Printer jammed", assigneeId: "" }));
   });
 });

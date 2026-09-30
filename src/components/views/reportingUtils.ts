@@ -148,7 +148,10 @@ export interface TaskWeekLoad { hours: number; overdue: boolean }
 /** How much of an open task's estimate lands in the week starting `weekStart`.
  *  - due date only → the whole estimate lands in the week it's due
  *  - start → due  → the estimate is spread evenly over the working days of the span
- *  - late or started-and-undated work that is still open is carried into the current week
+ *  - start date only → the whole estimate lands in the week it starts
+ *  - late work that is still open is carried, in full, into the current week
+ *  - work under way with no due date (started before this week) counts this
+ *    week's share of the estimate, spread from its start to the end of this week
  *  - no dates at all → null (unscheduled; not counted against capacity) */
 export function taskLoadInWeek(t: Task, weekStart: Date, today: Date): TaskWeekLoad | null {
   const due = localDay(t.dueDate), start = localDay(t.startDate);
@@ -162,6 +165,14 @@ export function taskLoadInWeek(t: Task, weekStart: Date, today: Date): TaskWeekL
   const last = due ?? start!;
   // everything still open on a late task is due now, however long its span was
   if (overdue) return isCurrent ? { hours: effort, overdue } : null;
+  // work already under way with no due date isn't late — it has no deadline.
+  // Count this week's share of the estimate spread from its start to the end of
+  // this week, not the whole estimate again every week it stays open.
+  if (!due && start! < weekStart) {
+    if (!isCurrent) return null;
+    const span = workdays(start!, lastDay);
+    return { hours: span > 0 ? effort * (workdays(weekStart, lastDay) / span) : effort, overdue: false };
+  }
   if (last < weekStart) return isCurrent ? { hours: effort, overdue } : null;
   const first = start && due && start <= due ? start : last;
   if (first > lastDay) return null;
@@ -238,10 +249,21 @@ export function goalDescendants<G extends { id: string; parentId?: string }>(goa
   return out;
 }
 
-export interface GoalProgress { pct: number; source: "project" | "subgoals" | "manual"; children: number }
+export interface GoalProgress {
+  pct: number;
+  source: "project" | "subgoals" | "manual";
+  children: number;
+  /** average of the sub-goals, when there are any (shown alongside a goal's own number) */
+  subPct?: number;
+}
 
-/** Progress for every goal: a linked project drives it; otherwise a goal with
- *  sub-goals rolls up as the average of them; otherwise current / target. */
+/** Progress for every goal:
+ *  - a linked project drives it;
+ *  - otherwise a goal that tracks its own number (current > 0) keeps current / target,
+ *    so parents that already tracked a figure don't change when sub-goals are added;
+ *  - otherwise a goal with sub-goals rolls up as their average (the untouched
+ *    0 / 100 parent used to read 0% however far along its sub-goals were);
+ *  - otherwise current / target. */
 export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) => number): Map<string, GoalProgress> {
   const ids = new Set(goals.map((g) => g.id));
   const kids = new Map<string, Goal[]>();
@@ -252,19 +274,24 @@ export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) =
   const calc = (g: Goal): GoalProgress => {
     const hit = memo.get(g.id); if (hit) return hit;
     const children = kids.get(g.id) ?? [];
-    let res: GoalProgress;
-    if (g.projectId) res = { pct: projectPct(g.projectId), source: "project", children: children.length };
-    else if (children.length && !visiting.has(g.id)) {
+    let subPct: number | undefined;
+    if (children.length && !visiting.has(g.id)) {
       visiting.add(g.id);
       const vals = children.filter((c) => !visiting.has(c.id)).map((c) => calc(c).pct);
       visiting.delete(g.id);
-      res = vals.length ? { pct: vals.reduce((a, b) => a + b, 0) / vals.length, source: "subgoals", children: children.length } : { pct: manual(g), source: "manual", children: 0 };
-    } else res = { pct: manual(g), source: "manual", children: 0 };
+      if (vals.length) subPct = vals.reduce((a, b) => a + b, 0) / vals.length;
+    }
+    const n = children.length;
+    const withSub = subPct === undefined ? {} : { subPct };
+    let res: GoalProgress;
+    if (g.projectId) res = { pct: projectPct(g.projectId), source: "project", children: n, ...withSub };
+    else if (subPct !== undefined && !((g.current ?? 0) > 0)) res = { pct: subPct, source: "subgoals", children: n, subPct };
+    else res = { pct: manual(g), source: "manual", children: n, ...withSub };
     memo.set(g.id, res);
     return res;
   };
   goals.forEach((g) => calc(g));
-  memo.forEach((v, k) => memo.set(k, { ...v, pct: Math.round(v.pct) }));
+  memo.forEach((v, k) => memo.set(k, { ...v, pct: Math.round(v.pct), ...(v.subPct === undefined ? {} : { subPct: Math.round(v.subPct) }) }));
   return memo;
 }
 

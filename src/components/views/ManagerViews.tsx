@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { Icon, Avatar, EmptyArt, Collapse } from "../primitives";
 import { getProject, getMember, projectProgress, KANBO_TODAY, TAGS, PRIORITY_META, toLocalISO } from "../../data/data";
 import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate, Section, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey, TagDef, Priority } from "../../data/types";
-import { addDays, fmtDayMonth, fmtHours, goalDescendants, goalProgressMap, goalTree, projectHealth, resolveTagId, round1, startOfWeekMon, useStableOrder, workloadForWeek, type HealthKind } from "./reportingUtils";
+import { addDays, fmtDayMonth, fmtHours, goalDescendants, goalProgressMap, goalTree, projectHealth, resolveTagId, round1, startOfWeekMon, useStableOrder, workloadForWeek, type GoalProgress, type HealthKind } from "./reportingUtils";
 
 const inp: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" };
 /* progress / capacity tracks: a visible well on white cards in the light theme */
@@ -49,10 +49,15 @@ function Pill({ color, title, children }: { color: string; title?: string; child
 
 /** A field that edits a local draft and saves once — on blur or Enter; Escape
  *  reverts. Saving on every keystroke sent ~25 UPDATEs per name, and a
- *  realtime reload in between could revert the field mid-word. */
-function DraftInput({ value, onCommit, label, style, type = "text", placeholder, required = false, min }: {
+ *  realtime reload in between could revert the field mid-word.
+ *  Only a value the user actually typed is ever saved: focusing a field and
+ *  leaving it never writes, so a teammate's change that arrives meanwhile
+ *  shows up and is kept. */
+function DraftInput({ value, onCommit, label, style, type = "text", placeholder, required = false, min, max, title }: {
   value: string | number | undefined;
-  onCommit: (v: string) => void;
+  /** save the typed value. Return false to reject it (the field shows the
+   *  saved value again), or a string to show the value as it was stored. */
+  onCommit: (v: string) => void | string | false;
   label: string;
   style?: CSSProperties;
   type?: "text" | "number";
@@ -60,25 +65,28 @@ function DraftInput({ value, onCommit, label, style, type = "text", placeholder,
   /** an empty value reverts instead of saving (names can't be blank) */
   required?: boolean;
   min?: number;
+  max?: number;
+  title?: string;
 }) {
   const external = value == null ? "" : String(value);
   const [draft, setDraft] = useState(external);
-  const editing = useRef(false);
+  // true once the user has typed; until then the field keeps following `value`
+  const dirty = useRef(false);
   const cancelled = useRef(false);
-  // follow outside changes (another tab, a teammate) — but never mid-edit
-  useEffect(() => { if (!editing.current) setDraft(external); }, [external]);
+  // follow outside changes (another tab, a teammate) — but never over unsaved typing
+  useEffect(() => { if (!dirty.current) setDraft(external); }, [external]);
   const commit = () => {
-    editing.current = false;
-    if (cancelled.current) { cancelled.current = false; setDraft(external); return; }
+    const typed = dirty.current, escaped = cancelled.current;
+    dirty.current = false; cancelled.current = false;
+    if (!typed || escaped) { setDraft(external); return; }
     const v = type === "text" ? draft.trim() : draft;
-    if (required && !v) { setDraft(external); return; }
-    setDraft(v);
-    if (v !== external) onCommit(v);
+    if ((required && !v) || v === external) { setDraft(external); return; }
+    const shown = onCommit(v);
+    setDraft(shown === false ? external : typeof shown === "string" ? shown : v);
   };
   return (
-    <input type={type} value={draft} min={min} placeholder={placeholder} aria-label={label} style={style}
-      onFocus={() => { editing.current = true; }}
-      onChange={(e) => { editing.current = true; setDraft(e.target.value); }}
+    <input type={type} value={draft} min={min} max={max} title={title} placeholder={placeholder} aria-label={label} style={style}
+      onChange={(e) => { dirty.current = true; setDraft(e.target.value); }}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
@@ -89,6 +97,7 @@ function DraftInput({ value, onCommit, label, style, type = "text", placeholder,
 
 /* ---------------- WORKLOAD ---------------- */
 const DEFAULT_CAP = 40;   // weekly capacity (hours) unless set per person
+const MIN_CAP = 1, MAX_CAP = 168;
 const HEAVY = 12;         // tasks in one week that signal overload even without estimates
 const CAP_KEY = "kanbo-capacity";
 function readCaps(): Record<string, number> {
@@ -106,7 +115,8 @@ export function WorkloadView({ tasks, members, onOpen }: {
   const capOf = (id: string) => { const c = caps[id]; return typeof c === "number" && c > 0 ? c : DEFAULT_CAP; };
   const setCap = (id: string, hours: number) => setCaps((cur) => {
     const next = { ...cur };
-    if (!(hours > 0) || hours === DEFAULT_CAP) delete next[id]; else next[id] = round1(hours);
+    const h = round1(hours);
+    if (!(h > 0) || h === DEFAULT_CAP) delete next[id]; else next[id] = h;
     try { localStorage.setItem(CAP_KEY, JSON.stringify(next)); } catch { /* private mode */ }
     return next;
   });
@@ -126,7 +136,9 @@ export function WorkloadView({ tasks, members, onOpen }: {
     const known = getMember(id)?.name;
     return known ? `${known} (former member)` : "(former member)";
   }
-  const overloaded = rows.filter((r) => isMember(r.id) && (r.hours > capOf(r.id) || r.items.length >= HEAVY));
+  // compare the hours as shown (1 decimal), so "40h / 40h" is never flagged over capacity
+  const isOver = (r: { id: string; hours: number }) => round1(r.hours) > capOf(r.id);
+  const overloaded = rows.filter((r) => isMember(r.id) && (isOver(r) || r.items.length >= HEAVY));
   const orphaned = rows.filter((r) => !isMember(r.id) && r.items.length > 0).reduce((a, r) => a + r.items.length, 0);
   // rebalance hint: the busiest person + a teammate who clearly has room
   const freeest = rows.filter((r) => isMember(r.id)).sort((a, b) => (a.hours / capOf(a.id) - b.hours / capOf(b.id)) || (a.items.length - b.items.length))[0];
@@ -148,7 +160,7 @@ export function WorkloadView({ tasks, members, onOpen }: {
           {weekOffset > 0 && <button type="button" onClick={() => setWeekOffset(0)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12.5 }}>This week</button>}
         </div>
         <p style={{ flex: "1 1 280px", fontSize: 12.5, color: "var(--ink-4)", margin: 0, lineHeight: 1.5 }}>
-          Estimated hours due in the week, per person. Tasks with a start and due date are spread across the working days between them{weekOffset === 0 ? "; overdue work counts this week" : ""}. Capacity is {DEFAULT_CAP}h unless you set one.
+          Estimated hours due in the week, per person. Tasks with a start and due date are spread across the working days between them{weekOffset === 0 ? "; overdue work counts in full this week, and work under way with no due date counts a weekly share" : ""}. Capacity is {DEFAULT_CAP}h unless you set one.
         </p>
       </div>
       {overloaded.length > 0 && (
@@ -172,7 +184,7 @@ export function WorkloadView({ tasks, members, onOpen }: {
           {rows.map((r) => {
             const member = isMember(r.id);
             const cap = capOf(r.id);
-            const over = member && r.hours > cap;
+            const over = member && isOver(r);
             const heavy = member && !over && r.items.length >= HEAVY;
             const pct = Math.min(100, (r.hours / cap) * 100);
             const name = nameOf(r.id);
@@ -193,7 +205,7 @@ export function WorkloadView({ tasks, members, onOpen }: {
                 <div style={{ marginTop: 9, height: 9, borderRadius: 6, background: TRACK, overflow: "hidden" }}>
                   <div style={{ width: `${heavy ? 100 : pct}%`, height: "100%", borderRadius: 6, background: over || heavy ? "var(--prio-urgent)" : member ? "var(--accent)" : "var(--ink-4)", transition: "width .6s var(--ease)" }} />
                 </div>
-                {over && <div style={{ fontSize: 11.5, color: "var(--prio-urgent)", marginTop: 6 }}>Over capacity by {fmtHours(r.hours - cap)}</div>}
+                {over && <div style={{ fontSize: 11.5, color: "var(--prio-urgent)", marginTop: 6 }}>Over capacity by {fmtHours(round1(r.hours) - cap)}</div>}
                 {heavy && <div style={{ fontSize: 11.5, color: "var(--prio-urgent)", marginTop: 6 }}>Heavy load — {r.items.length} tasks {weekOffset === 0 ? "this week" : "that week"}</div>}
                 <Collapse open={open}>
                   <div id={panelId} style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
@@ -217,9 +229,15 @@ export function WorkloadView({ tasks, members, onOpen }: {
                     {member && (
                       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, padding: "8px 8px 2px", borderTop: "1px solid var(--hairline)", fontSize: 12.5, color: "var(--ink-3)", flexWrap: "wrap" }}>
                         Weekly capacity
-                        <DraftInput type="number" min={1} value={cap} label={`Weekly capacity for ${name}, in hours`}
-                          onCommit={(v) => setCap(r.id, Number(v))} style={{ ...inp, width: 72, height: 28, fontFamily: "var(--font-mono)", fontSize: 12.5 }} />
-                        h <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>· saved on this device</span>
+                        <DraftInput type="number" min={MIN_CAP} max={MAX_CAP} value={cap} label={`Weekly capacity for ${name}, in hours`} title={`Between ${MIN_CAP} and ${MAX_CAP} hours`}
+                          onCommit={(v) => {
+                            // out of range (or cleared) → the box shows the capacity actually in use again
+                            const h = Number(v);
+                            if (v.trim() === "" || !(h >= MIN_CAP && h <= MAX_CAP)) return false;
+                            setCap(r.id, h);
+                            return String(round1(h));
+                          }} style={{ ...inp, width: 72, height: 28, fontFamily: "var(--font-mono)", fontSize: 12.5 }} />
+                        h <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>· {MIN_CAP}–{MAX_CAP}h · saved on this device</span>
                       </label>
                     )}
                   </div>
@@ -256,10 +274,16 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
   const progress = goalProgressMap(goals, (pid) => projectProgress(tasks, pid));
   const todayIso = toLocalISO(KANBO_TODAY);
   const numOr0 = (v: string) => { const n = Number(v); return v.trim() === "" || !isFinite(n) ? 0 : n; };
+  // save a typed number (blank → 0) only when it differs, and show it as stored
+  const saveNum = (g: Goal, key: "current" | "target", v: string) => {
+    const n = numOr0(v);
+    if (n !== (g[key] ?? 0)) onUpdate(g.id, key === "current" ? { current: n } : { target: n });
+    return String(n);
+  };
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-        <p style={{ flex: "1 1 260px", fontSize: 13, color: "var(--ink-4)", margin: 0 }}>Track measurable objectives — link a project for automatic progress, or nest sub-goals and the parent rolls up their average.</p>
+        <p style={{ flex: "1 1 260px", fontSize: 13, color: "var(--ink-4)", margin: 0 }}>Track measurable objectives — link a project for automatic progress, or nest sub-goals: a parent with no current value of its own shows their average.</p>
         <button onClick={() => setAdding(true)} className="btn btn-accent" style={{ marginLeft: "auto", padding: "7px 13px", fontSize: 13 }}><Icon name="plus" size={15} /> New goal</button>
       </div>
       {adding && (
@@ -273,7 +297,7 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {ordered.map(({ g, depth }) => {
             const meta = GOAL_STATUS[g.status] ?? GOAL_STATUS.on_track;
-            const prog = progress.get(g.id) ?? { pct: 0, source: "manual" as const, children: 0 };
+            const prog: GoalProgress = progress.get(g.id) ?? { pct: 0, source: "manual", children: 0 };
             const pct = prog.pct;
             const linkedProject = g.projectId ? getProject(g.projectId) : undefined;
             // a goal can't sit under itself or anything nested beneath it
@@ -316,17 +340,18 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
                   </label>
                   {overdue && <Pill color="var(--prio-urgent)">Overdue</Pill>}
                 </div>
-                {prog.source === "manual" && (
+                {prog.source !== "project" && (
                   <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8, flexWrap: "wrap" }}>
-                    <DraftInput type="number" value={g.current ?? 0} label={`Current value for ${g.name}`} onCommit={(v) => onUpdate(g.id, { current: numOr0(v) })} style={{ ...inp, width: 90 }} />
+                    <DraftInput type="number" value={g.current ?? 0} label={`Current value for ${g.name}`} onCommit={(v) => saveNum(g, "current", v)} style={{ ...inp, width: 90 }} />
                     <span style={{ color: "var(--ink-4)", fontSize: 13 }}>/</span>
-                    <DraftInput type="number" value={g.target ?? 0} label={`Target for ${g.name}`} onCommit={(v) => onUpdate(g.id, { target: numOr0(v) })} style={{ ...inp, width: 90 }} />
+                    <DraftInput type="number" value={g.target ?? 0} label={`Target for ${g.name}`} onCommit={(v) => saveNum(g, "target", v)} style={{ ...inp, width: 90 }} />
                     <DraftInput value={g.unit ?? ""} placeholder="unit" label={`Unit for ${g.name}`} onCommit={(v) => onUpdate(g.id, { unit: v })} style={{ ...inp, width: 90 }} />
                   </div>
                 )}
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                   {prog.source === "project" && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>From project {linkedProject?.name ?? "—"}</span>}
-                  {prog.source === "subgoals" && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Average of {prog.children} sub-goal{prog.children === 1 ? "" : "s"}</span>}
+                  {prog.source === "subgoals" && <span style={{ fontSize: 12, color: "var(--ink-4)" }} title="Enter a current value to track this goal's own number instead">Average of {prog.children} sub-goal{prog.children === 1 ? "" : "s"}</span>}
+                  {prog.source === "manual" && prog.subPct !== undefined && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Own value · {prog.children} sub-goal{prog.children === 1 ? "" : "s"} average {prog.subPct}%</span>}
                   <span className="mono tnum" style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600, color: meta.color }}>{pct}%</span>
                 </div>
                 <div role="progressbar" aria-label={`${g.name} progress`} aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} style={{ height: 9, borderRadius: 6, background: TRACK, overflow: "hidden" }}>
@@ -628,6 +653,8 @@ const FORM_FIELDS: { key: FormFieldKey; label: string }[] = [
   { key: "dueDate", label: "Due date" },
   { key: "assignee", label: "Assignee" },
 ];
+/** `assigneeId` is "" when the form asks for an assignee and the submitter
+ *  chose "Unassigned", and undefined when the form doesn't ask. */
 export interface FormValues { title: string; description?: string; priority?: string; dueDate?: string; assigneeId?: string }
 export function FormsView({ forms, projects, members, onCreate, onUpdate, onDelete, onSubmit }: {
   forms: FormDef[];
@@ -651,7 +678,7 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
   // a remembered assignee from another workspace would silently assign the task outside this team
   const assigneeId = vals.assigneeId && members.some((m) => m.id === vals.assigneeId) ? vals.assigneeId : "";
   const add = () => { const n = name.trim(); if (n && pid) { onCreate(pid, n, ["description", "priority"]); setName(""); setAdding(false); } };
-  const submit = (f: FormDef) => { if (vals.title.trim()) { onSubmit(f.projectId, { ...vals, title: vals.title.trim(), assigneeId: assigneeId || undefined }); setVals({ title: "" }); setFillFor(null); } };
+  const submit = (f: FormDef) => { if (vals.title.trim()) { onSubmit(f.projectId, { ...vals, title: vals.title.trim(), assigneeId: f.fields.includes("assignee") ? assigneeId : undefined }); setVals({ title: "" }); setFillFor(null); } };
   const ordered = useStableOrder(forms);
 
   return (
