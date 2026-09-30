@@ -9,6 +9,8 @@
 //
 // Abuse limits (rate_limits from migration 0042; fails open without it):
 //   • one request per email address per minute — repeats are a quiet no-op
+//   • one pending request per address; a repeat after approval is dropped by
+//     0042's trigger (unless that access was revoked since) — no admin email
 //   • per IP: the request is still recorded, but at most 5 admin emails per
 //     10 minutes (a whole office behind one IP is never turned away)
 //   • at most 20 admin emails per hour overall — the rest wait in the panel
@@ -51,17 +53,22 @@ Deno.serve(async (req) => {
     emailKey = key;
     await sweep(admin);
 
-    // one open request per address — repeats are a quiet no-op
-    // (a failed lookup isn't fatal: the insert below is de-duplicated by 0042 too)
-    const { data: existing, error: findErr } = await whereEmail(admin.from("access_requests").select("id,status"), "email", email).limit(5);
+    // one open request per address — a repeat while one is pending is a quiet
+    // no-op (a failed lookup isn't fatal: the insert below is de-duplicated by
+    // 0042 too). An earlier APPROVED request is 0042's call, not ours: its
+    // before-insert trigger drops a repeat from someone already let in, but
+    // queues it if that account's access was revoked since.
+    const { data: existing, error: findErr } = await whereEmail(admin.from("access_requests").select("id").eq("status", "pending"), "email", email).limit(1);
     if (findErr) console.warn("request-access lookup", findErr.message);
-    if ((existing ?? []).some((r: { status: string }) => r.status === "pending" || r.status === "approved")) return json({ ok: true });
-    const { error } = await admin.from("access_requests").insert({ name, email, note: note || null });
+    if ((existing ?? []).length) return json({ ok: true });
+    const { data: inserted, error } = await admin.from("access_requests").insert({ name, email, note: note || null }).select("id");
     if (error) {
       // a simultaneous duplicate hit the one-pending-per-email index: already recorded
       if (error.code === "23505") return json({ ok: true });
       throw new Error(`insert: ${error.message}`);
     }
+    // no row back: the trigger dropped a repeat, so there's nothing new for the admins
+    if (!(inserted ?? []).length) return json({ ok: true });
     saved = true;
 
     // ---- tell the admins (best-effort; the request is already saved) ----

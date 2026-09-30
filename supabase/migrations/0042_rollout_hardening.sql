@@ -33,6 +33,9 @@
 --      anyone who could see the task, guests included. They now follow 0041:
 --      everyone who sees the task reads them; only people who can edit the
 --      task (never guests) add, change or remove them.
+--  10. Following a task: guests could not follow (0041 rejects their task
+--      updates). toggle_task_follow() lets anyone who can see a task add or
+--      remove only their own id.
 -- Needs 0041. Idempotent: safe to run more than once.
 -- RUN IT LAST. Re-running an older migration that this file overrides puts the
 -- old hole back (e.g. 0010 re-creates the listable avatar policy, 0025 the
@@ -686,6 +689,44 @@ create policy "dependencies edit: task editors" on public.task_dependencies
 create policy "dependencies delete: task editors" on public.task_dependencies
   for delete using (public.can_edit_task(task_id));
 
+-- ---------- 7c. following a task: everyone who can see it, guests too ----------
+-- Following only adds or removes the caller's OWN id, so it is open to anyone
+-- who can see the task (same rule as 0041's task read policy), including guests,
+-- whose direct task updates 0041 rejects. One locked update, so two people
+-- following at once never overwrite each other. p_follow: true = follow,
+-- false = unfollow, null = toggle. Returns the task's followers afterwards.
+-- The app always passes true or false (store.setTaskFollow), so a screen that
+-- is out of date can't flip the person's choice; null is for the SQL editor.
+create or replace function public.toggle_task_follow(p_task uuid, p_follow boolean default null)
+returns text[] language plpgsql security definer set search_path = public as $$
+declare
+  me     text := lower(auth.uid()::text);
+  t      record;
+  now_on boolean;
+  result text[];
+begin
+  if me is null then raise exception 'not authorized'; end if;
+  select id, user_id, workspace_id, coalesce(followers, '{}') as followers
+    into t from public.tasks where id = p_task for update;
+  if t.id is null
+     or not ((t.workspace_id is null and t.user_id = auth.uid() and public.can_act())
+             or (t.workspace_id is not null and public.is_member(t.workspace_id))) then
+    raise exception 'task not found';          -- same answer whether it's gone or not yours
+  end if;
+  now_on := exists (select 1 from unnest(t.followers) f where lower(f) = me);
+  if coalesce(p_follow, not now_on) = now_on then return t.followers; end if;  -- already so: no write
+  update public.tasks x
+     set followers = case when now_on
+                          then array(select f from unnest(x.followers) with ordinality as a(f, i)
+                                      where lower(f) is distinct from me order by i)
+                          else coalesce(x.followers, '{}') || me end
+   where x.id = p_task
+  returning x.followers into result;
+  return result;
+end; $$;
+revoke execute on function public.toggle_task_follow(uuid, boolean) from public, anon;
+grant execute on function public.toggle_task_follow(uuid, boolean) to authenticated;
+
 -- ---------- 8. realtime for the remaining shared tables ----------
 do $rt$
 declare t text;
@@ -766,6 +807,8 @@ insert into public.schema_migrations (version) values ('0042') on conflict (vers
 --       and coalesce(qual, '') || coalesce(with_check, '') like '%can_edit_task%') = 6    as checklist_deps_editors_only,
 --   exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
 --            and policyname = 'owner delete task-files' and qual like '%attachments%')      as task_file_delete_scoped,
+--   exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace
+--            and proname = 'toggle_task_follow' and prosecdef)                                 as follow_for_viewers,
 --   (select relrowsecurity from pg_class where oid = 'public.rate_limits'::regclass)
 --   and (select relrowsecurity from pg_class where oid = 'public.ai_usage'::regclass)          as service_tables_locked;
 --
