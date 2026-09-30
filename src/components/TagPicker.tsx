@@ -1,9 +1,11 @@
 /* ============================================================
-   KANBO — tag picker with inline create + per-tag delete
+   KANBO — tag picker with inline create + per-tag delete.
+   Tags read as a dot and a word (never a filled pill); a picked tag
+   carries the selection tint and a tick.
    ============================================================ */
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon, chipInk, chipFill, chipEdge } from "./primitives";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Icon, Button, projectPaint } from "./primitives";
 import type { TagDef } from "../data/types";
 
 export const TAG_COLORS: { c: string; name: string }[] = [
@@ -127,11 +129,15 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
   };
 
   const entries = Object.entries(tags);
-  const chipFont = small ? 10 : 11;
+  const chip: CSSProperties = {
+    display: "inline-flex", alignItems: "center", gap: 6, height: 24, padding: "0 8px", borderRadius: "var(--r-sm, 6px)",
+    fontFamily: "var(--font-ui, var(--font-display))", fontSize: 12, fontWeight: 500, lineHeight: 1, whiteSpace: "nowrap",
+    transition: "background-color var(--d-1, 90ms) var(--ease), border-color var(--d-1, 90ms) var(--ease)",
+  };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-      <div role="group" aria-label="Tags" style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: small ? 8 : 10 }}>
+      <div role="group" aria-label="Tags" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
         {entries.map(([id, def]) => {
           const active = selected.includes(id);
           const saving = isPendingTag(id);
@@ -143,16 +149,15 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
                 aria-label={saving ? `${def.label} (saving…)` : def.label}
                 title={saving ? "Saving…" : active ? "Remove tag" : "Add tag"}
                 style={{
-                  display: "inline-flex", alignItems: "center", gap: 5, cursor: saving ? "progress" : "pointer",
-                  fontFamily: "var(--font-mono)", fontSize: chipFont, fontWeight: 500,
-                  padding: small ? "1px 7px" : "2px 8px", borderRadius: 6,
-                  // readable ink in every state; an unpicked tag is told apart
-                  // by a lighter fill and no tick, not by fading its text
-                  color: chipInk(def.color), opacity: saving ? 0.6 : 1, transition: "background-color .14s",
-                  border: `1px ${saving ? "dashed" : "solid"} ${chipEdge(def.color)}`,
-                  background: active ? chipFill(def.color) : `color-mix(in oklch, ${def.color} calc(var(--chip-fill, 12%) * 0.35), transparent)`,
+                  ...chip, cursor: saving ? "progress" : "pointer", opacity: saving ? 0.6 : 1,
+                  // an unpicked tag is told apart by its outline and no tick, never by fading its text
+                  color: active ? "var(--ink)" : "var(--ink-2)",
+                  border: `1px ${saving ? "dashed" : "solid"} ${active ? "var(--accent-line, var(--accent))" : "var(--hairline-strong)"}`,
+                  background: active ? "var(--bg-selected, var(--accent-dim))" : "transparent",
                 }}>
-                {active && <Icon name="check" size={small ? 9 : 10} sw={2.5} />}
+                {active
+                  ? <Icon name="check" size={12} sw={2.5} style={{ color: "var(--accent-text, var(--accent))", marginLeft: -2 }} />
+                  : <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: projectPaint(def.color).solid }} />}
                 {def.label}
               </button>
               {!saving && (
@@ -167,12 +172,12 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
           );
         })}
         {!adding && (
-          <button ref={addBtnRef} type="button" onClick={() => setAdding(true)} className="iadd" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: chipFont, fontWeight: 500, padding: "2px 8px", borderRadius: 6, color: "var(--ink-3)", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", cursor: "pointer" }}>
-            <Icon name="plus" size={11} /> New tag
+          <button ref={addBtnRef} type="button" onClick={() => setAdding(true)} className="iadd" style={{ ...chip, gap: 4, color: "var(--ink-3)", background: "transparent", border: "1px dashed var(--hairline-strong)", cursor: "pointer" }}>
+            <Icon name="plus" size={12} sw={2} /> New tag
           </button>
         )}
         {entries.length === 0 && !adding && (
-          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>No tags yet — create one.</span>
+          <span style={{ fontSize: 12, color: "var(--ink-3)" }}>No tags yet. Create the first one.</span>
         )}
       </div>
       {adding && (
@@ -180,15 +185,15 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
           <input ref={nameRef} autoFocus value={label} maxLength={TAG_MAX} aria-label="New tag name"
             onChange={(e) => setLabel(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); create(); } }}
-            placeholder="Tag name…" style={{ height: 30, padding: "0 10px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, width: 130 }} />
-          <div role="group" aria-label="Tag colour" style={{ display: "flex", gap: 5 }}>
+            placeholder="Tag name" style={{ height: 28, padding: "0 8px", borderRadius: "var(--r-sm, 6px)", border: "1px solid var(--field-border, var(--hairline-strong))", background: "var(--field-bg, var(--surface))", color: "var(--ink)", fontFamily: "var(--font-ui, var(--font-display))", fontSize: 13, fontWeight: 500, width: 128 }} />
+          <div role="group" aria-label="Tag colour" style={{ display: "flex", gap: 6 }}>
             {TAG_COLORS.map(({ c, name }) => (
               <button key={c} type="button" aria-pressed={color === c} aria-label={`Colour ${name}`} onClick={() => setColor(c)}
-                style={{ width: 20, height: 20, borderRadius: 99, cursor: "pointer", background: c, border: "none", boxShadow: color === c ? "0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent)" : "none" }} />
+                style={{ width: 18, height: 18, padding: 0, borderRadius: 99, cursor: "pointer", background: projectPaint(c).solid, border: "none", boxShadow: color === c ? "0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent)" : "none" }} />
             ))}
           </div>
-          <button type="button" onClick={create} disabled={!label.trim()} className="btn btn-accent" style={{ padding: "4px 11px", fontSize: 12, opacity: label.trim() ? 1 : 0.5 }}>Add</button>
-          <button type="button" onClick={() => close(true)} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>Cancel</button>
+          <Button variant="primary" size="sm" onClick={create} disabled={!label.trim()}>Add</Button>
+          <Button variant="ghost" size="sm" onClick={() => close(true)}>Cancel</Button>
         </div>
       )}
     </div>
