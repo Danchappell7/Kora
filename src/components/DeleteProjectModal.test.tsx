@@ -21,6 +21,36 @@ describe("DeleteProjectModal", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it("closes itself after archiving, so the caller only has to archive", () => {
+    const onArchive = vi.fn(); const onClose = vi.fn();
+    render(<DeleteProjectModal project={launch} taskCount={1} projects={projects} onConfirm={() => {}} onArchive={onArchive} onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: /Archive project/ }));
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("tabbing past the target picker never turns Archive into Move & delete", () => {
+    const onArchive = vi.fn(); const onConfirm = vi.fn();
+    render(<DeleteProjectModal project={launch} taskCount={5} projects={projects} onConfirm={onConfirm} onArchive={onArchive} onClose={() => {}} />);
+    const select = screen.getByRole("combobox", { name: /Move tasks from Q4 Launch to/ });
+    // not a tab stop while Move isn't the choice…
+    expect(select).toHaveAttribute("tabindex", "-1");
+    // …and even if it gets focus, focus alone isn't a choice
+    fireEvent.focus(select);
+    expect(radio(/Archive instead/)).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: /Archive project/ }));
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("puts the target picker in the tab order once Move is chosen, and clicking it chooses Move", () => {
+    render(<DeleteProjectModal project={launch} taskCount={5} projects={projects} onConfirm={() => {}} onArchive={() => {}} onClose={() => {}} />);
+    const select = screen.getByRole("combobox", { name: /Move tasks from Q4 Launch to/ });
+    fireEvent.mouseDown(select);
+    expect(radio(/Move 5 tasks/)).toHaveAttribute("aria-checked", "true");
+    expect(select).toHaveAttribute("tabindex", "0");
+  });
+
   it("counts archived tasks and says so", () => {
     render(<DeleteProjectModal project={launch} taskCount={5} archivedCount={20} projects={projects} onConfirm={() => {}} onClose={() => {}} />);
     expect(screen.getByRole("dialog")).toHaveTextContent("5 tasks and 20 archived");
@@ -44,6 +74,8 @@ describe("DeleteProjectModal", () => {
     expect(radio(/Delete 4 tasks too/)).toHaveAttribute("aria-checked", "false");
     const cta = screen.getByRole("button", { name: /Delete project/ });
     expect(cta).toBeDisabled();
+    // say why the button is disabled
+    expect(cta).toHaveAccessibleDescription("Choose what happens to the tasks first.");
     fireEvent.click(cta);
     expect(onConfirm).not.toHaveBeenCalled();
     fireEvent.click(radio(/Delete 4 tasks too/));

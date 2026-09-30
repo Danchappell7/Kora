@@ -9,7 +9,7 @@ import { useToast } from "./Toast";
 import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch, Role } from "../data/types";
 import type { Route } from "../app-types";
 import { SMART_LISTS } from "../lib/smartLists";
-import { canDeleteProject } from "../lib/permissions";
+import { canDeleteProject, canArchiveProject } from "../lib/permissions";
 import type { FocusTimer } from "../hooks/useFocusTimer";
 
 /* Sidebar-only rules: project row action group, saved-list delete reveal and
@@ -122,7 +122,7 @@ function NavItem({ icon, label, active, badge, onClick }: {
   );
 }
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, smartCounts, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, smartCounts, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole, guardRoute = true }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -152,6 +152,14 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onDeleteSavedSearch?: (id: string) => void | Promise<unknown>;
   /** the caller's role in the active workspace; gates project archive/delete (mirrors 0041) */
   myRole?: Role | null;
+  /**
+   * The Sidebar keeps the open project valid: it follows a project opened from
+   * another workspace (palette, search) by switching to that workspace, and
+   * leaves a project that was archived, deleted or left behind by a workspace
+   * change. Pass false only if App takes over that job — never run both, or
+   * every redirect fires (and toasts) twice.
+   */
+  guardRoute?: boolean;
 }) {
   const toast = useToast();
   const [wsOpen, setWsOpen] = useState(false);
@@ -167,8 +175,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   // Badges count what the matching page shows as rows: open tasks, with a
   // sub-task counted only when its parent isn't in the same list (otherwise
   // it nests under the parent). "Mine" = assignee OR collaborator, exactly
-  // like the My tasks view. Memoised: the sidebar re-renders every second
-  // while the focus timer runs.
+  // like the My tasks view. One O(n) pass; the memo only pays off when the
+  // caller passes a stable `tasks` array (App currently rebuilds it per render).
   const { projectOpen, myOpen } = useMemo(() => {
     const idsByProject = new Map<string, Set<string>>();
     const mineIds = new Set<string>();
@@ -187,7 +195,10 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     }
     return { projectOpen: perProject, myOpen: mine };
   }, [tasks, currentUserId]);
-  const canManageProject = (p: Project) => canDeleteProject(p, { currentUserId, myRole, workspaceOwnerId: activeWs.ownerId });
+  // delete follows 0041's DELETE policy (owner/admin/project owner); archive and
+  // restore are plain updates any writer may make, so members can undo their own archive
+  const canDelete = (p: Project) => canDeleteProject(p, { currentUserId, myRole, workspaceOwnerId: activeWs.ownerId });
+  const canArchive = (p: Project) => canArchiveProject(p, { myRole });
 
   // switching workspace never strands you on a project from the old one
   // (its header would read "0 tasks" and quick-add would file into it)
@@ -202,14 +213,25 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   };
 
   // …and neither does a teammate archiving or deleting the project you're in,
-  // nor a workspace change made elsewhere. Remember the name for the notice.
+  // nor a workspace change made elsewhere. Opening a project that lives in
+  // another workspace (the palette and Search list every workspace) follows it
+  // there instead of bouncing you Home. `seenProjectId` tells "you navigated to
+  // a project" apart from "the workspace changed under an open project".
   const lastProject = useRef<{ id: string; name: string } | null>(null);
+  const seenProjectId = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (route.view !== "project" || !route.projectId) return;
-    const id = route.projectId;
+    if (!guardRoute) return;
+    const id = route.view === "project" ? route.projectId : undefined;
+    const navigated = id !== seenProjectId.current;
+    seenProjectId.current = id;
+    if (!id) return;
     if (id.startsWith("tmp-")) return; // still being created — the id is about to change
     const p = projects.find((x) => x.id === id);
-    if (p && !p.archivedAt && (p.workspaceId ?? null) === workspace) { lastProject.current = { id, name: p.name }; return; }
+    if (p && !p.archivedAt) {
+      lastProject.current = { id, name: p.name };
+      if ((p.workspaceId ?? null) === workspace) return;
+      if (navigated) { setWorkspace(p.workspaceId ?? null); return; }
+    }
     const name = p?.name ?? (lastProject.current?.id === id ? lastProject.current.name : null);
     if (!p) {
       // only trust "it's gone" when the rest of this workspace's projects are
@@ -221,9 +243,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
       return;
     }
     setRoute({ view: "home" });
-    if (p.archivedAt) toast.toast(`“${p.name}” was archived. You can restore it from Archived in the sidebar.`);
+    if (p.archivedAt) toast.toast(canArchive(p) ? `“${p.name}” was archived. You can restore it from Archived in the sidebar.` : `“${p.name}” was archived.`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.view, route.projectId, projects, workspace]);
+  }, [route.view, route.projectId, projects, workspace, guardRoute]);
 
   // saved lists: hide at once, delete for real only when the Undo window closes
   const [hiddenSaved, setHiddenSaved] = useState<Set<string>>(() => new Set());
@@ -370,11 +392,11 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         {orderedProjects.map((p) => {
           const active = route.view === "project" && route.projectId === p.id;
           const count = projectOpen.get(p.id) ?? 0;
-          const manage = canManageProject(p);
-          const canArchive = manage && !!onArchiveProject;
+          const deletable = canDelete(p);
+          const archivable = !!onArchiveProject && canArchive(p);
           const isPinned = pinned.has(p.id);
           // room the name leaves for the action group when it's revealed
-          const reserve = (1 + (canArchive ? 1 : 0) + (manage ? 1 : 0)) * 25 + 10;
+          const reserve = (1 + (archivable ? 1 : 0) + (deletable ? 1 : 0)) * 25 + 10;
           return (
             <div key={p.id} role="listitem" className="kproj-item" style={{ "--kacts": `${reserve}px` } as CSSProperties}>
               <button onClick={() => setRoute({ view: "project", projectId: p.id })} className="kproj" data-active={active} aria-current={active ? "page" : undefined}>
@@ -390,13 +412,13 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                   onClick={(e) => { e.stopPropagation(); togglePin(p.id); }}>
                   <StarGlyph filled={isPinned} />
                 </button>
-                {canArchive && (
+                {archivable && (
                   <button type="button" className="kproj-act" aria-label={`Archive project ${p.name}`} title="Archive project"
                     onClick={(e) => { e.stopPropagation(); onArchiveProject!(p.id); }}>
                     <Icon name="archive" size={14} />
                   </button>
                 )}
-                {manage && (
+                {deletable && (
                   <button type="button" className="kproj-act" data-kind="delete" aria-label={`Delete project ${p.name}`} title="Delete project"
                     onClick={(e) => { e.stopPropagation(); onDeleteProject(p.id); }}>
                     <Icon name="trash" size={14} />
@@ -421,7 +443,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             <div key={p.id} className="kproj-row" style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 11px", opacity: 0.75 }}>
               <span style={{ width: 8, height: 8, borderRadius: 3, background: p.color, flexShrink: 0 }} />
               <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink-3)" }}>{p.name}</span>
-              {onRestoreProject && canManageProject(p) && <button onClick={(e) => { e.stopPropagation(); onRestoreProject(p.id); }} title="Restore project" aria-label={`Restore project ${p.name}`} className="btn-icon" style={{ border: "none", background: "transparent", width: 26, height: 26, borderRadius: 7, color: "var(--ink-3)" }}><Icon name="refresh" size={13} /></button>}
+              {onRestoreProject && canArchive(p) && <button onClick={(e) => { e.stopPropagation(); onRestoreProject(p.id); }} title="Restore project" aria-label={`Restore project ${p.name}`} className="btn-icon" style={{ border: "none", background: "transparent", width: 26, height: 26, borderRadius: 7, color: "var(--ink-3)" }}><Icon name="refresh" size={13} /></button>}
             </div>
           ))}</Collapse>
         </div>
@@ -460,7 +482,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           </span>
         </button>
         {onOpenSettings && <button className="btn-icon" onClick={onOpenSettings} style={{ border: "none", width: 28, height: 28 }} title="Settings" aria-label="Settings"><Icon name="settings" size={16} /></button>}
-        {onSignOut && <button className="btn-icon" onClick={onSignOut} style={{ border: "none", width: 28, height: 28 }} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button>}
+        {onSignOut && <button className="btn-icon" onClick={() => { toast.flush(); onSignOut(); }} style={{ border: "none", width: 28, height: 28 }} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button>}
       </div>
     </aside>
   );

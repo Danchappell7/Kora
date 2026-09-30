@@ -1,3 +1,4 @@
+import { StrictMode, useEffect } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { ToastProvider, useToast, ACTION_TOAST_MIN_MS } from "./Toast";
@@ -92,5 +93,34 @@ describe("Toast", () => {
     expect(first).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: "z", metaKey: true });
     expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits pending Undo toasts when the page is closed or reloaded", () => {
+    setup();
+    const onExpire = vi.fn(); const legacy = vi.fn();
+    act(() => { api.action("Deleted “G”", "Undo", () => {}, { onExpire }); api.action("Archived", "Undo", legacy); });
+    act(() => { window.dispatchEvent(new Event("pagehide")); });
+    expect(onExpire).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Deleted “G”")).not.toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(20000); });
+    expect(onExpire).toHaveBeenCalledTimes(1);
+    expect(legacy).not.toHaveBeenCalled();
+  });
+
+  it("flush() commits every pending Undo toast at once", () => {
+    setup();
+    const a = vi.fn(); const b = vi.fn();
+    act(() => { api.action("A", "Undo", () => {}, { onExpire: a }); api.action("B", "Undo", () => {}, { onExpire: b }); });
+    act(() => api.flush());
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("never leaves a toast stuck on screen after a StrictMode remount", () => {
+    function OnMount() { const t = useToast(); useEffect(() => { t.success("Welcome back"); }, [t]); return null; }
+    render(<StrictMode><ToastProvider><OnMount /></ToastProvider></StrictMode>);
+    act(() => { vi.advanceTimersByTime(60000); });
+    expect(screen.queryByText("Welcome back")).not.toBeInTheDocument();
   });
 });

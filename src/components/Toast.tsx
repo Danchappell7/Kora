@@ -14,9 +14,10 @@ interface ToastItem { id: number; message: string; type: ToastType; action?: Toa
  * Options for an action toast. Passing an options OBJECT (even `{}`) opts in to
  * the managed lifecycle: the toast stays up for at least 10s, pauses while
  * hovered / focused / the tab is hidden, and calls `onExpire` exactly once when
- * it goes away without the action being run (timed out, dismissed with ×, or
- * the app unmounting). Put a deferred commit (e.g. the real delete) in
- * `onExpire` so the Undo button can never outlive the thing it undoes.
+ * it goes away without the action being run (timed out, dismissed with ×,
+ * flushed, the page being closed or reloaded, or the app unmounting). Put a
+ * deferred commit (e.g. the real delete) in `onExpire` so the Undo button can
+ * never outlive the thing it undoes.
  *
  * Legacy callers that pass a number (or nothing) keep a FIXED lifetime of
  * `ms` (default 6s) with no pausing, because they may be committing on their
@@ -34,6 +35,8 @@ interface ToastApi {
   success: (message: string) => void;
   /** toast with an action button (e.g. Undo). See ToastActionOptions. */
   action: (message: string, label: string, run: () => void, opts?: number | ToastActionOptions) => void;
+  /** commit every pending managed toast now (runs their onExpire) — e.g. before signing out */
+  flush: () => void;
 }
 
 /** Minimum on-screen time for a managed action toast (Undo). */
@@ -75,11 +78,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const paused = useRef(false);
 
   const close = useCallback((id: number, reason: "expire" | "dismiss" | "action") => {
+    // always take it off screen, even without a clock (e.g. a toast whose entry
+    // a StrictMode remount cleared) — × must never leave a toast stuck
+    setItems((xs) => xs.some((x) => x.id === id) ? xs.filter((x) => x.id !== id) : xs);
     const e = entries.current.get(id);
     if (!e) return; // already gone — never run onExpire twice
     if (e.timer) clearTimeout(e.timer);
     entries.current.delete(id);
-    setItems((xs) => xs.filter((x) => x.id !== id));
     if (reason !== "action" && e.onExpire) {
       try { e.onExpire(); } catch (err) { console.error(err); }
     }
@@ -165,9 +170,25 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     syncPaused();
   }, [items, syncPaused]);
 
-  // on unmount: stop the clocks and honour pending commits (the user never undid them)
+  // commit pending managed toasts now; Undo is no longer offered for them
+  const flush = useCallback(() => {
+    [...entries.current.entries()].forEach(([id, e]) => { if (e.onExpire) close(id, "expire"); });
+  }, [close]);
+
+  // closing or reloading the tab inside the Undo window still commits what the
+  // user did (best effort: the request starts as the page goes away)
+  useEffect(() => {
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [flush]);
+
+  // on unmount: stop the clocks and honour pending commits (the user never undid them).
+  // On (re)mount, drop any toast whose clock a previous unmount cleared —
+  // StrictMode's dev-only remount would otherwise leave it on screen for ever
+  // with an Undo that no longer works.
   useEffect(() => {
     const map = entries.current;
+    setItems((xs) => xs.every((x) => map.has(x.id)) ? xs : xs.filter((x) => map.has(x.id)));
     return () => {
       const pending = [...map.values()];
       map.forEach((e) => { if (e.timer) clearTimeout(e.timer); });
@@ -178,7 +199,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const error = useCallback((m: string) => toast(m, "error"), [toast]);
   const success = useCallback((m: string) => toast(m, "success"), [toast]);
-  const api = useMemo<ToastApi>(() => ({ toast, error, success, action }), [toast, error, success, action]);
+  const api = useMemo<ToastApi>(() => ({ toast, error, success, action, flush }), [toast, error, success, action, flush]);
 
   const color = (t: ToastType) => t === "error" ? "var(--st-blocked)" : t === "success" ? "var(--st-done)" : "var(--accent)";
 

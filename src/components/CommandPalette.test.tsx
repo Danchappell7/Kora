@@ -76,4 +76,14 @@ describe("CommandPalette", () => {
       expect(onNavigate).toHaveBeenLastCalledWith(view);
     }
   });
+
+  it("hides New project from people who can't create projects (guests)", () => {
+    const { unmount } = open();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "new project" } });
+    expect(screen.getByRole("option", { name: /New project/ })).toBeInTheDocument();
+    unmount();
+    open({ canCreateProject: false });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "new project" } });
+    expect(screen.queryByRole("option", { name: /New project/ })).not.toBeInTheDocument();
+  });
 });

@@ -75,7 +75,7 @@ type Item =
 const LIST_ID = "kcmd-list";
 const optId = (i: number) => `kcmd-opt-${i}`;
 
-export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll }: {
+export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true }: {
   open: boolean;
   onClose: () => void;
   onAction: (s: Suggestion) => void;
@@ -90,6 +90,8 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
   workspaces?: Workspace[];
   /** open the Search view pre-filled with the text; adds a "See all results" row */
   onSearchAll?: (text: string) => void;
+  /** false drops the "New project" action (guests can view and comment, not create) */
+  canCreateProject?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -150,7 +152,8 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
     .filter((r) => r.s > 0)
     .sort((a, b) => b.s - a.s || a.i - b.i)
     .map((r) => r.x);
-  const actionItems: Item[] = ranked(ACTIONS, (a) => Math.max(nameScore(a.label, query), fuzzy(a.label, query) ? 0.5 : 0))
+  const actions = canCreateProject ? ACTIONS : ACTIONS.filter((a) => a.id !== "new-project");
+  const actionItems: Item[] = ranked(actions, (a) => Math.max(nameScore(a.label, query), fuzzy(a.label, query) ? 0.5 : 0))
     .map((s) => ({ kind: "action", s }));
   const navItems: Item[] = ranked(NAV, (n) => Math.max(
     nameScore(n.label.replace(/^Go to /, ""), query), nameScore(n.view, query),

@@ -13,7 +13,7 @@ const createMenuItem: CSSProperties = {
 // a white-on-white hover is invisible in the light theme — tint with ink instead
 const MENU_HOVER = "var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent))";
 
-export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNewProject, onCommand, onBell, onMenu, theme, toggleTheme, hasUnread, unreadCount }: {
+export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNewProject, onCommand, onBell, onMenu, theme, toggleTheme, hasUnread, unreadCount, canCreateProject = true }: {
   title?: string;
   subtitle?: string;
   breadcrumb?: string;
@@ -28,6 +28,8 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
   hasUnread?: boolean;
   /** unread inbox items — spoken in the bell's label */
   unreadCount?: number;
+  /** false hides "New project" (guests can view and comment, not create) */
+  canCreateProject?: boolean;
 }) {
   const [createOpen, setCreateOpen] = useState(false);
   const createBtnRef = useRef<HTMLButtonElement>(null);
@@ -103,10 +105,12 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
                 onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
                 <Icon name="tasks" size={16} style={{ color: "var(--accent)" }} /> New task
               </button>
-              <button role="menuitem" tabIndex={-1} style={createMenuItem} onClick={() => { setCreateOpen(false); onNewProject(); }}
-                onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
-                <Icon name="folder" size={16} style={{ color: "var(--accent)" }} /> New project
-              </button>
+              {canCreateProject && (
+                <button role="menuitem" tabIndex={-1} style={createMenuItem} onClick={() => { setCreateOpen(false); onNewProject(); }}
+                  onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
+                  <Icon name="folder" size={16} style={{ color: "var(--accent)" }} /> New project
+                </button>
+              )}
             </div>
           </>
         )}

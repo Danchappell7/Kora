@@ -23,7 +23,8 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
   archivedCount?: number;
   projects: Project[];
   onConfirm: (mode: DeleteMode, targetProjectId?: string) => void;
-  /** when given, "Archive instead" is offered — and chosen by default */
+  /** when given, "Archive instead" is offered — and chosen by default. The
+   *  modal calls onClose() straight after it, so this only needs to archive. */
   onArchive?: () => void;
   onClose: () => void;
 }) {
@@ -64,11 +65,16 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
   if (total > 0 && canMove) options.push({
     value: "reassign", icon: "arrowUpRight", title: `Move ${n(total)} to another project`,
     desc: archived > 0 ? `Includes ${archived} archived. Then the project is deleted.` : "Then the project is deleted.",
+    // The picker only joins the Tab order once "Move" is chosen, and merely
+    // focusing it never changes the choice — tabbing from the (default)
+    // Archive option to the confirm button must not turn it into a delete.
+    // Picking a target, or clicking the picker, is an explicit choice.
     extra: (
       <select value={target} aria-label={`Move tasks from ${project.name} to`}
+        tabIndex={choice === "reassign" ? 0 : -1}
         onChange={(e) => { setTarget(e.target.value); setChoice("reassign"); }}
-        onFocus={() => setChoice("reassign")}
-        style={{ height: 34, width: "100%", marginTop: 9, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface-raised)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, outline: "none" }}>
+        onMouseDown={() => setChoice("reassign")}
+        style={{ height: 34, width: "100%", marginTop: 9, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface-raised)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5, opacity: choice === "reassign" ? 1 : 0.7, transition: "opacity .14s" }}>
         {others.map((p) => <option key={p.id} value={p.id}>{p.emoji} {p.name}</option>)}
       </select>
     ),
@@ -95,7 +101,7 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
   const ready = choice === "archive" || choice === "delete" || (choice === "reassign" && !!target);
   const confirm = () => {
     if (!ready) return;
-    if (choice === "archive") { onArchive?.(); return; }
+    if (choice === "archive") { onArchive?.(); onClose(); return; }
     if (choice === "reassign") { onConfirm("reassign", target); return; }
     onConfirm("delete");
   };
@@ -107,6 +113,7 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
 
   const titleId = `kdelproj-title-${project.id}`;
   const descId = `kdelproj-desc-${project.id}`;
+  const hintId = `kdelproj-hint-${project.id}`;
   const summary = total === 0
     ? " This project has no tasks."
     : archived > 0 && taskCount > 0 ? <> It has <strong style={{ color: "var(--ink)" }}>{n(taskCount)}</strong> and <strong style={{ color: "var(--ink)" }}>{archived} archived</strong> — what should happen to them?</>
@@ -163,8 +170,9 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
         </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)", flexWrap: "wrap" }}>
+          {!ready && <span id={hintId} style={{ marginRight: "auto", fontSize: 12.5, color: "var(--ink-3)" }}>{choice === "reassign" ? "Choose a project to move the tasks to." : "Choose what happens to the tasks first."}</span>}
           <button className="btn btn-ghost" onClick={onClose} data-autofocus>Cancel</button>
-          <button className={danger ? "btn" : "btn btn-accent"} onClick={confirm} disabled={!ready}
+          <button className={danger ? "btn" : "btn btn-accent"} onClick={confirm} disabled={!ready} aria-describedby={!ready ? hintId : undefined}
             style={danger ? { background: "var(--st-blocked)", color: "oklch(0.99 0.01 20)", fontWeight: 650, opacity: ready ? 1 : 0.5, cursor: ready ? "pointer" : "not-allowed" } : undefined}>
             <Icon name={choice === "archive" ? "archive" : "trash"} size={15} /> {cta}
           </button>
