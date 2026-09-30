@@ -36,14 +36,14 @@ describe("early-access gate", () => {
     isAdmin(false);
     renderApp();
     expect(await screen.findByText("You’re on the early-access list")).toBeInTheDocument();
-    expect(screen.queryByText("Plan my day")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
   });
 
   it("lets a platform admin in by the server's is_admin() (no hard-coded address)", async () => {
     withProfile({ approved: false });
     const check = isAdmin(true);
     renderApp();
-    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
     expect(check).toHaveBeenCalled();
   });
 
@@ -51,7 +51,7 @@ describe("early-access gate", () => {
     withProfile({ approved: false, isAdmin: true });
     const check = isAdmin(false);
     renderApp();
-    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
     expect(check).not.toHaveBeenCalled();
   });
 
@@ -60,14 +60,14 @@ describe("early-access gate", () => {
     isAdmin(false);
     renderApp();
     expect(await screen.findByText("Your account is suspended")).toBeInTheDocument();
-    expect(screen.queryByText("Plan my day")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
   });
 
   it("never asks the server when nobody is gated", async () => {
     withProfile({ approved: true });
     const check = isAdmin(false);
     renderApp();
-    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
     expect(check).not.toHaveBeenCalled();
   });
 });

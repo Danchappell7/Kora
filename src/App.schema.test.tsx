@@ -15,7 +15,7 @@ import { store } from "./data/store";
 
 const boot = async () => {
   render(<ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider>);
-  await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
 };
 const NOTICE = /the database is behind this version — workspace_id isn't being saved yet/;
 

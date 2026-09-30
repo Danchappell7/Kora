@@ -16,7 +16,7 @@ const renderApp = () => render(
   </ToastProvider>,
 );
 // bootstrap is async; wait for the sidebar nav to appear
-const boot = async () => { renderApp(); await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument()); };
+const boot = async () => { renderApp(); await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument()); };
 const key = (k: string, opts: Record<string, unknown> = {}) => fireEvent.keyDown(document.body, { key: k, ...opts });
 const openTask = async (title: string) => { fireEvent.click((await screen.findAllByText(title))[0]); return screen.findByRole("dialog", { name: `Task: ${title}` }); };
 const DECK = "Finalize Q3 launch narrative deck"; // seeded demo task t-1, mine, in Foundrise
@@ -280,7 +280,7 @@ describe("App (demo mode)", () => {
       };
     }));
     const { unmount } = renderApp();
-    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
     fireEvent.click(projectButton("Brand Refresh"));
     expect(await screen.findByTitle("Archive this project")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Post update" })).toBeInTheDocument();
@@ -521,7 +521,7 @@ describe("App (demo mode)", () => {
 
   it("the top bar's theme button flips light and dark every time (also under StrictMode)", async () => {
     render(<StrictMode><ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider></StrictMode>);
-    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
     await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("light"));
     fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));

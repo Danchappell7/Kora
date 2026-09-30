@@ -56,6 +56,19 @@ const ICONS: Record<IconName, string> = {
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
   trash: "M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M10 11v6M14 11v6",
   menu: "M3 6h18M3 12h18M3 18h18",
+  /* first cut for the redesign (W0): simple strokes in the same style, so
+     nothing renders blank; P01 may redraw them */
+  pulse: "M3 12h4l3-8 4 16 3-8h4",
+  radar: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 1 4-4M12 12l6.4-6.4M16 16h.01",
+  kanbo: "M4 4h4v16H4zM10 4h4v11h-4zM16 4h4v7h-4z",
+  undo: "M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3",
+  keyboard: "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M8 14h8",
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  send: "M22 2L11 13M22 2l-7 20-4-9-9-4z",
+  sliders: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6",
+  hourglass: "M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2",
+  sunset: "M12 10V2M4.9 10.9l1.4 1.4M2 18h2M20 18h2M19.1 10.9l-1.4 1.4M22 22H2M16 6l-4 4-4-4M16 18a4 4 0 0 0-8 0",
+  notes: "M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M9 13h6M9 17h6M9 9h1",
 };
 
 interface IconProps {

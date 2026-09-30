@@ -94,8 +94,9 @@ src/
     primitives/            # Icon, Avatar, StatusDot, Check, Tag, PriorityFlag, AiScore, Segmented, tooltips
     charts/                # Ring, Sparkline, Bars, Heatmap (lightweight SVG)
     Sidebar.tsx Topbar.tsx CommandPalette.tsx TaskDetail.tsx
-    tasks/                 # ListView (showpiece) + Board/Timeline/Calendar
-    views/                 # PlanView (hero), HomeView, AnalyticsView, InboxTeam, FocusMode
+    tasks/                 # TasksPage, ListView (showpiece) + Board/Timeline/Calendar
+    project/               # ProjectHeader (the project overview card)
+    views/                 # PlanView (hero), HomeView, AnalyticsView, InboxView, TeamView, FocusMode
 supabase/
   migrations/0001_init.sql # schema + RLS + per-user demo seed
 ```
