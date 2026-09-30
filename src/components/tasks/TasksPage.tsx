@@ -305,9 +305,10 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const displayBtn = useRef<HTMLButtonElement>(null);
   const actionsBtn = useRef<HTMLButtonElement>(null);
 
+  // a project's tab IS its view: onTab (the address) switches both, so call one or the other
   const pickView = (v: TaskView) => {
     setMenu(null);
-    setView(v);
+    if (isMy || !onTab) setView(v);
     if (!isMy) { setLocalTab(v); onTab?.(v); }
   };
   const tabItems: TabItem[] = isMy
@@ -327,7 +328,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const onTabChange = (id: string) => {
     if (id === "more") return; // its menu opens on click (below), never on arrow-key focus
     if (id.startsWith("view:")) { onOpenSavedView?.(id.slice(5)); return; }
-    if (!isMy && isTaskView(id)) setView(id);
+    if (!isMy && isTaskView(id) && !onTab) setView(id);
     setLocalTab(id);
     onTab?.(id);
   };
