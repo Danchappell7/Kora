@@ -1,41 +1,61 @@
 /* ============================================================
    KANBO — Smart Lists
    Pinned, always-current saved views shown in the sidebar. Each is a
-   predicate over tasks (for the live count) plus a Search-view preset
-   (so clicking one opens the full filtered results). One source of
-   truth keeps the sidebar badge and the Search results in agreement.
+   Search-view preset (so clicking one opens the full filtered results) and
+   its live count runs that same preset through the Search predicate — one
+   source of truth, so the sidebar badge and the results always agree.
+
+   Every list is personal: it covers tasks assigned to you or that you
+   collaborate on. A team-wide "Overdue" in a 40-person workspace is noise
+   in everyone's sidebar; the team-wide versions are Search's "All …" chips.
+   Tasks in archived projects are left out (see taskMatchesQuery).
    ============================================================ */
-import { dueState } from "../data/data";
+import { taskMatchesQuery, toQuery, type Query } from "./searchQuery";
 import type { Task, IconName } from "../data/types";
 
 export interface SmartList {
   id: string;
   label: string;
   icon: IconName;
+  /** one-line scope note, shown in Search while the list is open */
+  description: string;
   match: (t: Task, currentUserId: string) => boolean;
   preset: Record<string, string>; // maps onto SearchView's Query fields
 }
 
-const withinWeek = (iso?: string) => {
-  if (!iso) return false;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const diff = (new Date(iso + "T00:00:00").getTime() - today.getTime()) / 86400000;
-  return diff >= 0 && diff <= 7;
-};
+/** placeholder for the signed-in user inside a preset */
+const ME = "@me";
+
+function resolvePreset(preset: Record<string, string>, currentUserId: string): Record<string, string> {
+  const q: Record<string, string> = {};
+  for (const [k, v] of Object.entries(preset)) q[k] = v === ME ? currentUserId : v;
+  return q;
+}
+
+/** The list's count predicate IS the Search predicate over its preset. The
+ *  resolved query is cached per user, since this runs once per task. */
+function presetMatcher(preset: Record<string, string>): SmartList["match"] {
+  let forUser: string | null = null;
+  let query: Query | null = null;
+  return (t, currentUserId) => {
+    if (!currentUserId) return false; // no user yet: nothing is "mine"
+    if (query === null || forUser !== currentUserId) { forUser = currentUserId; query = toQuery(resolvePreset(preset, currentUserId)); }
+    return taskMatchesQuery(t, query);
+  };
+}
+
+const smartList = (id: string, label: string, icon: IconName, description: string, preset: Record<string, string>): SmartList =>
+  ({ id, label, icon, description, preset, match: presetMatcher(preset) });
 
 export const SMART_LISTS: SmartList[] = [
-  { id: "mine", label: "Assigned to me", icon: "user",
-    match: (t, me) => !t.archivedAt && t.status !== "done" && (t.assigneeId === me || (t.collaborators ?? []).includes(me)),
-    preset: { assignee: "@me", status: "open" } },
-  { id: "today", label: "Due today", icon: "calendar",
-    match: (t) => !t.archivedAt && dueState(t.dueDate, t.status) === "today",
-    preset: { due: "today" } },
-  { id: "overdue", label: "Overdue", icon: "clock",
-    match: (t) => !t.archivedAt && dueState(t.dueDate, t.status) === "overdue",
-    preset: { due: "overdue" } },
-  { id: "week", label: "Due this week", icon: "calendarPlus",
-    match: (t) => !t.archivedAt && t.status !== "done" && withinWeek(t.dueDate),
-    preset: { due: "week", status: "open" } },
+  smartList("mine", "Assigned to me", "user", "Open tasks assigned to you or where you're a collaborator",
+    { assignee: ME, status: "open" }),
+  smartList("today", "Due today", "calendar", "Assigned to you or where you're a collaborator",
+    { assignee: ME, due: "today" }),
+  smartList("overdue", "Overdue", "clock", "Assigned to you or where you're a collaborator",
+    { assignee: ME, due: "overdue" }),
+  smartList("week", "Due this week", "calendarPlus", "Open, due in the next 7 days · assigned to you or where you're a collaborator",
+    { assignee: ME, due: "week", status: "open" }),
 ];
 
 export const smartListById = (id?: string) => SMART_LISTS.find((s) => s.id === id);
@@ -44,7 +64,5 @@ export const smartListById = (id?: string) => SMART_LISTS.find((s) => s.id === i
 export function smartListQuery(id: string | undefined, currentUserId: string): Record<string, string> | undefined {
   const list = smartListById(id);
   if (!list) return undefined;
-  const q: Record<string, string> = {};
-  for (const [k, v] of Object.entries(list.preset)) q[k] = v === "@me" ? currentUserId : v;
-  return q;
+  return resolvePreset(list.preset, currentUserId);
 }
