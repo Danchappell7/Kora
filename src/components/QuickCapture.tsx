@@ -545,7 +545,8 @@ button.kcap-chip[aria-expanded="true"] { background: var(--fill-2); border-color
 .kcap-menu button[aria-checked="true"] { color: var(--ink); font-weight: 600; }
 
 @media (max-width: 859px) {
-  .kcap-head { margin-top: -4px; }
+  /* the sheet's sides are 16px here: keep Close 12px in, as a titled sheet's is */
+  .kcap-head { margin: -4px -4px 8px 0; }
   .kcap-input { font-size: 17px; }
   /* phone: the actions stack full width at touch height, the main one first */
   .kcap-foot { flex-direction: column-reverse; align-items: stretch; gap: 4px; }

@@ -707,7 +707,7 @@ export function parseCapture(text: string, opts: CaptureOptions = {}): Task | nu
     status: "todo", priority: p.priority ?? "medium", projectId: opts.projectId || "p-personal", assigneeId: opts.assigneeId || selfMemberId(),
     dueDate: p.dueDate, tags, dependencies: [], subtasks: [], comments: 0,
     focusMin: dur, dur, energy, scheduled: null, aiScore: 60,
-    aiReason: "Captured just now — drag it onto your day or hit Auto-plan.", planToday: true,
+    aiReason: "Captured just now — drag it onto your day, or let Plan my day place it.", planToday: true,
   };
 }
 
