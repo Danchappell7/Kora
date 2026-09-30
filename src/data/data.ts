@@ -9,6 +9,7 @@ import type {
   Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/supabase";
+import { parseTask, tidyTitle, type NlpKind } from "../lib/nlp";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
    It is ONE Date object that refreshClock() (below, next to NOW_MIN) moves
@@ -535,54 +536,15 @@ export function planDay(tasks: Task[], events: CalEvent[], opts: { nowMin?: numb
   return planDayDetailed(tasks, events, opts).placed;
 }
 
-/* ---- natural-language tokens shared by both parsers ----
-   Each token must stand on its own: preceded by the start, a space or an
-   opening bracket (words also after a comma — not durations, or "10,000
-   hours" would read as 0), and not followed by a letter, digit or
-   apostrophe — so "Q3", "3pm" and "today's numbers" are left alone while
-   "(2h)" and "[tomorrow]" still count. Removing a token keeps what led into
-   it plus a space, so words don't fuse; tidyTitle then drops the "()" it
-   may leave behind. */
-const HOURS_RE = /(^|[\s(\[])(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)(?:(\d{1,2})(?:m|mins?|minutes?)?|\s+(\d{1,2})\s*(?:m|mins?|minutes?))?(?![\w'’])/i;
-const MINS_RE = /(^|[\s(\[])(\d+)\s*(?:m|mins?|minutes?)(?![\w'’])/i;
-/* Cut a match out of `s` AT ITS POSITION, putting `keep` in its place.
-   (`s.replace(m[0], …)` would cut the first literal copy instead — which can
-   be one the regex deliberately skipped: the " today" inside "today's" in
-   "Review today's numbers today".) */
-function cutMatch(s: string, m: RegExpMatchArray, keep = " "): string {
-  const at = m.index ?? s.indexOf(m[0]);
-  return s.slice(0, at) + keep + s.slice(at + m[0].length);
-}
-/* "90m", "45 mins", "1.5h", "3 hrs", "2 hours", "1h30", "1h 30m" → minutes */
-function takeDuration(s: string): { min: number; rest: string } | null {
-  const h = s.match(HOURS_RE);
-  if (h) {
-    const min = Math.round(parseFloat(h[2]) * 60) + parseInt(h[3] ?? h[4] ?? "0", 10);
-    return { min, rest: cutMatch(s, h, h[1] + " ") };
-  }
-  const m = s.match(MINS_RE);
-  if (m) return { min: parseInt(m[2], 10), rest: cutMatch(s, m, m[1] + " ") };
-  return null;
-}
-/* "today" / "tomorrow" / "next week", with an optional lead-in ("by", "due",
-   "for") that goes with it: "Send invoice by tomorrow" → "Send invoice". */
-const DUE_WORD_RE = /(^|[\s(\[,;])(?:(?:by|due|for)\s+)?(today|tomorrow|next\s+week)(?![\w'’])/i;
-function takeDueWord(s: string): { offset: number; rest: string } | null {
-  const m = s.match(DUE_WORD_RE);
-  if (!m) return null;
-  const w = m[2].toLowerCase();
-  return { offset: w === "today" ? 0 : w === "tomorrow" ? 1 : 7, rest: cutMatch(s, m, m[1] + " ") };
-}
-/* energy words: "deep work" / "focus time" / "focus block" anywhere, or a bare
-   "deep" / "focus" as the last word. "Focus group prep" or "Deep dive into
-   churn" are titles, not energy. */
-const DEEP_RE = /(^|[\s(\[,;])(deep|focus)(?:[\s-]+(?:work|time|block)(?![\w'’])|(?=[\s.,;:!?)\]]*$))/i;
-/* what's left once tokens are cut out: a "()" / "[]" a token sat in (only a
-   free-standing one — "parseDate()" keeps its brackets), doubled spaces and
-   separators stranded at either end (`edge`) */
+/* ---- natural-language capture ----
+   Both parsers below are thin wrappers over lib/nlp's parseTask (the one
+   grammar), kept with their original signatures and return shapes. They read
+   only the tokens they have always read — everything else stays in the title
+   exactly as typed — and "next week" is a week today, as it always was. */
+const CAPTURE_KINDS: NlpKind[] = ["duration", "date", "priority", "energy"];
+const TOKEN_KINDS: NlpKind[] = ["duration", "priority", "date", "project", "person"];
+/* capture trims a stranded "-", "–" or ":" too; quick-add keeps them */
 const EDGE_SEPARATORS = /^[\s,;:–—-]+|[\s,;:–—-]+$/g;
-const tidyTitle = (s: string, edge: RegExp = EDGE_SEPARATORS): string =>
-  s.replace(/(^|\s)(?:\(\s*\)|\[\s*\])(?=[\s.,;:!?]|$)/g, "$1").replace(/\s{2,}/g, " ").replace(edge, "").trim();
 /* the signed-in user (demo: "m-self") — the store maps it on insert anyway,
    but using the real id keeps the task in My Week before the next reload */
 const selfMemberId = (): string => MEMBERS.find((m) => m.type === "self")?.id ?? "m-self";
@@ -593,37 +555,22 @@ const selfMemberId = (): string => MEMBERS.find((m) => m.type === "self")?.id ??
 export interface CaptureOptions { projectId?: string; assigneeId?: string }
 let _capId = 1000;
 export function parseCapture(text: string, opts: CaptureOptions = {}): Task | null {
-  let s = text.trim();
-  if (!s) return null;
-  let dur = 30;
+  if (!text.trim()) return null;
+  const p = parseTask(text, { today: KANBO_TODAY, kinds: CAPTURE_KINDS, nextWeek: "+7", priorityWords: true });
+  let s = tidyTitle(p.title, EDGE_SEPARATORS);
+  const dur = p.focusMin != null ? Math.max(SLOT_MIN, p.focusMin) : 30;
   let energy: EnergyKind = "admin";
   let tag: string | null = null;
-  let dueDate: string | undefined;       // no date unless the text says so
-  let priority: Priority = "medium";
-  const d = takeDuration(s);
-  if (d) { dur = Math.max(SLOT_MIN, d.min); s = d.rest; }
-  const due = takeDueWord(s);
-  if (due) { dueDate = dayOffset(due.offset); s = due.rest; }
-  const pm = s.match(/(^|[\s(\[,;])(?:urgent|asap)(?![\w'’])|!{2,}/i);
-  if (pm) { priority = "high"; s = cutMatch(s, pm, (pm[1] ?? "") + " "); }
-  const deep = s.match(DEEP_RE);
-  if (deep) {
-    energy = "deep"; tag = "writing";
-    const at = (deep.index ?? 0) + deep[1].length;
-    // a leading "Deep work on the pricing model" IS the title — keep it;
-    // elsewhere it's an annotation ("Draft deck deep work") — drop it
-    if (at > 0 && s.slice(0, at).trim()) s = cutMatch(s, deep, deep[1] + " ");
-  }
+  if (p.energy === "deep") { energy = "deep"; tag = "writing"; }
   else if (/\bdesign|creativ/i.test(s)) { energy = "create"; tag = "design"; }
   else if (/\bcall\b|\bmeet|\binterview/i.test(s)) { energy = "collab"; tag = "research"; }
-  s = tidyTitle(s);
   if (!s) s = "New task";
   // built-in tag ids only exist in demo mode — real accounts have their own tags
   const tags = tag && !isSupabaseConfigured && TAGS[tag] ? [tag] : [];
   return {
     id: "t-cap" + (++_capId), title: s.charAt(0).toUpperCase() + s.slice(1), description: "",
-    status: "todo", priority, projectId: opts.projectId || "p-personal", assigneeId: opts.assigneeId || selfMemberId(),
-    dueDate, tags, dependencies: [], subtasks: [], comments: 0,
+    status: "todo", priority: p.priority ?? "medium", projectId: opts.projectId || "p-personal", assigneeId: opts.assigneeId || selfMemberId(),
+    dueDate: p.dueDate, tags, dependencies: [], subtasks: [], comments: 0,
     focusMin: dur, dur, energy, scheduled: null, aiScore: 60,
     aiReason: "Captured just now — drag it onto your day or hit Auto-plan.", planToday: true,
   };
@@ -633,20 +580,12 @@ export function parseCapture(text: string, opts: CaptureOptions = {}): Task | nu
    "Email Sara tomorrow 90m #Foundrise !high @dan" → fields + cleaned title. */
 export interface ParsedTokens { title: string; dueDate?: string; priority?: Priority; projectId?: string; assigneeId?: string; focusMin?: number }
 export function parseTaskTokens(text: string, projects: { id: string; name: string }[] = [], members: { id: string; name: string }[] = []): ParsedTokens {
-  let s = text;
-  const out: ParsedTokens = { title: "" };
-  const dur = takeDuration(s);
-  if (dur) { out.focusMin = dur.min; s = dur.rest; }
-  const pw = s.match(/(^|\s)!(urgent|high|medium|med|low)\b/i);
-  if (pw) { const w = pw[2].toLowerCase(); out.priority = (w === "med" ? "medium" : w) as Priority; s = cutMatch(s, pw); }
-  else { const bang = s.match(/(^|\s)(!{1,3})(?=\s|$)/); if (bang) { out.priority = bang[2].length >= 3 ? "urgent" : bang[2].length === 2 ? "high" : "medium"; s = cutMatch(s, bang); } }
-  const due = takeDueWord(s);
-  if (due) { out.dueDate = dayOffset(due.offset); s = due.rest; }
-  const projM = s.match(/(^|\s)#([\w-]+)/);
-  if (projM) { const q = projM[2].toLowerCase(); const p = projects.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || projects.find((x) => x.name.toLowerCase().includes(q)); if (p) { out.projectId = p.id; s = cutMatch(s, projM); } }
-  const asM = s.match(/(^|\s)@([\w-]+)/);
-  if (asM) { const q = asM[2].toLowerCase(); const m = members.find((x) => x.name.toLowerCase().replace(/\s+/g, "").startsWith(q)) || members.find((x) => x.name.toLowerCase().includes(q)); if (m) { out.assigneeId = m.id; s = cutMatch(s, asM); } }
-  // gentler edges than capture: a title may well start with "-" or end in ":"
-  out.title = tidyTitle(s, /^[\s,;]+|[\s,;]+$/g);
+  const p = parseTask(text, { today: KANBO_TODAY, projects, members, kinds: TOKEN_KINDS, nextWeek: "+7" });
+  const out: ParsedTokens = { title: p.title };
+  if (p.focusMin != null) out.focusMin = p.focusMin;
+  if (p.priority) out.priority = p.priority;
+  if (p.dueDate) out.dueDate = p.dueDate;
+  if (p.projectId) out.projectId = p.projectId;
+  if (p.assigneeId) out.assigneeId = p.assigneeId;
   return out;
 }
