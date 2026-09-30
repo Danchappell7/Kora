@@ -3150,7 +3150,10 @@ export default function App() {
   useEffect(() => {
     if (!gated || adminByFlag || !authUserId) return;
     let alive = true;
-    store.amIAdmin().then((admin) => { if (alive) setAdminCheck({ uid: authUserId, admin }); }, () => { if (alive) setAdminCheck({ uid: authUserId, admin: false }); });
+    // never leave someone on the loader if the check stalls — after 6s treat it as "not an admin"
+    const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 6000));
+    Promise.race([store.amIAdmin(), timeout])
+      .then((admin) => { if (alive) setAdminCheck({ uid: authUserId, admin }); }, () => { if (alive) setAdminCheck({ uid: authUserId, admin: false }); });
     return () => { alive = false; };
   }, [gated, adminByFlag, authUserId]);
   const adminChecked = adminCheck?.uid === authUserId;

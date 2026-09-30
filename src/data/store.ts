@@ -2146,7 +2146,7 @@ export const store = {
     const heuristic = () => {
       const open = tasks.filter((t) => t.status !== "done");
       const items = [...open].sort((a, b) => b.aiScore - a.aiScore).map((t) => ({ id: t.id, score: t.aiScore, reason: t.aiReason || "Ranked by Kanbo's priority model." }));
-      return { items, summary: "Prioritized your open work — urgent and unblocking tasks first.", source: "heuristic" as const };
+      return { items, summary: "Prioritised your open work — urgent and unblocking tasks first.", source: "heuristic" as const };
     };
     aiNoticeText = null;
     if (!supabase) return heuristic();

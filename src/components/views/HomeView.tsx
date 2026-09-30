@@ -179,7 +179,7 @@ export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, s
               : "A good moment to plan ahead or clear your backlog."}
         </p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button className="btn btn-accent" onClick={onAutoPrioritize} disabled={aiBusy} style={{ opacity: aiBusy ? 0.6 : 1 }}><Icon name="sparkles" size={15} /> {aiBusy ? "Prioritizing…" : "Auto-prioritize my day"}</button>
+          <button className="btn btn-accent" onClick={onAutoPrioritize} disabled={aiBusy} style={{ opacity: aiBusy ? 0.6 : 1 }}><Icon name="sparkles" size={15} /> {aiBusy ? "Prioritizing…" : "Auto-prioritise my day"}</button>
           <button className="btn btn-ghost" onClick={openFocus}><Icon name="play" size={14} fill="currentColor" /> Start focus block</button>
           <button className="btn btn-ghost" onClick={() => setRoute({ view: "tasks" })}>Review all tasks <Icon name="arrowRight" size={14} /></button>
         </div>

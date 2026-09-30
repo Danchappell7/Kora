@@ -18,7 +18,7 @@ export interface Suggestion {
 }
 
 const ACTIONS: Suggestion[] = [
-  { id: "prioritize", icon: "sparkles", label: "Auto-prioritize my day", hint: "AI", accent: true },
+  { id: "prioritize", icon: "sparkles", label: "Auto-prioritise my day", hint: "AI", accent: true },
   { id: "new-task", icon: "plus", label: "New task", hint: "c" },
   { id: "quick-capture", icon: "zap", label: "Quick capture", hint: "q" },
   { id: "new-project", icon: "briefcase", label: "New project", hint: "" },

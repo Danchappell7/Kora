@@ -147,7 +147,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
         <section style={{ ...sectionPad, padding: "60px 24px" }}>
           <h2 style={{ textAlign: "center", fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 12 }}>Everything in one place. Nothing in your way.</h2>
           <p style={{ textAlign: "center", fontSize: 16, color: "var(--ink-3)", margin: "0 auto 44px", maxWidth: 540, lineHeight: 1.55 }}>
-            Capture, plan, prioritize, and focus. For you, and for the whole team.
+            Capture, plan, prioritise and focus. For you, and for the whole team.
           </p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 18 }}>
             {FEATURES.map((f) => (
@@ -191,7 +191,7 @@ export function Landing({ onGetStarted, onSignIn, signupDisabled }: {
                 <span style={{ fontSize: 38, fontWeight: 700, letterSpacing: "-0.02em" }}>Free</span>
               </div>
               <p style={{ fontSize: 13.5, color: "var(--ink-3)", margin: "0 0 16px", lineHeight: 1.5 }}>The full Kanbo. Every feature, solo or with your team, while we’re in early access.</p>
-              {["Unlimited tasks and projects", "Shared team spaces", "AI planning and prioritization", "Workload and calendar view", "Export your data anytime"].map((f) => (
+              {["Unlimited tasks and projects", "Shared team spaces", "AI planning and prioritisation", "Workload and calendar view", "Export your data anytime"].map((f) => (
                 <div key={f} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, color: "var(--ink-2)", padding: "5px 0" }}>
                   <Icon name="check" size={15} style={{ color: "var(--accent)" }} /> {f}
                 </div>
