@@ -79,21 +79,26 @@ const FOCUS_KEY = "kanbo-workload-focus";
 export function focusWorkloadMember(id: string): void {
   try { sessionStorage.setItem(FOCUS_KEY, id); } catch { /* private mode */ }
 }
-function takeWorkloadFocus(): string | null {
-  try { const v = sessionStorage.getItem(FOCUS_KEY); sessionStorage.removeItem(FOCUS_KEY); return v; } catch { return null; }
+function peekWorkloadFocus(): string | null {
+  try { return sessionStorage.getItem(FOCUS_KEY); } catch { return null; }
 }
 
 const weekWord = (offset: number) => (offset === 0 ? "This week" : offset === 1 ? "Next week" : `In ${offset} weeks`);
 const fmtDay = fmtDayMonth;
 
-export function WorkloadView({ tasks, members, onOpen }: {
+export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace }: {
   tasks: Task[];
   members: { id: string; name: string }[];
   onOpen: (id: string) => void;
+  /** the Personal workspace: Workload is for teams, so it explains itself instead */
+  personal?: boolean;
+  onNewWorkspace?: () => void;
 }) {
   const [weekOffset, setWeekOffset] = useState(0);       // the first week column
   const [pick, setPick] = useState(0);                    // the week (column) whose work is listed
-  const [focusId] = useState(takeWorkloadFocus);
+  // read while rendering (an initializer may run twice), cleared once mounted so it's used once
+  const [focusId] = useState(peekWorkloadFocus);
+  useEffect(() => { try { sessionStorage.removeItem(FOCUS_KEY); } catch { /* private mode */ } }, []);
   const [expanded, setExpanded] = useState<string | null>(focusId);
   const [caps, setCaps] = useState<Record<string, number>>(readCapacities);
   const capOf = (id: string) => capacityOf(caps, id);
@@ -149,13 +154,24 @@ export function WorkloadView({ tasks, members, onOpen }: {
   const thatWeek = focus.offset === 0 ? "this week" : "that week";
   const shift = (by: number) => { setWeekOffset((w) => Math.min(MAX_OFFSET, Math.max(0, w + by))); setPick(0); };
 
+  if (personal) {
+    return (
+      <div className="kload" data-personal="">
+        <style>{WORKLOAD_CSS}</style>
+        <EmptyState art="chart" size="lg" title="Workload is for teams"
+          body="In a team workspace, Workload shows who has room each week, from everyone's estimates and capacity."
+          action={onNewWorkspace ? <Button variant="primary" icon="plus" onClick={onNewWorkspace}>New workspace</Button> : undefined} />
+      </div>
+    );
+  }
+
   return (
     <div className="kload">
       <style>{WORKLOAD_CSS}</style>
       <div className="kload-bar">
         <div className="kload-nav">
-          <IconButton icon="chevronLeft" label="Previous week" size="sm" variant="secondary" onClick={() => shift(-1)} disabled={weekOffset === 0} />
-          <IconButton icon="chevronRight" label="Next week" size="sm" variant="secondary" onClick={() => shift(1)} disabled={weekOffset >= MAX_OFFSET} />
+          <IconButton icon="chevronLeft" label="Earlier week" size="sm" variant="secondary" onClick={() => shift(-1)} disabled={weekOffset === 0} />
+          <IconButton icon="chevronRight" label="Later week" size="sm" variant="secondary" onClick={() => shift(1)} disabled={weekOffset >= MAX_OFFSET} />
           <div className="kload-range" aria-live="polite">
             <span className="kload-range-title">{weekWord(focus.offset)}</span>
             <span className="kload-range-dates">{fmtDay(focus.start)} – {fmtDay(addDays(focus.start, 6))}</span>
@@ -301,6 +317,7 @@ export function WorkloadView({ tasks, members, onOpen }: {
 
 const WORKLOAD_CSS = `
 .kload { flex: 1; min-width: 0; overflow-y: auto; padding: 0 var(--gutter, 32px) 48px; container-type: inline-size; }
+.kload[data-personal] { display: grid; place-items: center; }
 .kload-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; min-height: 56px; padding: 8px 0; }
 .kload-nav { display: flex; align-items: center; gap: 6px; }
 .kload-range { display: flex; align-items: baseline; gap: 8px; margin-left: 6px; }

@@ -80,8 +80,9 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
     setEvents(null); setFailed(false);
     const since = (localDay(historyStart) ?? new Date(KANBO_TODAY)).toISOString();
     // (one read covers both periods: switching Since yesterday ↔ This week filters it)
-    Promise.resolve().then(() => load.current(since))
-      .then((ev) => { if (alive) setEvents(Array.isArray(ev) ? ev : []); })
+    let read: Promise<WorkspaceEvent[]>;
+    try { read = Promise.resolve(load.current(since)); } catch (e) { read = Promise.reject(e); }
+    read.then((ev) => { if (alive) setEvents(Array.isArray(ev) ? ev : []); })
       .catch(() => { if (alive) { setFailed(true); setEvents([]); } });
     return () => { alive = false; };
   }, [historyStart, wsKey, attempt, personal]);
@@ -128,27 +129,27 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
     else toast.error("Couldn't copy — select the text and copy it yourself.");
   };
   const [writeUp, setWriteUp] = useState<WriteUp | null>(null);
+  const [draft, setDraft] = useState("");   // the text as edited in the sheet (what gets copied)
   const request = useRef(0);
+  const ready = (w: Extract<WriteUp, { status: "ready" }>) => { setDraft(w.text); setWriteUp(w); };
   const startWriteUp = async () => {
     const template = pulseMarkdown(facts);
     const id = ++request.current;
-    if (!onWriteUp) { setWriteUp({ status: "ready", text: template, ai: false, note: "Written from your team's tasks (Kanbo AI is off)" }); return; }
+    if (!onWriteUp) { ready({ status: "ready", text: template, ai: false, note: "Written from your team's tasks (Kanbo AI is off)" }); return; }
     setWriteUp({ status: "loading" });
     let out: AiOutcome<string> | null = null;
     try { out = await onWriteUp(pulseFactsForAi(facts, risks)); } catch { out = null; }
     if (id !== request.current) return;   // closed, or asked again, meanwhile
     if (out && out.source === "ai" && typeof out.data === "string" && out.data.trim()) {
-      setWriteUp({ status: "ready", text: out.data.trim(), ai: true });
+      ready({ status: "ready", text: out.data.trim(), ai: true });
       return;
     }
     const why = out?.source === "limit" ? "you've reached today's Kanbo AI limit"
       : out?.source === "off" ? "Kanbo AI is off"
       : "Kanbo AI isn't available right now";
-    setWriteUp({ status: "ready", text: template, ai: false, note: `Written from your team's tasks (${why})` });
+    ready({ status: "ready", text: template, ai: false, note: `Written from your team's tasks (${why})` });
   };
   const closeWriteUp = () => { request.current++; setWriteUp(null); };
-  const [draft, setDraft] = useState("");
-  useEffect(() => { if (writeUp?.status === "ready") setDraft(writeUp.text); }, [writeUp]);
 
   if (personal) {
     return (
@@ -399,7 +400,11 @@ const PULSE_CSS = `
 .kpulse-writing-skel { display: grid; gap: 10px; }
 .kpulse-writing-skel .skel { height: 14px; border-radius: var(--r-xs, 4px); }
 .kpulse-writing-skel .skel:nth-child(2) { width: 88%; } .kpulse-writing-skel .skel:nth-child(3) { width: 94%; } .kpulse-writing-skel .skel:nth-child(4) { width: 60%; }
-@container (max-width: 1080px) {
+@container (max-width: 1180px) {
+  .kpulse-grid { grid-template-columns: minmax(0, 1fr) 320px; }
+  .kpt-row { grid-template-columns: 148px minmax(0, 1fr) minmax(0, 1.3fr) 96px; gap: 0 16px; }
+}
+@container (max-width: 959px) {
   .kpulse-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "lede" "radar" "table"; grid-template-rows: auto; padding-right: var(--gutter, 32px); }
   .kpulse-bar, .kpulse-lede-wrap, .kpt { padding-right: 0; }
   .kpulse-radar { margin-top: 24px; padding: 8px 0 8px; border-left: 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }

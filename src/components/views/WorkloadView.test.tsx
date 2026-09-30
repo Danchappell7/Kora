@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { Task } from "../../data/types";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
-import { WorkloadView } from "./WorkloadView";
+import { WorkloadView, focusWorkloadMember, readCapacities } from "./WorkloadView";
 import { addDays, startOfWeekMon } from "./reportingUtils";
 
 let n = 0;
@@ -55,5 +55,39 @@ describe("WorkloadView", () => {
     expect(screen.getByText(/4h \/ 32h · 1 task/)).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("kanbo-capacity") || "{}")).toEqual({ "m-1": 32 });
     localStorage.removeItem("kanbo-capacity");
+  });
+  it("without estimates, counts an hour a task — and says how to see real load", () => {
+    const wk = startOfWeekMon(KANBO_TODAY);
+    render(<WorkloadView members={[{ id: "m-1", name: "Maya Lin" }]} onOpen={() => {}} tasks={[
+      task({ assigneeId: "m-1", dueDate: toLocalISO(addDays(wk, 6)) }),
+      task({ assigneeId: "m-1", dueDate: toLocalISO(addDays(wk, 6)) }),
+    ]} />);
+    expect(screen.getByText(/2h \/ 40h · 2 tasks/)).toBeInTheDocument();
+    expect(screen.getByText("Add estimates (~2h) to tasks to see real load — until then Kanbo counts 1h per task.")).toBeInTheDocument();
+  });
+  it("shows four weeks side by side, and lists the picked week's work", () => {
+    const wk = startOfWeekMon(KANBO_TODAY);
+    render(<WorkloadView members={[{ id: "m-1", name: "Maya Lin" }]} onOpen={() => {}} tasks={[
+      task({ title: "Next week's job", assigneeId: "m-1", dueDate: toLocalISO(addDays(wk, 9)), effortHours: 5 }),
+    ]} />);
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(expect.arrayContaining([expect.stringMatching(/^This week/), expect.stringMatching(/^Next week/), expect.stringMatching(/^In 2 weeks/), expect.stringMatching(/^In 3 weeks/)]));
+    expect(screen.getByText(/5h \/ 40h · 1 task/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    expect(screen.queryByRole("button", { name: "Open task Next week's job" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Next week/ }));
+    expect(screen.getByRole("button", { name: /^Next week/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Open task Next week's job" })).toBeInTheDocument();
+  });
+  it("opens the person Radar's Rebalance pointed at", () => {
+    focusWorkloadMember("m-1");
+    render(<WorkloadView members={[{ id: "m-1", name: "Maya Lin" }, { id: "m-2", name: "Theo Vance" }]} onOpen={() => {}} tasks={[]} />);
+    expect(screen.getByRole("button", { name: /Maya Lin/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Theo Vance/ })).toHaveAttribute("aria-expanded", "false");
+    expect(readCapacities()).toEqual({});
+  });
+  it("in Personal, explains that Workload is for teams", () => {
+    render(<WorkloadView members={[{ id: "m-self", name: "Daniel Okai" }]} onOpen={() => {}} tasks={[]} personal />);
+    expect(screen.getByText("Workload is for teams")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
   });
 });

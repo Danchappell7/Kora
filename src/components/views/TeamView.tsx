@@ -587,10 +587,11 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
 
   // this week's load and what each person is working on (the load model Pulse and Workload share)
   const [capacities] = useState(readCapacities);
+  const todayKey = KANBO_TODAY.getTime();   // the live clock moves it at midnight
   const weekLoad = useMemo(() => {
-    const today = new Date(KANBO_TODAY);
+    const today = new Date(todayKey);
     return loadForWeek(tasks, startOfWeekMon(today), today).rows;
-  }, [tasks]);
+  }, [tasks, todayKey]);
   const working = useMemo(() => {
     const out = new Map<string, Task>();
     const under = tasks.filter((t) => t.status === "progress" && !t.archivedAt)

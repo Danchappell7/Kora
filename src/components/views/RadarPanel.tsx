@@ -41,6 +41,8 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
   const headId = "kradar-" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // what was just done about each risk ("Nudged Sana"), until the list moves on
   const [acks, setAcks] = useState<Record<string, string>>({});
+  // stacked under the lede (narrow screens) the list shows its top three until asked for the rest
+  const [all, setAll] = useState(false);
   const ack = (riskId: string, text: string) => { setAcks((a) => ({ ...a, [riskId]: text })); toast?.success(text); };
   const taskOf = (id: string | undefined) => (id ? tasks.find((t) => t.id === id) : undefined);
   const nameOf = (id: string | undefined) => (id ? members.find((m) => m.id === id)?.name ?? getMember(id)?.name ?? "" : "");
@@ -70,7 +72,8 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
       ) : risks.length === 0 ? (
         <EmptyState size="sm" title="Nothing at risk" body="Kanbo checks blockers, slips, stale work and capacity." />
       ) : (
-        <ol className="kradar-list">
+        <>
+        <ol className="kradar-list" data-all={all || undefined}>
           {risks.map((r, i) => {
             const focus = taskOf(r.focusTaskId ?? r.taskIds[0]);
             const self = !!currentUserId && r.memberId === currentUserId;
@@ -94,7 +97,8 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
                   {fixes.length > 0 && (
                     <div className="kradar-fixes">
                       {fixes.map((f, fi) => {
-                        const variant = fi === 0 && !readOnly ? "primary" : "secondary";
+                        // the first fix is the primary action on risks that need action now (signal); the rest stay quiet
+                        const variant = fi === 0 && !readOnly && r.severity === "signal" ? "primary" : "secondary";
                         const key = f.kind + fi;
                         if (f.kind === "open") return <Button key={key} size="sm" variant={variant} onClick={() => onOpen(r.taskIds[0])}>{f.label}</Button>;
                         if (f.kind === "rebalance") {
@@ -133,6 +137,12 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
             );
           })}
         </ol>
+        {risks.length > 3 && (
+          <button type="button" className="kradar-more" aria-expanded={all} onClick={() => setAll((x) => !x)}>
+            {all ? "Show the top three" : `Show all ${risks.length} risks`}
+          </button>
+        )}
+        </>
       )}
     </section>
   );
@@ -250,6 +260,13 @@ const RADAR_CSS = `
 .kradar-ack { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); }
 .kradar-fixes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
 .kradar-firm { display: inline-flex; }
+.kradar-more { display: none; align-self: flex-start; height: var(--h-sm, 28px); margin: 0 0 8px 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm, 6px);
+  background: transparent; color: var(--accent-text, var(--accent)); font: 600 12px/1 var(--font-ui, var(--font-display)); cursor: pointer; }
+.kradar-more:hover { background: var(--fill-1); }
+@container (max-width: 959px) {
+  .kradar-list:not([data-all]) > .kradar-item:nth-child(n+4) { display: none; }
+  .kradar-more { display: inline-flex; align-items: center; }
+}
 /* the popover's own menu hover would repaint these buttons; keep the kit's look */
 .knudge .kbtn[data-variant="primary"]:hover:not(:disabled) { background: var(--accent-hover, var(--accent-strong)) !important; color: var(--on-accent) !important; }
 .knudge .kbtn[data-variant="ghost"]:hover:not(:disabled) { background: var(--fill-1) !important; color: var(--ink) !important; }
