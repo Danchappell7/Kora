@@ -6,6 +6,7 @@
 import type {
   Member, Workspace, Project, TagDef, Task, CalEvent,
   Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
+  Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/supabase";
 
@@ -432,6 +433,17 @@ export let EVENTS: CalEvent[] = [
   { id: "e3", title: "Design review", start: 13 * 60, end: 14 * 60, kind: "meeting", with: ["Sana", "Theo"] },
   { id: "e4", title: "1:1 with Maya", start: 16 * 60 + 30, end: 17 * 60, kind: "meeting", with: ["Maya"] },
 ];
+
+/* demo seed for the redesign's surfaces — Inbox, Pulse and Radar, Goals,
+   Portfolios, status updates, Rules and Requests. Empty until P14 fills them,
+   so demo mode looks exactly as it does today. */
+export const DEMO_ACTIVITY: Activity[] = [];
+export const DEMO_GOALS: Goal[] = [];
+export const DEMO_PORTFOLIOS: Portfolio[] = [];
+export const DEMO_STATUS_UPDATES: StatusUpdate[] = [];
+export const DEMO_TASK_EVENTS: WorkspaceEvent[] = [];
+export const DEMO_RULES: AutomationRule[] = [];
+export const DEMO_FORMS: FormDef[] = [];
 
 export const fmtClock = (m: number): string => {
   const h = Math.floor(m / 60), mm = m % 60, ap = h >= 12 ? "pm" : "am", hh = h % 12 || 12;

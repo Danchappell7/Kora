@@ -13,7 +13,8 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, SELF_COLOR,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent } from "./types";
+import type { AiOutcome, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -2206,6 +2207,30 @@ export const store = {
    *  show — "You've used today's 200 AI requests…" — or null when it was just
    *  unavailable. Reset at the start of every AI request. */
   aiNotice(): string | null { return aiNoticeText; },
+
+  /* ---------- redesign contracts (W0 stubs: P13 fills them in) ----------
+     Each answers "unavailable" (or nothing) until then, and every caller
+     falls back to on-device rules, so nothing depends on them yet. */
+  /** The workspace's task_events since a moment (Pulse, Radar), newest first. */
+  async listWorkspaceEventsSince(_workspaceId: string | null, _sinceISO: string, _limit = 500): Promise<WorkspaceEvent[]> {
+    return [];
+  },
+  /** Ask Kanbo: answer a question about the tasks and propose changes. */
+  async aiCommand(_question: string, _tasks: Task[], _ctx: AskContext): Promise<AiOutcome<AskResult>> {
+    return { data: null, source: "unavailable" };
+  },
+  /** Read tasks out of pasted notes. */
+  async aiExtract(_text: string, _ctx: AskContext & { hint?: string }): Promise<AiOutcome<ExtractedTask[]>> {
+    return { data: null, source: "unavailable" };
+  },
+  /** Write the team's standup from Pulse's facts. */
+  async aiStandup(_facts: unknown): Promise<AiOutcome<string>> {
+    return { data: null, source: "unavailable" };
+  },
+  /** Draft a project status update from its facts. */
+  async aiStatus(_facts: unknown): Promise<AiOutcome<{ summary: string; status: StatusKind }>> {
+    return { data: null, source: "unavailable" };
+  },
 
   /* ---------- activity feed (Inbox) ---------- */
   /** The inbox: every unread item (up to 500) plus the newest `limit`, merged,

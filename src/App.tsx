@@ -1,9 +1,9 @@
 /* ============================================================
    KANBO — App shell: auth gate, store-backed state, routing,
-   timer, tasks page
+   timer
    ============================================================ */
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Icon, Avatar, StatusDot, Segmented, GlobalTipStyles, EmojiPicker, type SegmentedOption, AppBg, Collapse } from "./components/primitives";
+import { Icon, GlobalTipStyles, AppBg } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -17,20 +17,25 @@ import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ImportTasksModal, type ImportRow } from "./components/ImportTasksModal";
-import { exportTasksCsv, printTasks, type TaskExportOptions } from "./lib/exportTasks";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { TagManagerModal } from "./components/TagManagerModal";
 import { TAG_COLORS } from "./components/TagPicker";
-import { ListView } from "./components/tasks/ListView";
-import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./components/tasks/OtherViews";
+import { TasksPage } from "./components/tasks/TasksPage";
+import { CalendarView } from "./components/tasks/OtherViews";
+import { ProjectOverview } from "./components/project/ProjectHeader";
 import { PlanView } from "./components/views/PlanView";
 import { MyWeekView } from "./components/views/MyWeekView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
 import { ReportsView } from "./components/views/ReportsView";
 import { SearchView } from "./components/views/SearchView";
-import { WorkloadView, GoalsView, PortfoliosView, AutomationsView, FormsView, type FormValues, STATUS_KIND_META } from "./components/views/ManagerViews";
-import { InboxView, TeamView } from "./components/views/InboxTeam";
+import { WorkloadView } from "./components/views/WorkloadView";
+import { GoalsView, PortfoliosView } from "./components/views/GoalsPortfolios";
+import { AutomationsView, FormsView, type FormValues } from "./components/views/RulesForms";
+import { InboxView } from "./components/views/InboxView";
+import { TeamView } from "./components/views/TeamView";
+import { ProjectsView } from "./components/views/ProjectsView";
+import { TeamPulse } from "./components/views/TeamPulse";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
 import { PublicSite, UpdatePasswordScreen, PendingApproval } from "./auth/LoginScreen";
@@ -50,7 +55,7 @@ import { QuickCapture } from "./components/QuickCapture";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
 import { taskMatchesQuery, toQuery } from "./lib/searchQuery";
 import {
-  STATUS_META, getProject, getMember, setReferenceData, toLocalISO, MEMBERS, dueState, KANBO_TODAY, energyOf, SELF_COLOR,
+  STATUS_META, getProject, getMember, setReferenceData, toLocalISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
 import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./data/types";
@@ -58,568 +63,13 @@ import type { Route, TaskView, GroupBy } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
   unseenCreates, reloadProjects, reloadWorkspaces,
-  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, readFilters, validFilters, filtersKey, EMPTY_FILTERS, type TaskFilters, type Limiter,
+  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, type Limiter,
 } from "./lib/taskOps";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const GUEST_MSG = "Guests can view and comment — ask a workspace admin for member access";
 // activity the signed-in user wrote about their own actions — history, not notifications
 const SELF_KINDS = new Set<ActivityKind>(["created", "status", "completed", "reopened", "deleted"]);
-
-/* ---- tasks page with view switcher ---- */
-const VIEW_OPTS: SegmentedOption<TaskView>[] = [
-  { value: "list", label: "List", icon: "list" },
-  { value: "board", label: "Board", icon: "board" },
-  { value: "timeline", label: "Timeline", icon: "timeline" },
-  { value: "calendar", label: "Calendar", icon: "calendar" },
-  { value: "files", label: "Files", icon: "folder" },
-  { value: "matrix", label: "Matrix", icon: "grid" },
-];
-
-const GROUP_OPTS: SegmentedOption<GroupBy>[] = [
-  { value: "status", label: "Status" },
-  { value: "section", label: "Section" },
-  { value: "due", label: "Due" },
-  { value: "priority", label: "Priority" },
-  { value: "project", label: "Project" },
-  { value: "none", label: "None" },
-];
-
-const PRIORITY_FILTERS: { value: string; label: string }[] = [
-  { value: "all", label: "All priorities" },
-  { value: "urgent", label: "Urgent" },
-  { value: "high", label: "High" },
-  { value: "medium", label: "Medium" },
-  { value: "low", label: "Low" },
-];
-
-function FilterSection({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 4 }}>
-      <div className="kicker" style={{ padding: "6px 8px 4px" }}>{label}</div>
-      {children}
-    </div>
-  );
-}
-function FilterOption({ label, active, onClick, dot }: { label: string; active: boolean; onClick: () => void; dot?: string }) {
-  return (
-    <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: active ? "var(--ink)" : "var(--ink-3)", background: active ? "var(--surface-2)" : "transparent" }}>
-      <span style={{ width: 13, display: "grid", placeItems: "center", flexShrink: 0 }}>{active && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}</span>
-      {dot && <span style={{ width: 8, height: 8, borderRadius: 3, background: dot, flexShrink: 0 }} />}
-      <span className="truncate">{label}</span>
-    </button>
-  );
-}
-
-const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
-  { v: "on_track", label: "On track", color: "var(--st-done)" },
-  { v: "at_risk", label: "At risk", color: "var(--st-review)" },
-  { v: "off_track", label: "Off track", color: "var(--st-blocked)" },
-  { v: "on_hold", label: "On hold", color: "var(--ink-4)" },
-];
-
-/** "today", "yesterday", "3 days ago", or a date — for status-update freshness. */
-function relDay(iso: string): { label: string; days: number } {
-  const then = new Date(iso); const now = new Date();
-  const days = Math.max(0, Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime()) / 86400000));
-  const label = days === 0 ? "today" : days === 1 ? "yesterday" : days < 14 ? `${days} days ago` : then.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: then.getFullYear() === now.getFullYear() ? undefined : "numeric" });
-  return { label, days };
-}
-
-function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate, onArchive }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void; onArchive?: (projectId: string) => void }) {
-  // progress and the task count are top-level tasks, like the page header (sub-tasks nest
-  // under their parent); what needs attention — overdue, due soon, blocked — counts every
-  // task, sub-tasks included, because that's real work that's late or stuck
-  const tasks = allProjectTasks.filter((t) => !t.parentId);
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [peopleOpen, setPeopleOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
-  const [nameDraft, setNameDraft] = useState(project.name);
-  const [emojiDraft, setEmojiDraft] = useState(project.emoji);
-  useEffect(() => { setNameDraft(project.name); setEmojiDraft(project.emoji); setEditOpen(false); setEmojiPickerOpen(false); }, [project.id, project.name, project.emoji]);
-  const PROJECT_PALETTE = ["oklch(0.74 0.14 230)", "oklch(0.74 0.16 305)", "oklch(0.75 0.13 155)", "oklch(0.78 0.15 70)", "oklch(0.66 0.2 20)", "oklch(0.78 0.1 45)"];
-  const [descEditing, setDescEditing] = useState(false);
-  const [descDraft, setDescDraft] = useState(project.description || "");
-  const [updOpen, setUpdOpen] = useState(false);
-  const [updText, setUpdText] = useState("");
-  const [updKind, setUpdKind] = useState<StatusKind>("on_track");
-  const [posting, setPosting] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const history = statusUpdates.filter((s) => s.projectId === project.id);
-  const latest = history[0];
-  const latestAge = latest ? relDay(latest.createdAt) : null;
-  const stale = !!latestAge && latestAge.days > 14;
-  // keep the draft until the update is actually saved
-  const postUpd = () => {
-    const v = updText.trim(); if (!v || !onPostStatus || posting) return;
-    const r = onPostStatus(project.id, v, updKind);
-    if (r && typeof (r as Promise<boolean>).then === "function") {
-      setPosting(true);
-      (r as Promise<boolean>).then((ok) => { setPosting(false); if (ok) { setUpdText(""); setUpdOpen(false); } });
-    } else { setUpdText(""); setUpdOpen(false); }
-  };
-  const total = tasks.length;
-  const done = tasks.filter((t) => t.status === "done").length;
-  const prog = total ? Math.round((done / total) * 100) : 0;
-  const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
-  const dueSoon = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
-  // auto-computed RAG health — complements the manually-set project phase
-  const overdue = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() < todayMid).length;
-  const blockedCount = allProjectTasks.filter((t) => t.status === "blocked").length;
-  const health = (() => {
-    if (total === 0) return null;
-    const bits: string[] = [];
-    if (overdue) bits.push(`${overdue} overdue`);
-    if (blockedCount) bits.push(`${blockedCount} blocked`);
-    const detail = bits.length ? bits.join(" · ") : "nothing overdue or blocked";
-    if (prog === 100) return { label: "Complete", color: "var(--st-done)", detail: "all tasks done" };
-    if (overdue >= 3 || overdue / allProjectTasks.length > 0.25 || (overdue >= 1 && blockedCount >= 2)) return { label: "Off track", color: "var(--prio-urgent)", detail };
-    if (overdue >= 1 || blockedCount >= 1) return { label: "At risk", color: "var(--st-review)", detail };
-    return { label: "On track", color: "var(--st-done)", detail };
-  })();
-  const byStatus = (["todo", "progress", "review", "blocked", "done"] as Status[]).map((s) => ({ s, n: tasks.filter((t) => t.status === s).length })).filter((x) => x.n > 0);
-  const printReport = () => {
-    const w = window.open("", "_blank"); if (!w) return;
-    const esc = (s: unknown) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
-    // every task, each sub-task listed under its parent
-    const kids = new Map<string, Task[]>();
-    allProjectTasks.forEach((t) => { if (t.parentId) { const l = kids.get(t.parentId); if (l) l.push(t); else kids.set(t.parentId, [t]); } });
-    const ordered: { t: Task; depth: number }[] = [];
-    const seen = new Set<string>();
-    const walk = (t: Task, depth: number) => { if (seen.has(t.id)) return; seen.add(t.id); ordered.push({ t, depth }); (kids.get(t.id) ?? []).forEach((k) => walk(k, depth + 1)); };
-    [...tasks].sort((a, b) => a.status.localeCompare(b.status)).forEach((t) => walk(t, 0));
-    allProjectTasks.forEach((t) => walk(t, 0)); // a sub-task whose parent isn't in this list
-    const rows = ordered.map(({ t, depth }) => `<tr><td style="padding-left:${8 + Math.min(depth, 4) * 16}px">${depth ? "↳ " : ""}${esc(t.title)}</td><td>${esc(STATUS_META[t.status].label)}</td><td>${esc(t.priority)}</td><td>${esc(t.dueDate || "")}</td><td>${esc(getMember(t.assigneeId)?.name || "")}</td></tr>`).join("");
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(project.name)} — report</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;color:#1a1a1a;padding:32px;max-width:900px;margin:0 auto}h1{font-size:22px;margin:0 0 4px}.sub{color:#666;font-size:13px;margin:0 0 20px}.bar{height:10px;background:#eee;border-radius:6px;overflow:hidden;margin:8px 0 20px}.bar>div{height:100%;background:#6a5cff;width:${prog}%}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #eee}th{color:#888;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}@media print{.noprint{display:none}}</style></head><body><h1>${esc(project.emoji)} ${esc(project.name)}</h1><p class="sub">${total} tasks · ${prog}% complete · ${esc(new Date().toLocaleDateString())}</p><div class="bar"><div></div></div><table><thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Due</th><th>Assignee</th></tr></thead><tbody>${rows}</tbody></table><p class="noprint" style="margin-top:24px;color:#888;font-size:12px">Use your browser's Print dialog to save as PDF.</p></body></html>`);
-    w.document.close(); w.focus(); setTimeout(() => w.print(), 250);
-  };
-  const curStatus = PROJECT_STATUSES.find((s) => s.v === project.status);
-  return (
-    <div className="glass" style={{ margin: "14px 24px 0", padding: "16px 18px", borderRadius: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-     <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 180 }}>
-        <div style={{ position: "relative" }}>
-          <button onClick={() => canManagePeople && setEditOpen((v) => !v)} title={canManagePeople ? "Edit project" : undefined}
-            style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", fontSize: 20, background: `color-mix(in oklch, ${project.color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${project.color} 32%, transparent)`, cursor: canManagePeople ? "pointer" : "default", padding: 0 }}>{project.emoji}</button>
-          {editOpen && canManagePeople && (
-            <>
-              <div onClick={() => setEditOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-              <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 31, width: 280, padding: 14, borderRadius: 14, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 12 }}>
-                <div className="kicker">Edit project</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => setEmojiPickerOpen((v) => !v)} title="Choose icon" aria-label="Project icon"
-                    style={{ width: 46, height: 38, textAlign: "center", fontSize: 19, borderRadius: 9, border: emojiPickerOpen ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer" }}>{emojiDraft}</button>
-                  <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && nameDraft.trim()) { onUpdate(project.id, { name: nameDraft.trim() }); setEditOpen(false); } }} onBlur={() => { if (nameDraft.trim() && nameDraft.trim() !== project.name) onUpdate(project.id, { name: nameDraft.trim() }); }} aria-label="Project name"
-                    style={{ flex: 1, height: 38, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
-                </div>
-                {emojiPickerOpen && <EmojiPicker width={252} height={180} onPick={(e) => { setEmojiDraft(e); onUpdate(project.id, { emoji: e }); setEmojiPickerOpen(false); }} />}
-                <div>
-                  <div className="kicker" style={{ marginBottom: 7 }}>Colour</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {PROJECT_PALETTE.map((c) => (
-                      <button key={c} onClick={() => onUpdate(project.id, { color: c })} aria-label="Set colour"
-                        style={{ width: 26, height: 26, borderRadius: 8, background: c, border: project.color === c ? "2px solid var(--ink)" : "2px solid transparent", cursor: "pointer" }} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 15, fontWeight: 600 }}>{project.name}</span>
-            <div style={{ position: "relative" }}>
-              <button onClick={() => setStatusOpen((v) => !v)} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 99, border: "1px solid var(--hairline)", background: curStatus ? `color-mix(in oklch, ${curStatus.color} 14%, transparent)` : "var(--surface)", cursor: "pointer", fontSize: 11.5, fontFamily: "var(--font-display)", color: curStatus ? curStatus.color : "var(--ink-4)" }}>
-                {curStatus ? <><span style={{ width: 7, height: 7, borderRadius: 99, background: curStatus.color }} />{curStatus.label}</> : "Set status"}
-              </button>
-              {statusOpen && (
-                <>
-                  <div onClick={() => setStatusOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
-                  <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 5px)", left: 0, zIndex: 21, width: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                    {PROJECT_STATUSES.map((s) => (
-                      <button key={s.v} onClick={() => { onUpdate(project.id, { status: project.status === s.v ? "" : s.v }); setStatusOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", background: project.status === s.v ? "var(--surface-2)" : "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)" }}>
-                        <span style={{ width: 8, height: 8, borderRadius: 99, background: s.color }} /> {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-            {health && (
-              <span title={`Auto health: ${health.detail}`} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 99, fontSize: 11.5, fontFamily: "var(--font-display)", color: health.color, background: `color-mix(in oklch, ${health.color} 14%, transparent)`, border: `1px solid color-mix(in oklch, ${health.color} 30%, transparent)` }}>
-                <span style={{ width: 7, height: 7, borderRadius: 99, background: health.color }} />{health.label}
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: 12, color: "var(--ink-4)" }}>{total} task{total === 1 ? "" : "s"}{dueSoon > 0 ? ` · ${dueSoon} due soon` : ""}</div>
-        </div>
-      </div>
-      <div style={{ flex: 1, minWidth: 160 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 5 }}><span className="kicker">Progress</span><span className="mono tnum" style={{ color: prog > 0 ? "var(--accent)" : "var(--ink-4)" }}>{prog}%</span></div>
-        <div style={{ height: 7, borderRadius: 99, background: "var(--track, var(--surface-2))", overflow: "hidden" }}><div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: project.color, transition: "width .9s var(--ease)" }} /></div>
-        <div style={{ display: "flex", gap: 12, marginTop: 9, flexWrap: "wrap" }}>
-          {byStatus.map(({ s, n }) => (
-            <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-3)" }}><StatusDot status={s} size={7} />{STATUS_META[s].label} <span className="mono" style={{ color: "var(--ink-4)" }}>{n}</span></span>
-          ))}
-        </div>
-      </div>
-      {(() => {
-        const ownerId = project.ownerId ?? null;
-        const ownerName = ownerId ? (members.find((m) => m.id === ownerId)?.name || getMember(ownerId)?.name || "Owner") : null;
-        const contribIds = (project.contributorIds ?? []).filter((id) => id !== ownerId);
-        const toggleContrib = (id: string) => {
-          const set = new Set(contribIds);
-          set.has(id) ? set.delete(id) : set.add(id);
-          onUpdate(project.id, { contributorIds: [...set] });
-        };
-        return (
-          <div style={{ position: "relative" }}>
-            <div className="kicker" style={{ marginBottom: 6 }}>Owner & contributors</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {/* owner */}
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }} title={ownerName ? `Owner: ${ownerName}` : "No owner"}>
-                {ownerId ? <Avatar id={ownerId} size={28} /> : <span style={{ width: 28, height: 28, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={14} /></span>}
-                <span style={{ fontSize: 12.5, color: "var(--ink-2)" }} className="truncate">{ownerName || "Set owner"}<span style={{ color: "var(--ink-4)", fontSize: 11 }}> · owner</span></span>
-              </div>
-              {/* contributors stack */}
-              {contribIds.length > 0 && <div style={{ display: "flex", marginLeft: 4 }}>{contribIds.slice(0, 6).map((id, i) => <span key={id} title={members.find((m) => m.id === id)?.name || getMember(id)?.name} style={{ marginLeft: i ? -8 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised)" }}><Avatar id={id} size={28} /></span>)}</div>}
-              {canManagePeople && <button onClick={() => setPeopleOpen((v) => !v)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12 }}><Icon name="users" size={13} /> Manage</button>}
-            </div>
-            {peopleOpen && canManagePeople && (
-              <>
-                <div onClick={() => setPeopleOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 31, width: 280, maxHeight: 320, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                  <div className="kicker" style={{ padding: "4px 8px 6px" }}>Owner</div>
-                  <select value={ownerId ?? ""} onChange={(e) => onUpdate(project.id, { ownerId: e.target.value || null })} aria-label="Project owner"
-                    style={{ width: "100%", height: 32, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", cursor: "pointer", marginBottom: 8 }}>
-                    {!ownerId && <option value="">Select owner…</option>}
-                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                  <div className="kicker" style={{ padding: "4px 8px 6px" }}>Contributors</div>
-                  {members.filter((m) => m.id !== ownerId).length === 0 && <p style={{ fontSize: 12, color: "var(--ink-4)", padding: "2px 8px" }}>Invite teammates to add contributors.</p>}
-                  {members.filter((m) => m.id !== ownerId).map((m) => (
-                    <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 8px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
-                      <input type="checkbox" checked={contribIds.includes(m.id)} onChange={() => toggleContrib(m.id)} />
-                      <Avatar id={m.id} size={22} /><span className="truncate">{m.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        );
-      })()}
-      <div style={{ display: "flex", gap: 8, alignSelf: "flex-start" }}>
-        {onDuplicate && <button onClick={() => onDuplicate(project.id)} className="btn btn-ghost" title="Duplicate this project (as a template)" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="layers" size={14} /> Duplicate</button>}
-        {onArchive && <button onClick={() => { if (window.confirm(`Archive "${project.name}"? It's hidden but kept, and you can restore it from the sidebar.`)) onArchive(project.id); }} className="btn btn-ghost" title="Archive this project" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="archive" size={14} /> Archive</button>}
-        <button onClick={printReport} className="btn btn-ghost" title="Print / export a PDF report" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Report</button>
-      </div>
-     </div>
-     {descEditing ? (
-       // eslint-disable-next-line jsx-a11y/no-autofocus
-       <textarea autoFocus value={descDraft} onChange={(e) => setDescDraft(e.target.value)} onBlur={() => { setDescEditing(false); if (descDraft !== (project.description || "")) onUpdate(project.id, { description: descDraft }); }}
-         placeholder="Add a project description…" rows={2}
-         style={{ width: "100%", resize: "vertical", padding: "8px 11px", borderRadius: 10, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, lineHeight: 1.55, outline: "none" }} />
-     ) : (
-       <div onClick={() => { setDescDraft(project.description || ""); setDescEditing(true); }} style={{ fontSize: 13, lineHeight: 1.55, color: project.description ? "var(--ink-3)" : "var(--ink-4)", cursor: "text", padding: "2px 0" }}>
-         {project.description || "Add a project description…"}
-       </div>
-     )}
-     {/* guests can read the updates; only people who can edit can post one */}
-     {(onPostStatus || history.length > 0) && (
-       <div style={{ borderTop: "1px solid var(--hairline)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-           <span className="kicker">Status update</span>
-           {latest && <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: STATUS_KIND_META[latest.status].color }}><span style={{ width: 7, height: 7, borderRadius: 99, background: STATUS_KIND_META[latest.status].color }} />{STATUS_KIND_META[latest.status].label}</span>}
-           {latestAge && <span style={{ fontSize: 11.5, color: stale ? "var(--st-review)" : "var(--ink-4)" }} title={new Date(latest!.createdAt).toLocaleString("en-GB")}>{stale ? `Stale · last update ${latestAge.label}` : `Posted ${latestAge.label}`}</span>}
-           {onPostStatus && <button onClick={() => setUpdOpen((v) => !v)} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}>{updOpen ? "Cancel" : "Post update"}</button>}
-         </div>
-         {latest && !updOpen && <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5 }}>{latest.summary}</div>}
-         {history.length > 1 && !updOpen && (
-           <div>
-             <button onClick={() => setHistoryOpen((v) => !v)} aria-expanded={historyOpen} className="btn btn-ghost" style={{ padding: "3px 8px", fontSize: 12, color: "var(--ink-3)" }}>
-               <Icon name={historyOpen ? "chevronDown" : "chevronRight"} size={13} /> {historyOpen ? "Hide earlier updates" : `Show ${plural(history.length - 1, "earlier update")}`}
-             </button>
-             <Collapse open={historyOpen}>
-               <ol style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-                 {history.slice(1, 21).map((s) => (
-                   <li key={s.id} style={{ display: "flex", gap: 9, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-3)" }}>
-                     <span style={{ width: 7, height: 7, borderRadius: 99, marginTop: 6, flexShrink: 0, background: STATUS_KIND_META[s.status].color }} aria-hidden="true" />
-                     <span><span style={{ color: STATUS_KIND_META[s.status].color, fontWeight: 600 }}>{STATUS_KIND_META[s.status].label}</span> <span style={{ color: "var(--ink-4)" }}>· {relDay(s.createdAt).label}</span><br />{s.summary}</span>
-                   </li>
-                 ))}
-               </ol>
-             </Collapse>
-           </div>
-         )}
-         {updOpen && onPostStatus && (
-           <>
-             <div style={{ display: "flex", gap: 6 }}>
-               {(Object.keys(STATUS_KIND_META) as StatusKind[]).map((k) => (
-                 <button key={k} onClick={() => setUpdKind(k)} style={{ padding: "4px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12, border: `1px solid ${updKind === k ? STATUS_KIND_META[k].color : "var(--hairline)"}`, background: updKind === k ? `color-mix(in oklch, ${STATUS_KIND_META[k].color} 14%, transparent)` : "transparent", color: updKind === k ? STATUS_KIND_META[k].color : "var(--ink-3)", fontFamily: "var(--font-display)" }}>{STATUS_KIND_META[k].label}</button>
-               ))}
-             </div>
-             {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-             <textarea autoFocus value={updText} onChange={(e) => setUpdText(e.target.value)} placeholder="What's the latest? Wins, risks, next steps…" rows={2}
-               style={{ width: "100%", resize: "vertical", padding: "8px 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, lineHeight: 1.55, outline: "none" }} />
-             <button onClick={postUpd} disabled={posting || !updText.trim()} className="btn btn-accent" style={{ alignSelf: "flex-start", padding: "6px 13px", fontSize: 13, opacity: posting || !updText.trim() ? 0.6 : 1 }}>{posting ? "Posting…" : "Post update"}</button>
-           </>
-         )}
-       </div>
-     )}
-    </div>
-  );
-}
-
-function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts }: {
-  tasks: Task[];
-  allTasks: Task[];
-  projects?: Project[];
-  view: TaskView;
-  setView: (v: TaskView) => void;
-  groupBy: GroupBy;
-  setGroupBy: (g: GroupBy) => void;
-  smart: boolean;
-  setSmart: React.Dispatch<React.SetStateAction<boolean>>;
-  onOpen: (id: string) => void;
-  onToggle: (id: string) => void;
-  onToggleSubtask: (taskId: string, subId: string) => void;
-  onAdd: (status: Status) => void;
-  onMove: (taskId: string, status: Status, position?: number) => void;
-  onBulkPatch: (ids: string[], patch: Partial<Task>) => void;
-  onBulkDelete: (ids: string[]) => void;
-  onPatch: (id: string, patch: Partial<Task>) => void;
-  onQuickAdd: (partial: Partial<Task> & { title: string }) => void;
-  onOpenImport?: () => void;
-  members: { id: string; name: string }[];
-  allTags: Record<string, TagDef>;
-  archivedTasks?: Task[];
-  header?: React.ReactNode;
-  sections?: Section[];
-  onCreateSection?: (projectId: string, name: string) => void;
-  onRenameSection?: (id: string, name: string) => void;
-  onDeleteSection?: (id: string) => void;
-  customFields?: CustomFieldDef[];
-  sectionField?: "sectionId" | "mySectionId";
-  sectionProjectId?: string;
-  /** filters are saved per route: a project id, or "my" for My tasks */
-  filterScope?: string;
-  /** a guest in this workspace: view + comment only (editing controls should hide) */
-  readOnly?: boolean;
-  /** which board this is, so each board keeps its own WIP limits */
-  boardScope?: string;
-  /** the CSV file's name (the project's, or "my-tasks") */
-  exportName?: string;
-  /** what the CSV needs to fill its Section, Parent task and custom-field columns */
-  exportOpts?: TaskExportOptions;
-}) {
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [compact, setCompact] = useState(() => { try { return localStorage.getItem("kanbo-density") === "compact"; } catch { return false; } });
-  const toggleCompact = () => setCompact((c) => { const n = !c; try { localStorage.setItem("kanbo-density", n ? "compact" : "comfortable"); } catch { /* private mode */ } return n; });
-  const [sortOpen, setSortOpen] = useState(false);
-  const [sort, setSort] = useState<string>(() => { try { return localStorage.getItem("kanbo-sort") || "manual"; } catch { return "manual"; } });
-  useEffect(() => { try { localStorage.setItem("kanbo-sort", sort); } catch { /* ignore */ } }, [sort]);
-  // The page is keyed by route, so the title filter starts empty on every
-  // project / My tasks switch. Filters persist per route (not app-wide), so a
-  // filter set in one project can never hide every task in another.
-  const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<TaskFilters>(() => readFilters(filterScope));
-  useEffect(() => { try { localStorage.setItem(filtersKey(filterScope), JSON.stringify({ ...filters, showArchived: false })); } catch { /* ignore */ } }, [filters, filterScope]);
-  const setFilter = (patch: Partial<TaskFilters>) => setFilters((f) => ({ ...f, ...patch }));
-  const clearFilters = () => { setFilters({ ...EMPTY_FILTERS, custom: {} }); setSearch(""); };
-  const isMobile = useMediaQuery("(max-width: 860px)");
-  // ignore saved filters that can't apply here (another project's custom field,
-  // someone who isn't in this workspace, a deleted tag)
-  const effective = validFilters(filters, {
-    memberIds: new Set(members.map((m) => m.id)),
-    fieldIds: new Set(customFields.map((f) => f.id)),
-    tagIds: new Set(Object.keys(allTags)),
-  });
-  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone, showArchived, custom: customFilter } = effective;
-  const cfActive = Object.values(customFilter ?? {}).some((v) => v && v !== "all");
-  const filterActive = priorityFilter !== "all" || assigneeFilter !== "all" || tagFilter !== "all" || dueFilter !== "all" || hideDone || cfActive;
-  const dueOk = (t: Task) => {
-    if (dueFilter === "all") return true;
-    const ds = dueState(t.dueDate, t.status);
-    if (dueFilter === "overdue") return ds === "overdue";
-    if (dueFilter === "today") return ds === "today";
-    if (dueFilter === "week") {
-      if (!t.dueDate) return false;
-      const days = Math.round((new Date(t.dueDate + "T00:00:00").getTime() - new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime()) / 86400000);
-      return days >= 0 && days <= 7;
-    }
-    return true;
-  };
-  const q = search.trim().toLowerCase();
-  const filtered = (showArchived ? archivedTasks : tasks).filter((t) =>
-    (priorityFilter === "all" || t.priority === priorityFilter) &&
-    (!hideDone || t.status !== "done") &&
-    (assigneeFilter === "all" || t.assigneeId === assigneeFilter) &&
-    (tagFilter === "all" || (t.tags || []).includes(tagFilter)) &&
-    dueOk(t) &&
-    Object.entries(customFilter ?? {}).every(([fid, v]) => { if (!v || v === "all") return true; const cv = (t.custom ?? {})[fid]; return Array.isArray(cv) ? cv.includes(v) : String(cv ?? "") === v; }) &&
-    (q === "" || t.title.toLowerCase().includes(q)));
-  const narrowed = filterActive || q !== "";
-  // filters hide everything: say so (the list view renders its own empty state)
-  const hiddenByFilters = narrowed && filtered.length === 0 && (showArchived ? archivedTasks : tasks).length > 0 && view !== "list";
-
-  return (
-    <>
-      {header}
-      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, padding: isMobile ? "10px 14px" : "12px 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, flexWrap: "wrap" }}>
-        <Segmented options={VIEW_OPTS} value={view} onChange={setView} ariaLabel="View" />
-        {!isMobile && <div style={{ width: 1, height: 22, background: "var(--hairline)" }} />}
-        {view === "list" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {!isMobile && <span className="kicker">Group</span>}
-            <Segmented options={GROUP_OPTS} value={groupBy} onChange={setGroupBy} ariaLabel="Group by" />
-          </div>
-        )}
-        {/* wraps rather than running off the edge on a narrow window (a focused button out
-            there would scroll the whole app sideways) */}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: isMobile ? 8 : 10, flexWrap: "wrap", justifyContent: "flex-end", minWidth: 0 }}>
-        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-          <Icon name="search" size={14} style={{ position: "absolute", left: 10, color: "var(--ink-4)", pointerEvents: "none" }} />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter tasks…" aria-label="Filter tasks by title"
-            style={{ width: isMobile ? 120 : 168, height: 34, padding: "0 10px 0 30px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }} />
-          {search && <button onClick={() => setSearch("")} aria-label="Clear search" style={{ position: "absolute", right: 6, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}>×</button>}
-        </div>
-        {view === "list" && (
-          <div style={{ position: "relative" }}>
-            <button onClick={() => setSortOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: sort !== "manual" ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: sort !== "manual" ? "var(--accent-dim)" : "transparent", color: sort !== "manual" ? "var(--accent)" : "var(--ink-2)" }}>
-              <Icon name="sort" size={15} /> Sort
-            </button>
-            {sortOpen && (
-              <>
-                <div onClick={() => setSortOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 180, padding: 6, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                  {[{ v: "manual", l: "Manual" }, { v: "due", l: "Due date" }, { v: "priority", l: "Priority" }, { v: "title", l: "Name (A–Z)" }].map((o) => (
-                    <button key={o.v} onClick={() => { setSort(o.v); setSortOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 9px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: sort === o.v ? "var(--ink)" : "var(--ink-3)", background: sort === o.v ? "var(--surface-2)" : "transparent" }}>
-                      <span style={{ width: 13, display: "grid", placeItems: "center" }}>{sort === o.v && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}</span>{o.l}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        <div style={{ position: "relative" }}>
-          <button onClick={() => setFilterOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: filterActive ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: filterActive ? "var(--accent-dim)" : "transparent", color: filterActive ? "var(--accent)" : "var(--ink-2)" }}>
-            <Icon name="filter" size={15} /> Filter{filterActive ? " · on" : ""}
-          </button>
-          {filterOpen && (
-            <>
-              <div onClick={() => setFilterOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-              <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 224, maxHeight: 420, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                <div style={{ display: "flex", alignItems: "center", padding: "2px 6px 8px" }}>
-                  <span className="kicker">Filters</span>
-                  {filterActive && <button onClick={() => setFilters({ ...EMPTY_FILTERS, custom: {} })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
-                </div>
-
-                <FilterSection label="Priority">
-                  {PRIORITY_FILTERS.map((p) => <FilterOption key={p.value} label={p.label} active={priorityFilter === p.value} onClick={() => setFilter({ priority: p.value })} />)}
-                </FilterSection>
-
-                <FilterSection label="Due">
-                  {[{ v: "all", l: "Any time" }, { v: "overdue", l: "Overdue" }, { v: "today", l: "Due today" }, { v: "week", l: "Next 7 days" }].map((d) => <FilterOption key={d.v} label={d.l} active={dueFilter === d.v} onClick={() => setFilter({ due: d.v })} />)}
-                </FilterSection>
-
-                {members.length > 1 && (
-                  <FilterSection label="Assignee">
-                    <FilterOption label="Anyone" active={assigneeFilter === "all"} onClick={() => setFilter({ assignee: "all" })} />
-                    {members.map((m) => <FilterOption key={m.id} label={m.name} active={assigneeFilter === m.id} onClick={() => setFilter({ assignee: m.id })} />)}
-                  </FilterSection>
-                )}
-
-                {Object.keys(allTags).length > 0 && (
-                  <FilterSection label="Tag">
-                    <FilterOption label="Any tag" active={tagFilter === "all"} onClick={() => setFilter({ tag: "all" })} />
-                    {Object.entries(allTags).map(([id, t]) => <FilterOption key={id} label={t.label} dot={t.color} active={tagFilter === id} onClick={() => setFilter({ tag: id })} />)}
-                  </FilterSection>
-                )}
-
-                {/* custom-field filters (dropdown / people fields) */}
-                {customFields.filter((f) => f.type === "dropdown" || f.type === "people" || f.type === "multiselect").map((f) => {
-                  const cur = customFilter?.[f.id] ?? "all";
-                  const opts = f.type === "people" ? members.map((m) => ({ v: m.id, l: m.name })) : f.options.map((o) => ({ v: o, l: o }));
-                  return (
-                    <FilterSection key={f.id} label={f.name}>
-                      <FilterOption label="Any" active={cur === "all"} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: "all" } })} />
-                      {opts.map((o) => <FilterOption key={o.v} label={o.l} active={cur === o.v} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: o.v } })} />)}
-                    </FilterSection>
-                  );
-                })}
-
-                <div className="divider" style={{ margin: "6px 4px" }} />
-                <button onClick={() => setFilter({ hideDone: !hideDone })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
-                  <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${hideDone ? "var(--accent)" : "var(--hairline-strong)"}`, background: hideDone ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{hideDone && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
-                  Hide completed
-                </button>
-                {archivedTasks.length > 0 && (
-                  <button onClick={() => setFilter({ showArchived: !showArchived })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
-                    <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${showArchived ? "var(--accent)" : "var(--hairline-strong)"}`, background: showArchived ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{showArchived && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
-                    <Icon name="archive" size={13} style={{ color: "var(--ink-4)" }} /> Show archived <span className="mono" style={{ color: "var(--ink-4)", marginLeft: "auto" }}>{archivedTasks.length}</span>
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-        <button onClick={() => setSmart((v) => !v)} className="btn" style={{
-          padding: "8px 12px", border: smart ? "1px solid var(--accent)" : "1px solid var(--hairline)",
-          background: smart ? "var(--accent-dim)" : "transparent", color: smart ? "var(--accent)" : "var(--ink-2)", fontWeight: 500,
-        }}>
-          <Icon name="sparkles" size={15} /> AI sort {smart ? "on" : "off"}
-        </button>
-        {view === "list" && (
-          <button onClick={toggleCompact} className="btn" title={compact ? "Switch to comfortable rows" : "Switch to compact rows"} style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}>
-            <Icon name={compact ? "list" : "menu"} size={15} /> {compact ? "Comfortable" : "Compact"}
-          </button>
-        )}
-        {!isMobile && (
-          <>
-            <button onClick={() => exportTasksCsv(filtered, exportName, exportOpts)} className="btn" title="Export these tasks to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
-            <button onClick={() => printTasks(filtered, "Tasks export")} className="btn" title="Export these tasks to PDF (print)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> PDF</button>
-            {onOpenImport && !readOnly && <button onClick={onOpenImport} className="btn" title="Import tasks (paste a list or upload a file)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="plus" size={15} /> Import</button>}
-          </>
-        )}
-        </div>
-      </div>
-      {(view === "list" || view === "board") && (
-        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: isMobile ? "8px 14px" : "8px 24px", flexWrap: "wrap", borderBottom: "1px solid var(--hairline)", flexShrink: 0 }}>
-          <span className="kicker" style={{ marginRight: 2 }}>Quick</span>
-          {[
-            { label: "Overdue", active: dueFilter === "overdue", on: () => setFilter({ due: dueFilter === "overdue" ? "all" : "overdue" }) },
-            { label: "Today", active: dueFilter === "today", on: () => setFilter({ due: dueFilter === "today" ? "all" : "today" }) },
-            { label: "This week", active: dueFilter === "week", on: () => setFilter({ due: dueFilter === "week" ? "all" : "week" }) },
-            { label: "High priority", active: priorityFilter === "high", on: () => setFilter({ priority: priorityFilter === "high" ? "all" : "high" }) },
-            { label: "Urgent", active: priorityFilter === "urgent", on: () => setFilter({ priority: priorityFilter === "urgent" ? "all" : "urgent" }) },
-            { label: "Hide done", active: hideDone, on: () => setFilter({ hideDone: !hideDone }) },
-          ].map((c) => (
-            <button key={c.label} onClick={c.on} style={{ padding: "4px 11px", borderRadius: 99, cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, border: `1px solid ${c.active ? "var(--accent)" : "var(--hairline)"}`, background: c.active ? "var(--accent-dim)" : "transparent", color: c.active ? "var(--accent)" : "var(--ink-3)" }}>{c.label}</button>
-          ))}
-          {filterActive && <button onClick={() => setFilters({ ...EMPTY_FILTERS, custom: {} })} style={{ marginLeft: 4, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear</button>}
-        </div>
-      )}
-      {hiddenByFilters && (
-        <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, margin: isMobile ? "10px 14px 0" : "12px 24px 0", padding: "10px 14px", borderRadius: 12, border: "1px solid var(--hairline)", background: "var(--fill-1, var(--surface-2))", flexShrink: 0 }}>
-          <Icon name="filter" size={15} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
-          <span style={{ flex: 1, fontSize: 13, color: "var(--ink-2)" }}>No tasks match {q !== "" ? `“${search.trim()}”` : "these filters"}.</span>
-          <button onClick={clearFilters} className="btn btn-ghost" style={{ padding: "4px 11px", fontSize: 12.5 }}>Clear filters</button>
-        </div>
-      )}
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId}
-        filtered={narrowed || showArchived} onClearFilters={clearFilters} readOnly={readOnly} />}
-      {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} />}
-      {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
-      {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
-      {view === "files" && <FilesView tasks={filtered} onOpen={onOpen} />}
-      {view === "matrix" && <MatrixView tasks={filtered} onOpen={onOpen} />}
-    </>
-  );
-}
 
 function FullLoader() {
   const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
@@ -3286,6 +2736,12 @@ export default function App() {
       case "forms": return <FormsView key={wsKey} forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
       case "inbox": return <InboxView activity={scopedActivity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
       case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} readOnly={activeReadOnly} />;
+      // W0: the redesign's Projects directory and Team › Pulse, until their packages land
+      case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
+        canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)} />;
+      case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} readOnly={activeReadOnly}
+        loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
+        onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={patchTask} onOpenWorkload={() => setRoute({ view: "workload" })} />;
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
       case "tasks":
       case "project":
@@ -3327,6 +2783,8 @@ export default function App() {
     portfolios: { title: "Portfolios", subtitle: "Projects, rolled up.", breadcrumb: "Reporting" },
     automations: { title: "Automations", subtitle: "Rules that run on new tasks.", breadcrumb: "Reporting" },
     forms: { title: "Forms", subtitle: "Capture requests as tasks.", breadcrumb: "Intake" },
+    projects: { title: "Projects", subtitle: "Every project in this workspace.", breadcrumb: activeWsName },
+    pulse: { title: "Pulse", subtitle: "What the team did, and what's at risk.", breadcrumb: "Team" },
     tasks: { title, subtitle, breadcrumb },
     project: { title, subtitle, breadcrumb },
   };

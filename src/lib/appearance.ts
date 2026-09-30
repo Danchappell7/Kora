@@ -18,9 +18,19 @@ export type AccentId = "violet" | "blue" | "teal" | "green" | "amber" | "rose" |
 export type TextSize = "small" | "normal" | "large";
 export type ThemeName = "light" | "dark";
 
+export type Density = "comfortable" | "compact";
+
 // ambient = opt-in slow drift of the background aurora. Off by default: every
 // glass card re-blurs whatever moves beneath it, so it costs a little GPU.
-export interface Appearance { accent: AccentId; textSize: TextSize; ambient: boolean; }
+// The optional fields default to comfortable rows, suggestions on and Kanbo's
+// AI on (an Appearance saved before they existed reads as those defaults):
+//   density     — list row height; applyAppearance sets <html data-density>
+//   suggestions — Kanbo's suggested plan on Today (ghost blocks)
+//   ai          — AI features; off falls back to on-device rules
+export interface Appearance {
+  accent: AccentId; textSize: TextSize; ambient: boolean;
+  density?: Density; suggestions?: boolean; ai?: boolean;
+}
 
 // each accent is a single oklch hue + chroma; the LIGHTNESS comes from the
 // theme (--accent-l in kanbo.css) so every accent is text-safe on paper and
@@ -100,7 +110,7 @@ export function uiZoom(): number {
   return Number.isFinite(z) && z > 0 ? z : 1;
 }
 
-export const DEFAULT_APPEARANCE: Appearance = { accent: "violet", textSize: "normal", ambient: false };
+export const DEFAULT_APPEARANCE: Appearance = { accent: "violet", textSize: "normal", ambient: false, density: "comfortable", suggestions: true, ai: true };
 
 export function loadAppearance(): Appearance {
   const get = (k: string, fallback: string) => { try { return localStorage.getItem(k) || fallback; } catch { return fallback; } };
@@ -110,6 +120,9 @@ export function loadAppearance(): Appearance {
     accent: ACCENTS.some((a) => a.id === accent) ? accent : "violet",
     textSize: ["small", "normal", "large"].includes(textSize) ? textSize : "normal",
     ambient: get("kanbo-ambient", "off") === "on",
+    density: get("kanbo-density", "comfortable") === "compact" ? "compact" : "comfortable",
+    suggestions: get("kanbo-suggestions", "on") !== "off",
+    ai: get("kanbo-ai", "on") !== "off",
   };
 }
 
@@ -152,6 +165,7 @@ export function applyAppearance(a: Appearance, root: HTMLElement = document.docu
   root.style.zoom = ZOOM[a.textSize]; // Chromium/WebKit — scales the whole app uniformly
   root.style.setProperty("--zoom", ZOOM[a.textSize]);
   root.setAttribute("data-ambient", a.ambient ? "on" : "off");
+  root.setAttribute("data-density", a.density === "compact" ? "compact" : "comfortable");
 }
 
 export function saveAppearance(a: Appearance) {
@@ -159,6 +173,9 @@ export function saveAppearance(a: Appearance) {
     localStorage.setItem("kanbo-accent", a.accent);
     localStorage.setItem("kanbo-textsize", a.textSize);
     localStorage.setItem("kanbo-ambient", a.ambient ? "on" : "off");
+    localStorage.setItem("kanbo-density", a.density === "compact" ? "compact" : "comfortable");
+    localStorage.setItem("kanbo-suggestions", a.suggestions === false ? "off" : "on");
+    localStorage.setItem("kanbo-ai", a.ai === false ? "off" : "on");
   } catch { /* private mode */ }
   applyAppearance(a);
 }

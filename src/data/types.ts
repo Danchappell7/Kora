@@ -144,6 +144,7 @@ export interface Task {
   custom?: Record<string, CustomValue>; // custom field values, keyed by field def id
   effortHours?: number;            // estimate for workload planning
   loggedHours?: number;            // actual time logged
+  createdBy?: string;              // tasks.user_id (the creator); mapped by rowToTask
 }
 
 export type CustomValue = string | number | boolean | string[] | null;
@@ -260,6 +261,19 @@ export interface Activity {
   readAt?: string;
 }
 
+/** One row of the workspace's change history (task_events): who moved which
+ *  field of which task, from what to what. Feeds Pulse and Radar. */
+export interface WorkspaceEvent {
+  id: string;
+  taskId: string;
+  actorId: string | null;
+  actorName: string;
+  field: "status" | "assignee" | "due" | "priority" | string;
+  oldValue: string | null;
+  newValue: string | null;
+  createdAt: string;
+}
+
 export interface CalEvent {
   id: string;
   title: string;
@@ -312,4 +326,5 @@ export type IconName =
   | "play" | "pause" | "x" | "more" | "arrowUpRight" | "target" | "briefcase"
   | "user" | "sun" | "moon" | "command" | "filter" | "sort" | "link" | "zap"
   | "trendingUp" | "check" | "message" | "folder" | "dot" | "settings" | "circle"
-  | "grid" | "arrowRight" | "arrowLeft" | "refresh" | "calendarPlus" | "layers" | "trash" | "menu" | "archive";
+  | "grid" | "arrowRight" | "arrowLeft" | "refresh" | "calendarPlus" | "layers" | "trash" | "menu" | "archive"
+  | "pulse" | "radar" | "kanbo" | "undo" | "keyboard" | "copy" | "send" | "sliders" | "hourglass" | "sunset" | "notes";

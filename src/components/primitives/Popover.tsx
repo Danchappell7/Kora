@@ -93,10 +93,13 @@ export interface PopoverProps {
   style?: CSSProperties;
   /** move focus into the panel when it opens (default true) */
   autoFocus?: boolean;
+  /** where that focus lands (e.g. a picker's text field); default: the
+   *  checked/selected item, else the first focusable one */
+  initialFocus?: RefObject<HTMLElement | null>;
   zIndex?: number;
 }
 
-export function Popover({ open, anchorRef, onClose, children, side = "bottom", align = "start", offset = 6, role = "menu", label, minWidth = 150, maxHeight, className, style, autoFocus = true, zIndex = 1100 }: PopoverProps) {
+export function Popover({ open, anchorRef, onClose, children, side = "bottom", align = "start", offset = 6, role = "menu", label, minWidth = 150, maxHeight, className, style, autoFocus = true, initialFocus, zIndex = 1100 }: PopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<PopoverPlacement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -188,7 +191,9 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
     if (!open || !place || focusedRef.current || !autoFocus) return;
     focusedRef.current = true;
     const items = focusables(panelRef.current);
-    const current = items.find((el) => el.getAttribute("aria-checked") === "true" || el.getAttribute("aria-selected") === "true") ?? items[0];
+    const preferred = initialFocus?.current;
+    const current = (preferred && panelRef.current?.contains(preferred) ? preferred : undefined)
+      ?? items.find((el) => el.getAttribute("aria-checked") === "true" || el.getAttribute("aria-selected") === "true") ?? items[0];
     if (!current) return;
     current.focus({ preventScroll: true }); // (never scroll the page behind the menu)
     // …but preventScroll also stops the panel itself scrolling, so a checked item further down
@@ -199,7 +204,7 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
       const within = cr.top - pr.top + panel.scrollTop; // item's offset inside the scrolled content
       if (cr.top < pr.top || cr.bottom > pr.bottom) panel.scrollTop = Math.max(0, within - (panel.clientHeight - cr.height) / 2);
     }
-  }, [open, place, autoFocus]);
+  }, [open, place, autoFocus, initialFocus]);
 
   if (!open || typeof document === "undefined") return null;
 

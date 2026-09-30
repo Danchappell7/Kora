@@ -68,3 +68,23 @@ describe("progress tracks", () => {
     expect(track?.[1]).toMatch(/background:\s*var\(--track\)\s*!important/);
   });
 });
+
+describe("kit primitives", () => {
+  const KIT = /^\.k(btn|ibtn|kbd|tabs?|meter|glyph|prio|date|dp|aimark|prov|vellum|empty|sheet|pill|pdot|section|toggle|spin)\b/;
+
+  it("an element the kit toggles with [hidden] isn't forced visible by a display rule", () => {
+    const hit = all.find(([sels]) => sels.includes(".kprov-list[hidden]"));
+    expect(hit?.[1]).toMatch(/display:\s*none/);
+  });
+
+  it("switches off every kit animation and transform under reduced motion", () => {
+    const block = css.split("@media (prefers-reduced-motion: reduce)").slice(1)
+      .map((b) => b.slice(0, b.indexOf("\n}"))).find((b) => b.includes(".kglyph-pop")) ?? "";
+    for (const cls of [".kglyph-pop", ".kglyph-draw", ".kspin", ".ksheet", ".kaimark", ".kbtn:active"]) expect(block, cls).toContain(cls);
+  });
+
+  it("never blurs what's behind a kit surface (no glass)", () => {
+    const blurred = all.filter(([sels, body]) => sels.some((s) => KIT.test(s)) && /backdrop-filter/.test(body)).flatMap(([sels]) => sels);
+    expect(blurred).toEqual([]);
+  });
+});

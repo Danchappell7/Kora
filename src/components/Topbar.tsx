@@ -1,9 +1,11 @@
 /* ============================================================
-   KANBO — Topbar
+   KANBO — Topbar, and PageHeader (the redesign's page header;
+   for now it draws itself with the Topbar)
    ============================================================ */
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Fragment } from "react";
 import type { ReactNode, CSSProperties } from "react";
-import { Icon } from "./primitives";
+import { Icon, Segmented } from "./primitives";
+import type { IconName } from "../data/types";
 
 const createMenuItem: CSSProperties = {
   display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 9,
@@ -18,13 +20,16 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
   subtitle?: string;
   breadcrumb?: string;
   children?: ReactNode;
-  onNewTask: () => void;
-  onNewProject: () => void;
+  /** without it there's no Create menu (guests) */
+  onNewTask?: () => void;
+  onNewProject?: () => void;
   onCommand: () => void;
-  onBell: () => void;
+  /** without it there's no bell */
+  onBell?: () => void;
   onMenu?: () => void;
-  theme: "light" | "dark";
-  toggleTheme: () => void;
+  /** without these there's no theme button */
+  theme?: "light" | "dark";
+  toggleTheme?: () => void;
   hasUnread?: boolean;
   /** unread inbox items — spoken in the bell's label */
   unreadCount?: number;
@@ -84,14 +89,18 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
         <kbd className="mono" style={{ fontSize: 11, padding: "2px 6px", borderRadius: 6, background: "var(--fill-1, var(--surface-2))", border: "1px solid var(--hairline)", color: "var(--ink-4)" }}>⌘K</kbd>
       </button>
       {children}
-      <button className="btn-icon" onClick={toggleTheme} title="Toggle theme" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
-        <Icon name={theme === "dark" ? "sun" : "moon"} size={17} />
-      </button>
-      <button className="btn-icon" onClick={onBell} title={bellLabel} aria-label={bellLabel} style={{ position: "relative" }}>
-        <Icon name="bell" size={17} />
-        {showDot && <span aria-hidden="true" style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 calc(var(--glow-r, 8px) * 0.75) var(--accent)" }} />}
-      </button>
-      <div style={{ position: "relative" }}>
+      {toggleTheme && theme && (
+        <button className="btn-icon" onClick={toggleTheme} title="Toggle theme" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
+          <Icon name={theme === "dark" ? "sun" : "moon"} size={17} />
+        </button>
+      )}
+      {onBell && (
+        <button className="btn-icon" onClick={onBell} title={bellLabel} aria-label={bellLabel} style={{ position: "relative" }}>
+          <Icon name="bell" size={17} />
+          {showDot && <span aria-hidden="true" style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 calc(var(--glow-r, 8px) * 0.75) var(--accent)" }} />}
+        </button>
+      )}
+      {onNewTask && <div style={{ position: "relative" }}>
         <button ref={createBtnRef} className="btn btn-accent topbar-create" onClick={() => setCreateOpen((v) => !v)}
           aria-label="Create" aria-haspopup="menu" aria-expanded={createOpen} aria-controls={createOpen ? "ktop-create-menu" : undefined}>
           <Icon name="plus" size={16} /> <span className="topbar-create-label" aria-hidden="true">Create <Icon name="chevronDown" size={14} style={{ marginLeft: -2, opacity: 0.8 }} /></span>
@@ -105,7 +114,7 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
                 onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
                 <Icon name="tasks" size={16} style={{ color: "var(--accent)" }} /> New task
               </button>
-              {canCreateProject && (
+              {canCreateProject && onNewProject && (
                 <button role="menuitem" tabIndex={-1} style={createMenuItem} onClick={() => { setCreateOpen(false); onNewProject(); }}
                   onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
                   <Icon name="folder" size={16} style={{ color: "var(--accent)" }} /> New project
@@ -114,7 +123,69 @@ export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNew
             </div>
           </>
         )}
-      </div>
+      </div>}
     </header>
+  );
+}
+
+/* ---------------- PageHeader (W0 stub; P03 builds the real one) ---------------- */
+
+/** The primitives' TabItem shape (kit.tsx). Structural, so either can be passed. */
+type HeaderTab = { id: string; label: string; count?: number; icon?: IconName; tone?: "signal"; href?: string; disabled?: boolean; secondary?: boolean };
+
+export interface PageHeaderProps {
+  title: string;
+  meta?: string;
+  leading?: ReactNode;
+  titleAddon?: ReactNode;
+  switcher?: { items: { id: string; label: string }[]; value: string; onChange: (id: string) => void; label: string };
+  actions?: ReactNode;
+  tabs?: HeaderTab[];
+  tabValue?: string;
+  onTab?: (id: string) => void;
+  tabsLabel?: string;
+  tabsTrailing?: ReactNode;
+  /** 0..1: the 2px progress line under the header (Today) */
+  momentum?: number | null;
+  onSearch: () => void;
+  /** null hides New task (guests) */
+  create: { onNewTask: () => void; onQuickCapture: () => void; onPasteNotes: () => void; onImport?: () => void; onNewProject?: () => void } | null;
+  isMobile?: boolean;
+  onOpenSettings?: () => void;
+  userId?: string;
+}
+
+/** One header row per page (title, meta, actions, search, New task) and an
+ *  optional tabs row. For now it's drawn with the Topbar. */
+export function PageHeader({ title, meta, leading, titleAddon, switcher, actions, tabs, tabValue, onTab, tabsLabel, tabsTrailing, onSearch, create, isMobile }: PageHeaderProps) {
+  return (
+    <>
+      <Topbar title={title} subtitle={meta} onCommand={onSearch}
+        onNewTask={create?.onNewTask} onNewProject={create?.onNewProject} canCreateProject={!!create?.onNewProject}>
+        {leading}
+        {titleAddon}
+        {switcher && <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} />}
+        {actions}
+      </Topbar>
+      {tabs && tabs.length > 0 && onTab && (
+        <nav aria-label={tabsLabel ?? title} style={{ display: "flex", alignItems: "center", gap: 2, minHeight: 44, padding: isMobile ? "0 14px" : "0 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, overflowX: "auto" }}>
+          {tabs.map((t, i) => {
+            const on = t.id === tabValue;
+            return (
+              <Fragment key={t.id}>
+                {t.secondary && i > 0 && !tabs[i - 1].secondary && <span aria-hidden="true" style={{ width: 1, height: 18, margin: "0 8px", background: "var(--hairline)", flexShrink: 0 }} />}
+                <button type="button" onClick={() => onTab(t.id)} disabled={t.disabled} aria-current={on ? "page" : undefined}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 32, padding: "0 10px", borderRadius: 8, border: "none", cursor: t.disabled ? "default" : "pointer", whiteSpace: "nowrap", fontFamily: "var(--font-display)", fontSize: 13, fontWeight: on ? 600 : 500, color: on ? "var(--ink)" : "var(--ink-3)", background: on ? MENU_HOVER : "transparent", opacity: t.disabled ? 0.5 : 1 }}>
+                  {t.icon && <Icon name={t.icon} size={14} />}
+                  {t.label}
+                  {t.count != null && <span className="mono" style={{ fontSize: 11, color: t.tone === "signal" ? "var(--st-blocked)" : "var(--ink-4)" }}>{t.count}</span>}
+                </button>
+              </Fragment>
+            );
+          })}
+          {tabsTrailing && <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>{tabsTrailing}</div>}
+        </nav>
+      )}
+    </>
   );
 }

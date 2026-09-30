@@ -103,6 +103,25 @@ describe("Popover", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("puts focus on initialFocus when given (e.g. a picker's text field)", async () => {
+    function Picker() {
+      const anchor = useRef<HTMLButtonElement>(null), field = useRef<HTMLInputElement>(null);
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button ref={anchor} onClick={() => setOpen(true)}>Due date</button>
+          <Popover open={open} anchorRef={anchor} onClose={() => setOpen(false)} role="dialog" label="Due date" initialFocus={field}>
+            <button aria-selected="true">Today</button>
+            <input ref={field} aria-label="Type a date" />
+          </Popover>
+        </>
+      );
+    }
+    render(<Picker />);
+    fireEvent.click(screen.getByText("Due date"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Type a date" })).toHaveFocus());
+  });
+
   it("Tab closes the menu instead of leaking focus out of the portal", () => {
     const onClose = vi.fn();
     render(<Harness onClose={onClose} />);

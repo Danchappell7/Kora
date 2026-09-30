@@ -9,11 +9,15 @@ import {
   getMember, memberInitials, STATUS_META, TAGS, PRIORITY_META,
 } from "../../data/data";
 import type { Status, Priority, IconName } from "../../data/types";
+import { markJustCompleted, wasJustCompleted } from "./celebrate";
 
 export { Icon };
 export { KanboLogo } from "./KanboLogo";
 export { EmptyArt } from "./EmptyArt";
 export { EmojiPicker } from "./EmojiPicker";
+export { markJustCompleted, wasJustCompleted, markJustLanded, wasJustLanded } from "./celebrate";
+// Paper & Navy kit (Button, Tabs, StatusGlyph, DateChip, Sheet…): see kit.tsx
+export * from "./kit";
 
 /* ---------- colour chips ----------
    Chips tinted with a RAW palette colour (tags, energy levels, calendar
@@ -113,34 +117,8 @@ export function StatusDot({ status, size = 9, glow }: { status: Status; size?: n
 }
 
 /* ---------- Checkbox ---------- */
-// "Just completed" registry. Completing a task often MOVES its row (e.g. into
-// the Done group), which unmounts the checkbox mid-animation; the re-mounted
-// checkbox/row look themselves up here and finish the celebration in place.
-const recentlyCompleted = new Map<string, number>();
-const CELEBRATE_MS = 700;
-export function markJustCompleted(key?: string) {
-  if (!key) return;
-  const now = Date.now();
-  recentlyCompleted.forEach((t, k) => { if (now - t > 5000) recentlyCompleted.delete(k); });
-  recentlyCompleted.set(key, now);
-}
-export function wasJustCompleted(key?: string): boolean {
-  const t = key ? recentlyCompleted.get(key) : undefined;
-  return !!t && Date.now() - t < CELEBRATE_MS;
-}
-// Same idea for drag-and-drop: a dropped card/row often re-mounts in its new
-// column/group, so the "landed" settle is looked up by id on mount.
-const recentlyLanded = new Map<string, number>();
-export function markJustLanded(key?: string) {
-  if (!key) return;
-  const now = Date.now();
-  recentlyLanded.forEach((t, k) => { if (now - t > 5000) recentlyLanded.delete(k); });
-  recentlyLanded.set(key, now);
-}
-export function wasJustLanded(key?: string): boolean {
-  const t = key ? recentlyLanded.get(key) : undefined;
-  return !!t && Date.now() - t < CELEBRATE_MS;
-}
+// The "just completed" / "just landed" registries live in celebrate.ts so the
+// kit's StatusGlyph shares them with Check (same names, re-exported here).
 
 // The signature completion moment: when the user checks something off, the box
 // springs, a ring bursts outward, the tick draws itself, and phones get a light
