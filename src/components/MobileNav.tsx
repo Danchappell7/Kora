@@ -12,6 +12,7 @@ const TABS: { id: Route["view"]; icon: IconName; label: string }[] = [
   { id: "home", icon: "home", label: "Home" },
   { id: "inbox", icon: "inbox", label: "Inbox" },
   { id: "tasks", icon: "tasks", label: "Tasks" },
+  { id: "search", icon: "search", label: "Search" },
   { id: "calendar", icon: "calendar", label: "Calendar" },
 ];
 
@@ -31,21 +32,21 @@ export function MobileNav({ route, setRoute, inboxCount }: {
       {TABS.map((t) => {
         const active = route.view === t.id;
         return (
-          <button key={t.id} onClick={() => setRoute({ view: t.id })} aria-label={t.label} aria-current={active ? "page" : undefined}
+          <button key={t.id} onClick={() => setRoute({ view: t.id })} aria-label={t.id === "inbox" && inboxCount > 0 ? `${t.label}, ${inboxCount} unread` : t.label} aria-current={active ? "page" : undefined}
             style={{
               flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-              padding: "5px 0 7px", minHeight: 52, border: "none", background: "transparent", cursor: "pointer",
+              minWidth: 0, padding: "5px 0 7px", minHeight: 52, border: "none", background: "transparent", cursor: "pointer",
               color: active ? "var(--accent)" : "var(--ink-4)", fontFamily: "var(--font-display)",
             }}>
             <span style={{ position: "relative", display: "grid", placeItems: "center" }}>
               <Icon name={t.icon} size={21} style={{ filter: active ? "drop-shadow(0 0 8px var(--accent-glow))" : undefined }} />
               {t.id === "inbox" && inboxCount > 0 && (
-                <span className="mono" style={{ position: "absolute", top: -5, right: -8, minWidth: 15, height: 15, padding: "0 4px", borderRadius: 99, background: "var(--accent)", color: "var(--on-accent)", fontSize: 9.5, fontWeight: 700, display: "grid", placeItems: "center", lineHeight: 1 }}>
+                <span aria-hidden="true" className="mono" style={{ position: "absolute", top: -5, right: -8, minWidth: 15, height: 15, padding: "0 4px", borderRadius: 99, background: "var(--accent)", color: "var(--on-accent)", fontSize: 9.5, fontWeight: 700, display: "grid", placeItems: "center", lineHeight: 1 }}>
                   {inboxCount > 9 ? "9+" : inboxCount}
                 </span>
               )}
             </span>
-            <span style={{ fontSize: 10.5, fontWeight: active ? 600 : 500 }}>{t.label}</span>
+            <span aria-hidden="true" style={{ fontSize: 10.5, fontWeight: active ? 600 : 500, whiteSpace: "nowrap" }}>{t.label}</span>
           </button>
         );
       })}
