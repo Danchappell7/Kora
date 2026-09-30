@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within, cleanup } from "@testing-library/react";
 import { SettingsModal } from "./SettingsModal";
 import { AuthProvider } from "../auth/AuthProvider";
@@ -313,5 +313,42 @@ describe("Settings sheet", () => {
     goTo("Data");
     fireEvent.click(screen.getByRole("button", { name: /import tasks/i }));
     expect(order).toEqual(["close", "import"]);
+  });
+});
+
+describe("Settings on a phone", () => {
+  const phoneMedia = (query: string) => ({
+    matches: /max-width:\s*859px/.test(query), media: query, onchange: null,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+  });
+  let real: typeof window.matchMedia;
+  beforeEach(() => { real = window.matchMedia; window.matchMedia = vi.fn(phoneMedia) as unknown as typeof window.matchMedia; });
+  afterEach(() => { window.matchMedia = real; });
+
+  it("lists the sections, pushes one with a Back button, and goes back to the row you came from", async () => {
+    renderSettings({ theme: "dark", onChangeTheme: vi.fn() });
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(nav).getByRole("button", { name: /Ada Lovelace/ })).toHaveFocus();
+    expect(within(nav).getByRole("button", { name: /Appearance/ })).toHaveTextContent("Dark");
+    fireEvent.click(within(nav).getByRole("button", { name: /Notifications/ }));
+    expect(screen.getByRole("heading", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "All settings" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "All settings" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Notifications/ })).toHaveFocus());
+  });
+
+  it("opens straight into a section it's asked for", () => {
+    renderSettings({ section: "account" });
+    expect(screen.getByRole("heading", { name: "Account" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All settings" })).toBeInTheDocument();
+  });
+});
+
+describe("Settings › closing", () => {
+  it("Escape closes the sheet", () => {
+    const props = renderSettings();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Appearance" }), { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 });

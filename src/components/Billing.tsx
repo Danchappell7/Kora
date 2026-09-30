@@ -26,13 +26,16 @@ export function hasAccess(sub: Subscription | null): boolean {
   return sub.status === "trialing" && new Date(sub.trialEndsAt).getTime() > Date.now();
 }
 
-/** "Wed 7 Oct" (plus the year when it isn't this one) */
-function shortDate(iso: string | null | undefined): string | null {
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Wed 7 Oct" (plus the year when it isn't this one). Built by hand: en-GB
+ *  formatting puts a comma after the weekday on some engines and not others. */
+export function shortDate(iso: string | null | undefined, now = new Date()): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
+  const day = `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return d.getFullYear() === now.getFullYear() ? day : `${day} ${d.getFullYear()}`;
 }
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -137,7 +140,7 @@ export function BillingPanel({ enabled, subscription: sub, guest, onUpgrade, onM
   onUpgrade?: () => void;
   onManageBilling?: () => void;
 }) {
-  const card = (title: string, body: React.ReactNode, pill?: React.ReactNode, action?: React.ReactNode) => (
+  const card = (title: string, body: React.ReactNode, pill?: React.ReactNode, action?: React.ReactNode, note?: React.ReactNode) => (
     <div className="kbill-panel">
       <style>{BILLING_CSS}</style>
       <div className="kbill-card">
@@ -150,8 +153,11 @@ export function BillingPanel({ enabled, subscription: sub, guest, onUpgrade, onM
         </div>
         {action && <div className="kbill-card-act">{action}</div>}
       </div>
+      {note && <p className="kbill-note">{note}</p>}
     </div>
   );
+  // what choosing a plan costs, under the cards that offer one
+  const prices = `Personal is ${PLANS[0].price} ${PLANS[0].unit}; Team is ${PLANS[1].price} ${PLANS[1].unit}. Every feature is in both, and you can cancel any time.`;
 
   if (guest) return card("Your workspace admin manages billing.", <p>Ask them if you need a change to the plan or the number of seats.</p>);
   if (!enabled) return card("Kanbo is free during early access.", <p>Every feature is included, for you and for your team.</p>, <Pill tone="ok">Early access</Pill>);
@@ -168,13 +174,14 @@ export function BillingPanel({ enabled, subscription: sub, guest, onUpgrade, onM
       return card("Free trial",
         <p>{ends ? `Your trial ends on ${ends}. ` : ""}Choose a plan to keep everything running.</p>,
         <Pill tone={days <= 2 ? "warn" : "accent"}>{days === 0 ? "Ends today" : `${plural(days, "day")} left`}</Pill>,
-        onUpgrade && <Button size="sm" variant="primary" onClick={onUpgrade}>Choose a plan</Button>);
+        onUpgrade && <Button size="sm" variant="primary" onClick={onUpgrade}>Choose a plan</Button>, prices);
     }
     case "active": {
       const renews = shortDate(sub.currentPeriodEnd);
       return card(plan ? `${plan.name} plan` : "Your plan",
         <p>{plan ? `${plan.price} ${plan.unit} · ` : ""}{seats}{renews ? ` · Renews on ${renews}` : ""}</p>,
-        <Pill tone="ok">Active</Pill>, manage);
+        <Pill tone="ok">Active</Pill>, manage,
+        onManageBilling ? "Update your card or see past invoices from Manage billing. It opens our payment provider, Stripe." : undefined);
     }
     case "past_due":
       return card(plan ? `${plan.name} plan` : "Your plan",
@@ -185,7 +192,7 @@ export function BillingPanel({ enabled, subscription: sub, guest, onUpgrade, onM
       return card("No active plan",
         <p>Choose a plan to pick up where you left off. Your tasks and projects are safe.</p>,
         <Pill tone="neutral">Cancelled</Pill>,
-        onUpgrade && <Button size="sm" variant="primary" onClick={onUpgrade}>Choose a plan</Button>);
+        onUpgrade && <Button size="sm" variant="primary" onClick={onUpgrade}>Choose a plan</Button>, prices);
   }
 }
 
@@ -244,6 +251,7 @@ const BILLING_CSS = `
 .kbill-card-title { margin: 0; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
 .kbill-card-body p { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
 .kbill-card-act { flex-shrink: 0; margin-left: auto; }
+.kbill-note { margin: 12px 2px 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
 
 @media (max-width: 859px) {
   .kbill-trial { padding-left: 16px; }

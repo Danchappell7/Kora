@@ -12,7 +12,7 @@
    ============================================================ */
 import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { Icon, Collapse, avatarPaint, Button, IconButton, Toggle, EmptyState, ProjectDot } from "./primitives";
+import { Icon, Collapse, avatarPaint, Button, IconButton, Toggle, EmptyState } from "./primitives";
 import { memberInitials } from "../data/data";
 import type { IconName, CalendarConnection, CalProvider, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
@@ -51,9 +51,9 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   { key: "due", label: "Due-date reminders", hint: "Sent by email only." },
 ];
 
-const CAL_PROVIDERS: { id: CalProvider; label: string; short: string; color: string }[] = [
-  { id: "google", label: "Google Calendar", short: "Google Calendar", color: "oklch(0.7 0.18 25)" },
-  { id: "microsoft", label: "Microsoft Outlook", short: "Outlook", color: "oklch(0.62 0.16 250)" },
+const CAL_PROVIDERS: { id: CalProvider; label: string; short: string }[] = [
+  { id: "google", label: "Google Calendar", short: "Google Calendar" },
+  { id: "microsoft", label: "Microsoft Outlook", short: "Outlook" },
 ];
 
 /** the sections, in order; `sep` starts a new group in the list */
@@ -660,7 +660,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
         {CAL_PROVIDERS.map((p, i) => {
           const conn = calendar.connections.find((c) => c.provider === p.id);
           return (
-            <Row key={p.id} icon={<ProjectDot color={p.color} size={10} shape="dot" />} label={p.label}
+            <Row key={p.id} icon={<Icon name="calendar" size={16} sw={1.75} />} label={p.label}
               desc={conn ? <><span className="kset-ok">Connected</span>{conn.accountEmail ? ` · ${conn.accountEmail}` : ""}</> : `Connect ${p.short} to see meetings on Today.`}>
               {conn
                 ? <Button size="sm" onClick={() => calendar.onDisconnect(p.id)} aria-label={`Disconnect ${p.label}`}>Disconnect</Button>
@@ -977,7 +977,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       </div>
       <div ref={scrollRef} className="kset-scroll" onScroll={onScroll}>
         <nav className="kset-sec kset-pop kset-mlist" aria-label="Settings sections">
-          <button ref={(el) => { tabRefs.current.profile = el; }} type="button" className="kset-me" onClick={() => openSection("profile")}>
+          <button ref={(el) => { tabRefs.current.profile = el; }} type="button" className="kset-me" data-autofocus="" onClick={() => openSection("profile")}>
             {avatar(40, base.avatarUrl, savedName)}
             <span className="kset-me-text">
               <span className="kset-me-name">{savedName}{profileDot}</span>
@@ -1119,10 +1119,11 @@ const SETTINGS_CSS = `
 /* ---- section list ---- */
 .kset-nav {
   display: flex; flex-direction: column; flex-shrink: 0; width: 200px; min-height: 0; overflow-y: auto;
-  padding: 8px 6px 16px; background: var(--bg-deep, var(--bg-sunken));
+  padding: 0 6px 16px; background: var(--bg-deep, var(--bg-sunken));
   box-shadow: inset -1px 0 0 var(--hairline);
 }
-.kset-nav-title { margin: 0; padding: 0 10px; height: 48px; display: flex; align-items: center; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+/* 56px, so it lines up with the pane's title */
+.kset-nav-title { margin: 0; padding: 0 10px; height: 56px; flex-shrink: 0; display: flex; align-items: center; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
 .kset-tabs { display: flex; flex-direction: column; gap: 2px; }
 .kset-tab {
   position: relative; display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px 0 10px;
@@ -1167,7 +1168,7 @@ const SETTINGS_CSS = `
 .kset-card > * + * { box-shadow: inset 0 1px 0 var(--hairline); }
 .kset-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 60px; padding: 12px 16px; }
 .kset-row > .ktoggle { flex: 1; min-width: 0; }
-.kset-row-icon { display: grid; place-items: center; width: 16px; flex-shrink: 0; align-self: flex-start; margin-top: 5px; }
+.kset-row-icon { display: grid; place-items: center; width: 16px; flex-shrink: 0; align-self: flex-start; margin-top: 2px; color: var(--ink-3); }
 .kset-row-text { display: grid; gap: 2px; flex: 1 1 240px; min-width: 0; }
 .kset-row-label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
 .kset-row-desc { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
@@ -1210,6 +1211,9 @@ const SETTINGS_CSS = `
   transition: background var(--d-2, 160ms) var(--ease), border-color var(--d-2, 160ms) var(--ease), color var(--d-2, 160ms) var(--ease);
 }
 .kset-check:hover .kset-check-box { border-color: var(--ink-3); }
+/* the real checkbox is invisible, so its ring goes on the box you see */
+.kset-check input:focus-visible { outline: none !important; }
+.kset-check input:focus-visible + .kset-check-box { outline: 2px solid var(--accent); outline-offset: 2px; }
 .kset-check input:checked + .kset-check-box { background: var(--accent-fill, var(--accent)); border-color: transparent; color: var(--on-accent); }
 .kset-check[data-disabled] { opacity: 0.45; cursor: not-allowed; }
 
@@ -1314,6 +1318,8 @@ const SETTINGS_CSS = `
   .kset-scroll { padding: 8px 16px 32px; }
   .kset-foot { padding: 12px 16px; }
   .kset-fields { grid-template-columns: 1fr; }
+  /* 16px stops iOS zooming into a field on focus */
+  .kset-input { font-size: 16px; }
   .kset-row-ctl { margin-left: 0; }
   .kset-row[role="group"] .kset-row-ctl { width: 100%; }
   .kset-seg { max-width: 100%; }

@@ -59,7 +59,11 @@ const TAGS_CSS = `
 }
 .ktm-opt[aria-checked="true"] { color: var(--ink); font-weight: 600; }
 .ktm-opt-check { margin-left: auto; color: var(--accent-text, var(--accent)); }
+.ktm-dialog { max-height: min(720px, 100%); }
 @media (max-width: 859px) {
+  .ksheet.ktm-dialog { max-height: 92%; }
+  /* 16px stops iOS zooming into a field on focus */
+  .ktm-input, .ktm-name { font-size: 16px; }
   .ktm-row { flex-wrap: wrap; padding: 6px 6px 6px 8px; row-gap: 2px; }
   .ktm-count { min-width: 0; }
 }
@@ -269,11 +273,12 @@ export function TagManagerModal({ open, onClose, tags, taskCounts, onUpdate, onD
 
   if (!open) return null;
   return (
-    <div className="kbackdrop ksheet-layer"
+    <div className="kbackdrop ksheet-layer" data-side="center"
       onMouseDown={(e) => { downOnScrim.current = e.target === e.currentTarget; }}
       onClick={(e) => { if (downOnScrim.current && e.target === e.currentTarget) onClose(); downOnScrim.current = false; }}>
-      <div ref={trapRef} role="dialog" aria-modal="true" aria-labelledby="kanbo-tagmgr-title" className="ksheet"
-        style={{ "--sheet-w": "560px", maxHeight: "min(720px, 100%)" } as React.CSSProperties}>
+      <div ref={trapRef} role="dialog" aria-modal="true" aria-labelledby="kanbo-tagmgr-title" className="ksheet ktm-dialog"
+        style={{ "--sheet-w": "560px" } as React.CSSProperties}>
+        <span className="ksheet-handle" aria-hidden="true" />
         <div className="ksheet-head">
           <h2 id="kanbo-tagmgr-title" className="ksheet-title">Manage tags</h2>
           <IconButton ref={closeRef} icon="x" label="Close" onClick={onClose} />
