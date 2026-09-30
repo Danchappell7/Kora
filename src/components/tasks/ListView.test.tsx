@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { ListView, dropPosition, dueDateForBucket } from "./ListView";
+import { ListView, dropPosition, planDrop, dueDateForBucket } from "./ListView";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project } from "../../data/types";
 import type { GroupBy } from "../../app-types";
@@ -14,6 +15,15 @@ const mk = (p: Partial<Task> & { title: string }): Task => ({
 const base = (tasks: Task[], extra: Partial<Parameters<typeof ListView>[0]> = {}) => ({
   tasks, allTasks: tasks, onOpen: vi.fn(), onToggle: vi.fn(), onToggleSubtask: vi.fn(), groupBy: "status" as GroupBy, smart: false, ...extra,
 });
+
+// a ListView whose onPatch / onToggle really update its tasks (like App), so rows regroup and reorder
+function Live({ initial, ...extra }: { initial: Task[] } & Partial<Parameters<typeof ListView>[0]>) {
+  const [tasks, setTasks] = useState(initial);
+  const onPatch = (id: string, p: Partial<Task>) => setTasks((ts) => ts.map((t) => t.id === id ? { ...t, ...p } : t));
+  const onToggle = (id: string) => setTasks((ts) => ts.map((t) => t.id === id ? { ...t, status: t.status === "done" ? "todo" : "done" } : t));
+  return <ListView {...base(tasks, { onPatch, onToggle, ...extra })} />;
+}
+const rowOrder = (root: ParentNode = document) => Array.from(root.querySelectorAll<HTMLElement>("[data-row-title]")).map((el) => el.textContent);
 
 const iso = (d: number) => toLocalISO(new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate() + d));
 
@@ -206,5 +216,178 @@ describe("ListView bulk selection", () => {
     const [ids, patch] = onBulkPatch.mock.calls[0];
     expect([...ids].sort()).toEqual(["kid", "par"]); // "stay" is already in Brand Refresh
     expect(patch).toEqual({ projectId: "p-brand", workspaceId: "ws-foundrise", sectionId: undefined });
+  });
+});
+
+describe("planDrop with tied positions", () => {
+  // rendered order = stable sort by position (a missing position counts as 0), like the list
+  const render_ = (ts: Task[]) => [...ts].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const PATTERNS: (number | undefined)[][] = [
+    [5, 5, 5, 5],                          // a pasted list: one timestamp for every row
+    [1, 2, 2, 2, 3],                       // a tied run between distinct neighbours
+    [undefined, undefined, 3, 3],          // legacy rows with no position
+    [1.727e12, 1.727e12, 1.727e12, 1.727e12 + 1],
+    [0, 0, 1, 1, 1, 2, 2],
+  ];
+  it("every move lands exactly where it was dropped, re-spacing as few neighbours as it can", () => {
+    for (const pat of PATTERNS) {
+      const items = render_(pat.map((p, i) => mk({ id: "r" + i, title: "R" + i, position: p })));
+      for (const d of items) for (const t of items) for (const half of ["top", "bottom"] as const) {
+        if (d.id === t.id) continue;
+        const rest = items.filter((x) => x.id !== d.id);
+        const ti = rest.findIndex((x) => x.id === t.id);
+        const at = half === "top" ? ti : ti + 1;
+        const expected = [...rest.slice(0, at), d].concat(rest.slice(at)).map((x) => x.id);
+        const plan = planDrop(items, d.id, t.id, half, false);
+        const moved = new Map([...plan.respace.map((r) => [r.id, r.position] as const), [d.id, plan.position] as const]);
+        const after = render_(items.map((x) => moved.has(x.id) ? { ...x, position: moved.get(x.id) } : x)).map((x) => x.id);
+        expect({ pat, d: d.id, t: t.id, half, after }).toEqual({ pat, d: d.id, t: t.id, half, after: expected });
+        expect(plan.unchanged).toBe(expected.join() === items.map((x) => x.id).join());
+        expect(plan.respace.length).toBeLessThanOrEqual(Math.ceil(items.length / 2));
+      }
+    }
+  });
+
+  it("needs no re-spacing when the neighbours already differ", () => {
+    const [a, b, c] = [mk({ id: "a", title: "a", position: 1 }), mk({ id: "b", title: "b", position: 2 }), mk({ id: "c", title: "c", position: 3 })];
+    expect(planDrop([a, b, c], "a", "b", "bottom", false)).toEqual({ position: 2.5, respace: [], unchanged: false });
+  });
+});
+
+describe("ListView keyboard reorder with tied positions", () => {
+  it("Alt+↓ really moves a task in a pasted list (all rows share one position), and says so", async () => {
+    const tasks = [mk({ id: "A", title: "Alpha", position: 5 }), mk({ id: "B", title: "Bravo", position: 5 }), mk({ id: "C", title: "Charlie", position: 5 })];
+    render(<Live initial={tasks} />);
+    expect(rowOrder()).toEqual(["Alpha", "Bravo", "Charlie"]);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Alpha" }), { key: "ArrowDown", altKey: true });
+    expect(rowOrder()).toEqual(["Bravo", "Alpha", "Charlie"]);
+    expect(screen.getByText("Moved “Alpha” below “Bravo”")).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Alpha" })));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Alpha" }), { key: "ArrowDown", altKey: true });
+    expect(rowOrder()).toEqual(["Bravo", "Charlie", "Alpha"]);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Charlie" }), { key: "ArrowUp", altKey: true });
+    expect(rowOrder()).toEqual(["Charlie", "Bravo", "Alpha"]);
+  });
+});
+
+describe("ListView keeps keyboard focus when a change moves the row to another group", () => {
+  it("picking a new status (grouped by Status) returns focus to that task's status control in its new group", async () => {
+    const tasks = [mk({ title: "Finalise deck", status: "progress" }), mk({ title: "Other", status: "todo" })];
+    render(<Live initial={tasks} />);
+    fireEvent.click(screen.getByRole("button", { name: "Status: In progress. Change status for “Finalise deck”" }));
+    const menu = await screen.findByRole("menu", { name: "Status for “Finalise deck”" });
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /In review/ })); // detail 0 = Enter/Space
+    const moved = screen.getByRole("button", { name: "Status: In review. Change status for “Finalise deck”" });
+    expect(moved.closest("[data-row-title]") ?? moved).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(moved));
+  });
+
+  it("…and the same for priority under Priority grouping, and for completing a task", async () => {
+    const tasks = [mk({ title: "Book venue", priority: "medium" }), mk({ title: "Other", priority: "low" })];
+    const { unmount } = render(<Live initial={tasks} groupBy="priority" />);
+    fireEvent.click(screen.getByRole("button", { name: "Priority: Medium. Change priority for “Book venue”" }));
+    const menu = await screen.findByRole("menu", { name: "Priority for “Book venue”" });
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Urgent/ }), { detail: 1 }); // a mouse pick too
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Priority: Urgent. Change priority for “Book venue”" })));
+    unmount();
+
+    render(<Live initial={[mk({ id: "sd", title: "Send invoice" }), mk({ title: "Other" })]} />);
+    fireEvent.click(within(screen.getByRole("group", { name: "Send invoice" })).getByRole("button", { name: "Mark as done" }));
+    await waitFor(() => expect(document.activeElement).toBe(within(screen.getByRole("group", { name: "Send invoice" })).getByRole("button", { name: "Mark as not done" })));
+    expect(screen.getByRole("heading", { name: /^Done/ })).toBeInTheDocument();
+  });
+});
+
+describe("ListView group drop targets", () => {
+  const dt = (id: string) => ({ types: ["text/kanbo-task"], getData: () => id, setData: () => {}, effectAllowed: "" });
+  const setup = () => {
+    const tasks = [mk({ id: "A", title: "Alpha", position: 1 }), mk({ id: "B", title: "Bravo", position: 2 }), mk({ id: "C", title: "Charlie", position: 3 }), mk({ id: "D", title: "Delta", status: "progress", position: 0 })];
+    const onPatch = vi.fn();
+    render(<ListView {...base(tasks, { onPatch, onQuickAdd: vi.fn() })} />);
+    return onPatch;
+  };
+
+  it("a task dropped on the 'Add task' row goes to the END of that group, with the hint line there", () => {
+    const onPatch = setup();
+    fireEvent.dragStart(screen.getByRole("group", { name: "Delta" }), { dataTransfer: dt("D") });
+    const add = screen.getByRole("button", { name: "Add task to To do" });
+    fireEvent.dragOver(add, { dataTransfer: dt("D") });
+    expect(add.style.boxShadow).toContain("var(--accent)");
+    fireEvent.drop(add, { dataTransfer: dt("D") });
+    expect(onPatch).toHaveBeenCalledWith("D", { status: "todo", completedAt: undefined, position: 4 }); // after Charlie (3)
+  });
+
+  it("a task dropped on a group header goes to the top of that group", () => {
+    const onPatch = setup();
+    const header = screen.getByRole("heading", { name: /^To do/ }).closest(".kgrouphdr")!;
+    fireEvent.drop(header, { dataTransfer: dt("D") });
+    expect(onPatch).toHaveBeenCalledWith("D", { status: "todo", completedAt: undefined, position: 0 }); // before Alpha (1)
+  });
+
+  it("dropping a task back where it already was writes nothing", () => {
+    const onPatch = setup();
+    // (jsdom has no layout, so a row drop reads as its bottom half) — the bottom of Alpha is Bravo's own slot
+    fireEvent.drop(screen.getByRole("group", { name: "Alpha" }), { dataTransfer: dt("B") });
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("ListView first-task focus", () => {
+  it("takes focus from a clicked button (the sidebar link that opened the empty project)", () => {
+    const nav = document.createElement("button");
+    document.body.appendChild(nav);
+    nav.focus();
+    const { rerender } = render(<ListView {...base([], { onQuickAdd: vi.fn(), sectionProjectId: "p-one" })} />);
+    expect(document.activeElement).toBe(screen.getByLabelText("New task name"));
+    nav.focus(); // …then another empty project is opened from the sidebar
+    rerender(<ListView {...base([], { onQuickAdd: vi.fn(), sectionProjectId: "p-two" })} />);
+    expect(document.activeElement).toBe(screen.getByLabelText("New task name"));
+    nav.remove();
+  });
+
+  it("never reaches behind an open modal", () => {
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    const ok = document.createElement("button");
+    modal.appendChild(ok);
+    document.body.appendChild(modal);
+    ok.focus();
+    render(<ListView {...base([], { onQuickAdd: vi.fn() })} />);
+    expect(document.activeElement).toBe(ok);
+    modal.remove();
+  });
+});
+
+describe("ListView bulk selection — Escape and touch", () => {
+  it("Escape that closes a task panel (or cancels a rename) keeps the selection", () => {
+    const tasks = [mk({ title: "One" }), mk({ title: "Two" })];
+    render(<ListView {...base(tasks, { onBulkPatch: vi.fn(), onPatch: vi.fn() })} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select “One”" }));
+    const panel = document.createElement("div"); // the task panel App opened
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    document.body.appendChild(panel);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Two" }), { key: "Escape" }); // focus was left on the clicked title
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.getByRole("toolbar")).toBeInTheDocument();
+    panel.remove();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Two" }), { key: "F2" });
+    fireEvent.keyDown(screen.getByLabelText("Rename “Two”"), { key: "Escape" });
+    expect(screen.getByRole("toolbar")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Two" }), { key: "Escape" });
+    expect(screen.queryByRole("toolbar")).toBeNull();
+  });
+
+  it("on touch screens the group select-all only appears once a selection is under way", () => {
+    const orig = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: /hover: none/.test(q), media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as unknown as typeof window.matchMedia;
+    try {
+      render(<ListView {...base([mk({ title: "One" }), mk({ title: "Two" })], { onBulkPatch: vi.fn() })} />);
+      expect(screen.queryByRole("checkbox", { name: /Select all tasks in/ })).toBeNull();
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select “One”" }));
+      expect(screen.getByRole("checkbox", { name: "Select all tasks in To do" })).toBeInTheDocument();
+    } finally {
+      window.matchMedia = orig;
+    }
   });
 });

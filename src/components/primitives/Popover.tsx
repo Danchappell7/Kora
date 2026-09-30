@@ -189,7 +189,16 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
     focusedRef.current = true;
     const items = focusables(panelRef.current);
     const current = items.find((el) => el.getAttribute("aria-checked") === "true" || el.getAttribute("aria-selected") === "true") ?? items[0];
-    current?.focus({ preventScroll: true });
+    if (!current) return;
+    current.focus({ preventScroll: true }); // (never scroll the page behind the menu)
+    // …but preventScroll also stops the panel itself scrolling, so a checked item further down
+    // a long list (assignees) would take focus out of sight: centre it in the panel instead
+    const panel = panelRef.current;
+    if (panel && panel.scrollHeight > panel.clientHeight && panel.contains(current)) {
+      const pr = panel.getBoundingClientRect(), cr = current.getBoundingClientRect();
+      const within = cr.top - pr.top + panel.scrollTop; // item's offset inside the scrolled content
+      if (cr.top < pr.top || cr.bottom > pr.bottom) panel.scrollTop = Math.max(0, within - (panel.clientHeight - cr.height) / 2);
+    }
   }, [open, place, autoFocus]);
 
   if (!open || typeof document === "undefined") return null;

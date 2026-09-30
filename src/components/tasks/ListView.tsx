@@ -56,20 +56,97 @@ export function dueDateForBucket(bucket: string, today: Date = KANBO_TODAY): str
   return undefined;
 }
 
-/** Position for a task dropped above/below `targetId` (or at the top of the
- *  group when targetId is null) in a group whose rows render in `items` order.
+export interface DropPlan {
+  /** the moved task's new position */
+  position: number;
+  /** neighbours to re-space first — needed when the rows either side of the gap share a
+   *  position (a pasted list is created in the same millisecond), so no midpoint exists */
+  respace: { id: string; position: number }[];
+  /** the drop puts the task back exactly where it already was */
+  unchanged: boolean;
+}
+
+/** Where a task dropped above/below `targetId` goes, in a group whose rows render in
+ *  `items` order. With no target row it goes to the top of the group (its header), or
+ *  to the end for half "bottom" (its "Add task" row).
  *  Done rows always sort to the bottom whatever their position, so positions
  *  aren't monotonic across that boundary: neighbours are taken from the rows
  *  in the dropped task's own band (open vs done), counted up to the drop point. */
-export function dropPosition(items: Task[], draggedId: string, targetId: string | null, half: "top" | "bottom", willBeDone: boolean): number {
+export function planDrop(items: Task[], draggedId: string, targetId: string | null, half: "top" | "bottom", willBeDone: boolean): DropPlan {
+  const inBand = (t: Task) => (t.status === "done") === willBeDone;
   const rest = items.filter((t) => t.id !== draggedId);
   const ti = targetId ? rest.findIndex((t) => t.id === targetId) : -1;
-  const at = ti < 0 ? 0 : half === "top" ? ti : ti + 1;
-  const inBand = (t: Task) => (t.status === "done") === willBeDone;
+  const at = ti < 0 ? (half === "bottom" ? rest.length : 0) : half === "top" ? ti : ti + 1;
   const k = rest.slice(0, at).filter(inBand).length;
   const band = rest.filter(inBand);
-  return between(band[k - 1], band[k]);
+  const own = items.filter(inBand).findIndex((t) => t.id === draggedId);
+  return { ...placeAt(band, k), unchanged: own === k };
 }
+
+/** Just the new position (see planDrop). */
+export function dropPosition(items: Task[], draggedId: string, targetId: string | null, half: "top" | "bottom", willBeDone: boolean): number {
+  return planDrop(items, draggedId, targetId, half, willBeDone).position;
+}
+
+// the list sorts a missing position as 0, so the maths must too
+const posOf = (t: Task) => t.position ?? 0;
+
+// n strictly increasing values strictly inside (lo, hi) — null if they don't fit (float precision)
+function spaced(lo: number, hi: number, n: number): number[] | null {
+  const vals = lo === -Infinity ? Array.from({ length: n }, (_, i) => hi - (n - i))
+    : hi === Infinity ? Array.from({ length: n }, (_, i) => lo + i + 1)
+    : lo < hi ? Array.from({ length: n }, (_, i) => lo + ((hi - lo) * (i + 1)) / (n + 1))
+    : null;
+  return vals && vals.every((v, i) => v > (i ? vals[i - 1] : lo) && v < hi) ? vals : null;
+}
+
+// the task goes into `band` (its rendered rows, without it) at index k
+function placeAt(band: Task[], k: number): Omit<DropPlan, "unchanged"> {
+  if (band.length === 0) return { position: Date.now(), respace: [] };
+  if (k <= 0) return { position: posOf(band[0]) - 1, respace: [] };
+  if (k >= band.length) return { position: posOf(band[band.length - 1]) + 1, respace: [] };
+  const lo = posOf(band[k - 1]), hi = posOf(band[k]);
+  const mid = (lo + hi) / 2;
+  if (lo < mid && mid < hi) return { position: mid, respace: [] };
+  // tied (or too-close) neighbours: shift the fewest rows on one side of the gap, keeping their order
+  let down: Omit<DropPlan, "unchanged"> | null = null, up: Omit<DropPlan, "unchanged"> | null = null;
+  for (let i = k - 1; i >= 0 && !down; i--) {
+    const seg = band.slice(i, k); // these rows, then the task, fit between band[i-1] and band[k]
+    const v = spaced(i > 0 ? posOf(band[i - 1]) : -Infinity, hi, seg.length + 1);
+    if (v) down = { position: v[seg.length], respace: seg.map((t, j) => ({ id: t.id, position: v[j] })) };
+  }
+  for (let j = k; j < band.length && !up; j++) {
+    const seg = band.slice(k, j + 1); // the task, then these rows, fit between band[k-1] and band[j+1]
+    const v = spaced(lo, j + 1 < band.length ? posOf(band[j + 1]) : Infinity, seg.length + 1);
+    if (v) up = { position: v[0], respace: seg.map((t, i) => ({ id: t.id, position: v[i + 1] })) };
+  }
+  if (down && (!up || down.respace.length <= up.respace.length)) return down;
+  if (up) return up;
+  // (unreachable in practice) renumber the whole band
+  const order = [...band.slice(0, k), null, ...band.slice(k)];
+  return { position: k * 1024, respace: order.flatMap((t, i) => t ? [{ id: t.id, position: i * 1024 }] : []) };
+}
+
+/** True for controls that take typed text (so focus there must never be moved or overridden). */
+function isTypingTarget(el: Element | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return true;
+  if (el.tagName !== "INPUT") return false;
+  return !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image"].includes((el as HTMLInputElement).type);
+}
+
+// keep the previous array while its items are unchanged, so memoised rows don't
+// re-render just because the parent rebuilt an equal list (App filters on every render)
+function useStableList<T>(list: T[], same: (a: T, b: T) => boolean = Object.is): T[] {
+  const ref = useRef(list);
+  const prev = ref.current;
+  if (prev !== list && (prev.length !== list.length || list.some((x, i) => !same(x, prev[i])))) ref.current = list;
+  return ref.current;
+}
+const sameMember = (a: { id: string; name: string }, b: { id: string; name: string }) => a.id === b.id && a.name === b.name;
+
+/** Which control of a row keeps keyboard focus when a change re-mounts it in another group. */
+type RowFocusPart = "title" | "status" | "priority" | "due" | "check";
 
 // stable empties so memoised rows don't re-render on a fresh [] every time
 const NO_TASKS: Task[] = [];
@@ -121,10 +198,13 @@ interface TaskRowProps {
   onPickup?: (id: string) => void; onHover?: (id: string, half: "top" | "bottom") => void; onRowDrop?: (draggedId: string, targetId: string, half: "top" | "bottom") => void;
   /** keyboard reorder (Alt+↑/↓ on the title) */
   onMoveBy?: (id: string, dir: -1 | 1) => void;
+  /** called just before a change that may move this row into another group (which re-mounts
+   *  it), so the list can put focus back on the same control; `scroll` = keyboard-initiated */
+  onRefocus?: (id: string, part: RowFocusPart, scroll: boolean) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void; members?: { id: string; name: string }[]; customFields?: CustomFieldDef[];
 }
 
-const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onPatch, members = NO_MEMBERS, customFields = NO_FIELDS }: TaskRowProps) {
+const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onPatch, members = NO_MEMBERS, customFields = NO_FIELDS }: TaskRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [selFocus, setSelFocus] = useState(false);
@@ -136,6 +216,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   const priorityRef = useRef<HTMLButtonElement>(null);
   const assigneeRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLButtonElement>(null);
+  const checkByKey = useRef(false); // was the completion toggle pressed from the keyboard?
   const closeMenu = useCallback(() => setMenu(null), []);
   const toggleMenu = (m: "priority" | "assignee" | "status") => setMenu((cur) => cur === m ? null : m);
   const edit = readOnly ? undefined : onPatch;
@@ -188,7 +269,8 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   };
 
   return (
-    <div className="krow-cv" style={{ borderBottom: "1px solid var(--hairline)" }}>
+    // scroll-margin keeps a row revealed by scrollIntoView clear of the sticky group header
+    <div className="krow-cv" style={{ borderBottom: "1px solid var(--hairline)", scrollMarginTop: 56 }}>
       <div role="group" aria-label={task.title} onClick={() => onOpen(task.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} className={"task-row lift-row" + (landed ? " kland-row" : "")}
         draggable={draggable}
         onDragStart={draggable ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}
@@ -216,7 +298,11 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           </button>
         )}
 
-        {readOnly ? <DoneMark done={done} /> : <Check done={done} celebrateKey={task.id} onToggle={() => onToggle(task.id)} />}
+        {readOnly ? <DoneMark done={done} /> : (
+          <span data-row-check={task.id} onClickCapture={(e) => { checkByKey.current = e.detail === 0; }} style={{ display: "inline-flex", flexShrink: 0 }}>
+            <Check done={done} celebrateKey={task.id} onToggle={() => { onRefocus?.(task.id, "check", checkByKey.current); onToggle(task.id); }} />
+          </span>
+        )}
 
         {hasSubs && (
           <button type="button" onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }} className="btn-icon" aria-expanded={expanded}
@@ -227,7 +313,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
         )}
         {edit ? (
           <span style={{ display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
-            <button ref={statusRef} type="button" onClick={() => toggleMenu("status")} aria-haspopup="menu" aria-expanded={menu === "status"}
+            <button ref={statusRef} type="button" data-row-status={task.id} onClick={() => toggleMenu("status")} aria-haspopup="menu" aria-expanded={menu === "status"}
               aria-label={`Status: ${statusLabel}. Change status for ${q}`} title={statusLabel}
               style={{ ...triggerStyle, padding: 7, margin: -7 }}>
               <StatusDot status={task.status} />
@@ -235,7 +321,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
             {menu === "status" && <Popover open anchorRef={statusRef} onClose={closeMenu} label={`Status for ${q}`}>
               {STATUS_ORDER.map((s) => (
                 <button key={s} type="button" role="menuitemradio" aria-checked={task.status === s} style={bulkItemStyle}
-                  onClick={() => { setMenu(null); if (s !== task.status) edit(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined }); }}>
+                  onClick={(e) => { setMenu(null); if (s === task.status) return; onRefocus?.(task.id, "status", e.detail === 0); edit(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined }); }}>
                   <StatusDot status={s} size={9} /> {STATUS_META[s].label}{task.status === s && <CurrentMark />}
                 </button>
               ))}
@@ -294,7 +380,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           )}
           {!isMobile && (edit ? (
             <span style={{ display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
-              <button ref={priorityRef} type="button" onClick={() => toggleMenu("priority")} aria-haspopup="menu" aria-expanded={menu === "priority"}
+              <button ref={priorityRef} type="button" data-row-priority={task.id} onClick={() => toggleMenu("priority")} aria-haspopup="menu" aria-expanded={menu === "priority"}
                 aria-label={`Priority: ${prioLabel}. Change priority for ${q}`}
                 style={{ ...triggerStyle, padding: 5, margin: -5 }}>
                 <PriorityFlag priority={task.priority} size={14} />
@@ -302,7 +388,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
               {menu === "priority" && <Popover open anchorRef={priorityRef} onClose={closeMenu} align="end" label={`Priority for ${q}`}>
                 {PRIORITIES_INLINE.map((p) => (
                   <button key={p} type="button" role="menuitemradio" aria-checked={task.priority === p} style={bulkItemStyle}
-                    onClick={() => { setMenu(null); if (p !== task.priority) edit(task.id, { priority: p }); }}>
+                    onClick={(e) => { setMenu(null); if (p === task.priority) return; onRefocus?.(task.id, "priority", e.detail === 0); edit(task.id, { priority: p }); }}>
                     <PriorityFlag priority={p} size={13} /> {PRIORITY_META[p].label}{task.priority === p && <CurrentMark />}
                   </button>
                 ))}
@@ -315,7 +401,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
                 borderRadius: 4, outline: dateFocus ? "2px solid var(--accent)" : undefined, outlineOffset: 2 }}>
                 {task.dueDate ? fmtDue(task.dueDate) : "—"}
               </span>
-              <input type="date" value={task.dueDate || ""} onChange={(e) => edit(task.id, { dueDate: e.target.value || undefined })}
+              <input type="date" data-row-due={task.id} value={task.dueDate || ""} onChange={(e) => { onRefocus?.(task.id, "due", dateFocus); edit(task.id, { dueDate: e.target.value || undefined }); }}
                 aria-label={`Due date for ${q}`}
                 // the native input is invisible, so mirror keyboard focus onto the visible date
                 onFocus={(e) => { let kb = true; try { kb = e.currentTarget.matches(":focus-visible"); } catch { /* old engines */ } setDateFocus(kb); }}
@@ -411,7 +497,7 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete, selectStat
 
 interface Group { key: string; label: string; color: string; icon?: IconName; items: Task[]; }
 
-export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members = NO_MEMBERS, sections = NO_SECTIONS, onCreateSection, onRenameSection, onDeleteSection, customFields = NO_FIELDS, sectionField = "sectionId", sectionProjectId, filtered = false, onClearFilters, readOnly = false }: {
+export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_PROJECTS, compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members: membersIn = NO_MEMBERS, sections: sectionsIn = NO_SECTIONS, onCreateSection, onRenameSection, onDeleteSection, customFields: customFieldsIn = NO_FIELDS, sectionField = "sectionId", sectionProjectId, filtered = false, onClearFilters, readOnly = false }: {
   tasks: Task[]; allTasks: Task[]; projects?: Project[]; compact?: boolean; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
@@ -435,6 +521,14 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
 }) {
   const entrance = useEntrance();
   const isMobile = useMediaQuery("(max-width: 860px)");
+  const isTouch = useMediaQuery("(hover: none), (pointer: coarse)");
+  // App rebuilds these arrays on every render; keep the old ones while nothing in them
+  // changed, so the grouping memo and the memoised rows skip unrelated re-renders
+  const tasks = useStableList(tasksIn);
+  const allTasks = useStableList(allTasksIn);
+  const members = useStableList(membersIn, sameMember);
+  const customFields = useStableList(customFieldsIn);
+  const sections = useStableList(sectionsIn);
   // read-only strips every write path at the source
   const patch = readOnly ? undefined : onPatch;
   const quickAddFn = readOnly ? undefined : onQuickAdd;
@@ -604,7 +698,17 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
     if (groupBy === "section") { const v = key === "__none" ? undefined : key; return sectionField === "mySectionId" ? { mySectionId: v } : { sectionId: v }; }
     return {};
   };
-  // drop a dragged task next to a target row (or at the top of a group): change its group field if needed, and reposition
+  // focus / scroll requests carried across the re-render that a move causes (see the effect below)
+  const pendingFocus = useRef<{ id: string; part: RowFocusPart; scroll: boolean; at: number } | null>(null);
+  const pendingReveal = useRef<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // write a placement: re-space any tied neighbours first, then move the task
+  const applyPlan = (id: string, plan: DropPlan, extra: Partial<Task> = {}) => {
+    for (const r of plan.respace) patch?.(r.id, { position: r.position });
+    patch?.(id, { ...extra, position: plan.position });
+  };
+  // drop a dragged task next to a target row, or with no target at the top of a group
+  // (header) / its end (half "bottom", the "Add task" row): change its group field if needed, and reposition
   const dropInto = (draggedId: string, g: Group, targetId: string | null, half: "top" | "bottom") => {
     setDragId(null); setHover(null);
     if (draggedId === targetId) return;
@@ -612,9 +716,13 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
     if (!dragged) return;
     const p = groupPatch(dragged, g.key);
     const willBeDone = (p.status ?? dragged.status) === "done";
+    const plan = planDrop(g.items, draggedId, targetId, half, willBeDone);
+    if (plan.unchanged && Object.keys(p).length === 0) return; // dropped back where it was
     markJustLanded(draggedId);
-    patch?.(draggedId, { ...p, position: dropPosition(g.items, draggedId, targetId, half, willBeDone) });
+    applyPlan(draggedId, plan, p);
     if (p.projectId) moveFamily(draggedId, p.projectId);
+    // a (sticky) header or "Add task" drop can land it out of sight — bring it into view
+    if (!targetId) pendingReveal.current = draggedId;
   };
   const onRowDrop = useStableCallback((draggedId: string, targetId: string, half: "top" | "bottom") => {
     const g = groups.find((x) => x.items.some((t) => t.id === targetId));
@@ -624,14 +732,33 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
   const onPickup = useStableCallback((id: string) => { setDragId(id || null); if (!id) setHover(null); });
   // dragover fires ~60×/s — only re-render when the hovered row or half actually changes
   const onHoverRow = useStableCallback((id: string, half: "top" | "bottom") => setHover((h) => h && h.id === id && h.half === half ? h : { id, half }));
-  const groupDropProps = (g: Group) => dragEnabled ? {
-    onDragOver: (e: React.DragEvent) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); onHoverRow("hdr:" + g.key, "bottom"); },
-    onDrop: (e: React.DragEvent) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); dropInto(e.dataTransfer.getData("text/kanbo-task"), g, null, "top"); },
+  // group drop targets: the header drops at the top of the group, the "Add task" row at its end
+  const groupDropProps = (g: Group, where: "top" | "end") => dragEnabled ? {
+    onDragOver: (e: React.DragEvent) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); onHoverRow((where === "top" ? "hdr:" : "add:") + g.key, "bottom"); },
+    onDrop: (e: React.DragEvent) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); dropInto(e.dataTransfer.getData("text/kanbo-task"), g, null, where === "top" ? "top" : "bottom"); },
   } : {};
 
+  // A change can move a row into another group (new status under Status grouping, a
+  // completed task under Due…), which re-mounts it and drops keyboard focus on <body>.
+  // The row asks for focus back on the same control; after the re-render it's restored.
+  const onRefocus = useStableCallback((id: string, part: RowFocusPart, scroll: boolean) => { pendingFocus.current = { id, part, scroll, at: Date.now() }; });
+  const findRowEl = (attr: string, id: string) => Array.from(rootRef.current?.querySelectorAll<HTMLElement>(`[${attr}]`) ?? []).find((n) => n.getAttribute(attr) === id);
+  useEffect(() => {
+    const rid = pendingReveal.current;
+    if (rid) { pendingReveal.current = null; findRowEl("data-row-title", rid)?.closest<HTMLElement>(".krow-cv")?.scrollIntoView?.({ block: "nearest" }); }
+    const pf = pendingFocus.current;
+    if (!pf) return;
+    if (Date.now() - pf.at > 2000) { pendingFocus.current = null; return; } // the change never landed (cancelled, filtered out…)
+    const host = findRowEl("data-row-" + pf.part, pf.id);
+    const el = host && (host.matches("button, input") ? host : host.querySelector<HTMLElement>("button, input"));
+    if (!el) return; // not rendered yet — try again on the next render
+    pendingFocus.current = null;
+    // only when the change actually lost focus — never pull it from wherever the user went
+    const ae = document.activeElement;
+    if (ae !== el && (!ae || ae === document.body)) el.focus({ preventScroll: !pf.scroll });
+  });
+
   // keyboard reorder: Alt+↑/↓ on a row title moves it one place within its group
-  const pendingFocus = useRef<string | null>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
   const onMoveBy = useStableCallback((id: string, dir: -1 | 1) => {
     const g = groups.find((x) => x.items.some((t) => t.id === id));
     if (!g) return;
@@ -639,18 +766,12 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
     const me = g.items[i], other = g.items[i + dir];
     // done rows always sit at the bottom, so an open task can't hop past them (and vice versa)
     if (!other || (me.status === "done") !== (other.status === "done")) { setLive(`“${me.title}” can't move any further ${dir < 0 ? "up" : "down"}`); return; }
+    const plan = planDrop(g.items, id, other.id, dir < 0 ? "top" : "bottom", me.status === "done");
+    if (plan.unchanged) return;
     markJustLanded(id);
-    pendingFocus.current = id;
-    patch?.(id, { position: dropPosition(g.items, id, other.id, dir < 0 ? "top" : "bottom", me.status === "done") });
+    onRefocus(id, "title", true);
+    applyPlan(id, plan);
     setLive(`Moved “${me.title}” ${dir < 0 ? "above" : "below"} “${other.title}”`);
-  });
-  // a moved row can be re-inserted in the DOM, which drops focus — put it back on its title
-  useEffect(() => {
-    const id = pendingFocus.current;
-    if (!id) return;
-    pendingFocus.current = null;
-    const el = Array.from(rootRef.current?.querySelectorAll<HTMLElement>("[data-row-title]") ?? []).find((n) => n.dataset.rowTitle === id);
-    if (el && document.activeElement !== el) el.focus();
   });
 
   // selection: click toggles; shift-click selects the range from the last clicked row
@@ -673,17 +794,23 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
     const all = g.items.every((t) => selected.has(t.id));
     setSelected((prev) => { const n = new Set(prev); g.items.forEach((t) => { if (all) n.delete(t.id); else n.add(t.id); }); return n; });
   };
-  // Escape clears a selection (an open bulk menu swallows the first Escape itself) — but only
-  // when focus is in the list, so closing a task panel with Escape keeps the selection
+  // Escape clears a selection — but only when nothing else claims that Escape. It's captured
+  // (so it runs before App closes the task panel, while the panel is still on screen) and it
+  // stands aside when: a task panel / modal is open (Escape closes that — peeking at a task
+  // mustn't cost a 40-task selection), a menu is open (it closes first), focus is in a text
+  // field (Escape cancels the rename / quick-add), or focus is somewhere outside the list.
   useEffect(() => {
     if (!selectionActive) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      const t = e.target as Node | null;
-      if (!t || t === document.body || rootRef.current?.contains(t)) clearSel();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const t = e.target as HTMLElement | null;
+      if (t && t !== document.body && !rootRef.current?.contains(t)) return;
+      if (isTypingTarget(t)) return;
+      if (document.querySelector('[aria-modal="true"], [data-kpop]')) return;
+      clearSel();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [selectionActive]);
 
   // Only offer to take focus for a scope that was genuinely empty when opened —
@@ -696,9 +823,12 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
   useEffect(() => {
     if (!showOnboarding || !scope.empty || filtered) return;
     const el = emptyInputRef.current, ae = document.activeElement;
-    if (!el || (ae && ae !== document.body && ae !== el)) return; // someone is already typing somewhere
+    if (!el || ae === el) return;
+    // never take over a field someone is typing in (the search box), or reach behind an open
+    // modal — but a focused button (the sidebar link that opened this project) is fine
+    if (isTypingTarget(ae) || document.querySelector('[aria-modal="true"]')) return;
     el.focus({ preventScroll: true });
-  }, [showOnboarding, scope.empty, filtered]);
+  }, [showOnboarding, scope.empty, scope.key, filtered]);
 
   const bulkBtnStyle: React.CSSProperties = { padding: isMobile ? "7px 9px" : "7px 11px", fontSize: 13 };
   const divider = !isMobile && <span aria-hidden="true" style={{ width: 1, height: 22, background: "var(--hairline)" }} />;
@@ -739,22 +869,25 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
         const shown = expandedGroups.has(g.key) ? g.items : g.items.slice(0, ROW_CAP);
         const nSel = selectionActive ? g.items.reduce((n, t) => n + (selected.has(t.id) ? 1 : 0), 0) : 0;
         const canAddHere = !!quickAddFn && !(groupBy === "due" && g.key === "completed"); // "Completed" isn't somewhere you add to-dos
-        const dropProps = groupDropProps(g);
         const headerHot = !!dragId && hover?.id === "hdr:" + g.key;
+        const addHot = !!dragId && hover?.id === "add:" + g.key;
+        // touch screens have no hover to reveal the group select-all, so an invisible box would
+        // sit under a stray tap — offer it there only once a selection is under way (and visible)
+        const offerSelectAll = bulkEnabled && g.items.length > 0 && (!isTouch || selectionActive);
         return (
           <div key={g.key}>
             <GroupHeader label={g.label} color={g.color} count={g.items.length} icon={g.icon}
               onRename={!readOnly && groupBy === "section" && g.key !== "__none" && onRenameSection ? () => { const n = window.prompt("Rename section", g.label); if (n?.trim()) onRenameSection(g.key, n.trim()); } : undefined}
               onDelete={!readOnly && groupBy === "section" && g.key !== "__none" && onDeleteSection ? () => { if (window.confirm(`Delete section "${g.label}"? Its tasks move to No section.`)) onDeleteSection(g.key); } : undefined}
-              selectState={bulkEnabled && g.items.length > 0 ? (nSel === 0 ? "none" : nSel === g.items.length ? "all" : "some") : undefined}
-              showSelect={selectionActive} onSelectAll={bulkEnabled ? () => toggleGroupSelection(g) : undefined}
-              dropActive={headerHot} {...dropProps} />
+              selectState={offerSelectAll ? (nSel === 0 ? "none" : nSel === g.items.length ? "all" : "some") : undefined}
+              showSelect={selectionActive} onSelectAll={offerSelectAll ? () => toggleGroupSelection(g) : undefined}
+              dropActive={headerHot} {...groupDropProps(g, "top")} />
             <div className={entrance}>{shown.map((t) => (
               <TaskRow key={t.id} task={t} childTasks={childrenOf.get(t.id) ?? NO_TASKS} childDone={doneKids.get(t.id) ?? 0} byId={byId}
                 onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} smart={smart} isMobile={isMobile} readOnly={readOnly}
                 selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? onSelectRow : undefined}
                 draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
-                onPickup={onPickup} onHover={onHoverRow} onRowDrop={onRowDrop} onMoveBy={dragEnabled ? onMoveBy : undefined}
+                onPickup={onPickup} onHover={onHoverRow} onRowDrop={onRowDrop} onMoveBy={dragEnabled ? onMoveBy : undefined} onRefocus={onRefocus}
                 onPatch={patch} members={members} customFields={customFields} />
             ))}</div>
             {!expandedGroups.has(g.key) && g.items.length > ROW_CAP && (
@@ -771,8 +904,10 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
                   style={{ flex: 1, height: 32, padding: "0 11px", borderRadius: 8, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
               </div>
             ) : (
-              <button type="button" onClick={() => { setAddDraft(""); setAddingKey(g.key); }} className="lift-row" aria-label={`Add task to ${g.label}`} {...dropProps}
-                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 18px 9px 30px", border: "none", borderBottom: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13 }}>
+              // also a drop target: a task dropped here goes to the END of the group (the hint line shows where)
+              <button type="button" onClick={() => { setAddDraft(""); setAddingKey(g.key); }} className="lift-row" aria-label={`Add task to ${g.label}`} {...groupDropProps(g, "end")}
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 18px 9px 30px", border: "none", borderBottom: "1px solid var(--hairline)", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13,
+                  background: addHot ? "color-mix(in oklch, var(--accent) 9%, transparent)" : "transparent", boxShadow: addHot ? "inset 0 3px 0 -1px var(--accent)" : undefined, transition: "background .14s" }}>
                 <Icon name="plus" size={14} /> Add task
               </button>
             ))}
@@ -840,15 +975,6 @@ export function ListView({ tasks, allTasks, projects = NO_PROJECTS, compact = fa
       )}
     </div>
   );
-}
-
-// fractional index between two neighbours (matches the board's reorder math)
-function between(before?: Task, after?: Task): number {
-  const bp = before?.position, ap = after?.position;
-  if (bp == null && ap == null) return Date.now();
-  if (bp == null) return (ap as number) - 1;
-  if (ap == null) return (bp as number) + 1;
-  return (bp + ap) / 2;
 }
 
 export const bulkItemStyle: React.CSSProperties = {

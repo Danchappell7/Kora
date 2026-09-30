@@ -110,3 +110,46 @@ describe("Popover", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Popover — long lists", () => {
+  it("scrolls the checked item into view inside the panel (focus alone can't: it uses preventScroll)", async () => {
+    // fake layout: a 280px panel over 30 items × 30px, the 25th of which is checked
+    const ITEM = 30, PANEL_TOP = 100, PANEL_H = 280;
+    const rectOf = (top: number, h: number) => ({ top, bottom: top + h, left: 0, right: 150, width: 150, height: h, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    const panelOf = (el: Element) => el.closest("[data-kpop-panel]") as HTMLElement | null;
+    const spies = [
+      vi.spyOn(Element.prototype, "scrollHeight", "get").mockImplementation(function (this: Element) { return this.hasAttribute("data-kpop-panel") ? 30 * ITEM + 10 : 0; }),
+      vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) { return this.hasAttribute("data-kpop-panel") ? PANEL_H : 0; }),
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+        if (this.hasAttribute("data-kpop-panel")) return rectOf(PANEL_TOP, PANEL_H);
+        const i = Number(this.getAttribute("data-i"));
+        const panel = panelOf(this);
+        if (panel && !Number.isNaN(i)) return rectOf(PANEL_TOP + 5 + i * ITEM - panel.scrollTop, ITEM);
+        return rectOf(0, 20);
+      }),
+    ];
+    try {
+      function Long() {
+        const [open, setOpen] = useState(false);
+        const ref = useRef<HTMLButtonElement>(null);
+        return (
+          <>
+            <button ref={ref} onClick={() => setOpen(true)}>Assignee</button>
+            <Popover open={open} anchorRef={ref} onClose={() => setOpen(false)} maxHeight={PANEL_H} label="Assignee">
+              {Array.from({ length: 30 }, (_, i) => <button key={i} data-i={i} role="menuitemradio" aria-checked={i === 24}>Person {i + 1}</button>)}
+            </Popover>
+          </>
+        );
+      }
+      render(<Long />);
+      fireEvent.click(screen.getByText("Assignee"));
+      const checked = screen.getByRole("menuitemradio", { name: "Person 25" });
+      await waitFor(() => expect(document.activeElement).toBe(checked));
+      const panel = screen.getByRole("menu", { name: "Assignee" });
+      // item 25 starts 5 + 24×30 = 725px down the list; centred in a 280px panel → 725 − 125
+      expect(panel.scrollTop).toBe(725 - (PANEL_H - ITEM) / 2);
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+    }
+  });
+});
