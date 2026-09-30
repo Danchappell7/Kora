@@ -78,7 +78,7 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
             const focus = taskOf(r.focusTaskId ?? r.taskIds[0]);
             const self = !!currentUserId && r.memberId === currentUserId;
             const fixes = readOnly
-              ? (r.taskIds.length ? [{ kind: "open", label: r.fixes.find((f) => f.kind === "open")?.label ?? "Open task" } as RiskFix] : [])
+              ? (r.kind !== "over_capacity" && r.taskIds.length ? [{ kind: "open", label: r.fixes.find((f) => f.kind === "open")?.label ?? "Open task" } as RiskFix] : [])
               : r.fixes.filter((f) => !(self && (f.kind === "nudge" || f.kind === "check_in")));
             const rest = r.mono && r.reason.startsWith(r.mono) ? r.reason.slice(r.mono.length) : r.reason;
             return (
