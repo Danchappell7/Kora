@@ -269,6 +269,10 @@ function daysAgoAt(days: number, hh: number, mm = 0): string {
 }
 /* an ISO timestamp `minutes` before the page loaded (today's history, always in the past) */
 const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60000).toISOString();
+/* `n` days on, but never past this Sunday: Workload, Pulse and Radar count the
+   Monday–Sunday week, so Maya's ~45h stays in it (and over her 40h) whichever
+   day the demo is opened. Monday to Thursday it's plain dayOffset(n). */
+const thisWeek = (n: number): string => dayOffset(Math.min(n, 6 - ((KANBO_TODAY.getDay() + 6) % 7)));
 
 export const TASKS: Task[] = [
   t({ title: "Finalise Q3 launch narrative deck", status: "progress", priority: "urgent", projectId: "p-launch",
@@ -282,7 +286,7 @@ export const TASKS: Task[] = [
         { id: "s3", title: "Trim to 14 slides", done: false },
       ] }),
   t({ title: "Ship onboarding redesign to staging", status: "blocked", priority: "high", projectId: "p-launch",
-      assigneeId: "m-1", dueDate: dayOffset(1), tags: ["eng", "design"], dependencies: ["t-4"], aiScore: 88,
+      assigneeId: "m-1", dueDate: thisWeek(1), tags: ["eng", "design"], dependencies: ["t-4"], aiScore: 88,
       aiReason: "Waiting on design tokens — nudge Sana to unblock.", focusMin: 120, comments: 2, effortHours: 12,
       createdAt: daysAgoAt(10, 11, 5) }),
   t({ title: "Run pricing-page A/B test", status: "todo", priority: "high", projectId: "p-growth",
@@ -297,7 +301,7 @@ export const TASKS: Task[] = [
       assigneeId: "m-self", dueDate: dayOffset(2), tags: ["writing"], aiScore: 58,
       aiReason: "Recurring; batch it with the deck writing.", focusMin: 40, comments: 0, createdAt: daysAgoAt(6, 8, 15) }),
   t({ title: "Migrate auth to edge sessions", status: "progress", priority: "urgent", projectId: "p-infra",
-      assigneeId: "m-1", dueDate: dayOffset(1), tags: ["eng"], aiScore: 91,
+      assigneeId: "m-1", dueDate: thisWeek(1), tags: ["eng"], aiScore: 91,
       aiReason: "Security-sensitive and time-boxed this sprint.", focusMin: 150, comments: 3, effortHours: 16,
       createdAt: daysAgoAt(9, 9, 0),
       subtasks: [
@@ -316,7 +320,7 @@ export const TASKS: Task[] = [
       aiReason: "Creative work — protect an afternoon block.", focusMin: 90, comments: 2, effortHours: 10,
       createdAt: daysAgoAt(20, 10, 30) }),
   t({ title: "Set up usage analytics events", status: "review", priority: "medium", projectId: "p-launch",
-      assigneeId: "m-1", dueDate: dayOffset(2), tags: ["eng"], dependencies: ["t-6"], aiScore: 61,
+      assigneeId: "m-1", dueDate: thisWeek(2), tags: ["eng"], dependencies: ["t-6"], aiScore: 61,
       aiReason: "Needs edge sessions merged first.", focusMin: 45, comments: 0, effortHours: 6, createdAt: daysAgoAt(7, 15, 0) }),
   t({ title: "Weekly review & plan", status: "todo", priority: "low", projectId: "p-personal",
       assigneeId: "m-self", dueDate: dayOffset(0), recurrence: "weekly", tags: ["ops"], aiScore: 40,
@@ -341,7 +345,7 @@ export const TASKS: Task[] = [
       assigneeId: "", dueDate: dayOffset(2), tags: ["writing"], dependencies: ["t-1"], aiScore: 72,
       aiReason: "Due in two days and nobody owns it yet.", focusMin: 60, effortHours: 3, createdAt: daysAgoAt(3, 10, 20) }),
   t({ title: "Load-test edge sessions", status: "todo", priority: "high", projectId: "p-infra",
-      assigneeId: "m-1", dueDate: dayOffset(3), tags: ["eng"], dependencies: ["t-6"], aiScore: 67,
+      assigneeId: "m-1", dueDate: thisWeek(3), tags: ["eng"], dependencies: ["t-6"], aiScore: 67,
       aiReason: "Starts once the migration lands.", focusMin: 120, effortHours: 10, createdAt: daysAgoAt(2, 9, 50) }),
   t({ title: "Review launch FAQ copy", status: "todo", priority: "medium", projectId: "p-launch",
       assigneeId: "m-3", dueDate: dayOffset(1), tags: ["writing"], aiScore: 55, focusMin: 30, effortHours: 2,
@@ -366,7 +370,8 @@ export const TASKS: Task[] = [
   t({ title: "Update pricing FAQ", status: "todo", priority: "medium", projectId: "p-launch",
       assigneeId: "m-self", createdBy: "m-2", dueDate: dayOffset(4), tags: ["writing"], aiScore: 46, focusMin: 45, effortHours: 2,
       createdAt: daysAgoAt(1, 12, 0),
-      description: "From the Launch requests form.\n\nThe pricing FAQ still lists the beta tiers — update it for launch." }),
+      // the line a request form's submission opens with (Inbox reads "New request … via Launch requests")
+      description: "Request via Launch requests.\n\nThe pricing FAQ still lists the beta tiers — update it for launch." }),
   t({ title: "Book venue for launch party", status: "todo", priority: "low", projectId: "p-launch",
       assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(6), tags: ["ops"], aiScore: 35, focusMin: 30, effortHours: 2,
       createdAt: daysAgoAt(3, 15, 15) }),
@@ -378,7 +383,7 @@ export const TASKS: Task[] = [
       assigneeId: "m-3", dueDate: dayOffset(5), tags: ["design"], aiScore: 57, focusMin: 90, effortHours: 6,
       createdAt: daysAgoAt(4, 9, 20) }),
   t({ title: "Security review sign-off", status: "review", priority: "high", projectId: "p-infra",
-      assigneeId: "m-1", createdBy: "m-1", dueDate: dayOffset(2), tags: ["eng"], aiScore: 70, focusMin: 30,
+      assigneeId: "m-1", createdBy: "m-1", dueDate: thisWeek(2), tags: ["eng"], aiScore: 70, focusMin: 30, effortHours: 1,
       createdAt: daysAgoAt(3, 11, 50) }),
 ];
 
@@ -511,14 +516,16 @@ export let EVENTS: CalEvent[] = [
    Demo mode only (store.ts hands these out when there's no Supabase).
    ============================================================ */
 
-/* The Inbox: six items, two of them new. `detail` is the actor's full name
-   (InboxView's actorOf reads it), except a request, which names its form. */
+/* The Inbox: six items, two of them new. `detail` is the actor's full name,
+   and only on the kinds InboxView's actorOf names someone for (assigned,
+   mention, comment): a status or completed row is always the signed-in
+   user's own history, so it would read "You …". A request names its form. */
 export const DEMO_ACTIVITY: Activity[] = ([
   { id: "a-demo-1", taskId: "t-4", taskTitle: "Define design tokens v2", kind: "mention", detail: "Sana Rao", createdAt: minutesAgo(40) },
   { id: "a-demo-2", taskId: "t-21", taskTitle: "Send the interview brief", kind: "assigned", detail: "Maya Lin", createdAt: minutesAgo(250) },
-  { id: "a-demo-3", taskId: "t-24", taskTitle: "Record product demo video", kind: "completed", detail: "Theo Vance", createdAt: minutesAgo(130), readAt: minutesAgo(100) },
+  { id: "a-demo-3", taskId: "t-24", taskTitle: "Record product demo video", kind: "comment", detail: "Theo Vance", createdAt: minutesAgo(125), readAt: minutesAgo(100) },
   { id: "a-demo-4", taskId: "t-1", taskTitle: "Finalise Q3 launch narrative deck", kind: "comment", detail: "Theo Vance", createdAt: minutesAgo(310), readAt: minutesAgo(290) },
-  { id: "a-demo-5", taskId: "t-2", taskTitle: "Ship onboarding redesign to staging", kind: "status", detail: "Maya Lin", createdAt: daysAgoAt(1, 15, 10), readAt: daysAgoAt(1, 15, 40) },
+  { id: "a-demo-5", taskId: "t-2", taskTitle: "Ship onboarding redesign to staging", kind: "mention", detail: "Maya Lin", createdAt: daysAgoAt(1, 15, 12), readAt: daysAgoAt(1, 15, 40) },
   { id: "a-demo-6", taskId: "t-25", taskTitle: "Update pricing FAQ", kind: "assigned", detail: "Request via Launch requests", createdAt: daysAgoAt(1, 12, 0), readAt: daysAgoAt(1, 12, 30) },
 ] satisfies Activity[]).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
 

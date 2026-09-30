@@ -581,10 +581,36 @@ describe("demo seed", () => {
   it("puts Maya over a 40h week and leaves the press release unowned", () => {
     const maya = ["t-2", "t-6", "t-10", "t-18"].reduce((h, id) => h + (byId(id).effortHours ?? 0), 0);
     expect(maya).toBe(44);
+    expect(byId("t-30").effortHours).toBe(1);
     expect(byId("t-17")).toMatchObject({ assigneeId: "", dueDate: dayOffset(2), projectId: "p-launch" });
     // the deck really is holding up three tasks
     expect(TASKS.filter((t) => t.dependencies.includes("t-1")).map((t) => t.id)).toEqual(["t-17", "t-20", "t-23"]);
     expect(byId("t-23").isMilestone).toBe(true);
+  });
+
+  it("keeps Maya over capacity in this Monday–Sunday week, whichever day the demo opens", async () => {
+    vi.useFakeTimers();
+    try {
+      // Mon 28 Sep … Sun 4 Oct 2026
+      for (let day = 28; day <= 34; day++) {
+        vi.setSystemTime(new Date(2026, 8, day, 10, 0));
+        vi.resetModules();
+        const seed = await import("./data");
+        const today = new Date(2026, 8, day);
+        const monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+        const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+        const [from, to] = [seed.toLocalISO(monday), seed.toLocalISO(sunday)];
+        const hours = seed.TASKS
+          .filter((t) => t.assigneeId === "m-1" && t.status !== "done" && !t.isMilestone && t.dueDate && t.dueDate >= from && t.dueDate <= to)
+          .reduce((h, t) => h + (t.effortHours ?? 1), 0);
+        expect([seed.toLocalISO(today), hours]).toEqual([seed.toLocalISO(today), 45]);
+        // Monday to Thursday the dates are exactly as written (+1, +2, +3)
+        if (today.getDay() >= 1 && today.getDay() <= 4) expect(seed.TASKS.find((t) => t.id === "t-18")!.dueDate).toBe(seed.dayOffset(3));
+      }
+    } finally {
+      vi.useRealTimers();
+      vi.resetModules();
+    }
   });
 
   it("has a date that slipped twice and a task that went quiet", () => {
@@ -609,6 +635,12 @@ describe("demo seed", () => {
     expect(DEMO_ACTIVITY).toHaveLength(6);
     expect(DEMO_ACTIVITY.filter((a) => !a.readAt).map((a) => a.kind).sort()).toEqual(["assigned", "mention"]);
     expect(DEMO_ACTIVITY.every((a) => a.taskTitle === TASKS.find((t) => t.id === a.taskId)?.title)).toBe(true);
+    // every row is from someone (the kinds the Inbox names an actor for), never "You …"
+    expect(DEMO_ACTIVITY.every((a) => ["assigned", "mention", "comment"].includes(a.kind))).toBe(true);
+    const members = ["Maya Lin", "Theo Vance", "Sana Rao"];
+    expect(DEMO_ACTIVITY.filter((a) => !a.detail.startsWith("Request via")).every((a) => members.includes(a.detail))).toBe(true);
+    // the request's task carries the line a form submission writes
+    expect(byId("t-25").description).toMatch(/^Request via Launch requests\./);
     expect(DEMO_GOALS.map((g) => g.status)).toEqual(["on_track", "at_risk"]);
     expect(DEMO_PORTFOLIOS).toEqual([expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] })]);
     expect(DEMO_STATUS_UPDATES.some((u) => u.projectId === "p-infra")).toBe(false);
