@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { useRef, useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Popover, computePopoverPosition } from "./Popover";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 const VIEW = { width: 1000, height: 800 };
 const rect = (top: number, left: number, h = 20, w = 20) => ({ top, left, bottom: top + h, right: left + w });
@@ -108,6 +109,32 @@ describe("Popover", () => {
     fireEvent.click(screen.getByText("Status"));
     fireEvent.keyDown(screen.getByRole("menuitem", { name: "Done" }), { key: "Tab" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Popover inside a focus-trapped dialog", () => {
+  function TrappedDialog({ onEscape }: { onEscape: () => void }) {
+    const trapRef = useFocusTrap<HTMLDivElement>(true, onEscape);
+    return (
+      <div ref={trapRef} role="dialog" aria-label="Edit task">
+        <Harness />
+      </div>
+    );
+  }
+
+  it("keeps focus in the menu (the trap doesn't pull it back) and Escape closes only the menu", async () => {
+    const onEscape = vi.fn();
+    render(<TrappedDialog onEscape={onEscape} />);
+    const trigger = screen.getByText("Status");
+    fireEvent.click(trigger);
+    const checked = screen.getByRole("menuitemradio", { name: "In progress" });
+    await waitFor(() => expect(document.activeElement).toBe(checked));
+    // the portal root opts out of every trap, whatever role the panel has
+    expect(checked.closest("[data-focus-trap-ignore]")).not.toBeNull();
+    fireEvent.keyDown(checked, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onEscape).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 });
 

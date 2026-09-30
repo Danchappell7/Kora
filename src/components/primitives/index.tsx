@@ -79,18 +79,34 @@ export function AvatarStack({ ids, size = 22 }: { ids: string[]; size?: number }
   );
 }
 
-/* ---------- StatusDot ---------- */
+/* ---------- StatusDot ----------
+   Colour alone can't tell "Blocked" from "Done" for a colour-blind user
+   (red/green), so every status also has its own SHAPE, legible down to 6px:
+   to do = empty ring · in progress = half full · in review = three-quarters
+   full · blocked = no-entry bar · done = tick. The bar and tick are knocked
+   out in the card colour (--surface-solid), so they read in both themes. */
+const KNOCK = "var(--surface-solid)";
 export function StatusDot({ status, size = 9, glow }: { status: Status; size?: number; glow?: boolean }) {
   const c = STATUS_META[status].color;
   const isProgress = status === "progress";
+  const u = 16 / size;            // viewBox units per CSS pixel
+  const ring = 1.6 * u;           // a 1.6px outline at any size
+  const r = 8 - ring / 2;
+  const solid = status === "blocked" || status === "done";
   return (
-    <span style={{ position: "relative", width: size, height: size, flexShrink: 0, display: "inline-block" }}>
-      <span style={{
-        position: "absolute", inset: 0, borderRadius: 99,
-        background: status === "todo" ? "transparent" : c,
-        border: status === "todo" ? `1.6px solid ${c}` : "none",
-        boxShadow: glow ? `0 0 var(--glow-r, 8px) ${c}` : "none", // no glow on paper (light: 0px)
-      }} />
+    <span data-status={status} style={{
+      position: "relative", width: size, height: size, flexShrink: 0, display: "inline-block", borderRadius: 99,
+      boxShadow: glow ? `0 0 var(--glow-r, 8px) ${c}` : "none", // no glow on paper (light: 0px)
+    }}>
+      <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" focusable="false" style={{ display: "block" }}>
+        {solid
+          ? <circle cx={8} cy={8} r={8} fill={c} />
+          : <circle cx={8} cy={8} r={r} fill="none" stroke={c} strokeWidth={ring} />}
+        {status === "progress" && <path d="M8 0A8 8 0 0 1 8 16Z" fill={c} />}
+        {status === "review" && <path d="M8 0A8 8 0 1 1 0 8H8Z" fill={c} />}
+        {status === "blocked" && <rect x={3.4} y={8 - Math.max(1.3, 0.7 * u)} width={9.2} height={2 * Math.max(1.3, 0.7 * u)} rx={0.6} fill={KNOCK} />}
+        {status === "done" && <path d="M4.4 8.4l2.5 2.5 4.8-5" fill="none" stroke={KNOCK} strokeWidth={Math.max(2.2, 1.3 * u)} strokeLinecap="round" strokeLinejoin="round" />}
+      </svg>
       {isProgress && <span style={{ position: "absolute", inset: -3, borderRadius: 99, border: `1.5px solid ${c}`, opacity: 0.35, animation: "pulseGlow 2s var(--ease) infinite" }} />}
     </span>
   );
@@ -294,12 +310,21 @@ export function Tag({ id, small }: { id: string; small?: boolean }) {
   );
 }
 
-/* ---------- Priority flag ---------- */
+/* ---------- Priority flag ----------
+   Filled = high or urgent, outline = medium or low. Urgent also carries an
+   exclamation mark beside the flag, so it differs from High by shape as well
+   as colour (red and amber look alike to many colour-blind users). */
 export function PriorityFlag({ priority, size = 14, withLabel }: { priority: Priority; size?: number; withLabel?: boolean }) {
   const p = PRIORITY_META[priority];
+  const filled = priority === "urgent" || priority === "high";
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: p.color }} title={p.label + " priority"}>
-      <Icon name="flag" size={size} fill={priority === "urgent" || priority === "high" ? p.color : "none"} />
+    <span data-priority={priority} style={{ display: "inline-flex", alignItems: "center", gap: 6, color: p.color }} title={p.label + " priority"}>
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}>
+        <path d="M5 21V4" />
+        <path d="M5 4h11l-2 4 2 4H5" fill={filled ? "currentColor" : "none"} />
+        {priority === "urgent" && <path d="M20.5 4v5.2M20.5 12.6v.01" strokeWidth={2.6} />}
+      </svg>
       {withLabel && <span style={{ fontSize: 12, color: "var(--ink-2)" }}>{p.label}</span>}
     </span>
   );

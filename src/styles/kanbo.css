@@ -515,12 +515,8 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .kproj { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 11px; border-radius: 9px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 13.5px; color: var(--ink-3); text-align: left; transition: background .15s; }
 .kproj:hover { background: var(--surface); }
 .kproj[data-active="true"] { background: var(--surface-2); color: var(--ink); }
-.kproj-del { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 24px; height: 24px; border: none; border-radius: 7px; background: var(--surface-2); color: var(--ink-3); cursor: pointer; opacity: 0; transition: opacity .14s, color .14s, background .14s; }
-/* the actions sit left of the pin star (which stays visible and clickable),
-   over the task count they replace; with two actions (Archive, then Delete)
-   the first steps further left so neither covers the other */
-.kproj-del:has(+ .kproj-del) { right: 52px; }
-.kproj-del:hover { color: var(--st-blocked); background: color-mix(in oklch, var(--st-blocked) 14%, transparent); }
+/* (the project row's pin / archive / delete group is styled beside the
+   component, in Sidebar.tsx's SIDEBAR_CSS) */
 
 /* tag chip delete (hover-reveal) */
 .tagchip-del { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 99px; background: var(--danger-fill, var(--st-blocked)); color: oklch(0.99 0.01 20); cursor: pointer; opacity: 0; transition: opacity .14s; box-shadow: var(--shadow); }
@@ -530,21 +526,17 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 
 /* Hover-revealed actions must also appear for KEYBOARD users: a focusable
    control at opacity 0 means Tab lands on something invisible and Space/Enter
-   fires an action nobody could see (delete a tag, archive a project). They
+   fires an action nobody could see (delete a tag, remove a saved list). They
    show while KEYBOARD focus is anywhere in their row, and on their own focus.
    Not :focus-within — Chrome focuses a button on mouse click, so a clicked
    project/tag/saved list would keep its delete controls stuck on screen
    (covering the name) until focus moved on; :focus-visible is keyboard-only
    for buttons. The :has() rules are separate so a browser without :has()
    drops only them, never the hover rule. */
-.kproj-row:hover .kproj-del, .kproj-del:focus-visible,
 .tagchip:hover .tagchip-del, .tagchip-del:focus-visible,
 .ksaved-row:hover .ksaved-del, .ksaved-del:focus-visible { opacity: 1; }
-.kproj-row:has(:focus-visible) .kproj-del,
 .tagchip:has(:focus-visible) .tagchip-del,
 .ksaved-row:has(:focus-visible) .ksaved-del { opacity: 1; }
-.kproj-row:hover .kproj-count { opacity: 0; }
-.kproj-row:has(:focus-visible) .kproj-count { opacity: 0; }
 /* multi-select boxes on list rows and board cards fade in on hover (opacity
    is inline in ListView/OtherViews), so keyboard focus must reveal them too.
    The row rule looks for a focused BUTTON only: text/date inputs match
@@ -727,16 +719,8 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
 /* ---- touch devices: no hover, so reveal hover-only affordances + grow tap targets ---- */
 @media (hover: none), (pointer: coarse) {
   /* controls that fade in on hover must be permanently reachable by a finger */
-  .kproj-del { opacity: 1 !important; }
-  /* …except the sidebar's one-tap Archive (the first of the two actions):
-     permanently shown beside Delete on a phone it's an easy mis-tap that
-     hides the project for the whole team. On touch, archiving goes through
-     the project Overview's Archive button, which confirms first. */
-  .kproj-del[title^="Archive"] { display: none !important; }
-  .kproj-del:has(+ .kproj-del) { display: none !important; }
   .tagchip-del { opacity: 1 !important; }
   .ksaved-del { opacity: 1 !important; }
-  .kproj-row .kproj-count { opacity: 0 !important; } /* hide count so it doesn't sit under the delete button */
   /* the saved-search × sits at the row's right edge: pad the row so its
      count badge moves clear of it instead of hiding under an invisible target */
   .ksaved-row .knav { padding-right: 36px; }

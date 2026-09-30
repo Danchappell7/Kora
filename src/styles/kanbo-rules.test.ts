@@ -23,14 +23,12 @@ describe("hover-revealed row actions", () => {
   const reveals = selectorsSetting(/opacity:\s*1/);
 
   it("never reveal on :focus-within (Chrome focuses a clicked button, leaving delete controls stuck on screen)", () => {
-    const leaky = reveals.filter((s) => /focus-within/.test(s) && /(kproj-del|tagchip-del|ksaved-del|Select task)/.test(s));
+    const leaky = reveals.filter((s) => /focus-within/.test(s) && /(tagchip-del|ksaved-del|Select task)/.test(s));
     expect(leaky).toEqual([]);
-    expect(selectorsSetting(/opacity:\s*0/).filter((s) => /kproj-row:focus-within/.test(s))).toEqual([]);
   });
 
   it("reveal for keyboard focus anywhere in the row", () => {
     for (const s of [
-      ".kproj-row:has(:focus-visible) .kproj-del",
       ".tagchip:has(:focus-visible) .tagchip-del",
       ".ksaved-row:has(:focus-visible) .ksaved-del",
       '.task-row:has(button:focus-visible) button[aria-label="Select task"]',
@@ -43,10 +41,7 @@ describe("hover-revealed row actions", () => {
     }
   });
 
-  it("hide the sidebar's one-tap Archive on touch, where it would sit permanently beside Delete", () => {
-    const touch = css.match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*?)\n\}/)![1];
-    expect(touch).toMatch(/\.kproj-del\[title\^="Archive"\]\s*\{\s*display:\s*none/);
-  });
+  // (the sidebar's project actions live in Sidebar.tsx; Sidebar.test.tsx guards them)
 });
 
 describe("rules that match React's inline border:none", () => {

@@ -22,14 +22,14 @@ const task = (id: string, extra: Partial<Task>): Task => ({
   tags: [], dependencies: [], subtasks: [], focusMin: 0, comments: 0, aiScore: 0, workspaceId: "ws-1", ...extra,
 });
 
-function renderSidebar(opts: { route?: Route; workspace?: string | null; myRole?: Role; tasks?: Task[]; saved?: SavedSearch[]; onDeleteSavedSearch?: (id: string) => void | Promise<unknown>; projects?: Project[]; workspaces?: Workspace[]; currentUserId?: string; guardRoute?: boolean } = {}) {
+function renderSidebar(opts: { route?: Route; workspace?: string | null; myRole?: Role; tasks?: Task[]; saved?: SavedSearch[]; onDeleteSavedSearch?: (id: string) => void | Promise<unknown>; projects?: Project[]; workspaces?: Workspace[]; currentUserId?: string; guardRoute?: boolean; focus?: FocusTimer } = {}) {
   const props = {
     setRoute: vi.fn(), setWorkspace: vi.fn(), onDeleteProject: vi.fn(), onArchiveProject: vi.fn(), onRestoreProject: vi.fn(), onSignOut: vi.fn(),
   };
   const ui = (o: typeof opts) => (
     <ToastProvider>
       <Sidebar route={o.route ?? { view: "home" }} workspace={o.workspace === undefined ? "ws-1" : o.workspace} workspaces={o.workspaces ?? workspaces} onNewWorkspace={() => {}}
-        focus={focus} openFocus={() => {}} tasks={o.tasks ?? []} projects={o.projects ?? projects} inboxCount={0} currentUserId={o.currentUserId ?? "u-me"}
+        focus={o.focus ?? focus} openFocus={() => {}} tasks={o.tasks ?? []} projects={o.projects ?? projects} inboxCount={0} currentUserId={o.currentUserId ?? "u-me"}
         onNewProject={() => {}} onUpgrade={() => {}} onManageBilling={() => {}} myRole={o.myRole} guardRoute={o.guardRoute}
         savedSearches={o.saved} onDeleteSavedSearch={o.onDeleteSavedSearch} {...props} />
     </ToastProvider>
@@ -199,5 +199,52 @@ describe("Sidebar saved lists", () => {
     await act(async () => { vi.advanceTimersByTime(ACTION_TOAST_MIN_MS); await Promise.resolve(); await Promise.resolve(); });
     expect(screen.getByRole("status")).toHaveTextContent("Couldn't remove “Urgent bugs”");
     expect(screen.getByRole("button", { name: /^Urgent bugs/ })).toBeInTheDocument();
+  });
+});
+
+describe("Sidebar deep-work mini timer", () => {
+  const timer = (over: Partial<FocusTimer>) => ({ ...focus, seconds: 125, phase: "work", ...over }) as FocusTimer;
+
+  it("says a break ended rather than calling it too short to bank", () => {
+    renderSidebar({ focus: timer({ phase: "break", endSession: () => 0 }) });
+    fireEvent.click(screen.getByRole("button", { name: /^End$/ }));
+    expect(screen.getByText("Break ended")).toBeInTheDocument();
+    expect(screen.queryByText("Too short to bank")).not.toBeInTheDocument();
+  });
+
+  it("banks a work session, and calls a zero-minute one too short", () => {
+    const s = renderSidebar({ focus: timer({ endSession: () => 25 }) });
+    fireEvent.click(screen.getByRole("button", { name: /^End$/ }));
+    expect(screen.getByText("Banked 25m of deep work")).toBeInTheDocument();
+    s.rerender({ focus: timer({ endSession: () => 0 }) });
+    fireEvent.click(screen.getByRole("button", { name: /^End$/ }));
+    expect(screen.getByText("Too short to bank")).toBeInTheDocument();
+  });
+});
+
+describe("Sidebar smart lists", () => {
+  it("explain their scope in a tooltip", () => {
+    renderSidebar();
+    expect(screen.getByRole("button", { name: /^Assigned to me/ })).toHaveAttribute("title", "Open tasks assigned to you or where you're a collaborator");
+  });
+});
+
+describe("Sidebar row-action styles", () => {
+  const sidebarCss = () => Array.from(document.querySelectorAll("style")).map((el) => el.textContent ?? "").find((t) => t.includes(".kproj-acts"))!;
+
+  it("hides the one-tap Archive on touch, where it would sit permanently beside Delete", () => {
+    renderSidebar({ myRole: "admin" });
+    expect(screen.getByRole("button", { name: "Archive project Q4 Launch" })).toHaveAttribute("data-kind", "archive");
+    const touch = sidebarCss().match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*?)\n\}/)![1];
+    expect(touch).toMatch(/\.kproj-act\[data-kind="archive"\]\s*\{\s*display:\s*none/);
+  });
+
+  it("reveals row actions for keyboard focus only — never :focus-within on the whole row (a mouse click would leave them stuck)", () => {
+    renderSidebar({ myRole: "admin" });
+    const css = sidebarCss();
+    expect(css).not.toMatch(/\.kproj-item:focus-within|\.ksaved-row:focus-within/);
+    expect(css).toMatch(/\.kproj-item:has\(:focus-visible\) \.kproj-acts\s*\{[^}]*opacity:\s*1/);
+    // :has() never shares a selector list with :hover (an unsupported selector drops the whole rule)
+    for (const rule of css.match(/[^{}]+\{/g) ?? []) if (/:hover/.test(rule)) expect(rule).not.toMatch(/:has\(/);
   });
 });

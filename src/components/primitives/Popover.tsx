@@ -225,8 +225,10 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
   return createPortal(
     // the full-viewport root IS the click-away layer; React events from inside
     // a portal still bubble to the trigger's ancestors (e.g. a row that opens
-    // its task on click), so they stop here
-    <div data-kpop="" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) close(); }}
+    // its task on click), so they stop here. data-focus-trap-ignore: the menu
+    // manages its own focus, so a dialog's focus trap underneath (useFocusTrap)
+    // must not pull focus back out of it — whatever role the panel has.
+    <div data-kpop="" data-focus-trap-ignore="" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) close(); }}
       onContextMenu={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) { e.preventDefault(); close(); } }}
       onWheel={(e) => { if (e.target === e.currentTarget) close(); }}
       onTouchMove={(e) => { if (e.target === e.currentTarget) close(); }}
