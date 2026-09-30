@@ -7,7 +7,7 @@
    work, then makes the ghosts solid — with one Undo. The canvas, the
    drag engine and the Unplanned rail live in PlanView.
    ============================================================ */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PlanView, useDayClock, dayEventsFor } from "./PlanView";
 import { Daybeam, type BeamSegment } from "./Daybeam";
 import { Button, Icon, StatusGlyph } from "../primitives";
@@ -68,15 +68,15 @@ const SETUP_HIDDEN_KEY = "kanbo-setup-hidden";
 const TODAY_CSS = `
 .ktoday-lede { flex: none; padding: 24px var(--kp-gutter, 32px) 0; }
 .ktoday-brief { margin: 0; max-width: 740px; font: 500 28px/36px var(--font-head); letter-spacing: -0.02em; color: var(--ink); text-wrap: pretty; }
-.ktoday-fig { display: inline; margin: 0; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer;
-  font: inherit; letter-spacing: inherit; color: inherit; text-align: inherit;
+.ktoday-fig { border-radius: 4px; cursor: pointer; outline: none;
   text-decoration: underline dotted var(--ink-4); text-decoration-thickness: 1px; text-underline-offset: 4px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
   transition: color var(--d-1, 90ms) var(--ease); }
 .ktoday-fig:hover, .ktoday-fig[aria-pressed="true"] { color: var(--accent-text, var(--accent)); text-decoration-color: currentColor; }
 .ktoday-fig:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ktoday-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; min-height: 40px; margin-top: 20px; }
 .ktoday-hint { display: inline-flex; align-items: center; gap: 8px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
-.ktoday-beam { flex: 1 1 240px; min-width: 200px; max-width: 420px; margin-left: auto; }
+.ktoday-beam { flex: 1 1 280px; min-width: 220px; max-width: 460px; margin-left: auto; }
 .ktoday-setup { display: flex; margin-top: 12px; }
 .ktoday-setup .kpill svg { margin-right: -2px; }
 .ktoday-steps { padding: 6px 6px 4px; min-width: 268px; }
@@ -96,10 +96,34 @@ const TODAY_CSS = `
   .ktoday-brief { font-size: 22px; line-height: 30px; }
   .ktoday-actions { margin-top: 16px; }
   .ktoday-actions > .kbtn { flex: 1 1 100%; height: var(--h-touch, 44px); }
+  .ktoday-actions > .kbtn .kkbd { display: none; } /* no keyboard to press it on */
   .ktoday-hint { flex: 1; }
   .ktoday-beam { flex: 1 1 100%; max-width: none; margin-left: 0; }
 }
 `;
+
+const FIGURE_TITLE: Record<Exclude<BriefPart, string>["kind"], string> = {
+  free: "Show the free time on your day", due: "Show what's due today", overdue: "Show what's overdue",
+  task: "Open this task", risks: "See the risks",
+};
+
+/** A live figure in the brief. A span with the button role rather than a
+ *  <button>, so a long one (a task's title) wraps with the sentence around it. */
+function Figure({ kind, pressed, onActivate, children }: {
+  kind: Exclude<BriefPart, string>["kind"]; pressed?: boolean; onActivate: () => void; children: ReactNode;
+}) {
+  return (
+    <span role="button" tabIndex={0} className="ktoday-fig" data-kind={kind} aria-pressed={pressed} title={FIGURE_TITLE[kind]}
+      onClick={onActivate}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); onActivate(); }
+        else if (e.key === " ") e.preventDefault(); // Space acts on release, like a button
+      }}
+      onKeyUp={(e) => { if (e.key === " ") { e.preventDefault(); onActivate(); } }}>
+      {children}
+    </span>
+  );
+}
 
 /** "2 of 4 set up": the getting-started steps, tucked into a chip until they're done or hidden. */
 function SetupChip({ steps }: { steps: TodayViewProps["setup"] }) {
@@ -298,18 +322,17 @@ function TodayDay({
     : mode === "replan" ? "Your day is planned"
     : "Nothing to place yet";
 
-  const lede = (
+  const lede = (drop: { start: number; end: number } | null) => (
     <section className="ktoday-lede" aria-label="Your day in brief">
       <style>{TODAY_CSS}</style>
       <p className="ktoday-brief">
         {brief.parts.map((p, i) => typeof p === "string" ? <Fragment key={i}>{p}</Fragment>
           : p.kind === "risks" && !onOpenRisks ? <Fragment key={i}>{p.text}</Fragment>
           : (
-            <button key={i} type="button" className="ktoday-fig" data-kind={p.kind} onClick={() => onFigure(p)}
-              aria-pressed={p.kind === "due" || p.kind === "overdue" ? railFocus === p.kind : undefined}
-              title={p.kind === "free" ? "Show the free time on your day" : p.kind === "due" ? "Show what's due today" : p.kind === "overdue" ? "Show what's overdue" : p.kind === "task" ? "Open this task" : "See the risks"}>
+            <Figure key={i} kind={p.kind} onActivate={() => onFigure(p)}
+              pressed={p.kind === "due" || p.kind === "overdue" ? railFocus === p.kind : undefined}>
               {p.text}
-            </button>
+            </Figure>
           ))}
       </p>
       <div className="ktoday-actions">
@@ -322,7 +345,7 @@ function TodayDay({
         {!readOnly && hint && <span className="ktoday-hint">{hint}</span>}
         <div className="ktoday-beam">
           {/* the working day, unless something's planned outside it */}
-          <Daybeam segments={segments} nowMin={nowMin} planned={planned} free={free}
+          <Daybeam segments={segments} nowMin={nowMin} planned={planned} free={free} drop={drop}
             compact={!segments.some((s) => s.start < 8 * 60 || s.end > 18 * 60)} />
         </div>
       </div>

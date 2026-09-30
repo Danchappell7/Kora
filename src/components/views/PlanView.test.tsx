@@ -366,6 +366,29 @@ describe("PlanView drag and drop", () => {
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
+  it("a task dropped on the Daybeam lands at the time it points to (and the beam is told where)", () => {
+    // the beam spans 08:00–18:00 over 600px at y=950: a pixel a minute, from x=100
+    spies.pop()?.mockRestore();
+    spy(vi.spyOn(Element.prototype, "getBoundingClientRect")).mockImplementation(function (this: Element) {
+      const r = (this as HTMLElement).dataset?.daybeam != null ? { left: 100, right: 700, top: 950, bottom: 966 }
+        : this.tagName === "ASIDE" ? { left: 800, right: 1140, top: 0, bottom: 900 } : { left: 0, right: 780, top: 0, bottom: 900 };
+      return { ...r, x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top, toJSON() { return r; } } as DOMRect;
+    });
+    const due = task({ id: "d1", title: "Send the brief", dueDate: localDayKey() });
+    const { onUpdate } = renderPlan([due], {
+      lede: (drop) => <div data-daybeam="" data-from="480" data-to="1080">{drop ? `lands ${drop.start}–${drop.end}` : "beam"}</div>,
+    });
+    const card = screen.getByRole("button", { name: /^Send the brief, 30m/ }).closest("[data-intake-card]")!;
+    press(card, 900, 100);
+    act(() => { on("pointermove", 880, 110); });
+    act(() => { on("pointermove", 403, 958); });
+    expect(screen.getByText("lands 780–810")).toBeInTheDocument();
+    act(() => { on("pointerup", 403, 958); });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith("d1", { scheduled: 13 * 60, planToday: true });
+    expect(screen.getByText("beam")).toBeInTheDocument();
+  });
+
   it("touch: long-press then drag moves the block; a second finger can't drop it", () => {
     vi.useFakeTimers();
     const { btn, onUpdate } = setup();

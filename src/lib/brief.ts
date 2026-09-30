@@ -141,14 +141,28 @@ export function ghostPlan(tasks: Task[], events: CalEvent[], nowMin: number, opt
   const ordered = [...cand].sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0))
     .map((t) => ({ ...t, energy: energyKindOf(t), dur: durOf(t), scheduled: null }));
   const plan = planDayDetailed(ordered, busy, { nowMin });
+  const placed = { ...plan.placed };
+  // A second pass for what didn't fit: the breaks the planner holds back after
+  // long runs of focus can leave a visible "Free · 40m" that a 30m task could
+  // use. Offer those gaps before calling anything tomorrow's.
+  const unplaced: Task[] = [];
+  for (const t of plan.unplaced) {
+    const taken = Object.entries(placed).map(([id, start]) => {
+      const o = ordered.find((x) => x.id === id)!;
+      return { id: "sugg-" + id, title: o.title, start, end: start + o.dur, kind: "meeting" as const };
+    });
+    const again = planDayDetailed([t], [...busy, ...taken], { nowMin }).placed[t.id];
+    if (again != null) placed[t.id] = again;
+    else unplaced.push(t);
+  }
   const byId = new Map(cand.map((t) => [t.id, t]));
-  const suggestions = Object.entries(plan.placed)
+  const suggestions = Object.entries(placed)
     .map(([id, start]) => {
       const t = byId.get(id)!;
       return { id, start, end: start + durOf(t), overdue: isOverdue(t, opts.today) };
     })
     .sort((a, b) => a.start - b.start);
-  return { suggestions, unplaced: plan.unplaced.map((t) => byId.get(t.id) ?? t) };
+  return { suggestions, unplaced: unplaced.map((t) => byId.get(t.id) ?? t) };
 }
 
 /* ---------- the brief ---------- */

@@ -253,6 +253,14 @@ describe("ghostPlan", () => {
     expect(ghostPlan([big], [], H(18, 30), opts).suggestions).toHaveLength(1);
   });
 
+  it("uses a gap the focus break held back before calling anything tomorrow's", () => {
+    const long = task({ dueDate: TODAY, focusMin: 90, aiScore: 90 });
+    const short = task({ dueDate: TODAY, focusMin: 25, aiScore: 10 });
+    const plan = ghostPlan([long, short], [], H(16), opts);
+    expect(plan.unplaced).toEqual([]);
+    expect(plan.suggestions.map((s) => [s.id, s.start])).toEqual([[long.id, H(16)], [short.id, H(17, 30)]]);
+  });
+
   it("Kanbo's score breaks ties between equally due, equally urgent work", () => {
     const low = task({ dueDate: TODAY, aiScore: 20 });
     const high = task({ dueDate: TODAY, aiScore: 90 });

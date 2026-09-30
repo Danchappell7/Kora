@@ -57,6 +57,19 @@ describe("TodayView: the brief", () => {
     expect(props.onOpenRisks).toHaveBeenCalled();
   });
 
+  it("a figure works from the keyboard like any button (Enter, or Space on release)", () => {
+    const deck = task({ id: "deck", title: "Launch deck", dueDate: today(), aiScore: 90 });
+    const { props } = renderToday([deck]);
+    const fig = screen.getByRole("button", { name: "Launch deck" });
+    expect(fig).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(fig, { key: "Enter" });
+    expect(props.onOpen).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(fig, { key: " " });
+    expect(props.onOpen).toHaveBeenCalledTimes(1);
+    fireEvent.keyUp(fig, { key: " " });
+    expect(props.onOpen).toHaveBeenCalledTimes(2);
+  });
+
   it("a due figure narrows the rail to that group, and again shows everything", () => {
     renderToday([task({ id: "a", title: "Due one", dueDate: today() }), task({ id: "b", title: "Planned one", planToday: true })]);
     const rail = screen.getByRole("complementary", { name: "Unplanned" });

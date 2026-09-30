@@ -47,6 +47,9 @@ const WEEK_CSS = `
 .kweek-range { font: 500 11px/16px var(--font-mono); color: var(--ink-4); white-space: nowrap; }
 .kweek-head-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
+/* seven equal days while they fit at 132px (1280 wide, even with the sidebar); the
+   box is measured, not the window, so a docked task panel wraps the days too */
+.kweek-days { container-type: inline-size; }
 .kweek-grid { display: grid; grid-template-columns: repeat(7, minmax(132px, 1fr)); gap: 8px; }
 .kweek-day { display: flex; flex-direction: column; min-width: 0; min-height: 220px; padding: 0 6px 8px; border-radius: var(--r-md, 8px);
   background: var(--bg-deep); transition: box-shadow var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease); }
@@ -93,13 +96,17 @@ const WEEK_CSS = `
 .kweek-float { position: fixed; z-index: 80; max-width: 220px; padding: 6px 10px; pointer-events: none; border-radius: var(--r-sm, 6px);
   background: var(--surface-raised); box-shadow: var(--kw-e2); font: 500 13px/18px var(--kw-ui); color: var(--ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kweek-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--r-sm, 6px);
-  background: transparent; font: 500 13px/20px var(--kw-ui); color: var(--ink-2); cursor: pointer; text-align: left; white-space: nowrap; }
-.kweek-menu-item .mono { margin-left: auto; padding-left: 16px; font: 500 11px/16px var(--font-mono); color: var(--ink-4); }
-.kweek-menu-item[aria-checked="true"] { color: var(--accent-text, var(--accent)); }
-.kweek-menu-label { padding: 6px 10px 4px; font: 600 12px/16px var(--kw-ui); color: var(--ink-3); }
+/* the menu is portalled out of .kweek: only global tokens in here */
+.kweek-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 10px 0 8px; border: 0; border-radius: var(--r-sm, 6px);
+  background: transparent; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); cursor: pointer; text-align: left; white-space: nowrap;
+  transition: background var(--d-1, 90ms) var(--ease); }
+.kweek-menu-item:hover, .kweek-menu-item:focus-visible { background: var(--fill-1); color: var(--ink); }
+.kweek-menu-item > svg { flex-shrink: 0; color: var(--accent-text, var(--accent)); }
+.kweek-menu-item[aria-checked="false"] > svg { visibility: hidden; }
+.kweek-menu-item .mono { margin-left: auto; padding-left: 16px; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kweek-menu-label { padding: 6px 8px 4px 32px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
-@media (max-width: 1100px) { .kweek-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+@container (max-width: 971px) { .kweek-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
 @media (max-width: 859px) {
   .kweek { padding: 16px 16px 32px; }
   .kweek-grid { grid-template-columns: 1fr; }
@@ -109,7 +116,7 @@ const WEEK_CSS = `
   .kweek-more.kibtn { opacity: 1; width: 32px; height: 32px; top: 50%; translate: 0 -50%; box-shadow: none; }
 }
 @media (hover: none) { .kweek-chip { padding-right: 32px; } .kweek-more.kibtn { opacity: 1; box-shadow: none; } }
-@media (prefers-reduced-motion: reduce) { .kweek-day, .kweek-chip, .kweek-more.kibtn { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .kweek-day, .kweek-chip, .kweek-more.kibtn, .kweek-menu-item { transition: none; } }
 `;
 
 /** A seven-day completions sparkline: a gradient area under a hairline of ink. */
@@ -147,7 +154,7 @@ function MoveMenu({ task, targets, anchorRef, open, onClose, onMove }: {
       {targets.map((t) => (
         <button key={t.label} type="button" role="menuitemradio" aria-checked={task.dueDate === t.iso} className="kweek-menu-item"
           onClick={() => { onClose(); onMove(task.id, t.iso); }}>
-          {t.label}<span className="mono">{t.hint}</span>
+          <Icon name="check" size={16} sw={2} />{t.label}<span className="mono">{t.hint}</span>
         </button>
       ))}
     </Popover>
@@ -367,27 +374,29 @@ export function MyWeekView({ tasks, onOpen, onPatch, currentUserId, readOnly }: 
         </div>
       </div>
 
-      <div className={"kweek-grid " + entrance}>
-        {days.map((d, i) => {
-          const iso = weekIsos[i];
-          const items = open.filter((t) => t.dueDate === iso);
-          const isToday = iso === todayIso;
-          const nameId = `kw-${iso}`;
-          return (
-            <section key={iso} className="kweek-day" data-day={iso} data-today={isToday || undefined} data-past={iso < todayIso || undefined}
-              data-weekend={i >= 5 || undefined} data-drop={overDay === iso || undefined} aria-labelledby={nameId} {...dropProps(iso)}>
-              <h3 className="kweek-day-head" id={nameId} aria-label={`${FULL_DAYS[d.getDay()]} ${dayMonth(d)}${isToday ? ", today" : ""}`}>
-                <span className="kweek-day-name">{weekdayShort(d)}</span>
-                <span className="kweek-day-date">{d.getDate()}</span>
-                {items.length > 0 && <span className="kweek-day-count">{items.length}</span>}
-              </h3>
-              <div className="kweek-day-list">
-                {items.map(chip)}
-                {items.length === 0 && <div className="kweek-empty" aria-hidden="true">{overDay === iso ? "Drop here" : dragId ? "" : "—"}</div>}
-              </div>
-            </section>
-          );
-        })}
+      <div className="kweek-days">
+        <div className={"kweek-grid " + entrance}>
+          {days.map((d, i) => {
+            const iso = weekIsos[i];
+            const items = open.filter((t) => t.dueDate === iso);
+            const isToday = iso === todayIso;
+            const nameId = `kw-${iso}`;
+            return (
+              <section key={iso} className="kweek-day" data-day={iso} data-today={isToday || undefined} data-past={iso < todayIso || undefined}
+                data-weekend={i >= 5 || undefined} data-drop={overDay === iso || undefined} aria-labelledby={nameId} {...dropProps(iso)}>
+                <h3 className="kweek-day-head" id={nameId} aria-label={`${FULL_DAYS[d.getDay()]} ${dayMonth(d)}${isToday ? ", today" : ""}`}>
+                  <span className="kweek-day-name">{weekdayShort(d)}</span>
+                  <span className="kweek-day-date">{d.getDate()}</span>
+                  {items.length > 0 && <span className="kweek-day-count">{items.length}</span>}
+                </h3>
+                <div className="kweek-day-list">
+                  {items.map(chip)}
+                  {items.length === 0 && <div className="kweek-empty" aria-hidden="true">{overDay === iso ? "Drop here" : dragId ? "" : "—"}</div>}
+                </div>
+              </section>
+            );
+          })}
+        </div>
       </div>
 
       {overdue.length > 0 && (
