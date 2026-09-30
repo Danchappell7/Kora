@@ -1,19 +1,121 @@
 /* Shared task export — CSV download + printable PDF (used by List/Board
-   toolbar and the Search view). */
-import type { Task } from "../data/types";
-import { getMember, getProject, STATUS_META, toLocalISO } from "../data/data";
+   toolbar and the Search view). The CSV opens cleanly in Excel (UTF-8 BOM,
+   every cell quoted, formula injection neutralised) and re-imports into
+   Kanbo with status, people, dates, sections, tags and sub-tasks intact. */
+import type { CustomFieldDef, CustomValue, Task } from "../data/types";
+import { getMember, getProject, PRIORITY_META, STATUS_META, TAGS, toLocalISO } from "../data/data";
 
-const csvCell = (s: string) => /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-const esc = (s: unknown) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
+// A cell starting with one of these is run as a formula by Excel, Sheets and
+// Numbers (=HYPERLINK(…), DDE payloads) — or shows #NAME? for "-Call supplier".
+const FORMULA_START = /^[=+\-@\t\r]/;
+// …but a plain signed number ("-5", "+2.5") is data, not a formula.
+const PLAIN_NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
 
-export function exportTasksCsv(tasks: Task[], name = "tasks") {
-  const rows = [["Title", "Status", "Priority", "Assignee", "Due", "Project", "Tags"]];
-  tasks.forEach((t) => rows.push([t.title, STATUS_META[t.status]?.label ?? t.status, t.priority, getMember(t.assigneeId)?.name || "", t.dueDate || "", getProject(t.projectId)?.name || "", (t.tags || []).join("; ")]));
-  const csv = rows.map((r) => r.map((c) => csvCell(String(c))).join(",")).join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a"); a.href = url; a.download = `kanbo-${name}-${toLocalISO(new Date())}.csv`;
-  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+/** One CSV cell: always quoted, with a leading ' when the value would run as a formula. */
+export function csvCell(value: unknown): string {
+  let s = value == null ? "" : String(value);
+  if (FORMULA_START.test(s) && !PLAIN_NUMBER.test(s)) s = "'" + s;
+  return `"${s.replace(/"/g, '""')}"`;
 }
+
+/** Rows → CSV text with a UTF-8 byte-order mark so Excel reads £ and accents correctly. */
+export function toCsv(rows: unknown[][]): string {
+  return "\uFEFF" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
+/** Downloads CSV text built by toCsv(). */
+export function downloadCsv(filename: string, csv: string) {
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+  // revoking straight away can cancel the download in Safari/Firefox
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+export interface TaskExportOptions {
+  /** Section names (by id) for the Section column. */
+  sections?: { id: string; name: string }[];
+  /** Custom field definitions — one extra column per field name. */
+  customFields?: CustomFieldDef[];
+  /** All tasks, so a sub-task's parent is named even when the parent isn't in the export. */
+  allTasks?: Task[];
+  /** People to resolve assignees against (defaults to the loaded workspace members). */
+  members?: { id: string; name: string; email?: string }[];
+}
+
+const BASE_COLUMNS = ["Title", "Description", "Status", "Priority", "Assignee", "Assignee email", "Start", "Due", "Completed", "Project", "Section", "Tags", "Parent task"];
+
+const dateCell = (v?: string) => {
+  if (!v) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? "" : toLocalISO(d);
+};
+
+/** Builds the CSV text for a task export (exposed for tests). */
+export function buildTasksCsv(tasks: Task[], opts: TaskExportOptions = {}): string {
+  const person = (id?: string) => {
+    if (!id) return undefined;
+    const m = opts.members?.find((x) => x.id === id);
+    const g = getMember(id);
+    return m || g ? { name: m?.name || g?.name || "", email: m?.email || g?.email || "" } : undefined;
+  };
+  const sectionName = new Map((opts.sections ?? []).map((s) => [s.id, s.name]));
+  const titleOf = new Map<string, string>();
+  (opts.allTasks ?? []).forEach((t) => titleOf.set(t.id, t.title));
+  tasks.forEach((t) => titleOf.set(t.id, t.title));
+
+  // custom fields used by the exported tasks' projects, one column per distinct name
+  const projectIds = new Set(tasks.map((t) => t.projectId));
+  const fieldCols: { name: string; defs: CustomFieldDef[] }[] = [];
+  (opts.customFields ?? []).filter((f) => projectIds.has(f.projectId)).forEach((f) => {
+    const clash = BASE_COLUMNS.some((c) => c.toLowerCase() === f.name.trim().toLowerCase());
+    const name = clash ? `${f.name} (custom field)` : f.name;
+    const col = fieldCols.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (col) col.defs.push(f); else fieldCols.push({ name, defs: [f] });
+  });
+  const customCell = (def: CustomFieldDef, v: CustomValue | undefined): string => {
+    if (v == null || v === "") return "";
+    if (def.type === "people") return (Array.isArray(v) ? v : [String(v)]).map((id) => person(id)?.name || id).join("; ");
+    if (Array.isArray(v)) return v.join("; ");
+    if (typeof v === "boolean") return v ? "Yes" : "No";
+    return String(v);
+  };
+
+  const rows: unknown[][] = [[...BASE_COLUMNS, ...fieldCols.map((c) => c.name)]];
+  tasks.forEach((t) => {
+    const who = person(t.assigneeId);
+    rows.push([
+      t.title,
+      t.description || "",
+      STATUS_META[t.status]?.label ?? t.status,
+      PRIORITY_META[t.priority]?.label ?? t.priority,
+      who?.name || "",
+      who?.email || "",
+      dateCell(t.startDate),
+      dateCell(t.dueDate),
+      t.status === "done" ? dateCell(t.completedAt) : "",
+      getProject(t.projectId)?.name || "",
+      (t.sectionId && sectionName.get(t.sectionId)) || "",
+      (t.tags || []).map((k) => TAGS[k]?.label ?? k).join("; "),
+      (t.parentId && titleOf.get(t.parentId)) || "",
+      ...fieldCols.map((c) => {
+        const def = c.defs.find((d) => d.projectId === t.projectId);
+        return def ? customCell(def, t.custom?.[def.id]) : "";
+      }),
+    ]);
+  });
+  return toCsv(rows);
+}
+
+const fileSlug = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tasks";
+
+export function exportTasksCsv(tasks: Task[], name = "tasks", opts: TaskExportOptions = {}) {
+  downloadCsv(`kanbo-${fileSlug(name)}-${toLocalISO(new Date())}.csv`, buildTasksCsv(tasks, opts));
+}
+
+const esc = (s: unknown) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
 
 export function printTasks(tasks: Task[], title = "Tasks") {
   const w = window.open("", "_blank"); if (!w) return;
