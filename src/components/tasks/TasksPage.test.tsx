@@ -143,11 +143,52 @@ describe("the one toolbar row", () => {
     prompt.mockRestore();
   });
 
-  it("saved views sit in the tabs row and open through onOpenSavedView", () => {
+  it("saved views sit in the tabs row, as links (not tabs), and open through onOpenSavedView", () => {
     const onOpenSavedView = vi.fn();
     render(<My tasks={[mk({ title: "x" })]} savedViews={[{ id: "s1", name: "Urgent bugs", count: 4 }]} onOpenSavedView={onOpenSavedView} />);
-    fireEvent.click(screen.getByRole("tab", { name: /^Urgent bugs/ }));
+    const tabs = screen.getByRole("tablist", { name: "My tasks" });
+    expect(within(tabs).queryByRole("tab", { name: /Urgent bugs/ })).not.toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Saved views" });
+    fireEvent.click(within(nav).getByRole("button", { name: "Urgent bugs, 4 tasks" }));
     expect(onOpenSavedView).toHaveBeenCalledWith("s1");
+  });
+
+  it("arrowing along the tabs never leaves the page for a saved view (← on Open wraps to Done)", () => {
+    const onOpenSavedView = vi.fn();
+    render(<My tasks={[mk({ title: "x" })]} savedViews={[{ id: "s1", name: "Urgent bugs", count: 4 }]} onOpenSavedView={onOpenSavedView} />);
+    const open = screen.getByRole("tab", { name: /^Open/ });
+    open.focus();
+    fireEvent.keyDown(open, { key: "ArrowLeft" });
+    expect(screen.getByRole("tab", { name: /^Done/ })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "End" });
+    expect(screen.getByRole("tab", { name: /^Done/ })).toHaveAttribute("aria-selected", "true");
+    expect(onOpenSavedView).not.toHaveBeenCalled();
+  });
+
+  it("the Filter button is named “Filter · on” when active, with the count as its description", () => {
+    render(<My tasks={[mk({ title: "Big one", priority: "high" })]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Quick filters" })).getByRole("button", { name: "High priority" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Quick filters" })).getByRole("button", { name: "Hide done" }));
+    const btn = screen.getByRole("button", { name: "Filter · on" });
+    expect(btn).toHaveAccessibleDescription("2 filters on");
+  });
+
+  it("Display › Density follows Appearance: offered only with onDensity, and never set by the page itself", () => {
+    const { unmount } = render(<My tasks={[mk({ title: "x" })]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Display" }));
+    expect(within(screen.getByRole("dialog", { name: "Display" })).queryByRole("group", { name: "Density" })).not.toBeInTheDocument();
+    unmount();
+    const onDensity = vi.fn();
+    document.documentElement.removeAttribute("data-density");
+    render(<My tasks={[mk({ title: "x" })]} density="comfortable" onDensity={onDensity} />);
+    fireEvent.click(screen.getByRole("button", { name: "Display" }));
+    const panel = screen.getByRole("dialog", { name: "Display" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Compact" }));
+    expect(onDensity).toHaveBeenCalledWith("compact");
+    expect(document.documentElement.hasAttribute("data-density")).toBe(false);
   });
 
   it("Display › Sort offers Kanbo's order (the old AI sort)", () => {

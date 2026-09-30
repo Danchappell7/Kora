@@ -9,7 +9,7 @@
    Phones: swipe a row right to complete it, left for Tomorrow ·
    Next week · Pick; a long press opens the row's action sheet.
    ============================================================ */
-import { useState, useRef, useEffect, useMemo, useCallback, memo, type ReactNode } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, memo, type ReactNode } from "react";
 import {
   Icon, Avatar, Check, AiScore, wasJustCompleted, wasJustLanded, markJustLanded, Collapse,
   StatusGlyph, PriorityGlyph, DateChip, ProjectDot, projectPaint, EmptyState, Button, IconButton, Kbd, AiMark, Sheet,
@@ -582,7 +582,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           <span className="ktv-avatar" data-row-assignee={task.id} onClick={stop}>
             {edit && members.length > 0 ? (
               <>
-                <button ref={assigneeRef} type="button" className="ktv-trig" data-hidden={quietAssignee && !!assignee ? true : undefined}
+                <button ref={assigneeRef} type="button" className="ktv-trig" data-quiet={quietAssignee && !!assignee ? true : undefined}
                   onClick={() => toggleMenu("assignee")} aria-haspopup="menu" aria-expanded={menu === "assignee"}
                   aria-label={assignee ? `Assigned to ${assignee.name}. Change assignee for ${q}` : `Unassigned. Assign ${q}`}>
                   {assignee ? <Avatar id={task.assigneeId} size={20} /> : <span className="ktv-unassigned" title="Unassigned"><Icon name="user" size={11} /></span>}
@@ -1082,6 +1082,8 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   const pendingFocus = useRef<{ id: string; part: RowFocusPart; scroll: boolean; at: number } | null>(null);
   const pendingReveal = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // phones, or a column squeezed by the docked task panel: the bulk bar's buttons are icons
+  const iconBulk = useFloatBounds(rootRef) || isMobile;
   // write a placement: re-space any tied neighbours first, then move the task
   const applyPlan = (id: string, plan: DropPlan, extra: Partial<Task> = {}) => {
     for (const r of plan.respace) patch?.(r.id, { position: r.position });
@@ -1268,7 +1270,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
     el.classList.remove("ktv-flash");
     void el.offsetWidth; // restart the animation
     el.classList.add("ktv-flash");
-    const t = window.setTimeout(() => el.classList.remove("ktv-flash"), 1300);
+    const t = window.setTimeout(() => el.classList.remove("ktv-flash"), 600);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusGroup, focusKey]);
@@ -1480,29 +1482,29 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
         <div role="toolbar" aria-label="Bulk actions for selected tasks" className="ktv-float">
           <span className="ktv-float-count" aria-live="polite">{ids.length} selected</span>
           <span className="ktv-float-sep" aria-hidden="true" />
-          <Button variant="ghost" size="sm" icon="check" onClick={() => applyPatch({ status: "done", completedAt: toLocalISO(new Date()) })} aria-label={isMobile ? "Mark selected as done" : undefined}>{!isMobile && "Done"}</Button>
-          <BulkMenuButton label="Status" icon="layers" iconOnly={isMobile} open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
+          <Button variant="ghost" size="sm" icon="check" onClick={() => applyPatch({ status: "done", completedAt: toLocalISO(new Date()) })} aria-label={iconBulk ? "Mark selected as done" : undefined}>{!iconBulk && "Done"}</Button>
+          <BulkMenuButton label="Status" icon="layers" iconOnly={iconBulk} open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
             {STATUS_ORDER.map((s) => (
               <button key={s} type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })}>
                 <StatusGlyph status={s} size={14} readOnly /> {STATUS_META[s].label}
               </button>
             ))}
           </BulkMenuButton>
-          <BulkMenuButton label="Priority" icon="flag" iconOnly={isMobile} open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
+          <BulkMenuButton label="Priority" icon="flag" iconOnly={iconBulk} open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
             {PRIORITIES.map((p) => (
               <button key={p} type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ priority: p })}>
                 <span style={{ display: "inline-grid", placeItems: "center", width: 16 }}><PriorityGlyph priority={p} /></span> {PRIORITY_META[p].label}
               </button>
             ))}
           </BulkMenuButton>
-          <BulkMenuButton label="Due" icon="calendar" iconOnly={isMobile} open={bulkMenu === "due"} onToggle={() => setBulkMenu((m) => m === "due" ? null : "due")}>
+          <BulkMenuButton label="Due" icon="calendar" iconOnly={iconBulk} open={bulkMenu === "due"} onToggle={() => setBulkMenu((m) => m === "due" ? null : "due")}>
             <button type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ dueDate: isoDay(0) })}><Icon name="calendar" size={16} /> Today</button>
             <button type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ dueDate: isoDay(1) })}><Icon name="calendar" size={16} /> Tomorrow</button>
             <button type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ dueDate: isoDay(7) })}><Icon name="calendar" size={16} /> Next week</button>
             <button type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ dueDate: undefined })}><Icon name="x" size={16} /> Clear due date</button>
           </BulkMenuButton>
           {members.length > 0 && (
-            <BulkMenuButton label="Assign" icon="user" iconOnly={isMobile} open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
+            <BulkMenuButton label="Assign" icon="user" iconOnly={iconBulk} open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
               {members.map((m) => (
                 <button key={m.id} type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ assigneeId: m.id })}>
                   <Avatar id={m.id} size={20} /> <span className="truncate">{m.name}</span>
@@ -1511,7 +1513,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
             </BulkMenuButton>
           )}
           {projects.length > 0 && (
-            <BulkMenuButton label="Project" icon="grid" iconOnly={isMobile} open={bulkMenu === "project"} onToggle={() => setBulkMenu((m) => m === "project" ? null : "project")}>
+            <BulkMenuButton label="Project" icon="grid" iconOnly={iconBulk} open={bulkMenu === "project"} onToggle={() => setBulkMenu((m) => m === "project" ? null : "project")}>
               {projects.map((p) => (
                 <button key={p.id} type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ projectId: p.id })}>
                   <ProjectDot color={p.color} /> <span className="truncate">{p.name}</span>
@@ -1519,7 +1521,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
               ))}
             </BulkMenuButton>
           )}
-          {onBulkDelete && <Button variant="ghost" size="sm" icon="trash" onClick={() => { onBulkDelete(ids); clearSel(); }} aria-label={isMobile ? "Delete selected tasks" : undefined} style={{ color: "var(--tv-signal)" }}>{!isMobile && "Delete"}</Button>}
+          {onBulkDelete && <Button variant="ghost" size="sm" icon="trash" onClick={() => { onBulkDelete(ids); clearSel(); }} aria-label={iconBulk ? "Delete selected tasks" : undefined} style={{ color: "var(--tv-signal)" }}>{!iconBulk && "Delete"}</Button>}
           <span className="ktv-float-sep" aria-hidden="true" />
           <IconButton icon="x" size="sm" label="Clear selection" onClick={clearSel} />
         </div>
@@ -1532,6 +1534,31 @@ export const bulkItemStyle: React.CSSProperties = {
   display: "flex", alignItems: "center", gap: 8, width: "100%", height: 32, padding: "0 8px", borderRadius: 6, border: "none",
   background: "transparent", cursor: "pointer", fontFamily: "var(--font-ui, var(--font-display))", fontSize: 13, fontWeight: 500, textAlign: "left", color: "var(--ink-2)",
 };
+
+/** The bulk bar and the key hints float at the bottom centre of the view's own column, not the
+ *  window's: a docked task panel (≥ 1280) or the sidebar would otherwise cover one end. The
+ *  column's edges go to CSS as --tv-float-l / --tv-float-r (read by .ktv-float). Returns true
+ *  while the column is too narrow for a labelled bulk bar on one line (the panel docked at 1280). */
+export function useFloatBounds(ref: React.RefObject<HTMLElement>, narrowBelow = 760): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const sync = () => {
+      const r = el.getBoundingClientRect();
+      if (!r.width) return; // not laid out (tests, hidden)
+      el.style.setProperty("--tv-float-l", `${Math.max(0, Math.round(r.left))}px`);
+      el.style.setProperty("--tv-float-r", `${Math.max(0, Math.round(window.innerWidth - r.right))}px`);
+      setNarrow(r.width < narrowBelow);
+    };
+    sync();
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(sync) : null;
+    ro?.observe(el);
+    window.addEventListener("resize", sync);
+    return () => { ro?.disconnect(); window.removeEventListener("resize", sync); };
+  }, [ref, narrowBelow]);
+  return narrow;
+}
 
 /** A bulk-bar button with an upward menu. The menu renders through Popover
  *  (portal), so a wrapping bar can't clip it. `iconOnly` suits phones. */

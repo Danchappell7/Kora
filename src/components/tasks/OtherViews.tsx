@@ -11,7 +11,7 @@ import {
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useListKeyboard, type ListKeyAction } from "../../hooks/useListKeyboard";
-import { BulkMenuButton, CustomChips } from "./ListView";
+import { BulkMenuButton, CustomChips, useFloatBounds } from "./ListView";
 import { parseDateText } from "../../lib/nlp";
 import {
   getProject, getMember, dueState, fmtDue, TAGS,
@@ -389,6 +389,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const canDrag = editable && !isMobile;
   const bulkEnabled = editable && !!onBulkPatch;
   const rootRef = useRef<HTMLDivElement>(null);
+  // phones, or a column squeezed by the docked task panel: the bulk bar's buttons are icons
+  const iconBulk = useFloatBounds(rootRef, 620) || isMobile;
   const hintId = useId();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
@@ -675,19 +677,19 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
         <div role="toolbar" aria-label="Bulk actions for selected tasks" className="ktv-float">
           <span className="ktv-float-count" aria-live="polite">{selIds.length} selected</span>
           <span className="ktv-float-sep" aria-hidden="true" />
-          <Button variant="ghost" size="sm" icon="check" onClick={() => applyBulk({ status: "done", completedAt: toLocalISO(new Date()) })}>Done</Button>
-          <BulkMenuButton label="Status" icon="layers" open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
+          <Button variant="ghost" size="sm" icon="check" onClick={() => applyBulk({ status: "done", completedAt: toLocalISO(new Date()) })} aria-label={iconBulk ? "Mark selected as done" : undefined}>{!iconBulk && "Done"}</Button>
+          <BulkMenuButton label="Status" icon="layers" iconOnly={iconBulk} open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
             {STATUS_ORDER.map((s) => (<button key={s} type="button" className="ktv-mi" onClick={() => applyBulk({ status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })}><StatusGlyph status={s} size={14} readOnly /> {STATUS_META[s].label}</button>))}
           </BulkMenuButton>
-          <BulkMenuButton label="Priority" icon="flag" open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
+          <BulkMenuButton label="Priority" icon="flag" iconOnly={iconBulk} open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
             {BULK_PRIORITIES.map((pr) => (<button key={pr} type="button" className="ktv-mi" onClick={() => applyBulk({ priority: pr })}><span style={{ display: "inline-grid", placeItems: "center", width: 16 }}><PriorityGlyph priority={pr} /></span> {PRIORITY_META[pr].label}</button>))}
           </BulkMenuButton>
           {members.length > 0 && (
-            <BulkMenuButton label="Assign" icon="user" open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
+            <BulkMenuButton label="Assign" icon="user" iconOnly={iconBulk} open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
               {members.map((m) => (<button key={m.id} type="button" className="ktv-mi" onClick={() => applyBulk({ assigneeId: m.id })}><Avatar id={m.id} size={20} /> {m.name}</button>))}
             </BulkMenuButton>
           )}
-          <Button variant="ghost" size="sm" icon="trash" onClick={() => { onBulkDelete?.(selIds); clearSel(); }} style={{ color: "var(--signal, var(--prio-urgent))" }}>Delete</Button>
+          <Button variant="ghost" size="sm" icon="trash" onClick={() => { onBulkDelete?.(selIds); clearSel(); }} aria-label={iconBulk ? "Delete selected tasks" : undefined} style={{ color: "var(--signal, var(--prio-urgent))" }}>{!iconBulk && "Delete"}</Button>
           <span className="ktv-float-sep" aria-hidden="true" />
           <IconButton icon="x" size="sm" label="Clear selection" onClick={clearSel} />
         </div>

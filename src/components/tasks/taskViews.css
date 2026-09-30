@@ -43,6 +43,11 @@
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
 }
+/* saved views: links to Search after the tabs (a hairline apart), styled as quiet tabs */
+.ktv-views { display: flex; align-items: stretch; gap: 20px; flex-shrink: 0; min-width: 0; margin-left: 2px; }
+.ktv-views::before { content: ""; flex-shrink: 0; align-self: center; width: 1px; height: 16px; margin-right: -6px; background: var(--hairline-strong); }
+.ktv-views .ktab { max-width: 160px; }
+.ktv-views .ktab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ktv-save { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .ktv-save-wrap { position: relative; display: inline-flex; align-items: center; }
 .ktv-save-kbd { position: absolute; right: 5px; display: inline-flex; pointer-events: none; }
@@ -53,8 +58,10 @@
 }
 .ktv-save-field::placeholder { color: var(--ink-4); }
 .ktv-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
-.ktv-tools .kbtn[data-on="true"] { color: var(--accent-text, var(--accent)); }
+.ktv-tools .kbtn[data-on="true"], .ktv-tools .kbtn[data-on="true"]:is(:hover, :active):not(:disabled) { color: var(--accent-text, var(--accent)); }
 .ktv-tools .kbtn[data-on="true"] svg { color: var(--accent-text, var(--accent)); }
+/* Filter while filters are on: the accent, hovered or not (on phones a tap leaves :hover behind) */
+.ktv-tools .kibtn[data-on="true"], .ktv-tools .kibtn[data-on="true"]:hover:not(:disabled) { color: var(--accent-text, var(--accent)); background: var(--tv-selected); }
 .ktv-tools .kbtn-label { display: inline-flex; align-items: center; overflow: visible; }
 .ktv-count {
   display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin-left: 6px; padding: 0 4px; border-radius: 999px;
@@ -192,8 +199,9 @@
 .ktv-gname[data-rename="true"] { cursor: text; }
 .ktv-gtools { display: flex; align-items: center; gap: 2px; margin-left: auto; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
 .ktv-ghead:hover .ktv-gtools, .ktv-ghead:focus-within .ktv-gtools { opacity: 1; }
-.ktv-flash > .ktv-ghead { animation: ktvFlash 1.1s var(--ease-out, var(--ease)); }
-@keyframes ktvFlash { 0%, 30% { background: color-mix(in oklab, var(--accent) 12%, var(--bg)); } }
+/* ?due=…: the group it names flashes once (160ms, the selected fill) as it scrolls into place */
+.ktv-flash > .ktv-ghead, .ktv-flash .ktv-row { animation: ktvFlash var(--d-2, 160ms) var(--ease-out, var(--ease)); }
+@keyframes ktvFlash { from { background: var(--tv-selected); } }
 
 /* the select boxes sit in the gutter, left of the status glyph */
 .ktv-sel {
@@ -246,11 +254,12 @@
 .ktv-title:focus-visible { outline-offset: 2px; }
 .ktv-row[data-done="true"] .ktv-title { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); text-decoration-thickness: 1px; }
 /* a done row is the struck title and the filled glyph, nothing else; the columns keep their place */
-.ktv-row .ktv-meta, .ktv-row .ktv-due > *, .ktv-row [data-row-priority] { transition: opacity var(--d-2, 160ms) var(--ease), visibility 0s linear 0s; }
+.ktv-row .ktv-meta, .ktv-row .ktv-proj > *, .ktv-row .ktv-due > *, .ktv-row [data-row-priority], .ktv-row .ktv-avatar > * { transition: opacity var(--d-2, 160ms) var(--ease), visibility 0s linear 0s; }
 .ktv-row[data-done="true"] .ktv-meta,
+.ktv-row[data-done="true"] .ktv-proj > *,
 .ktv-row[data-done="true"] .ktv-due > *,
-.ktv-row[data-done="true"] [data-row-priority] { opacity: 0; visibility: hidden; transition: opacity var(--d-2, 160ms) var(--ease), visibility 0s linear var(--d-2, 160ms); }
-.ktv-row[data-done="true"] .ktv-proj { opacity: 0.7; }
+.ktv-row[data-done="true"] [data-row-priority],
+.ktv-row[data-done="true"] .ktv-avatar > * { opacity: 0; visibility: hidden; transition: opacity var(--d-2, 160ms) var(--ease), visibility 0s linear var(--d-2, 160ms); }
 /* the strike sweeps across the title as a row is ticked off */
 @keyframes ktvStrike { from { background-size: 0% 1px; } }
 .ktv-row[data-done="true"] .ktv-title.ktv-strike {
@@ -318,6 +327,10 @@
 .ktv-trig:hover, .ktv-trig[aria-expanded="true"] { background: var(--tv-hover); }
 .ktv-trig[data-hidden="true"] { opacity: 0; }
 .ktv-row:hover .ktv-trig[data-hidden="true"], .ktv-trig[data-hidden="true"]:focus-visible, .ktv-trig[data-hidden="true"][aria-expanded="true"] { opacity: 1; }
+/* My tasks › Open: your own avatar on your own rows is noise, so it stays out of sight, hover
+   included. Reassigning is A (or Tab onto it, which shows it) and the task panel. */
+.ktv-trig[data-quiet="true"] { opacity: 0; pointer-events: none; }
+.ktv-trig[data-quiet="true"]:focus-visible, .ktv-trig[data-quiet="true"][aria-expanded="true"] { opacity: 1; pointer-events: auto; }
 .ktv-avatar { display: inline-grid; place-items: center; width: 24px; flex-shrink: 0; }
 .ktv-unassigned { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1.5px dashed var(--control-border, var(--hairline-strong)); color: var(--ink-4); box-sizing: border-box; }
 
@@ -378,9 +391,11 @@
 .ktv-skel-row > i:first-child { width: 16px; height: 16px; border-radius: 50%; }
 @keyframes ktvShimmer { 50% { opacity: 0.55; } }
 
-/* the bulk bar and the key hints float at the bottom centre */
+/* the bulk bar and the key hints float at the bottom centre of the view's column (useFloatBounds
+   sets its edges, so a docked task panel never covers them) */
 .ktv-float {
-  position: fixed; left: 12px; right: 12px; bottom: 20px; z-index: var(--z-popover, 60); width: fit-content; max-width: calc(100vw - 24px); margin-inline: auto;
+  position: fixed; left: calc(var(--tv-float-l, 0px) + 12px); right: calc(var(--tv-float-r, 0px) + 12px); bottom: 20px; z-index: var(--z-popover, 60);
+  width: fit-content; max-width: calc(100vw - var(--tv-float-l, 0px) - var(--tv-float-r, 0px) - 24px); margin-inline: auto;
   display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; padding: 4px;
   border-radius: var(--r-lg, 12px); background: var(--surface-raised); box-shadow: var(--e2, var(--shadow-lg));
   animation: ktvRise var(--d-2, 160ms) var(--ease-out, var(--ease));
@@ -432,7 +447,7 @@
   .ktv-row .ktv-due { width: auto; order: -1; }
   .ktv-row .ktv-due:empty, .ktv-row .ktv-due:has(.kdate[data-empty="true"]) { display: none; }
   .ktv-row .ktv-avatar { margin-left: auto; }
-  .ktv-row .ktv-trig[data-hidden="true"] { display: none; }
+  .ktv-row .ktv-trig:is([data-hidden="true"], [data-quiet="true"]):not([aria-expanded="true"]) { display: none; }
   .ktv-row .ktv-action { position: static; translate: none; padding: 0; background: none; -webkit-mask-image: none; mask-image: none; opacity: 1; pointer-events: auto; }
   .ktv-sel { display: none; }
   .ktv-list[data-selecting="true"] .ktv-row { grid-template-columns: 16px 20px minmax(0, 1fr); }
@@ -696,7 +711,9 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 }
 .ktv-cal-task:hover { background: var(--tv-hover); color: var(--ink); }
 .ktv-cal-task > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ktv-cal-task .kglyph { width: 14px; height: 14px; margin: 0; }
+/* a 12px glyph on the 20px task rows (the primitive draws 14/16/20, so the art is scaled here) */
+.ktv-cal-task .kglyph { width: 12px; height: 12px; margin: 0; }
+.ktv-cal-task .kglyph-art { width: 12px; height: 12px; }
 .ktv-cal-task[data-done="true"] > span:last-child { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
 .ktv-cal-task[draggable="true"] { cursor: grab; }
 .ktv-cal-event {
@@ -821,8 +838,8 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 
 @media (prefers-reduced-motion: reduce) {
   .ktv-row, .ktv-add, .ktv-card, .ktv-tl-bar, .ktv-gtitle .ktv-gchev, .ktv-subbtn svg,
-  .ktv-row .ktv-meta, .ktv-row .ktv-due > *, .ktv-row [data-row-priority] { transition: none !important; }
-  .ktv-flash > .ktv-ghead, .ktv-row.kland-row, .ktv-float, .ktv-skel-row > i, .ktv-row[data-done="true"] .ktv-title.ktv-strike { animation: none; }
+  .ktv-row .ktv-meta, .ktv-row .ktv-proj > *, .ktv-row .ktv-due > *, .ktv-row [data-row-priority], .ktv-row .ktv-avatar > * { transition: none !important; }
+  .ktv-flash > .ktv-ghead, .ktv-flash .ktv-row, .ktv-row.kland-row, .ktv-float, .ktv-skel-row > i, .ktv-row[data-done="true"] .ktv-title.ktv-strike { animation: none; }
   .ktv-row[data-glide="true"], .ktv-swipe-done, .ktv-swipe-done > svg { transition: none !important; }
   .ktv-swipe-done[data-armed="true"] > svg { scale: none; }
 }

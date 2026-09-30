@@ -52,6 +52,14 @@ type PageFilters = TaskFilters & { status?: string; section?: string };
 
 const readLocal = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 const writeLocal = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+/** the density Appearance last applied (<html data-density>), else its saved value */
+const readDensity = (): "comfortable" | "compact" => {
+  try {
+    const d = document.documentElement.getAttribute("data-density");
+    if (d === "compact" || d === "comfortable") return d;
+  } catch { /* no DOM */ }
+  return readLocal("kanbo-density") === "compact" ? "compact" : "comfortable";
+};
 
 /** A toggle chip (Filter presets, field values, Display choices). */
 function Chip({ on, onClick, children, label }: { on: boolean; onClick: () => void; children: ReactNode; label?: string }) {
@@ -162,15 +170,10 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     return s && BOARD_GROUPS.some((g) => g.id === s) ? s : "status";
   });
   const setBoardGroup = (g: BoardGroup) => { setBoardGroupState(g); writeLocal(BOARD_GROUP_KEY, g); };
-  const [localDensity, setLocalDensity] = useState<"comfortable" | "compact">(() => (readLocal("kanbo-density") === "compact" ? "compact" : "comfortable"));
-  const density = densityProp ?? localDensity;
-  const setDensity = (d: "comfortable" | "compact") => {
-    if (onDensity) { onDensity(d); return; }
-    setLocalDensity(d);
-    writeLocal("kanbo-density", d);
-    // the same switch as Settings › Appearance: every list follows at once
-    try { document.documentElement.setAttribute("data-density", d); } catch { /* no DOM */ }
-  };
+  // Density belongs to Settings › Appearance (App's appearance state). The page only reads it,
+  // and offers Display › Density when App hands it the setter: a copy of its own would be
+  // overwritten by App's next appearance save and leave Settings showing a stale value.
+  const density = densityProp ?? readDensity();
   const [sort, setSort] = useState<string>(() => readLocal("kanbo-sort") || "manual");
   useEffect(() => { writeLocal("kanbo-sort", sort); }, [sort]);
 
@@ -267,6 +270,12 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const toolsRef = useRef<HTMLDivElement>(null);
   const saveRef = useRef<HTMLDivElement>(null);
   const fullToolsW = useRef(0);
+  // Saved views open Search (another page), so they are links after the tablist, never tabs in
+  // it: arrowing along the tabs (which selects as it goes, and wraps) must not leave the page.
+  const shownSaved = isMy && onOpenSavedView ? (savedViews ?? []).slice(0, 4) : [];
+  const savedKey = shownSaved.map((v) => `${v.id}:${v.name}:${v.count}`).join("|");
+  const savedRef = useRef<HTMLElement>(null);
+  const savedW = useRef({ key: "", w: 0 });
   // 0: everything · 1: the title field folds into Filter · 2: and the tools become icons
   const [fold, setFold] = useState<0 | 1 | 2>(0);
   const foldRef = useRef(fold);
@@ -279,14 +288,19 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     const list = bar.querySelector<HTMLElement>(".ktabs-list");
     const cs = window.getComputedStyle(bar);
     const room = bar.clientWidth - parseFloat(cs.paddingLeft || "0") - parseFloat(cs.paddingRight || "0");
-    const tabsW = (list?.scrollWidth ?? 0) + 24;
+    // the saved views fold into the view menu with the tools; remember their width while they show
+    const sv = savedRef.current;
+    if (sv?.offsetWidth) savedW.current = { key: savedKey, w: sv.offsetWidth + 12 };
+    else if (savedW.current.key !== savedKey) savedW.current = { key: savedKey, w: shownSaved.reduce((n, v) => n + v.name.length * 7 + 40, shownSaved.length ? 16 : 0) };
+    const tabsW = (list?.scrollWidth ?? 0) + 24 + (shownSaved.length ? savedW.current.w : 0);
     const full = fullToolsW.current || (isMy ? 580 : 460);
     const without = full - 208; // the 200px title field and its gap
     // a little slack on the way back, so the row doesn't flicker at a boundary
     const slack = (level: 0 | 1 | 2) => (foldRef.current > level ? 16 : 0);
     const next: 0 | 1 | 2 = tabsW + full + slack(0) <= room ? 0 : tabsW + without + slack(1) <= room ? 1 : 2;
     if (next !== foldRef.current) setFold(next);
-  }, [isMy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMy, savedKey]);
   useEffect(() => {
     const el = barRef.current;
     if (!el || typeof ResizeObserver !== "function") return;
@@ -318,7 +332,6 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         { id: "open", label: "Open", count: openCount },
         { id: "waiting", label: "Waiting on", count: waitingCount || undefined },
         { id: "done", label: "Done" },
-        ...(savedViews ?? []).slice(0, 4).map((s) => ({ id: `view:${s.id}`, label: s.name, count: s.count, secondary: true })),
       ]
     : [
         ...VIEWS.filter((v) => !MORE_VIEWS.includes(v.id)).map((v) => ({ id: v.id, label: v.label })),
@@ -329,7 +342,6 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const rowKey = tabItems.map((t) => `${t.id}:${t.label}:${t.count ?? ""}`).join("|");
   const onTabChange = (id: string) => {
     if (id === "more") return; // its menu opens on click (below), never on arrow-key focus
-    if (id.startsWith("view:")) { onOpenSavedView?.(id.slice(5)); return; }
     if (!isMy && isTaskView(id) && !onTab) setView(id);
     setLocalTab(id);
     onTab?.(id);
@@ -372,6 +384,18 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
 
   useLayoutEffect(() => { fit(); }, [fit, rowKey, extraActive, saving, isMobile]);
 
+  const savedNav = shownSaved.length > 0 && !iconTools ? (
+    <nav ref={savedRef} className="ktv-views" aria-label="Saved views">
+      {shownSaved.map((v) => (
+        <button key={v.id} type="button" className="ktab" onClick={() => onOpenSavedView?.(v.id)}
+          aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`} title="Opens in Search">
+          <span className="ktab-label" data-label={v.name}>{v.name}</span>
+          <span className="ktab-count">{v.count}</span>
+        </button>
+      ))}
+    </nav>
+  ) : null;
+
   const findField = (wide: boolean) => (
     <div className="ktv-find" data-wide={wide || undefined}>
       <Icon name="search" size={14} sw={1.75} />
@@ -380,7 +404,13 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
       {search && <button type="button" className="ktv-find-clear" onClick={() => setSearch("")} aria-label="Clear search"><Icon name="x" size={14} sw={1.75} /></button>}
     </div>
   );
-  const filterLabel = filterActive ? `Filter · on, ${activeCount || 1} active` : "Filter";
+  // the name is "Filter" or "Filter · on"; how many are on is its description (and the pills row).
+  // Once the title field has folded into Filter, a title filter counts as one of them.
+  const titleInFilter = compactBar && q !== "";
+  const filterOn = filterActive || titleInFilter;
+  const filterLabel = filterOn ? "Filter · on" : "Filter";
+  const filterCountId = useId();
+  const filterCount = activeCount + (titleInFilter ? 1 : 0) || 1;
   const currentView = VIEWS.find((v) => v.id === shownView) ?? VIEWS[0];
   const exportList = shownTasks;
 
@@ -390,12 +420,14 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         ? <IconButton ref={viewBtn} icon={currentView.icon} size="sm" label={`View: ${currentView.label}`} onClick={() => setMenu((m) => (m === "view" ? null : "view"))} aria-haspopup="menu" aria-expanded={menu === "view"} />
         : <Button ref={viewBtn} variant="secondary" size="sm" icon={currentView.icon} iconRight="chevronDown" onClick={() => setMenu((m) => (m === "view" ? null : "view"))} aria-haspopup="menu" aria-expanded={menu === "view"} aria-label={`View: ${currentView.label}`}>{currentView.label}</Button>)}
       {!compactBar && findField(false)}
+      {filterOn && <span id={filterCountId} className="sr-only">{filterCount} {filterCount === 1 ? "filter" : "filters"} on</span>}
       {iconTools
-        ? <IconButton ref={filterBtn} icon="filter" size="sm" label={filterLabel} badge={filterActive ? activeCount || true : undefined} pressed={filterActive || undefined} onClick={() => setMenu((m) => (m === "filter" ? null : "filter"))} aria-haspopup="dialog" aria-expanded={menu === "filter"} />
+        ? <IconButton ref={filterBtn} icon="filter" size="sm" label={filterLabel} badge={filterOn || undefined} data-on={filterOn || undefined}
+            aria-describedby={filterOn ? filterCountId : undefined} onClick={() => setMenu((m) => (m === "filter" ? null : "filter"))} aria-haspopup="dialog" aria-expanded={menu === "filter"} />
         : (
-          <Button ref={filterBtn} variant="ghost" size="sm" icon="filter" data-on={filterActive || undefined} aria-label={filterLabel}
+          <Button ref={filterBtn} variant="ghost" size="sm" icon="filter" data-on={filterOn || undefined} aria-label={filterLabel} aria-describedby={filterOn ? filterCountId : undefined}
             onClick={() => setMenu((m) => (m === "filter" ? null : "filter"))} aria-haspopup="dialog" aria-expanded={menu === "filter"}>
-            Filter{filterActive && <span className="ktv-count" aria-hidden="true">{activeCount || 1}</span>}
+            Filter{filterOn && <span className="ktv-count" aria-hidden="true">{filterCount}</span>}
           </Button>
         )}
       {iconTools
@@ -532,10 +564,12 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
               <Chip on={smart} onClick={() => setSmart((v) => !v)} label="Kanbo's order">Kanbo's order</Chip>
             </div>
           </PopSection>
-          <PopSection title="Density">
-            <Segmented ariaLabel="Density" value={density} onChange={setDensity}
-              options={[{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }]} />
-          </PopSection>
+          {onDensity && (
+            <PopSection title="Density">
+              <Segmented ariaLabel="Density" value={density} onChange={onDensity}
+                options={[{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }]} />
+            </PopSection>
+          )}
         </>
       )}
       {shownView === "board" && (
@@ -651,6 +685,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
           if (more) { moreTab.current = more; setMenu((m) => (m === "more" ? null : "more")); }
         }}>
         <Tabs items={tabItems} value={tabValue} onChange={onTabChange} label={isMy ? "My tasks" : "Project views"} />
+        {savedNav}
         {!compactBar && saveControl}
         {tools}
       </div>
@@ -682,6 +717,18 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
               <Icon name={v.icon} size={16} sw={1.75} /> {v.label}{shownView === v.id && <span className="ktv-mi-end"><Icon name="check" size={14} sw={2.2} /></span>}
             </button>
           ))}
+          {iconTools && shownSaved.length > 0 && (
+            <>
+              <div className="ktv-msep" role="separator" />
+              <div className="ktv-mlabel" aria-hidden="true">Saved views</div>
+              {shownSaved.map((v) => (
+                <button key={v.id} type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); onOpenSavedView?.(v.id); }}
+                  aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`}>
+                  <Icon name="filter" size={16} sw={1.75} /> <span className="truncate">{v.name}</span><span className="ktv-mi-end">{v.count}</span>
+                </button>
+              ))}
+            </>
+          )}
         </Popover>
       )}
       {menu === "more" && (
