@@ -2,7 +2,8 @@
    KANBO — Plan my day (white-glass, time-native hero)
    Day canvas + intake + NL capture + AI auto-plan.
    ============================================================ */
-import { useState, useEffect, useRef, useMemo, useCallback, useId } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, useId } from "react";
+import { flushSync } from "react-dom";
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, CSSProperties, RefObject } from "react";
 import { Icon } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -15,9 +16,9 @@ import {
 import type { Task, CalEvent, EnergyKind, ExternalEvent } from "../../data/types";
 import {
   durOf, energyKindOf, energyMetaOf, layoutLanes, mergeIntervals, totalMinutes,
-  localDayKey, staleBlockIds, readPlanDay, writePlanDay, readCarry, writeCarry, nextCarry, carryLabel,
+  localDayKey, planSeenKey, readSeen, writeSeen, carryOver, recordSeen, markSeen, touchSeen, carryLabel,
 } from "./planCanvas";
-import type { Lane, Carry } from "./planCanvas";
+import type { Lane, SeenMap } from "./planCanvas";
 
 const PXM = 1.0; // px per minute
 const SNAP = 5;
@@ -109,6 +110,8 @@ interface DragState {
   x0: number;
   y0: number;
   touch: boolean;
+  /** only this pointer moves or drops the block (a second finger can't) */
+  pointerId: number;
 }
 
 export function EnergyChip({ energy, small }: { energy: EnergyKind; small?: boolean }) {
@@ -499,7 +502,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   const pendingRef = useRef<(() => void) | null>(null);
   const pointerRef = useRef({ x: 0, y: 0 });
   const movedRef = useRef(0);
-  const lastDragEndRef = useRef(0);
+  const lastDragEndRef = useRef(-Infinity); // no drag has ended yet — a click right after load still opens
   const kbRef = useRef(kb); kbRef.current = kb;
   const kbTimer = useRef(0);
   const revealRef = useRef<{ id: string; focus: boolean } | null>(null);
@@ -567,29 +570,37 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
     announce(`Brought ${slipped.length} due and overdue task${slipped.length === 1 ? "" : "s"} into Intake.`);
   }, [slipped, onUpdate, announce]);
 
-  /* ----- new day: offer to carry over or clear an earlier day's unfinished blocks ----- */
-  const [carry, setCarryState] = useState<Carry | null>(() => { const c = readCarry(); return c && c.day === localDayKey() ? c : null; });
-  const carryRef = useRef(carry); carryRef.current = carry;
-  const setCarry = useCallback((c: Carry | null) => { carryRef.current = c; setCarryState(c); writeCarry(c); }, []);
-  const loaded = tasks.length > 0;
+  /* ----- new day: offer to carry over or clear an earlier day's unfinished blocks -----
+     This device remembers the day and time it last saw each of my blocks
+     (planCanvas.recordSeen); a block it saw on an earlier day, still at the same
+     time, is left over from that day's plan. */
+  const seenKey = planSeenKey(me);
+  const [seenState, setSeenState] = useState(() => ({ key: seenKey, map: readSeen(seenKey) }));
+  const seenRef = useRef(seenState); seenRef.current = seenState;
+  const saveSeen = useCallback((key: string, map: SeenMap) => {
+    const st = { key, map };
+    seenRef.current = st; setSeenState(st); writeSeen(key, map);
+  }, []);
   useEffect(() => {
-    if (!loaded) return; // wait for the tasks, or an empty first frame would mark the day as handled
-    const { carry: c, markDay } = nextCarry(day, readPlanDay(), readCarry(), staleBlockIds(tasksRef.current, me));
-    if (markDay) writePlanDay(day);
-    carryRef.current = c; setCarryState(c); writeCarry(c);
-  }, [loaded, day, me]);
-  const dropFromCarry = useCallback((ids: string[]) => {
-    const c = carryRef.current;
-    if (!c || !ids.some((id) => c.ids.includes(id))) return;
-    const next = { ...c, ids: c.ids.filter((x) => !ids.includes(x)) };
-    setCarry(next.ids.length ? next : null);
-  }, [setCarry]);
-  const carryTasks = carry ? planTasks.filter((t) => carry.ids.includes(t.id) && isPlaced(t) && (!me || t.assigneeId === me)) : [];
-  const resolveCarry = (mode: "carry" | "clear") => {
-    const list = carryTasks.map((t) => ({ id: t.id, scheduled: t.scheduled ?? null }));
-    if (list.length === 0) { setCarry(null); return; }
+    const cur = seenRef.current.key === seenKey ? seenRef.current.map : readSeen(seenKey); // another person signed in
+    const next = recordSeen(cur, tasks, day, me);
+    if (next) saveSeen(seenKey, next);
+    else if (seenRef.current.key !== seenKey) { const st = { key: seenKey, map: cur }; seenRef.current = st; setSeenState(st); }
+  }, [tasks, day, me, seenKey, saveSeen]);
+  // a block that's moved or taken off the day is no longer left over
+  const touchBlock = useCallback((id: string, at: number | null) => {
+    const { key, map } = seenRef.current;
+    const next = touchSeen(map, id, at, localDayKey());
+    if (next) saveSeen(key, next);
+  }, [saveSeen]);
+  const carry = seenState.key === seenKey ? carryOver(planTasks, seenState.map, day, me) : { ids: [] as string[], from: null };
+  const carryTasks = planTasks.filter((t) => carry.ids.includes(t.id));
+  const resolveCarry = (mode: "carry" | "clear" | "keep") => {
+    const list = carryTasks.map((t) => ({ id: t.id, scheduled: t.scheduled! }));
+    // answered for today: an Undo that puts a block back where it was won't re-prompt
+    saveSeen(seenRef.current.key, markSeen(seenRef.current.map, list.map((p) => ({ id: p.id, at: p.scheduled })), day));
+    if (mode === "keep" || list.length === 0) return;
     list.forEach((p) => onUpdate(p.id, mode === "carry" ? { scheduled: null } : { scheduled: null, planToday: false }));
-    setCarry(null);
     const noun = `${list.length} block${list.length === 1 ? "" : "s"}`;
     const msg = mode === "carry" ? `Moved ${noun} back to Intake to re-plan.` : `Cleared ${noun} from today.`;
     if (toast) toast.action(msg, "Undo", () => list.forEach((p) => onUpdate(p.id, { scheduled: p.scheduled, planToday: true })), 8000);
@@ -601,15 +612,15 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   const flashPlaced = useCallback((id: string) => { setJustPlaced(id); window.setTimeout(() => setJustPlaced((cur) => (cur === id ? null : cur)), 500); }, []);
   const place = useCallback((id: string, start: number, title: string, dur: number) => {
     onUpdate(id, { scheduled: start });
-    dropFromCarry([id]);
+    touchBlock(id, start);
     flashPlaced(id);
     announce(`Planned “${title}” for ${fmtClockRange(start, start + dur)}.`);
-  }, [onUpdate, dropFromCarry, flashPlaced, announce]);
+  }, [onUpdate, touchBlock, flashPlaced, announce]);
   const unschedule = useCallback((id: string, title: string) => {
     onUpdate(id, { scheduled: null });
-    dropFromCarry([id]);
+    touchBlock(id, null);
     announce(`Moved “${title}” back to Intake.`);
-  }, [onUpdate, dropFromCarry, announce]);
+  }, [onUpdate, touchBlock, announce]);
 
   const removeFromDay = useCallback((id: string, viaKeyboard: boolean) => {
     const t = tasksRef.current.find((x) => x.id === id); if (!t) return;
@@ -626,12 +637,12 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
       next = sib?.querySelector<HTMLElement>("[data-intake-open]") ?? null;
     }
     onUpdate(task.id, { planToday: false });
-    dropFromCarry([task.id]);
+    touchBlock(task.id, null);
     const msg = `Took “${task.title}” off today.`;
     if (toast) toast.action(msg, "Undo", () => onUpdate(task.id, { planToday: true }));
     else announce(msg);
     if (viaKeyboard) requestAnimationFrame(() => (next ?? intakeHeadingRef.current)?.focus());
-  }, [onUpdate, dropFromCarry, toast, announce]);
+  }, [onUpdate, touchBlock, toast, announce]);
 
   // a newly placed block scrolls into view; from the keyboard it also takes focus
   useEffect(() => {
@@ -671,7 +682,6 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
       const placed = planDay(todo, [...dayEvents, ...busy]);
       const ids = Object.keys(placed);
       ids.forEach((id) => onUpdate(id, { scheduled: placed[id] }));
-      if (ids.length) dropFromCarry(ids);
       const n = ids.length, leftover = todo.length - n;
       setPlanning(false);
       const rest = leftover ? ` ${leftover} didn’t fit today, so ${leftover === 1 ? "it stays" : "they stay"} in Intake.` : "";
@@ -679,7 +689,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
         ? `Planned ${n} task${n === 1 ? "" : "s"} around your meetings — deep work up front, lighter work after lunch.${rest}`
         : `Nothing more fits in what’s left of today.${rest}`);
     }, reduceMotion ? 0 : 850);
-  }, [onUpdate, dayEvents, dropFromCarry, showToast, reduceMotion]);
+  }, [onUpdate, dayEvents, showToast, reduceMotion]);
 
   /* ----- keyboard: move a focused block by 15 minutes (Shift: an hour), Delete to unplan ----- */
   const flushKb = useCallback(() => {
@@ -691,8 +701,8 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
     const focused = (document.activeElement as HTMLElement | null)?.dataset?.blockId === k.id;
     if (focused) revealRef.current = { id: k.id, focus: true }; // re-sorting can move the node; keep focus on it
     onUpdate(k.id, { scheduled: k.start });
-    dropFromCarry([k.id]);
-  }, [onUpdate, dropFromCarry]);
+    touchBlock(k.id, k.start);
+  }, [onUpdate, touchBlock]);
   const flushKbRef = useRef(flushKb); flushKbRef.current = flushKb;
   useEffect(() => () => flushKbRef.current(), []); // leaving the view saves a pending nudge
   const onBlockKey = useCallback((ev: ReactKeyboardEvent, task: Task) => {
@@ -753,7 +763,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
     const grab = source === "canvas" && task.scheduled != null ? y0 - ((task.scheduled - DAY_START) * PXM + top) : 16;
     const base: DragState = {
       taskId: task.id, dur: durOf(task), title: task.title, energy: energyKindOf(task), source, grab,
-      origin: source === "canvas" ? task.scheduled ?? null : null, x0, y0, touch,
+      origin: source === "canvas" ? task.scheduled ?? null : null, x0, y0, touch, pointerId: pid,
     };
     let last = { x: x0, y: y0 };
     let timer = 0;
@@ -764,7 +774,16 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
       window.removeEventListener("pointercancel", onEnd);
       pendingRef.current = null;
     };
-    const go = () => { cleanup(); activate(base, last.x, last.y); };
+    const go = () => {
+      cleanup();
+      // a finger picks the block up where it is when the long-press fires, so the
+      // wobble while holding can't nudge it (a hold released in place writes nothing)
+      const b = touch ? { ...base, x0: last.x, y0: last.y, grab: base.origin != null ? base.grab + (last.y - y0) : base.grab } : base;
+      // render the drag now, so its own move/release listeners are attached before
+      // the next pointer event — a release in between would otherwise be lost and
+      // leave the block stuck to the pointer
+      flushSync(() => activate(b, last.x, last.y));
+    };
     function onMove(ev: PointerEvent) {
       if (ev.pointerId !== pid) return;
       last = { x: ev.clientX, y: ev.clientY };
@@ -782,7 +801,8 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   }, [drag, activate]);
   useEffect(() => () => pendingRef.current?.(), []);
 
-  useEffect(() => {
+  // a layout effect, so the listeners are in place as soon as the drag renders (see go())
+  useLayoutEffect(() => {
     if (!drag) return;
     let ended = false, raf = 0;
     const update = (x: number, y: number) => {
@@ -806,14 +826,16 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
       touchDragRef.current = false;
       setDrag(null); setPreviewStart(null); setOverRail(false);
     };
+    const mine = (e: PointerEvent) => e.pointerId === drag.pointerId;
     const move = (e: PointerEvent) => {
+      if (!mine(e)) return;
       pointerRef.current = { x: e.clientX, y: e.clientY };
       movedRef.current = Math.max(movedRef.current, Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0));
       setPointer(pointerRef.current);
       update(e.clientX, e.clientY);
     };
-    const up = (e: PointerEvent) => finish(true, e);
-    const cancel = () => finish(false);
+    const up = (e: PointerEvent) => { if (mine(e)) finish(true, e); };
+    const cancel = (e: PointerEvent) => { if (mine(e)) finish(false); };
     const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); } };
     // no long-press context menu mid-drag
     const block = (e: Event) => { if (e.cancelable) e.preventDefault(); };
@@ -879,9 +901,9 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
       <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
         <div style={{ padding: "16px 24px 12px" }}><PlanCapture onCapture={onCreate} inputRef={captureRef} hint={!isMobile} /></div>
-        {carry && carryTasks.length > 0 && (
+        {carryTasks.length > 0 && (
           <CarryBanner label={carryLabel(carry.from, day)} count={carryTasks.length}
-            onCarry={() => resolveCarry("carry")} onClear={() => resolveCarry("clear")} onKeep={() => setCarry(null)} />
+            onCarry={() => resolveCarry("carry")} onClear={() => resolveCarry("clear")} onKeep={() => resolveCarry("keep")} />
         )}
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px 11px", padding: "0 24px 8px" }}>
           <h2 ref={dayHeadingRef} tabIndex={-1} style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.02em" }}>Your day</h2>

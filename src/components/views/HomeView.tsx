@@ -7,6 +7,7 @@ import { Sparkline } from "../charts";
 import { getProject, projectProgress, dueState, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, IconName } from "../../data/types";
 import type { Route } from "../../app-types";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 const kbdStyle = { fontSize: 11.5, padding: "1px 6px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-2)" } as const;
 
@@ -62,6 +63,8 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
 export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam }: {
   tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
 }) {
+  // phones and tablets have no q key to press — point them at a button instead
+  const touchOnly = useMediaQuery("(hover: none)");
   const open = tasks.filter((t) => t.status !== "done");
   const counts = {
     todo: tasks.filter((t) => t.status === "todo").length,
@@ -104,7 +107,9 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
           <div style={{ display: "inline-flex", padding: 14, borderRadius: 16, background: "var(--accent-dim)", color: "var(--accent)", marginBottom: 16 }}><Icon name="sparkles" size={24} /></div>
           <h2 style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 8 }}>Welcome to Kanbo{firstName !== "there" ? `, ${firstName}` : ""} 👋</h2>
           <p style={{ fontSize: 15, lineHeight: 1.55, color: "var(--ink-3)", margin: "0 auto 28px", maxWidth: 460 }}>
-            Your workspace is a clean slate. Pick a starting point below, or press <kbd className="mono" style={kbdStyle}>q</kbd> to capture a task.
+            {touchOnly
+              ? <>Your workspace is a clean slate. Pick a starting point below — <strong style={{ fontWeight: 600, color: "var(--ink-2)" }}>Add your first task</strong> is the quickest way in.</>
+              : <>Your workspace is a clean slate. Pick a starting point below, or press <kbd className="mono" style={kbdStyle}>q</kbd> to capture a task.</>}
           </p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, textAlign: "left" }}>
             {starters.map((s) => (
@@ -122,7 +127,9 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
             ))}
           </div>
           <p style={{ fontSize: 12.5, color: "var(--ink-4)", marginTop: 22 }}>
-            Tip: press <kbd className="mono" style={kbdStyle}>q</kbd> anywhere to capture — try <span className="mono" style={{ color: "var(--ink-3)" }}>“Pay invoice tomorrow 30m !high”</span>.
+            {touchOnly
+              ? <>Tip: write tasks the way you'd say them — try</>
+              : <>Tip: press <kbd className="mono" style={kbdStyle}>q</kbd> anywhere to capture — try</>} <span className="mono" style={{ color: "var(--ink-3)" }}>“Pay invoice tomorrow 30m !high”</span>.
           </p>
         </div>
       </div>

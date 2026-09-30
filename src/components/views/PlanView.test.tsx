@@ -2,8 +2,23 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { PlanView } from "./PlanView";
 import { ToastProvider } from "../Toast";
-import { localDayKey, PLAN_DAY_KEY, PLAN_CARRY_KEY } from "./planCanvas";
+import { localDayKey, planSeenKey, writeSeen } from "./planCanvas";
+import type { SeenMap } from "./planCanvas";
 import type { Task } from "../../data/types";
+
+// jsdom has no PointerEvent: without one, pointerId/pointerType/button never reach
+// the handlers and the drag code is never exercised
+if (typeof window.PointerEvent === "undefined") {
+  class PointerEventPolyfill extends MouseEvent {
+    pointerId: number; pointerType: string;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 1;
+      this.pointerType = init.pointerType ?? "mouse";
+    }
+  }
+  (window as unknown as { PointerEvent: typeof PointerEventPolyfill }).PointerEvent = PointerEventPolyfill;
+}
 
 const task = (o: Partial<Task>): Task => ({
   id: "t", title: "x", description: "", status: "todo", priority: "medium",
@@ -24,8 +39,15 @@ function renderPlan(tasks: Task[], extra: Partial<Parameters<typeof PlanView>[0]
   return { ...utils, onUpdate, onOpen };
 }
 
-beforeEach(() => { localStorage.clear(); localStorage.setItem(PLAN_DAY_KEY, localDayKey()); });
-afterEach(() => { vi.useRealTimers(); });
+const seed = (map: SeenMap, me = "m-self") => writeSeen(planSeenKey(me), map);
+const seenYesterday = (...pairs: [string, number][]): SeenMap => Object.fromEntries(pairs.map(([id, at]) => [id, { day: yesterday(), at }]));
+
+// restore only our own spies (restoreAllMocks would also wipe the global matchMedia mock)
+const spies: { mockRestore: () => void }[] = [];
+const spy = <T extends { mockRestore: () => void }>(s: T): T => { spies.push(s); return s; };
+
+beforeEach(() => { localStorage.clear(); });
+afterEach(() => { vi.useRealTimers(); spies.splice(0).forEach((s) => s.mockRestore()); });
 
 describe("PlanView", () => {
   it("doesn't crash on a quick-added task with no energy or duration", () => {
@@ -45,16 +67,6 @@ describe("PlanView", () => {
     ]);
     expect(screen.getByText("Still to do")).toBeInTheDocument();
     expect(screen.queryByText("Already done")).not.toBeInTheDocument();
-  });
-
-  it("opens a block on click without writing anything", () => {
-    const { onUpdate, onOpen } = renderPlan([task({ id: "b1", title: "Write brief", planToday: true, scheduled: 9 * 60 + 7 })]);
-    const btn = screen.getByRole("button", { name: /^Write brief,/ });
-    fireEvent.pointerDown(btn, { button: 0, pointerType: "mouse", clientX: 100, clientY: 100 });
-    fireEvent.pointerUp(window, { pointerType: "mouse", clientX: 100, clientY: 100 });
-    fireEvent.click(btn);
-    expect(onOpen).toHaveBeenCalledWith("b1");
-    expect(onUpdate).not.toHaveBeenCalled();
   });
 
   it("'Not today' takes a card off today's list", () => {
@@ -79,7 +91,7 @@ describe("PlanView", () => {
   });
 
   it("offers to carry over yesterday's unfinished blocks — mine only", () => {
-    localStorage.setItem(PLAN_DAY_KEY, yesterday());
+    seed(seenYesterday(["a", 9 * 60], ["b", 11 * 60], ["c", 13 * 60], ["d", 14 * 60]));
     const { onUpdate } = renderPlan([
       task({ id: "a", title: "A", planToday: true, scheduled: 9 * 60 }),
       task({ id: "b", title: "B", planToday: true, scheduled: 11 * 60 }),
@@ -93,31 +105,93 @@ describe("PlanView", () => {
     expect(onUpdate).toHaveBeenCalledWith("a", { scheduled: null });
     expect(onUpdate).toHaveBeenCalledWith("b", { scheduled: null });
     expect(screen.queryByRole("region", { name: /Unfinished blocks/ })).not.toBeInTheDocument();
-    expect(localStorage.getItem(PLAN_DAY_KEY)).toBe(localDayKey());
-    // Undo puts them back where they were
+    // Undo puts them back where they were — and the prompt stays answered
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(onUpdate).toHaveBeenCalledWith("a", { scheduled: 9 * 60, planToday: true });
+    expect(screen.queryByRole("region", { name: /Unfinished blocks/ })).not.toBeInTheDocument();
   });
 
   it("Clear takes yesterday's blocks off today entirely", () => {
-    localStorage.setItem(PLAN_DAY_KEY, yesterday());
+    seed(seenYesterday(["a", 9 * 60]));
     const { onUpdate } = renderPlan([task({ id: "a", title: "A", planToday: true, scheduled: 9 * 60 })]);
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(onUpdate).toHaveBeenCalledWith("a", { scheduled: null, planToday: false });
   });
 
-  it("doesn't prompt again the same day, and keeps a pending prompt across visits", () => {
-    localStorage.setItem(PLAN_DAY_KEY, yesterday());
+  it("keeps a pending prompt across visits, and Keep answers it for the day", () => {
+    seed(seenYesterday(["a", 9 * 60]));
     const tasks = [task({ id: "a", title: "A", planToday: true, scheduled: 9 * 60 })];
     const first = renderPlan(tasks);
     expect(screen.getByText(/1 unfinished block/)).toBeInTheDocument();
     first.unmount();
-    expect(JSON.parse(localStorage.getItem(PLAN_CARRY_KEY) || "{}").ids).toEqual(["a"]);
-    renderPlan(tasks);
+    const second = renderPlan(tasks);
     expect(screen.getByText(/1 unfinished block/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Keep them where they are" }));
     expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
-    expect(localStorage.getItem(PLAN_CARRY_KEY)).toBeNull();
+    second.unmount();
+    renderPlan(tasks);
+    expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
+  });
+
+  it("the first open on a device (or after an update) never offers today's plan", () => {
+    const tasks = [task({ id: "a", title: "A", planToday: true, scheduled: 9 * 60 })];
+    const first = renderPlan(tasks);
+    expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
+    first.unmount();
+    renderPlan(tasks);
+    expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(planSeenKey("m-self")) || "{}").a).toEqual({ day: localDayKey(), at: 9 * 60 });
+  });
+
+  it("never offers blocks planned today elsewhere, or moved since", () => {
+    seed(seenYesterday(["old", 9 * 60], ["moved", 13 * 60]));
+    renderPlan([
+      task({ id: "old", title: "Old", planToday: true, scheduled: 9 * 60 }),
+      task({ id: "fresh", title: "Planned on my phone", planToday: true, scheduled: 10 * 60 }),
+      task({ id: "moved", title: "Moved", planToday: true, scheduled: 14 * 60 }),
+    ]);
+    expect(screen.getByText(/Yesterday's plan: 1 unfinished block$/)).toBeInTheDocument();
+  });
+
+  it("offers each workspace's leftovers, whichever workspace Plan is opened in first", () => {
+    seed(seenYesterday(["p1", 9 * 60], ["w1", 10 * 60], ["w2", 11 * 60]));
+    const personal = [task({ id: "p1", title: "Personal", planToday: true, scheduled: 9 * 60, workspaceId: null })];
+    const team = [
+      task({ id: "w1", title: "Team 1", planToday: true, scheduled: 10 * 60, workspaceId: "ws-team" }),
+      task({ id: "w2", title: "Team 2", planToday: true, scheduled: 11 * 60, workspaceId: "ws-team" }),
+    ];
+    const onUpdate = vi.fn();
+    const el = (tasks: Task[]) => (
+      <ToastProvider>
+        <PlanView tasks={tasks} onUpdate={onUpdate} onCreate={vi.fn()} onOpen={vi.fn()} calendarConnected externalEvents={[]} currentUserId="m-self" />
+      </ToastProvider>
+    );
+    const { rerender } = render(el(personal));
+    expect(screen.getByText(/Yesterday's plan: 1 unfinished block/)).toBeInTheDocument();
+    rerender(el(team));
+    expect(screen.getByText(/Yesterday's plan: 2 unfinished blocks/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Carry over" }));
+    expect(onUpdate).toHaveBeenCalledWith("w1", { scheduled: null });
+    expect(onUpdate).toHaveBeenCalledWith("w2", { scheduled: null });
+    // …and Personal's prompt is still waiting when you switch back
+    rerender(el(personal));
+    expect(screen.getByText(/Yesterday's plan: 1 unfinished block/)).toBeInTheDocument();
+  });
+
+  it("keeps each person's record apart on a shared computer", () => {
+    seed(seenYesterday(["a", 9 * 60]), "u-dan");
+    renderPlan([task({ id: "a", title: "A", planToday: true, scheduled: 9 * 60, assigneeId: "u-sam" })], { currentUserId: "u-sam" });
+    expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
+  });
+
+  it("with storage blocked, today's plan is never offered as an earlier one", () => {
+    spy(vi.spyOn(Storage.prototype, "getItem")).mockImplementation(() => { throw new Error("blocked"); });
+    spy(vi.spyOn(Storage.prototype, "setItem")).mockImplementation(() => { throw new Error("blocked"); });
+    const tasks = [task({ id: "a", title: "A", planToday: true, scheduled: 9 * 60 })];
+    const first = renderPlan(tasks, { currentUserId: "u-blocked" });
+    first.unmount();
+    renderPlan(tasks, { currentUserId: "u-blocked" });
+    expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
   });
 
   it("announces plan updates in a live region and points capture at q", () => {
@@ -126,5 +200,131 @@ describe("PlanView", () => {
     expect(screen.queryByText("⌘K")).not.toBeInTheDocument();
     fireEvent.keyDown(document.body, { key: "q" });
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: /Capture a task/ }));
+  });
+});
+
+/* ---------- pointer drags ---------- */
+describe("PlanView drag and drop", () => {
+  // day canvas on the left (0–780px, 1px per minute from 7am), Intake rail on the right
+  beforeEach(() => {
+    localStorage.setItem(planSeenKey("m-self"), JSON.stringify({ b1: { day: localDayKey(), at: 9 * 60 } }));
+    spy(vi.spyOn(Element.prototype, "getBoundingClientRect")).mockImplementation(function (this: Element) {
+      const r = this.tagName === "ASIDE" ? { left: 800, right: 1140, top: 0, bottom: 900 } : { left: 0, right: 780, top: 0, bottom: 900 };
+      return { ...r, x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top, toJSON() { return r; } } as DOMRect;
+    });
+  });
+
+  // the 9am block's top edge is at y=120; presses land 10px into it
+  const setup = () => {
+    const utils = renderPlan([task({ id: "b1", title: "Write brief", planToday: true, scheduled: 9 * 60 })]);
+    return { ...utils, btn: screen.getByRole("button", { name: /^Write brief,/ }) };
+  };
+  const on = (type: string, x: number, y: number, o: { pointerType?: string; pointerId?: number } = {}) =>
+    window.dispatchEvent(new window.PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: o.pointerId ?? 1, pointerType: o.pointerType ?? "mouse" }));
+  const press = (el: Element, x: number, y: number, o: { pointerType?: string; pointerId?: number } = {}) =>
+    fireEvent.pointerDown(el, { clientX: x, clientY: y, button: 0, pointerId: o.pointerId ?? 1, pointerType: o.pointerType ?? "mouse" });
+  const dragging = () => document.querySelectorAll(".dragging").length > 0;
+
+  it("a click opens the block and writes nothing", () => {
+    const { btn, onUpdate, onOpen } = setup();
+    press(btn, 100, 130);
+    act(() => { on("pointerup", 100, 130); });
+    fireEvent.click(btn);
+    expect(onOpen).toHaveBeenCalledWith("b1");
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a mouse wobble of 4px or less is still a click", () => {
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130);
+    act(() => { on("pointermove", 102, 133); });
+    expect(dragging()).toBe(false);
+    act(() => { on("pointerup", 102, 133); });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("dragging a block to a new time writes it once", () => {
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130);
+    act(() => { on("pointermove", 100, 136); });
+    expect(dragging()).toBe(true);
+    act(() => { on("pointermove", 100, 190); });
+    act(() => { on("pointerup", 100, 190); });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith("b1", { scheduled: 10 * 60 });
+    expect(dragging()).toBe(false);
+  });
+
+  it("dropping it back in the same slot writes nothing", () => {
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130);
+    act(() => { on("pointermove", 100, 140); });
+    act(() => { on("pointermove", 100, 131); });
+    act(() => { on("pointerup", 100, 131); });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("Escape and pointercancel abort a drag without writing", () => {
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130);
+    act(() => { on("pointermove", 100, 190); });
+    act(() => { fireEvent.keyDown(window, { key: "Escape" }); });
+    expect(dragging()).toBe(false);
+    act(() => { on("pointerup", 100, 190); });
+    press(btn, 100, 130);
+    act(() => { on("pointermove", 100, 190); });
+    act(() => { on("pointercancel", 100, 190); });
+    expect(dragging()).toBe(false);
+    act(() => { on("pointerup", 100, 190); });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a release that lands straight after the drag starts is never lost", () => {
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130);
+    // the move that starts the drag and the release arrive before React would normally re-render
+    act(() => { on("pointermove", 100, 136); on("pointerup", 100, 136); });
+    expect(dragging()).toBe(false);
+    const writes = onUpdate.mock.calls.length;
+    // the next click anywhere else must not drop (or unplan) the block
+    act(() => { on("pointerup", 2000, 300); });
+    expect(onUpdate.mock.calls.length).toBe(writes);
+    expect(onUpdate).not.toHaveBeenCalledWith("b1", { scheduled: null });
+  });
+
+  it("touch: a swipe scrolls the day instead of picking the block up", () => {
+    vi.useFakeTimers();
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130, { pointerType: "touch", pointerId: 7 });
+    act(() => { on("pointermove", 100, 150, { pointerType: "touch", pointerId: 7 }); });
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(dragging()).toBe(false);
+    act(() => { on("pointerup", 100, 150, { pointerType: "touch", pointerId: 7 }); });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("touch: a long-press released in place writes nothing, even with a wobble", () => {
+    vi.useFakeTimers();
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130, { pointerType: "touch", pointerId: 7 });
+    act(() => { on("pointermove", 103, 134, { pointerType: "touch", pointerId: 7 }); }); // 5px of finger wobble
+    act(() => { vi.advanceTimersByTime(260); });
+    expect(dragging()).toBe(true);
+    act(() => { on("pointerup", 103, 134, { pointerType: "touch", pointerId: 7 }); });
+    expect(dragging()).toBe(false);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("touch: long-press then drag moves the block; a second finger can't drop it", () => {
+    vi.useFakeTimers();
+    const { btn, onUpdate } = setup();
+    press(btn, 100, 130, { pointerType: "touch", pointerId: 7 });
+    act(() => { vi.advanceTimersByTime(260); });
+    act(() => { on("pointermove", 100, 190, { pointerType: "touch", pointerId: 7 }); });
+    act(() => { on("pointerup", 400, 700, { pointerType: "touch", pointerId: 8 }); });
+    expect(dragging()).toBe(true);
+    expect(onUpdate).not.toHaveBeenCalled();
+    act(() => { on("pointerup", 100, 190, { pointerType: "touch", pointerId: 7 }); });
+    expect(onUpdate).toHaveBeenCalledWith("b1", { scheduled: 10 * 60 });
   });
 });

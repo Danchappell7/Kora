@@ -40,4 +40,17 @@ describe("HomeView daily brief", () => {
     expect(screen.getByText(/anywhere to capture/)).toBeInTheDocument();
     expect(screen.queryByText(/in the bar at the top/)).not.toBeInTheDocument();
   });
+
+  it("gives phones and tablets touch copy instead of a key they can't press", () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ ...original(q), matches: q === "(hover: none)" })) as typeof window.matchMedia;
+    try {
+      renderHome([]);
+      expect(screen.queryByText("q")).not.toBeInTheDocument();
+      expect(screen.getByText(/is the quickest way in/)).toBeInTheDocument();
+      expect(screen.getByText(/write tasks the way you'd say them/)).toBeInTheDocument();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
 });

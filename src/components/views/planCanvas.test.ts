@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   layoutLanes, mergeIntervals, totalMinutes, durOf, energyMetaOf, energyKindOf,
-  staleBlockIds, nextCarry, carryLabel, localDayKey,
+  carryOver, recordSeen, markSeen, touchSeen, readSeen, writeSeen, planSeenKey, isMine, carryLabel, localDayKey,
 } from "./planCanvas";
+import type { SeenMap } from "./planCanvas";
 import { ENERGY } from "../../data/data";
 import type { Task } from "../../data/types";
 
@@ -78,6 +79,7 @@ describe("busy-time maths", () => {
 });
 
 describe("new-day carry-over", () => {
+  const TODAY = "2026-09-30", YEST = "2026-09-29";
   const tasks = [
     task({ id: "mine", planToday: true, scheduled: 540 }),
     task({ id: "done", planToday: true, scheduled: 600, status: "done" }),
@@ -85,26 +87,69 @@ describe("new-day carry-over", () => {
     task({ id: "intake", planToday: true, scheduled: null }),
     task({ id: "archived", planToday: true, scheduled: 700, archivedAt: "2026-09-01" }),
   ];
-  it("only offers my unfinished, still-placed blocks", () => {
-    expect(staleBlockIds(tasks, "m-self")).toEqual(["mine"]);
-    expect(staleBlockIds(tasks)).toEqual(["mine", "theirs"]);
+  const seenYesterday: SeenMap = { mine: { day: YEST, at: 540 }, done: { day: YEST, at: 600 }, theirs: { day: YEST, at: 660 }, archived: { day: YEST, at: 700 } };
+
+  it("offers only my unfinished blocks this device saw on an earlier day, at the same time", () => {
+    expect(carryOver(tasks, seenYesterday, TODAY, "m-self")).toEqual({ ids: ["mine"], from: YEST });
   });
-  it("snapshots on the first open of a new day", () => {
-    const r = nextCarry("2026-09-30", "2026-09-29", null, ["mine"]);
-    expect(r.markDay).toBe(true);
-    expect(r.carry).toEqual({ day: "2026-09-30", from: "2026-09-29", ids: ["mine"] });
+  it("never offers a block it hasn't seen before — planned today, or on another device", () => {
+    expect(carryOver(tasks, {}, TODAY, "m-self").ids).toEqual([]);
   });
-  it("offers nothing when there's nothing left over", () => {
-    expect(nextCarry("2026-09-30", "2026-09-29", null, [])).toEqual({ carry: null, markDay: true });
+  it("never offers a block that has been moved since", () => {
+    expect(carryOver(tasks, { mine: { day: YEST, at: 600 } }, TODAY, "m-self").ids).toEqual([]);
   });
-  it("keeps today's pending prompt, and never re-snapshots blocks planned today", () => {
-    const pending = { day: "2026-09-30", from: "2026-09-29", ids: ["mine"] };
-    expect(nextCarry("2026-09-30", "2026-09-30", pending, ["mine", "planned-this-morning"])).toEqual({ carry: pending, markDay: false });
-    expect(nextCarry("2026-09-30", "2026-09-30", null, ["planned-this-morning"])).toEqual({ carry: null, markDay: false });
+  it("never offers a block already seen today", () => {
+    expect(carryOver(tasks, { mine: { day: TODAY, at: 540 } }, TODAY, "m-self").ids).toEqual([]);
   });
-  it("drops a stale pending prompt from an earlier day", () => {
-    const old = { day: "2026-09-28", from: "2026-09-27", ids: ["x"] };
-    expect(nextCarry("2026-09-30", "2026-09-30", old, []).carry).toBeNull();
+  it("names no single day when the blocks come from different days", () => {
+    const two = [task({ id: "a", planToday: true, scheduled: 540 }), task({ id: "b", planToday: true, scheduled: 600 })];
+    expect(carryOver(two, { a: { day: YEST, at: 540 }, b: { day: "2026-09-27", at: 600 } }, TODAY, "m-self")).toEqual({ ids: ["a", "b"], from: null });
+  });
+  it("counts the local placeholder and unassigned personal tasks as mine, never a teammate's", () => {
+    expect(isMine(task({ assigneeId: "u-1" }), "u-1")).toBe(true);
+    expect(isMine(task({ assigneeId: "m-self" }), "u-1")).toBe(true);
+    expect(isMine(task({ assigneeId: "", workspaceId: null }), "u-1")).toBe(true);
+    expect(isMine(task({ assigneeId: "", workspaceId: "ws-team" }), "u-1")).toBe(false);
+    expect(isMine(task({ assigneeId: "maya" }), "u-1")).toBe(false);
+  });
+
+  it("first open: stamps everything with today, so nothing is offered", () => {
+    const next = recordSeen({}, tasks, TODAY, "m-self")!;
+    expect(next).toEqual({ mine: { day: TODAY, at: 540 } });
+    expect(carryOver(tasks, next, TODAY, "m-self").ids).toEqual([]);
+    // …and tomorrow the unfinished block is offered
+    expect(carryOver(tasks, next, "2026-10-01", "m-self")).toEqual({ ids: ["mine"], from: TODAY });
+  });
+  it("leaves a waiting block's earlier day alone, and forgets blocks that left the canvas", () => {
+    const next = recordSeen(seenYesterday, tasks, TODAY, "m-self")!;
+    expect(next.mine).toEqual({ day: YEST, at: 540 }); // still waiting on the prompt
+    expect(next.done).toBeUndefined();
+    expect(next.archived).toBeUndefined();
+    expect(next.theirs).toBeUndefined();
+  });
+  it("re-stamps a block that was moved", () => {
+    const moved = [task({ id: "mine", planToday: true, scheduled: 600 })];
+    expect(recordSeen(seenYesterday, moved, TODAY, "m-self")!.mine).toEqual({ day: TODAY, at: 600 });
+  });
+  it("leaves other workspaces' blocks alone (they aren't in this list)", () => {
+    const seen: SeenMap = { elsewhere: { day: YEST, at: 540 } };
+    expect(recordSeen(seen, [task({ id: "here", planToday: true, scheduled: 600 })], TODAY, "m-self")!.elsewhere).toEqual({ day: YEST, at: 540 });
+  });
+  it("returns null when nothing changed", () => {
+    expect(recordSeen({ mine: { day: TODAY, at: 540 } }, tasks, TODAY, "m-self")).toBeNull();
+  });
+  it("forgets blocks not seen for two months", () => {
+    const next = recordSeen({ old: { day: "2026-07-01", at: 540 }, recent: { day: "2026-09-01", at: 540 } }, [], TODAY, "m-self")!;
+    expect(next).toEqual({ recent: { day: "2026-09-01", at: 540 } });
+  });
+  it("an answered prompt stays answered, even if Undo puts a block back", () => {
+    const answered = markSeen(seenYesterday, [{ id: "mine", at: 540 }], TODAY);
+    expect(carryOver(tasks, answered, TODAY, "m-self").ids).toEqual([]);
+  });
+  it("touchSeen re-stamps a moved block and forgets one taken off the day", () => {
+    expect(touchSeen(seenYesterday, "mine", 600, TODAY)!.mine).toEqual({ day: TODAY, at: 600 });
+    expect(touchSeen(seenYesterday, "mine", null, TODAY)!.mine).toBeUndefined();
+    expect(touchSeen({}, "nope", null, TODAY)).toBeNull();
   });
   it("labels the prompt by when the plan was made", () => {
     expect(carryLabel("2026-09-29", "2026-09-30")).toBe("Yesterday's plan");
@@ -115,5 +160,28 @@ describe("new-day carry-over", () => {
   });
   it("formats day keys locally", () => {
     expect(localDayKey(new Date(2026, 0, 5))).toBe("2026-01-05");
+  });
+});
+
+describe("the per-device record", () => {
+  const spies: { mockRestore: () => void }[] = [];
+  afterEach(() => { spies.splice(0).forEach((s) => s.mockRestore()); localStorage.clear(); });
+  it("is kept per person", () => {
+    expect(planSeenKey("u-1")).not.toBe(planSeenKey("u-2"));
+    writeSeen(planSeenKey("u-1"), { a: { day: "2026-09-29", at: 540 } });
+    expect(readSeen(planSeenKey("u-2"))).toEqual({});
+    expect(readSeen(planSeenKey("u-1"))).toEqual({ a: { day: "2026-09-29", at: 540 } });
+  });
+  it("ignores corrupt entries", () => {
+    localStorage.setItem(planSeenKey("u-1"), JSON.stringify({ a: { day: 5 }, b: { day: "2026-09-29", at: 600 } }));
+    expect(readSeen(planSeenKey("u-1"))).toEqual({ b: { day: "2026-09-29", at: 600 } });
+    localStorage.setItem(planSeenKey("u-1"), "{not json");
+    expect(readSeen(planSeenKey("u-1"))).toEqual({ b: { day: "2026-09-29", at: 600 } }); // last good copy
+  });
+  it("carries on in memory when storage is blocked", () => {
+    spies.push(vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); }));
+    spies.push(vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); }));
+    writeSeen(planSeenKey("u-3"), { a: { day: "2026-09-30", at: 540 } });
+    expect(readSeen(planSeenKey("u-3"))).toEqual({ a: { day: "2026-09-30", at: 540 } });
   });
 });

@@ -120,6 +120,8 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
           <div role="group" aria-label="Session length" style={{ display: "flex", gap: 6 }}>
             {[25, 50, 90].map((m) => (
               <button type="button" key={m} onClick={() => setTargetMin(m)} className="btn-icon" aria-label={`${m}-minute ${onBreak ? "break" : "session"}`} aria-pressed={targetMin === m}
+                // a length you've already passed finishes this interval now (the time spent is banked, never lost)
+                title={seconds > 0 && seconds >= m * 60 && targetMin !== m ? (onBreak ? `Already past ${m}m: ends the break now` : `Already past ${m}m: finishes the block and banks your time`) : undefined}
                 style={{ width: 44, height: 44, borderRadius: 14, fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, border: targetMin === m ? "1px solid var(--accent)" : "1px solid var(--hairline)", color: targetMin === m ? "var(--accent)" : "var(--ink-3)" }}>{m}</button>
             ))}
           </div>

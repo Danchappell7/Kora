@@ -80,62 +80,137 @@ export function mergeIntervals(spans: Interval[], lo: number, hi: number): Inter
 
 export const totalMinutes = (spans: Interval[]): number => spans.reduce((a, s) => a + (s.end - s.start), 0);
 
-/* ---------- new-day carry-over ---------- */
+/* ---------- new-day carry-over ----------
+   A plan row has no date, so this device remembers, per block, the last day it
+   saw that block on the canvas and at what time ({ id: { day, at } }). A block
+   is left over from an earlier day's plan only when this device saw it then, at
+   the same time, and nobody has moved it since. So:
+   - blocks planned today (here or on another device) are never offered;
+   - the first open on a new device, or after an update, offers nothing;
+   - it works per task, so every workspace gets its own prompt — whichever one
+     Plan happens to be opened in first;
+   - it's kept per person, so a shared computer never mixes two people's plans. */
 
-export const PLAN_DAY_KEY = "kanbo-plan-day";
-export const PLAN_CARRY_KEY = "kanbo-plan-carry";
+export const PLAN_SEEN_KEY = "kanbo-plan-seen";
+export const planSeenKey = (me?: string | null) => `${PLAN_SEEN_KEY}:${me || "local"}`;
 
-/** Local calendar day as YYYY-MM-DD. */
+export interface SeenBlock { day: string; at: number }
+export type SeenMap = Record<string, SeenBlock>;
+
+/** how long an unvisited block is remembered */
+const SEEN_KEEP_DAYS = 60;
+const SEEN_MAX = 1500;
+
+/** Local calendar day as YYYY-MM-DD (zero-padded, so days compare as strings). */
 export function localDayKey(d: Date = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-
-/** The blocks an earlier day's plan left on the canvas: still scheduled and not
- *  finished. Scoped to tasks assigned to `me` when known, so opening Plan can
- *  never offer to clear a teammate's plan. */
-export function staleBlockIds(tasks: Task[], me?: string): string[] {
-  return tasks
-    .filter((t) => t.planToday && t.scheduled != null && t.status !== "done" && !t.archivedAt && (!me || t.assigneeId === me))
-    .map((t) => t.id);
+function shiftDay(day: string, by: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return localDayKey(new Date(y, m - 1, d + by));
 }
 
-export interface Carry {
-  /** the day this carry-over prompt belongs to */
-  day: string;
-  /** the last day Plan was opened on this device (null = never) */
-  from: string | null;
-  ids: string[];
-}
+/** A block on today's canvas: on the plan, placed, and not finished. */
+export const isOnCanvas = (t: Task): boolean =>
+  !!t.planToday && t.scheduled != null && Number.isFinite(t.scheduled) && t.status !== "done" && !t.archivedAt;
 
-function read(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
-function write(key: string, value: string | null) {
-  try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* private mode */ }
-}
+/** My task: assigned to me (or the local "m-self" placeholder a new task carries
+ *  until it's saved), or an unassigned personal one. Never a teammate's. */
+export const isMine = (t: Task, me?: string | null): boolean =>
+  !me || t.assigneeId === me || t.assigneeId === "m-self" || (!t.assigneeId && (t.workspaceId ?? null) === null);
 
-export function readPlanDay(): string | null { return read(PLAN_DAY_KEY); }
-export function writePlanDay(day: string) { write(PLAN_DAY_KEY, day); }
-
-export function readCarry(): Carry | null {
+// storage can be blocked (policy, some webviews): keep a copy in memory so a
+// failed read never makes every visit look like the first one
+const memory = new Map<string, SeenMap>();
+function isSeenMap(v: unknown): v is SeenMap {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+export function readSeen(key: string): SeenMap {
   try {
-    const v = JSON.parse(read(PLAN_CARRY_KEY) || "null");
-    if (v && typeof v.day === "string" && Array.isArray(v.ids)) return { day: v.day, from: typeof v.from === "string" ? v.from : null, ids: v.ids.filter((x: unknown) => typeof x === "string") };
-  } catch { /* corrupt — ignore */ }
-  return null;
+    const raw = localStorage.getItem(key);
+    const v: unknown = raw ? JSON.parse(raw) : {};
+    const out: SeenMap = {};
+    if (isSeenMap(v)) {
+      for (const [id, e] of Object.entries(v)) {
+        if (e && typeof e.day === "string" && typeof e.at === "number") out[id] = { day: e.day, at: e.at };
+      }
+    }
+    memory.set(key, out);
+    return out;
+  } catch {
+    return memory.get(key) ?? {};
+  }
 }
-export function writeCarry(c: Carry | null) { write(PLAN_CARRY_KEY, c && c.ids.length ? JSON.stringify(c) : null); }
+export function writeSeen(key: string, map: SeenMap) {
+  memory.set(key, map);
+  try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* blocked — the memory copy carries on */ }
+}
+
+/** The blocks an earlier day's plan left on the canvas, and which day that was
+ *  (null when they come from different days). */
+export function carryOver(tasks: Task[], seen: SeenMap, today: string, me?: string | null): { ids: string[]; from: string | null } {
+  const ids: string[] = [];
+  const days = new Set<string>();
+  for (const t of tasks) {
+    if (!isOnCanvas(t) || !isMine(t, me)) continue;
+    const e = seen[t.id];
+    if (e && e.day < today && e.at === t.scheduled) { ids.push(t.id); days.add(e.day); }
+  }
+  return { ids, from: days.size === 1 ? [...days][0] : null };
+}
 
 /**
- * Decides what the carry-over prompt should hold when Plan is opened.
- *  - Same day as last time: keep whatever prompt is still pending for today.
- *  - A new day (or first open on this device): snapshot the unfinished blocks
- *    left on the canvas. Only that snapshot is offered, so blocks planned after
- *    opening today are never mistaken for yesterday's.
+ * Brings the record up to date with what's on the canvas now. Blocks still
+ * waiting on the carry-over prompt keep their earlier day; everything else of
+ * mine that's placed is stamped with today and its time; blocks that left the
+ * canvas are forgotten. Tasks not in `tasks` (another workspace) are left alone.
+ * Returns null when nothing changed.
  */
-export function nextCarry(today: string, lastDay: string | null, pending: Carry | null, staleIds: string[]): { carry: Carry | null; markDay: boolean } {
-  if (lastDay === today) return { carry: pending && pending.day === today ? pending : null, markDay: false };
-  return { carry: staleIds.length ? { day: today, from: lastDay, ids: staleIds } : null, markDay: true };
+export function recordSeen(seen: SeenMap, tasks: Task[], today: string, me?: string | null): SeenMap | null {
+  let next: SeenMap | null = null;
+  const edit = () => (next ??= { ...seen });
+  for (const t of tasks) {
+    const e = seen[t.id];
+    if (!isOnCanvas(t) || !isMine(t, me)) {
+      if (e) delete edit()[t.id];
+      continue;
+    }
+    if (e && e.day < today && e.at === t.scheduled) continue; // left over — waits for the prompt
+    if (!e || e.day !== today || e.at !== t.scheduled) edit()[t.id] = { day: today, at: t.scheduled! };
+  }
+  // forget blocks not seen for a long time, and keep the record small
+  const cutoff = shiftDay(today, -SEEN_KEEP_DAYS);
+  const base: SeenMap = next ?? seen;
+  const entries = Object.entries(base);
+  const old = entries.filter(([, e]) => e.day < cutoff);
+  if (old.length) { const m = edit(); for (const [id] of old) delete m[id]; }
+  const cur: SeenMap = next ?? seen;
+  const n = Object.keys(cur).length;
+  if (n > SEEN_MAX) {
+    const m = edit();
+    Object.entries(m).sort((a, b) => (a[1].day < b[1].day ? -1 : a[1].day > b[1].day ? 1 : 0))
+      .slice(0, n - SEEN_MAX).forEach(([id]) => delete m[id]);
+  }
+  return next;
+}
+
+/** Marks blocks as dealt with today (the prompt was answered), so an Undo that
+ *  puts one back exactly where it was doesn't bring the prompt back. */
+export function markSeen(seen: SeenMap, blocks: { id: string; at: number }[], today: string): SeenMap {
+  const next = { ...seen };
+  for (const b of blocks) next[b.id] = { day: today, at: b.at };
+  return next;
+}
+
+/** Forgets or re-stamps one block after it was moved (at = its new time) or taken off the day (at = null). */
+export function touchSeen(seen: SeenMap, id: string, at: number | null, today: string): SeenMap | null {
+  const e = seen[id];
+  if (at == null) {
+    if (!e) return null;
+    const next = { ...seen }; delete next[id]; return next;
+  }
+  if (e && e.day === today && e.at === at) return null;
+  return { ...seen, [id]: { day: today, at } };
 }
 
 /** "Yesterday's plan" / "Your plan from Monday" / "An earlier plan". */
