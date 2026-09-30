@@ -28,7 +28,17 @@ function Harness({ onCreate = vi.fn(), onDeleteTag = vi.fn(), tags = TAGS, proje
 const title = () => screen.getByRole("textbox", { name: "Task title" }) as HTMLInputElement;
 const typeTitle = (v: string) => fireEvent.change(title(), { target: { value: v } });
 const reopen = () => { fireEvent.click(screen.getByText("open-modal")); act(() => { vi.advanceTimersByTime(50); }); };
-const escape = () => fireEvent.keyDown(title(), { key: "Escape" });
+// An accidental close with Escape. Escape in the title first only leaves the
+// field (nothing typed is lost, focus parks on the dialog); the next one closes.
+const escape = () => {
+  act(() => title().focus());
+  fireEvent.keyDown(title(), { key: "Escape" });
+  expect(screen.getByTestId("state")).toHaveTextContent("open");
+  const dialog = screen.getByRole("dialog", { name: "New task" });
+  expect(dialog).toHaveFocus();
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  expect(screen.getByTestId("state")).toHaveTextContent("closed");
+};
 
 beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ shouldAdvanceTime: true }); });
 // restore only our own spies — restoreAllMocks would also wipe the global
@@ -48,9 +58,8 @@ describe("NewTaskModal", () => {
     expect(screen.getByTestId("state")).toHaveTextContent("open");
     expect(screen.queryByRole("textbox", { name: "New tag name" })).toBeNull();
     expect(title().value).toBe("Ship the rollout deck");
-    // Escape elsewhere still closes the modal
-    fireEvent.keyDown(title(), { key: "Escape" });
-    expect(screen.getByTestId("state")).toHaveTextContent("closed");
+    // Escape elsewhere still closes the modal (from the title: leave it, then close)
+    escape();
   });
 
   it("opens blank after an accidental close and offers the draft back instead of forcing it", () => {

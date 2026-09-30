@@ -28,8 +28,9 @@ const fmtBytes = (n: number): string => {
 };
 import {
   getProject, getMember, blockingTasks, dueState, fmtDue, timeAgo, DUE_PRESETS, presetDate,
-  STATUS_META, STATUS_ORDER, PRIORITY_META, nextDueDate,
+  STATUS_META, STATUS_ORDER, PRIORITY_META, nextDueDate, nextOccurrence, seriesAnchorDay,
 } from "../data/data";
+import { timelineStartPatch } from "./tasks/otherViewsLogic";
 import type { Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project, CustomFieldDef, CustomValue, Section } from "../data/types";
 
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
@@ -37,10 +38,13 @@ const CONFLICT_MSG = "Someone else changed this while you were editing. Overwrit
 // signed download links last an hour; refresh well before they lapse
 const FILES_REFRESH_MS = 45 * 60 * 1000;
 
-function nextOccurrences(iso: string | undefined, recurrence: Recurrence, n = 3): string[] {
+/** the next few due dates of a repeating task. Every step keeps the series'
+ *  day, so a task due 31 Jan previews 28 Feb · 31 Mar · 30 Apr. */
+function nextOccurrences(task: Pick<Task, "dueDate" | "originalDueDate">, recurrence: Recurrence, n = 3): string[] {
   const out: string[] = [];
-  let cur = iso;
-  for (let i = 0; i < n; i++) { cur = nextDueDate(cur, recurrence); out.push(cur); }
+  const anchor = seriesAnchorDay(task);
+  let cur = task.dueDate;
+  for (let i = 0; i < n; i++) { cur = nextDueDate(cur, recurrence, anchor); out.push(cur); }
   return out;
 }
 function shortDate(iso: string): string {
@@ -234,7 +238,7 @@ function CustomFieldsSection({ task, fields, people, onPatch, onCreate, onDelete
                   </div>
                 )}
                 {f.type === "date" && <input type="date" aria-label={f.name} value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value || null)} style={{ ...fieldInputStyle, fontFamily: "var(--font-mono)", fontSize: 12.5 }} />}
-                {f.type === "checkbox" && <Check done={!!v} size={18} onToggle={() => setValue(f.id, !v)} />}
+                {f.type === "checkbox" && <Check done={!!v} size={18} name={f.name} onToggle={() => setValue(f.id, !v)} />}
                 {f.type === "dropdown" && (
                   <select aria-label={f.name} value={(v as string) ?? ""} onChange={(e) => setValue(f.id, e.target.value || null)} style={fieldInputStyle}>
                     <option value="">—</option>
@@ -379,6 +383,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
   const [reactsOpen, setReactsOpen] = useState(false);
   const [reactMoreOpen, setReactMoreOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [startError, setStartError] = useState(false);
+  useEffect(() => { setStartError(false); }, [task.dueDate]);   // a new due date may make room for it
   const [dragOver, setDragOver] = useState(false);
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
@@ -485,15 +491,17 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     return () => { stopped = true; window.clearTimeout(timer); setViewers([]); unsub?.(); };
   }, [taskId, currentUserId, meName]);
 
-  // live comments — append comments teammates post while the panel is open
-  // (skip my own, which are already added optimistically by sendComment)
+  // live comments — append comments posted while the panel is open, including
+  // your own from another device (one sent from here is already in the thread:
+  // sendComment and this both de-duplicate by id), and take edits and
+  // reactions as they change
   useEffect(() => {
-    const unsub = store.subscribeToTaskComments(taskId, (c) => {
-      if (c.authorId === currentUserId || (c.taskId && c.taskId !== taskId)) return;
-      setThread((t) => t.some((x) => x.id === c.id) ? t : [...t, c]);
-    });
+    const here = (c: Comment) => !c.taskId || c.taskId === taskId;
+    const unsub = store.subscribeToTaskComments(taskId,
+      (c) => { if (here(c)) setThread((t) => t.some((x) => x.id === c.id) ? t : [...t, c]); },
+      (c) => { if (here(c)) setThread((t) => t.map((x) => x.id === c.id ? c : x)); });
     return unsub;
-  }, [taskId, currentUserId]);
+  }, [taskId]);
 
   // auto-grow the title textarea to fit long titles instead of clipping them
   useEffect(() => {
@@ -648,15 +656,17 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
     ? activeMembers.map((m) => ({ id: m.userId!, name: m.name || m.email }))
     : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   const projectTaskCount = tasks.filter((t) => t.projectId === task.projectId).length;
-  const ids = { status: `${uid}-status`, priority: `${uid}-priority`, project: `${uid}-project`, section: `${uid}-section`, assignee: `${uid}-assignee`, due: `${uid}-due`, repeat: `${uid}-repeat`, estimate: `${uid}-estimate`, logged: `${uid}-logged`, desc: `${uid}-desc`, mentions: `${uid}-mentions`, descMentions: `${uid}-desc-mentions`, deps: `${uid}-deps` };
+  const ids = { status: `${uid}-status`, priority: `${uid}-priority`, project: `${uid}-project`, section: `${uid}-section`, assignee: `${uid}-assignee`, due: `${uid}-due`, start: `${uid}-start`, repeat: `${uid}-repeat`, estimate: `${uid}-estimate`, logged: `${uid}-logged`, desc: `${uid}-desc`, mentions: `${uid}-mentions`, descMentions: `${uid}-desc-mentions`, deps: `${uid}-deps` };
 
-  // deleting a tag removes it from every task that has it — say so first
-  const confirmDeleteTag = (id: string) => {
-    const label = tags[id]?.label ?? "this tag";
-    const n = tasks.filter((t) => t.tags.includes(id)).length;
-    const scope = n === 0 ? "" : n === 1 ? " It will be removed from the 1 task that uses it." : ` It will be removed from all ${n} tasks that use it.`;
-    if (!window.confirm(`Delete the tag “${label}”?${scope} This can't be undone.`)) return;
-    onDeleteTag(id);
+  // deleting a tag removes it from every task that has it — TagPicker asks
+  // first, and says how many tasks that is
+  const tagUsage = (id: string) => tasks.filter((t) => t.tags.includes(id)).length;
+  // a start date can't come after the due date (the timeline's rule)
+  const setStart = (iso: string) => {
+    if (!iso) { setStartError(false); if (task.startDate) onPatch(task.id, { startDate: undefined }); return; }
+    const r = timelineStartPatch(task, iso);
+    setStartError(!r.ok && r.reason === "after-due");
+    if (r.ok) onPatch(task.id, r.patch);
   };
   const toggleTag = (id: string) => {
     const next = task.tags.includes(id) ? task.tags.filter((x) => x !== id) : [...task.tags, id];
@@ -924,7 +934,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
           onDrop={(e) => { if (!readOnly && e.dataTransfer.files?.length) { e.preventDefault(); setDragOver(false); onPickFiles(e.dataTransfer.files); } }}>
           {/* title — editable */}
           <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-            <div style={{ marginTop: 3 }}>{readOnly ? <StaticCheck done={done} size={22} /> : <Check done={done} size={22} celebrateKey={task.id} onToggle={() => onToggle(task.id)} />}</div>
+            <div style={{ marginTop: 3 }}>{readOnly ? <StaticCheck done={done} size={22} /> : <Check done={done} size={22} celebrateKey={task.id} label={task.title} onToggle={() => onToggle(task.id)} />}</div>
             {readOnly ? (
               <h2 style={{ flex: 1, margin: 0, fontFamily: "var(--font-display)", fontSize: 21, fontWeight: 600, lineHeight: 1.25, letterSpacing: "-0.02em", color: done ? "var(--ink-3)" : "var(--ink)", textDecoration: done ? "line-through" : "none", wordBreak: "break-word" }}>{task.title}</h2>
             ) : (
@@ -1109,6 +1119,21 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                 </div>
               )}
             </MetaRow>
+            {(!readOnly || task.startDate) && (
+              <MetaRow icon="timeline" label="Start" topAlign={!readOnly && startError} htmlFor={readOnly ? undefined : ids.start}>
+                {readOnly ? (
+                  <ReadValue mono>{shortDate(task.startDate!)}</ReadValue>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <input id={ids.start} type="date" value={task.startDate || ""} max={task.dueDate || undefined} onChange={(e) => setStart(e.target.value)}
+                      aria-invalid={startError || undefined} aria-describedby={startError ? `${ids.start}-err` : undefined}
+                      style={{ height: 30, padding: "0 9px", borderRadius: 8, border: `1px solid ${startError ? "var(--prio-urgent)" : "var(--hairline)"}`, background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-mono)", fontSize: 12.5 }} />
+                    {task.startDate && <button onClick={() => setStart("")} title="Clear start date" aria-label="Clear start date" style={{ padding: "4px 7px", borderRadius: 7, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13 }}>×</button>}
+                    {startError && <span id={`${ids.start}-err`} role="alert" style={{ flexBasis: "100%", fontSize: 11.5, color: "var(--prio-urgent)" }}>The start date can't be after the due date.</span>}
+                  </div>
+                )}
+              </MetaRow>
+            )}
             <button onClick={() => setMoreOpen((v) => !v)} aria-expanded={moreOpen}
               style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 5, marginTop: 6, padding: "4px 2px", border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, color: "var(--ink-3)" }}>
               <Icon name={moreOpen ? "chevronDown" : "chevronRight"} size={14} /> {moreOpen ? "Fewer options" : "More options"}
@@ -1123,12 +1148,16 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                     </select>
                   )}
                   {!readOnly && task.recurrence && task.recurrence !== "none" && task.dueDate && (
-                    <button onClick={() => onPatch(task.id, { dueDate: nextDueDate(task.dueDate, task.recurrence!) })} title="Move this task to its next occurrence without completing it"
+                    <button onClick={() => {
+                      // same maths as completing it: the start date moves with it and a month-end series keeps its day
+                      const n = nextOccurrence(task, task.id);
+                      onPatch(task.id, { dueDate: n.dueDate, startDate: n.startDate, originalDueDate: n.originalDueDate });
+                    }} title="Move this task to its next occurrence without completing it"
                       style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontSize: 12, fontFamily: "var(--font-display)" }}>Skip →</button>
                   )}
                 </span>
                 {task.recurrence && task.recurrence !== "none" && (
-                  <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Next: {nextOccurrences(task.dueDate, task.recurrence, 3).map(shortDate).join(" · ")}</span>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Next: {nextOccurrences(task, task.recurrence, 3).map(shortDate).join(" · ")}</span>
                 )}
               </div>
             </MetaRow>
@@ -1164,7 +1193,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
                   </span>
                 )
               ) : (
-                <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={confirmDeleteTag} small />
+                <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={onDeleteTag} usage={tagUsage} ownerKey={task.id} small />
               )}
             </MetaRow>
             <MetaRow icon="target" label="Milestone">
@@ -1366,7 +1395,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
               const cds = dueState(c.dueDate, c.status);
               return (
                 <div key={c.id} className="lift-row" onClick={() => onOpenTask?.(c.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 8px", margin: "0 -8px", borderRadius: 9, cursor: "pointer" }}>
-                  <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}>{readOnly ? <StaticCheck done={cdone} size={17} /> : <Check done={cdone} size={17} celebrateKey={c.id} onToggle={() => onToggle(c.id)} />}</span>
+                  <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}>{readOnly ? <StaticCheck done={cdone} size={17} /> : <Check done={cdone} size={17} celebrateKey={c.id} label={c.title} onToggle={() => onToggle(c.id)} />}</span>
                   <span className="truncate" style={{ flex: 1, fontSize: 13.5, color: cdone ? "var(--ink-4)" : "var(--ink-2)", textDecoration: cdone ? "line-through" : "none" }}>{c.title}</span>
                   {c.priority !== "medium" && <PriorityFlag priority={c.priority} size={13} />}
                   {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}
@@ -1378,7 +1407,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, taskId, tasks, tags, activity
             {/* legacy lightweight checklist items, if any */}
             {task.subtasks?.map((s) => (
               <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0" }}>
-                {readOnly ? <StaticCheck done={s.done} size={17} /> : <Check done={s.done} size={17} onToggle={() => onToggleSubtask(task.id, s.id)} />}
+                {readOnly ? <StaticCheck done={s.done} size={17} /> : <Check done={s.done} size={17} label={s.title} onToggle={() => onToggleSubtask(task.id, s.id)} />}
                 <span style={{ fontSize: 13.5, color: s.done ? "var(--ink-4)" : "var(--ink-2)", textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span>
               </div>
             ))}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { ImportTasksModal } from "./ImportTasksModal";
 
 const projects = [{ id: "p-web", name: "Website" }, { id: "p-ops", name: "Operations" }];
@@ -16,9 +16,18 @@ function setup(props: Partial<Parameters<typeof ImportTasksModal>[0]> = {}) {
 
 describe("ImportTasksModal", () => {
   it("is a labelled modal dialog that closes on Escape", () => {
-    const { onClose, textarea } = setup({ defaultProjectId: "p-web" });
-    expect(screen.getByRole("dialog", { name: "Import tasks" })).toHaveAttribute("aria-modal", "true");
+    const { onClose, textarea, type } = setup({ defaultProjectId: "p-web" });
+    const dialog = screen.getByRole("dialog", { name: "Import tasks" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    // Escape in the paste box only leaves it — a pasted list isn't thrown away…
+    type("Call Sarah\nBook venue");
+    act(() => textarea.focus());
     fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Call Sarah\nBook venue");
+    expect(dialog).toHaveFocus();
+    // …and the next Escape closes the dialog
+    fireEvent.keyDown(dialog, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

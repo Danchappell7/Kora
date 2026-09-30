@@ -3,7 +3,7 @@
    ============================================================ */
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon } from "./primitives";
+import { Icon, chipInk, chipFill, chipEdge } from "./primitives";
 import type { TagDef } from "../data/types";
 
 const TAG_COLORS: { c: string; name: string }[] = [
@@ -28,7 +28,7 @@ interface PendingTag {
   selected: string[];
 }
 
-export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small, ownerKey }: {
+export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small, ownerKey, usage }: {
   tags: Record<string, TagDef>;
   selected: string[];
   onToggle: (id: string) => void;
@@ -39,6 +39,9 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
    *  picker at different items should pass it, so a tag still being created
    *  for one item is never auto-selected on the next. */
   ownerKey?: string;
+  /** how many tasks carry a tag — when given, the delete confirmation says
+   *  how many tasks will lose it */
+  usage?: (id: string) => number;
 }) {
   const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState("");
@@ -108,8 +111,14 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
     close(true);
   };
 
+  // deleting a tag is workspace-wide: always ask first (the one confirmation —
+  // parents pass `usage` for the count rather than asking again themselves)
   const remove = (id: string, def: TagDef) => {
-    if (!window.confirm(`Delete tag “${def.label}” from every task?`)) return;
+    const n = usage?.(id);
+    const msg = n === undefined
+      ? `Delete tag “${def.label}” from every task?`
+      : `Delete the tag “${def.label}”?${n === 0 ? "" : n === 1 ? " It will be removed from the 1 task that uses it." : ` It will be removed from all ${n} tasks that use it.`} This can't be undone.`;
+    if (!window.confirm(msg)) return;
     onDelete(id);
     setFocusedChip(null);
     // keep focus inside the picker (and any dialog around it): the "+ New tag"
@@ -137,9 +146,11 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
                   display: "inline-flex", alignItems: "center", gap: 5, cursor: saving ? "progress" : "pointer",
                   fontFamily: "var(--font-mono)", fontSize: chipFont, fontWeight: 500,
                   padding: small ? "1px 7px" : "2px 8px", borderRadius: 6,
-                  color: def.color, opacity: active ? 1 : saving ? 0.45 : 0.55, transition: "opacity .14s",
-                  border: `1px ${saving ? "dashed" : "solid"} color-mix(in oklch, ${def.color} 30%, transparent)`,
-                  background: `color-mix(in oklch, ${def.color} 12%, transparent)`,
+                  // readable ink in every state; an unpicked tag is told apart
+                  // by a lighter fill and no tick, not by fading its text
+                  color: chipInk(def.color), opacity: saving ? 0.6 : 1, transition: "background-color .14s",
+                  border: `1px ${saving ? "dashed" : "solid"} ${chipEdge(def.color)}`,
+                  background: active ? chipFill(def.color) : `color-mix(in oklch, ${def.color} calc(var(--chip-fill, 12%) * 0.35), transparent)`,
                 }}>
                 {active && <Icon name="check" size={small ? 9 : 10} sw={2.5} />}
                 {def.label}

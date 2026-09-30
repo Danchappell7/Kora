@@ -176,6 +176,9 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
     if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => items.length ? (s + 1) % items.length : 0); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => items.length ? (s - 1 + items.length) % items.length : 0); }
     else if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); if (items[sel]) activate(items[sel]); }
+    // the query is throwaway: one Escape closes the palette (as the ESC hint
+    // says), rather than the focus trap's "leave the field first"
+    else if (e.key === "Escape" && !e.nativeEvent.isComposing) { e.preventDefault(); onClose(); }
   };
 
   // render with section headers but a single running index for keyboard nav
@@ -222,7 +225,7 @@ export function CommandPalette({ open, onClose, onAction, onNavigate, tasks = []
             placeholder={onOpenProject ? "Search tasks and projects, or jump to a view…" : "Search tasks, jump to a view, or ask Kanbo…"}
             role="combobox" aria-label="Search or run a command" aria-expanded={count > 0} aria-controls={LIST_ID}
             aria-activedescendant={active >= 0 ? optId(active) : undefined} aria-autocomplete="list" aria-describedby="kcmd-help"
-            autoComplete="off" spellCheck={false}
+            autoComplete="off" spellCheck={false} data-focus-ring="none"
             style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 16 }} />
           <kbd aria-hidden="true" className="mono" style={{ fontSize: 11, padding: "3px 7px", borderRadius: 6, background: "var(--fill-1, color-mix(in oklch, var(--ink) 5%, transparent))", border: "1px solid var(--hairline)", color: "var(--ink-4)" }}>ESC</kbd>
         </div>

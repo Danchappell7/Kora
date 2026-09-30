@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { useState } from "react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { CommandPalette } from "./CommandPalette";
+import { NewProjectModal } from "./NewProjectModal";
 import type { Project, Task } from "../data/types";
 
 const projects: Project[] = [
@@ -29,6 +31,15 @@ describe("CommandPalette", () => {
     const second = within(list).getAllByRole("option")[1];
     expect(second).toHaveAttribute("aria-selected", "true");
     expect(input).toHaveAttribute("aria-activedescendant", second.id);
+  });
+
+  it("closes on one Escape from the search box, and marks it handled so nothing underneath closes too", () => {
+    const onClose = vi.fn();
+    open({ onClose });
+    const input = screen.getByRole("combobox", { name: "Search or run a command" });
+    fireEvent.change(input, { target: { value: "rep" } });
+    expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("jumps to a project (never an archived one) when onOpenProject is given", () => {
@@ -85,5 +96,33 @@ describe("CommandPalette", () => {
     open({ canCreateProject: false });
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "new project" } });
     expect(screen.queryByRole("option", { name: /New project/ })).not.toBeInTheDocument();
+  });
+
+  // Picking an action closes the palette in the same update that opens the
+  // next dialog; closing that dialog must still hand focus back to where you
+  // were before the palette, not drop it onto the page.
+  it("hands focus back to where you started after the dialog an action opened closes", async () => {
+    function Page() {
+      const [cmd, setCmd] = useState(false);
+      const [np, setNp] = useState(false);
+      return (
+        <>
+          <button onClick={() => setCmd(true)}>Board card</button>
+          <CommandPalette open={cmd} onClose={() => setCmd(false)} onAction={(s) => { if (s.id === "new-project") setNp(true); }} />
+          <NewProjectModal open={np} onClose={() => setNp(false)} onCreate={() => {}} workspaceId={null} />
+        </>
+      );
+    }
+    render(<Page />);
+    const card = screen.getByText("Board card");
+    act(() => card.focus());
+    fireEvent.click(card);
+    const input = screen.getByRole("combobox", { name: "Search or run a command" });
+    fireEvent.change(input, { target: { value: "new project" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("textbox", { name: "Project name" })).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)); });   // the modal's delayed focus
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(card).toHaveFocus();
   });
 });

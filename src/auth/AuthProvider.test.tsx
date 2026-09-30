@@ -1,6 +1,7 @@
 /* AuthProvider in Supabase mode, against a fake client. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { useState } from "react";
 
 const h = vi.hoisted(() => {
   const listeners = new Set<(event: string, session: unknown) => void>();
@@ -12,14 +13,16 @@ const h = vi.hoisted(() => {
       return { data: { subscription: { unsubscribe: () => listeners.delete(cb) } } };
     }),
     verifyOtp: vi.fn(),
+    resetPasswordForEmail: vi.fn(async () => ({ data: {}, error: null })),
     signOut: vi.fn(async (): Promise<{ error: unknown }> => ({ error: null })),
     getUser: vi.fn(async (): Promise<{ data: { user: unknown }; error: unknown }> => ({ data: { user: state.session?.user ?? null }, error: null })),
     updateUser: vi.fn(async () => ({ data: {}, error: null })),
   };
   const flush = vi.fn(async (): Promise<number> => 0);
-  return { auth, listeners, state, flush };
+  const invoke = vi.fn(async (): Promise<{ data: unknown; error: unknown }> => ({ data: {}, error: null }));
+  return { auth, listeners, state, flush, invoke };
 });
-vi.mock("../lib/supabase", () => ({ isSupabaseConfigured: true, supabase: { auth: h.auth, functions: { invoke: vi.fn() } } }));
+vi.mock("../lib/supabase", () => ({ isSupabaseConfigured: true, supabase: { auth: h.auth, functions: { invoke: h.invoke } } }));
 vi.mock("../data/store", () => ({ store: { flushQueue: h.flush } }));
 
 type Mod = typeof import("./AuthProvider");
@@ -33,6 +36,7 @@ async function boot(url: string) {
   const nav = { reload: vi.spyOn(pageNav, "reload").mockImplementation(() => {}), restart: vi.spyOn(pageNav, "restart").mockImplementation(() => {}) };
   function Probe() {
     const a = mod.useAuth();
+    const [reset, setReset] = useState("");
     return (
       <div>
         <span data-testid="recovery">{String(a.recovery)}</span>
@@ -41,6 +45,8 @@ async function boot(url: string) {
         <span data-testid="user">{a.user?.id ?? "none"}</span>
         <button onClick={() => { a.verifyLink(); }}>verify</button>
         <button onClick={a.signOut}>sign out</button>
+        <button onClick={async () => { const r = await a.resetPassword("sam@company.com"); setReset(r.error ?? "sent"); }}>reset</button>
+        <span data-testid="reset">{reset}</span>
       </div>
     );
   }
@@ -169,6 +175,21 @@ describe("sign-out on a shared device", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
+  it("signs out of this device only, and forgets unsent comments and unsaved task text", async () => {
+    signedIn();
+    const { nav } = await boot("/");
+    await waitFor(() => expect(text("user")).toBe("u1"));
+    sessionStorage.setItem("kanbo-draft:u1:t1", "half a comment");
+    sessionStorage.setItem("kanbo-unsaved:u1:t1:description", "half a description");
+    sessionStorage.setItem("kanbo-something-else", "kept");
+    fireEvent.click(screen.getByText("sign out"));
+    await waitFor(() => expect(nav.restart).toHaveBeenCalled());
+    expect(h.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(sessionStorage.getItem("kanbo-draft:u1:t1")).toBeNull();
+    expect(sessionStorage.getItem("kanbo-unsaved:u1:t1:description")).toBeNull();
+    expect(sessionStorage.getItem("kanbo-something-else")).toBe("kept");
+  });
+
   it("doesn't ask about unsynced edits once the account no longer exists", async () => {
     signedIn();
     const { offlineQueue } = await boot("/");
@@ -260,5 +281,31 @@ describe("switching accounts on one device", () => {
     await boot("/?token_hash=old&type=signup");
     fireEvent.click(screen.getByText("verify"));
     await waitFor(() => expect(text("link-error")).toBe("confirm-expired"));
+  });
+});
+
+describe("password reset", () => {
+  it("says to try again in a minute when the email service just refused, instead of failing twice", async () => {
+    await boot("/");
+    h.invoke.mockResolvedValueOnce({ data: { ok: true, fallback: true, retryAfter: 60 }, error: null });
+    fireEvent.click(screen.getByText("reset"));
+    await waitFor(() => expect(text("reset")).toBe("We couldn't send that just now. Try again in a minute."));
+    expect(h.auth.resetPasswordForEmail).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the built-in reset straight away when the function asks for it", async () => {
+    await boot("/");
+    h.invoke.mockResolvedValueOnce({ data: { ok: true, fallback: true }, error: null });
+    fireEvent.click(screen.getByText("reset"));
+    await waitFor(() => expect(text("reset")).toBe("sent"));
+    expect(h.auth.resetPasswordForEmail).toHaveBeenCalledWith("sam@company.com", expect.anything());
+  });
+
+  it("treats a throttled request as sent (the earlier link still works)", async () => {
+    await boot("/");
+    h.invoke.mockResolvedValueOnce({ data: { ok: true, throttled: true, retryAfter: 42 }, error: null });
+    fireEvent.click(screen.getByText("reset"));
+    await waitFor(() => expect(text("reset")).toBe("sent"));
+    expect(h.auth.resetPasswordForEmail).not.toHaveBeenCalled();
   });
 });
