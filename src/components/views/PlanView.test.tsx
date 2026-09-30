@@ -59,15 +59,31 @@ describe("PlanView", () => {
     expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Draft Q3 deck", projectId: "p-launch", assigneeId: "u-42", planToday: true }));
   });
 
-  it("the capture preview only shows a Due chip when the text names a date", () => {
+  it("the parse line under capture only names a day when the text does", () => {
     renderPlan([]);
     const input = screen.getByLabelText("Capture a task for today");
+    const line = () => document.getElementById(input.getAttribute("aria-describedby")!)!;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "Call supplier 30m" } });
-    expect(screen.getByText("Kanbo understood")).toBeInTheDocument();
-    expect(screen.queryByText(/^Due /)).toBeNull();
+    expect(line().textContent).toContain("30m");
+    expect(line().textContent).toContain("⏎ add · ⇥ plan");
+    expect(line().textContent).not.toMatch(/Tomorrow|Today/);
     fireEvent.change(input, { target: { value: "Call supplier tomorrow" } });
-    expect(screen.getByText(/^Due /)).toBeInTheDocument();
+    expect(line().textContent).toContain("Tomorrow");
+  });
+
+  it("Tab adds the capture and puts it on the day", () => {
+    const onCreate = vi.fn();
+    renderPlan([], { onCreate });
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "Call supplier 30m" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Call supplier", planToday: true, scheduled: expect.any(Number) }));
+    expect((input as HTMLInputElement).value).toBe("");
+    // an empty field lets Tab move on as usual
+    const e = fireEvent.keyDown(input, { key: "Tab" });
+    expect(e).toBe(true);
+    expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
   it("doesn't crash on a quick-added task with no energy or duration", () => {
@@ -77,7 +93,7 @@ describe("PlanView", () => {
 
   it("doesn't crash when a placed block has no energy", () => {
     renderPlan([task({ id: "b1", title: "Imported block", planToday: true, scheduled: 9 * 60, energy: undefined })]);
-    expect(screen.getByRole("button", { name: /Imported block, 9am – 9:30am/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Imported block, 09:00–09:30/ })).toBeInTheDocument();
   });
 
   it("leaves finished tasks off the canvas", () => {
@@ -89,17 +105,41 @@ describe("PlanView", () => {
     expect(screen.queryByText("Already done")).not.toBeInTheDocument();
   });
 
-  it("'Not today' takes a card off today's list", () => {
+  it("'Not today' takes a card off today's list, with an Undo", () => {
     const { onUpdate } = renderPlan([task({ id: "i1", title: "Expenses", planToday: true, scheduled: null })]);
     fireEvent.click(screen.getByRole("button", { name: /Not today: take “Expenses”/ }));
     expect(onUpdate).toHaveBeenCalledWith("i1", { planToday: false });
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onUpdate).toHaveBeenLastCalledWith("i1", { planToday: true });
+  });
+
+  it("on its own (no list of waved-away tasks) it only offers 'Not today' for what's on today's list", () => {
+    const today = localDayKey();
+    renderPlan([
+      task({ id: "due", title: "Due only", dueDate: today }),
+      task({ id: "listed", title: "Listed", planToday: true }),
+    ]);
+    expect(screen.queryByRole("button", { name: /Not today: take “Due only”/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Not today: take “Listed”/ })).toBeInTheDocument();
+  });
+
+  it("the parse line names a day further off in full (Fri 2 Oct)", () => {
+    renderPlan([]);
+    const input = screen.getByLabelText("Capture a task for today");
+    const line = () => document.getElementById(input.getAttribute("aria-describedby")!)!;
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    const short = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+    const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()];
+    // "in 7 days" rather than "next week", which P14's grammar reads as next Monday (tomorrow on a Sunday)
+    fireEvent.change(input, { target: { value: "Call supplier in 7 days 30m" } });
+    expect(line().textContent).toContain(`${short} ${d.getDate()} ${month} · 30m`);
   });
 
   it("moves a block from the keyboard in one write, and Delete unplans it", () => {
     vi.useFakeTimers();
     const { onUpdate } = renderPlan([task({ id: "b1", title: "Deck", planToday: true, scheduled: 9 * 60 + 7 })]);
     const btn = screen.getByRole("button", { name: /^Deck,/ });
-    btn.focus();
+    act(() => btn.focus());
     fireEvent.keyDown(btn, { key: "ArrowDown" });
     fireEvent.keyDown(btn, { key: "ArrowDown" });
     expect(onUpdate).not.toHaveBeenCalled(); // nudges settle before saving
@@ -120,7 +160,9 @@ describe("PlanView", () => {
     ]);
     const banner = screen.getByRole("region", { name: /Unfinished blocks/ });
     expect(within(banner).getByText(/Yesterday's plan: 2 unfinished blocks/)).toBeInTheDocument();
-    fireEvent.click(within(banner).getByRole("button", { name: "Carry over" }));
+    // the group names them, at their old times, earliest first
+    expect(within(banner).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["A09:00", "B11:00"]);
+    fireEvent.click(within(banner).getByRole("button", { name: "Bring all" }));
     expect(onUpdate).toHaveBeenCalledTimes(2);
     expect(onUpdate).toHaveBeenCalledWith("a", { scheduled: null });
     expect(onUpdate).toHaveBeenCalledWith("b", { scheduled: null });
@@ -190,7 +232,7 @@ describe("PlanView", () => {
     expect(screen.getByText(/Yesterday's plan: 1 unfinished block/)).toBeInTheDocument();
     rerender(el(team));
     expect(screen.getByText(/Yesterday's plan: 2 unfinished blocks/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Carry over" }));
+    fireEvent.click(screen.getByRole("button", { name: "Bring all" }));
     expect(onUpdate).toHaveBeenCalledWith("w1", { scheduled: null });
     expect(onUpdate).toHaveBeenCalledWith("w2", { scheduled: null });
     // …and Personal's prompt is still waiting when you switch back
@@ -212,6 +254,20 @@ describe("PlanView", () => {
     first.unmount();
     renderPlan(tasks, { currentUserId: "u-blocked" });
     expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
+  });
+
+  it("a free gap centred on the hour steps its label clear of the hour rule", () => {
+    const events = [
+      { id: "m1", title: "Morning", start: 8 * 60, end: 15 * 60 + 30, kind: "meeting" as const },
+      { id: "m2", title: "Late", start: 16 * 60 + 30, end: 17 * 60, kind: "meeting" as const },
+    ];
+    const { container } = renderPlan([], { events, nowMin: 8 * 60 });
+    const labels = Array.from(container.querySelectorAll<HTMLElement>(".kday-free-label"));
+    const byText = (t: string) => labels.find((l) => l.textContent === t)!;
+    // 15:30–16:30 is centred on 16:00: its label sits 12px below the rule
+    expect(byText("Free · 1h").style.transform).toBe("translateY(12px)");
+    // 17:00–18:00 is centred on the half hour: left where it is
+    expect(labels.filter((l) => l.textContent === "Free · 1h").map((l) => l.style.transform)).toEqual(["translateY(12px)", ""]);
   });
 
   it("announces plan updates in a live region and points capture at q", () => {
@@ -243,7 +299,7 @@ describe("PlanView drag and drop", () => {
     window.dispatchEvent(new window.PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: o.pointerId ?? 1, pointerType: o.pointerType ?? "mouse" }));
   const press = (el: Element, x: number, y: number, o: { pointerType?: string; pointerId?: number } = {}) =>
     fireEvent.pointerDown(el, { clientX: x, clientY: y, button: 0, pointerId: o.pointerId ?? 1, pointerType: o.pointerType ?? "mouse" });
-  const dragging = () => document.querySelectorAll(".dragging").length > 0;
+  const dragging = () => document.querySelectorAll("[data-dragging]").length > 0;
 
   it("a click opens the block and writes nothing", () => {
     const { btn, onUpdate, onOpen } = setup();
@@ -348,6 +404,29 @@ describe("PlanView drag and drop", () => {
     act(() => { on("pointerup", 103, 134, { pointerType: "touch", pointerId: 7 }); });
     expect(dragging()).toBe(false);
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a task dropped on the Daybeam lands at the time it points to (and the beam is told where)", () => {
+    // the beam spans 08:00–18:00 over 600px at y=950: a pixel a minute, from x=100
+    spies.pop()?.mockRestore();
+    spy(vi.spyOn(Element.prototype, "getBoundingClientRect")).mockImplementation(function (this: Element) {
+      const r = (this as HTMLElement).dataset?.daybeam != null ? { left: 100, right: 700, top: 950, bottom: 966 }
+        : this.tagName === "ASIDE" ? { left: 800, right: 1140, top: 0, bottom: 900 } : { left: 0, right: 780, top: 0, bottom: 900 };
+      return { ...r, x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top, toJSON() { return r; } } as DOMRect;
+    });
+    const due = task({ id: "d1", title: "Send the brief", dueDate: localDayKey() });
+    const { onUpdate } = renderPlan([due], {
+      lede: (drop) => <div data-daybeam="" data-from="480" data-to="1080">{drop ? `lands ${drop.start}–${drop.end}` : "beam"}</div>,
+    });
+    const card = screen.getByRole("button", { name: /^Send the brief, 30m/ }).closest("[data-intake-card]")!;
+    press(card, 900, 100);
+    act(() => { on("pointermove", 880, 110); });
+    act(() => { on("pointermove", 403, 958); });
+    expect(screen.getByText("lands 780–810")).toBeInTheDocument();
+    act(() => { on("pointerup", 403, 958); });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith("d1", { scheduled: 13 * 60, planToday: true });
+    expect(screen.getByText("beam")).toBeInTheDocument();
   });
 
   it("touch: long-press then drag moves the block; a second finger can't drop it", () => {
