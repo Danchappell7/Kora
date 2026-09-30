@@ -85,9 +85,9 @@ describe("Sidebar project actions", () => {
     expect(screen.queryByRole("button", { name: "Restore project Q4 Launch" })).not.toBeInTheDocument();
   });
 
-  it("keeps demo mode fully manageable with App's current props (no myRole, demo data has no owners)", () => {
+  it("keeps demo mode fully manageable with App's props (Daniel owns the demo workspace)", () => {
     const archived = DEMO_PROJECTS.map((p) => p.id === "p-infra" ? { ...p, archivedAt: "2026-09-30" } : p);
-    renderSidebar({ workspaces: DEMO_WORKSPACES, projects: archived, workspace: "ws-foundrise", currentUserId: "m-self" });
+    renderSidebar({ workspaces: DEMO_WORKSPACES, projects: archived, workspace: "ws-foundrise", currentUserId: "m-self", myRole: "owner" });
     for (const name of ["Q3 Product Launch", "Brand Refresh"]) {
       expect(screen.getByRole("button", { name: `Delete project ${name}` })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: `Archive project ${name}` })).toBeInTheDocument();
@@ -102,6 +102,17 @@ describe("Sidebar project actions", () => {
     expect(screen.queryByRole("button", { name: /^Archive project/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pin project Q4 Launch" })).toBeInTheDocument();
+  });
+
+  it("wears each project's identity: a 20px tile (its emoji), and the open one's colour as an edge", () => {
+    renderSidebar({ route: { view: "project", projectId: "p-launch" }, myRole: "owner" });
+    const row = screen.getByRole("button", { name: /^Q4 Launch/ });
+    expect(row.querySelector(".kptile[data-size='20']")?.textContent).toBe("🚀");
+    expect(row).toHaveClass("kp");
+    expect(row.style.getPropertyValue("--p-h")).toMatch(/^\d+$/);
+    expect(row.querySelector(".kpdot")).toBeNull();
+    const css = Array.from(document.querySelectorAll("style")).map((el) => el.textContent ?? "").join("\n");
+    expect(css).toMatch(/\.ksb \.kproj\.kp\[data-active="true"\] \{ box-shadow: inset 2px 0 0 var\(--p-fill\)/);
   });
 
   it("marks the open project with aria-current (its row, not Projects or Today)", () => {

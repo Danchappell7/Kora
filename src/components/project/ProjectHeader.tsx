@@ -8,7 +8,7 @@
    the shell stops rendering it.
    ============================================================ */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Icon, Avatar, AvatarStack, StatusDot, EmojiPicker, Collapse, AiMark, Button, EmptyState, IconButton, Meter, Pill, projectPaint } from "../primitives";
+import { Icon, Avatar, AvatarStack, StatusDot, EmojiPicker, Collapse, AiMark, Button, EmptyState, IconButton, Meter, Pill, ProgressRing, ProjectTile, projectPaint } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { STATUS_KIND_META } from "../views/GoalsPortfolios";
 import { AutomationsView, FormsView } from "../views/RulesForms";
@@ -20,6 +20,7 @@ import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, status
 import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
 import { ComposerPanel, ComposerPopover, POP_STYLE, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
 import { DraftInput } from "./DraftInput";
+import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
@@ -69,7 +70,7 @@ export function projectStatusPill(project: Project, latest?: StatusUpdate): { to
 }
 
 /** Owner first, then contributors (people we can still name). */
-function projectPeople(project: Project): string[] {
+export function projectPeople(project: Project): string[] {
   const ids = [project.ownerId, ...(project.contributorIds ?? [])].filter((id): id is string => !!id);
   return [...new Set(ids)].filter((id) => !!getMember(id));
 }
@@ -95,7 +96,8 @@ export function printProjectReport(project: Project, allProjectTasks: Task[]): v
 
 /* ============================ ProjectTitleAddon ============================ */
 
-/** Beside the project's name in the page header: status pill (opens Updates), progress, people. */
+/** Under the project's name in its header: status pill (opens Updates), a
+ *  progress ring with the count behind it, the next milestone, and the people. */
 export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates }: {
   project: Project;
   tasks: Task[];
@@ -108,13 +110,23 @@ export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates
   const pill = projectStatusPill(project, facts.latest);
   const people = projectPeople(project);
   const names = people.map((id) => getMember(id)?.name).filter(Boolean).join(", ");
+  const done = facts.total - facts.open;
+  const ms = facts.nextMilestone;
   return (
     <span className="kpj-addon">
       <Pill tone={pill.tone} onClick={onOpenUpdates} title={`${pill.title} · open Updates`}>{pill.label}</Pill>
       <span className="kpj-addon-progress" title={`${facts.pct}% of ${plural(facts.total, "task")} done`}>
-        <Meter value={facts.pct} width={64} height={4} label={`${project.name} progress`} />
+        <ProgressRing value={facts.pct} size={16} label={`${project.name} progress`} />
         <span className="kpj-mono">{facts.pct}%</span>
+        {facts.total > 0 && <span className="kpj-addon-of" aria-hidden="true">{done} of {facts.total}</span>}
       </span>
+      {ms?.dueDate && (
+        <span className="kpj-addon-ms" title={`Next milestone: ${ms.title}`}>
+          <Icon name="flag" size={14} sw={1.75} />
+          <span className="kpj-addon-ms-title">{ms.title}</span>
+          <span className="kpj-mono">{fmtShortDay(ms.dueDate, KANBO_TODAY)}</span>
+        </span>
+      )}
       {people.length > 0 && (
         <span className="kpj-people" title={names} role="img" aria-label={`People: ${names}`}>
           <AvatarStack ids={people.slice(0, 3)} size={24} />
@@ -131,7 +143,7 @@ interface MenuItem { id: string; label: string; icon: IconName; run: () => void;
 
 /** The page header's actions: Draft update (Kanbo writes it) · Post update (an empty field) ·
  *  ⋯ Project actions. Both buttons open the same composer, on the project's one shared draft. */
-export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate }: {
+export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -144,8 +156,11 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   onArchive?: (id: string) => void;
   onDelete?: (id: string) => void;
   onSaveTemplate?: (id: string) => void;
+  /** "Edit identity": saves the project's icon and colour together */
+  onEditIdentity?: (patch: { emoji: string; color: string }) => void;
 }): JSX.Element {
   const canPost = !readOnly && !!onPostStatus;
+  const [identityOpen, setIdentityOpen] = useState(false);
   const [open, setOpen] = useState<null | "draft" | "post">(null);
   const [menuOpen, setMenuOpen] = useState(false);
   // "Save as template" answers in place: saved, or this device's storage refused it
@@ -154,7 +169,7 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   const postRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus, onPosted: () => setOpen(null) });
-  useEffect(() => { setOpen(null); setMenuOpen(false); setSaved(null); }, [project.id]);
+  useEffect(() => { setOpen(null); setMenuOpen(false); setSaved(null); setIdentityOpen(false); }, [project.id]);
   useEffect(() => {
     if (saved !== "saved") return;
     const t = window.setTimeout(() => { setSaved(null); setMenuOpen(false); }, 1200);
@@ -173,6 +188,7 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   };
   const run = (fn: () => void) => () => { setMenuOpen(false); fn(); };
   const items: MenuItem[] = [
+    ...(!readOnly && onEditIdentity ? [{ id: "identity", label: "Edit identity", icon: "palette" as IconName, run: run(() => setIdentityOpen(true)) }] : []),
     { id: "about", label: "Details", icon: "notes", run: run(() => onTab("about")) },
     ...(!readOnly ? [{ id: "rules", label: "Rules", icon: "zap" as IconName, run: run(() => onTab("rules")) }] : []),
     { id: "requests", label: "Requests", icon: "inbox", run: run(() => onTab("requests")) },
@@ -223,6 +239,9 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
           </button>,
         ])}
       </Popover>
+      {onEditIdentity && !readOnly && (
+        <EditIdentitySheet project={project} open={identityOpen} onClose={() => { setIdentityOpen(false); moreRef.current?.focus(); }} onSave={onEditIdentity} />
+      )}
     </div>
   );
 }
@@ -394,23 +413,26 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
           <dd>
             {canManage ? (
               <>
-                <button type="button" className="kpj-emoji-btn" aria-label="Project icon" aria-expanded={emojiOpen} onClick={() => setEmojiOpen((v) => !v)}>{project.emoji || "📁"}</button>
+                <span className="kpj-about-tile"><ProjectTile project={project} size={28} /></span>
                 <DraftInput value={project.name} required label="Project name" onCommit={(v) => onUpdate(project.id, { name: v })} className="kpj-field" style={{ flex: "1 1 220px" }} />
-                {emojiOpen && <div style={{ flexBasis: "100%" }}><EmojiPicker width={280} height={200} onPick={(e) => { onUpdate(project.id, { emoji: e }); setEmojiOpen(false); }} /></div>}
               </>
-            ) : <span style={{ color: "var(--ink)" }}>{project.emoji} {project.name}</span>}
+            ) : <span className="kpj-about-named"><ProjectTile project={project} size={20} /><span style={{ color: "var(--ink)" }}>{project.name}</span></span>}
           </dd>
 
           {canManage && (
             <>
-              <dt>Colour</dt>
+              <dt>Identity</dt>
               <dd>
-                <div className="kpj-swatches" role="group" aria-label="Project colour">
-                  {PROJECT_COLOURS.map((c) => (
-                    <button key={c.value} type="button" className="kpj-swatch" aria-label={c.name} title={c.name} aria-pressed={project.color === c.value}
-                      style={{ background: projectPaint(c.value).solid }} onClick={() => onUpdate(project.id, { color: c.value })} />
-                  ))}
-                </div>
+                <button type="button" className="kpj-about-identity" aria-expanded={emojiOpen} onClick={() => setEmojiOpen((v) => !v)}>
+                  <span>{emojiOpen ? "Done" : "Change icon and colour"}</span>
+                  <Icon name="chevronDown" size={14} sw={1.75} />
+                </button>
+                {emojiOpen && (
+                  <div className="kpj-about-idf">
+                    <IdentityFields name={project.name} emoji={project.emoji ?? ""} color={project.color}
+                      onEmoji={(e) => onUpdate(project.id, { emoji: e })} onColor={(c) => onUpdate(project.id, { color: c })} />
+                  </div>
+                )}
               </dd>
             </>
           )}

@@ -14,7 +14,7 @@
    ============================================================ */
 import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { Icon, Collapse, avatarPaint, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
+import { Icon, Collapse, avatarDisc, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
 import type { IconName, CalendarConnection, CalProvider, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
@@ -556,7 +556,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const avatar = (size: number, url: string | null, name: string) => url
     ? <img src={url} alt="" className="kset-avatar" style={{ width: size, height: size }} />
     : (
-      <span aria-hidden="true" className="kset-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.4), background: avatarPaint(color).fill, color: avatarPaint(color).ink }}>
+      <span aria-hidden="true" className="kset-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.42), ...avatarDisc(color) }}>
         {memberInitials(name)}
       </span>
     );

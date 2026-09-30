@@ -5,7 +5,7 @@
    ============================================================ */
 import { useState, useMemo, useEffect, useRef, useId } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectDot, SectionLabel } from "./primitives";
+import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectTile, SectionLabel, projectIdentity } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { MenuItem, MenuSeparator } from "./Topbar";
 import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
@@ -117,7 +117,7 @@ main[tabindex="-1"]:focus { outline: none; }
 /* projects */
 .ksb-projects { margin-top: 4px; }
 .ksb .kproj {
-  display: flex; align-items: center; gap: 12px; width: 100%; height: 30px; padding: 0 8px 0 12px;
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 8px 0 6px;
   border: 0; border-radius: var(--r-sm, 6px); background: transparent; box-shadow: none; cursor: pointer; text-align: left;
   font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
   transition: background-color var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
@@ -133,6 +133,9 @@ main[tabindex="-1"]:focus { outline: none; }
 .kproj-name { flex: 1; min-width: 0; }
 .kproj-n { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kproj-pinmark { display: inline-flex; color: var(--accent-text, var(--accent)); flex-shrink: 0; }
+/* the open project: its colour as a 2px bar on the inside left edge (its tile
+   is centred on the nav icons' 16px column) */
+.ksb .kproj.kp[data-active="true"] { box-shadow: inset 2px 0 0 var(--p-fill), var(--e1, 0 0 0 1px var(--hairline), 0 1px 2px oklch(0.2 0.03 268 / 0.06)); }
 .kproj-item:hover .kproj-n, .kproj-item:hover .kproj-pinmark { visibility: hidden; }
 .kproj-item:has(:focus-visible, .kproj-acts:focus-within) :is(.kproj-n, .kproj-pinmark) { visibility: hidden; }
 .kproj-acts { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 1px; opacity: 0; pointer-events: none; transition: opacity var(--d-2, 160ms) var(--ease); }
@@ -156,7 +159,8 @@ main[tabindex="-1"]:focus { outline: none; }
 .ksb-empty { margin: 0; padding: 4px 8px 8px 12px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .ksb-link { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-text, var(--accent)); cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in oklch, currentColor 40%, transparent); text-underline-offset: 3px; }
 .ksb-link:hover { text-decoration-color: currentColor; }
-.ksb-arch-row { display: flex; align-items: center; gap: 12px; height: 28px; padding: 0 2px 0 12px; }
+.ksb-arch-row { display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 2px 0 8px; }
+.ksb-arch-row > .kptile { opacity: 0.7; }
 .ksb-arch-row > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
 /* footer: billing, the Focus pill, the account row */
@@ -710,8 +714,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                 const reserve = (1 + (archivable ? 1 : 0) + (deletable ? 1 : 0)) * 25 + 8;
                 return (
                   <div key={p.id} role="listitem" className="kproj-item" style={{ "--kacts": `${reserve}px` } as CSSProperties}>
-                    <button type="button" onClick={() => setRoute({ view: "project", projectId: p.id })} className="kproj" data-active={active || undefined} aria-current={active ? "page" : undefined}>
-                      <ProjectDot color={p.color} size={8} />
+                    <button type="button" onClick={() => setRoute({ view: "project", projectId: p.id })} className="kproj kp" style={projectIdentity(p).style} data-active={active || undefined} aria-current={active ? "page" : undefined}>
+                      <ProjectTile project={p} size={20} />
                       <span className="truncate kproj-name">{p.name}</span>
                       {isPinned && <span className="kproj-pinmark" aria-hidden="true"><StarGlyph filled size={11} /></span>}
                       {isPinned && <span className="sr-only">, pinned</span>}
@@ -761,7 +765,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
               </button>
               <Collapse open={archivedOpen}>{archivedProjects.map((p) => (
                 <div key={p.id} className="ksb-arch-row">
-                  <ProjectDot color={p.color} size={8} />
+                  <ProjectTile project={p} size={16} />
                   <span>{p.name}</span>
                   {onRestoreProject && canArchive(p) && (
                     <IconButton size="sm" icon="refresh" label={`Restore project ${p.name}`} onClick={(e) => { e.stopPropagation(); onRestoreProject(p.id); }} />

@@ -14,7 +14,7 @@ import type {
   PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, FocusEvent as ReactFocusEvent,
   MouseEvent as ReactMouseEvent, CSSProperties, ReactNode, RefObject, SyntheticEvent,
 } from "react";
-import { Icon, chipInk, chipFill, chipEdge, Button, Kbd, StatusGlyph, ProjectDot, EmptyState, SectionLabel, projectPaint } from "../primitives";
+import { Icon, chipInk, chipFill, chipEdge, Button, Kbd, StatusGlyph, ProjectTile, EmptyState, SectionLabel, projectIdentity } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useToast } from "../Toast";
@@ -204,6 +204,7 @@ const PLAN_CSS = `
 .kday-earlier { display: inline-flex; align-items: center; gap: 6px; height: 32px; margin: 0 0 4px; padding: 0 8px 0 4px; border: 0; border-radius: var(--kp-r-sm);
   background: none; cursor: pointer; font: 500 12px/16px var(--kp-ui); color: var(--ink-3); }
 .kday-earlier:hover { background: var(--fill-1); color: var(--ink); }
+.kday-after { padding: 8px 0 0; }
 .kday-hour { position: absolute; left: 0; right: 0; height: 0; pointer-events: none; }
 .kday-hour-label { position: absolute; left: 0; top: -8px; width: 44px; text-align: right;
   font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
@@ -234,6 +235,9 @@ const PLAN_CSS = `
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   transition: box-shadow var(--kp-d1) var(--ease), opacity var(--kp-d2) var(--ease); }
 .kday-block::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--edge, var(--ink-4)); }
+/* a project's block wears its identity: its tint, and its fill as the 3px edge */
+.kday-block.kp { background: var(--p-tint); }
+.kday-block.kp::before { background: var(--p-fill); }
 .kday-block[data-deep="true"]::before { background: var(--kp-grad-v); }
 .kday-block:hover { box-shadow: var(--kp-e2); }
 .kday-block[data-now="true"] { box-shadow: var(--kp-e1), 0 0 0 1px var(--kp-accent-line); }
@@ -529,9 +533,9 @@ function TaskBlock({ task, start, lane, win, nowMin, helpId, readOnly, onStartDr
   const tall = h >= 46;
   const done = task.status === "done";
   const focus = useFocusRing();
-  const style = { ...inset(top, h), ...laneStyle(lane), "--edge": proj ? projectPaint(proj.color).solid : undefined, animationDelay: landing != null ? `${landing * 40}ms` : undefined } as CSSProperties;
+  const style = { ...inset(top, h), ...laneStyle(lane), ...(proj ? projectIdentity(proj).style : null), animationDelay: landing != null ? `${landing * 40}ms` : undefined } as CSSProperties;
   return (
-    <div onPointerDown={(ev) => onStartDrag(ev, task, "canvas")} className="kday-block" style={style}
+    <div onPointerDown={(ev) => onStartDrag(ev, task, "canvas")} className={proj ? "kday-block kp" : "kday-block"} style={style}
       data-deep={deep || undefined} data-now={(now && !done) || undefined} data-past={(start + dur <= nowMin && !done) || undefined}
       data-ring={focus.ring || undefined} data-dragging={dragging || undefined} data-landing={landing != null || undefined}
       data-tall={tall || undefined} data-short={h < 28 || undefined} data-done={done || undefined}>
@@ -566,7 +570,7 @@ function TaskBlock({ task, start, lane, win, nowMin, helpId, readOnly, onStartDr
       {tall && (
         <div className="kday-block-meta" aria-hidden="true">
           <span>{fmtTime(start)} · {fmtDuration(dur)}</span>
-          {proj && <span className="kday-proj"><ProjectDot color={proj.color} />{proj.name}</span>}
+          {proj && <span className="kday-proj"><ProjectTile project={proj} size={16} />{proj.name}</span>}
         </div>
       )}
     </div>
@@ -610,7 +614,7 @@ function GhostView({ task, ghost, lane, win, helpId, onStartDrag, onOpen, onAcce
       {tall && (
         <div className="kday-ghost-sub" aria-hidden="true">
           <span>{range}</span>
-          {proj && <span className="kday-proj"><ProjectDot color={proj.color} />{proj.name}</span>}
+          {proj && <span className="kday-proj"><ProjectTile project={proj} size={16} />{proj.name}</span>}
         </div>
       )}
       {/* with a mouse they appear on hover or focus; on touch they're always there, as icons */}
@@ -894,7 +898,7 @@ function RailItem({ task, today, me, slot, tomorrow, readOnly, dragging, canSkip
       {/* the meta line runs the full width, under the suggested slot too */}
       <div className="krail-item-meta" aria-hidden="true">
         <span className="mono">{fmtDuration(durOf(task))}</span>
-        {proj && <><span className="krail-dot">·</span><span className="krail-proj"><ProjectDot color={proj.color} /><span>{proj.name}</span></span></>}
+        {proj && <><span className="krail-dot">·</span><span className="krail-proj"><ProjectTile project={proj} size={16} /><span>{proj.name}</span></span></>}
         {due && <><span className="krail-dot">·</span><span className="mono" data-tone={overdue ? "signal" : undefined}>{due}</span></>}
         {from && <><span className="krail-dot">·</span><span className="krail-from">from {from}</span></>}
       </div>
@@ -959,9 +963,9 @@ export interface PlanViewProps {
   onStartFocus?: (id: string) => void;
   onExtractFromMeeting?: (meetingTitle: string) => void;
   onConnectCalendar?: () => void;
-  /** show only the due-today or overdue group (the brief's figures) */
-  railFocus?: "due" | "overdue" | null;
-  onRailFocus?: (f: "due" | "overdue" | null) => void;
+  /** show only what's due today, overdue, slipping or new from the team (the brief's numbers) */
+  railFocus?: RailFocusKind | null;
+  onRailFocus?: (f: RailFocusKind | null) => void;
   /** bump to flash the free gaps (the brief's "free" figure) */
   freePulse?: number;
   /** this week's Big 3 task ids */
@@ -971,14 +975,25 @@ export interface PlanViewProps {
   /** people and projects for @mentions and #projects in the capture field */
   members?: { id: string; name: string }[];
   projects?: { id: string; name: string }[];
+  /** at the top of the rail, above Unplanned ("Kanbo noticed") */
+  railTop?: ReactNode;
+  /** after the working day: shown instead of the day's grid (which folds behind a toggle) */
+  afterHours?: ReactNode;
 }
+
+export type RailFocusKind = "due" | "overdue" | "slipping" | "team";
+const FOCUS_LABEL: Record<RailFocusKind, string> = {
+  due: "what's due today", overdue: "what's overdue", slipping: "what's slipping", team: "what's new from the team",
+};
 
 export function PlanView({
   tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false, currentUserId, captureDefaults,
   lede, events: eventsProp, nowMin: nowProp, ghosts = [], tomorrowIds, skipped, onSkip, onUnskip, landing, readOnly = false,
   onStartFocus, onExtractFromMeeting, onConnectCalendar, railFocus = null, onRailFocus, freePulse, big3, onOpenMyTasks, onShutdown,
-  members: membersProp, projects: projectsProp,
+  members: membersProp, projects: projectsProp, railTop, afterHours,
 }: PlanViewProps) {
+  // after hours the day's grid folds away behind a toggle
+  const [dayOpen, setDayOpen] = useState(false);
   const authUserId = useAuthUserId();
   const me = currentUserId ?? authUserId;
   const toast = useOptionalToast();
@@ -1532,9 +1547,23 @@ export function PlanView({
 
   // the brief's figures narrow the rail; scroll it to the top so the group is in view
   useEffect(() => { if (railFocus) railScrollRef.current?.scrollTo?.({ top: 0 }); }, [railFocus]);
+  const yesterday = useMemo(() => { const [y, m, d] = day.split("-").map(Number); return localDayKey(new Date(y, m - 1, d - 1)); }, [day]);
+  const focusTest = (t: Task): boolean => {
+    const due = t.dueDate?.slice(0, 10);
+    switch (railFocus) {
+      case "due": return due === day;
+      case "overdue": return !!due && due < day;
+      case "slipping": return !!due && !!t.originalDueDate && due > t.originalDueDate.slice(0, 10);
+      case "team": return !!me && t.assigneeId === me && !!t.createdBy && t.createdBy !== me && (t.createdAt ?? "").slice(0, 10) >= yesterday;
+      default: return true;
+    }
+  };
+  const NONE: Task[] = [];
   const shown = railFocus === "due"
-    ? { overdue: [], today: groups.today.filter((t) => t.dueDate?.slice(0, 10) === day), week: [], inbox: [] }
-    : railFocus === "overdue" ? { overdue: groups.overdue, today: [], week: [], inbox: [] } : groups;
+    ? { overdue: NONE, today: groups.today.filter(focusTest), week: NONE, inbox: NONE, focus: NONE }
+    : railFocus === "overdue" ? { overdue: groups.overdue, today: NONE, week: NONE, inbox: NONE, focus: NONE }
+    : railFocus ? { overdue: NONE, today: NONE, week: NONE, inbox: NONE, focus: [...groups.overdue, ...groups.today, ...groups.week, ...groups.inbox, ...groups.later].filter(focusTest) }
+    : { ...groups, focus: NONE };
 
   const big3Tasks = (big3 ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t && !t.archivedAt);
 
@@ -1549,15 +1578,12 @@ export function PlanView({
     </section>
   );
   // narrowed by the brief's figure: what of it is already on the day (the brief counts that too)
-  const focusOnDay = railFocus ? blocks.filter((b) => {
-    const due = b.task.dueDate?.slice(0, 10);
-    return b.task.status !== "done" && !!due && (railFocus === "due" ? due === day : due < day);
-  }).length : 0;
+  const focusOnDay = railFocus ? blocks.filter((b) => b.task.status !== "done" && focusTest(b.task)).length : 0;
 
   const railEmpty = unplannedCount === 0 && groups.later.length === 0 && carryTasks.length === 0;
   const floatEdge = drag ? (() => {
     const t = taskById.get(drag.taskId); const p = t ? getProject(t.projectId) : undefined;
-    return drag.energy === "deep" ? "var(--kp-grad-v)" : p ? projectPaint(p.color).solid : "var(--accent)";
+    return drag.energy === "deep" ? "var(--kp-grad-v)" : p ? projectIdentity(p).fill : "var(--accent)";
   })() : undefined;
   const zoom = drag ? uiZoom() : 1; // the fixed float sits inside the zoomed page: screen px ÷ zoom
   const noCalendar = !calendarConnected && dayEvents.length === 0 && !!onConnectCalendar && !readOnly;
@@ -1613,13 +1639,24 @@ export function PlanView({
               <Icon name="calendar" size={14} sw={1.75} /> Connect your calendar to see meetings here
             </button>
           )}
-          {stacked && (win.from > DAY_START || earlier) && (
-            <button type="button" className="kday-earlier" aria-expanded={earlier} onClick={() => setEarlier((e) => !e)}>
-              <Icon name={earlier ? "chevronDown" : "chevronRight"} size={14} sw={1.75} />
-              {earlier ? "Hide earlier today" : `Earlier today · ${fmtTime(DAY_START)}–${fmtTime(win.from)}`}
+          {afterHours && (
+            // after hours the day is behind you: its grid folds away, and tomorrow takes its place
+            <button type="button" className="kday-earlier" aria-expanded={dayOpen} onClick={() => setDayOpen((o) => !o)}>
+              <Icon name={dayOpen ? "chevronDown" : "chevronRight"} size={14} sw={1.75} />
+              {dayOpen ? "Hide today's hours" : `Today · ${fmtTime(DAY_START)}–${fmtTime(DAY_END)}${blocks.length ? ` · ${blocks.length} ${blocks.length === 1 ? "block" : "blocks"}` : ""}`}
             </button>
           )}
-          {canvas}
+          {afterHours && !dayOpen ? <div className="kday-after">{afterHours}</div> : (
+            <>
+              {stacked && (win.from > DAY_START || earlier) && (
+                <button type="button" className="kday-earlier" aria-expanded={earlier} onClick={() => setEarlier((e) => !e)}>
+                  <Icon name={earlier ? "chevronDown" : "chevronRight"} size={14} sw={1.75} />
+                  {earlier ? "Hide earlier today" : `Earlier today · ${fmtTime(DAY_START)}–${fmtTime(win.from)}`}
+                </button>
+              )}
+              {canvas}
+            </>
+          )}
         </div>
       </div>
       <aside ref={railRef} className="krail" aria-label="Unplanned" data-drop={(overRail && drag?.source === "canvas") || undefined}>
@@ -1630,13 +1667,14 @@ export function PlanView({
           {/* side by side, capture heads the rail; in one column the rail is "Unplanned"
               under the agenda, with capture at its top */}
           {!stacked && captureField}
+          {railTop}
           {!stacked && big3Section}
           {railHead}
           {stacked && captureField}
           {stacked && big3Section}
           {railFocus && (
             <div className="krail-filter" role="status">
-              <span>Showing {railFocus === "due" ? "what's due today" : "what's overdue"}{focusOnDay > 0 ? ` · ${focusOnDay} already on your day` : ""}</span>
+              <span>Showing {FOCUS_LABEL[railFocus]}{focusOnDay > 0 ? ` · ${focusOnDay} already on your day` : ""}</span>
               <button type="button" onClick={() => onRailFocus?.(null)}>Show all</button>
             </div>
           )}
@@ -1670,6 +1708,11 @@ export function PlanView({
           {renderGroup("today", "Today", shown.today)}
           {renderGroup("week", "This week", shown.week)}
           {renderGroup("inbox", "From Inbox", shown.inbox)}
+          {railFocus === "slipping" && renderGroup("slipping", "Slipping", shown.focus)}
+          {railFocus === "team" && renderGroup("team", "New from the team", shown.focus)}
+          {railFocus && railFocus !== "due" && railFocus !== "overdue" && shown.focus.length === 0 && (
+            <p className="krail-note"><Icon name="check" size={14} sw={2} />Nothing left to place here{focusOnDay > 0 ? ": it's on your day" : ""}.</p>
+          )}
           {!railFocus && railEmpty && blocks.length === 0 && (
             <EmptyState size="sm" art="tasks" title="Nothing waiting"
               body={readOnly ? "Nothing's lined up for today." : "Capture something above, or pull from My tasks."}

@@ -4,7 +4,7 @@
    between every view and the store.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
-import { Icon, GlobalTipStyles, AppBg, Button, IconButton, ProjectDot, type TabItem } from "./components/primitives";
+import { Icon, GlobalTipStyles, AppBg, Button, IconButton, type TabItem } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { PageHeader, type PageHeaderProps } from "./components/Topbar";
@@ -194,6 +194,9 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** "Wed 30 Sep" (spelt out here: some browsers' en-GB says "Sept") */
 const dayMeta = (d: Date) => `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+
+/** 16:00 until the working day ends (18:00): when Today's header offers Shut down. */
+const isLateDay = () => { const h = new Date().getHours(); return h >= 16 && h < 18; };
 
 export default function App() {
   const auth = useAuth();
@@ -540,10 +543,15 @@ export default function App() {
   }, [route.view]);
   // while the inbox is on screen, what it shows (this workspace only) is read —
   // including anything that arrives while you're looking at it
+  // what was unread when this inbox visit began (and anything that lands during
+  // it): the page's "3 new" counts these, as its rows keep their dots for the visit
+  const [inboxVisitNew, setInboxVisitNew] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => { if (route.view !== "inbox") setInboxVisitNew((s) => (s.size ? new Set() : s)); }, [route.view, workspace]);
   useEffect(() => {
     if (route.view !== "inbox") return;
     const unread = scopedActivity.filter((a) => !a.readAt).map((a) => a.id);
     if (!unread.length) return;
+    setInboxVisitNew((s) => { const n = new Set(s); unread.forEach((id) => n.add(id)); return n; });
     const stamp = new Date().toISOString();
     const ids = new Set(unread);
     unread.forEach((id) => readLocallyRef.current.set(id, stamp));
@@ -3139,9 +3147,10 @@ export default function App() {
   }, [shellShown, page, pageTitle]);
   // someone new to Kanbo never needs "What moved" (they get "Your five places" in the tour)
   useEffect(() => { if (shellShown && !knewOldLayout) markWhatMovedSeen(); }, [shellShown, knewOldLayout]);
-  // after 16:00 Today offers "Shut down" (flips once, not every minute)
-  const [lateDay, setLateDay] = useState(() => new Date().getHours() >= 16);
-  useEffect(() => subscribeMinute(() => setLateDay(new Date().getHours() >= 16)), []);
+  // 16:00–18:00 Today's header offers "Shut down" (after 18:00 it's the brief's own hero);
+  // flips when the phase changes, not every minute
+  const [lateDay, setLateDay] = useState(isLateDay);
+  useEffect(() => subscribeMinute(() => setLateDay(isLateDay())), []);
 
   // ---- auth / loading gates ----
   if (auth.recovery) return <UpdatePasswordScreen />;
@@ -3266,7 +3275,7 @@ export default function App() {
   const tabItem = (t: PlaceTab, extra: Partial<TabItem> = {}): TabItem => ({ id: t.id, label: t.label, secondary: t.secondary, href: pathOf(t.route), ...extra });
   const placeTab = (tabs: PlaceTab[]) => (id: string) => { const t = tabs.find((x) => x.id === id); if (t) setRoute(t.route); };
   const place = placeOf(route);
-  const header: Pick<PageHeaderProps, "title" | "meta" | "leading" | "titleAddon" | "switcher" | "actions" | "tabs" | "tabValue" | "onTab" | "tabsLabel" | "momentum"> = (() => {
+  const header: Pick<PageHeaderProps, "title" | "meta" | "leading" | "titleAddon" | "switcher" | "actions" | "tabs" | "tabValue" | "onTab" | "tabsLabel" | "momentum" | "identity"> = (() => {
     switch (place) {
       case "today": {
         if (route.view === "home") {
@@ -3285,8 +3294,10 @@ export default function App() {
           momentum: route.view === "plan" && dayTotal > 0 ? doneToday / dayTotal : null,
         };
       }
-      case "inbox":
-        return { title: "Inbox", meta: inboxCount > 0 ? `${inboxCount} new` : "Nothing new" };
+      case "inbox": {
+        const fresh = inboxVisitNew.size + inboxCount;
+        return { title: "Inbox", meta: fresh > 0 ? `${fresh} new` : "Nothing new" };
+      }
       case "tasks": {
         // a smart list or saved view names itself
         if (route.view === "search") return { title: "Search", meta: route.list ? SMART_LISTS.find((l) => l.id === route.list)?.label ?? savedActive?.name : undefined };
@@ -3298,19 +3309,16 @@ export default function App() {
           if (!openProject) return { title: "Project" };
           return {
             title: openProject.name,
-            leading: (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <ProjectDot color={openProject.color} size={10} />
-                {openProject.emoji && <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1 }}>{openProject.emoji}</span>}
-              </span>
-            ),
+            // its cover, and its tile (its emoji lives there, never beside the name as well)
+            identity: { project: openProject, crumb: { label: "Projects", href: pathOf({ view: "projects" }), onClick: () => setRoute({ view: "projects" }) } },
             titleAddon: <ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")} />,
             actions: (
               <ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
                 onDuplicate={activeReadOnly ? undefined : duplicateProject}
                 onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}
-                onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)} />
+                onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)}
+                onEditIdentity={activeReadOnly ? undefined : (patch) => updateProject(openProject.id, patch)} />
             ),
           };
         }
@@ -3368,7 +3376,8 @@ export default function App() {
         onStartFocus={startFocus} onShutdown={() => setShutdownOpen(true)} onExtractFromMeeting={(title) => openExtract(undefined, title)}
         onConnectCalendar={() => openSettings("calendar")} setup={setup} showSuggestions={appearance.suggestions !== false}
         riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={activeReadOnly}
-        members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })} />;
+        members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
+        risks={risks} onAsk={() => openPalette()} />;
       case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} readOnly={activeReadOnly} />;
       // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
       // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
@@ -3593,7 +3602,7 @@ export default function App() {
       {focusOpen && <FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length} />
-      <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
+      <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
         onGoToday={() => setRoute({ view: "plan" })} />

@@ -245,14 +245,48 @@ describe("ProjectActions — the ⋯ menu", () => {
   });
 });
 
+describe("ProjectActions: Edit identity", () => {
+  it("opens from ⋯, previews the choice live, and saves icon and colour together", async () => {
+    const onEditIdentity = vi.fn();
+    render(<ProjectActions project={P} tasks={TASKS} statusUpdates={UPDATES} canManage readOnly={false} onTab={() => {}} onEditIdentity={onEditIdentity} />);
+    fireEvent.click(screen.getByRole("button", { name: "Project actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit identity" }));
+    const sheet = await screen.findByRole("dialog", { name: "Edit identity of Alpha" });
+    const save = within(sheet).getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();                                                      // nothing changed yet
+    expect(within(sheet).getByRole("radio", { name: "Sky" })).toHaveAttribute("aria-checked", "true");  // its stored colour, read as the spectrum
+    fireEvent.click(within(sheet).getByRole("radio", { name: "Jade" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "🌱" }));
+    expect(sheet.querySelector(".kptile")?.textContent).toBe("🌱");
+    fireEvent.click(save);
+    expect(onEditIdentity).toHaveBeenCalledWith({ emoji: "🌱", color: "oklch(0.62 0.144 158)" });
+  });
+
+  it("isn't offered to a guest", () => {
+    render(<ProjectActions project={P} tasks={TASKS} statusUpdates={UPDATES} canManage={false} readOnly onTab={() => {}} onEditIdentity={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Project actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Edit identity" })).not.toBeInTheDocument();
+  });
+});
+
 describe("ProjectTitleAddon", () => {
   it("shows the latest call as a pill that opens Updates, the progress and the people", () => {
     const onOpenUpdates = vi.fn();
     render(<ProjectTitleAddon project={P} tasks={TASKS} statusUpdates={UPDATES} onOpenUpdates={onOpenUpdates} />);
     fireEvent.click(screen.getByRole("button", { name: "At risk" }));
     expect(onOpenUpdates).toHaveBeenCalled();
-    expect(screen.getByRole("progressbar", { name: "Alpha progress" })).toHaveAttribute("aria-valuenow", "33");
+    const ring = screen.getByRole("progressbar", { name: "Alpha progress" });
+    expect(ring).toHaveAttribute("aria-valuenow", "33");
+    expect(ring).toHaveClass("kring");                                               // a ring, not a bar
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /^People: Daniel Okai, Maya Lin$/ })).toBeInTheDocument();
+  });
+
+  it("names the next milestone and when it lands", () => {
+    const ms = task("m1", { title: "Launch day", isMilestone: true, dueDate: iso(3) });
+    render(<ProjectTitleAddon project={P} tasks={[...TASKS, ms]} statusUpdates={UPDATES} onOpenUpdates={() => {}} />);
+    const chip = screen.getByTitle("Next milestone: Launch day");
+    expect(chip).toHaveTextContent("Launch day");
   });
 
   it("says No update when nobody has posted one", () => {

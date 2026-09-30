@@ -425,7 +425,8 @@
   }
   @container ktvlist (max-width: 600px) {
     .ktv-row .ktv-proj { width: auto; }
-    .ktv-row .ktv-proj > span:last-child { display: none; }
+    /* (the tile stays; the name is still read out) */
+    .ktv-row .ktv-proj > span:last-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   }
 }
 

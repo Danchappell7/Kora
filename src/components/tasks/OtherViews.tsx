@@ -6,7 +6,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, use
 import { createPortal } from "react-dom";
 import {
   Icon, Avatar, wasJustLanded, markJustLanded, Segmented,
-  StatusGlyph, PriorityGlyph, DateChip, ProjectDot, projectPaint, Button, IconButton, EmptyState,
+  StatusGlyph, PriorityGlyph, DateChip, ProjectTile, projectPaint, Button, IconButton, EmptyState,
 } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
@@ -289,7 +289,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
               )}
             </span>
           ) : loud ? <PriorityGlyph priority={task.priority} /> : null}
-          {p.showProject && proj && <ProjectDot color={proj.color} title={proj.name} />}
+          {p.showProject && proj && <ProjectTile project={proj} size={16} title={proj.name} />}
           {onPatch && members.length > 0 ? (
             <span style={{ display: "inline-flex" }} onClick={stop}>
               <button ref={assignBtn} type="button" className="ktv-trig" data-card-assignee onClick={() => toggle("assignee")} aria-label={`${assignee ? `Assigned to ${assignee.name}` : "Unassigned"}. Change assignee of ${task.title}`}
@@ -358,7 +358,7 @@ function WipLimitEditor({ column, current, perBoard, onSave, onClose }: { column
   );
 }
 
-interface BoardCol { key: string; label: string; status?: Status; dot?: string; avatar?: string; accepts: boolean; hint?: string }
+interface BoardCol { key: string; label: string; status?: Status; project?: Project; avatar?: string; accepts: boolean; hint?: string }
 const BOARD_GROUPS: { value: BoardGroup; label: string }[] = [{ value: "status", label: "Status" }, { value: "priority", label: "Priority" }, { value: "project", label: "Project" }, { value: "assignee", label: "Assignee" }];
 
 export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle, activeId }: {
@@ -469,7 +469,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     : group === "priority" ? (["urgent", "high", "medium", "low"] as Priority[]).map((pr) => ({ key: pr, label: PRIORITY_META[pr].label, accepts: true }))
     : group === "project" ? [
         ...[...new Set(boardTasks.map((t) => t.projectId))].map((pid) => ({ pid, pr: getProject(pid) })).filter((x): x is { pid: string; pr: Project } => !!x.pr)
-          .map(({ pid, pr }) => ({ key: pid, label: pr.name, dot: pr.color, accepts: true })),
+          .map(({ pid, pr }) => ({ key: pid, label: pr.name, project: pr, accepts: true })),
         ...(colItems[NO_PROJECT_COL]?.length ? [{ key: NO_PROJECT_COL, label: "Other projects", accepts: false, hint: "In projects you can't see here. Drag a card to a project to move it." }] : []),
       ]
     : [
@@ -606,7 +606,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
           const dropOk = canDrag && col.accepts;
           const lead = col.status ? <StatusGlyph status={col.status} size={14} readOnly />
             : col.avatar && getMember(col.avatar) ? <Avatar id={col.avatar} size={20} />
-            : col.dot ? <ProjectDot color={col.dot} size={10} />
+            : col.project ? <ProjectTile project={col.project} size={20} />
             : col.key in PRIORITY_META ? <PriorityGlyph priority={col.key as Priority} />
             : <span className="ktv-dot" style={{ background: "var(--icon-quiet, var(--ink-4))" }} />;
           if (isCollapsed) {
@@ -931,7 +931,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
             {byProject.map((g) => (
               <div key={g.project.id} className="ktv-tl-group">
                 <div className="ktv-tl-lane">
-                  <div className="ktv-tl-lane-in"><ProjectDot color={g.project.color} /><span>{g.project.name}</span><small>{g.items.length}</small></div>
+                  <div className="ktv-tl-lane-in"><ProjectTile project={g.project} size={16} /><span>{g.project.name}</span><small>{g.items.length}</small></div>
                 </div>
                 <div className="ktv-tl-rows" style={{ width: trackW }}>
                   {g.rows.map((t) => {
@@ -1195,7 +1195,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
                 <button key={t.id} type="button" className="ktv-agenda-item" onClick={() => onOpen(t.id)} aria-label={taskName(t)}>
                   <StatusGlyph status={t.status} size={16} readOnly />
                   <span style={{ color: t.status === "done" ? "var(--ink-3)" : undefined, textDecoration: t.status === "done" ? "line-through" : undefined }}>{t.title}</span>
-                  {proj && <ProjectDot color={proj.color} />}
+                  {proj && <ProjectTile project={proj} size={16} title={proj.name} />}
                   <Avatar id={t.assigneeId} size={20} />
                 </button>
               );
@@ -1347,7 +1347,7 @@ export function MatrixView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: stri
                   <button key={t.id} type="button" className="ktv-quad-item" onClick={() => onOpen(t.id)}>
                     <StatusGlyph status={t.status} size={14} readOnly />
                     <span>{t.title}</span>
-                    {proj && <ProjectDot color={proj.color} title={proj.name} />}
+                    {proj && <ProjectTile project={proj} size={16} title={proj.name} />}
                     {t.dueDate && <span className="ktv-mono" style={{ color: ds === "overdue" ? "var(--signal, var(--prio-urgent))" : "var(--ink-3)" }}>{fmtDue(t.dueDate)}</span>}
                   </button>
                 );

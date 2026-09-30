@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getUserProjectTemplates } from "../lib/templates";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { NewProjectModal } from "./NewProjectModal";
 import { getProjectTemplates } from "../lib/templates";
 
@@ -38,15 +38,47 @@ describe("NewProjectModal", () => {
     expect(getUserProjectTemplates().map((t) => t.name)).toEqual(["Garden"]);
   });
 
-  it("names each colour and icon choice, and creates with the ones picked", () => {
+  it("names each colour and icon choice, and creates with the ones picked (the colour stored as its spectrum fill)", () => {
     const onCreate = vi.fn();
     render(<NewProjectModal open onClose={vi.fn()} onCreate={onCreate} workspaceId={null} />);
-    const violet = screen.getByRole("button", { name: "Violet" });
+    const hues = screen.getByRole("radiogroup", { name: "Colour" });
+    expect(within(hues).getAllByRole("radio")).toHaveLength(12);
+    const violet = within(hues).getByRole("radio", { name: "Violet" });
     fireEvent.click(violet);
-    expect(violet).toHaveAttribute("aria-pressed", "true");
+    expect(violet).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("button", { name: "🚀" }));
+    expect(screen.getByRole("button", { name: "🚀" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "Rocket" } });
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Project name" }), { key: "Enter" });
-    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Rocket", emoji: "🚀", color: "oklch(0.74 0.16 305)" }));
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Rocket", emoji: "🚀", color: "oklch(0.62 0.16 293)" }));
+  });
+
+  it("starts in a hue no project here wears yet, with the name's initial on the tile until an icon is picked", () => {
+    const onCreate = vi.fn();
+    const projects = [{ id: "a", color: "oklch(0.62 0.154 270)" }, { id: "b", color: "oklch(0.62 0.16 293)" }];
+    render(<NewProjectModal open onClose={vi.fn()} onCreate={onCreate} workspaceId={null} projects={projects} />);
+    expect(screen.getByRole("radio", { name: "Orchid" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "Garden" } });
+    expect(screen.getByRole("button", { name: "No icon: use the initial" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.querySelector(".kptile")?.textContent).toBe("G");
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Garden", emoji: "", color: "oklch(0.62 0.16 318)" }));
+  });
+
+  it("takes any emoji typed in, and moves through the hues with the arrow keys", () => {
+    render(<NewProjectModal open onClose={vi.fn()} onCreate={vi.fn()} workspaceId={null} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Any emoji" }), { target: { value: "🦄 unicorn" } });
+    expect(screen.getByRole("textbox", { name: "Any emoji" })).toHaveValue("🦄");
+    expect(document.querySelector(".kptile")?.textContent).toBe("🦄");
+    const iris = screen.getByRole("radio", { name: "Iris" });
+    expect(iris).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("radio", { name: "Violet" })).toHaveAttribute("tabindex", "-1");
+    fireEvent.keyDown(iris, { key: "ArrowRight" });
+    expect(screen.getByRole("radio", { name: "Violet" })).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Violet" }));
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Violet" }), { key: "End" });
+    expect(screen.getByRole("radio", { name: "Cobalt" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Cobalt" }), { key: "ArrowRight" });
+    expect(screen.getByRole("radio", { name: "Iris" })).toHaveAttribute("aria-checked", "true");
   });
 });

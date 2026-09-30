@@ -12,7 +12,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, memo, type ReactNode } from "react";
 import {
   Icon, Avatar, Check, AiScore, wasJustCompleted, wasJustLanded, markJustLanded, Collapse,
-  StatusGlyph, PriorityGlyph, DateChip, ProjectDot, projectPaint, EmptyState, Button, IconButton, Kbd, AiMark, Sheet,
+  StatusGlyph, PriorityGlyph, DateChip, ProjectTile, projectPaint, EmptyState, Button, IconButton, Kbd, AiMark, Sheet,
 } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useToast } from "../Toast";
@@ -543,8 +543,8 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           {action && <span className="ktv-action" onClick={stop}>{action}</span>}
           {smart && !done && <AiScore score={task.aiScore} reason={task.aiReason} />}
           {showProject && (
-            <span className="ktv-proj" data-row-project={task.id}>
-              {proj && <><ProjectDot color={proj.color} title={proj.name} /><span>{proj.name}</span></>}
+            <span className="ktv-proj" data-row-project={task.id} title={proj?.name}>
+              {proj && <><ProjectTile project={proj} size={16} /><span>{proj.name}</span></>}
             </span>
           )}
           <span className="ktv-due" data-row-due={task.id} onClick={stop}>
@@ -657,7 +657,7 @@ function RowActionSheet({ task, canSelect, onOpen, onStatus, onDue, onPickDue, o
     <div className="ktv-acts">
       <p className="ktv-acts-meta">
         <StatusGlyph status={task.status} size={14} readOnly /><span>{STATUS_META[task.status].label}</span>
-        {proj && <><span aria-hidden="true">·</span><ProjectDot color={proj.color} /><span className="truncate">{proj.name}</span></>}
+        {proj && <><span aria-hidden="true">·</span><ProjectTile project={proj} size={16} /><span className="truncate">{proj.name}</span></>}
         {task.dueDate && <><span aria-hidden="true">·</span><span className="ktv-mono">{fmtDue(task.dueDate)}</span></>}
       </p>
       <button type="button" className="ktv-act" onClick={() => onOpen(task.id)}>
@@ -1429,7 +1429,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
           {listMenu.kind === "move" ? projects.map((p) => (
             <button key={p.id} type="button" role="menuitemradio" aria-checked={menuTask.projectId === p.id} className="ktv-mi"
               onClick={() => { setListMenu(null); if (p.id === menuTask.projectId) return; onEdit(menuTask, { projectId: p.id, workspaceId: workspaceOf(p.id), sectionId: undefined }, "Project"); moveFamily(menuTask.id, p.id); }}>
-              <ProjectDot color={p.color} /> <span className="truncate">{p.name}</span>{menuTask.projectId === p.id && <CurrentMark />}
+              <ProjectTile project={p} size={16} /> <span className="truncate">{p.name}</span>{menuTask.projectId === p.id && <CurrentMark />}
             </button>
           )) : Object.entries(allTags ?? {}).map(([id, tg]) => {
             const on = (menuTask.tags ?? []).includes(id);
@@ -1516,7 +1516,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
             <BulkMenuButton label="Project" icon="grid" iconOnly={iconBulk} open={bulkMenu === "project"} onToggle={() => setBulkMenu((m) => m === "project" ? null : "project")}>
               {projects.map((p) => (
                 <button key={p.id} type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ projectId: p.id })}>
-                  <ProjectDot color={p.color} /> <span className="truncate">{p.name}</span>
+                  <ProjectTile project={p} size={16} /> <span className="truncate">{p.name}</span>
                 </button>
               ))}
             </BulkMenuButton>

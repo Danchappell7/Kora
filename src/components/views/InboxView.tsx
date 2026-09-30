@@ -8,7 +8,7 @@
 import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon, EmptyArt, EmptyState, Avatar, Button, DateChip, Kbd, ProjectDot, SectionLabel } from "../primitives";
+import { Icon, EmptyArt, EmptyState, Avatar, Button, DateChip, Kbd, ProjectTile, SectionLabel } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { timeAgo, getProject, getMember, MEMBERS, todayISO, toLocalISO } from "../../data/data";
 import type { Task, Activity, ActivityKind, IconName } from "../../data/types";
@@ -730,7 +730,7 @@ export function InboxView({
       : excerpt
         ? <span id={`${subId}-ctx`} className="kinbox-excerpt truncate">{excerpt}</span>
         : proj
-          ? <span id={`${subId}-ctx`} className="kinbox-proj"><ProjectDot color={proj.color} size={8} /><span className="truncate">{proj.name}</span></span>
+          ? <span id={`${subId}-ctx`} className="kinbox-proj"><ProjectTile project={proj} size={16} /><span className="truncate">{proj.name}</span></span>
           : null;
     const describedBy = [
       ctx && `${subId}-ctx`,

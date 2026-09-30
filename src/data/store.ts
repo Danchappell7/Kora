@@ -1118,6 +1118,12 @@ export const store = {
     if (!supabase) {
       // demo mode — seeded in-memory data + rich reference set, fixed "self" user
       if (demoWorkspaces.length === 0) demoWorkspaces = WORKSPACES.map((w) => ({ ...w }));
+      // the demo person has a name: Settings › Profile shows the same Daniel Okai as the sidebar
+      if (!demoProfile) {
+        const self = MEMBERS.find((m) => m.id === "m-self");
+        const [firstName = "", ...rest] = (self?.name ?? "").split(/\s+/);
+        demoProfile = { id: "m-self", firstName, lastName: rest.join(" "), pronouns: "", email: self?.email ?? "", avatarUrl: null };
+      }
       if (demoMembers.length === 0) {
         demoMembers = MEMBERS.filter((m) => m.type !== "external").map((m, i) => ({
           id: "wm-" + i, workspaceId: "ws-foundrise", userId: m.id, email: m.email, name: m.name,

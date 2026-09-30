@@ -1,6 +1,6 @@
 /* ============================================================
    KANBO — the "Paper & Navy" primitive kit.
-   Button · IconButton · Kbd · Tabs · Meter · StatusGlyph ·
+   Button · IconButton · Kbd · Tabs · Meter · ProgressRing · StatusGlyph ·
    PriorityGlyph · DateChip (+ DatePicker) · AiMark · Provenance ·
    Vellum · EmptyState · Sheet · Pill · ProjectDot / projectPaint ·
    SectionLabel · Toggle.
@@ -280,6 +280,34 @@ export function Meter({ value, max = 100, tone = "grad", width, height = 4, labe
         {tick != null && <span className="kmeter-marker" style={{ left: `${tick}%` }} />}
       </span>
       {showValue && <span className="kmeter-value" aria-hidden="true">{Math.round(pct)}%</span>}
+    </span>
+  );
+}
+
+/* ============================== ProgressRing ============================== */
+
+/** Progress as a small ring (project headers and directory cards): a --track
+ *  circle with the done share drawn in the brand gradient from twelve o'clock. */
+export function ProgressRing({ value, max = 100, size = 16, label }: { value: number; max?: number; size?: 14 | 16 | 20 | 24; label: string }) {
+  const gid = useDomId("kring");
+  const top = max > 0 ? max : 100;
+  const v = Math.min(top, Math.max(0, Number.isFinite(value) ? value : 0));
+  const r = 7.5, c = 2 * Math.PI * r;
+  const dash = +(c * (v / top)).toFixed(2);
+  return (
+    <span className="kring" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={top} aria-valuenow={v}>
+      <svg width={size} height={size} viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#5B7CFA" /><stop offset="0.52" stopColor="#8B5CF6" /><stop offset="1" stopColor="#C24BE0" />
+          </linearGradient>
+        </defs>
+        <circle className="kring-track" cx={10} cy={10} r={r} fill="none" strokeWidth={2.5} />
+        {dash > 0 && (
+          <circle cx={10} cy={10} r={r} fill="none" stroke={`url(#${gid})`} strokeWidth={2.5} strokeLinecap={v >= top ? "butt" : "round"}
+            strokeDasharray={`${dash} ${+c.toFixed(2)}`} transform="rotate(-90 10 10)" />
+        )}
+      </svg>
     </span>
   );
 }

@@ -12,7 +12,7 @@ import { useState, useEffect, useRef, useMemo, useId, forwardRef, useImperativeH
 import type { ReactNode, RefObject, MutableRefObject, Dispatch, SetStateAction, KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Icon, Avatar, AvatarStack, Check, EmojiPicker, Button, IconButton, Kbd, StatusGlyph, PriorityGlyph,
-  DateChip, AiMark, Meter, Pill, ProjectDot, projectPaint,
+  DateChip, AiMark, Meter, Pill, ProjectChip, ProjectTile, projectIdentity, projectPaint,
 } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { useFocusTrap, isEditableTarget } from "../hooks/useFocusTrap";
@@ -90,7 +90,12 @@ const PANEL_CSS = `
 /* header */
 .ktd-head { display: flex; align-items: center; gap: 2px; flex-shrink: 0; height: 52px; padding: 0 12px 0 24px; border-bottom: 1px solid var(--hairline); }
 .ktd[data-mobile="true"] .ktd-head { height: calc(52px + env(safe-area-inset-top, 0px)); padding: env(safe-area-inset-top, 0px) 8px 0 16px; }
-.ktd-crumb { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; margin-right: 8px; font: 500 12px/16px ${UI}; color: var(--ink-3); }
+/* the task's project: its colour as a 3px edge along the panel's top, and its chip (tile + name › section) */
+.ktd.kp[data-project]::before { content: ""; position: absolute; top: 0; left: 0; right: 0; z-index: 2; height: 3px; background: var(--p-fill); pointer-events: none; }
+.ktd[data-mobile="true"].kp[data-project]::before { top: env(safe-area-inset-top, 0px); }
+.ktd-crumb { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; margin-right: 8px; font: 500 12px/16px ${UI}; color: var(--ink-3); }
+.ktd-crumb > .kpchip { flex: 0 1 auto; margin-left: -3px; }
+.ktd-crumb .kpchip-sep { display: inline-flex; flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
 .ktd-crumb-link { min-width: 0; max-width: 60%; flex-shrink: 1; margin: 0 -4px; padding: 4px; border: 0; border-radius: var(--r-xs, 4px); background: none; font: inherit; color: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ktd-crumb-link:hover { color: var(--ink); background: var(--fill-1); }
 .ktd-crumb-sep { color: var(--ink-4); flex-shrink: 0; }
@@ -859,6 +864,7 @@ export function TaskDetail(props: TaskDetailProps) {
   }, [exists, onClose]);
 
   if (!task) return null;
+  const proj = props.projects?.find((p) => p.id === task.projectId) ?? getProject(task.projectId);
   return (
     <>
       <style>{PANEL_CSS}</style>
@@ -866,7 +872,8 @@ export function TaskDetail(props: TaskDetailProps) {
       {/* no outline override: when Escape parks focus on the panel itself,
           keyboard users see the global focus ring (drawn just inside the edge) */}
       <div ref={trapRef} role="dialog" aria-modal={!isDocked} aria-label={`Task: ${task.title}`} tabIndex={-1}
-        className="ktd" data-docked={isDocked || undefined} data-mobile={isMobile || undefined}
+        className={proj ? "ktd kp" : "ktd"} style={proj ? projectIdentity(proj).style : undefined} data-project={proj ? proj.id : undefined}
+        data-docked={isDocked || undefined} data-mobile={isMobile || undefined}
         onFocusCapture={(e) => { const from = e.relatedTarget; if (from instanceof HTMLElement && !e.currentTarget.contains(from)) returnTo.current = from; }}
         onKeyDown={isDocked ? (e) => {
           // docked there's no focus trap to close it: an Escape nothing inside took closes the panel
@@ -1519,8 +1526,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const statusOptions: PropOption[] = STATUS_ORDER.map((s) => ({ value: s, label: STATUS_META[s].label, icon: <StatusGlyph status={s} size={16} readOnly /> }));
   const priorityOptions: PropOption[] = (Object.keys(PRIORITY_META) as Priority[]).map((p) => ({ value: p, label: PRIORITY_META[p].label, icon: <PriorityGlyph priority={p} /> }));
   const projectOptions: PropOption[] = [
-    ...projects.map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot color={p.color} size={10} /> })),
-    ...(!projects.some((p) => p.id === task.projectId) ? [{ value: task.projectId, label: proj?.name || "Project", icon: proj ? <ProjectDot color={proj.color} size={10} /> : undefined }] : []),
+    ...projects.map((p) => ({ value: p.id, label: p.name, icon: <ProjectTile project={p} size={16} /> })),
+    ...(!projects.some((p) => p.id === task.projectId) ? [{ value: task.projectId, label: proj?.name || "Project", icon: proj ? <ProjectTile project={proj} size={16} /> : undefined }] : []),
   ];
   const sectionOptions: PropOption[] = [
     { value: "", label: "No section" },
@@ -1699,11 +1706,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
       {/* ================= header ================= */}
       <div className="ktd-head" data-menu-open={actionsOpen || undefined}>
         <nav className="ktd-crumb" aria-label="Where this task lives">
-          {proj && <ProjectDot color={proj.color} size={8} />}
-          {proj && (onOpenProject
-            ? <button type="button" className="ktd-crumb-link" title={`Open ${proj.name}`} onClick={() => { onClose(); onOpenProject(proj.id); }}>{proj.name}</button>
-            : <span className="ktd-crumb-text">{proj.name}</span>)}
-          {proj && section && <><span className="ktd-crumb-sep" aria-hidden="true">/</span><span className="ktd-crumb-text">{section.name}</span></>}
+          {proj && <ProjectChip project={proj} size="md" title={onOpenProject ? `Open ${proj.name}` : undefined}
+            onClick={onOpenProject ? () => { onClose(); onOpenProject(proj.id); } : undefined} />}
+          {proj && section && <><span className="kpchip-sep" aria-hidden="true"><Icon name="chevronRight" size={12} /></span><span className="ktd-crumb-text">{section.name}</span></>}
         </nav>
         {readOnly && <Pill tone="neutral" icon="lock" title="Guests can view this task and comment on it">View and comment</Pill>}
         {viewers.length > 0 && (
@@ -1866,10 +1871,10 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
           <div className="ktd-prop">
             <dt>{readOnly ? "Project" : <label htmlFor={ids.project}>Project</label>}</dt>
             <dd style={{ flexWrap: "nowrap" }}>
-              {readOnly ? readValue(<>{proj?.name || "Project"}{section && <span className="ktd-val-sub"> / {section.name}</span>}</>, false, proj ? <ProjectDot color={proj.color} size={8} /> : undefined) : (
+              {readOnly ? readValue(<>{proj?.name || "Project"}{section && <span className="ktd-val-sub"> / {section.name}</span>}</>, false, proj ? <ProjectTile project={proj} size={16} /> : undefined) : (
                 <>
                   <PropSelect ref={projectMenu} id={ids.project} menuLabel="Project" native={nativePick} value={task.projectId} text={proj?.name || "Project"}
-                    leading={proj ? <ProjectDot color={proj.color} size={8} /> : undefined} options={projectOptions}
+                    leading={proj ? <ProjectTile project={proj} size={16} /> : undefined} options={projectOptions}
                     onChange={(v) => onPatch(task.id, { projectId: v })} />
                   {hasSections && !addingSection && (
                     <>

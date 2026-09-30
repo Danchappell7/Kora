@@ -170,6 +170,12 @@ describe.each(["light", "dark"] as const)("%s theme tokens", (theme) => {
     for (const a of ACCENTS) expect(worst(tok("--accent", tokens(theme, accentInline(a.id))), bgs), a.id).toBeGreaterThanOrEqual(3);
   });
 
+  it("gradient text (--grad-text, Today's focus phrase) is ≥ 4.5:1 at every stop on every surface", () => {
+    const ss = stops(resolve("var(--grad-text)", t));
+    expect(ss).toHaveLength(3);
+    for (const c of ss) expect(worst(color(c), bgs), c).toBeGreaterThanOrEqual(4.5);
+  });
+
   it("brand gradient marks (--grad: meters, rings, the AI mark) are ≥ 3:1 on the canvas", () => {
     const marks = stops(resolve("var(--grad)", t));
     expect(marks).toHaveLength(3);

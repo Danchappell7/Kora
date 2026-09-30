@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor, within, act } from "@testing-librar
 import * as primitives from "./index";
 import {
   Button, IconButton, Kbd, Tabs, Meter, StatusGlyph, PriorityGlyph, DateChip, AiMark, Provenance, Vellum,
-  EmptyState, Sheet, Pill, ProjectDot, projectPaint, SectionLabel, Toggle, type TabItem,
+  EmptyState, Sheet, Pill, ProjectDot, projectPaint, SectionLabel, Toggle, ProgressRing, type TabItem,
 } from "./kit";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Priority, Status } from "../../data/types";
@@ -511,6 +511,21 @@ describe("Pill", () => {
     fireEvent.click(screen.getByRole("button", { name: "2 blocked" }));
     expect(onClick).toHaveBeenCalled();
     expect(screen.getByText("At risk")).toHaveAttribute("data-tone", "warn");
+  });
+});
+
+describe("ProgressRing", () => {
+  it("is a named progressbar drawing the done share from twelve o'clock in the gradient", () => {
+    const { container } = render(<><ProgressRing value={25} label="Launch progress" /><ProgressRing value={0} label="Empty" /></>);
+    const ring = screen.getByRole("progressbar", { name: "Launch progress" });
+    expect(ring).toHaveAttribute("aria-valuenow", "25");
+    const arcs = ring.querySelectorAll("circle");
+    expect(arcs).toHaveLength(2);
+    expect(arcs[1].getAttribute("stroke")).toMatch(/^url\(#kring/);
+    expect(arcs[1].getAttribute("stroke-dasharray")).toBe("11.78 47.12");
+    // nothing done: just the track
+    expect(screen.getByRole("progressbar", { name: "Empty" }).querySelectorAll("circle")).toHaveLength(1);
+    expect(container.querySelectorAll("linearGradient")[0].id).not.toBe(container.querySelectorAll("linearGradient")[1].id);
   });
 });
 

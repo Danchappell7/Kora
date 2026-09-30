@@ -10,7 +10,7 @@
 import { DAY_START, DAY_END, PRIORITY_META, planDayDetailed } from "../data/data";
 import type { CalEvent, Task } from "../data/types";
 import {
-  dayMonth, daysBetween, durOf, energyKindOf, fmtDuration, isMine, parseDay, weekdayShort, isPlaced, mergeIntervals, totalMinutes, type Interval,
+  dayMonth, daysBetween, durOf, energyKindOf, fmtDuration, fmtTime, fmtTimeRange, isMine, parseDay, weekdayShort, isPlaced, mergeIntervals, totalMinutes, type Interval,
 } from "../components/views/planCanvas";
 
 /** The working day that "free" and the suggestions are counted against. */
@@ -341,4 +341,307 @@ export function composeBrief({ tasks: given, events, nowMin, today, userName, ri
 /** "Places 4 tasks · 2h 15m" under Plan my day (a data line, so digits). */
 export function placesHint(n: number, minutes: number): string {
   return `Places ${n} ${n === 1 ? "task" : "tasks"} · ${fmtDuration(minutes)}`;
+}
+
+/* ============================================================
+   Today's brief, Companion-grade: Kanbo speaks first.
+   composeTodayBrief writes the card Today opens on: a greeting, a
+   headline naming the day's one big thing (the focus phrase is the
+   gradient, and opens the task), two or three sentences of why with
+   the people, tasks and times as chips, the day in fact pills, and
+   "How I got here" (the facts it was built from). Deterministic: the
+   template IS the brief; the variants follow the clock and the work
+   (morning, afternoon, evening, an empty day, Monday's preview of
+   the week, an overloaded day).
+   ============================================================ */
+
+export type TodayVariant = "morning" | "afternoon" | "evening" | "empty" | "monday" | "overloaded";
+
+/** A live part of the brief: the view draws each as a chip or a button. */
+export type BriefEntity =
+  | { kind: "focus"; text: string; taskId: string }
+  | { kind: "task"; text: string; taskId: string; status: Task["status"] }
+  | { kind: "person"; text: string; memberId: string }
+  | { kind: "project"; text: string; projectId: string }
+  | { kind: "time"; text: string }
+  | { kind: "risks"; text: string };
+export type BriefSpan = string | BriefEntity;
+
+export type BriefFactKind = "meetings" | "free" | "due" | "overdue" | "slipping" | "team";
+/** One of the day's numbers ("3 meetings"): `value` is the figure (mono), `label` the words after it. */
+export interface BriefFact { kind: BriefFactKind; n: number; value: string; label: string; tone?: "warn" | "signal" }
+/** A group of the facts the brief was built from ("How I got here"). */
+export interface BriefWhy { label: string; items: string[] }
+
+export interface TodayBrief {
+  variant: TodayVariant;
+  /** "Morning, Daniel." */
+  greeting: string;
+  /** the rest of the headline; its `focus` entity is the day's one big thing */
+  headline: BriefSpan[];
+  /** two or three sentences, with chips */
+  prose: BriefSpan[];
+  /** the day in numbers; zeros are left out */
+  facts: BriefFact[];
+  why: BriefWhy[];
+  /** the one big thing */
+  focusTaskId?: string;
+  /** the stretch the brief suggests for it */
+  slot?: Interval;
+  /** the whole brief as one string (for screen readers and tests) */
+  plain: string;
+}
+
+export interface TodayBriefInput extends BriefInput {
+  /** workspace people, for the names in "unblocks Maya" */
+  members?: { id: string; name: string }[];
+  /** the projects the one big thing may belong to (its chip in "due today for …"); Personal is never named */
+  projects?: { id: string; name: string }[];
+}
+
+const FOCUS_MAX = 44;
+const firstName = (s?: string) => (s && !s.includes("@") ? s.trim().split(/\s+/)[0] ?? "" : "");
+/** "tomorrow", "on Friday" (within the week), else "on 12 Oct". */
+function dueWords(iso: string, today: string): string {
+  const n = daysBetween(today, iso);
+  const d = parseDay(iso);
+  if (n === 1) return "tomorrow";
+  if (d && n > 1 && n < 7) return "on " + d.toLocaleDateString("en-GB", { weekday: "long" });
+  return d ? `on ${dayMonth(d)}` : iso;
+}
+/** A task's title as a phrase inside a sentence: shortened, its first letter lowered
+ *  unless it starts an acronym or a name ("Finalise the deck" → "finalise the deck"). */
+export function focusPhrase(title: string): string {
+  const t = title.trim().replace(/[.!\s]+$/, "");
+  const cut = t.length > FOCUS_MAX ? t.slice(0, FOCUS_MAX - 1).trimEnd() + "…" : t;
+  return /^[A-Z][a-z]/.test(cut) && !/^(I|I'm|I've)\b/.test(cut) ? cut.charAt(0).toLowerCase() + cut.slice(1) : cut;
+}
+const timeOf = (t: Task) => (t.dueTime ? t.dueTime.slice(0, 5) : "");
+const plusMore = (items: string[], max = 3) => (items.length > max ? [...items.slice(0, max), `and ${items.length - max} more`] : items);
+const dayAfter = (iso: string, n = 1) => { const d = parseDay(iso) ?? new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+
+/** Open tasks of yours whose date has moved later than first planned. */
+export function slippingTasks(tasks: Task[], me?: string | null): Task[] {
+  return tasks.filter((t) => isOpen(t) && !t.parentId && isMine(t, me) && !!t.dueDate && !!t.originalDueDate && day10(t.dueDate) > day10(t.originalDueDate));
+}
+
+/** Open work of yours that someone else gave you since yesterday. */
+export function newFromTeam(tasks: Task[], today: string, me?: string | null): Task[] {
+  if (!me) return [];
+  const since = dayAfter(today, -1);
+  return tasks.filter((t) => isOpen(t) && !t.parentId && t.assigneeId === me && !!t.createdBy && t.createdBy !== me && day10(t.createdAt) >= since);
+}
+
+/** Your open tasks that someone else's open work waits on, with who is waiting: most held up first. */
+export function waitingOnYou(all: Task[], me?: string | null): { task: Task; waiting: Task[] }[] {
+  if (!me) return [];
+  const byId = new Map(all.filter((t) => !t.archivedAt).map((t) => [t.id, t]));
+  const held = new Map<string, Task[]>();
+  for (const d of byId.values()) {
+    if (!isOpen(d) || d.assigneeId === me || !d.assigneeId) continue;
+    for (const dep of d.dependencies ?? []) {
+      const b = byId.get(dep);
+      if (!b || !isOpen(b) || b.assigneeId !== me) continue;
+      const a = held.get(b.id) ?? []; a.push(d); held.set(b.id, a);
+    }
+  }
+  return [...held.entries()].map(([id, waiting]) => ({ task: byId.get(id)!, waiting }))
+    .sort((x, y) => y.waiting.length - x.waiting.length || (day10(x.task.dueDate) || "9999").localeCompare(day10(y.task.dueDate) || "9999"));
+}
+
+/** The clearest stretch for `dur` minutes still ahead today: the longest free gap that
+ *  holds it, finishing by `by` (a deadline today) when one does. */
+export function clearestStretch(tasks: Task[], events: CalEvent[], nowMin: number, dur: number, by?: number | null): Interval | null {
+  const all = freeGaps(tasks, events, Math.ceil(nowMin / 5) * 5);
+  const pick = (gaps: Interval[]) => {
+    const fit = gaps.filter((g) => g.end - g.start >= dur);
+    if (!fit.length) return null;
+    const best = fit.reduce((a, g) => (g.end - g.start > a.end - a.start ? g : a));
+    return { start: best.start, end: best.start + dur };
+  };
+  if (by != null) {
+    const before = pick(all.map((g) => ({ start: g.start, end: Math.min(g.end, by) })).filter((g) => g.end > g.start));
+    if (before) return before;
+  }
+  return pick(all);
+}
+
+/** Today's brief card (see the section note above). */
+export function composeTodayBrief({ tasks: given, events, nowMin, today, userName, riskCount = 0, allTasks, me, members = [], projects = [] }: TodayBriefInput): TodayBrief {
+  const all = allTasks ?? given;
+  const name = firstName(userName);
+  const nameOf = (id: string) => firstName(members.find((m) => m.id === id)?.name) || "a teammate";
+  const scope = given.filter((t) => isTodaysScope(t, me));
+  const open = scope.filter(isOpen);
+  const dueToday = open.filter((t) => isDueToday(t, today));
+  const overdue = open.filter((t) => isOverdue(t, today));
+  const todaysWork = open.filter((t) => isDueToday(t, today) || isOverdue(t, today) || !!t.planToday || isPlaced(t));
+  const meetings = events.filter((e) => e.kind === "meeting");
+  const free = freeMinutes(scope, events, nowMin);
+  const slipping = slippingTasks(scope, me);
+  const team = newFromTeam(scope, today, me);
+  const top = topTask(scope, today, me);
+  const waits = waitingOnYou(all, me);
+  const unplacedNeed = todaysWork.filter((t) => !isPlaced(t)).reduce((a, t) => a + durOf(t), 0);
+  const weekday = parseDay(today)?.getDay();
+  const hour = nowMin / 60;
+
+  const variant: TodayVariant = nowMin >= WORK_END ? "evening"
+    : todaysWork.length === 0 ? "empty"
+    : unplacedNeed >= 60 && unplacedNeed > free + 30 ? "overloaded"
+    : weekday === 1 && hour < 12 ? "monday"
+    : hour < 12 ? "morning" : "afternoon";
+
+  const part = variant === "evening" ? "Evening" : hour < 12 ? "Morning" : "Afternoon";
+  const greeting = name ? `${part}, ${name}.` : `Good ${part.toLowerCase()}.`;
+  const headline: BriefSpan[] = [];
+  const prose: BriefSpan[] = [];
+  const focus: BriefEntity | null = top ? { kind: "focus", text: focusPhrase(top.title), taskId: top.id } : null;
+  let slot: Interval | undefined;
+
+  // why the one big thing, and when: "It's due at 17:00 and three of the team's tasks are waiting on it, so I'd give it your clearest stretch, 10:15–11:45, before lunch."
+  const whyTop = (t: Task) => {
+    const held = all.filter((x) => isOpen(x) && x.id !== t.id && !x.archivedAt && (x.dependencies ?? []).includes(t.id));
+    const others = held.filter((x) => x.assigneeId && x.assigneeId !== me);
+    const bits: string[] = [];
+    if (isDueToday(t, today) && timeOf(t)) bits.push(`it's due at ${timeOf(t)}`);
+    else if (isOverdue(t, today)) bits.push(`it's been overdue since ${sinceLabel(t.dueDate!, today)}`);
+    else if (isDueToday(t, today)) bits.push("it's due today");
+    if (held.length) bits.push(`${countWord(held.length)} of ${others.length === held.length ? "the team's" : "your"} tasks ${held.length === 1 ? "is" : "are"} waiting on it`);
+    if (!bits.length) {
+      const ai = cleanReason(t.aiReason);
+      bits.push(ai ? `Kanbo put it first: ${ai}` : t.planToday ? "it's on today's list" : "it's your highest priority");
+    }
+    // "It's due at 17:00 for [Q3 Product Launch] and three of …": the deadline names its project
+    const proj = t.projectId && t.projectId !== "p-personal" ? projects.find((p) => p.id === t.projectId) : undefined;
+    const dated = bits.length > 0 && /^it's (due|been overdue)/.test(bits[0]);
+    if (proj && dated) {
+      prose.push(capitalise(bits[0]) + " for ", { kind: "project", text: proj.name, projectId: proj.id });
+      if (bits.length > 1) prose.push(" and " + bits.slice(1).join(" and "));
+    } else prose.push(capitalise(bits.join(" and ")));
+    if (isPlaced(t)) {
+      prose.push(", and it's on your day at ", { kind: "time", text: fmtTimeRange(t.scheduled!, t.scheduled! + durOf(t)) }, ".");
+      return;
+    }
+    const s = clearestStretch(scope, events, nowMin, durOf(t), isDueToday(t, today) ? dueMinutes(t) : null);
+    if (s) {
+      slot = s;
+      prose.push(", so I'd give it your clearest stretch, ", { kind: "time", text: fmtTimeRange(s.start, s.end) }, s.end <= 12 * 60 ? ", before lunch." : ".");
+    } else {
+      prose.push(`, but there's no free stretch of ${fmtDuration(durOf(t))} left today.`);
+    }
+  };
+  // "Define design tokens v2 is waiting on your review: 20m there unblocks Maya."
+  const whoWaits = (skipId?: string) => {
+    const w = waits.find((x) => x.task.id !== skipId);
+    if (!w) return;
+    const d = w.waiting[0];
+    const review = w.task.status === "review";
+    prose.push(" ", { kind: "task", text: w.task.title.length > TITLE_MAX ? shorten(w.task.title) : w.task.title, taskId: w.task.id, status: w.task.status },
+      review ? " is waiting on your review. " : " is waiting on you. ",
+      `${fmtDuration(durOf(w.task))} there unblocks `, { kind: "person", text: nameOf(d.assigneeId), memberId: d.assigneeId },
+      w.waiting.length > 1 ? ` and ${countOf(w.waiting.length - 1, "other task")}.` : ".");
+  };
+
+  if (variant === "evening") {
+    const finished = scope.filter((t) => doneToday(t, today)).length;
+    headline.push(finished > 0 ? `You finished ${countOf(finished, "thing")} today.` : "The working day's done.");
+    const left = todaysWork.length;
+    prose.push(left > 0
+      ? `${capitalise(countOf(left, "thing"))} ${left === 1 ? "is" : "are"} still open. Shut down to close the day and pick tomorrow's first thing.`
+      : "Everything for today is done. Shut down to close the day and pick tomorrow's first thing.");
+  } else if (variant === "empty") {
+    headline.push("A clear day. Want to pull something forward?");
+    const next = open.filter((t) => !!t.dueDate && day10(t.dueDate) > today && day10(t.dueDate) <= dayAfter(today, 14))
+      .sort((a, b) => day10(a.dueDate).localeCompare(day10(b.dueDate)) || (b.aiScore ?? 0) - (a.aiScore ?? 0))[0];
+    if (next) prose.push("Nothing's due and nothing's planned. The nearest thing is ", { kind: "task", text: shorten(next.title), taskId: next.id, status: next.status }, `, due ${dueWords(next.dueDate!, today)}.`);
+    else prose.push("Nothing's due and nothing's planned. Capture what's on your mind, or enjoy the room.");
+    if (free >= BOOKED_UNDER) prose.push(` You've ${fmtDuration(free)} free.`);
+  } else if (variant === "overloaded") {
+    headline.push("Something has to give. Start with ", focus!, ".");
+    whyTop(top!);
+    // what to move: the lowest-ranked unplaced work until the rest fits
+    const movable = todaysWork.filter((t) => !isPlaced(t) && t.id !== top!.id && !t.dueTime)
+      .sort((a, b) => rank(a) - rank(b) || (a.aiScore ?? 0) - (b.aiScore ?? 0) || (day10(b.dueDate) || "9999").localeCompare(day10(a.dueDate) || "9999"));
+    const move: Task[] = [];
+    let need = unplacedNeed;
+    for (const t of movable) { if (need <= free) break; move.push(t); need -= durOf(t); }
+    prose.push(` You've ${fmtDuration(unplacedNeed)} of work and ${fmtDuration(free)} free.`);
+    if (move.length) {
+      prose.push(" To fit, I'd move ", { kind: "task", text: shorten(move[0].title), taskId: move[0].id, status: move[0].status },
+        move.length > 1 ? ` and ${countOf(move.length - 1, "other")} to tomorrow.` : " to tomorrow.");
+    }
+  } else {
+    // morning, afternoon, Monday: the one big thing
+    headline.push(variant === "monday" ? "New week. One big thing today: " : variant === "afternoon" ? "One big thing this afternoon: " : "One big thing today: ", focus!, ".");
+    whyTop(top!);
+    whoWaits(top!.id);
+    if (variant === "monday") {
+      const weekEnd = dayAfter(today, 6);
+      const week = open.filter((t) => !!t.dueDate && day10(t.dueDate) > today && day10(t.dueDate) <= weekEnd);
+      const ms = week.filter((t) => t.isMilestone).sort((a, b) => day10(a.dueDate).localeCompare(day10(b.dueDate)))[0];
+      if (week.length) {
+        prose.push(` This week: ${countOf(week.length, "more thing")} due`);
+        if (ms) prose.push(", and ", { kind: "task", text: shorten(ms.title), taskId: ms.id, status: ms.status }, ` lands ${dueWords(ms.dueDate!, today)}`);
+        prose.push(".");
+      }
+    }
+  }
+  if (riskCount > 0 && variant !== "evening") {
+    prose.push(" ", { kind: "risks", text: capitalise(`${countOf(riskCount, "risk")} ${riskCount === 1 ? "needs" : "need"} a look`) }, ".");
+  }
+
+  const facts: BriefFact[] = [];
+  const fact = (kind: BriefFactKind, n: number, value: string, label: string, tone?: BriefFact["tone"]) => { if (n > 0) facts.push({ kind, n, value, label, tone }); };
+  fact("meetings", meetings.length, String(meetings.length), meetings.length === 1 ? "meeting" : "meetings");
+  if (variant !== "evening") fact("free", free, fmtDuration(free), "free");
+  fact("due", dueToday.length, String(dueToday.length), "due today");
+  fact("overdue", overdue.length, String(overdue.length), "overdue", "signal");
+  fact("slipping", slipping.length, String(slipping.length), "slipping", "warn");
+  fact("team", team.length, String(team.length), "new from the team");
+
+  const withTime = (t: Task) => (timeOf(t) ? `${t.title} (${timeOf(t)})` : t.title);
+  const why: BriefWhy[] = [{ label: "Due today", items: dueToday.length ? plusMore(dueToday.map(withTime)) : ["Nothing"] }];
+  if (top) {
+    const held = all.filter((x) => isOpen(x) && !x.archivedAt && x.id !== top.id && (x.dependencies ?? []).includes(top.id));
+    if (held.length) why.push({ label: "Waiting on this", items: plusMore(held.map((x) => x.assigneeId && x.assigneeId !== me ? `${x.title} (${nameOf(x.assigneeId)})` : x.title)) });
+  }
+  if (waits.length) why.push({ label: "Waiting on you", items: plusMore(waits.map((w) => `${w.task.title} → ${w.waiting[0].title} (${nameOf(w.waiting[0].assigneeId)})`)) });
+  why.push({ label: "Your calendar", items: meetings.length ? plusMore(meetings.map((m) => `${m.title} ${fmtTime(m.start)}`), 4) : ["No meetings today"] });
+
+  // neighbouring strings merge, so the parts stay few (and a lone "." never floats free)
+  const merge = (list: BriefSpan[]) => list.reduce<BriefSpan[]>((out, x) => {
+    const last = out[out.length - 1];
+    if (typeof x === "string" && typeof last === "string") out[out.length - 1] = last + x; else out.push(x);
+    return out;
+  }, []);
+  const head = merge(headline), body = merge(prose);
+  const text = (s: BriefSpan) => (typeof s === "string" ? s : s.text);
+  const plain = [greeting, head.map(text).join(""), body.map(text).join("").trim()].filter(Boolean).join(" ");
+  return { variant, greeting, headline: head, prose: body, facts, why, focusTaskId: top?.id, slot, plain };
+}
+
+/* ---------- after hours: tomorrow, in brief ---------- */
+
+export interface TomorrowPreview {
+  /** YYYY-MM-DD: tomorrow */
+  day: string;
+  /** YYYY-MM-DD: today, the day it was read on */
+  today: string;
+  /** tomorrow's first meeting */
+  firstMeeting?: CalEvent;
+  meetings: number;
+  /** what Kanbo would put first tomorrow (at most three) */
+  top: Task[];
+}
+
+/** Once the working day is over: tomorrow's first meeting and the three things
+ *  Kanbo would start it with (still open and due by tomorrow, or on today's list). */
+export function tomorrowPreview(tasks: Task[], tomorrowEvents: CalEvent[], today: string, me?: string | null): TomorrowPreview {
+  const tmr = dayAfter(today, 1);
+  const meetings = tomorrowEvents.filter((e) => e.kind === "meeting").sort((a, b) => a.start - b.start);
+  const pool = tasks.filter((t) => isOpen(t) && isTodaysScope(t, me) && (!!t.planToday || (!!t.dueDate && day10(t.dueDate) <= tmr)));
+  const top = [...pool].sort((a, b) => (day10(a.dueDate) || "9999").localeCompare(day10(b.dueDate) || "9999")
+    || (b.aiScore ?? 0) - (a.aiScore ?? 0) || rank(b) - rank(a)).slice(0, 3);
+  return { day: tmr, today, firstMeeting: meetings[0], meetings: meetings.length, top };
 }

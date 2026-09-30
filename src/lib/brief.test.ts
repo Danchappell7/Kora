@@ -336,3 +336,171 @@ describe("ghostPlan", () => {
     expect(suggestions[0].id).toBe(high.id);
   });
 });
+
+/* ---------------- the Companion-grade brief ---------------- */
+
+import { clearestStretch, composeTodayBrief, focusPhrase, newFromTeam, slippingTasks, tomorrowPreview, waitingOnYou } from "./brief";
+
+const today2 = (o: Partial<Parameters<typeof composeTodayBrief>[0]>) =>
+  composeTodayBrief({ tasks: [], events: [], nowMin: H(10), today: TODAY, userName: "Daniel Okai", me: "me", ...o });
+const text = (spans: ReturnType<typeof composeTodayBrief>["headline"]) => spans.map((s) => (typeof s === "string" ? s : s.text)).join("");
+const ents = (spans: ReturnType<typeof composeTodayBrief>["prose"], kind: string) => spans.filter((s) => typeof s !== "string" && s.kind === kind);
+
+describe("composeTodayBrief: the variants", () => {
+  const deck = () => task({ id: "deck", title: "Finalise the launch deck", dueDate: TODAY, dueTime: "17:00", aiScore: 90, focusMin: 90 });
+
+  it("morning: the day's one big thing as the focus phrase, why, and your clearest stretch before its deadline", () => {
+    const held = [task({ title: "Hero copy", assigneeId: "maya", dependencies: ["deck"] }), task({ title: "Press kit", assigneeId: "theo", dependencies: ["deck"] })];
+    const b = today2({ tasks: [deck()], allTasks: [deck(), ...held], events: [meeting(H(11), H(12)), lunch] });
+    expect(b.variant).toBe("morning");
+    expect(b.greeting).toBe("Morning, Daniel.");
+    expect(text(b.headline)).toBe("One big thing today: finalise the launch deck.");
+    expect(b.headline.find((s) => typeof s !== "string")).toMatchObject({ kind: "focus", taskId: "deck" });
+    // the longest gap before 17:00 that holds 90 minutes: 13:00–14:30 (not 10:00–11:00, too short)
+    expect(b.slot).toEqual({ start: H(13), end: H(14, 30) });
+    expect(text(b.prose)).toBe("It's due at 17:00 and two of the team's tasks are waiting on it, so I'd give it your clearest stretch, 13:00–14:30.");
+    expect(ents(b.prose, "time")).toEqual([{ kind: "time", text: "13:00–14:30" }]);
+    expect(b.plain).toMatch(/^Morning, Daniel\. One big thing today: finalise the launch deck\. It's due at 17:00/);
+  });
+
+  it("says 'before lunch' when the stretch ends by noon, and names who you'd unblock", () => {
+    const mine = task({ id: "tok", title: "Design tokens", status: "review", focusMin: 20 });
+    const theirs = task({ id: "ob", title: "Onboarding", assigneeId: "maya", status: "blocked", dependencies: ["tok"] });
+    const b = today2({ tasks: [task({ id: "a", title: "Budget", dueDate: TODAY, aiScore: 50, focusMin: 60 }), mine], allTasks: [mine, theirs],
+      events: [meeting(H(12), H(18))], members: [{ id: "maya", name: "Maya Lin" }] });
+    expect(text(b.prose)).toBe("It's due today, so I'd give it your clearest stretch, 10:00–11:00, before lunch. Design tokens is waiting on your review. 20m there unblocks Maya.");
+    expect(ents(b.prose, "task")).toEqual([{ kind: "task", text: "Design tokens", taskId: "tok", status: "review" }]);
+    expect(ents(b.prose, "person")).toEqual([{ kind: "person", text: "Maya", memberId: "maya" }]);
+  });
+
+  it("names the project the deadline belongs to, as a chip (never Personal)", () => {
+    const t = task({ id: "d", title: "Deck", dueDate: TODAY, dueTime: "17:00", projectId: "p-launch", aiScore: 9 });
+    const b = today2({ tasks: [t], projects: [{ id: "p-launch", name: "Q3 Product Launch" }] });
+    expect(b.prose.slice(0, 3)).toEqual(["It's due at 17:00 for ", { kind: "project", text: "Q3 Product Launch", projectId: "p-launch" }, ", so I'd give it your clearest stretch, "]);
+    const personal = today2({ tasks: [{ ...t, projectId: "p-personal" }], projects: [{ id: "p-personal", name: "Personal" }] });
+    expect(ents(personal.prose, "project")).toEqual([]);
+  });
+
+  it("afternoon reads as the afternoon", () => {
+    const b = today2({ tasks: [deck()], nowMin: H(14) });
+    expect(b.variant).toBe("afternoon");
+    expect(b.greeting).toBe("Afternoon, Daniel.");
+    expect(text(b.headline)).toBe("One big thing this afternoon: finalise the launch deck.");
+  });
+
+  it("Monday morning previews the week", () => {
+    const monday = day(-2); // 28 Sep 2026
+    const ms = task({ title: "Launch day", isMilestone: true, dueDate: day(1) });
+    const b = today2({ tasks: [{ ...deck(), dueDate: monday }, ms, task({ dueDate: day(0) })], today: monday, nowMin: H(9) });
+    expect(b.variant).toBe("monday");
+    expect(text(b.headline)).toMatch(/^New week\. One big thing today: /);
+    expect(text(b.prose)).toMatch(/ This week: two more things due, and Launch day lands on Thursday\./);
+  });
+
+  it("an overloaded day says something has to give, and what it would move", () => {
+    const big = (id: string, pr: Task["priority"], score: number) => task({ id, title: `Job ${id}`, dueDate: TODAY, focusMin: 120, priority: pr, aiScore: score });
+    const b = today2({ tasks: [big("a", "high", 90), big("b", "medium", 50), big("c", "low", 10)], events: [meeting(H(10), H(15))] });
+    expect(b.variant).toBe("overloaded");
+    expect(text(b.headline)).toBe("Something has to give. Start with job a.");
+    expect(text(b.prose)).toContain(" You've 6h of work and 3h free.");
+    expect(text(b.prose)).toContain(" To fit, I'd move Job c and one other to tomorrow.");
+  });
+
+  it("an empty day offers to pull something forward", () => {
+    const b = today2({ tasks: [task({ title: "Quarterly plan", dueDate: day(2) })] });
+    expect(b.variant).toBe("empty");
+    expect(text(b.headline)).toBe("A clear day. Want to pull something forward?");
+    expect(text(b.prose)).toBe("Nothing's due and nothing's planned. The nearest thing is Quarterly plan, due on Friday. You've 8h free.");
+    expect(b.focusTaskId).toBeUndefined();
+  });
+
+  it("the evening invites you to shut down", () => {
+    const b = today2({ tasks: [task({ status: "done", completedAt: TODAY }), task({ dueDate: TODAY })], nowMin: H(19) });
+    expect(b.variant).toBe("evening");
+    expect(b.greeting).toBe("Evening, Daniel.");
+    expect(text(b.headline)).toBe("You finished one thing today.");
+    expect(text(b.prose)).toBe("One thing is still open. Shut down to close the day and pick tomorrow's first thing.");
+    expect(b.facts.map((f) => f.kind)).not.toContain("free");
+  });
+
+  it("greets without a name when there isn't one", () => {
+    expect(today2({ userName: "dan@kanbo.app" }).greeting).toBe("Good morning.");
+  });
+});
+
+describe("composeTodayBrief: the numbers and How I got here", () => {
+  it("counts meetings, free time, due, overdue, slipping and new work from the team, leaving zeros out", () => {
+    const b = today2({
+      tasks: [
+        task({ dueDate: TODAY }), task({ dueDate: day(-2) }),
+        task({ dueDate: day(1), originalDueDate: day(-1) }),
+        task({ createdBy: "maya", createdAt: `${TODAY}T08:00:00Z` }),
+      ],
+      events: [meeting(H(11), H(12)), lunch],
+    });
+    expect(b.facts.map((f) => [f.kind, f.value, f.label, f.tone])).toEqual([
+      ["meetings", "1", "meeting", undefined],
+      ["free", "6h", "free", undefined],
+      ["due", "1", "due today", undefined],
+      ["overdue", "1", "overdue", "signal"],
+      ["slipping", "1", "slipping", "warn"],
+      ["team", "1", "new from the team", undefined],
+    ]);
+    expect(today2({}).facts.map((f) => f.kind)).toEqual(["free"]);
+  });
+
+  it("How I got here lists what's due, what waits on the one big thing, what waits on you, and the calendar", () => {
+    const deck = task({ id: "deck", title: "Deck", dueDate: TODAY, dueTime: "17:00", aiScore: 90 });
+    const copy = task({ title: "Hero copy", assigneeId: "maya", dependencies: ["deck"] });
+    const b = today2({ tasks: [deck], allTasks: [deck, copy], events: [meeting(H(9), H(9, 30), "Standup")], members: [{ id: "maya", name: "Maya Lin" }] });
+    expect(b.why).toEqual([
+      { label: "Due today", items: ["Deck (17:00)"] },
+      { label: "Waiting on this", items: ["Hero copy (Maya)"] },
+      { label: "Waiting on you", items: ["Deck → Hero copy (Maya)"] },
+      { label: "Your calendar", items: ["Standup 09:00"] },
+    ]);
+  });
+});
+
+describe("the brief's helpers", () => {
+  it("focusPhrase lowers a sentence-case title, keeps acronyms and names, and shortens a long one", () => {
+    expect(focusPhrase("Finalise the deck.")).toBe("finalise the deck");
+    expect(focusPhrase("Q3 launch deck")).toBe("Q3 launch deck");
+    expect(focusPhrase("SSO rollout")).toBe("SSO rollout");
+    expect(focusPhrase("A".repeat(10) + " very long title that keeps going and going")).toHaveLength(44);
+  });
+
+  it("slipping is open work of yours moved later than first planned; new from the team is since yesterday", () => {
+    const moved = task({ dueDate: day(2), originalDueDate: day(0) });
+    const earlier = task({ dueDate: day(0), originalDueDate: day(2) });
+    expect(slippingTasks([moved, earlier, task({ ...moved, status: "done" })], "me")).toEqual([moved]);
+    const fresh = task({ createdBy: "maya", createdAt: `${day(-1)}T20:00:00Z` });
+    const old = task({ createdBy: "maya", createdAt: `${day(-3)}T20:00:00Z` });
+    expect(newFromTeam([fresh, old, task({ createdBy: "me", createdAt: `${TODAY}T09:00:00Z` })], TODAY, "me")).toEqual([fresh]);
+  });
+
+  it("waitingOnYou lists your open tasks that others' open work depends on, most held up first", () => {
+    const a = task({ id: "a" }), b = task({ id: "b" });
+    const w1 = task({ assigneeId: "maya", dependencies: ["b"] }), w2 = task({ assigneeId: "theo", dependencies: ["b"] }), w3 = task({ assigneeId: "maya", dependencies: ["a"] });
+    const mineToo = task({ dependencies: ["a"] }); // your own sequencing isn't someone waiting
+    expect(waitingOnYou([a, b, w1, w2, w3, mineToo], "me").map((x) => [x.task.id, x.waiting.length])).toEqual([["b", 2], ["a", 1]]);
+  });
+
+  it("clearestStretch takes the longest free gap, finishing by a deadline when one's given", () => {
+    const evs = [meeting(H(10), H(10, 30)), meeting(H(12), H(13))];
+    expect(clearestStretch([], evs, H(9), 30)).toEqual({ start: H(13), end: H(13, 30) });
+    expect(clearestStretch([], evs, H(9), 30, H(12))).toEqual({ start: H(10, 30), end: H(11) });
+    expect(clearestStretch([], [meeting(H(9), H(18))], H(9), 30)).toBeNull();
+  });
+
+  it("tomorrowPreview: the first meeting and the three things to start with", () => {
+    const p = tomorrowPreview([
+      task({ id: "late", dueDate: day(-1) }), task({ id: "tmr", dueDate: day(1), aiScore: 50 }), task({ id: "tod", dueDate: TODAY }),
+      task({ id: "later", dueDate: day(5) }), task({ id: "list", planToday: true }),
+    ], [meeting(H(13), H(14), "Review"), meeting(H(9), H(9, 30), "Standup")], TODAY, "me");
+    expect(p.day).toBe(day(1));
+    expect(p.firstMeeting?.title).toBe("Standup");
+    expect(p.meetings).toBe(2);
+    expect(p.top.map((t) => t.id)).toEqual(["late", "tod", "tmr"]);
+  });
+});

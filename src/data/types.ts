@@ -327,4 +327,5 @@ export type IconName =
   | "user" | "sun" | "moon" | "command" | "filter" | "sort" | "link" | "zap"
   | "trendingUp" | "check" | "message" | "folder" | "dot" | "settings" | "circle"
   | "grid" | "arrowRight" | "arrowLeft" | "refresh" | "calendarPlus" | "layers" | "trash" | "menu" | "archive"
-  | "pulse" | "radar" | "kanbo" | "undo" | "keyboard" | "copy" | "send" | "sliders" | "hourglass" | "sunset" | "notes";
+  | "pulse" | "radar" | "kanbo" | "undo" | "keyboard" | "copy" | "send" | "sliders" | "hourglass" | "sunset" | "notes"
+  | "palette" | "eye" | "alert" | "coffee";

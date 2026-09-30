@@ -58,6 +58,21 @@ describe("TeamPulse", () => {
     expect(within(radar).getByText("Maya is over capacity")).toBeInTheDocument();
   });
 
+  it("fills one button on the whole Radar: the top risk's first fix; every other fix is secondary or ghost", async () => {
+    pulse();
+    await ready();
+    const radar = screen.getByRole("complementary", { name: "Radar" });
+    const buttons = Array.from(radar.querySelectorAll(".kradar-fixes .kbtn"));
+    expect(buttons.length).toBeGreaterThan(2);
+    const filled = buttons.filter((b) => b.getAttribute("data-variant") === "primary");
+    expect(filled).toHaveLength(1);
+    expect(radar.querySelector(".kradar-item .kradar-fixes .kbtn")).toBe(filled[0]);
+    // second fixes stay ghost
+    for (const row of Array.from(radar.querySelectorAll(".kradar-fixes"))) {
+      Array.from(row.querySelectorAll(":scope > .kbtn, :scope > * > .kbtn")).slice(1).forEach((b) => expect(b).toHaveAttribute("data-variant", "ghost"));
+    }
+  });
+
   it("shows placeholders while the change history loads", async () => {
     let resolve: (v: WorkspaceEvent[]) => void = () => {};
     pulse({ loadEvents: () => new Promise((r) => { resolve = r; }) });

@@ -2,36 +2,35 @@
    KANBO — create-project dialog
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
-import { Button, EmojiPicker, Sheet, projectPaint } from "./primitives";
+import { Button, Sheet, spectrumColor } from "./primitives";
 import { getProjectTemplates, storeProjectTemplate, type ProjectTemplate } from "../lib/templates";
-import { PROJECT_COLOURS } from "./project/ProjectHeader";
+import { IdentityFields, IdentityPreview, freshSpectrum } from "./project/IdentityPicker";
 import type { NewProject } from "../data/store";
+import type { Project } from "../data/types";
 import "./project/projects.css";
 
-const EMOJI = ["📁", "🚀", "🎨", "⚙️", "📈", "🧪", "💡", "📊", "🛠️", "🌱", "🔮", "📦"];
-const COLORS = PROJECT_COLOURS.map((c) => c.value);
-
-export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
+export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects }: {
   open: boolean;
   onClose: () => void;
   /** templateId: the template it was started from, if any — a built-in one
    *  carries sections and starter tasks for the caller to create */
   onCreate: (p: NewProject & { templateId?: string }) => void;
   workspaceId: string | null;
+  /** the workspace's projects: a new one starts in a hue none of them wears yet */
+  projects?: Pick<Project, "id" | "color">[];
 }) {
   const [name, setName] = useState("");
-  const [emoji, setEmoji] = useState(EMOJI[0]);
-  const [color, setColor] = useState(COLORS[0]);
+  const [emoji, setEmoji] = useState("");
+  const [color, setColor] = useState(() => spectrumColor(freshSpectrum(projects)));
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   // "Save as template" answers in place: saved, or this device's storage refused it
   const [saved, setSaved] = useState<null | "saved" | "failed">(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setTemplateId(""); setSaved(null); setPickerOpen(false); setTemplates(getProjectTemplates());
+    setName(""); setEmoji(""); setColor(spectrumColor(freshSpectrum(projects))); setTemplateId(""); setSaved(null); setTemplates(getProjectTemplates());
     const t = window.setTimeout(() => inputRef.current?.focus(), 30);
     return () => window.clearTimeout(t);
   }, [open]);
@@ -71,35 +70,12 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
             {mine.length > 0 && <optgroup label="Your templates">{mine.map((t) => <option key={t.id} value={t.id}>{t.emoji} {t.name}</option>)}</optgroup>}
           </select>
         )}
-        <div className="kpj-np-name">
-          <span className="kpj-np-tile" aria-hidden="true" style={{ boxShadow: `inset 0 0 0 1px ${projectPaint(color).edge}`, background: projectPaint(color).tint }}>{emoji}</span>
+        <IdentityPreview name={name} emoji={emoji} color={color}>
           <input ref={inputRef} className="kpj-field" data-size="lg" value={name} onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
             placeholder="Project name" aria-label="Project name" />
-        </div>
-        <div>
-          <p className="kpj-dialog-label" id="kpj-np-icon">Icon</p>
-          <div className="kpj-np-emoji" role="group" aria-labelledby="kpj-np-icon">
-            {EMOJI.map((e) => (
-              <button key={e} type="button" className="kpj-np-emoji-btn" aria-pressed={emoji === e} onClick={() => setEmoji(e)}>{e}</button>
-            ))}
-            <button type="button" className="kpj-np-emoji-btn" aria-expanded={pickerOpen} aria-label="More icons" title="More icons"
-              aria-pressed={!EMOJI.includes(emoji) || undefined} onClick={() => setPickerOpen((v) => !v)}>{EMOJI.includes(emoji) ? "＋" : emoji}</button>
-          </div>
-          {pickerOpen && <div style={{ marginTop: 8 }}><EmojiPicker onPick={(e) => { setEmoji(e); setPickerOpen(false); }} /></div>}
-        </div>
-        <div>
-          <p className="kpj-dialog-label" id="kpj-np-colour">Colour</p>
-          <div className="kpj-swatches" role="group" aria-labelledby="kpj-np-colour">
-            {PROJECT_COLOURS.map((c) => (
-              <button key={c.value} type="button" className="kpj-swatch" aria-label={c.name} title={c.name} aria-pressed={color === c.value}
-                style={{ background: projectPaint(c.value).solid }} onClick={() => setColor(c.value)} />
-            ))}
-            {!COLORS.includes(color) && (
-              <span className="kpj-swatch" role="img" aria-label="The template's colour" data-chosen="true" style={{ background: projectPaint(color).solid }} />
-            )}
-          </div>
-        </div>
+        </IdentityPreview>
+        <IdentityFields name={name} emoji={emoji} color={color} onEmoji={setEmoji} onColor={setColor} />
       </div>
     </Sheet>
   );

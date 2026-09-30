@@ -138,8 +138,9 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
                   {fixes.length > 0 && (
                     <div className="kradar-fixes">
                       {fixes.map((f, fi) => {
-                        // the first fix is the primary action on risks that need action now (signal); the rest stay quiet
-                        const variant = fi === 0 && !readOnly && r.severity === "signal" ? "primary" : "secondary";
+                        // one filled button on the whole list: the top risk's first fix, when it needs action
+                        // now (signal). Every other risk leads with a secondary, and second fixes stay ghost.
+                        const variant: Variant = fi > 0 ? "ghost" : i === 0 && !readOnly && r.severity === "signal" ? "primary" : "secondary";
                         const key = f.kind + fi;
                         if (f.kind === "open") return <Button key={key} size="sm" variant={variant} onClick={() => onOpen(r.taskIds[0])}>{f.label}</Button>;
                         if (f.kind === "rebalance") {
@@ -193,7 +194,7 @@ type Ack = { text: string; check?: { taskId: string; field: "dueDate" | "assigne
 
 const fmtDate = (iso: string) => { const d = localDay(iso); return d ? `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${fmtDayMonth(d)}` : iso; };
 
-type Variant = "primary" | "secondary";
+type Variant = "primary" | "secondary" | "ghost";
 
 /** Nudge / Check in: an editable @mention, posted as a comment on the task. */
 function NudgeFix({ label, variant, who, taskTitle, initialText, onSend, onSent }: {

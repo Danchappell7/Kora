@@ -1,13 +1,16 @@
 /* ============================================================
    KANBO — Projects › All: the workspace's project directory.
-   One row per project: its status, progress, owner, open and
-   overdue work, next milestone, how fresh its last update is, and
-   Kanbo's one-line read. Draft or post an update from the row.
-   Phones, touch screens (no hover to reveal a row's buttons) and
-   narrow columns get one card per project, its buttons always shown.
+   Gallery (the default): one card per project wearing its identity
+   (its cover, its tile), with its status, progress, open and
+   overdue work, how fresh its last update is, Kanbo's one-line
+   read and its people. Table: the dense view, one row per project
+   with owner, next milestone and risks as well. Draft or post an
+   update from either. Phones, touch screens (no hover to reveal a
+   row's buttons) and narrow columns always get the gallery, with
+   each card's buttons shown.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { AiMark, Avatar, Button, EmptyState, Icon, Meter, Pill, ProjectDot, Segmented } from "../primitives";
+import { AiMark, Avatar, AvatarStack, Button, EmptyState, Icon, Meter, Pill, ProgressRing, ProjectCover, ProjectTile, Segmented, projectIdentity } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { getMember, KANBO_TODAY, todayISO } from "../../data/data";
@@ -15,11 +18,16 @@ import type { Task, Project, StatusUpdate, StatusKind } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { pathOf } from "../../lib/nav";
 import { fmtAge, fmtShortDay, indexTasks, isStale, kanbosRead, oldestTaskAge, statusFacts, type StatusFacts } from "../../lib/statusDraft";
-import { projectStatusPill } from "../project/ProjectHeader";
+import { projectPeople, projectStatusPill } from "../project/ProjectHeader";
 import { ComposerPopover, POP_STYLE, useStatusComposer, type AiStatus, type PostStatus } from "../project/StatusComposer";
 import "../project/projects.css";
 
 type Scope = "all" | "mine" | "risk";
+type Layout = "gallery" | "table";
+const LAYOUTS: { value: Layout; label: string }[] = [
+  { value: "gallery", label: "Gallery" },
+  { value: "table", label: "Table" },
+];
 type SortKey = "status" | "name" | "progress" | "update";
 type Col = "name" | "status" | "progress" | "owner" | "open" | "overdue" | "milestone" | "update" | "risks";
 
@@ -102,6 +110,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   const [sort, setSortRaw] = useState<SortKey>(() => readPref("kanbo-projects-sort", ["status", "name", "progress", "update"] as const, "status"));
   const setScope = (s: Scope) => { setScopeRaw(s); writePref("kanbo-projects-scope", s); };
   const setSort = (s: SortKey) => { setSortRaw(s); writePref("kanbo-projects-sort", s); };
+  const [layout, setLayoutRaw] = useState<Layout>(() => readPref("kanbo-projects-view", ["gallery", "table"] as const, "gallery"));
+  const setLayout = (l: Layout) => { setLayoutRaw(l); writePref("kanbo-projects-view", l); };
   const [sortOpen, setSortOpen] = useState(false);
   const sortRef = useRef<HTMLButtonElement>(null);
 
@@ -183,7 +193,9 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     );
   }
 
-  const cards = phone || touch || (width > 0 && width < 700);
+  // the table needs hover (its row buttons) and room (its columns): otherwise, the gallery
+  const tableFits = !(phone || touch || (width > 0 && width < 700));
+  const cards = !tableFits || layout === "gallery";
   const cols = directoryColumns(width, !!risksByProject);
   const template = cols.map((c) => COL_W[c]).join(" ");
   const sortLabel = SORTS.find((s) => s.id === sort)!.label;
@@ -213,10 +225,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     switch (c) {
       case "name": return (
         <div className="kpj-proj">
-          <ProjectDot color={r.p.color} size={10} />
-          <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-proj-name" onClick={(e) => onLink(e, r.p.id)}>
-            {r.p.emoji && <span className="kpj-emoji" aria-hidden="true">{r.p.emoji}</span>}{r.p.name}
-          </a>
+          <ProjectTile project={r.p} size={20} />
+          <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-proj-name" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
           <span className="kpj-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</span>
         </div>
       );
@@ -262,6 +272,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           <span className="kpj-count" aria-live="polite">
             {shown.length === real.length ? `${real.length} ${real.length === 1 ? "project" : "projects"}` : `${shown.length} of ${real.length}`}
           </span>
+          {tableFits && <Segmented ariaLabel="Show projects as" options={LAYOUTS} value={layout} onChange={setLayout} />}
           <Button ref={sortRef} variant="ghost" size="sm" icon="sort" iconRight="chevronDown" aria-haspopup="menu" aria-expanded={sortOpen}
             aria-label={`Sort projects: ${sortLabel}`} onClick={() => setSortOpen((v) => !v)}>{sortLabel}</Button>
           <Popover open={sortOpen} anchorRef={sortRef} onClose={() => setSortOpen(false)} role="menu" label="Sort projects by" align="end" minWidth={180}
@@ -281,29 +292,43 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
             body={query ? `Nothing here is called “${query.trim()}”.` : scope === "risk" ? "Every project is on track, with nothing overdue or blocked." : "Projects you own, help with or have open tasks in show up here."}
             action={<Button variant="ghost" size="sm" onClick={reset}>Show all projects</Button>} />
         ) : cards ? (
-          <ul className="kpj-cards" aria-label="Projects">
-            {shown.map((r) => (
-              // the name is the link, stretched over the card; the update buttons sit above it
-              <li key={r.p.id} className="kpj-pcard">
-                <span className="kpj-pcard-name">
-                  <ProjectDot color={r.p.color} size={10} />
-                  <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-pcard-link" onClick={(e) => onLink(e, r.p.id)}>
-                    {r.p.emoji && <span className="kpj-emoji" aria-hidden="true">{r.p.emoji}</span>}{r.p.name}
-                  </a>
-                </span>
-                <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
-                <span className="kpj-pcard-bar">
-                  <Meter value={r.facts.pct} height={4} label={`${r.p.name} progress`} />
-                  <span className="kpj-mono" aria-hidden="true">{r.facts.pct}%</span>
-                </span>
-                <span className="kpj-pcard-meta">
-                  {r.facts.openAll} open
-                  {r.facts.overdue.length > 0 && <> · <span className="kpj-signal">{r.facts.overdue.length} overdue</span></>}
-                  {" · "}<UpdateAge facts={r.facts} stale={r.stale} long />
-                </span>
-                {canPost && <div className="kpj-pcard-acts">{updateButtons(r)}</div>}
-              </li>
-            ))}
+          <ul className="kpj-gallery" aria-label="Projects" data-touch={!tableFits || undefined}>
+            {shown.map((r) => {
+              const people = projectPeople(r.p);
+              const names = people.map((id) => getMember(id)?.name).filter(Boolean).join(", ");
+              return (
+                // the name is the link, stretched over the card; the update buttons sit above it
+                <li key={r.p.id} className="kpj-gcard kp" style={projectIdentity(r.p).style}
+                  data-open={composer?.open && composer.id === r.p.id ? "true" : undefined}>
+                  <ProjectCover project={r.p} size="card" tile={44} surface="surface" />
+                  <div className="kpj-gcard-status">
+                    <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
+                  </div>
+                  <div className="kpj-gcard-body">
+                    <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-gcard-link" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
+                    <p className="kpj-gcard-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</p>
+                    <div className="kpj-gcard-foot">
+                      <span className="kpj-gcard-progress" title={`${r.facts.pct}% of ${r.facts.total} ${r.facts.total === 1 ? "task" : "tasks"} done`}>
+                        <ProgressRing value={r.facts.pct} size={16} label={`${r.p.name} progress`} />
+                        <span className="kpj-mono" aria-hidden="true">{r.facts.pct}%</span>
+                      </span>
+                      <span className="kpj-gcard-meta">
+                        {r.facts.openAll} open
+                        {r.facts.overdue.length > 0 && <> · <span className="kpj-signal">{r.facts.overdue.length} overdue</span></>}
+                        {" · "}<UpdateAge facts={r.facts} stale={r.stale} long />
+                      </span>
+                      {people.length > 0 && (
+                        <span className="kpj-gcard-people" role="img" aria-label={`People: ${names}`} title={names}>
+                          <AvatarStack ids={people.slice(0, 3)} size={20} />
+                          {people.length > 3 && <span className="kpj-people-more" aria-hidden="true">+{people.length - 3}</span>}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {canPost && <div className="kpj-gcard-acts">{updateButtons(r)}</div>}
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <div role="table" aria-label="Projects" aria-rowcount={shown.length + 1} className="kpj-table">
@@ -337,7 +362,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   );
 }
 
-/** "2d" · "today" · "16d · stale" (warn) · "none · stale" (warn); `long` reads as a sentence for cards. */
+/** "2d" · "today" · "16d · stale" (warn) · "none · stale" (warn); `long` reads as a
+ *  sentence for cards, and there the age itself warns: amber after a week, red after two. */
 function UpdateAge({ facts, stale, long }: { facts: StatusFacts; stale: boolean; long?: boolean }) {
   const d = facts.lastUpdateDays;
   if (d == null) {
@@ -347,9 +373,14 @@ function UpdateAge({ facts, stale, long }: { facts: StatusFacts; stale: boolean;
   }
   const age = fmtAge(d);
   const text = long ? (d === 0 ? "Updated today" : `Updated ${age} ago`) : age;
+  const title = d === 0 ? "Last update today" : `Last update ${d} ${d === 1 ? "day" : "days"} ago`;
+  if (long) {
+    const tone = d > 14 ? "kpj-signal" : d > 7 ? "kpj-warn" : undefined;
+    return <span className={tone} title={d > 14 ? `${title}: stale after 14 days` : title}>{text}</span>;
+  }
   return stale
     ? <span className="kpj-warn" title={`Last update ${d} days ago: stale after 14 days`}>{text} · stale</span>
-    : <span title={d === 0 ? "Last update today" : `Last update ${d} ${d === 1 ? "day" : "days"} ago`}>{text}</span>;
+    : <span title={title}>{text}</span>;
 }
 
 /** The directory's composer: "Draft update" has Kanbo write it, "Post update" opens an empty field. */

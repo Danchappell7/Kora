@@ -8,6 +8,52 @@ const openCreateMenu = () => {
   return screen.getByRole("menu", { name: "Create" });
 };
 
+describe("PageHeader: a project's identity", () => {
+  const project = { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: "oklch(0.62 0.116 225)" };
+
+  it("runs the cover behind the header row, overlaps the 64px tile on its edge, and sets the name in 28px under it", () => {
+    const onClick = vi.fn();
+    const { container } = render(
+      <PageHeader title="Q3 Product Launch" onSearch={vi.fn()} create={makeCreate()} titleAddon={<span>At risk</span>}
+        actions={<button type="button">Post update</button>}
+        identity={{ project, crumb: { label: "Projects", href: "/projects", onClick } }} />,
+    );
+    const header = container.querySelector(".kph")!;
+    expect(header).toHaveAttribute("data-hero");
+    const hero = container.querySelector(".kph-hero")!;
+    expect(hero).toHaveClass("kp");
+    expect((hero as HTMLElement).style.getPropertyValue("--p-h")).toBe("225");
+    const cover = hero.querySelector(".kpcover-wrap")!;
+    expect(cover).toHaveAttribute("data-size", "page");
+    expect(cover.querySelector(".kptile[data-size='64'][data-ring='true']")?.textContent).toBe("🚀");
+    // the name is the page's heading, once, with no emoji beside it
+    const h1 = screen.getByRole("heading", { level: 1, name: "Q3 Product Launch" });
+    expect(h1.closest(".kph-hero-body")).not.toBeNull();
+    expect(h1.textContent).toBe("Q3 Product Launch");
+    expect(screen.getByText("At risk").closest(".kph-hero-meta")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Post update" }).closest(".kph-hero-line")).not.toBeNull();
+    // the way back, as a real link
+    const crumb = screen.getByRole("link", { name: "Projects" });
+    expect(crumb).toHaveAttribute("href", "/projects");
+    fireEvent.click(crumb);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    crumb.addEventListener("click", (e) => e.preventDefault());    // (jsdom can't open the new tab)
+    fireEvent.click(crumb, { metaKey: true });
+    expect(onClick).toHaveBeenCalledTimes(1);                       // a new tab, not a route change
+    expect(screen.getByRole("button", { name: "Search or ask Kanbo" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New task" })).toBeInTheDocument();
+  });
+
+  it("on a phone, the band scrolls away above the sticky row, which carries a 20px tile once stuck", () => {
+    const { container } = render(<PageHeader title="Q3 Product Launch" onSearch={vi.fn()} create={makeCreate()} isMobile identity={{ project }} />);
+    const band = container.querySelector(".kph-mcover")!;
+    expect(band.querySelector(".kpcover-wrap")).not.toBeNull();
+    expect(band.nextElementSibling).toHaveClass("kph-sentinel");                 // outside the sticky header
+    expect(container.querySelector(".kph[data-mobile][data-hero] .kph-leading .kptile[data-size='20']")).not.toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
+  });
+});
+
 describe("PageHeader", () => {
   it("draws the title as the page's heading, with its meta", () => {
     render(<PageHeader title="Today" meta="Wed 30 Sep" onSearch={vi.fn()} create={makeCreate()} />);

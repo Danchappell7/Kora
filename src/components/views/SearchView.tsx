@@ -7,7 +7,7 @@
    J / K move, X selects, Enter opens, ⌘↵ completes.
    ============================================================ */
 import { useMemo, useState, useEffect, useRef, useId } from "react";
-import { Icon, Avatar, StatusGlyph, PriorityGlyph, DateChip, ProjectDot, EmptyState, Button, IconButton, Kbd } from "../primitives";
+import { Icon, Avatar, StatusGlyph, PriorityGlyph, DateChip, ProjectTile, EmptyState, Button, IconButton, Kbd } from "../primitives";
 import { getProject, getMember, fmtDue, STATUS_META, PRIORITY_META, toLocalISO, presetDate, todayISO } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, searchRank, isQueryActive, hasSearchText, inArchivedProject, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
@@ -358,7 +358,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
                 <div className="ktv-cluster">
                   {proj && (
                     <span className="ktv-proj" title={proj.archivedAt ? `${proj.name} (archived project)` : proj.name}>
-                      {proj.archivedAt ? <Icon name="archive" size={12} sw={1.75} /> : <ProjectDot color={proj.color} />}
+                      {proj.archivedAt ? <Icon name="archive" size={12} sw={1.75} /> : <ProjectTile project={proj} size={16} />}
                       <span>{proj.name}</span>
                     </span>
                   )}

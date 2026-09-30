@@ -41,7 +41,57 @@ const names = () => within(screen.getByRole("table", { name: "Projects" })).getA
 
 beforeEach(() => { localStorage.clear(); clearStatusDrafts(); });
 
-describe("ProjectsView (the directory)", () => {
+describe("ProjectsView (the gallery, the default)", () => {
+  const cards = () => within(screen.getByRole("list", { name: "Projects" })).getAllByRole("listitem");
+  const cardOf = (name: string) => screen.getByRole("link", { name }).closest("li") as HTMLElement;
+
+  it("opens on the gallery: one card per project in its identity (cover, tile, status, progress, work, freshness, people)", () => {
+    render(<ProjectsView {...props()} />);
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(cards()).toHaveLength(3);
+    const launch = cardOf("Launch");
+    expect(launch).toHaveClass("kp");
+    expect(launch.querySelector(".kpcover")).not.toBeNull();
+    expect(launch.querySelector(".kptile[data-size='44']")).not.toBeNull();
+    expect(within(launch).getByText("At risk")).toBeInTheDocument();
+    expect(within(launch).getByRole("progressbar", { name: "Launch progress" })).toHaveAttribute("aria-valuenow", "0");
+    expect(within(launch).getByRole("img", { name: /^People: \S/ })).toBeInTheDocument();                   // the owner
+    expect(within(launch).getByText(/Critical path: the deck/)).toBeInTheDocument();                         // Kanbo's read
+    expect(cardOf("Infra")).toHaveTextContent("2 open · 1 overdue · No update yet");
+  });
+
+  it("warns as an update ages: amber after a week, red after two", () => {
+    render(<ProjectsView {...props({ statusUpdates: [{ ...UPDATES[0], createdAt: ago(9) }, { ...UPDATES[1], createdAt: ago(16) }] })} />);
+    expect(within(cardOf("Launch")).getByText("Updated 9d ago")).toHaveClass("kpj-warn");
+    expect(within(cardOf("Brand")).getByText("Updated 16d ago")).toHaveClass("kpj-signal");
+  });
+
+  it("keeps Table as the other view, and remembers the choice", () => {
+    render(<ProjectsView {...props()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Table" }));
+    expect(screen.getByRole("table", { name: "Projects" })).toBeInTheDocument();
+    expect(localStorage.getItem("kanbo-projects-view")).toBe("table");
+    // the table's name cell carries the 20px tile (no emoji beside the name)
+    expect(rowOf("Launch").querySelector(".kptile[data-size='20']")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Gallery" }));
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("drafts and posts an update from a card without opening the project", async () => {
+    const onPostUpdate = vi.fn().mockResolvedValue(true);
+    const onOpenProject = vi.fn();
+    render(<ProjectsView {...props({ onPostUpdate, onOpenProject })} />);
+    fireEvent.click(within(cardOf("Infra")).getByRole("button", { name: "Draft update for Infra" }));
+    expect((screen.getByRole("textbox", { name: "Update" }) as HTMLTextAreaElement).value).toMatch(/^Nothing finished this week/);
+    expect(onOpenProject).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("link", { name: "Brand" }));
+    expect(onOpenProject).toHaveBeenCalledWith("p-brand");
+  });
+});
+
+describe("ProjectsView (the directory as a table)", () => {
+  beforeEach(() => { localStorage.setItem("kanbo-projects-view", "table"); });
+
   it("lists every project with its status, progress, milestone and how fresh its update is", () => {
     render(<ProjectsView {...props({ risksByProject: { "p-launch": 2 } })} />);
     const launch = rowOf("Launch");
@@ -100,7 +150,7 @@ describe("ProjectsView (the directory)", () => {
     expect(within(brand).getByText("No milestone")).toHaveClass("sr-only");
   });
 
-  it("gives touch screens cards, each with its own Draft and Post update (there's no hover to reveal a row's)", () => {
+  it("gives touch screens the gallery, each card with its own Draft and Post update (there's no hover to reveal a row's)", () => {
     const mm = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({
       matches: q === "(hover: none)", media: q, onchange: null, addEventListener: vi.fn(), removeEventListener: vi.fn(),
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
@@ -110,6 +160,7 @@ describe("ProjectsView (the directory)", () => {
       const onOpenProject = vi.fn();
       render(<ProjectsView {...props({ onPostUpdate, onOpenProject })} />);
       expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Table" })).not.toBeInTheDocument();            // no table to switch to
       const list = screen.getByRole("list", { name: "Projects" });
       const infra = within(list).getByRole("link", { name: "Infra" }).closest("li") as HTMLElement;
       expect(infra).toHaveTextContent("2 open · 1 overdue · No update yet");

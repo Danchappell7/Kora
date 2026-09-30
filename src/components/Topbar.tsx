@@ -10,7 +10,7 @@
    ============================================================ */
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, RefObject } from "react";
-import { Icon, Avatar, KanboLogo, Segmented, Button, IconButton, Kbd, Tabs, type TabItem } from "./primitives";
+import { Icon, Avatar, KanboLogo, Segmented, Button, IconButton, Kbd, Tabs, ProjectCover, ProjectTile, projectIdentity, type TabItem, type ProjectLike } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { getMember } from "../data/data";
 import type { IconName } from "../data/types";
@@ -171,8 +171,48 @@ ${compactCreate("@container kph (max-width: 479px)", ".kph")}
 .kph[data-mobile]:not([data-tabs]) > :last-child { box-shadow: inset 0 -1px 0 var(--hairline); }
 .kph[data-mobile][data-momentum]:not([data-tabs]) > .kph-momentum:last-child { box-shadow: none; }
 
+/* ---- a project page: its identity header ----
+   The cover band (140px) runs behind the header row; the 64px tile overlaps
+   its bottom edge, half on and half off, ringed in the page colour; the name
+   (Sora 28), actions and meta line sit beside the tile, under the band. No
+   words ever sit on the cover itself: the row's controls on it are opaque. */
+.kph-hero { position: relative; }
+.kph-hero > .kph-cover { position: absolute; top: 0; left: 0; right: 0; }
+.kph-hero > .kph-row { position: relative; z-index: 1; }
+.kph-hero-body {
+  position: relative; z-index: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  margin-top: calc(var(--kph-cover-h, 140px) - var(--header-h, 56px));
+  padding: 6px var(--gutter, 32px) 10px calc(var(--gutter, 32px) + 80px);
+}
+.kph-hero-line { display: flex; align-items: center; gap: 16px; min-width: 0; min-height: 36px; }
+.kph[data-hero] .kph-hero-line .kph-title { font: 600 28px/36px var(--font-head); letter-spacing: -0.022em; }
+.kph-hero-line > .kph-actions { margin-left: auto; }
+.kph-hero-meta { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 28px; overflow: hidden; }
+.kph-hero-meta > .kph-meta { flex: 0 1 auto; padding-top: 0; }
+/* the way back to the directory, and search: opaque on the cover */
+.kph-crumb {
+  display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; height: 28px; padding: 0 10px 0 4px;
+  border-radius: var(--r-sm, 6px); background: var(--surface-raised); box-shadow: var(--e1);
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); text-decoration: none;
+  transition: color var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease);
+}
+.kph-crumb > svg { color: var(--icon-quiet, var(--ink-4)); }
+.kph-crumb:hover { color: var(--ink); background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised); }
+.kph[data-hero] .kph-hero .kph-search { background: var(--surface-raised); box-shadow: var(--e1); color: var(--ink-3); }
+.kph[data-hero] .kph-hero .kph-search:hover { background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised); }
+.kph[data-hero] .kph-hero .kph-search-ico { background: var(--surface-raised); box-shadow: var(--e1); }
+/* a narrow column (a docked task panel) keeps the name: Draft update folds first */
+@container kph (max-width: 759px) { .kph[data-hero] .kph-hero-line .kpj-hide-phone { display: none; } }
+/* phone: the band scrolls away above the sticky header; its tile overlaps the
+   header row, so the name starts clear of it until the header sticks, when a
+   20px tile takes its place */
+.kph-mcover { position: relative; }
+.kph[data-mobile][data-hero] .kph-lead { transition: padding-left var(--d-2, 160ms) var(--ease); }
+.kph[data-mobile][data-hero]:not([data-scrolled]) .kph-lead { padding-left: 76px; }
+.kph[data-mobile][data-hero]:not([data-scrolled]) .kph-leading { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
-  .kph, .kph-row, .kph-title, .kph-momentum-fill, .kph .kph-create-more svg { transition: none !important; }
+  .kph, .kph-row, .kph-title, .kph-lead, .kph-momentum-fill, .kph .kph-create-more svg { transition: none !important; }
 }
 `;
 
@@ -233,6 +273,11 @@ export interface PageHeaderProps {
   userId?: string;
   /** phone: a menu button before the title (the old drawer trigger; the bottom bar's More replaces it) */
   onMenu?: () => void;
+  /** A project page wears its identity: the cover band runs behind the header
+   *  row, the tile overlaps the band's bottom edge, and the title (28px), the
+   *  actions and `titleAddon` (the meta line) sit under it. `crumb` leads back
+   *  to the directory. (Phones: the band scrolls away above the sticky row.) */
+  identity?: { project: ProjectLike; crumb?: { label: string; href: string; onClick: () => void } };
 }
 
 /** How far the page has scrolled past the header, read from an 8px sentinel
@@ -314,7 +359,19 @@ function CreateSplit({ create }: { create: NonNullable<PageHeaderProps["create"]
   );
 }
 
-export function PageHeader({ title, meta, leading, titleAddon, switcher, actions, tabs, tabValue, onTab, tabsLabel, tabsTrailing, momentum, momentumLabel, onSearch, create, isMobile, onOpenSettings, userId, onMenu }: PageHeaderProps) {
+/** A link that routes in place on a plain click (a modified click opens a new tab, as links do). */
+function Crumb({ crumb }: { crumb: NonNullable<NonNullable<PageHeaderProps["identity"]>["crumb"]> }) {
+  return (
+    <a className="kph-crumb" href={crumb.href} onClick={(e) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault(); crumb.onClick();
+    }}>
+      <Icon name="chevronLeft" size={16} sw={1.75} />{crumb.label}
+    </a>
+  );
+}
+
+export function PageHeader({ title, meta, leading, titleAddon, switcher, actions, tabs, tabValue, onTab, tabsLabel, tabsTrailing, momentum, momentumLabel, onSearch, create, isMobile, onOpenSettings, userId, onMenu, identity }: PageHeaderProps) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const addonRef = useRef<HTMLDivElement>(null);
   const { scrolled, stuck } = useScrollState(sentinelRef);
@@ -333,14 +390,20 @@ export function PageHeader({ title, meta, leading, titleAddon, switcher, actions
 
   if (isMobile) {
     const sub = segmented || titleAddon || (actions && !hasTabs);
+    const lead = identity ? <ProjectTile project={identity.project} size={20} /> : leading;
     return (
       <>
+        {identity && (
+          <div className="kph-mcover">
+            <ProjectCover project={identity.project} size="page" height={104} tile={64} reserve={false} />
+          </div>
+        )}
         <div ref={sentinelRef} className="kph-sentinel" aria-hidden="true" />
-        <header className="kph" data-mobile="" data-scrolled={scrolled || undefined} data-stuck={stuck || undefined} data-tabs={hasTabs || undefined} data-momentum={hasMomentum || undefined}>
+        <header className="kph" data-mobile="" data-hero={identity ? "" : undefined} data-scrolled={scrolled || undefined} data-stuck={stuck || undefined} data-tabs={hasTabs || undefined} data-momentum={hasMomentum || undefined}>
           <div className="kph-row">
             {onMenu && <IconButton icon="menu" label="Open menu" onClick={onMenu} style={{ marginLeft: -6 }} />}
             <div className="kph-lead">
-              {leading ? <span className="kph-leading">{leading}</span> : <span className="kph-glyph" aria-hidden="true"><KanboLogo size={20} /></span>}
+              {lead ? <span className="kph-leading">{lead}</span> : <span className="kph-glyph" aria-hidden="true"><KanboLogo size={20} /></span>}
               <h1 className="kph-title">{title}</h1>
               {meta && <span className="kph-meta">{meta}</span>}
             </div>
@@ -364,6 +427,52 @@ export function PageHeader({ title, meta, leading, titleAddon, switcher, actions
             </div>
           )}
           {tabsRow(hasTabs && (tabsTrailing || actions) ? <>{tabsTrailing}{actions}</> : null)}
+        </header>
+        <style>{HEADER_CSS}</style>
+      </>
+    );
+  }
+
+  const searchField = (
+    <>
+      <button type="button" className="kph-search" aria-label={searchLabel} aria-keyshortcuts="Meta+K Control+K" onClick={onSearch}>
+        <Icon name="search" size={14} sw={1.75} />
+        <span className="kph-search-text">{searchLabel}</span>
+        <span aria-hidden="true" style={{ display: "inline-flex" }}><Kbd>⌘K</Kbd></span>
+      </button>
+      <IconButton icon="search" label={searchLabel} className="kph-search-ico" aria-keyshortcuts="Meta+K Control+K" onClick={onSearch} />
+    </>
+  );
+
+  if (identity) {
+    return (
+      <>
+        <div ref={sentinelRef} className="kph-sentinel" aria-hidden="true" />
+        <header className="kph" data-hero="" data-tabs={hasTabs || undefined} data-momentum={hasMomentum || undefined}>
+          <div className="kph-hero kp" style={projectIdentity(identity.project).style}>
+            <ProjectCover project={identity.project} size="page" tile={64} reserve={false} className="kph-cover" />
+            <div className="kph-row">
+              <div className="kph-heading">{identity.crumb && <Crumb crumb={identity.crumb} />}</div>
+              <div className="kph-end">
+                {searchField}
+                {create && <CreateSplit create={create} />}
+              </div>
+            </div>
+            <div className="kph-hero-body">
+              <div className="kph-hero-line">
+                <h1 className="kph-title" title={title}>{title}</h1>
+                {actions && <div className="kph-actions">{actions}</div>}
+              </div>
+              {(titleAddon || meta) && (
+                <div className="kph-hero-meta">
+                  {titleAddon}
+                  {meta && <span className="kph-meta">{meta}</span>}
+                </div>
+              )}
+            </div>
+          </div>
+          {hasMomentum && <Momentum value={momentum!} label={momentumLabel} />}
+          {tabsRow(tabsTrailing)}
         </header>
         <style>{HEADER_CSS}</style>
       </>
@@ -394,12 +503,7 @@ export function PageHeader({ title, meta, leading, titleAddon, switcher, actions
             </div>
           )}
           <div className="kph-end">
-            <button type="button" className="kph-search" aria-label={searchLabel} aria-keyshortcuts="Meta+K Control+K" onClick={onSearch}>
-              <Icon name="search" size={14} sw={1.75} />
-              <span className="kph-search-text">{searchLabel}</span>
-              <span aria-hidden="true" style={{ display: "inline-flex" }}><Kbd>⌘K</Kbd></span>
-            </button>
-            <IconButton icon="search" label={searchLabel} className="kph-search-ico" aria-keyshortcuts="Meta+K Control+K" onClick={onSearch} />
+            {searchField}
             {create && <CreateSplit create={create} />}
           </div>
         </div>

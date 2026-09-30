@@ -18,6 +18,8 @@ export interface BeamSegment {
   kind: "meeting" | "break" | "task" | "suggestion";
   /** a task's project colour (any CSS colour; painted at the identity lightness) */
   color?: string;
+  /** a ready-made fill for a task's segment, used as is (its project's spectrum fill, projectIdentity().fill) */
+  fill?: string;
 }
 
 const COMPACT = { from: 8 * 60, to: 18 * 60 };
@@ -99,7 +101,7 @@ export function Daybeam({ segments, nowMin, planned, free, compact, caption = tr
                   left: pct(s.start),
                   // a hair of daylight between neighbouring blocks
                   width: `calc(${pct(s.end)} - ${pct(s.start)} - 1px)`,
-                  ...(s.kind === "task" ? { background: projectPaint(s.color ?? "").solid } : null),
+                  ...(s.kind === "task" ? { background: s.fill ?? projectPaint(s.color ?? "").solid } : null),
                 }} />
             ))}
             {nowMin > from && <span className="kbeam-past" style={{ width: pct(nowMin) }} />}

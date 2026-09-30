@@ -17,7 +17,7 @@
    lead and the Ask row is always the pick.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
-import { AiMark, Icon, IconButton, Kbd, ProjectDot, StatusGlyph } from "./primitives";
+import { AiMark, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from "./primitives";
 import { AskKanbo, type AskKanboHandle, type AskSummary, type AskView, type AskVia } from "./AskKanbo";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProject, getMember, MEMBERS, PROJECTS, STATUS_META, todayISO } from "../data/data";
@@ -94,10 +94,10 @@ const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.tab ?? "") ===
 type Item =
   | { kind: "ask"; text: string; example?: boolean }
   | { kind: "task"; id: string; label: string; status: Status; where?: string; due?: string; overdue?: boolean }
-  | { kind: "project"; id: string; label: string; color: string; where?: string }
+  | { kind: "project"; id: string; label: string; color: string; emoji?: string; where?: string }
   | { kind: "search"; label: string }
   | { kind: "action"; s: Suggestion }
-  | { kind: "go"; target: GoTarget; crumb?: string; color?: string };
+  | { kind: "go"; target: GoTarget; crumb?: string; project?: { id: string; name: string; color: string; emoji?: string } };
 interface Group { key: string; heading?: string; items: Item[] }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -299,7 +299,7 @@ export function CommandPalette({
         if (r.view === "project") {
           const p = projects?.find((x) => x.id === r.projectId) ?? (r.projectId ? getProject(r.projectId) : undefined);
           if (!p || p.archivedAt) continue;
-          routes.push({ kind: "go", target: { id: `recent-p-${p.id}`, label: p.name, keywords: "", icon: "folder", route: r }, color: p.color });
+          routes.push({ kind: "go", target: { id: `recent-p-${p.id}`, label: p.name, keywords: "", icon: "folder", route: r }, project: { id: p.id, name: p.name, color: p.color, emoji: p.emoji } });
           continue;
         }
         const g = GO_TARGETS.find((x) => sameRoute(x.route, r)) ?? GO_TARGETS.find((x) => x.route.view === r.view);
@@ -347,7 +347,7 @@ export function CommandPalette({
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name))
       .slice(0, 5)
-      .map(({ p }) => ({ kind: "project", id: p.id, label: p.name, color: p.color, where: wsName(p.workspaceId) }));
+      .map(({ p }) => ({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) }));
 
     // places and actions keep their curated order on ties; the best-named match rises
     const ranked = <T,>(list: T[], score: (x: T) => number, max: number): T[] => list
@@ -525,7 +525,7 @@ export function CommandPalette({
         return row(it, <>
           <span className="kcmd-label">{it.label}{it.where && <span className="sr-only">, project in {it.where}</span>}{!it.where && <span className="sr-only">, project</span>}</span>
           {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
-        </>, { icon: <ProjectDot color={it.color} size={10} /> });
+        </>, { icon: <ProjectTile project={{ id: it.id, color: it.color, name: it.label, emoji: it.emoji }} size={16} /> });
       case "search":
         return row(it, <span className="kcmd-label">{it.label}</span>, { icon: <Icon name="search" size={16} sw={1.75} /> });
       case "action":
@@ -535,7 +535,7 @@ export function CommandPalette({
         });
       case "go":
         return row(it, <span className="kcmd-label">{it.crumb && <span className="kcmd-crumb">{it.crumb} › </span>}{it.target.label}</span>, {
-          icon: it.color ? <ProjectDot color={it.color} size={10} /> : <Icon name={it.target.icon} size={16} sw={1.75} />,
+          icon: it.project ? <ProjectTile project={it.project} size={16} /> : <Icon name={it.target.icon} size={16} sw={1.75} />,
           hint: it.target.hint,
         });
     }

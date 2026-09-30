@@ -183,6 +183,7 @@
 
   /* AI surfaces (model-written text ONLY) */
   --vellum-edge: linear-gradient(115deg, oklch(0.62 0.17 268 / 0.55), oklch(0.58 0.2 292 / 0.55) 55%, oklch(0.6 0.2 318 / 0.55));
+  --grad-text: linear-gradient(95deg, oklch(0.5 0.19 268), oklch(0.48 0.22 292) 55%, oklch(0.5 0.21 318)); /* Today's focus phrase: every stop ≥ 4.5:1 on every surface */
   --vellum-wash: radial-gradient(420px 160px at 100% 0%, oklch(0.62 0.17 268 / 0.06), transparent 70%);
 
   /* retired ambience (kept declared so nothing leaks) */
@@ -281,6 +282,7 @@
   --glow-r: 0px; --chart-glow: none;
 
   --vellum-edge: linear-gradient(115deg, oklch(0.66 0.17 268 / 0.6), oklch(0.64 0.2 292 / 0.6) 55%, oklch(0.66 0.2 318 / 0.6));
+  --grad-text: linear-gradient(95deg, oklch(0.8 0.11 268), oklch(0.78 0.14 292) 55%, oklch(0.8 0.13 318));
   --vellum-wash: radial-gradient(420px 160px at 100% 0%, oklch(0.62 0.17 268 / 0.10), transparent 70%);
 
   --halo: radial-gradient(900px 520px at 88% -8%, oklch(0.55 0.2 285 / 0.10), transparent 65%);  /* the ONLY ambient light */
@@ -969,6 +971,10 @@ textarea.kfield { height: auto; min-height: 80px; padding: 6px 10px; resize: ver
 .kmeter-fill[data-tone="signal"] { background: var(--st-blocked-fill); }
 .kmeter-marker { position: absolute; top: 50%; width: 1px; height: 8px; border-radius: 1px; translate: -50% -50%; background: var(--ink-2); }
 .kmeter-value { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+/* ProgressRing: the done share as a small gradient ring on the meters' track */
+.kring { display: inline-flex; flex-shrink: 0; vertical-align: middle; }
+.kring > svg { display: block; }
+.kring-track { stroke: var(--track, var(--fill-2)); }
 
 /* ---- StatusGlyph: the completion checkbox (a 24px+ hit area around a 14/16/20 glyph) ---- */
 .kglyph {

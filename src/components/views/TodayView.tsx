@@ -7,20 +7,23 @@
    work, then makes the ghosts solid — with one Undo. The canvas, the
    drag engine and the Unplanned rail live in PlanView.
    ============================================================ */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PlanView, useDayClock, dayEventsFor } from "./PlanView";
 import { Daybeam, type BeamSegment } from "./Daybeam";
-import { Button, Icon, Kbd, StatusGlyph } from "../primitives";
+import { BriefCard, NoticedCard, TomorrowCard, BRIEF_CSS, type RailFocus } from "./TodayBrief";
+import { Button, Icon, Kbd, StatusGlyph, projectIdentity } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useToast } from "../Toast";
 import { getProject } from "../../data/data";
 import type { CaptureOptions } from "../../data/data";
 import type { Task, ExternalEvent } from "../../data/types";
 import {
-  composeBrief, ghostCandidates, ghostPlan, freeMinutes, plannedMinutes, placesHint, WORK_START, WORK_END, type BriefPart,
+  composeTodayBrief, ghostCandidates, ghostPlan, freeMinutes, plannedMinutes, placesHint, tomorrowPreview, WORK_START, WORK_END, type BriefFact,
 } from "../../lib/brief";
+import { noticedToday, type Noticed, type NoticedAction } from "../../lib/noticed";
+import type { Risk } from "../../lib/radar";
 import { readBig3 } from "../../lib/rituals";
-import { durOf, fmtDuration, fmtTime, isPlaced, ghostPrefsKey, readGhostPrefs, writeGhostPrefs, type GhostPrefs } from "./planCanvas";
+import { durOf, fmtDuration, fmtTime, isPlaced, ghostPrefsKey, readGhostPrefs, writeGhostPrefs, todaysEvents, type GhostPrefs } from "./planCanvas";
 
 export interface TodayViewProps {
   tasks: Task[];
@@ -53,6 +56,22 @@ export interface TodayViewProps {
   projects?: { id: string; name: string }[];
   /** the first load: a skeleton instead of an empty day */
   loading?: boolean;
+  /** Radar's risks (owners and admins): "Kanbo noticed" shows those touching your work */
+  risks?: Risk[];
+  /** "or tell Kanbo what's different today": opens Ask (⌘K) */
+  onAsk?: () => void;
+}
+
+/** "Not now" on a noticed card lasts the day, per person, on this device. */
+const noticedKey = (me: string) => `kanbo-noticed:${me || "local"}`;
+function readDismissed(me: string, day: string): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(noticedKey(me)) || "null");
+    return v && v.day === day && Array.isArray(v.ids) ? v.ids.filter((x: unknown): x is string => typeof x === "string") : [];
+  } catch { return []; }
+}
+function writeDismissed(me: string, day: string, ids: string[]) {
+  try { localStorage.setItem(noticedKey(me), JSON.stringify({ day, ids })); } catch { /* private mode: it lasts this visit */ }
 }
 
 // works outside the providers in isolated renders; in the app it's always there
@@ -68,14 +87,8 @@ type RankSource = Awaited<ReturnType<TodayViewProps["onRank"]>>;
 
 const TODAY_CSS = `
 .ktoday-lede { flex: none; padding: 24px var(--kp-gutter, 32px) 0; }
-.ktoday-brief { margin: 0; max-width: 740px; font: 500 28px/36px var(--font-head); letter-spacing: -0.02em; color: var(--ink); text-wrap: pretty; }
-.ktoday-fig { border-radius: 4px; cursor: pointer; outline: none;
-  text-decoration: underline dotted var(--ink-4); text-decoration-thickness: 1px; text-underline-offset: 4px;
-  -webkit-box-decoration-break: clone; box-decoration-break: clone;
-  transition: color var(--d-1, 90ms) var(--ease); }
-.ktoday-fig:hover, .ktoday-fig[aria-pressed="true"] { color: var(--accent-text, var(--accent)); text-decoration-color: currentColor; }
-.ktoday-fig:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.ktoday-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; min-height: 40px; margin-top: 20px; }
+/* under the brief card: the day's shape, and what Plan my day will do */
+.ktoday-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; min-height: 40px; margin-top: 16px; max-width: 920px; }
 /* what Plan my day will do, and under it the one quiet switch for the suggestions (H's mouse path) */
 .ktoday-hint { display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; min-height: 40px;
   font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
@@ -91,7 +104,7 @@ const TODAY_CSS = `
 .ktoday-hero-label { display: inline-grid; }
 .ktoday-hero-label > span { grid-area: 1 / 1; text-align: start; }
 .ktoday-hero-label > [aria-hidden="true"] { visibility: hidden; }
-.ktoday-beam { flex: 1 1 200px; min-width: 200px; max-width: 420px; margin-left: auto; }
+.ktoday-beam { flex: 1 1 280px; min-width: 200px; }
 .ktoday-setup { display: flex; margin-top: 12px; }
 .ktoday-setup .kpill svg { margin-right: -2px; }
 .ktoday-steps { padding: 6px 6px 4px; min-width: 268px; }
@@ -120,11 +133,8 @@ const TODAY_CSS = `
   .ktoday-skeleton-rail { display: none; }
 }
 @media (max-width: 859px) {
-  .ktoday-lede { padding-top: 16px; }
-  .ktoday-brief { font-size: 22px; line-height: 30px; }
-  .ktoday-actions { margin-top: 16px; }
-  .ktoday-actions > .kbtn { flex: 1 1 100%; height: var(--h-touch, 44px); }
-  .ktoday-actions > .kbtn .kkbd { display: none; } /* no keyboard to press it on */
+  .ktoday-lede { padding-top: 12px; }
+  .ktoday-actions { margin-top: 12px; }
   .ktoday-hero-label > span { text-align: center; }
   .ktoday-hint { flex: 1; min-height: 0; }
   .ktoday-beam { flex: 1 1 100%; max-width: none; margin-left: 0; }
@@ -132,29 +142,6 @@ const TODAY_CSS = `
   .ktoday-skeleton { --kp-gutter: var(--gutter, 16px); }
 }
 `;
-
-const FIGURE_TITLE: Record<Exclude<BriefPart, string>["kind"], string> = {
-  free: "Show the free time on your day", due: "Show what's due today", overdue: "Show what's overdue",
-  task: "Open this task", risks: "See the risks",
-};
-
-/** A live figure in the brief. A span with the button role rather than a
- *  <button>, so a long one (a task's title) wraps with the sentence around it. */
-function Figure({ kind, pressed, onActivate, children }: {
-  kind: Exclude<BriefPart, string>["kind"]; pressed?: boolean; onActivate: () => void; children: ReactNode;
-}) {
-  return (
-    <span role="button" tabIndex={0} className="ktoday-fig" data-kind={kind} aria-pressed={pressed} title={FIGURE_TITLE[kind]}
-      onClick={onActivate}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") { e.preventDefault(); onActivate(); }
-        else if (e.key === " ") e.preventDefault(); // Space acts on release, like a button
-      }}
-      onKeyUp={(e) => { if (e.key === " ") { e.preventDefault(); onActivate(); } }}>
-      {children}
-    </span>
-  );
-}
 
 /** "2 of 4 set up": the getting-started steps, tucked into a chip until they're done or hidden. */
 function SetupChip({ steps }: { steps: TodayViewProps["setup"] }) {
@@ -197,10 +184,13 @@ function TodaySkeleton() {
       <style>{TODAY_CSS}</style>
       <div className="ktoday-skeleton-main" aria-hidden="true">
         <div className="ktoday-lede">
-          <span className="ktoday-skel skel" style={{ width: "min(640px, 92%)", height: 28, marginTop: 4 }} />
-          <span className="ktoday-skel skel" style={{ width: "min(420px, 64%)", height: 28, marginTop: 8 }} />
+          <div className="ktoday-skel" style={{ maxWidth: 920, height: 248, borderRadius: 20, padding: "28px 32px", background: "var(--bg-raised, var(--surface-raised))", boxShadow: "var(--e1)" }}>
+            <span className="ktoday-skel skel" style={{ width: 220, height: 12 }} />
+            <span className="ktoday-skel skel" style={{ width: "min(560px, 88%)", height: 32, marginTop: 20 }} />
+            <span className="ktoday-skel skel" style={{ width: "min(460px, 70%)", height: 16, marginTop: 18 }} />
+            <span className="ktoday-skel skel" style={{ width: 212, height: 40, marginTop: 32, borderRadius: "var(--r-md, 8px)" }} />
+          </div>
           <div className="ktoday-actions">
-            <span className="ktoday-skel skel" style={{ width: 212, height: 40, borderRadius: "var(--r-md, 8px)" }} />
             <span className="ktoday-skel ktoday-beam" style={{ height: 10, borderRadius: 999 }} />
           </div>
         </div>
@@ -238,7 +228,7 @@ export function TodayView(props: TodayViewProps) {
 function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
-  riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects,
+  riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -290,14 +280,17 @@ function TodayDay({
     const skipped = new Set(prefs.skipped);
     return ghostCandidates(tasks, { today: day, me }).filter((t) => skipped.has(t.id)).length;
   }, [tasks, day, me, prefs.skipped]);
-  const brief = useMemo(() => composeBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me }),
-    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me]);
+  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members, projects }),
+    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, members, projects]);
   const planned = plannedMinutes(tasks);
   const free = freeMinutes(tasks, dayEvents, nowMin);
   const placedOpen = tasks.filter((t) => isPlaced(t) && t.status !== "done" && !t.archivedAt);
   const segments: BeamSegment[] = [
     ...dayEvents.map((e) => ({ start: e.start, end: e.end, title: e.title, kind: e.kind === "break" ? "break" as const : "meeting" as const })),
-    ...placedOpen.map((t) => ({ start: t.scheduled!, end: t.scheduled! + durOf(t), title: t.title, kind: "task" as const, color: getProject(t.projectId)?.color })),
+    ...placedOpen.map((t) => {
+      const p = getProject(t.projectId);
+      return { start: t.scheduled!, end: t.scheduled! + durOf(t), title: t.title, kind: "task" as const, color: p?.color, fill: p ? projectIdentity(p).fill : undefined };
+    }),
     ...ghosts.map((g) => ({ start: g.start, end: g.end, title: tasks.find((t) => t.id === g.id)?.title ?? "", kind: "suggestion" as const })),
   ];
   const big3 = useMemo(() => readBig3(me), [me, day]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -424,15 +417,50 @@ function TodayDay({
     return () => window.removeEventListener("keydown", h);
   }, [readOnly]);
 
-  /* ----- the brief's figures ----- */
-  const [railFocus, setRailFocus] = useState<"due" | "overdue" | null>(null);
+  /* ----- the brief's numbers: each narrows the rail (free time is outlined on the day) ----- */
+  const [railFocus, setRailFocus] = useState<RailFocus | null>(null);
   const [freePulse, setFreePulse] = useState(0);
-  const onFigure = (p: Exclude<BriefPart, string>) => {
-    if (p.kind === "free") setFreePulse((n) => n + 1);
-    else if (p.kind === "due" || p.kind === "overdue") { const k = p.kind; setRailFocus((f) => (f === k ? null : k)); }
-    else if (p.kind === "task" && p.taskId) onOpen(p.taskId);
-    else if (p.kind === "risks") onOpenRisks?.();
+  const onFact = (f: BriefFact) => {
+    if (f.kind === "free") setFreePulse((n) => n + 1);
+    else if (f.kind !== "meetings") { const k = f.kind; setRailFocus((cur) => (cur === k ? null : k)); }
   };
+
+  /* ----- Kanbo noticed ----- */
+  const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(me, day));
+  useEffect(() => { setDismissed(readDismissed(me, day)); }, [me, day]);
+  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members, risks, dismissed }),
+    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, members, risks, dismissed]);
+  const dismiss = (n: Noticed) => {
+    const next = [...dismissed.filter((x) => x !== n.id), n.id];
+    setDismissed(next); writeDismissed(me, day, next);
+    const undo = () => { const back = readDismissed(me, day).filter((x) => x !== n.id); setDismissed(back); writeDismissed(me, day, back); };
+    if (toast) toast.action("Hidden for today", "Undo", undo);
+    say(`Hidden for today: ${n.title}`);
+  };
+  const onNoticed = (n: Noticed, a: NoticedAction) => {
+    if (a.kind === "open") onOpen(a.taskId);
+    else if (a.kind === "risks") onOpenRisks?.();
+    else {
+      const t = tasks.find((x) => x.id === a.taskId) ?? allTasks.find((x) => x.id === a.taskId);
+      if (!t) return;
+      const before = { planToday: !!t.planToday, scheduled: t.scheduled ?? null };
+      const patch: Partial<Task> = a.kind === "place" ? { planToday: true, scheduled: a.start } : { planToday: true };
+      onUpdate(t.id, patch);
+      const msg = a.kind === "place" ? `“${t.title}” is on your day at ${fmtTime(a.start)}` : `“${t.title}” is on today's list`;
+      if (toast) toast.action(msg, "Undo", () => onUpdate(t.id, before), { ms: 10000 });
+      say(msg);
+      const next = [...dismissed.filter((x) => x !== n.id), n.id];
+      setDismissed(next); writeDismissed(me, day, next);
+    }
+  };
+
+  /* ----- after hours: tomorrow instead of an empty evening ----- */
+  const tomorrow = useMemo(() => {
+    if (!evening) return null;
+    const d = new Date(); d.setDate(d.getDate() + 1);
+    const tmrEvents = calendarConnected ? todaysEvents(events, d) : dayEvents;
+    return tomorrowPreview(tasks, tmrEvents, day, me);
+  }, [evening, calendarConnected, events, dayEvents, tasks, day, me]);
 
   const busy = ordering || ranking;
   const wontFit = plan.unplaced.length;
@@ -448,35 +476,34 @@ function TodayDay({
     : "Nothing to place yet";
   // H's mouse path, under the hint while there are suggestions to hide or show
   const toggle = mode === "plan" && showSuggestions && plan.suggestions.length > 0;
-  const idleLabel = mode === "replan" ? "Re-plan" : "Plan my day";
+  const idleLabel = mode === "replan" ? "Re-plan" : "Plan my day for me";
   const busyLabel = mode === "replan" ? "Re-planning…" : "Ordering your day…";
+
+  const hero = readOnly ? null : mode === "evening" ? (
+    // the working day's over: closing it is what's left (the rail's own link steps aside)
+    <Button variant="hero" size="lg" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
+  ) : (
+    <Button variant={mode === "plan" ? "hero" : "secondary"} size="lg" kbd="P" loading={busy} disabled={!busy && mode === "none"}
+      icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()}>
+      <span className="ktoday-hero-label">
+        <span aria-hidden={busy || undefined}>{idleLabel}</span>
+        <span aria-hidden={!busy || undefined}>{busyLabel}</span>
+      </span>
+    </Button>
+  );
 
   const lede = (drop: { start: number; end: number } | null) => (
     <section className="ktoday-lede" aria-label="Your day in brief">
       <style>{TODAY_CSS}</style>
-      <p className="ktoday-brief">
-        {brief.parts.map((p, i) => typeof p === "string" ? <Fragment key={i}>{p}</Fragment>
-          : p.kind === "risks" && !onOpenRisks ? <Fragment key={i}>{p.text}</Fragment>
-          : (
-            <Figure key={i} kind={p.kind} onActivate={() => onFigure(p)}
-              pressed={p.kind === "due" || p.kind === "overdue" ? railFocus === p.kind : undefined}>
-              {p.text}
-            </Figure>
-          ))}
-      </p>
+      <style>{BRIEF_CSS}</style>
+      <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks}
+        hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk} />
       <div className="ktoday-actions">
-        {!readOnly && (mode === "evening" ? (
-          // the working day's over: closing it is what's left (the rail's own link steps aside)
-          <Button variant="secondary" size="lg" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
-        ) : (
-          <Button variant={mode === "plan" ? "hero" : "secondary"} size="lg" kbd="P" loading={busy} disabled={!busy && mode === "none"}
-            icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()}>
-            <span className="ktoday-hero-label">
-              <span aria-hidden={busy || undefined}>{idleLabel}</span>
-              <span aria-hidden={!busy || undefined}>{busyLabel}</span>
-            </span>
-          </Button>
-        ))}
+        <div className="ktoday-beam">
+          {/* the working day, unless something's planned outside it */}
+          <Daybeam segments={segments} nowMin={nowMin} planned={planned} free={free} drop={drop}
+            compact={!segments.some((s) => s.start < 8 * 60 || s.end > 18 * 60)} />
+        </div>
         {!readOnly && hint && (
           <span className="ktoday-hint">
             <span>{hint}</span>
@@ -488,11 +515,6 @@ function TodayDay({
             )}
           </span>
         )}
-        <div className="ktoday-beam">
-          {/* the working day, unless something's planned outside it */}
-          <Daybeam segments={segments} nowMin={nowMin} planned={planned} free={free} drop={drop}
-            compact={!segments.some((s) => s.start < 8 * 60 || s.end > 18 * 60)} />
-        </div>
       </div>
       {!readOnly && <SetupChip steps={setup} />}
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
@@ -506,6 +528,8 @@ function TodayDay({
       skipped={prefs.skipped} onSkip={skip} onUnskip={unskipOne} landing={landing} readOnly={readOnly}
       onStartFocus={onStartFocus} onExtractFromMeeting={onExtractFromMeeting} onConnectCalendar={onConnectCalendar}
       railFocus={railFocus} onRailFocus={setRailFocus} freePulse={freePulse} big3={big3}
-      onOpenMyTasks={onOpenMyTasks} onShutdown={evening ? undefined : onShutdown} members={members} projects={projects} />
+      onOpenMyTasks={onOpenMyTasks} onShutdown={evening ? undefined : onShutdown} members={members} projects={projects}
+      railTop={noticed.length > 0 ? <NoticedCard items={noticed} onAction={onNoticed} onDismiss={dismiss} /> : undefined}
+      afterHours={tomorrow ? <TomorrowCard preview={tomorrow} onOpen={onOpen} /> : undefined} />
   );
 }

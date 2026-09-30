@@ -588,10 +588,23 @@ describe("TaskDetail — frame", () => {
     const project = { id: "p1", name: "Q3 Product Launch", color: "oklch(0.62 0.14 230)", icon: "🚀", workspaceId: "w1" } as never;
     const { props } = await setup({ projects: [project], onOpenProject, sections: [{ id: "s1", projectId: "p1", name: "Narrative" }], tasks: [mk({ sectionId: "s1" })] });
     const crumb = screen.getByRole("navigation", { name: "Where this task lives" });
-    expect(crumb).toHaveTextContent("Q3 Product Launch/Narrative");
-    fireEvent.click(within(crumb).getByRole("button", { name: "Q3 Product Launch" }));
+    expect(crumb).toHaveTextContent("Q3 Product LaunchNarrative");
+    // the project's chip: its tile and name, then › the section
+    const chip = within(crumb).getByRole("button", { name: "Q3 Product Launch" });
+    expect(chip).toHaveClass("kpchip");
+    expect(chip.querySelector(".kptile")).not.toBeNull();
+    fireEvent.click(chip);
     expect(props.onClose).toHaveBeenCalled();
     expect(onOpenProject).toHaveBeenCalledWith("p1");
+  });
+
+  it("wears the project's colour as a 3px edge along its top (and nothing without a project)", async () => {
+    const project = { id: "p1", name: "Q3 Product Launch", color: "oklch(0.62 0.14 230)", emoji: "🚀", workspaceId: "w1" } as never;
+    await setup({ projects: [project] });
+    const panel = screen.getByRole("dialog", { name: /^Task:/ });
+    expect(panel).toHaveClass("kp");
+    expect(panel).toHaveAttribute("data-project", "p1");
+    expect(panel.style.getPropertyValue("--p-h")).toBe("225");
   });
 });
 
@@ -746,7 +759,7 @@ describe("TaskDetail — property menus", () => {
     openActions();
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to project…" }));
     const proj = await screen.findByRole("listbox", { name: "Project" });
-    expect(proj.querySelectorAll(".kpdot")).toHaveLength(2);
+    expect(proj.querySelectorAll(".kptile")).toHaveLength(2);
     fireEvent.click(within(proj).getByRole("option", { name: "Brand Refresh" }));
     expect(props.onPatch).toHaveBeenLastCalledWith("t1", { projectId: "p2" });
 

@@ -62,6 +62,13 @@ const avatarHue = (color: string) => {
   return o && o.c >= 0.03 ? Math.round(o.h) : 268;
 };
 
+/** An initials disc exactly as Avatar paints it (for a disc drawn elsewhere, e.g.
+ *  Settings' profile preview, so it matches the sidebar's). */
+export function avatarDisc(color: string): { background: string; color: string } {
+  const h = avatarHue(color);
+  return { background: `oklch(var(--av-bg-l) var(--av-bg-c) ${h})`, color: `oklch(var(--av-fg-l) var(--av-fg-c) ${h})` };
+}
+
 // A tinted disc in the member's hue with initials in a deeper (Paper) or
 // lighter (Navy) shade of the same hue: every hue reads ≥ 6.3:1, and a team
 // of avatars reads as one family instead of a box of crayons.

@@ -210,10 +210,10 @@ export let WORKSPACES: Workspace[] = [
    the launch Sky, the brand Orchid, infra Jade and growth Tangerine. */
 export let PROJECTS: Project[] = [
   { id: "p-personal", name: "Personal", emoji: "📌", color: spectrumColor("iris"), workspaceId: null },
-  { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: spectrumColor("sky"), workspaceId: "ws-foundrise" },
-  { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise" },
-  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise" },
-  { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco" },
+  { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: spectrumColor("sky"), workspaceId: "ws-foundrise", ownerId: "m-self", contributorIds: ["m-1", "m-2", "m-3"] },
+  { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
+  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"] },
+  { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
 ];
 
 /* Minimal reference data a brand-new (real) account starts with — one personal

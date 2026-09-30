@@ -52,43 +52,116 @@ afterEach(() => { vi.useRealTimers(); });
 const today = () => localDayKey();
 
 describe("TodayView: the brief", () => {
-  it("renders the live figures as buttons", () => {
+  it("speaks first: the greeting, the day's one big thing (it opens the task), why, and the day in numbers", () => {
     const deck = task({ id: "deck", title: "Launch deck", dueDate: today(), aiScore: 90 });
     const { props } = renderToday([deck, task({ id: "b", dueDate: today() })], { riskCount: 2, onOpenRisks: vi.fn() });
     const brief = screen.getByRole("region", { name: "Your day in brief" });
-    expect(brief.textContent).toContain("Good morning, Daniel.");
+    const head = within(brief).getByRole("heading", { level: 2 });
+    expect(head.textContent).toBe("Morning, Daniel. One big thing today: launch deck.");
+    expect(within(brief).getByText(/Kanbo/, { selector: ".kbrief-who" })).toBeInTheDocument();
+    expect(within(brief).getByText("09:00")).toBeInTheDocument();                                     // when it was written
     expect(within(brief).getByRole("button", { name: /free$/ })).toBeInTheDocument();
-    const due = within(brief).getByRole("button", { name: "two things due" });
+    const due = within(brief).getByRole("button", { name: "2 due today" });
     expect(due).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(within(brief).getByRole("button", { name: "Launch deck" }));
+    fireEvent.click(within(head).getByRole("button", { name: "launch deck" }));
     expect(props.onOpen).toHaveBeenCalledWith("deck");
     fireEvent.click(within(brief).getByRole("button", { name: "Two risks need a look" }));
     expect(props.onOpenRisks).toHaveBeenCalled();
   });
 
-  it("a figure works from the keyboard like any button (Enter, or Space on release)", () => {
-    const deck = task({ id: "deck", title: "Launch deck", dueDate: today(), aiScore: 90 });
-    const { props } = renderToday([deck]);
-    const fig = screen.getByRole("button", { name: "Launch deck" });
-    expect(fig).toHaveAttribute("tabindex", "0");
-    fireEvent.keyDown(fig, { key: "Enter" });
-    expect(props.onOpen).toHaveBeenCalledTimes(1);
-    fireEvent.keyDown(fig, { key: " " });
-    expect(props.onOpen).toHaveBeenCalledTimes(1);
-    fireEvent.keyUp(fig, { key: " " });
-    expect(props.onOpen).toHaveBeenCalledTimes(2);
+  it("the focus phrase is a real button (keyboard for free), and keeps its full stop in its gradient", () => {
+    renderToday([task({ id: "deck", title: "Launch deck", dueDate: today(), aiScore: 90 })]);
+    const focus = screen.getByRole("button", { name: "launch deck" });
+    expect(focus.tagName).toBe("BUTTON");
+    expect(focus).toHaveClass("kbrief-focus");
+    expect(focus.textContent).toBe("launch deck.");
   });
 
-  it("a due figure narrows the rail to that group, and again shows everything", () => {
+  it("How I got here opens the facts the brief was built from", async () => {
+    renderToday([task({ id: "deck", title: "Launch deck", dueDate: today(), dueTime: "17:00", aiScore: 90 })]);
+    const how = screen.getByRole("button", { name: "How I got here" });
+    expect(how).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(how);
+    expect(how).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText("Due today")).toBeInTheDocument();
+    expect(screen.getByText("Launch deck (17:00)")).toBeInTheDocument();
+    expect(screen.getByText("Your calendar")).toBeInTheDocument();
+    expect(screen.getByText(/Nothing changes until you say so/)).toBeInTheDocument();
+  });
+
+  it("Just show me the list goes to My tasks, and the Ask hint opens Kanbo", () => {
+    const onOpenMyTasks = vi.fn(), onAsk = vi.fn();
+    renderToday([task({ id: "a", dueDate: today() })], { onOpenMyTasks, onAsk });
+    fireEvent.click(screen.getByRole("button", { name: "Just show me the list" }));
+    expect(onOpenMyTasks).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /tell Kanbo what's different today/ }));
+    expect(onAsk).toHaveBeenCalled();
+  });
+
+  it("a number narrows the rail to that group, and again shows everything", () => {
     renderToday([task({ id: "a", title: "Due one", dueDate: today() }), task({ id: "b", title: "Planned one", planToday: true })]);
     const rail = screen.getByRole("complementary", { name: "Unplanned" });
     expect(within(rail).getByText("Planned one")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "one thing due" }));
-    expect(screen.getByRole("button", { name: "one thing due" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "1 due today" }));
+    expect(screen.getByRole("button", { name: "1 due today" })).toHaveAttribute("aria-pressed", "true");
     expect(within(rail).getByText("Due one")).toBeInTheDocument();
     expect(within(rail).queryByText("Planned one")).not.toBeInTheDocument();
     fireEvent.click(within(rail).getByRole("button", { name: "Show all" }));
     expect(within(rail).getByText("Planned one")).toBeInTheDocument();
+  });
+
+  it("slipping and new-from-the-team narrow the rail too", () => {
+    renderToday([
+      task({ id: "s", title: "Moved on", dueDate: today(), originalDueDate: "2020-01-01" }),
+      task({ id: "t", title: "From Maya", createdBy: "maya", createdAt: new Date().toISOString() }),
+      task({ id: "o", title: "Other", planToday: true }),
+    ]);
+    const rail = screen.getByRole("complementary", { name: "Unplanned" });
+    fireEvent.click(screen.getByRole("button", { name: "1 slipping" }));
+    expect(within(rail).getByText("Showing what's slipping")).toBeInTheDocument();
+    expect(within(rail).getByText("Moved on")).toBeInTheDocument();
+    expect(within(rail).queryByText("Other")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "1 new from the team" }));
+    expect(within(rail).getByText("From Maya")).toBeInTheDocument();
+    expect(within(rail).queryByText("Moved on")).not.toBeInTheDocument();
+  });
+
+  it("an empty day asks whether to pull something forward", () => {
+    renderToday([task({ id: "n", title: "Next week's thing", dueDate: "2999-01-01" })]);
+    const brief = screen.getByRole("region", { name: "Your day in brief" });
+    expect(within(brief).getByRole("heading", { level: 2 }).textContent).toBe("Morning, Daniel. A clear day. Want to pull something forward?");
+    expect(screen.getByRole("button", { name: /Plan my day/ })).toBeDisabled();
+  });
+});
+
+describe("TodayView: Kanbo noticed", () => {
+  const blockedOnMe = () => [
+    task({ id: "mine", title: "Review tokens", status: "review", dueDate: today(), focusMin: 20 }),
+    task({ id: "theirs", title: "Ship onboarding", assigneeId: "maya", status: "blocked", dependencies: ["mine"] }),
+  ];
+
+  it("names who's waiting on you, with an action and Not now (which lasts the day, with an Undo)", () => {
+    const { props } = renderToday(blockedOnMe(), { members: [{ id: "me", name: "Daniel Okai" }, { id: "maya", name: "Maya Lin" }] });
+    const card = screen.getByRole("region", { name: "Kanbo noticed" });
+    expect(within(card).getByRole("heading", { name: "Maya is blocked on you" })).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Review it now" }));
+    expect(props.onOpen).toHaveBeenCalledWith("mine");
+    fireEvent.click(within(card).getByRole("button", { name: /^Not now: hide “Maya is blocked on you”/ }));
+    expect(screen.queryByRole("region", { name: "Kanbo noticed" })).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kanbo-noticed:me")!).ids).toEqual(["waiting:mine"]);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(screen.getByRole("region", { name: "Kanbo noticed" })).toBeInTheDocument();
+  });
+
+  it("stays away for the day once waved off (read back on the next visit)", () => {
+    localStorage.setItem("kanbo-noticed:me", JSON.stringify({ day: today(), ids: ["waiting:mine"] }));
+    renderToday(blockedOnMe(), { members: [{ id: "maya", name: "Maya Lin" }] });
+    expect(screen.queryByRole("region", { name: "Kanbo noticed" })).not.toBeInTheDocument();
+  });
+
+  it("isn't shown to a guest", () => {
+    renderToday(blockedOnMe(), { readOnly: true });
+    expect(screen.queryByRole("region", { name: "Kanbo noticed" })).not.toBeInTheDocument();
   });
 });
 
@@ -281,7 +354,7 @@ describe("TodayView: the suggested plan", () => {
     fireEvent.click(btn);
     await waitFor(() => expect(btn).toHaveAttribute("aria-busy", "true"));
     expect(btn).toHaveAccessibleName(/Ordering your day…/);
-    expect(within(btn).getByText("Plan my day")).toHaveAttribute("aria-hidden", "true");
+    expect(within(btn).getByText("Plan my day for me")).toHaveAttribute("aria-hidden", "true");
     await act(async () => { release("ai"); });
     await waitFor(() => expect(props.onUpdate).toHaveBeenCalledTimes(2));
   });
@@ -344,10 +417,10 @@ describe("TodayView: the brief counts what the rail shows", () => {
     const sub = task({ id: "sub", title: "Subtask due", dueDate: today(), parentId: "mine", aiScore: 80 });
     renderToday([mine, collab, sub]);
     const brief = screen.getByRole("region", { name: "Your day in brief" });
-    expect(within(brief).getByRole("button", { name: "one thing due" })).toBeInTheDocument();
-    expect(within(brief).getByRole("button", { name: "Mine due" })).toBeInTheDocument();
+    expect(within(brief).getByRole("button", { name: "1 due today" })).toBeInTheDocument();
+    expect(within(brief).getByRole("button", { name: "mine due" })).toBeInTheDocument();
     expect(ghostButtons().map((b) => b.getAttribute("aria-label"))).toEqual([expect.stringMatching(/^Suggested: Mine due/)]);
-    fireEvent.click(within(brief).getByRole("button", { name: "one thing due" }));
+    fireEvent.click(within(brief).getByRole("button", { name: "1 due today" }));
     const rail = screen.getByRole("complementary", { name: "Unplanned" });
     expect(within(rail).getByText("Mine due")).toBeInTheDocument();
     expect(within(rail).queryByText("Collab due")).not.toBeInTheDocument();
@@ -358,7 +431,7 @@ describe("TodayView: the brief counts what the rail shows", () => {
       task({ id: "a", title: "Due, unplaced", dueDate: today() }),
       task({ id: "b", title: "Due, placed", dueDate: today(), planToday: true, scheduled: 14 * 60 }),
     ]);
-    fireEvent.click(screen.getByRole("button", { name: "two things due" }));
+    fireEvent.click(screen.getByRole("button", { name: "2 due today" }));
     expect(screen.getByText("Showing what's due today · 1 already on your day")).toBeInTheDocument();
   });
 });
@@ -368,7 +441,11 @@ describe("TodayView: after the working day", () => {
     at(19);
     const { props } = renderToday([task({ id: "d", title: "Due thing", dueDate: today() })]);
     const brief = screen.getByRole("region", { name: "Your day in brief" });
-    expect(brief.textContent).toContain("Good evening, Daniel. The working day's done, with one thing due.");
+    expect(within(brief).getByRole("heading", { level: 2 }).textContent).toBe("Evening, Daniel. The working day's done.");
+    expect(brief.textContent).toContain("One thing is still open. Shut down to close the day and pick tomorrow's first thing.");
+    // the day's grid folds away: tomorrow takes its place
+    expect(screen.getByRole("region", { name: "Tomorrow" })).toHaveTextContent("Due thing");
+    expect(screen.getByRole("button", { name: /^Today · 07:00–22:00/ })).toHaveAttribute("aria-expanded", "false");
     expect(ghostButtons()).toHaveLength(0);
     expect(screen.queryByRole("button", { name: /Plan my day|Re-plan/ })).not.toBeInTheDocument();
     expect(screen.getByText("Tomorrow's plan starts at 08:00")).toBeInTheDocument();
@@ -394,7 +471,7 @@ describe("TodayView: after the working day", () => {
 
   it("a task due at a time is suggested before it, as the brief says", () => {
     renderToday([task({ id: "c", title: "Send contract", dueDate: today(), dueTime: "11:00" })]);
-    expect(screen.getByRole("region", { name: "Your day in brief" }).textContent).toContain("Start with Send contract: it's due at 11:00.");
+    expect(screen.getByRole("region", { name: "Your day in brief" }).textContent).toContain("It's due at 11:00, so I'd give it your clearest stretch, 09:00–09:30, before lunch.");
     expect(ghostButtons().map((b) => b.getAttribute("aria-label"))).toEqual([expect.stringMatching(/^Suggested: Send contract, 09:00–09:30/)]);
   });
 });
