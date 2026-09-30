@@ -1,19 +1,20 @@
 /* ============================================================
    KANBO — bulk task import. Paste a list (one task per line),
    rows copied from Excel / Google Sheets, or drop a CSV exported
-   from Asana, Trello, Jira, Planner or Kanbo. Columns are matched
+   from Asana, Trello, Jira, Planner or Kanbo (or a Trello board's
+   JSON export). Columns are matched
    automatically (see lib/importTasks) and everything is shown in a
    live preview — mapping, warnings and the tasks themselves —
    before anything is created.
    ============================================================ */
-import { useState, useRef, useMemo, useEffect, useId } from "react";
+import { useState, useRef, useMemo, useEffect, useId, useDeferredValue } from "react";
 import type { CSSProperties, DragEvent } from "react";
 import { Icon } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { PRIORITY_META, STATUS_META, TAGS } from "../data/data";
 import {
-  analyseImport, decodeImportBytes, FIELD_LABELS, IMPORT_LIMIT,
-  type DateOrder, type ImportAnalysis, type ImportMember, type ImportProject, type ImportRow, type ImportSection,
+  analyseImport, decodeImportBytes, trelloJsonToCsv, FIELD_LABELS, IMPORT_LIMIT,
+  type DateOrder, type ImportAnalysis, type ImportField, type ImportMember, type ImportProject, type ImportRow, type ImportSection,
 } from "../lib/importTasks";
 
 export { parseImportText } from "../lib/importTasks";
@@ -27,13 +28,29 @@ export interface ImportSupport {
   newTags?: boolean;
   /** row.sectionName is created as a section in the row's project. */
   newSections?: boolean;
+  /**
+   * The handler keeps each row's description, tags, start date, estimate,
+   * section, extra people and completion date — not just its title, status,
+   * priority, project, assignee and due date. Until it says so, the preview
+   * doesn't show those and warns that they'll be left off.
+   */
+  details?: boolean;
 }
 
 const PREVIEW_ROWS = 50;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+// Trello's JSON carries the board's whole history; only the cards are kept
+const MAX_JSON_BYTES = 25 * 1024 * 1024;
+const TEXT_EXTS = ["csv", "tsv", "tab", "txt", "text", "md", "markdown", "json", ""];
+// columns whose values only land when the handler supports `details`
+const DETAIL_FIELDS = new Set<ImportField>(["description", "section", "tags", "start", "estimate"]);
 const EMPTY: ImportAnalysis = analyseImport("");
 
 const plural = (n: number, one: string, many = one + "s") => `${n.toLocaleString("en-GB")} ${n === 1 ? one : many}`;
+const sentence = (parts: string[]) => {
+  const s = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0] || "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
 const quoteList = (names: string[], max = 3) => {
   const shown = names.slice(0, max).map((n) => `“${n}”`);
   const more = names.length - shown.length;
@@ -77,6 +94,7 @@ export function ImportTasksModal({
   const [smartText, setSmartText] = useState(true);
   const [dateOrder, setDateOrder] = useState<"auto" | DateOrder>("auto");
   const [extras, setExtras] = useState(false);
+  const [keepFileProjects, setKeepFileProjects] = useState(false);
   const [target, setTarget] = useState(defaultProjectId ?? "");
   const fileRef = useRef<HTMLInputElement>(null);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
@@ -89,11 +107,25 @@ export function ImportTasksModal({
     : defaultProjectId && projects.some((p) => p.id === defaultProjectId) ? defaultProjectId : projects.length === 1 ? projects[0].id : "";
   useEffect(() => { if (open) setTarget(defaultTarget); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [open, defaultProjectId]);
 
-  const analysis = useMemo(() => (open ? analyseImport(text, {
-    projects, members, sections, defaultProjectId: target || undefined,
-    dateOrder: dateOrder === "auto" ? undefined : dateOrder, smartText,
+  // The parent rebuilds these arrays on every render (a teammate's edit arriving,
+  // the focus timer ticking): key the analysis on what's in them, not their identity.
+  const projectsKey = projects.map((p) => `${p.id}\u0001${p.name}`).join("\u0002");
+  const membersKey = members.map((m) => `${m.id}\u0001${m.name}\u0001${m.email ?? ""}`).join("\u0002");
+  const sectionsKey = sections ? sections.map((x) => `${x.id}\u0001${x.projectId}\u0001${x.name}`).join("\u0002") : "-";
+  /* eslint-disable react-hooks/exhaustive-deps */
+  const stableProjects = useMemo(() => projects, [projectsKey]);
+  const stableMembers = useMemo(() => members, [membersKey]);
+  const stableSections = useMemo(() => sections, [sectionsKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
+  // a big paste re-analyses behind the typing rather than on every keystroke
+  const deferredText = useDeferredValue(text);
+  const analyse = (t: string) => analyseImport(t, {
+    projects: stableProjects, members: stableMembers, sections: stableSections, defaultProjectId: target || undefined,
+    keepFileProjects, dateOrder: dateOrder === "auto" ? undefined : dateOrder, smartText,
     mode: forceLines ? "lines" : "auto", csv: isCsv, extrasToDescription: extras,
-  }) : EMPTY), [open, text, projects, members, sections, target, dateOrder, smartText, forceLines, isCsv, extras]);
+  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const analysis = useMemo(() => (open ? analyse(deferredText) : EMPTY), [open, deferredText, stableProjects, stableMembers, stableSections, target, keepFileProjects, dateOrder, smartText, forceLines, isCsv, extras]);
 
   if (!open) return null;
 
@@ -101,17 +133,24 @@ export function ImportTasksModal({
   const w = analysis.warnings;
   const needsTarget = projects.length > 0 && !target && rows.some((r) => !r.projectId);
   const targetName = projects.find((p) => p.id === target)?.name || (target === defaultProjectId ? defaultProjectName : undefined);
+  const projectName = (id?: string) => (id ? projects.find((p) => p.id === id)?.name : undefined);
+  const otherDest = [...new Set(rows.map((r) => r.projectId).filter((id): id is string => !!id && id !== target))];
+  const subtitle = targetName
+    ? `Into ${targetName}${otherDest.length ? ` and ${plural(otherDest.length, "other project")}` : ""}`
+    : otherDest.length ? `Into ${plural(otherDest.length, "project")}` : "Paste a list, copy rows from a spreadsheet or upload a CSV";
   const canImport = rows.length > 0 && !needsTarget;
   const showSmartToggle = analysis.mode === "lines" || (analysis.mode === "columns" && !analysis.hasHeader);
-  const mapped = analysis.columns.filter((c) => c.field && c.field !== "ignore");
+  // the Project column only decides where tasks go when the user asks it to
+  const mapped = analysis.columns.filter((c) => c.field && c.field !== "ignore" && (c.field !== "project" || keepFileProjects));
 
   const resetInput = () => {
-    setText(""); setFileName(""); setIsCsv(false); setError(null); setForceLines(false); setDateOrder("auto"); setExtras(false);
+    setText(""); setFileName(""); setIsCsv(false); setError(null); setForceLines(false); setDateOrder("auto"); setExtras(false); setKeepFileProjects(false);
   };
 
   const handleFile = (file: File) => {
     setError(null);
-    const ext = (file.name.toLowerCase().split(".").pop() || "");
+    const name = file.name.toLowerCase();
+    const ext = name.includes(".") ? name.split(".").pop() || "" : "";
     if (["xlsx", "xlsm", "xls", "numbers", "ods"].includes(ext)) {
       setError(`Kanbo can't open ${ext.toUpperCase()} files directly. Save or export the sheet as CSV (UTF-8) and upload that, or select the rows, copy them and paste them into the box above.`);
       return;
@@ -120,24 +159,48 @@ export function ImportTasksModal({
       setError("Kanbo can't read that kind of file. Open it, copy the list and paste it into the box above.");
       return;
     }
-    if (ext === "json") {
-      setError("JSON exports (such as Trello's) aren't supported yet. Export a CSV instead, or copy the cards and paste them into the box above.");
+    // drag and drop skips the file picker's filter, so check the type here too
+    if (!TEXT_EXTS.includes(ext) && !file.type.startsWith("text/")) {
+      setError("Kanbo can import CSV, TSV and text files, or a Trello board's JSON export. For anything else, copy the list and paste it into the box above.");
       return;
     }
-    if (file.size > MAX_FILE_BYTES) {
-      setError("That file is over 5 MB. Split it into smaller files and import them one after another.");
+    const isJson = ext === "json";
+    if (file.size > (isJson ? MAX_JSON_BYTES : MAX_FILE_BYTES)) {
+      setError(isJson
+        ? "That file is over 25 MB. Export the board again (or a smaller board) and try once more."
+        : "That file is over 5 MB. Split it into smaller files and import them one after another.");
       return;
     }
     const reader = new FileReader();
     reader.onload = () => {
-      const decoded = decodeImportBytes(new Uint8Array(reader.result as ArrayBuffer));
-      setText(decoded); setFileName(file.name); setIsCsv(ext === "csv"); setForceLines(false); setDateOrder("auto"); setExtras(false);
+      const bytes = new Uint8Array(reader.result as ArrayBuffer);
+      // a NUL byte in a file without a UTF-16 byte-order mark means it isn't text (an image, a zip…)
+      const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+      if (!utf16 && bytes.subarray(0, 8192).includes(0)) {
+        setError("That file doesn't contain text Kanbo can read. Upload a CSV, TSV or text file, or copy the list and paste it into the box above.");
+        return;
+      }
+      let decoded = decodeImportBytes(bytes);
+      if (isJson) {
+        const csv = trelloJsonToCsv(decoded);
+        if (csv === null) {
+          setError("That JSON file isn't a Trello board export. In Trello, open the board's menu, choose Print, export and share → Export as JSON, and upload that file.");
+          return;
+        }
+        decoded = csv;
+      }
+      setText(decoded); setFileName(file.name); setIsCsv(ext === "csv" || isJson); setForceLines(false); setDateOrder("auto"); setExtras(false); setKeepFileProjects(false);
     };
     reader.onerror = () => setError("Couldn't read that file. Try again, or copy the rows and paste them into the box above.");
     reader.readAsArrayBuffer(file);
   };
 
+  // a file can be dropped anywhere on the dialog (or around it) — never let the browser open it instead
+  const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+  const onDragOver = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDragOver(true); } };
+  const onDragLeave = (e: DragEvent) => { if (!(e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget))) setDragOver(false); };
   const onDrop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
     e.preventDefault(); setDragOver(false);
     const f = e.dataTransfer.files?.[0];
     if (f) handleFile(f);
@@ -145,7 +208,8 @@ export function ImportTasksModal({
 
   const doImport = () => {
     if (!canImport) return;
-    onImport(rows);
+    // imported straight after typing: make sure the last keystrokes are included
+    onImport(deferredText === text ? rows : analyse(text).rows);
     resetInput();
     onClose();
   };
@@ -162,13 +226,26 @@ export function ImportTasksModal({
     const many = w.unknownAssignees.names.length > 1;
     warnings.push(`${plural(w.unknownAssignees.count, "task is", "tasks are")} assigned to ${many ? "people who aren't" : "someone who isn't"} in this workspace (${quoteList(w.unknownAssignees.names)}). ${w.unknownAssignees.count === 1 ? "It'll" : "They'll"} be assigned to you instead.`);
   }
+  if (w.unknownCompleted.count) warnings.push(`Kanbo couldn't tell whether ${plural(w.unknownCompleted.count, "task is", "tasks are")} done (${quoteList(w.unknownCompleted.names)}), so ${w.unknownCompleted.count === 1 ? "it stays" : "they stay"} open.`);
   if (w.unknownProjects.count) warnings.push(`${w.unknownProjects.names.length > 1 ? "There are no projects" : "There's no project"} called ${quoteList(w.unknownProjects.names)} here, so ${w.unknownProjects.count === 1 ? "that task goes" : "those tasks go"} into ${targetName ? `“${targetName}”` : "the project you choose below"}.`);
   if (w.unknownStatuses.count) warnings.push(`Kanbo doesn't have ${w.unknownStatuses.names.length > 1 ? "statuses" : "a status"} called ${quoteList(w.unknownStatuses.names)}, so ${w.unknownStatuses.count === 1 ? "that task starts" : "those tasks start"} as To do.`);
-  if (w.newTags.length) {
+  // what the file carries that this import can't keep yet
+  const leftOff: string[] = [];
+  if (!supports.details) {
+    if (rows.some((r) => r.description)) leftOff.push("descriptions");
+    if (rows.some((r) => r.tags?.length || r.newTags?.length)) leftOff.push("tags");
+    if (rows.some((r) => r.sectionId || r.sectionName)) leftOff.push("sections");
+    if (rows.some((r) => r.startDate)) leftOff.push("start dates");
+    if (rows.some((r) => r.focusMin)) leftOff.push("time estimates");
+    if (rows.some((r) => r.collaborators?.length)) leftOff.push("extra assignees");
+    if (rows.some((r) => r.completedAt)) leftOff.push("completion dates");
+  }
+  if (leftOff.length) warnings.push(`${sentence(leftOff)} from ${fileName ? "this file" : "your text"} will be left off — this import keeps each task's title, status, priority, project, assignee and due date.`);
+  if (w.newTags.length && supports.details) {
     if (supports.newTags) notes.push(`New ${w.newTags.length === 1 ? "tag" : "tags"} will be created: ${quoteList(w.newTags, 6)}.`);
     else warnings.push(`${quoteList(w.newTags, 6)} ${w.newTags.length === 1 ? "isn't a tag" : "aren't tags"} in Kanbo yet, so ${w.newTags.length === 1 ? "it'll" : "they'll"} be left off. Create ${w.newTags.length === 1 ? "it" : "them"} in Manage tags first to keep ${w.newTags.length === 1 ? "it" : "them"}.`);
   }
-  if (w.missingSections.length) {
+  if (w.missingSections.length && supports.details) {
     if (supports.newSections) notes.push(`New ${w.missingSections.length === 1 ? "section" : "sections"} will be added: ${quoteList(w.missingSections, 6)}.`);
     else warnings.push(`${w.missingSections.length > 1 ? "There are no sections" : "There's no section"} called ${quoteList(w.missingSections, 6)} in the project, so those tasks won't be in a section.`);
   }
@@ -184,7 +261,8 @@ export function ImportTasksModal({
   }
   if (w.skippedNoTitle) notes.push(`${plural(w.skippedNoTitle, "row")} had no task name and ${w.skippedNoTitle === 1 ? "was" : "were"} skipped.`);
   if (w.skippedArchived) notes.push(`${plural(w.skippedArchived, "archived item")} ${w.skippedArchived === 1 ? "was" : "were"} skipped.`);
-  if (w.skippedHeadings) notes.push(`${plural(w.skippedHeadings, "heading")} ending in “:” ${w.skippedHeadings === 1 ? "was" : "were"} left out.`);
+  if (w.skippedHeadings) notes.push(`${plural(w.skippedHeadings, "heading")} above the list ${w.skippedHeadings === 1 ? "was" : "were"} left out.`);
+  if (w.commentsToDescription) notes.push(`${plural(w.commentsToDescription, "comment")} ${w.commentsToDescription === 1 ? "was" : "were"} added to the description of the task above ${w.commentsToDescription === 1 ? "it" : "them"}.`);
   if (w.skippedLeading) notes.push(`${plural(w.skippedLeading, "line")} above the column headings ${w.skippedLeading === 1 ? "was" : "were"} skipped.`);
 
   const dueCount = rows.filter((r) => r.dueDate).length;
@@ -195,42 +273,42 @@ export function ImportTasksModal({
 
   return (
     <>
-      <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
+      <div onClick={onClose} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
       <div ref={trapRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId} className="glass anim-scalein"
         onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doImport(); } }}
+        onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
         style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 91, width: 620, maxWidth: "calc(100vw - 32px)", maxHeight: "min(90vh, 860px)", borderRadius: 20, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 22px 12px" }}>
           <span aria-hidden="true" style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 10, background: "var(--accent-dim)", color: "var(--accent)", flexShrink: 0 }}><Icon name="layers" size={17} /></span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <h2 id={titleId} style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Import tasks</h2>
-            <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{targetName ? `Into ${targetName}` : "Paste a list, copy rows from a spreadsheet or upload a CSV"}</div>
+            <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{subtitle}</div>
           </div>
           <button type="button" className="btn-icon" onClick={onClose} aria-label="Close import" style={{ border: "none" }}><Icon name="x" size={18} /></button>
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 22px 4px", display: "flex", flexDirection: "column", gap: 12 }}>
           <p id={descId} style={{ margin: 0, fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.55 }}>
-            One task per line, or columns copied straight from Excel or Google Sheets. CSV exports from Asana, Trello, Jira, Planner and Kanbo work too — columns such as <strong>Task name</strong>, <strong>Due date</strong>, <strong>Notes</strong>, <strong>Assignee</strong>, <strong>Status</strong> and <strong>Tags</strong> are matched automatically. In a plain list you can add <span className="mono" style={{ color: "var(--ink-2)" }}>!high</span>, <span className="mono" style={{ color: "var(--ink-2)" }}>#project</span>, <span className="mono" style={{ color: "var(--ink-2)" }}>@person</span> or <span className="mono" style={{ color: "var(--ink-2)" }}>tomorrow</span>.
+            One task per line, or columns copied straight from Excel or Google Sheets. CSV exports from Asana, Trello, Jira, Planner and Kanbo work too, as does a Trello board's JSON export — columns such as <strong>Task name</strong>, <strong>Due date</strong>, <strong>Notes</strong>, <strong>Assignee</strong>, <strong>Status</strong> and <strong>Tags</strong> are matched automatically. In a plain list you can add <span className="mono" style={{ color: "var(--ink-2)" }}>!high</span>, <span className="mono" style={{ color: "var(--ink-2)" }}>#project</span>, <span className="mono" style={{ color: "var(--ink-2)" }}>@person</span> or <span className="mono" style={{ color: "var(--ink-2)" }}>tomorrow</span>.
           </p>
 
-          <div onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
-            onDragLeave={() => setDragOver(false)} onDrop={onDrop} style={{ position: "relative" }}>
+          <div style={{ position: "relative" }}>
             <label htmlFor={textId} className="sr-only">Tasks to import</label>
             <textarea id={textId} value={text} onChange={(e) => { setText(e.target.value); setError(null); if (!e.target.value) { setFileName(""); setIsCsv(false); } }} autoFocus spellCheck={false} wrap="off"
               placeholder={"Draft Q3 deck !high tomorrow\nEmail the supplier\nReview budget #finance\n…"}
               style={{ width: "100%", minHeight: 150, maxHeight: 320, resize: "vertical", padding: "12px 14px", borderRadius: 12, border: `1px solid ${dragOver ? "var(--accent)" : "var(--hairline)"}`, background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.6, boxSizing: "border-box" }} />
             {dragOver && (
               <div aria-hidden="true" style={{ position: "absolute", inset: 0, borderRadius: 12, border: "2px dashed var(--accent)", background: "color-mix(in oklch, var(--accent) 8%, var(--surface-raised))", display: "grid", placeItems: "center", color: "var(--accent)", fontSize: 13, fontWeight: 600, pointerEvents: "none" }}>
-                Drop a .csv, .tsv or .txt file
+                Drop a .csv, .tsv, .txt or Trello .json file
               </div>
             )}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <input ref={fileRef} type="file" tabIndex={-1} aria-hidden="true" accept=".csv,.tsv,.txt,.md,text/csv,text/plain,text/tab-separated-values" style={{ display: "none" }}
+            <input ref={fileRef} type="file" tabIndex={-1} aria-hidden="true" accept=".csv,.tsv,.txt,.md,.json,text/csv,text/plain,text/tab-separated-values,application/json" style={{ display: "none" }}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); if (fileRef.current) fileRef.current.value = ""; }} />
-            <button type="button" className="btn btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12.5 }}><Icon name="folder" size={14} /> Upload a CSV or text file</button>
+            <button type="button" className="btn btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12.5 }}><Icon name="folder" size={14} /> Upload a CSV, text or Trello file</button>
             {fileName && <span className="truncate" style={{ ...chip, maxWidth: 200 }} title={fileName}>{fileName}</span>}
             {text && <button type="button" onClick={resetInput} style={{ ...linkBtn, color: "var(--ink-3)", fontWeight: 500 }}>Clear</button>}
             <span role="status" aria-live="polite" style={{ marginLeft: "auto", fontSize: 12.5, color: rows.length ? "var(--accent)" : "var(--ink-4)", fontWeight: 600 }}>
@@ -250,14 +328,19 @@ export function ImportTasksModal({
               </div>
               {mapped.length > 0 && (
                 <ul aria-label="Column mapping" style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {mapped.map((c) => (
-                    <li key={c.index} style={{ ...chip, color: "var(--ink-2)" }}>
-                      <span className="truncate" style={{ maxWidth: 140 }}>{c.header}</span>
-                      <span aria-hidden="true" style={{ color: "var(--ink-4)" }}>→</span>
-                      <span className="sr-only">imported as</span>
-                      <span style={{ fontWeight: 600 }}>{FIELD_LABELS[c.field!]}</span>
-                    </li>
-                  ))}
+                  {mapped.map((c) => {
+                    // read from the file, but not kept by this import (see the warning below)
+                    const dropped = !supports.details && DETAIL_FIELDS.has(c.field!);
+                    return (
+                      <li key={c.index} style={{ ...chip, color: dropped ? "var(--ink-4)" : "var(--ink-2)" }} title={dropped ? "Left off in this import" : undefined}>
+                        <span className="truncate" style={{ maxWidth: 140 }}>{c.header}</span>
+                        <span aria-hidden="true" style={{ color: "var(--ink-4)" }}>→</span>
+                        <span className="sr-only">{dropped ? "read as" : "imported as"}</span>
+                        <span style={{ fontWeight: 600, textDecoration: dropped ? "line-through" : "none" }}>{FIELD_LABELS[c.field!]}</span>
+                        {dropped && <span className="sr-only">, left off in this import</span>}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
               {analysis.ignoredColumns.length > 0 && (
@@ -273,6 +356,12 @@ export function ImportTasksModal({
                 <label style={checkboxRow}>
                   <input type="checkbox" checked={smartText} onChange={(e) => setSmartText(e.target.checked)} style={{ marginTop: 2 }} />
                   Pick up !priority, #project, @person, dates and durations like “30m” from the text
+                </label>
+              )}
+              {analysis.projectColumn && w.otherProjects.count > 0 && (
+                <label style={checkboxRow}>
+                  <input type="checkbox" checked={keepFileProjects} onChange={(e) => setKeepFileProjects(e.target.checked)} style={{ marginTop: 2 }} />
+                  <span>Put tasks into the projects named in the “{analysis.projectColumn}” column ({quoteList(w.otherProjects.names)}){targetName ? ` instead of “${targetName}”` : ""}</span>
                 </label>
               )}
               {analysis.ambiguousDates && (
@@ -330,21 +419,25 @@ export function ImportTasksModal({
                 {rows.slice(0, PREVIEW_ROWS).map((r, i) => {
                   const status = r.status || "todo";
                   const who = memberName(r.assigneeId);
-                  const section = sectionLabel(r);
-                  const tagLabels = [...(r.tags || []).map((k) => TAGS[k]?.label ?? k), ...(r.newTags || [])];
+                  // only what will actually be saved is shown
+                  const details = !!supports.details;
+                  const section = details && (r.sectionId || supports.newSections) ? sectionLabel(r) : undefined;
+                  const tagLabels = details ? [...(r.tags || []).map((k) => TAGS[k]?.label ?? k), ...(supports.newTags ? r.newTags || [] : [])] : [];
+                  const elsewhere = r.projectId && r.projectId !== target ? projectName(r.projectId) : undefined;
                   const isSub = r.parentIndex !== undefined || !!r.parentTitle;
                   return (
-                    <li key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", fontSize: 12.5, minWidth: 0 }}>
+                    <li key={i} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 8, rowGap: 3, padding: "5px 8px", fontSize: 12.5, minWidth: 0 }}>
                       <span title={STATUS_META[status].label} style={{ width: 8, height: 8, borderRadius: 99, flexShrink: 0, marginLeft: isSub ? 14 : 0, background: status === "todo" ? "transparent" : STATUS_META[status].color, border: status === "todo" ? `1.5px solid ${STATUS_META[status].color}` : "none" }} />
                       <span className="sr-only">{STATUS_META[status].label}{isSub ? `, sub-task of ${r.parentTitle}` : ""}:</span>
-                      <span className="truncate" title={r.title} style={{ flex: 1, minWidth: 0, color: status === "done" ? "var(--ink-3)" : "var(--ink-2)", textDecoration: status === "done" ? "line-through" : "none" }}>{r.title}</span>
+                      <span className="truncate" title={r.title} style={{ flex: "1 1 150px", minWidth: 0, color: status === "done" ? "var(--ink-3)" : "var(--ink-2)", textDecoration: status === "done" ? "line-through" : "none" }}>{r.title}</span>
                       {r.priority && r.priority !== "medium" && <span style={{ ...chip, color: PRIORITY_META[r.priority].color }}>{PRIORITY_META[r.priority].label}</span>}
                       {r.dueDate && <span style={chip}>Due {shortDate(r.dueDate)}</span>}
-                      {r.focusMin ? <span style={chip}>{r.focusMin}m</span> : null}
+                      {details && r.focusMin ? <span style={chip}>{r.focusMin}m</span> : null}
                       {who && <span className="truncate" style={{ ...chip, maxWidth: 110 }}>{who}</span>}
+                      {elsewhere && <span className="truncate" style={{ ...chip, maxWidth: 140, color: "var(--ink-2)" }} title={`Goes into ${elsewhere}`}><span className="sr-only">Goes into </span>{elsewhere}</span>}
                       {section && <span className="truncate" style={{ ...chip, maxWidth: 110 }}>{section}</span>}
                       {tagLabels.length > 0 && <span className="truncate" style={{ ...chip, maxWidth: 120 }} title={tagLabels.join(", ")}>{tagLabels.length === 1 ? tagLabels[0] : `${tagLabels.length} tags`}</span>}
-                      {r.description && <span title="Has a description" style={{ ...chip, padding: "0 5px" }}><Icon name="message" size={11} /><span className="sr-only">Has a description</span></span>}
+                      {details && r.description && <span title="Has a description" style={{ ...chip, padding: "0 5px" }}><Icon name="message" size={11} /><span className="sr-only">Has a description</span></span>}
                     </li>
                   );
                 })}

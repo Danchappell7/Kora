@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   analyseImport, parseImportText, parseDelimited, parseImportDate, parseMinutes, mapStatus, mapPriority,
-  matchMember, decodeImportBytes, IMPORT_LIMIT,
+  matchMember, decodeImportBytes, trelloJsonToCsv, IMPORT_LIMIT,
 } from "./importTasks";
 import { buildTasksCsv } from "./exportTasks";
 import type { Task } from "../data/types";
@@ -78,6 +78,7 @@ describe("mode detection", () => {
     const a = analyseImport("Actions from Monday:\n- Email supplier\n- Book room\nFollow up with legal", opts);
     expect(a.rows.map((r) => r.title)).toEqual(["Email supplier", "Book room", "Follow up with legal"]);
     expect(a.warnings.skippedHeadings).toBe(1);
+    expect(analyseImport("# Launch\n- [ ] Draft brief\n- [x] Book venue", opts).rows.map((r) => r.title)).toEqual(["Draft brief", "Book venue"]);
     // without bullets, a colon is just part of the task
     expect(analyseImport("Agenda: budget\nCall Sam", opts).rows.map((r) => r.title)).toEqual(["Agenda: budget", "Call Sam"]);
   });
@@ -124,7 +125,10 @@ describe("Asana / Trello / Jira exports", () => {
     expect(fonts).toMatchObject({ newTags: ["Fonts"], sectionName: "Brand ideas", projectId: "p-web" });
     expect(fonts.assigneeId).toBeUndefined();
     expect(a.warnings.unknownAssignees.count).toBe(1);
-    expect(a.warnings.unknownProjects.names).toEqual(["Marketing"]);
+    // the chosen project wins over the Projects column, so nothing is reported missing…
+    expect(a.warnings.unknownProjects.count).toBe(0);
+    // …unless the user asks to keep the file's projects
+    expect(analyseImport(csv, { ...opts, csv: true, keepFileProjects: true }).warnings.unknownProjects.names).toEqual(["Marketing"]);
     expect(a.warnings.missingSections).toEqual(["Brand ideas"]);
     expect(a.warnings.newTags).toEqual(["Fonts"]);
     expect(a.warnings.subtasks).toBe(1);
@@ -291,21 +295,207 @@ describe("decodeImportBytes", () => {
 describe("export → import round trip", () => {
   const base: Task = {
     id: "t1", title: "=HYPERLINK(\"https://evil.example\",\"Open\")", description: "Line 1\nLine 2, with £ and café",
-    status: "review", priority: "high", projectId: "p-web", assigneeId: "u-sarah", tags: ["design", "tag-123"],
+    status: "review", priority: "high", projectId: "p-launch", assigneeId: "u-sarah", tags: ["design", "tag-123"],
     dependencies: [], subtasks: [], focusMin: 30, comments: 0, aiScore: 0, dueDate: "2026-10-31", startDate: "2026-10-01",
-    sectionId: "s-build",
+    sectionId: "s-l-build",
   };
   const child: Task = { ...base, id: "t2", title: "-Call supplier", description: "", status: "done", completedAt: "2026-09-28", parentId: "t1", tags: [], sectionId: undefined, assigneeId: "u-tom" };
-  it("brings status, people, dates, section, tags and sub-tasks back", () => {
-    const csv = buildTasksCsv([base, child], { sections, members });
-    const a = analyseImport(csv, { ...opts, csv: true });
+  // "Q3 Product Launch" (p-launch) is real reference data, so the export names it in the Project column
+  const rtProjects = [{ id: "p-launch", name: "Q3 Product Launch" }, { id: "p-new", name: "Q4 Launch (copy)" }];
+  const rtSections = [{ id: "s-l-build", projectId: "p-launch", name: "Build" }, { id: "s-n-build", projectId: "p-new", name: "Build" }];
+  const csv = buildTasksCsv([base, child], { sections: rtSections, members });
+  const rt = { projects: rtProjects, members, tags, sections: rtSections, today: TODAY, csv: true };
+
+  it("brings status, people, dates, section, tags and sub-tasks back — into the project you chose", () => {
+    expect(csv).toContain('"Q3 Product Launch"');
+    const a = analyseImport(csv, { ...rt, defaultProjectId: "p-new" });
     expect(a.rows).toHaveLength(2);
     expect(a.rows[0]).toMatchObject({
       title: base.title, description: base.description, status: "review", priority: "high", assigneeId: "u-sarah",
-      dueDate: "2026-10-31", startDate: "2026-10-01", sectionId: "s-build", tags: ["design", "tag-123"],
+      dueDate: "2026-10-31", startDate: "2026-10-01", projectId: "p-new", sectionId: "s-n-build", tags: ["design", "tag-123"],
     });
-    expect(a.rows[1]).toMatchObject({ title: "-Call supplier", status: "done", completedAt: "2026-09-28", assigneeId: "u-tom", parentIndex: 0 });
+    expect(a.rows[1]).toMatchObject({ title: "-Call supplier", status: "done", completedAt: "2026-09-28", assigneeId: "u-tom", parentIndex: 0, projectId: "p-new" });
     expect(a.ignoredColumns).toEqual([]);
     expect(a.warnings.unreadableDates.count).toBe(0);
+    // the file's own project is reported so the user can choose to keep it
+    expect(a.projectColumn).toBe("Project");
+    expect(a.warnings.otherProjects).toEqual({ count: 2, names: ["Q3 Product Launch"] });
+    expect(a.warnings.unknownProjects.count).toBe(0);
+  });
+  it("puts rows back in the file's projects only when asked", () => {
+    const a = analyseImport(csv, { ...rt, defaultProjectId: "p-new", keepFileProjects: true });
+    expect(a.rows.map((r) => [r.projectId, r.sectionId])).toEqual([["p-launch", "s-l-build"], ["p-launch", undefined]]);
+    // with no project chosen at all, the file's projects are all there is to go on
+    expect(analyseImport(csv, rt).rows.map((r) => r.projectId)).toEqual(["p-launch", "p-launch"]);
+  });
+});
+
+describe("lists pasted from Word and Outlook", () => {
+  it("drops the list marker Word copies before a tab", () => {
+    for (const marker of ["1.", "•", "·", "a.", "o", "§", "\uF0B7", "i)"]) {
+      const a = analyseImport(`${marker}\tBook venue\r\n${marker}\tSend invites\r\n${marker}\tOrder catering\r\n`, opts);
+      expect(a.rows.map((r) => r.title), marker).toEqual(["Book venue", "Send invites", "Order catering"]);
+    }
+  });
+  it("keeps the heading rule and checkboxes for Word lists", () => {
+    const a = analyseImport("Actions from Monday:\n•\tEmail supplier\n•\tBook room\n☒\tOrder lunch\n☐\tPrint badges", opts);
+    expect(a.rows.map((r) => r.title)).toEqual(["Email supplier", "Book room", "Order lunch", "Print badges"]);
+    expect(a.warnings.skippedHeadings).toBe(1);
+    expect(a.rows.map((r) => r.status)).toEqual([undefined, undefined, "done", undefined]);
+  });
+  it("reads Outlook's plain-text bullets and nested items", () => {
+    const a = analyseImport("·         Call Bob about the budget\no   Check the numbers\n§  Ask finance\n·         Email Sue", opts);
+    expect(a.rows.map((r) => r.title)).toEqual(["Call Bob about the budget", "Check the numbers", "Ask finance", "Email Sue"]);
+  });
+  it("keeps a numbered list that has more columns as columns", () => {
+    const a = analyseImport("1.\tFix the boiler\tSarah Jones\t31/10/2026\n2.\tPaint the fence\tTom Baker\t01/11/2026", opts);
+    expect(a.mode).toBe("columns");
+    expect(a.rows[0]).toMatchObject({ title: "Fix the boiler", assigneeId: "u-sarah", dueDate: "2026-10-31" });
+  });
+  it("leaves a numbering column under its heading alone", () => {
+    const a = analyseImport("No.\tAction\tOwner\n1.\tFix the boiler\tSarah Jones\n2.\tPaint the fence\tTom Baker\n3.\tBook the van\tTom Baker", opts);
+    expect(a.hasHeader).toBe(true);
+    expect(a.rows.map((r) => [r.title, r.assigneeId])).toEqual([["Fix the boiler", "u-sarah"], ["Paint the fence", "u-tom"], ["Book the van", "u-tom"]]);
+  });
+  it("keeps a tab-indented sub-bullet from Notes or Docs as a task", () => {
+    const a = analyseImport("To do\n- Call Bob\n\t- Check the numbers\n- Email Sue", opts);
+    expect(a.mode).toBe("lines");
+    expect(a.rows.map((r) => r.title)).toEqual(["Call Bob", "Check the numbers", "Email Sue"]);
+  });
+  it("takes ticked checklist items as written", () => {
+    const a = analyseImport("- [x] Email Sarah tomorrow !high\n- [ ] Call Tom next week", opts);
+    expect(a.rows[0]).toMatchObject({ title: "Email Sarah tomorrow !high", status: "done" });
+    expect(a.rows[0].dueDate).toBeUndefined();
+    expect(a.rows[1].title).toBe("Call Tom next week");
+  });
+});
+
+describe("rows copied from a spreadsheet", () => {
+  it("reads a single row with its cells", () => {
+    expect(analyseImport("Draft deck\t31/10/2026\r\n", opts).rows).toEqual([expect.objectContaining({ title: "Draft deck", dueDate: "2026-10-31" })]);
+    expect(analyseImport("Draft deck\tHigh\t31/10/2026", opts).rows[0]).toMatchObject({ title: "Draft deck", priority: "high", dueDate: "2026-10-31" });
+  });
+  it("never leaves a tab in a title when rows have different widths", () => {
+    const a = analyseImport("Draft deck\tfor the board\nEmail Sue\nBook room", opts);
+    expect(a.rows.map((r) => r.title)).toEqual(["Draft deck", "Email Sue", "Book room"]);
+    expect(a.rows[0].description).toBe("for the board");
+  });
+  it("doesn't mistake a category value in the first row for a heading", () => {
+    const a = analyseImport("Write blog post\tContent\t31/10/2026\nUpdate pricing page\tWebsite\t01/11/2026\nRecord podcast\tContent\t02/11/2026", opts);
+    expect(a.hasHeader).toBe(false);
+    expect(a.rows.map((r) => [r.title, r.dueDate])).toEqual([["Write blog post", "2026-10-31"], ["Update pricing page", "2026-11-01"], ["Record podcast", "2026-11-02"]]);
+  });
+});
+
+describe("action logs and trackers", () => {
+  it("recognises Action / Owner / Due date headings", () => {
+    const a = analyseImport("Action\tOwner\tDue date\tStatus\nFix the boiler\tSarah Jones\t31/10/2026\tOpen\nPaint the fence\tTom Baker\t01/11/2026\tIn progress", opts);
+    expect(a.hasHeader).toBe(true);
+    expect(a.rows.map((r) => [r.title, r.assigneeId, r.dueDate, r.status])).toEqual([
+      ["Fix the boiler", "u-sarah", "2026-10-31", "todo"], ["Paint the fence", "u-tom", "2026-11-01", "progress"],
+    ]);
+    const comma = analyseImport("Action,Owner,Due date,Status\nSend deck to client,Sarah,31/10/2026,Open", opts);
+    expect(comma.rows[0]).toMatchObject({ title: "Send deck to client", assigneeId: "u-sarah", dueDate: "2026-10-31" });
+  });
+  it("takes the title from the text column when no heading says Title", () => {
+    const a = analyseImport("Description,Owner,Deadline\nFix the boiler,Sarah Jones,31/10/2026", opts);
+    expect(a.rows).toEqual([expect.objectContaining({ title: "Fix the boiler", assigneeId: "u-sarah", dueDate: "2026-10-31" })]);
+    const numbered = analyseImport("No.\tAction\tOwner\tDue\n1\tFix the boiler\tSarah Jones\t31/10/2026\n2\tPaint\tTom\t01/11/2026", opts);
+    expect(numbered.rows.map((r) => r.title)).toEqual(["Fix the boiler", "Paint"]);
+  });
+  it("prefers Task over Name, and reads Name as the person", () => {
+    const a = analyseImport("Name,Task,Deadline\nSarah,Fix boiler,31/10/2026\nTom,Paint,01/11/2026", opts);
+    expect(a.rows.map((r) => [r.title, r.assigneeId])).toEqual([["Fix boiler", "u-sarah"], ["Paint", "u-tom"]]);
+    expect(a.ignoredColumns).toEqual([]);
+  });
+  it("keeps Note rows in a generic Type column", () => {
+    const a = analyseImport("Title,Type\nKick-off,Task\nBudget approved,Note\nHire designer,Task", opts);
+    expect(a.rows.map((r) => r.title)).toEqual(["Kick-off", "Budget approved", "Hire designer"]);
+    expect(a.ignoredColumns).toEqual(["Type"]);
+  });
+  it("reads Todoist sections and adds comments to the task above", () => {
+    const csv = [
+      "TYPE,CONTENT,DESCRIPTION,PRIORITY,INDENT,AUTHOR,RESPONSIBLE,DATE,DATE_LANG,TIMEZONE",
+      "section,Build,,,,,,,,",
+      "task,Wire up checkout,,4,1,Tom (1),,,en,Europe/London",
+      "note,Use the new card form,,,,Tom (1),,,en,Europe/London",
+      "task,Ship it,,1,1,Tom (1),,,en,Europe/London",
+    ].join("\n");
+    const a = analyseImport(csv, { ...opts, csv: true });
+    expect(a.rows.map((r) => [r.title, r.sectionId, r.description])).toEqual([
+      ["Wire up checkout", "s-build", "Use the new card form"], ["Ship it", "s-build", undefined],
+    ]);
+    expect(a.warnings.commentsToDescription).toBe(1);
+  });
+});
+
+describe("completion", () => {
+  it("reads % Complete as progress, not done", () => {
+    const a = analyseImport("Task Name,% Complete,Due\nDraft brief,50%,31/10/2026\nShip,0%,31/10/2026\nPlan,25%,31/10/2026\nLaunch,100%,31/10/2026", opts);
+    expect(a.columns[1].field).toBe("percent");
+    expect(a.rows.map((r) => r.status)).toEqual(["progress", undefined, "progress", "done"]);
+    expect(a.warnings.unreadableDates.count).toBe(0);
+    expect(analyseImport("Task,Percent complete\nA,0.5\nB,1\nC,0", opts).rows.map((r) => r.status)).toEqual(["progress", "done", undefined]);
+  });
+  it("only marks a task done for a clear yes or a completion date", () => {
+    const a = analyseImport("Task\tDone?\nA\tPending\nB\tN/A\nC\tIn progress\nD\tTBC\nE\tNot yet\nF\tPartially\nG\tQ3 maybe\nH\tYes\nI\t✓\nJ\t12/09/2026", opts);
+    expect(a.rows.map((r) => [r.title, r.status ?? null, r.completedAt ?? null])).toEqual([
+      ["A", "todo", null], ["B", null, null], ["C", "progress", null], ["D", null, null], ["E", null, null], ["F", "progress", null],
+      ["G", null, null], ["H", "done", null], ["I", "done", null], ["J", "done", "2026-09-12"],
+    ]);
+    expect(a.warnings.unknownCompleted).toEqual({ count: 1, names: ["Q3 maybe"] });
+  });
+});
+
+describe("sections", () => {
+  it("reports sections as missing when there are none to match against", () => {
+    const { sections: _omit, ...noSections } = opts;
+    const a = analyseImport("Title,Section\nA,Marketing Q4\nB,Done", noSections);
+    expect(a.warnings.missingSections).toEqual(["Marketing Q4"]); // "Done" became the status instead
+    expect(a.rows[1]).toMatchObject({ status: "done" });
+  });
+});
+
+describe("Trello JSON export", () => {
+  const board = {
+    id: "b1", name: "Launch",
+    lists: [{ id: "l-doing", name: "Doing", pos: 2 }, { id: "l-todo", name: "Backlog", pos: 1 }, { id: "l-old", name: "Old", pos: 3, closed: true }],
+    members: [{ id: "mb1", fullName: "Tom Baker", username: "tomb" }],
+    labels: [{ id: "lb1", name: "Design", color: "green" }, { id: "lb2", name: "", color: "red" }],
+    checklists: [{ id: "c1", idCard: "k2", name: "Steps", pos: 1, checkItems: [{ name: "Sketch", state: "complete", pos: 1 }, { name: "Build", state: "incomplete", pos: 2 }] }],
+    cards: [
+      { id: "k2", name: "Fix header", desc: "Make it sticky", idList: "l-doing", pos: 1, idLabels: ["lb1", "lb2"], idMembers: ["mb1"], due: "2026-10-01T09:00:00.000Z", dueComplete: false, closed: false },
+      { id: "k1", name: "Write copy", desc: "", idList: "l-todo", pos: 1, idLabels: [], idMembers: [], due: null, dueComplete: true, closed: false },
+      { id: "k3", name: "Archived card", idList: "l-todo", pos: 2, closed: true },
+      { id: "k4", name: "In a closed list", idList: "l-old", pos: 1 },
+    ],
+    actions: [{ type: "commentCard" }],
+  };
+  it("converts cards with their list, labels, members, dates and checklists", () => {
+    const csv = trelloJsonToCsv(JSON.stringify(board));
+    expect(csv).not.toBeNull();
+    const a = analyseImport(csv!, { ...opts, csv: true });
+    expect(a.rows.map((r) => r.title)).toEqual(["Write copy", "Fix header"]); // board order: Backlog before Doing
+    expect(a.rows[0]).toMatchObject({ status: "done" });
+    expect(a.rows[1]).toMatchObject({
+      status: "progress", assigneeId: "u-tom", dueDate: "2026-10-01", tags: ["design"], newTags: ["red"],
+      description: "Make it sticky\n\nSteps:\n- [x] Sketch\n- [ ] Build",
+    });
+    expect(a.warnings.skippedArchived).toBe(2);
+  });
+  it("works when the JSON is pasted, and ignores JSON that isn't a board", () => {
+    expect(analyseImport(JSON.stringify(board), opts).rows).toHaveLength(2);
+    expect(trelloJsonToCsv('{"tasks": []}')).toBeNull();
+    expect(trelloJsonToCsv("not json")).toBeNull();
+  });
+});
+
+describe("row cap", () => {
+  it("counts rows past the cap without processing them", () => {
+    const text = ["Title,Due", ...Array.from({ length: 12 }, (_, i) => `Task ${i},2026-10-01`)].join("\n");
+    const a = analyseImport(text, { ...opts, maxRows: 5 });
+    expect(a.rows).toHaveLength(5);
+    expect(a.totalRows).toBe(12);
+    expect(a.truncated).toBe(true);
   });
 });

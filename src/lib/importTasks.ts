@@ -4,7 +4,8 @@
    - a plain list (one task per line, bullets/checkboxes stripped),
    - rows copied from Excel / Google Sheets (tab separated), or
    - a CSV exported from Asana, Trello, Jira, Planner, Todoist,
-     Monday (via Excel) or Kanbo itself.
+     Monday (via Excel) or Kanbo itself, or a Trello board's JSON
+     export (the only export on Trello's free plan).
    Delimited mode is only used when a recognised header row exists
    or the lines are consistently columnar, so a pasted list like
    "Book venue, catering" is never chopped at the comma.
@@ -34,7 +35,7 @@ export type DateOrder = "dmy" | "mdy";
 export type ImportField =
   | "title" | "description" | "status" | "section" | "priority" | "due" | "start" | "completed"
   | "assignee" | "assigneeEmail" | "tags" | "project" | "parent" | "estimate" | "archived"
-  | "sourceId" | "rowType" | "ignore";
+  | "percent" | "sourceId" | "rowType" | "ignore";
 
 export interface ImportColumn { index: number; header: string; field: ImportField | null }
 
@@ -45,8 +46,14 @@ export interface ImportOptions {
   sections?: ImportSection[];
   /** Tag dictionary (key → def). Defaults to the live TAGS reference data. */
   tags?: Record<string, TagDef>;
-  /** Project for rows that don't name one (or name one that doesn't exist). */
+  /** The project the user chose to import into. Rows go here unless keepFileProjects is set. */
   defaultProjectId?: string;
+  /**
+   * Put rows into the project named in a Project column (when it exists)
+   * instead of defaultProjectId. Default: only when there's no defaultProjectId,
+   * so an export of one project imported into another lands where it was sent.
+   */
+  keepFileProjects?: boolean;
   /** How to read ambiguous numeric dates like 03/04/2026. Default: detected, else day-first (UK). */
   dateOrder?: DateOrder;
   /** Read !priority, #project, @person, dates and durations from free text (lists only). Default true. */
@@ -68,6 +75,10 @@ export interface ImportWarnings {
   unknownAssignees: { count: number; names: string[] };
   unknownProjects: { count: number; names: string[] };
   unknownStatuses: { count: number; names: string[] };
+  /** Rows whose Project column names an existing project other than the chosen one. */
+  otherProjects: { count: number; names: string[] };
+  /** Completed / % complete values that weren't understood (those tasks stay open). */
+  unknownCompleted: { count: number; names: string[] };
   newTags: string[];
   missingSections: string[];
   subtasks: number;
@@ -77,6 +88,8 @@ export interface ImportWarnings {
   skippedLeading: number;
   /** "Actions from Monday:" above a bulleted list. */
   skippedHeadings: number;
+  /** Todoist comment rows added to the description of the task above them. */
+  commentsToDescription: number;
 }
 
 export interface ImportAnalysis {
@@ -85,6 +98,8 @@ export interface ImportAnalysis {
   hasHeader: boolean;
   delimiter: "\t" | "," | ";" | null;
   columns: ImportColumn[];
+  /** Heading of the Project column, when the file has one. */
+  projectColumn: string | null;
   /** Headers of columns that aren't imported (listed so nothing disappears silently). */
   ignoredColumns: string[];
   /** Order applied to numeric dates like 03/04/2026. */
@@ -104,7 +119,7 @@ export const FIELD_LABELS: Record<ImportField, string> = {
   title: "Title", description: "Description", status: "Status", section: "Section", priority: "Priority",
   due: "Due date", start: "Start date", completed: "Completed", assignee: "Assignee", assigneeEmail: "Assignee",
   tags: "Tags", project: "Project", parent: "Parent task", estimate: "Estimate", archived: "Skip if archived",
-  sourceId: "Links sub-tasks", rowType: "Row type", ignore: "Not imported",
+  percent: "Progress", sourceId: "Links sub-tasks", rowType: "Row type", ignore: "Not imported",
 };
 
 /* ---------- CSV / TSV parsing (RFC 4180, lenient) ---------- */
@@ -161,12 +176,16 @@ export const normHeader = (s: string) =>
   s.replace(/^\uFEFF/, "").toLowerCase().replace(/[_\-/().:#*]+/g, " ").replace(/[^\p{L}\p{N} ]+/gu, "").replace(/\s+/g, " ").trim();
 
 const HEADER_ALIASES: Record<Exclude<ImportField, "ignore">, string[]> = {
-  title: ["title", "task", "name", "task name", "task title", "card name", "card title", "summary", "item", "item name", "subject", "content", "action item", "to do", "todo"],
+  title: [
+    "title", "task", "name", "task name", "task title", "card name", "card title", "summary", "item", "item name", "subject", "content",
+    "action", "actions", "action item", "action items", "action point", "action points", "activity", "activities", "deliverable",
+    "deliverables", "issue", "what", "work item", "to do", "todo",
+  ],
   description: ["notes", "note", "description", "card description", "details", "detail", "task description", "body"],
   status: ["status", "task status", "state", "stage", "progress"],
   section: ["section", "section column", "column", "list", "list name", "board column", "group", "bucket", "bucket name"],
   priority: ["priority", "prio", "importance", "urgency", "priority level"],
-  due: ["due", "due date", "due on", "due by", "due at", "deadline", "date", "end date", "finish date", "target date"],
+  due: ["due", "due date", "due on", "due by", "due at", "deadline", "date", "end date", "finish date", "target date", "when", "by when"],
   start: ["start", "start date", "start on", "starts", "starts on", "begin date"],
   completed: ["completed", "completed at", "completed on", "completed date", "completion date", "date completed", "done", "done date", "resolved", "resolved at", "resolution date", "closed at", "due complete", "is completed", "complete"],
   assignee: ["assignee", "assignee name", "assigned to", "assigned", "owner", "person", "people", "members", "member", "responsible", "who"],
@@ -176,6 +195,8 @@ const HEADER_ALIASES: Record<Exclude<ImportField, "ignore">, string[]> = {
   parent: ["parent", "parent task", "parent task name", "parent name", "parent summary", "parent title"],
   estimate: ["estimate", "estimated time", "time estimate", "estimate min", "estimate mins", "estimate minutes", "duration", "focus min", "focus time"],
   archived: ["archived", "is archived"],
+  // "% Complete", "Progress %", "Percent done" ("%" is read as "percent")
+  percent: ["percent", "percent complete", "percent completed", "percent done", "complete percent", "done percent", "progress percent", "percentage", "percentage complete", "pct complete"],
   sourceId: ["task id", "id", "card id", "issue key", "issue id", "key", "item id"],
   rowType: ["type"],
 };
@@ -186,13 +207,16 @@ const KNOWN_IGNORED = new Set([
   "updated at", "modified", "card url", "url", "list id", "board id", "blocked by dependencies", "blocking dependencies",
   "issue type", "attachment count", "attachment links", "checklist item total count", "checklist item completed count",
   "last activity date", "completed by", "late", "resolution", "sprint", "author", "indent", "date lang", "timezone",
-  "duration unit", "subtasks", "followers", "collaborators",
+  "duration unit", "subtasks", "followers", "collaborators", "no", "number", "ref", "reference", "row", "s no", "sl no", "item no",
 ]);
+// Title headings that lose to a clearer one in the same file: in "Name, Task,
+// Deadline" the Name column is a person, not the task.
+const WEAK_TITLE = new Set(["name", "item", "item name", "content", "what"]);
 const ALIAS_TO_FIELD = new Map<string, ImportField>();
 (Object.keys(HEADER_ALIASES) as (keyof typeof HEADER_ALIASES)[]).forEach((f) => HEADER_ALIASES[f].forEach((a) => ALIAS_TO_FIELD.set(a, f)));
 
 function fieldOfHeader(h: string): ImportField | null {
-  const k = normHeader(h);
+  const k = normHeader(h.replace(/%/g, " percent "));
   if (!k) return null;
   const f = ALIAS_TO_FIELD.get(k);
   if (f) return f;
@@ -236,8 +260,12 @@ export function mapPriority(v: string): Priority | null {
   return null;
 }
 
-const TRUTHY = new Set(["true", "yes", "y", "x", "1", "done", "complete", "completed", "checked", "✓", "✔", "✔️", "☑", "☑️"]);
-const FALSY = new Set(["false", "no", "n", "0", "-", "—", "not completed", "incomplete", "not done", "open", "unresolved"]);
+const TRUTHY = new Set(["true", "yes", "y", "x", "1", "1.0", "done", "complete", "completed", "checked", "ticked", "✓", "✔", "✔️", "☑", "☑️", "✅"]);
+const FALSY = new Set([
+  "false", "no", "n", "0", "-", "—", "not completed", "incomplete", "not done", "open", "unresolved", "unchecked",
+  "n a", "na", "tbc", "tbd", "none", "☐",
+]);
+const PARTIAL = new Set(["partial", "partially", "part done", "partly", "half", "half done", "some"]);
 
 /** Minutes from "90", "90m", "1h 30m", "1.5 hours", "1:30". */
 export function parseMinutes(v: string): number | null {
@@ -366,6 +394,52 @@ function dateOrderEvidence(cells: string[]): { dmy: number; mdy: number; ambiguo
   return { dmy, mdy, ambiguous };
 }
 
+/* ---------- completion ---------- */
+
+/** done → Done (with a date when the cell held one); open → leave it (maybe with a status); null → not understood. */
+export type Completion = { done: true; completedAt?: string } | { done: false; status?: Status } | null;
+
+const fromFraction = (f: number): Completion => (f >= 1 ? { done: true } : f > 0 ? { done: false, status: "progress" } : { done: false });
+const PERCENT_RE = /^(\d{1,3}(?:\.\d+)?)\s*%$/;
+
+/**
+ * A Completed / Done / Complete cell. Only a clear yes (true, yes, ✓, Done,
+ * 100%) or a completion date marks the task done. A clear no, 0% or an open
+ * status leaves it open (part-way percentages → In progress). Anything else
+ * ("Pending review?", "Q3") returns null so it can be reported — the task
+ * stays open rather than silently disappearing into Done.
+ */
+export function readCompletion(raw: string, order: DateOrder = "dmy", today: Date = new Date()): Completion {
+  const v = raw.trim();
+  if (!v) return { done: false };
+  const k = normHeader(v) || v;
+  if (TRUTHY.has(k) || TRUTHY.has(v)) return { done: true };
+  if (FALSY.has(k) || FALSY.has(v) || /^(?:no|not)\b/.test(k)) return { done: false };
+  if (PARTIAL.has(k)) return { done: false, status: "progress" };
+  const pm = v.match(PERCENT_RE);
+  if (pm) return fromFraction(Math.min(1, +pm[1] / 100));
+  // 0.5 = half done; 46295 is an Excel date serial, read below
+  if (/^\d+(?:\.\d+)?$/.test(v) && !/^\d{5}(?:\.\d+)?$/.test(v)) return +v <= 1 ? fromFraction(+v) : null;
+  const s = mapStatus(v);
+  if (s) return s === "done" ? { done: true } : { done: false, status: s };
+  if (/\d/.test(v)) {
+    const d = parseImportDate(v, order, today);
+    if (d) return { done: true, completedAt: d };
+  }
+  return null;
+}
+
+/** A "% Complete" cell: "50%", or a number on the column's scale (0–1 or 0–100). */
+export function readPercent(raw: string, scale: 1 | 100 = 100): Completion {
+  const v = raw.trim().replace(/\s+/g, "");
+  if (!v) return { done: false };
+  const pm = v.match(PERCENT_RE);
+  if (pm) return fromFraction(Math.min(1, +pm[1] / 100));
+  if (/^\d{1,3}(?:\.\d+)?$/.test(v)) return fromFraction(Math.min(1, +v / scale));
+  const c = readCompletion(raw);
+  return c && c.done && c.completedAt ? null : c; // a date means nothing in a percentage column
+}
+
 /* ---------- matching helpers ---------- */
 
 const normName = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\p{L}\p{N}@.+ ]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -426,6 +500,91 @@ function capTitle(row: ImportRow) {
   row.description = row.description ? `${full}\n\n${row.description}` : full;
 }
 
+/* ---------- list markers ---------- */
+
+// A bullet, number or checkbox at the start of a line ("- ", "1. ", "a) ", "· ",
+// Outlook's plain-text "o   " and "§ ", "[x] ", "☐ ").
+const BULLET_CHARS = "-*+•◦▪▫‣·●○■□►➢➤–—§";
+export const BULLET = new RegExp(`^(?:[${BULLET_CHARS}]|o(?=\\s{2})|\\d{1,3}[.)]|[a-z][.)]|(?:ii|iii|iv|vi|vii|viii|ix)[.)])\\s+`);
+const CHECKBOX = new RegExp(`^(?:[${BULLET_CHARS}]\\s+)?(\\[[ xX]\\]|[☐☑☒])\\s+`);
+// Word and Outlook copy a list item as "<marker><TAB><text>"; Symbol-font
+// bullets arrive as private-use characters ( ).
+const TAB_MARKER = new RegExp(`^[ ]*([${BULLET_CHARS}o\\uF0A7\\uF0B7\\uF0D8\\uF076\\uF0FC✓✔]|\\d{1,3}(?:\\.\\d{1,3})*[.)]|[A-Za-z][.)]|(?:ii|iii|iv|vi|vii|viii|ix)[.)]|\\[[ xX]\\]|[☐☑☒])\\t+`);
+
+/**
+ * Turns a list pasted from Word or Outlook ("1.<TAB>Book venue") into an
+ * ordinary bulleted list, so the marker is never mistaken for a column. Only
+ * applied when nearly every line with a tab starts with a list marker.
+ */
+function normaliseListMarkers(text: string): string {
+  const lines = text.split(/\r\n|\n|\r/);
+  const tabbed = lines.filter((l) => l.includes("\t"));
+  if (!tabbed.length) return text;
+  const marked = tabbed.filter((l) => TAB_MARKER.test(l));
+  if (!marked.length || marked.length / tabbed.length < 0.8) return text;
+  // "1.<TAB>Fix boiler<TAB>Sarah" under a "No.<TAB>Action<TAB>Owner" heading is a table
+  // with a numbering column — dropping the numbers would shift the rows under the headings
+  const moreColumns = marked.some((l) => l.slice(l.match(TAB_MARKER)![0].length).includes("\t"));
+  if (moreColumns && marked.length !== tabbed.length) return text;
+  return lines.map((l) => {
+    const m = l.match(TAB_MARKER);
+    if (!m) return l;
+    const rest = l.slice(m[0].length);
+    if (rest.includes("\t")) return rest; // the item carries more columns — just drop the marker
+    const box = /^(?:\[[xX]\]|[☑☒✓✔])$/.test(m[1]) ? "[x] " : /^(?:\[ \]|☐)$/.test(m[1]) ? "[ ] " : "";
+    return `- ${box}${rest}`;
+  }).join("\n");
+}
+
+/* ---------- Trello JSON ---------- */
+
+type TrelloThing = {
+  id?: string; name?: string; pos?: number; closed?: boolean; state?: string; color?: string | null;
+  fullName?: string; username?: string; idCard?: string; checkItems?: TrelloThing[];
+  desc?: string; due?: string | null; start?: string | null; dueComplete?: boolean; idList?: string;
+  idLabels?: string[]; idMembers?: string[]; labels?: TrelloThing[];
+};
+
+const csvQuote = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+/**
+ * Converts a Trello board's JSON export (Menu → Print, export and share →
+ * Export as JSON — the only export on the free plan) into CSV text with
+ * Trello's own column names, so it goes through the normal preview. Cards keep
+ * their list (→ status / section), labels, members, dates, completion and
+ * archived state; checklists are added to the description. Returns null when
+ * the text isn't a Trello board.
+ */
+export function trelloJsonToCsv(text: string): string | null {
+  let data: unknown;
+  try { data = JSON.parse(text); } catch { return null; }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const board = data as { cards?: unknown; lists?: TrelloThing[]; members?: TrelloThing[]; labels?: TrelloThing[]; checklists?: TrelloThing[] };
+  if (!Array.isArray(board.cards) || !Array.isArray(board.lists)) return null;
+  const arr = (v: unknown): TrelloThing[] => (Array.isArray(v) ? v.filter((x): x is TrelloThing => !!x && typeof x === "object") : []);
+  const lists = new Map(arr(board.lists).map((l) => [l.id, l]));
+  const people = new Map(arr(board.members).map((m) => [m.id, m.fullName || m.username || ""]));
+  const labels = new Map(arr(board.labels).map((l) => [l.id, l.name || l.color || ""]));
+  const checklists = new Map<string, TrelloThing[]>();
+  arr(board.checklists).forEach((c) => { if (c.idCard) checklists.set(c.idCard, [...(checklists.get(c.idCard) ?? []), c]); });
+  const byPos = (a: TrelloThing, b: TrelloThing) => (a.pos ?? 0) - (b.pos ?? 0);
+  const cards = arr(board.cards).sort((a, b) => ((lists.get(a.idList)?.pos ?? 0) - (lists.get(b.idList)?.pos ?? 0)) || byPos(a, b));
+  const out = [["Card Name", "Card Description", "List Name", "Labels", "Members", "Start Date", "Due Date", "Completed", "Archived"].map(csvQuote).join(",")];
+  cards.forEach((c) => {
+    const list = lists.get(c.idList);
+    const cardLabels = c.labels?.length ? c.labels.map((l) => l.name || l.color || "") : (c.idLabels ?? []).map((id) => labels.get(id) || "");
+    const checklistText = (checklists.get(c.id ?? "") ?? []).sort(byPos).map((cl) =>
+      `${cl.name || "Checklist"}:\n${arr(cl.checkItems).sort(byPos).map((i) => `- [${i.state === "complete" ? "x" : " "}] ${i.name ?? ""}`).join("\n")}`);
+    const desc = [c.desc?.trim(), ...checklistText].filter(Boolean).join("\n\n");
+    out.push([
+      c.name ?? "", desc, list?.name ?? "", cardLabels.filter(Boolean).join(", "),
+      (c.idMembers ?? []).map((id) => people.get(id) || "").filter(Boolean).join(", "),
+      c.start ?? "", c.due ?? "", c.dueComplete ? "true" : "", c.closed || list?.closed ? "true" : "",
+    ].map(csvQuote).join(","));
+  });
+  return out.join("\n");
+}
+
 /* ---------- mode detection ---------- */
 
 type Detected =
@@ -440,20 +599,61 @@ function modalCount(records: string[][]): { count: number; share: number } {
   return { count, share: records.length ? best / records.length : 0 };
 }
 
+const NUMBERISH = /^[£$€]?[-+]?\d[\d,]*(?:\.\d+)?%?$/;
+/** A value that reads as data — a date, number, email, priority or status — and so can't be a column heading. */
+const isDataValue = (v: string) => NUMBERISH.test(v) || EMAIL_RE.test(v) || !!parseImportDate(v, "dmy") || !!mapPriority(v) || !!mapStatus(v);
+
+/** A recognised heading in row k that also turns up as a value in the same column below it. */
+function repeatsBelow(records: string[][], k: number, cells: string[], check: boolean[]): boolean {
+  const lower = cells.map((c) => c.toLowerCase());
+  const key = lower.join("\u0001");
+  for (let r = k + 1; r < records.length; r++) {
+    const row = records[r].map((c) => c.trim().toLowerCase());
+    if (row.join("\u0001") === key) continue; // a repeated header row (Monday groups)
+    if (lower.some((c, i) => check[i] && c && row[i] === c)) return true;
+  }
+  return false;
+}
+
+/**
+ * Finds the header row. A row counts when it names a title column (Task,
+ * Name, Action…) plus something else, or — for action logs such as
+ * "Description | Owner | Deadline" — when it's the first row and names two or
+ * more other known columns. Rows whose unrecognised cells read as data
+ * (dates, priorities…) or whose headings recur as values below never count,
+ * so "Write blog post<TAB>Content<TAB>31/10/2026" stays a task.
+ */
 function findHeader(records: string[][], relaxed: boolean): { idx: number; known: number } | null {
   const scan = Math.min(records.length, 10);
   const { count, share } = modalCount(records);
   const consistent = records.length >= 2 && count >= 2 && share >= 0.8;
   for (let k = 0; k < scan; k++) {
     const cells = records[k].map((c) => c.trim());
+    if (cells.filter(Boolean).length < 2) continue; // a header names at least two columns
+    if (!cells.every((c) => c.length <= 60)) continue;
     const fields = cells.map(fieldOfHeader);
-    if (!fields.includes("title")) continue;
+    if (cells.some((c, i) => c && !fields[i] && isDataValue(c))) continue;
     const known = fields.filter((f) => f && f !== "title").length;
-    const shortCells = cells.every((c) => c.length <= 60);
-    if (!shortCells) continue;
+    const titleAt = fields.indexOf("title");
+    if (titleAt < 0) {
+      // no title heading: only the first row, with two or more real fields and a column to take the title from
+      const real = new Set(fields.filter((f) => f && f !== "ignore"));
+      const titleSource = fields.some((f, i) => (f === null && cells[i]) || f === "description");
+      const check = fields.map((f) => !!f && f !== "completed" && f !== "archived" && f !== "ignore");
+      if (k === 0 && real.size >= 2 && titleSource && !repeatsBelow(records, k, cells, check)) return { idx: k, known };
+      continue;
+    }
+    // the title heading turning up again below is a category value, not a heading
+    if (repeatsBelow(records, k, cells, fields.map((f) => f === "title"))) continue;
     // a header lower down the file (Monday exports put a board name first) must look unmistakably like one
     if (k > 0 && known < 2) continue;
-    if (known >= 1 || (relaxed && (cells.length >= 2 || records.length > 1))) return { idx: k, known };
+    if (known >= 1) return { idx: k, known };
+    // only a title heading plus unknown ones ("Title | Budget | Team"): the title
+    // column must hold distinct values, not a handful of repeated categories
+    const below = records.slice(k + 1).map((r) => (r[titleAt] ?? "").trim().toLowerCase()).filter(Boolean);
+    const distinct = below.length < 3 || new Set(below).size / below.length >= 0.6;
+    if (!distinct) continue;
+    if (relaxed) return { idx: k, known };
     // "Title,Budget,Team" pasted with commas: a title header over consistent columns,
     // where every header cell reads like a column name rather than a sentence
     const headerLike = cells.every((c) => /^\p{L}/u.test(c) && c.length <= 40 && c.split(/\s+/).length <= 4 && !/[.!?:]$/.test(c));
@@ -463,11 +663,12 @@ function findHeader(records: string[][], relaxed: boolean): { idx: number; known
 }
 
 const isBlankRecord = (r: string[]) => r.every((c) => c.trim() === "");
+const isListHeading = (line: string) => { const h = normHeader(line); return LIST_HEADINGS.has(h) || ALIAS_TO_FIELD.get(h) === "title"; };
 
 function detect(clean: string, opts: ImportOptions, members: ImportMember[]): Detected {
   const lines = () => {
     const ls = clean.split(/\r\n|\n|\r/).map((l) => l.trim()).filter(Boolean);
-    const skip = ls.length > 1 && LIST_HEADINGS.has(normHeader(ls[0])) ? 1 : 0;
+    const skip = ls.length > 1 && isListHeading(ls[0]) ? 1 : 0;
     return { mode: "lines" as const, lines: ls.slice(skip), skippedLeading: skip };
   };
   if (opts.mode === "lines") return lines();
@@ -488,7 +689,9 @@ function detect(clean: string, opts: ImportOptions, members: ImportMember[]): De
 
   // 2) no header — only treat as columns when the rows are consistently columnar
   for (const { d, recs } of parsed) {
-    if (recs.length < 2 && !opts.csv) continue;
+    // one row copied from a spreadsheet ("Draft deck<TAB>31/10/2026") is still columns
+    const oneTabRow = d === "\t" && recs.length === 1 && recs[0].filter((c) => c.trim()).length >= 2;
+    if (recs.length < 2 && !opts.csv && !oneTabRow) continue;
     const { count, share } = modalCount(recs);
     if (count < 2 || share < 0.8) continue;
     if (d === "\t" || opts.csv) return { mode: "columns", delim: d, records: recs, headerIdx: -1 };
@@ -501,10 +704,16 @@ function detect(clean: string, opts: ImportOptions, members: ImportMember[]): De
 }
 
 type ColKind = "date" | "priority" | "status" | "person" | "number" | "text" | "empty";
+const CLASSIFY_SAMPLE = 400;
 function classifyColumns(records: string[][], width: number, members: ImportMember[]): ColKind[] {
   const kinds: ColKind[] = [];
   for (let c = 0; c < width; c++) {
-    const vals = records.map((r) => (r[c] ?? "").trim()).filter(Boolean);
+    const vals: string[] = [];
+    for (const r of records) {
+      const v = (r[c] ?? "").trim();
+      if (v) vals.push(v);
+      if (vals.length >= CLASSIFY_SAMPLE) break; // a sample is plenty to tell a date column from a text one
+    }
     if (!vals.length) { kinds.push("empty"); continue; }
     const share = (fn: (v: string) => boolean) => vals.filter(fn).length / vals.length;
     if (share((v) => /^\d+(?:\.\d+)?$/.test(v) && !/^\d{5}$/.test(v)) >= 0.8) kinds.push("number");
@@ -522,8 +731,9 @@ function classifyColumns(records: string[][], width: number, members: ImportMemb
 const emptyWarnings = (): ImportWarnings => ({
   unreadableDates: { count: 0, examples: [] }, unknownAssignees: { count: 0, names: [] },
   unknownProjects: { count: 0, names: [] }, unknownStatuses: { count: 0, names: [] },
+  otherProjects: { count: 0, names: [] }, unknownCompleted: { count: 0, names: [] },
   newTags: [], missingSections: [], subtasks: 0, orphanSubtasks: 0,
-  skippedNoTitle: 0, skippedArchived: 0, skippedLeading: 0, skippedHeadings: 0,
+  skippedNoTitle: 0, skippedArchived: 0, skippedLeading: 0, skippedHeadings: 0, commentsToDescription: 0,
 });
 
 const pushName = (bucket: { count: number; names: string[] }, name: string) => {
@@ -539,16 +749,24 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
   const today = opts.today ?? new Date();
   const smart = opts.smartText !== false;
   const limit = opts.maxRows ?? IMPORT_LIMIT;
+  const keepFileProjects = opts.keepFileProjects ?? !opts.defaultProjectId;
   const warnings = emptyWarnings();
-  const clean = raw.replace(/^\uFEFF/, "");
+  let clean = raw.replace(/^\uFEFF/, "");
   const base: ImportAnalysis = {
-    rows: [], mode: "empty", hasHeader: false, delimiter: null, columns: [], ignoredColumns: [],
+    rows: [], mode: "empty", hasHeader: false, delimiter: null, columns: [], projectColumn: null, ignoredColumns: [],
     dateOrder: opts.dateOrder ?? "dmy", ambiguousDates: false, totalRows: 0, truncated: false, warnings,
   };
   if (!clean.trim()) return base;
+  // a Trello board's JSON export, pasted rather than uploaded
+  if (/^\s*\{/.test(clean)) {
+    const csv = trelloJsonToCsv(clean);
+    if (csv !== null) return analyseImport(csv, { ...opts, csv: true });
+  }
+  clean = normaliseListMarkers(clean);
 
   const det = detect(clean, opts, members);
   const out: ImportRow[] = [];
+  let beyond = 0; // rows past the cap: counted for the warning, not processed
   const rowParents: { parents: string[]; ids: string[] }[] = [];
   // rows whose section also mapped to a status: keep the section only if it exists
   const softSection = new WeakSet<ImportRow>();
@@ -563,25 +781,34 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
     if (parsed.assigneeId) row.assigneeId = parsed.assigneeId;
     if (parsed.focusMin) { row.focusMin = parsed.focusMin; row.dur = parsed.focusMin; }
   };
+  const applyCompletion = (row: ImportRow, c: Completion, value: string) => {
+    if (!c) { pushName(warnings.unknownCompleted, value); return; }
+    if (c.done) { row.status = "done"; if (c.completedAt) row.completedAt = c.completedAt; }
+    else if (c.status && !row.status) row.status = c.status;
+  };
 
   if (det.mode === "lines") {
     warnings.skippedLeading = det.skippedLeading;
-    const BULLET = /^(?:[-*+•◦▪‣–—]|\d{1,3}[.)]|\[[ xX]\])\s+/;
-    const bulleted = det.lines.some((l) => BULLET.test(l));
+    const bulleted = det.lines.some((l) => BULLET.test(l) || CHECKBOX.test(l));
     for (const line of det.lines) {
-      let s = line;
-      // "Actions from Monday:" above a bulleted list is a heading, not a task
-      if (bulleted && !BULLET.test(s) && /:$/.test(s)) { warnings.skippedHeadings++; continue; }
+      // a line with tabs (a stray spreadsheet row): the first cell is the task, the rest its description
+      const cells = line.includes("\t") ? line.split("\t").map((c) => c.trim()).filter(Boolean) : [line];
+      let s = cells[0] ?? "";
+      // "Actions from Monday:" or a Markdown "# Launch" above a bulleted list is a heading, not a task
+      if (bulleted && !BULLET.test(s) && !CHECKBOX.test(s) && (/:$/.test(s) || /^#{1,6}\s/.test(s))) { warnings.skippedHeadings++; continue; }
+      if (out.length >= limit) { if (s.replace(BULLET, "").trim()) beyond++; continue; }
       const wrapped = s.match(/^"((?:[^"]|"")*)"$/);
       if (wrapped) s = wrapped[1].replace(/""/g, '"').trim();
       const row: ImportRow = { title: "" };
-      const box = s.match(/^(?:[-*+•◦▪‣–—]\s+)?\[( |x|X)\]\s+/);
-      if (box) { if (box[1] !== " ") row.status = "done"; s = s.slice(box[0].length); }
-      else s = s.replace(/^(?:[-*+•◦▪‣–—]|\d{1,3}[.)])\s+/, "");
+      const box = s.match(CHECKBOX);
+      if (box) { if (/[xX☑☒]/.test(box[1])) row.status = "done"; s = s.slice(box[0].length); }
+      else s = s.replace(BULLET, "");
       s = s.trim();
       if (!s) continue;
-      if (smart) applyTokens(s, row); else row.title = s;
+      // checklist items are taken as written: their "tomorrow" meant the day they were jotted down
+      if (smart && !box) applyTokens(s, row); else row.title = s;
       if (!row.title.trim()) row.title = s;
+      if (cells.length > 1) row.description = cells.slice(1).join("\n");
       capTitle(row);
       out.push(row); rowParents.push({ parents: [], ids: [] });
     }
@@ -598,13 +825,28 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
     const fields: (ImportField | null)[] = [];
     const textCols: number[] = [];
     if (hasHeader) {
+      const found = Array.from({ length: width }, (_, c) => fieldOfHeader(header[c] ?? ""));
+      // several title headings ("Name, Task, Deadline"): the clearest one wins, and a losing "Name" is the person
+      const titles = found.map((f, c) => (f === "title" ? c : -1)).filter((c) => c >= 0);
+      const titleAt = titles.find((c) => !WEAK_TITLE.has(normHeader(header[c] ?? ""))) ?? titles[0];
+      titles.forEach((c) => {
+        if (c === titleAt) return;
+        found[c] = normHeader(header[c] ?? "") === "name" && !found.includes("assignee") ? "assignee" : null;
+      });
       const seen = new Set<ImportField>();
       const multi = new Set<ImportField>(["description", "tags", "parent", "sourceId", "ignore"]);
-      for (let c = 0; c < width; c++) {
-        const f = fieldOfHeader(header[c] ?? "");
-        if (f && !multi.has(f) && seen.has(f)) { fields.push(null); continue; } // first one wins
+      found.forEach((f) => {
+        if (f && !multi.has(f) && seen.has(f)) { fields.push(null); return; } // first one wins
         if (f) seen.add(f);
         fields.push(f);
+      });
+      // no title heading ("Description | Owner | Deadline"): the first unrecognised
+      // column that holds text is the task, else the description column
+      if (!fields.includes("title")) {
+        const kinds = classifyColumns(body, width, members);
+        let t = fields.findIndex((f, c) => f === null && (header[c] ?? "").trim() !== "" && kinds[c] === "text");
+        if (t < 0) t = fields.indexOf("description");
+        if (t >= 0) fields[t] = "title";
       }
     } else {
       const kinds = classifyColumns(body, width, members);
@@ -622,12 +864,12 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
         else fields.push(null);
       }
     }
-    // an ID column only matters for linking sub-tasks; a "Type" column only for
-    // Todoist-style section/note rows — otherwise list them as not imported
+    // an ID column only matters for linking sub-tasks; a "Type" column only in a
+    // Todoist export (section and comment rows) — otherwise list them as not imported
     if (!fields.includes("parent")) fields.forEach((f, c) => { if (f === "sourceId") fields[c] = "ignore"; });
-    fields.forEach((f, c) => {
-      if (f === "rowType" && !body.some((r) => ["section", "note", "task"].includes(normHeader(r[c] ?? "")))) fields[c] = "ignore";
-    });
+    const headings = new Set(header.map((h) => normHeader(h)));
+    const todoist = headings.has("content") && (headings.has("indent") || headings.has("date lang"));
+    if (!todoist) fields.forEach((f, c) => { if (f === "rowType") fields[c] = "ignore"; });
     const colName = (c: number) => (hasHeader ? (header[c] ?? "").trim() || `Column ${c + 1}` : `Column ${c + 1}`);
     base.columns = fields.map((f, c) => ({ index: c, header: colName(c), field: f === "ignore" ? null : f }));
     const extraCols = fields.map((f, c) => (f === null || f === "ignore" ? c : -1)).filter((c) => c >= 0)
@@ -638,7 +880,10 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
     const titleC = col("title"), statusC = col("status"), sectionC = col("section"), priorityC = col("priority");
     const dueC = col("due"), startC = col("start"), completedC = col("completed"), assigneeC = col("assignee");
     const emailC = col("assigneeEmail"), projectC = col("project"), estimateC = col("estimate");
-    const archivedC = col("archived"), typeC = col("rowType");
+    const archivedC = col("archived"), typeC = col("rowType"), percentC = col("percent");
+    base.projectColumn = projectC >= 0 ? colName(projectC) : null;
+    // "% Complete" as 0–1 fractions or 0–100
+    const percentScale: 1 | 100 = percentC >= 0 && body.every((r) => { const v = (r[percentC] ?? "").trim(); return !/^\d+(?:\.\d+)?$/.test(v) || +v <= 1; }) ? 1 : 100;
     const descCs = colsOf("description"), tagCs = colsOf("tags"), parentCs = colsOf("parent"), idCs = colsOf("sourceId");
 
     // date order: explicit choice, else evidence in the file, else day-first (UK)
@@ -666,7 +911,12 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
       if (typeC >= 0) {
         const t = normHeader(cell(typeC));
         if (t === "section") { currentSection = cell(titleC) || undefined; continue; }
-        if (t === "note" || t === "comment") continue;
+        if (t === "note" || t === "comment") {
+          // a Todoist comment belongs to the task above it
+          const prev = out[out.length - 1], note = (r[titleC] ?? "").replace(/\r\n?/g, "\n").trim();
+          if (prev && note && !beyond) { prev.description = prev.description ? `${prev.description}\n\n${note}` : note; warnings.commentsToDescription++; }
+          continue;
+        }
       }
       if (archivedC >= 0 && TRUTHY.has(normHeader(cell(archivedC)) || cell(archivedC))) { warnings.skippedArchived++; continue; }
       const rawTitle = titleC >= 0 ? (r[titleC] ?? "").replace(/\s+/g, " ").trim() : "";
@@ -674,6 +924,7 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
         if (r.some((c) => c.trim() !== "")) warnings.skippedNoTitle++;
         continue;
       }
+      if (out.length >= limit) { beyond++; continue; }
       const row: ImportRow = { title: rawTitle };
       // free-text tokens only when there's no real header (a Title column is taken literally)
       if (!hasHeader && smart) applyTokens(rawTitle, row);
@@ -690,7 +941,9 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
       const statusVal = cell(statusC);
       if (statusVal) {
         const s = mapStatus(statusVal);
-        if (s) row.status = s; else pushName(warnings.unknownStatuses, statusVal);
+        if (s) row.status = s;
+        else if (PERCENT_RE.test(statusVal)) applyCompletion(row, readPercent(statusVal), statusVal);
+        else pushName(warnings.unknownStatuses, statusVal);
       }
       const sectionVal = cell(sectionC) || currentSection || "";
       if (sectionVal) {
@@ -703,16 +956,11 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
 
       const due = readDate(cell(dueC)); if (due) row.dueDate = due;
       const start = readDate(cell(startC)); if (start) row.startDate = start;
+      // Completed / % Complete: done only for a clear yes, 100% or a completion date
       const comp = cell(completedC);
-      if (comp) {
-        const k = normHeader(comp) || comp;
-        if (TRUTHY.has(k) || TRUTHY.has(comp)) row.status = "done";
-        else if (!FALSY.has(k)) {
-          row.status = "done";
-          const d = /\d/.test(comp) ? readDate(comp) : null;
-          if (d) row.completedAt = d;
-        }
-      }
+      if (comp) applyCompletion(row, readCompletion(comp, order, today), comp);
+      const pct = cell(percentC);
+      if (pct) applyCompletion(row, readPercent(pct, percentScale), pct);
 
       const est = cell(estimateC);
       if (est) { const m = parseMinutes(est); if (m) { row.focusMin = m; row.dur = m; } }
@@ -739,12 +987,15 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
         }
       }
 
-      // project: first listed project that exists
+      // project: the first listed project that exists — but the project the user chose
+      // wins unless they ask to keep the file's, so an export of one project imported
+      // into another doesn't quietly land back in the original
       const projVal = cell(projectC);
       if (projVal) {
         const names = splitList(projVal);
         const hit = names.map((n) => projects.find((p) => normProject(p.name) === normProject(n))).find(Boolean);
-        if (hit) row.projectId = hit.id; else pushName(warnings.unknownProjects, names[0] || projVal);
+        if (hit && hit.id !== opts.defaultProjectId) pushName(warnings.otherProjects, hit.name);
+        if (keepFileProjects) { if (hit) row.projectId = hit.id; else pushName(warnings.unknownProjects, names[0] || projVal); }
       }
 
       // tags: match existing tags by label (or key); keep unknown labels aside
@@ -774,18 +1025,19 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
     base.delimiter = delim;
   }
 
-  // default project + sections resolved against the row's final project
-  const sections = opts.sections;
+  // default project + sections resolved against the row's final project. With no
+  // sections to match against, a named section is reported as missing rather than
+  // silently dropped.
+  const sections = opts.sections ?? [];
   const missingSections = new Map<string, string>();
   out.forEach((row) => {
     if (!row.projectId && opts.defaultProjectId) row.projectId = opts.defaultProjectId;
-    if (row.sectionName && sections && row.projectId) {
-      const want = normName(row.sectionName);
-      const hit = sections.find((s) => s.projectId === row.projectId && normName(s.name) === want);
-      if (hit) { row.sectionId = hit.id; delete row.sectionName; }
-      else if (softSection.has(row)) delete row.sectionName;
-      else if (!missingSections.has(want)) missingSections.set(want, row.sectionName);
-    } else if (row.sectionName && softSection.has(row)) delete row.sectionName;
+    if (!row.sectionName) return;
+    const want = normName(row.sectionName);
+    const hit = row.projectId ? sections.find((s) => s.projectId === row.projectId && normName(s.name) === want) : undefined;
+    if (hit) { row.sectionId = hit.id; delete row.sectionName; }
+    else if (softSection.has(row)) delete row.sectionName;
+    else if (!missingSections.has(want)) missingSections.set(want, row.sectionName);
   });
   warnings.missingSections = [...missingSections.values()];
 
@@ -818,10 +1070,9 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
   out.forEach((r) => (r.newTags || []).forEach((t) => { if (!fresh.has(t.toLowerCase())) fresh.set(t.toLowerCase(), t); }));
   warnings.newTags = [...fresh.values()];
 
-  base.totalRows = out.length;
-  base.truncated = out.length > limit;
-  base.rows = base.truncated ? out.slice(0, limit) : out;
-  if (base.truncated) base.rows.forEach((r) => { if (r.parentIndex !== undefined && r.parentIndex >= limit) delete r.parentIndex; });
+  base.totalRows = out.length + beyond;
+  base.truncated = beyond > 0;
+  base.rows = out;
   return base;
 }
 

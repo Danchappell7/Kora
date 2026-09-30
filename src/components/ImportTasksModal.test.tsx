@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ImportTasksModal } from "./ImportTasksModal";
 
 const projects = [{ id: "p-web", name: "Website" }, { id: "p-ops", name: "Operations" }];
@@ -94,5 +94,53 @@ describe("ImportTasksModal", () => {
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     fireEvent.change(input, { target: { files: [new File(["x"], "board.xlsx")] } });
     expect(screen.getByRole("alert")).toHaveTextContent("Kanbo can't open XLSX files directly");
+  });
+  it("imports into the chosen project unless you ask to keep the file's projects", () => {
+    const { type, onImport } = setup({ defaultProjectId: "p-web", defaultProjectName: "Website" });
+    type("Title,Project\nHero copy,Operations\nFooter,Website");
+    expect(screen.getByText("Into Website")).toBeInTheDocument();
+    const keep = screen.getByRole("checkbox", { name: /Put tasks into the projects named in the “Project” column \(“Operations”\) instead of “Website”/ });
+    expect(keep).not.toBeChecked();
+    fireEvent.click(keep);
+    expect(screen.getByText("Into Website and 1 other project")).toBeInTheDocument();
+    expect(screen.getByText("Operations", { selector: "span[title='Goes into Operations']" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Import 2 tasks" }));
+    expect(onImport.mock.calls[0][0].map((r: { projectId: string }) => r.projectId)).toEqual(["p-ops", "p-web"]);
+  });
+
+  it("says which details will be left off until the handler keeps them", () => {
+    const text = "Title,Notes,Start date\nLaunch,Remember the press list,01/10/2026";
+    const { type, unmount } = setup({ defaultProjectId: "p-web" });
+    type(text);
+    expect(screen.getByText(/Descriptions and start dates from your text will be left off/)).toBeInTheDocument();
+    expect(screen.queryByTitle("Has a description")).toBeNull();
+    unmount();
+    const again = setup({ defaultProjectId: "p-web", supports: { details: true } });
+    again.type(text);
+    expect(screen.queryByText(/will be left off/)).toBeNull();
+    expect(screen.getByTitle("Has a description")).toBeInTheDocument();
+  });
+
+  it("accepts a file dropped anywhere on the dialog and turns away images", async () => {
+    setup({ defaultProjectId: "p-web" });
+    const dialog = screen.getByRole("dialog");
+    const png = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0])], "photo.png", { type: "image/png" });
+    fireEvent.drop(dialog, { dataTransfer: { files: [png], types: ["Files"] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Kanbo can import CSV, TSV and text files");
+    const csv = new File(["Title,Due\nA,2026-10-01"], "tasks.csv", { type: "text/csv" });
+    fireEvent.drop(dialog, { dataTransfer: { files: [csv], types: ["Files"] } });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1 task ready"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reads a Trello board's JSON export", async () => {
+    setup({ defaultProjectId: "p-web" });
+    const board = { lists: [{ id: "l1", name: "Doing" }], cards: [{ id: "c1", name: "Fix header", idList: "l1" }] };
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File([JSON.stringify(board)], "board.json", { type: "application/json" })] } });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1 task ready"));
+    expect(screen.getByText("Fix header")).toBeInTheDocument();
+    fireEvent.change(input, { target: { files: [new File(['{"hello":1}'], "other.json", { type: "application/json" })] } });
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("isn't a Trello board export"));
   });
 });
