@@ -3,8 +3,8 @@
    Tags read as a dot and a word (never a filled pill); a picked tag
    carries the selection tint and a tick.
    ============================================================ */
-import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Icon, Button, projectPaint } from "./primitives";
 import type { TagDef } from "../data/types";
 
@@ -103,15 +103,27 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
     close(true);
   };
 
-  // Escape must close ONLY the new-tag box: handled in the capture phase and
-  // stopped there, so it never reaches the dialog's focus trap or the app's
-  // global Escape handler (which would close the whole modal and lose the draft).
-  const onBoxKeyDownCapture = (e: ReactKeyboardEvent) => {
-    if (e.key !== "Escape") return;
-    e.preventDefault();
-    e.stopPropagation();
-    close(true);
-  };
+  // Escape must close ONLY the new-tag box, never the popover, dialog or panel
+  // around it (which would lose the draft). Those listen early: a Popover at
+  // the window in the capture phase, a focus trap on the document, the app on
+  // the window. So this listens at the window too, capturing, and is added in
+  // a layout effect when the picker mounts: that runs before the (passive)
+  // effect of a Popover opened with it adds its listener, so this one hears
+  // Escape first and stops it there.
+  const boxRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useLayoutEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !boxRef.current?.contains(e.target as Node)) return;
+      e.stopImmediatePropagation();
+      if (e.isComposing) return;   // it cancels the IME composition, nothing more
+      e.preventDefault();
+      closeRef.current(true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   // deleting a tag is workspace-wide: always ask first (the one confirmation —
   // parents pass `usage` for the count rather than asking again themselves)
@@ -181,7 +193,7 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small,
         )}
       </div>
       {adding && (
-        <div role="group" aria-label="New tag" onKeyDownCapture={onBoxKeyDownCapture} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div ref={boxRef} role="group" aria-label="New tag" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <input ref={nameRef} autoFocus value={label} maxLength={TAG_MAX} aria-label="New tag name"
             onChange={(e) => setLabel(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); create(); } }}

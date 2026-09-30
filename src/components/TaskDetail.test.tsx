@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act, within } from "@testing-library/react";
+import { useState } from "react";
+import { render, screen, fireEvent, act, within, waitFor } from "@testing-library/react";
 import { TaskDetail, type TaskDetailProps } from "./TaskDetail";
 import { ToastProvider } from "./Toast";
 import { store } from "../data/store";
@@ -303,7 +304,7 @@ describe("TaskDetail — actions", () => {
     showMoreFields();
     fireEvent.click(screen.getByRole("button", { name: "Delete field “Budget”" }));
     openActions();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete “Write brief”" }));
     expect(confirm).toHaveBeenCalledTimes(2);
     expect(confirm.mock.calls[0][0]).toContain("Delete field “Budget” from all tasks in this project?");
     expect(onDeleteCustomField).not.toHaveBeenCalled();
@@ -312,7 +313,7 @@ describe("TaskDetail — actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete field “Budget”" }));
     expect(onDeleteCustomField).toHaveBeenCalledWith("f1");
     openActions();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete “Write brief”" }));
     expect(props.onClose).toHaveBeenCalled();
     expect(props.onDelete).toHaveBeenCalledWith("t1");
   });
@@ -324,18 +325,24 @@ describe("TaskDetail — actions", () => {
     const head = screen.getByRole("button", { name: "Close task" }).parentElement!;
     const controls = Array.from(head.querySelectorAll("button")).filter((b) => !b.closest('[role="menu"]'));
     expect(controls.map((b) => b.getAttribute("aria-label"))).toEqual(["Follow task", "Copy link to task", "More actions", "Close task"]);
-    expect(screen.queryByRole("menuitem", { name: "Duplicate" })).toBeNull();    // closed
+    expect(screen.queryByRole("menuitem", { name: "Duplicate task" })).toBeNull();    // closed
+    expect(head).not.toHaveAttribute("data-menu-open");
     openActions();
+    expect(head).toHaveAttribute("data-menu-open", "true");    // (hushes the header's tooltips, which sit where the menu opens)
     expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Duplicate", "Save as template", "Attach file", "Archive", "Delete"]);
-    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Duplicate" }));
+    // the items keep the names they had as header buttons
+    expect(screen.getAllByRole("menuitem").map((m) => m.getAttribute("aria-label") ?? m.textContent))
+      .toEqual(["Duplicate task", "Save as template", "Attach file", "Archive “Write brief”", "Delete “Write brief”"]);
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Duplicate task" }));
     fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Save as template" }));
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(props.onClose).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "More actions" }));
+    expect(head).not.toHaveAttribute("data-menu-open");
     openActions();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive “Write brief”" }));
     expect(onArchive).toHaveBeenCalledWith("t1");
     expect(props.onClose).toHaveBeenCalled();
   });
@@ -540,6 +547,42 @@ describe("TaskDetail — frame", () => {
     }
   });
 
+  it("docked, a task opened from inside the panel keeps focus there, though App mounts a fresh panel for it", async () => {
+    const row = document.createElement("button");
+    document.body.appendChild(row);
+    row.focus();
+    const tasks = [mk(), mk({ id: "t2", title: "Child task", parentId: "t1" })];
+    function Host() {
+      const [id, setId] = useState<string | null>("t1");
+      if (!id) return null;
+      // as App does: the panel's error boundary is keyed by task, so each task gets a new panel
+      return (
+        <div key={id}>
+          <TaskDetail taskId={id} tasks={tasks} tags={{}} activity={[]} members={[member("u1", "Me")]} currentUserId="u1" docked
+            onOpenTask={setId} onClose={() => setId(null)} onToggle={vi.fn()} onPatch={vi.fn()} onDelete={vi.fn()} onToggleSubtask={vi.fn()}
+            onAddSubtask={vi.fn()} onCreateTag={vi.fn()} onDeleteTag={vi.fn()} onAddComment={vi.fn(async () => null)} onFocus={vi.fn()} />
+        </div>
+      );
+    }
+    try {
+      render(<Host />);
+      await act(async () => {});
+      expect(document.activeElement).toBe(row);                 // opened from the list: the list keeps focus
+      const child = screen.getByRole("button", { name: "Child task" });
+      act(() => child.focus());
+      await act(async () => { fireEvent.click(child); });
+      const panel = screen.getByRole("dialog", { name: "Task: Child task" });
+      expect(panel).toContainElement(document.activeElement as HTMLElement);   // not the row behind
+      // …and closing the new panel still goes back to the row you first came from
+      act(() => screen.getByRole("button", { name: "Close task" }).focus());
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Close task" })); });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(row);
+    } finally {
+      row.remove();
+    }
+  });
+
   it("the breadcrumb's project closes the panel and opens the project", async () => {
     const onOpenProject = vi.fn();
     const project = { id: "p1", name: "Q3 Product Launch", color: "oklch(0.62 0.14 230)", icon: "🚀", workspaceId: "w1" } as never;
@@ -608,6 +651,13 @@ describe("TaskDetail — Kanbo suggests and slip history", () => {
     expect(onOpenTask).toHaveBeenCalledWith("t2");
   });
 
+  it("offers no focus on a blocked task: the way forward is its blocker", async () => {
+    const onStartFocus = vi.fn();
+    await setup({ tasks: [mk({ status: "blocked", dueDate: dayOffset(-2) })], onStartFocus });
+    expect(screen.getByText(/^Overdue since/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /focus/i })).toBeNull();
+  });
+
   it("notes how often the due date has moved, once the history has loaded", async () => {
     const ev = (id: string, oldValue: string | null, newValue: string | null, at: string) =>
       ({ id, actorName: "Sana Rahman", field: "due", oldValue, newValue, createdAt: at });
@@ -625,6 +675,117 @@ describe("TaskDetail — Kanbo suggests and slip history", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("TaskDetail — property menus", () => {
+  const statusBox = () => screen.getByRole("combobox", { name: "Status" }) as HTMLSelectElement;
+
+  it("status opens the kit's menu (glyph, name, a check on the current one), not the OS list", async () => {
+    const { props } = await setup({ tasks: [mk({ status: "progress" })] });
+    expect(fireEvent.mouseDown(statusBox())).toBe(false);      // the native list is held back
+    const menu = await screen.findByRole("listbox", { name: "Status" });
+    expect(statusBox()).toHaveAttribute("aria-expanded", "true");
+    expect(menu).toHaveClass("ktd-pop-quiet");                 // opened by pointer: no keyboard ring until a key is pressed
+    expect(within(menu).getAllByRole("option").map((o) => o.textContent)).toEqual(["To do", "In progress", "In review", "Blocked", "Done"]);
+    expect(menu.querySelectorAll(".kglyph")).toHaveLength(5);
+    const current = within(menu).getByRole("option", { name: "In progress" });
+    expect(current).toHaveAttribute("aria-selected", "true");
+    expect(current.querySelector(".ktd-mi-check")).not.toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(current));
+    fireEvent.click(within(menu).getByRole("option", { name: "In review" }));
+    expect(props.onPatch).toHaveBeenCalledWith("t1", { status: "review", completedAt: undefined });
+    expect(screen.queryByRole("listbox", { name: "Status" })).toBeNull();
+    expect(document.activeElement).toBe(statusBox());
+  });
+
+  it("works from the keyboard: arrows open and move, a letter jumps, Escape closes only the menu, Done completes", async () => {
+    const { props } = await setup();
+    act(() => statusBox().focus());
+    fireEvent.keyDown(statusBox(), { key: "ArrowDown" });
+    const menu = await screen.findByRole("listbox", { name: "Status" });
+    expect(menu).not.toHaveClass("ktd-pop-quiet");
+    await waitFor(() => expect(document.activeElement).toBe(within(menu).getByRole("option", { name: "To do" })));
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(within(menu).getByRole("option", { name: "In progress" }));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "Status" })).toBeNull();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(statusBox());
+    expect(props.onPatch).not.toHaveBeenCalled();
+    // a letter on the closed control opens the menu on the first match, rather than changing the value unseen
+    fireEvent.keyDown(statusBox(), { key: "d" });
+    const again = await screen.findByRole("listbox", { name: "Status" });
+    await waitFor(() => expect(document.activeElement).toBe(within(again).getByRole("option", { name: "Done" })));
+    expect(props.onToggle).not.toHaveBeenCalled();
+    fireEvent.click(document.activeElement!);
+    expect(props.onToggle).toHaveBeenCalledWith("t1");          // the checkbox path (blocker warning, Undo, next repeat)
+    expect(props.onPatch).not.toHaveBeenCalled();
+  });
+
+  it("shift-clicking the status glyph opens the status menu", async () => {
+    const { props } = await setup();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Done: Write brief" }), { shiftKey: true });
+    expect(await screen.findByRole("listbox", { name: "Status" })).toBeInTheDocument();
+    expect(props.onToggle).not.toHaveBeenCalled();
+  });
+
+  it("priority, project and section pick from menus too; ⋯ › Move to project opens the project menu", async () => {
+    const projects = [
+      { id: "p1", name: "Q3 Product Launch", color: "oklch(0.62 0.14 230)", icon: "🚀", workspaceId: "w1" },
+      { id: "p2", name: "Brand Refresh", color: "oklch(0.62 0.14 305)", icon: "🎨", workspaceId: "w1" },
+    ] as never[];
+    const onCreateSection = vi.fn(() => "s-new");
+    const { props } = await setup({ projects, sections: [{ id: "s1", projectId: "p1", name: "Narrative" }], onCreateSection });
+    fireEvent.mouseDown(screen.getByLabelText("Priority"));
+    const prio = await screen.findByRole("listbox", { name: "Priority" });
+    expect(prio.querySelectorAll(".kprio")).toHaveLength(4);
+    fireEvent.click(within(prio).getByRole("option", { name: "Urgent" }));
+    expect(props.onPatch).toHaveBeenLastCalledWith("t1", { priority: "urgent" });
+
+    openActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to project…" }));
+    const proj = await screen.findByRole("listbox", { name: "Project" });
+    expect(proj.querySelectorAll(".kpdot")).toHaveLength(2);
+    fireEvent.click(within(proj).getByRole("option", { name: "Brand Refresh" }));
+    expect(props.onPatch).toHaveBeenLastCalledWith("t1", { projectId: "p2" });
+
+    fireEvent.mouseDown(screen.getByLabelText("Section"));
+    const sec = await screen.findByRole("listbox", { name: "Section" });
+    expect(within(sec).getAllByRole("option").map((o) => o.textContent)).toEqual(["No section", "Narrative", "New section…"]);
+    fireEvent.click(within(sec).getByRole("option", { name: "New section…" }));
+    const name = screen.getByLabelText("New section name");
+    fireEvent.change(name, { target: { value: "Launch week" } });
+    fireEvent.keyDown(name, { key: "Enter" });
+    expect(onCreateSection).toHaveBeenCalledWith("p1", "Launch week");
+    expect(props.onPatch).toHaveBeenLastCalledWith("t1", { sectionId: "s-new" });
+  });
+
+  it("offers only real energy levels (energy is never empty, so 'none' would come back on reload)", async () => {
+    const { props } = await setup({ tasks: [mk({ effortHours: 2, energy: "deep" })] });
+    fireEvent.mouseDown(screen.getByLabelText("Energy"));
+    const menu = await screen.findByRole("listbox", { name: "Energy" });
+    expect(within(menu).getAllByRole("option").map((o) => o.textContent)).toEqual(["Deep work", "Creative", "Collaborative", "Admin"]);
+    fireEvent.click(within(menu).getByRole("option", { name: "Admin" }));
+    expect(props.onPatch).toHaveBeenCalledWith("t1", { energy: "admin" });
+  });
+
+  it("Escape in the Tags popover's new-tag box closes only that box and keeps what's around it", async () => {
+    const { props } = await setup({ tags: { g1: { label: "Urgent", color: "#f00" } } });
+    fireEvent.click(screen.getByRole("button", { name: /^Tags/ }));
+    const pop = await screen.findByRole("dialog", { name: "Tags" });
+    fireEvent.click(within(pop).getByRole("button", { name: /New tag/ }));
+    const name = within(pop).getByLabelText("New tag name");
+    fireEvent.change(name, { target: { value: "Legal review" } });
+    fireEvent.keyDown(name, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Tags" })).toBeInTheDocument();
+    expect(within(pop).queryByLabelText("New tag name")).toBeNull();
+    expect(document.activeElement).toBe(within(pop).getByRole("button", { name: /New tag/ }));
+    expect(props.onClose).not.toHaveBeenCalled();
+    // the next Escape closes the Tags popover, and still not the panel
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Tags" })).toBeNull();
+    expect(props.onClose).not.toHaveBeenCalled();
   });
 });
 

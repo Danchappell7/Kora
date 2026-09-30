@@ -8,8 +8,8 @@
    sub-tasks, dependencies, files and one activity timeline, with the
    composer pinned underneath. Empty sections stay out of the way.
    ============================================================ */
-import { useState, useEffect, useRef, useMemo, useId } from "react";
-import type { ReactNode, RefObject, MutableRefObject, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useState, useEffect, useRef, useMemo, useId, forwardRef, useImperativeHandle } from "react";
+import type { ReactNode, RefObject, MutableRefObject, Dispatch, SetStateAction, KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Icon, Avatar, AvatarStack, Check, EmojiPicker, Button, IconButton, Kbd, StatusGlyph, PriorityGlyph,
   DateChip, AiMark, Meter, Pill, ProjectDot, projectPaint,
@@ -100,6 +100,8 @@ const PANEL_CSS = `
 .ktd-presence-more { margin-left: 4px; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
 .ktd-vsep { width: 1px; height: 16px; margin: 0 6px; background: var(--hairline-strong); flex-shrink: 0; }
 .ktd-head [data-tip]::after { top: calc(100% + 6px); bottom: auto; }
+/* the ⋯ menu opens where the header's tooltips would: hush them while it's out */
+.ktd-head[data-menu-open="true"] [data-tip]::after { display: none; }
 .ktd-head .ktd-tip-end[data-tip]::after, .ktd-head .ktd-tip-end[data-tip]:hover::after { left: auto; right: 0; transform: none; translate: none; }
 
 /* ⋯ menu */
@@ -120,7 +122,10 @@ const PANEL_CSS = `
 .ktd-mi[data-tone="danger"], .ktd-mi[data-tone="danger"] > svg { color: var(--signal, var(--st-blocked)); }
 .ktd-mi-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ktd-mi-note { font: 500 12px/16px ${UI}; color: var(--ink-3); }
-.ktd-mi-check { color: var(--accent-text, var(--accent)) !important; }
+.ktd-mi-check { flex-shrink: 0; margin-left: 8px; color: var(--accent-text, var(--accent)) !important; }
+/* a menu opened with the mouse doesn't ring its current option (the check marks it) until a key is pressed */
+.ktd-pop-quiet[data-kpop-panel] .ktd-mi:focus-visible:not(:hover) { outline: none; background: transparent !important; }
+.ktd-mi-ico { display: inline-grid; place-items: center; min-width: 16px; height: 20px; flex: none; }
 .ktd-msep { height: 1px; margin: 4px; background: var(--hairline); }
 .ktd-pop-label { padding: 8px 8px 4px; font: 600 12px/16px ${UI}; color: var(--ink-3); }
 .ktd-pop-search { display: block; width: 100%; height: 32px; margin-bottom: 4px; padding: 0 10px; border-radius: var(--r-sm, 6px); border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); font: 500 13px/20px ${UI}; color: var(--ink); }
@@ -163,7 +168,7 @@ textarea.ktd-title:focus { background: transparent; }
   font: 500 13px/20px ${UI}; color: var(--ink); text-align: left; cursor: pointer;
   transition: background var(--d-1, 90ms) var(--ease);
 }
-.ktd-val:hover, .ktd-val[aria-expanded="true"] { background: var(--fill-1); }
+.ktd-val:hover, .ktd-val[aria-expanded="true"], .ktd-val[data-open="true"] { background: var(--fill-1); }
 .ktd-val[data-wide="true"] { flex: 1 1 auto; }
 .ktd-val[data-wrap="true"] { flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; row-gap: 4px; column-gap: 12px; }
 .ktd-val[data-empty="true"], .ktd-val[data-empty="true"] .ktd-val-text { color: var(--ink-4); }
@@ -182,7 +187,7 @@ textarea.ktd-title:focus { background: transparent; }
 .ktd-val-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ktd-val-sub { font: 500 12px/16px ${UI}; color: var(--ink-3); white-space: nowrap; }
 .ktd-chev { color: var(--icon-quiet, var(--ink-4)); opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
-.ktd-val:hover .ktd-chev, .ktd-val:focus-within .ktd-chev, .ktd-val[aria-expanded="true"] .ktd-chev { opacity: 1; }
+.ktd-val:hover .ktd-chev, .ktd-val:focus-within .ktd-chev, .ktd-val[aria-expanded="true"] .ktd-chev, .ktd-val[data-open="true"] .ktd-chev { opacity: 1; }
 .ktd-input {
   width: 100%; min-width: 0; height: 32px; margin-left: -8px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--r-sm, 6px);
   background: transparent; font: 500 13px/20px ${UI}; color: var(--ink); transition: background var(--d-1, 90ms) var(--ease), border-color var(--d-1, 90ms) var(--ease);
@@ -240,7 +245,7 @@ textarea.ktd-title:focus { background: transparent; }
 .ktd-sec { margin-top: 24px; }
 .ktd-sec > .ksection { margin-bottom: 2px; }
 .ktd-sec .kmeter-wrap { flex: none; }
-.ktd-row { position: relative; display: flex; align-items: center; gap: 10px; min-height: 32px; margin: 0 -8px; padding: 0 8px; border-radius: var(--r-sm, 6px); font: 500 13px/20px ${UI}; color: var(--ink); }
+.ktd-row { position: relative; display: flex; align-items: center; gap: 10px; min-height: 32px; margin: 0 -8px; padding: 0 8px; border-radius: var(--r-sm, 6px); font: 500 14px/20px ${UI}; color: var(--ink); }
 .ktd-row[data-link="true"]:hover { background: var(--fill-1); }
 .ktd-row > .kcheck, .ktd-row > .kglyph, .ktd-row > button:not(.ktd-row-title), .ktd-row > input { position: relative; z-index: 1; }
 .ktd-row-title { flex: 1; min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -254,7 +259,7 @@ button.ktd-row-title:focus-visible::after { outline: 2px solid var(--accent); ou
 .ktd-row-meta[data-tone="today"] { color: var(--accent-text, var(--accent)); }
 .ktd-row-go { color: var(--icon-quiet, var(--ink-4)); opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
 .ktd-row:hover .ktd-row-go, .ktd-row:focus-within .ktd-row-go, .ktd-row:hover .ktd-del, .ktd-row:focus-within .ktd-del { opacity: 1; }
-.ktd-add-input { flex: 1; min-width: 0; height: 32px; padding: 0; border: 0; background: transparent; font: 500 13px/20px ${UI}; color: var(--ink); }
+.ktd-add-input { flex: 1; min-width: 0; height: 32px; padding: 0; border: 0; background: transparent; font: 500 14px/20px ${UI}; color: var(--ink); }
 .ktd-add-input::placeholder { color: var(--ink-4); }
 .ktd-quiet { color: var(--icon-quiet, var(--ink-4)); flex-shrink: 0; }
 .ktd-lock { color: var(--signal, var(--st-blocked)); flex-shrink: 0; }
@@ -360,37 +365,125 @@ function BufferedInput({ value, onCommit, onKeyDown, ...rest }: { value: string;
 }
 const numOrUndef = (s: string): number | undefined => { if (s.trim() === "") return undefined; const n = Number(s); return Number.isFinite(n) ? n : undefined; };
 
-/** A property value that opens the platform's own picker: the row shows the
- *  glyph and words; an invisible native <select> covers it (keyboard, screen
- *  readers and phone pickers all get the real control). */
-function PropSelect({ id, value, options, onChange, text, leading, empty, wide, small, selectRef, title, label }: {
+/** the panel's popovers wear the same surface as its ⋯ menu (Paper & Navy's Menu) */
+const POP_STYLE: React.CSSProperties = {
+  padding: 4, border: 0, borderRadius: "var(--r-lg, 12px)",
+  background: "linear-gradient(var(--surface-raised), var(--surface-raised)), var(--surface-solid)",
+  boxShadow: "var(--e2, 0 0 0 1px var(--hairline), var(--shadow-lg))",
+};
+
+interface PropOption { value: string; label: string; icon?: ReactNode; sepBefore?: boolean }
+interface PropSelectHandle { open: () => void }
+// keys that open a closed select-only combobox (the ARIA pattern), instead of
+// silently changing its value the way a native <select> does on some platforms
+const OPEN_KEYS = new Set([" ", "Enter", "ArrowDown", "ArrowUp", "Home", "End", "PageUp", "PageDown", "F4"]);
+const isTypeahead = (e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }) =>
+  e.key.length === 1 && e.key !== " " && !e.ctrlKey && !e.metaKey && !e.altKey;
+/** the next option (after `from`) whose label starts with `ch` */
+const seekOption = (labels: string[], ch: string, from = -1) => {
+  const c = ch.toLowerCase();
+  for (let k = 1; k <= labels.length; k++) {
+    const i = (from + k) % labels.length;
+    if (labels[i].toLowerCase().startsWith(c)) return i;
+  }
+  return -1;
+};
+
+/**
+ * A property value. The row shows the glyph and words; a transparent native
+ * <select> covers it and stays the real control: its <label>, its value and
+ * change event, a screen reader's own "open" command, and the platform picker
+ * on phones and touch screens. With a mouse or keyboard it opens the Paper &
+ * Navy menu instead of the OS list: each option with its glyph, and a check on
+ * the current one. ↑/↓/Home/End move, a letter jumps, Enter picks, Esc closes.
+ */
+const PropSelect = forwardRef<PropSelectHandle, {
   id: string;
   /** the accessible name, when no <label for> names it */
   label?: string;
+  /** the menu's name (defaults to `label`) */
+  menuLabel?: string;
   value: string;
-  options: { value: string; label: string }[];
+  options: PropOption[];
   onChange: (v: string) => void;
   text: ReactNode;
   leading?: ReactNode;
   empty?: boolean;
   wide?: boolean;
   small?: boolean;
-  selectRef?: RefObject<HTMLSelectElement>;
   title?: string;
-}) {
+  /** use the platform's own picker (phones, touch screens) */
+  native?: boolean;
+}>(function PropSelect({ id, label, menuLabel, value, options, onChange, text, leading, empty, wide, small, title, native }, ref) {
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const seekRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  // a letter typed on the closed control: the menu opens on the first match
+  const [seek, setSeek] = useState(-1);
+  // opened with the mouse: no keyboard ring on the current option until a key is pressed
+  const [quiet, setQuiet] = useState(false);
+  const labels = options.map((o) => o.label);
+  const show = (at = -1, pointer = false) => {
+    const el = selectRef.current;
+    if (!el) return;
+    if (native) {
+      el.scrollIntoView?.({ block: "nearest" });
+      el.focus({ preventScroll: true });
+      try { (el as HTMLSelectElement & { showPicker?: () => void }).showPicker?.(); } catch { /* focus is enough */ }
+      return;
+    }
+    setSeek(at); setQuiet(pointer); setOpen(true);
+  };
+  useImperativeHandle(ref, () => ({ open: () => show() }));
+  const pick = (v: string) => { setOpen(false); if (v !== value) onChange(v); };
+  const known = options.some((o) => o.value === value);
   return (
-    <span className="ktd-val" data-wide={wide || undefined} data-empty={empty || undefined} data-small={small || undefined} title={title}>
+    <span className="ktd-val" data-wide={wide || undefined} data-empty={empty || undefined} data-small={small || undefined} data-open={open || undefined} title={title}>
       <span aria-hidden="true" style={{ display: "contents" }}>
         {leading}
         <span className="ktd-val-text">{text}</span>
         {!small && <Icon name="chevronDown" size={14} sw={1.75} className="ktd-chev" />}
       </span>
-      <select ref={selectRef} id={id} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
+      <select ref={selectRef} id={id} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}
+        aria-expanded={native ? undefined : open}
+        onMouseDown={native ? undefined : (e) => {
+          if (e.button !== 0) return;
+          // hold back the OS list (it would open on mousedown) and show ours
+          e.preventDefault(); e.currentTarget.focus({ preventScroll: true }); show(-1, true);
+        }}
+        onKeyDown={native ? undefined : (e) => {
+          if (OPEN_KEYS.has(e.key) || (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp"))) { e.preventDefault(); show(); }
+          else if (isTypeahead(e)) { e.preventDefault(); show(seekOption(labels, e.key)); }
+        }}>
+        {/* a value outside the list (none yet) reads as nothing chosen, not as the first option */}
+        {!known && <option value={value} disabled hidden>—</option>}
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
+      {open && (
+        <Popover open anchorRef={selectRef} onClose={() => setOpen(false)} role="listbox" label={menuLabel ?? label} minWidth={212} maxHeight={336}
+          initialFocus={seek >= 0 ? seekRef : undefined} className={quiet ? "ktd-pop ktd-pop-quiet" : "ktd-pop"} style={POP_STYLE}>
+          <div onKeyDown={(e) => {
+              if (quiet) setQuiet(false);
+              if (!isTypeahead(e)) return;
+              const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]'));
+              const i = seekOption(labels, e.key, items.indexOf(document.activeElement as HTMLButtonElement));
+              if (i >= 0) { e.preventDefault(); items[i]?.focus(); }
+            }}>
+            {options.map((o, i) => [
+              o.sepBefore ? <div key={`${o.value}-sep`} role="presentation" className="ktd-msep" /> : null,
+              <button key={o.value} ref={i === seek ? seekRef : undefined} type="button" role="option" aria-selected={o.value === value}
+                className="ktd-mi" onClick={() => pick(o.value)}>
+                {o.icon && <span className="ktd-mi-ico" aria-hidden="true">{o.icon}</span>}
+                <span className="ktd-mi-name">{o.label}</span>
+                {o.value === value && <Icon name="check" size={16} sw={2} className="ktd-mi-check" />}
+              </button>,
+            ])}
+          </div>
+        </Popover>
+      )}
     </span>
   );
-}
+});
 
 type MdKind = "bold" | "italic" | "code" | "link" | "bullet";
 function applyMd(el: HTMLTextAreaElement, value: string, setValue: (v: string) => void, kind: MdKind) {
@@ -445,13 +538,23 @@ function moveFocus(e: ReactKeyboardEvent<HTMLElement>, selector: string) {
 }
 
 /* ---------- the header's ⋯ menu ---------- */
-interface MenuAction { id: string; label: string; icon: IconName; run: () => void; title?: string; tone?: "danger"; sepBefore?: boolean }
+interface MenuAction {
+  id: string;
+  label: string;
+  /** the accessible name, when it says more than the label ("Delete “Brief”") */
+  name?: string;
+  icon: IconName;
+  run: () => void;
+  title?: string;
+  tone?: "danger";
+  sepBefore?: boolean;
+}
 
 /** Always mounted (hidden while closed), so it opens instantly and sits in the
  *  panel's own stacking order. Arrow keys move, Escape closes it (only it),
- *  a click anywhere else closes it. */
-function ActionsMenu({ actions }: { actions: MenuAction[] }) {
-  const [open, setOpen] = useState(false);
+ *  a click anywhere else closes it. The header owns `open`, so it can hush its
+ *  tooltips while the menu is out. */
+function ActionsMenu({ actions, open, setOpen }: { actions: MenuAction[]; open: boolean; setOpen: Dispatch<SetStateAction<boolean>> }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -464,7 +567,7 @@ function ActionsMenu({ actions }: { actions: MenuAction[] }) {
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  }, [open, setOpen]);
   const close = (refocus: boolean) => { setOpen(false); if (refocus) btnRef.current?.focus({ preventScroll: true }); };
   return (
     <span className="ktd-menuwrap">
@@ -479,7 +582,7 @@ function ActionsMenu({ actions }: { actions: MenuAction[] }) {
         }}>
         {actions.map((a) => [
           a.sepBefore ? <div key={`${a.id}-sep`} className="ktd-msep" role="separator" /> : null,
-          <button key={a.id} type="button" role="menuitem" tabIndex={-1} className="ktd-mi" data-tone={a.tone} title={a.title}
+          <button key={a.id} type="button" role="menuitem" tabIndex={-1} className="ktd-mi" data-tone={a.tone} title={a.title} aria-label={a.name}
             onClick={() => { close(true); a.run(); }}>
             <Icon name={a.icon} size={16} sw={1.75} /><span className="ktd-mi-name">{a.label}</span>
           </button>,
@@ -512,7 +615,7 @@ function AssigneeMenu({ anchorRef, onClose, people, currentUserId, assigneeId, c
   const nameOf = (p: Person) => (p.id === currentUserId ? `${p.name} (you)` : p.name);
   return (
     <Popover open anchorRef={anchorRef} onClose={onClose} role="dialog" label="Assignee" minWidth={264} maxHeight={380}
-      initialFocus={searchRef} className="ktd-pop" style={{ padding: 4, width: 280 }}>
+      initialFocus={searchRef} className="ktd-pop" style={{ ...POP_STYLE, width: 280 }}>
       <div onKeyDown={(e) => moveFocus(e, 'input, [role="option"], [data-collab]')}>
         {people.length > 1 && (
           <input ref={searchRef} className="ktd-pop-search" value={q} onChange={(e) => setQ(e.target.value)}
@@ -564,13 +667,14 @@ function formatCustomValue(f: CustomFieldDef, v: CustomValue | undefined, people
   return String(v);
 }
 
-function CustomFieldRow({ task, field: f, people, onSet, onDelete, readOnly }: {
+function CustomFieldRow({ task, field: f, people, onSet, onDelete, readOnly, nativePick }: {
   task: Task;
   field: CustomFieldDef;
   people: Person[];
   onSet: (fid: string, v: CustomValue) => void;
   onDelete?: (f: CustomFieldDef) => void;
   readOnly: boolean;
+  nativePick?: boolean;
 }) {
   const uid = useId();
   const id = `${uid}-cf`;
@@ -592,11 +696,13 @@ function CustomFieldRow({ task, field: f, people, onSet, onDelete, readOnly }: {
       </span>
     );
   } else if (f.type === "dropdown" || f.type === "people") {
-    const opts = f.type === "dropdown" ? f.options.map((o) => ({ value: o, label: o })) : people.map((p) => ({ value: p.id, label: p.name }));
+    const opts: PropOption[] = f.type === "dropdown"
+      ? f.options.map((o, i) => ({ value: o, label: o, sepBefore: i === 0 }))
+      : people.map((p, i) => ({ value: p.id, label: p.name, icon: <Avatar id={p.id} size={20} />, sepBefore: i === 0 }));
     value = (
-      <PropSelect id={id} value={(v as string) ?? ""} wide empty={!v}
+      <PropSelect id={id} menuLabel={f.name} native={nativePick} value={(v as string) ?? ""} wide empty={!v}
         text={text ?? "Empty"} leading={f.type === "people" && v ? <Avatar id={String(v)} size={20} /> : undefined}
-        options={[{ value: "", label: "—" }, ...opts]} onChange={(s) => onSet(f.id, s || null)} />
+        options={[{ value: "", label: "None" }, ...opts]} onChange={(s) => onSet(f.id, s || null)} />
     );
   } else if (f.type === "multiselect") {
     const arr = Array.isArray(v) ? (v as string[]) : [];
@@ -711,6 +817,19 @@ export interface TaskDetailProps {
   onOpenProject?: (projectId: string) => void;
 }
 
+/** A task opened from inside the panel (a sub-task, a blocker, the parent)
+ *  replaces the row you were on, so focus stays in the panel, and closing it
+ *  later still goes back to where you first came in from. App keys the
+ *  panel's error boundary by task, which mounts a whole new panel for it, so
+ *  this lives out here where it outlasts the panel that set it. It clears
+ *  itself a frame later in case the host never opens that task. */
+let drill: { id: string; back: HTMLElement | null } | null = null;
+function markDrillIn(id: string, back: HTMLElement | null) {
+  const d = { id, back };
+  drill = d;
+  requestAnimationFrame(() => { if (drill === d) drill = null; });
+}
+
 export function TaskDetail(props: TaskDetailProps) {
   const { taskId, tasks, onClose, docked = false } = props;
   const task = tasks.find((t) => t.id === taskId);
@@ -721,16 +840,15 @@ export function TaskDetail(props: TaskDetailProps) {
   // runs after this component has re-rendered with the new list)
   const liveTasksRef = useRef(tasks);
   liveTasksRef.current = tasks;
-  // a task opened from inside the panel (a sub-task, a blocker) replaces the
-  // row you were on: focus parks on the panel rather than the page behind
-  const parkFocus = useRef(false);
-  // docked there's no trap to hand focus back on close: remember where it came from
-  const returnTo = useRef<HTMLElement | null>(null);
+  // docked there's no trap to hand focus back on close: remember where it came
+  // from. Not when this panel is only making way for a task opened from inside
+  // it: the next panel keeps focus.
+  const returnTo = useRef<HTMLElement | null>(drill?.id === taskId ? drill.back : null);
   const dockedRef = useRef(isDocked);
   dockedRef.current = isDocked;
   useEffect(() => () => {
     const back = returnTo.current, a = document.activeElement;
-    if (dockedRef.current && back?.isConnected && (!a || a === document.body)) back.focus({ preventScroll: true });
+    if (dockedRef.current && !drill && back?.isConnected && (!a || a === document.body)) back.focus({ preventScroll: true });
   }, []);
 
   // if the open task disappears (deleted here or by a realtime sync), close the
@@ -758,22 +876,26 @@ export function TaskDetail(props: TaskDetailProps) {
         {/* keyed by task: switching task (sub-task, dependency) starts from a
             clean slate — no reply target, draft or in-flight upload leaks
             across — and the old task's unsaved title/description are saved */}
-        <TaskPanel key={task.id} {...props} task={task} panelRef={trapRef} liveTasksRef={liveTasksRef} docked={isDocked} isMobile={isMobile} parkFocus={parkFocus} />
+        <TaskPanel key={task.id} {...props} task={task} panelRef={trapRef} liveTasksRef={liveTasksRef} returnTo={returnTo} docked={isDocked} isMobile={isMobile} />
       </div>
     </>
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
-  parkFocus: MutableRefObject<boolean>;
+  /** where focus came into the panel from (docked close hands it back) */
+  returnTo: MutableRefObject<HTMLElement | null>;
   isMobile: boolean;
   docked: boolean;
 }) {
   const toast = useOptionalToast();
   const uid = useId();
+  // phones and touch screens keep the platform's own pickers for property values
+  const coarse = useMediaQuery("(pointer: coarse)");
+  const nativePick = isMobile || coarse;
   const [newSub, setNewSub] = useState("");
   const [aiSubBusy, setAiSubBusy] = useState(false);
   const [aiSubNote, setAiSubNote] = useState<string | null>(null);
@@ -792,6 +914,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
   const [reactsOpen, setReactsOpen] = useState(false);
   const [reactMoreOpen, setReactMoreOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [addingSection, setAddingSection] = useState(false);
@@ -806,8 +929,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
   const depAddRef = useRef<HTMLButtonElement>(null);
   const depListRef = useRef<HTMLDivElement>(null);
   const descEditBtnRef = useRef<HTMLButtonElement>(null);
-  const statusRef = useRef<HTMLSelectElement>(null);
-  const projectRef = useRef<HTMLSelectElement>(null);
+  const statusMenu = useRef<PropSelectHandle>(null);
+  const projectMenu = useRef<PropSelectHandle>(null);
   const assigneeBtnRef = useRef<HTMLButtonElement>(null);
   const tagsBtnRef = useRef<HTMLButtonElement>(null);
   const reactsRef = useRef<HTMLDivElement>(null);
@@ -881,12 +1004,13 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
   // panel rather than letting it fall to the page behind. Docked, the list
   // beside it keeps focus when you open a task from there.
   useEffect(() => {
+    const drilled = drill?.id === task.id;
+    if (drilled) drill = null;
     const a = document.activeElement;
-    if ((!docked || parkFocus.current) && (!a || a === document.body)) panelRef.current?.focus({ preventScroll: true });
-    parkFocus.current = false;
+    if ((!docked || drilled) && (!a || a === document.body)) panelRef.current?.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelRef]);
-  const openTask = (id: string) => { parkFocus.current = true; onOpenTask?.(id); };
+  const openTask = (id: string) => { markDrillIn(id, returnTo.current); onOpenTask?.(id); };
 
   // live presence — who else is viewing this task right now. Depends on the
   // viewer's name string, not the members array (whose identity changes on
@@ -1081,6 +1205,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
   const slip = eventsLoaded ? slipNote(task, moves) : null;
   const blockedSince = events.find((e) => e.field === "status" && e.newValue === "blocked")?.createdAt;   // newest first
   const consequence = consequenceOf(task, tasks, KANBO_TODAY, { nameOf, blockedSince });
+  const blocked = task.status === "blocked" || consequence?.kind === "blocked";
   const timeline = buildTimeline(thread, eventsLoaded ? events : [], activity, task.id);
 
   // deleting a tag removes it from every task that has it — TagPicker asks
@@ -1283,13 +1408,6 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
     saveTemplate({ name: task.title, title: task.title, priority: task.priority, tags: task.tags, focusMin: task.focusMin, recurrence: task.recurrence ?? "none", description: desc });
     toast?.success("Saved as a template");
   };
-  // opens the platform picker where the browser allows (a user gesture is live), else focuses the control
-  const openPicker = (el: HTMLSelectElement | null) => {
-    if (!el) return;
-    el.scrollIntoView?.({ block: "nearest" });
-    el.focus({ preventScroll: true });
-    try { (el as HTMLSelectElement & { showPicker?: () => void }).showPicker?.(); } catch { /* focus is enough */ }
-  };
   const onPickFiles = async (list: FileList | File[] | null) => {
     if (readOnly || !list || list.length === 0) return;
     const forTask = task.id;
@@ -1387,29 +1505,33 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
 
   /* ---------- header actions ---------- */
   const actions: MenuAction[] = [
-    ...(onDuplicate && !readOnly ? [{ id: "duplicate", label: "Duplicate", icon: "copy" as IconName, title: "Duplicate task", run: () => { onDuplicate(task.id); onClose(); } }] : []),
-    ...(!readOnly && projects.length > 1 ? [{ id: "move", label: "Move to project…", icon: "arrowRight" as IconName, run: () => openPicker(projectRef.current) }] : []),
+    ...(onDuplicate && !readOnly ? [{ id: "duplicate", label: "Duplicate", name: "Duplicate task", icon: "copy" as IconName, title: "Duplicate task", run: () => { onDuplicate(task.id); onClose(); } }] : []),
+    ...(!readOnly && projects.length > 1 ? [{ id: "move", label: "Move to project…", icon: "arrowRight" as IconName, run: () => projectMenu.current?.open() }] : []),
     { id: "template", label: "Save as template", icon: "briefcase", run: saveAsTemplate },
     ...(!readOnly ? [{ id: "attach", label: "Attach file", icon: "folder" as IconName, run: () => fileRef.current?.click() }] : []),
     ...(onToggleTaskReaction && !readOnly ? [{ id: "react", label: "Add reaction", icon: "message" as IconName, run: () => { setReactsOpen(true); requestAnimationFrame(() => reactsRef.current?.querySelector<HTMLElement>("button")?.focus()); } }] : []),
-    ...(!readOnly && task.archivedAt && onUnarchive ? [{ id: "unarchive", label: "Unarchive", icon: "refresh" as IconName, title: "Unarchive task", sepBefore: true, run: () => { onUnarchive(task.id); onClose(); } }] : []),
-    ...(!readOnly && !task.archivedAt && onArchive ? [{ id: "archive", label: "Archive", icon: "archive" as IconName, title: "Archive task", sepBefore: true, run: () => { onArchive(task.id); onClose(); } }] : []),
-    ...(!readOnly ? [{ id: "delete", label: "Delete", icon: "trash" as IconName, title: "Delete task", tone: "danger" as const, sepBefore: !(task.archivedAt ? onUnarchive : onArchive), run: del }] : []),
+    ...(!readOnly && task.archivedAt && onUnarchive ? [{ id: "unarchive", label: "Unarchive", name: `Unarchive “${task.title}”`, icon: "refresh" as IconName, title: "Unarchive task", sepBefore: true, run: () => { onUnarchive(task.id); onClose(); } }] : []),
+    ...(!readOnly && !task.archivedAt && onArchive ? [{ id: "archive", label: "Archive", name: `Archive “${task.title}”`, icon: "archive" as IconName, title: "Archive task", sepBefore: true, run: () => { onArchive(task.id); onClose(); } }] : []),
+    ...(!readOnly ? [{ id: "delete", label: "Delete", name: `Delete “${task.title}”`, icon: "trash" as IconName, title: "Delete task", tone: "danger" as const, sepBefore: !(task.archivedAt ? onUnarchive : onArchive), run: del }] : []),
   ];
 
   /* ---------- pieces ---------- */
-  const statusOptions = STATUS_ORDER.map((s) => ({ value: s, label: STATUS_META[s].label }));
-  const priorityOptions = (Object.keys(PRIORITY_META) as Priority[]).map((p) => ({ value: p, label: PRIORITY_META[p].label }));
-  const projectOptions = [
-    ...projects.map((p) => ({ value: p.id, label: p.name })),
-    ...(!projects.some((p) => p.id === task.projectId) ? [{ value: task.projectId, label: proj?.name || "Project" }] : []),
+  const statusOptions: PropOption[] = STATUS_ORDER.map((s) => ({ value: s, label: STATUS_META[s].label, icon: <StatusGlyph status={s} size={16} readOnly /> }));
+  const priorityOptions: PropOption[] = (Object.keys(PRIORITY_META) as Priority[]).map((p) => ({ value: p, label: PRIORITY_META[p].label, icon: <PriorityGlyph priority={p} /> }));
+  const projectOptions: PropOption[] = [
+    ...projects.map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot color={p.color} size={10} /> })),
+    ...(!projects.some((p) => p.id === task.projectId) ? [{ value: task.projectId, label: proj?.name || "Project", icon: proj ? <ProjectDot color={proj.color} size={10} /> : undefined }] : []),
   ];
-  const sectionOptions = [
+  const sectionOptions: PropOption[] = [
     { value: "", label: "No section" },
-    ...sections.map((s) => ({ value: s.id, label: s.name })),
+    ...sections.map((s, i) => ({ value: s.id, label: s.name, sepBefore: i === 0 })),
     ...(task.sectionId && !section ? [{ value: task.sectionId, label: "(section)" }] : []),
-    ...(onCreateSection ? [{ value: NEW_SECTION, label: "New section…" }] : []),
+    ...(onCreateSection ? [{ value: NEW_SECTION, label: "New section…", icon: <Icon name="plus" size={16} sw={1.75} />, sepBefore: true }] : []),
   ];
+  // energy is always set (the store derives one from the tags when there's
+  // none), so there's no "none" to offer: it would come back on reload
+  const energyOptions: PropOption[] = (Object.keys(ENERGY) as EnergyKind[]).map((k) => ({ value: k, label: ENERGY[k].label, icon: <Icon name={ENERGY[k].icon} size={16} sw={1.75} /> }));
+  const repeatOptions: PropOption[] = (Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => ({ value: r, label: RECUR_LABEL[r], sepBefore: r === "daily" }));
   const energy = task.energy;
   const est = task.effortHours;
   const logged = task.loggedHours;
@@ -1443,10 +1565,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
       <dt>{readOnly ? "Repeats" : <label htmlFor={ids.repeat}>Repeats</label>}</dt>
       <dd>
         {readOnly ? readValue(RECUR_LABEL[task.recurrence || "none"], !hasRepeat) : (
-          <PropSelect id={ids.repeat} value={task.recurrence || "none"} empty={!hasRepeat} text={RECUR_LABEL[task.recurrence || "none"]}
+          <PropSelect id={ids.repeat} menuLabel="Repeats" native={nativePick} value={task.recurrence || "none"} empty={!hasRepeat} text={RECUR_LABEL[task.recurrence || "none"]}
             leading={hasRepeat ? <Icon name="refresh" size={14} sw={1.75} className="ktd-quiet" /> : undefined}
-            options={(Object.keys(RECUR_LABEL) as Recurrence[]).map((r) => ({ value: r, label: RECUR_LABEL[r] }))}
-            onChange={(v) => onPatch(task.id, { recurrence: v as Recurrence })} />
+            options={repeatOptions} onChange={(v) => onPatch(task.id, { recurrence: v as Recurrence })} />
         )}
         {!readOnly && hasRepeat && task.dueDate && (
           <Button variant="ghost" size="sm" iconRight="arrowRight" title="Move this task to its next occurrence without completing it" style={{ color: "var(--ink-3)" }}
@@ -1497,7 +1618,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
     </div>
   );
   const fieldRow = (f: CustomFieldDef) => (
-    <CustomFieldRow key={f.id} task={task} field={f} people={assignable} onSet={setCustom} readOnly={readOnly}
+    <CustomFieldRow key={f.id} task={task} field={f} people={assignable} onSet={setCustom} readOnly={readOnly} nativePick={nativePick}
       onDelete={onDeleteCustomField && !readOnly ? removeCustomField : undefined} />
   );
 
@@ -1576,7 +1697,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
   return (
     <div className="ktd-inner" onKeyDownCapture={onEscCapture} onKeyDown={onEscKey}>
       {/* ================= header ================= */}
-      <div className="ktd-head">
+      <div className="ktd-head" data-menu-open={actionsOpen || undefined}>
         <nav className="ktd-crumb" aria-label="Where this task lives">
           {proj && <ProjectDot color={proj.color} size={8} />}
           {proj && (onOpenProject
@@ -1593,7 +1714,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
         )}
         {onToggleFollow && <IconButton icon="bell" size="sm" label="Follow task" pressed={following} onClick={() => onToggleFollow(task.id)} />}
         <IconButton icon={copied ? "check" : "link"} size="sm" label="Copy link to task" onClick={copyLink} />
-        <ActionsMenu actions={actions} />
+        <ActionsMenu actions={actions} open={actionsOpen} setOpen={setActionsOpen} />
         <span className="ktd-vsep" aria-hidden="true" />
         <IconButton icon="x" size="sm" label="Close task" className="ktd-tip-end" onClick={onClose} />
       </div>
@@ -1616,7 +1737,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
           <span className="ktd-glyph">
             {readOnly
               ? <StatusGlyph status={task.status} size={20} label={task.title} readOnly />
-              : <StatusGlyph status={task.status} size={20} label={task.title} celebrateKey={task.id} onToggle={() => onToggle(task.id)} onPick={() => openPicker(statusRef.current)} />}
+              : <StatusGlyph status={task.status} size={20} label={task.title} celebrateKey={task.id} onToggle={() => onToggle(task.id)} onPick={() => statusMenu.current?.open()} />}
           </span>
           {readOnly ? (
             <h2 className="ktd-title" data-done={done || undefined}>{task.title}</h2>
@@ -1674,7 +1795,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
             <dt>{readOnly ? "Status" : <label htmlFor={ids.status}>Status</label>}</dt>
             <dd>
               {readOnly ? readValue(STATUS_META[task.status]?.label ?? task.status, false, <StatusGlyph status={task.status} size={14} readOnly />) : (
-                <PropSelect id={ids.status} selectRef={statusRef} value={task.status} wide text={STATUS_META[task.status]?.label ?? task.status}
+                <PropSelect ref={statusMenu} id={ids.status} menuLabel="Status" native={nativePick} value={task.status} wide text={STATUS_META[task.status]?.label ?? task.status}
                   leading={<StatusGlyph status={task.status} size={14} readOnly />} options={statusOptions}
                   onChange={(v) => {
                     const s = v as Status;
@@ -1735,7 +1856,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
             <dt>{readOnly ? "Priority" : <label htmlFor={ids.priority}>Priority</label>}</dt>
             <dd>
               {readOnly ? readValue(PRIORITY_META[task.priority]?.label ?? task.priority, false, <PriorityGlyph priority={task.priority} />) : (
-                <PropSelect id={ids.priority} value={task.priority} wide text={PRIORITY_META[task.priority]?.label ?? task.priority}
+                <PropSelect id={ids.priority} menuLabel="Priority" native={nativePick} value={task.priority} wide text={PRIORITY_META[task.priority]?.label ?? task.priority}
                   leading={<PriorityGlyph priority={task.priority} />} options={priorityOptions}
                   onChange={(v) => onPatch(task.id, { priority: v as Priority })} />
               )}
@@ -1747,13 +1868,13 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
             <dd style={{ flexWrap: "nowrap" }}>
               {readOnly ? readValue(<>{proj?.name || "Project"}{section && <span className="ktd-val-sub"> / {section.name}</span>}</>, false, proj ? <ProjectDot color={proj.color} size={8} /> : undefined) : (
                 <>
-                  <PropSelect id={ids.project} selectRef={projectRef} value={task.projectId} text={proj?.name || "Project"}
+                  <PropSelect ref={projectMenu} id={ids.project} menuLabel="Project" native={nativePick} value={task.projectId} text={proj?.name || "Project"}
                     leading={proj ? <ProjectDot color={proj.color} size={8} /> : undefined} options={projectOptions}
                     onChange={(v) => onPatch(task.id, { projectId: v })} />
                   {hasSections && !addingSection && (
                     <>
                       <span className="ktd-crumb-sep" aria-hidden="true">/</span>
-                      <PropSelect id={ids.section} label="Section" value={task.sectionId ?? ""} empty={!section} text={section?.name ?? "No section"} title="Section"
+                      <PropSelect id={ids.section} label="Section" native={nativePick} value={task.sectionId ?? ""} empty={!section} text={section?.name ?? "No section"} title="Section"
                         options={sectionOptions}
                         onChange={(v) => {
                           if (v === NEW_SECTION) { setAddingSection(true); return; }
@@ -1788,10 +1909,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
               )}
               {(energy || (est != null && !readOnly)) && (readOnly
                 ? <span className="ktd-note">{energy ? ENERGY[energy].label : ""}</span>
-                : <PropSelect id={ids.energy} label="Energy" small value={energy ?? ""} empty={!energy} title="Energy this needs"
+                : <PropSelect id={ids.energy} label="Energy" native={nativePick} small value={energy ?? ""} empty={!energy} title="Energy this needs"
                     text={energy ? ENERGY[energy].label : "Energy"} leading={energy ? <Icon name={ENERGY[energy].icon} size={12} sw={2} /> : undefined}
-                    options={[{ value: "", label: "No energy level" }, ...(Object.keys(ENERGY) as EnergyKind[]).map((k) => ({ value: k, label: ENERGY[k].label }))]}
-                    onChange={(v) => onPatch(task.id, { energy: (v || undefined) as EnergyKind | undefined })} />)}
+                    options={energyOptions} onChange={(v) => onPatch(task.id, { energy: v as EnergyKind })} />)}
             </dd>
           </div>
 
@@ -1808,7 +1928,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
                     <Icon name="plus" size={14} sw={1.75} className="ktd-chev" />
                   </button>
                   {tagsOpen && (
-                    <Popover open anchorRef={tagsBtnRef} onClose={() => setTagsOpen(false)} role="dialog" label="Tags" minWidth={280} className="ktd-pop" style={{ padding: 12, width: 320 }}>
+                    <Popover open anchorRef={tagsBtnRef} onClose={() => setTagsOpen(false)} role="dialog" label="Tags" minWidth={280} className="ktd-pop" style={{ ...POP_STYLE, padding: 12, width: 320 }}>
                       <TagPicker tags={tags} selected={task.tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={onDeleteTag} usage={tagUsage} ownerKey={task.id} small />
                     </Popover>
                   )}
@@ -1838,9 +1958,10 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
           <div className="ktd-suggest" data-kind={consequence.kind}>
             <AiMark size={14} title="Kanbo suggests" />
             <p>{consequence.text}</p>
+            {/* blocked, the only way forward is the blocker; focus is for work you can do */}
             {consequence.blockerId && onOpenTask
               ? <Button variant="ghost" size="sm" iconRight="arrowRight" onClick={() => openTask(consequence.blockerId!)}>Open blocker</Button>
-              : !readOnly && !done && <Button variant="ghost" size="sm" iconRight="arrowRight" onClick={() => (onStartFocus ?? onFocus)(task.id)}>Start {task.focusMin}m focus</Button>}
+              : !readOnly && !done && !blocked && <Button variant="ghost" size="sm" iconRight="arrowRight" onClick={() => (onStartFocus ?? onFocus)(task.id)}>Start {task.focusMin}m focus</Button>}
           </div>
         )}
 
