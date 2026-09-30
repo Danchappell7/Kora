@@ -3,7 +3,11 @@ import {
   BUILTIN_TASK_TEMPLATES, BUILTIN_PROJECT_TEMPLATES, MAX_USER_TEMPLATES,
   getTemplates, getUserTemplates, saveTemplate, deleteTemplate,
   getProjectTemplates, saveProjectTemplate, projectTemplateTasks,
+  projectBlueprint, findProjectTemplate, getUserProjectTemplates, MAX_BLUEPRINT_TASKS,
+  storeProjectTemplate, MAX_BLUEPRINT_NOTES, MAX_BLUEPRINT_CHARS,
 } from "./templates";
+import { vi } from "vitest";
+import type { Task } from "../data/types";
 
 const KEY = "kanbo-templates";
 const PKEY = "kanbo-project-templates";
@@ -127,5 +131,68 @@ describe("project template blueprints", () => {
   it("returns no tasks for a user-saved project template", () => {
     const tpl = saveProjectTemplate({ name: "Mine", emoji: "📁", color: "#fff" });
     expect(projectTemplateTasks(tpl, { projectId: "p", workspaceId: null, assigneeId: "u" })).toEqual([]);
+  });
+});
+
+describe("saving a project as a template", () => {
+  const t = (id: string, o: Partial<Task> = {}): Task => ({
+    id, title: `Task ${id}`, description: "", status: "todo", priority: "medium", projectId: "p", assigneeId: "u",
+    tags: [], dependencies: [], subtasks: [], focusMin: 30, comments: 0, aiScore: 0, ...o,
+  });
+
+  it("keeps the project's top-level work, in order, without people, dates or progress", () => {
+    const bp = projectBlueprint([
+      t("b", { position: 2, title: "Second", priority: "high", focusMin: 90, description: "Notes", dueDate: "2026-10-01", status: "done" }),
+      t("a", { position: 1, title: "First", recurrence: "weekly" }),
+      t("s", { parentId: "a", title: "A sub-task" }),
+      t("x", { archivedAt: "2026-01-01", title: "Archived" }),
+    ]);
+    expect(bp).toEqual([
+      { title: "First", recurrence: "weekly" },
+      { title: "Second", priority: "high", focusMin: 90, description: "Notes" },
+    ]);
+  });
+
+  it("stores the tasks with the template, so a new project can start from them", () => {
+    const tpl = saveProjectTemplate({ name: "Client onboarding", emoji: "🤝", color: "#000", tasks: [{ title: "Kick-off call", priority: "high" }] });
+    expect(findProjectTemplate(tpl.id)?.tasks).toEqual([{ title: "Kick-off call", priority: "high" }]);
+    expect(findProjectTemplate("builtin-launch")?.name).toBe("Product launch");
+    const tasks = projectTemplateTasks(findProjectTemplate(tpl.id)!, { projectId: "p-2", workspaceId: null, assigneeId: "u-1" });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ title: "Kick-off call", priority: "high", projectId: "p-2", status: "todo" });
+  });
+
+  it("keeps a template small: notes are trimmed, and dropped once the template's text budget is spent", () => {
+    const long = "n".repeat(MAX_BLUEPRINT_NOTES + 500);
+    const bp = projectBlueprint(Array.from({ length: 40 }, (_, i) => t(`k${i}`, { position: i, title: `Step ${i}`, description: long })));
+    expect(bp).toHaveLength(40);                                        // every title is kept
+    expect(bp[0].description).toHaveLength(MAX_BLUEPRINT_NOTES);
+    expect(bp.some((x) => !x.description)).toBe(true);                  // later notes didn't fit
+    expect(JSON.stringify(bp).length).toBeLessThan(MAX_BLUEPRINT_CHARS + 40 * 60);
+  });
+
+  it("cleans a template's tasks on the way in, not only on the way out", () => {
+    storeProjectTemplate({ name: "Raw", emoji: "📁", color: "#000", tasks: [{ title: "  Tidy me  ", priority: "extreme" as never }, { title: " " }] });
+    const stored = JSON.parse(localStorage.getItem(PKEY)!)[0];
+    expect(stored.tasks).toEqual([{ title: "Tidy me" }]);
+  });
+
+  it("says when this browser won't store the template (private mode, or storage full)", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("full", "QuotaExceededError"); });
+    try {
+      expect(storeProjectTemplate({ name: "Big", emoji: "📁", color: "#000" })).toBeNull();
+      expect(saveProjectTemplate({ name: "Big", emoji: "📁", color: "#000" }).name).toBe("Big"); // the old call still answers
+    } finally { setItem.mockRestore(); }
+    expect(getUserProjectTemplates()).toEqual([]);
+  });
+
+  it("sanitises stored template tasks", () => {
+    localStorage.setItem(PKEY, JSON.stringify([{ id: "ptpl-9", name: "Odd", emoji: "📁", color: "#fff", tasks: [
+      { title: "  Fine  ", priority: "extreme", focusMin: "lots", recurrence: "hourly", dueInDays: -3 }, { title: "" }, null, "nope",
+      ...Array.from({ length: MAX_BLUEPRINT_TASKS + 5 }, (_, i) => ({ title: `T${i}` })),
+    ] }]));
+    const [tpl] = getUserProjectTemplates();
+    expect(tpl.tasks![0]).toEqual({ title: "Fine", dueInDays: 0 });
+    expect(tpl.tasks).toHaveLength(MAX_BLUEPRINT_TASKS);
   });
 });

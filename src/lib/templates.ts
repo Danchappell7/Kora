@@ -49,8 +49,9 @@ function readList(key: string): unknown[] | null {
     return null; // storage blocked or corrupt JSON
   }
 }
-function writeList(key: string, list: unknown[]): void {
-  try { localStorage.setItem(key, JSON.stringify(list)); } catch { /* private mode / quota — ignore */ }
+/** false when the browser refused the write (private mode, or storage full) */
+function writeList(key: string, list: unknown[]): boolean {
+  try { localStorage.setItem(key, JSON.stringify(list)); return true; } catch { return false; }
 }
 /** the user's own templates: valid rows only, no built-ins, one per id.
  *  Self-heals storage that an older build polluted. */
@@ -137,7 +138,7 @@ export interface ProjectTemplate {
   id: string; name: string; emoji: string; color: string;
   /** built-ins only: sections to create, in order */
   sections?: string[];
-  /** built-ins only: starter tasks to create */
+  /** starter tasks to create: a built-in's, or a project's top-level tasks when saved from it */
   tasks?: ProjectBlueprintTask[];
 }
 const PKEY = "kanbo-project-templates";
@@ -238,16 +239,77 @@ export function projectTemplateTasks(tpl: ProjectTemplate, ctx: {
   });
 }
 
+/** how many starter tasks a saved project template keeps */
+export const MAX_BLUEPRINT_TASKS = 100;
+/** a saved task's notes are kept up to this length… */
+export const MAX_BLUEPRINT_NOTES = 1000;
+/** …and a template's text all told up to this, so templates (kept in this
+ *  browser's storage, beside the offline queue) stay small */
+export const MAX_BLUEPRINT_CHARS = 20000;
+
+function sanitizeBlueprintTask(x: unknown): ProjectBlueprintTask | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
+  if (typeof r.title !== "string" || !r.title.trim()) return null;
+  const bt: ProjectBlueprintTask = { title: r.title.trim().slice(0, 500) };
+  if (PRIORITIES.includes(r.priority as Priority)) bt.priority = r.priority as Priority;
+  if (typeof r.focusMin === "number" && Number.isFinite(r.focusMin)) bt.focusMin = Math.max(5, Math.round(r.focusMin));
+  if (typeof r.dueInDays === "number" && Number.isFinite(r.dueInDays)) bt.dueInDays = Math.max(0, Math.round(r.dueInDays));
+  if (RECURRENCES.includes(r.recurrence as Recurrence) && r.recurrence !== "none") bt.recurrence = r.recurrence as Recurrence;
+  if (typeof r.description === "string" && r.description) bt.description = r.description.slice(0, 5000);
+  if (typeof r.section === "string" && r.section) bt.section = r.section;
+  return bt;
+}
+
 function sanitizeProjectTemplate(x: unknown): ProjectTemplate | null {
   if (!x || typeof x !== "object") return null;
   const r = x as Record<string, unknown>;
   if (typeof r.id !== "string" || !r.id || typeof r.name !== "string" || !r.name.trim()) return null;
-  return {
+  const tpl: ProjectTemplate = {
     id: r.id,
     name: r.name,
     emoji: typeof r.emoji === "string" && r.emoji ? r.emoji : "📁",
     color: typeof r.color === "string" && r.color ? r.color : "oklch(0.74 0.14 230)",
   };
+  // a template saved from a project carries its tasks (never its people or dates)
+  const tasks = Array.isArray(r.tasks)
+    ? r.tasks.map(sanitizeBlueprintTask).filter((t): t is ProjectBlueprintTask => !!t).slice(0, MAX_BLUEPRINT_TASKS)
+    : [];
+  if (tasks.length) tpl.tasks = tasks;
+  return tpl;
+}
+
+/**
+ * A project's work as a reusable blueprint: its top-level tasks in order
+ * (titles, priorities, estimates, repeats and notes). People, dates, sections
+ * and progress stay with the project, so a new project starts clean.
+ */
+export function projectBlueprint(tasks: Task[]): ProjectBlueprintTask[] {
+  let budget = MAX_BLUEPRINT_CHARS;
+  const out: ProjectBlueprintTask[] = [];
+  const top = tasks
+    .filter((t) => !t.parentId && !t.archivedAt && t.title.trim())
+    .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER));
+  for (const t of top) {
+    if (out.length >= MAX_BLUEPRINT_TASKS) break;
+    const title = t.title.trim().slice(0, 200);
+    if (title.length > budget) break;
+    budget -= title.length;
+    const bt: ProjectBlueprintTask = { title };
+    if (t.priority && t.priority !== "medium") bt.priority = t.priority;
+    if (t.focusMin && t.focusMin !== 30) bt.focusMin = t.focusMin;
+    if (t.recurrence && t.recurrence !== "none") bt.recurrence = t.recurrence;
+    // notes only while there's room: the titles are the template
+    const notes = t.description?.trim().slice(0, MAX_BLUEPRINT_NOTES);
+    if (notes && notes.length <= budget) { bt.description = notes; budget -= notes.length; }
+    out.push(bt);
+  }
+  return out;
+}
+
+/** A project template by id: a built-in, or one the user saved. */
+export function findProjectTemplate(id: string): ProjectTemplate | undefined {
+  return getProjectTemplates().find((t) => t.id === id);
 }
 
 /** the user's saved project templates only (newest first) */
@@ -257,10 +319,18 @@ export function getUserProjectTemplates(): ProjectTemplate[] {
 export function getProjectTemplates(): ProjectTemplate[] {
   return [...BUILTIN_PROJECT_TEMPLATES, ...getUserProjectTemplates()];
 }
-/** Save a new project template; like saveTemplate, never overwrites one. */
-export function saveProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemplate {
+/** Save a new project template; like saveTemplate, never overwrites one.
+ *  Returns null when this browser wouldn't store it (private mode, or full). */
+export function storeProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemplate | null {
   const mine = getUserProjectTemplates();
   const tpl: ProjectTemplate = { ...t, name: uniqueName(t.name, mine), id: newTemplateId("ptpl-") };
-  writeList(PKEY, [tpl, ...mine].slice(0, MAX_USER_TEMPLATES));
-  return tpl;
+  // tasks are cleaned on the way in too, not only when read back
+  const tasks = (t.tasks ?? []).map(sanitizeBlueprintTask).filter((x): x is ProjectBlueprintTask => !!x).slice(0, MAX_BLUEPRINT_TASKS);
+  if (tasks.length) tpl.tasks = tasks; else delete tpl.tasks;
+  return writeList(PKEY, [tpl, ...mine].slice(0, MAX_USER_TEMPLATES)) ? tpl : null;
+}
+/** storeProjectTemplate for callers that don't need to know whether it was kept. */
+export function saveProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemplate {
+  const mine = getUserProjectTemplates();
+  return storeProjectTemplate(t) ?? { ...t, name: uniqueName(t.name, mine), id: newTemplateId("ptpl-") };
 }

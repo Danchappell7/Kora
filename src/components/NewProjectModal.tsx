@@ -1,17 +1,15 @@
 /* ============================================================
-   KANBO — create-project modal
+   KANBO — create-project dialog
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
-import { Icon, EmojiPicker } from "./primitives";
-import { useFocusTrap } from "../hooks/useFocusTrap";
-import { getProjectTemplates, saveProjectTemplate, type ProjectTemplate } from "../lib/templates";
+import { Button, EmojiPicker, Sheet, projectPaint } from "./primitives";
+import { getProjectTemplates, storeProjectTemplate, type ProjectTemplate } from "../lib/templates";
+import { PROJECT_COLOURS } from "./project/ProjectHeader";
 import type { NewProject } from "../data/store";
+import "./project/projects.css";
 
 const EMOJI = ["📁", "🚀", "🎨", "⚙️", "📈", "🧪", "💡", "📊", "🛠️", "🌱", "🔮", "📦"];
-const COLORS = [
-  "oklch(0.74 0.14 230)", "oklch(0.74 0.16 305)", "oklch(0.75 0.13 155)",
-  "oklch(0.78 0.15 70)", "oklch(0.66 0.2 20)", "oklch(0.78 0.1 45)",
-];
+const COLORS = PROJECT_COLOURS.map((c) => c.value);
 
 export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
   open: boolean;
@@ -26,74 +24,83 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId }: {
   const [color, setColor] = useState(COLORS[0]);
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
-  const [saved, setSaved] = useState(false);
+  // "Save as template" answers in place: saved, or this device's storage refused it
+  const [saved, setSaved] = useState<null | "saved" | "failed">(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
 
   useEffect(() => {
-    if (open) { setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setTemplateId(""); setSaved(false); setPickerOpen(false); setTemplates(getProjectTemplates()); setTimeout(() => inputRef.current?.focus(), 30); }
+    if (!open) return;
+    setName(""); setEmoji(EMOJI[0]); setColor(COLORS[0]); setTemplateId(""); setSaved(null); setPickerOpen(false); setTemplates(getProjectTemplates());
+    const t = window.setTimeout(() => inputRef.current?.focus(), 30);
+    return () => window.clearTimeout(t);
   }, [open]);
+  useEffect(() => {
+    if (!saved) return;
+    const t = window.setTimeout(() => setSaved(null), saved === "failed" ? 4000 : 1500);
+    return () => window.clearTimeout(t);
+  }, [saved]);
 
-  if (!open) return null;
-
+  const trimmed = name.trim();
   const submit = () => {
-    const trimmed = name.trim();
     if (!trimmed) return;
     onCreate({ name: trimmed, emoji, color, workspaceId, templateId: templateId || undefined });
     onClose();
   };
+  const builtins = templates.filter((t) => t.id.startsWith("builtin-"));
+  const mine = templates.filter((t) => !t.id.startsWith("builtin-"));
 
   return (
-    <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 110, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "14vh" }}>
-      <div ref={trapRef} role="dialog" aria-modal="true" aria-label="New project" onClick={(e) => e.stopPropagation()} className="glass anim-scalein" style={{ width: 440, maxWidth: "92vw", borderRadius: 18, overflow: "hidden", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "16px 18px", borderBottom: "1px solid var(--hairline)" }}>
-          <Icon name="folder" size={18} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 15, fontWeight: 600 }}>New project</span>
-          <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ marginLeft: "auto", border: "none", width: 30, height: 30 }}><Icon name="x" size={17} /></button>
+    <Sheet open={open} onClose={onClose} label="New project" title="New project" width={480} initialFocus={inputRef}
+      footer={(
+        <>
+          <Button variant="ghost" icon={saved === "saved" ? "check" : saved === "failed" ? "refresh" : "layers"} disabled={!trimmed} style={{ marginRight: "auto" }}
+            onClick={() => { if (trimmed) setSaved(storeProjectTemplate({ name: trimmed, emoji, color }) ? "saved" : "failed"); }}>
+            {saved === "saved" ? "Saved as a template" : saved === "failed" ? "Couldn't save: try again" : "Save as template"}
+          </Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" icon="plus" onClick={submit} disabled={!trimmed}>Create</Button>
+        </>
+      )}>
+      <div className="kpj-dialog">
+        {templates.length > 0 && (
+          <select className="kpj-field" value={templateId} aria-label="Start from template"
+            onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); setTemplateId(t ? t.id : ""); if (t) { setName(t.name); setEmoji(t.emoji); setColor(t.color); } }}>
+            <option value="">Start from template…</option>
+            <optgroup label="Kanbo templates">{builtins.map((t) => <option key={t.id} value={t.id}>{t.emoji} {t.name}</option>)}</optgroup>
+            {mine.length > 0 && <optgroup label="Your templates">{mine.map((t) => <option key={t.id} value={t.id}>{t.emoji} {t.name}</option>)}</optgroup>}
+          </select>
+        )}
+        <div className="kpj-np-name">
+          <span className="kpj-np-tile" aria-hidden="true" style={{ boxShadow: `inset 0 0 0 1px ${projectPaint(color).edge}`, background: projectPaint(color).tint }}>{emoji}</span>
+          <input ref={inputRef} className="kpj-field" data-size="lg" value={name} onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+            placeholder="Project name" aria-label="Project name" />
         </div>
-        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }}>
-          {templates.length > 0 && (
-            <select value={templateId} aria-label="Start from template" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); setTemplateId(t ? t.id : ""); if (t) { setName(t.name); setEmoji(t.emoji); setColor(t.color); } }}
-              style={{ width: "100%", height: 38, padding: "0 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }}>
-              <option value="">Start from template…</option>
-              {templates.map((t) => <option key={t.id} value={t.id}>{t.emoji} {t.name}</option>)}
-            </select>
-          )}
-          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-            <span style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 12, display: "grid", placeItems: "center", fontSize: 22, background: `color-mix(in oklch, ${color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${color} 32%, transparent)` }}>{emoji}</span>
-            <input ref={inputRef} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-              placeholder="Project name…" aria-label="Project name"
-              style={{ flex: 1, height: 44, padding: "0 14px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 500, outline: "none" }} />
+        <div>
+          <p className="kpj-dialog-label" id="kpj-np-icon">Icon</p>
+          <div className="kpj-np-emoji" role="group" aria-labelledby="kpj-np-icon">
+            {EMOJI.map((e) => (
+              <button key={e} type="button" className="kpj-np-emoji-btn" aria-pressed={emoji === e} onClick={() => setEmoji(e)}>{e}</button>
+            ))}
+            <button type="button" className="kpj-np-emoji-btn" aria-expanded={pickerOpen} aria-label="More icons" title="More icons"
+              aria-pressed={!EMOJI.includes(emoji) || undefined} onClick={() => setPickerOpen((v) => !v)}>{EMOJI.includes(emoji) ? "＋" : emoji}</button>
           </div>
-          <div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ink-4)", marginBottom: 8 }}>Icon</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {EMOJI.map((e) => (
-                <button key={e} onClick={() => setEmoji(e)} style={{ width: 34, height: 34, borderRadius: 9, cursor: "pointer", fontSize: 17, background: emoji === e ? "var(--surface-2)" : "transparent", border: emoji === e ? "1px solid var(--accent)" : "1px solid var(--hairline)" }}>{e}</button>
-              ))}
-              <button onClick={() => setPickerOpen((v) => !v)} title="More emojis" style={{ width: 34, height: 34, borderRadius: 9, cursor: "pointer", fontSize: 13, color: "var(--ink-3)", background: pickerOpen ? "var(--surface-2)" : "transparent", border: "1px solid var(--hairline)" }}>{EMOJI.includes(emoji) ? "＋" : emoji}</button>
-            </div>
-            {pickerOpen && <div style={{ marginTop: 8 }}><EmojiPicker onPick={(e) => { setEmoji(e); setPickerOpen(false); }} /></div>}
-          </div>
-          <div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ink-4)", marginBottom: 8 }}>Color</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {COLORS.map((c) => (
-                <button key={c} onClick={() => setColor(c)} style={{ width: 28, height: 28, borderRadius: 99, cursor: "pointer", background: c, border: "none", boxShadow: color === c ? "0 0 0 2px var(--bg), 0 0 0 4px var(--accent)" : "none" }} />
-              ))}
-            </div>
-          </div>
+          {pickerOpen && <div style={{ marginTop: 8 }}><EmojiPicker onPick={(e) => { setEmoji(e); setPickerOpen(false); }} /></div>}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>
-          <button className="btn btn-ghost" onClick={() => { if (name.trim()) { saveProjectTemplate({ name: name.trim(), emoji, color }); setSaved(true); setTimeout(() => setSaved(false), 1500); } }} disabled={!name.trim()} title="Save as template" style={{ opacity: name.trim() ? 1 : 0.5 }}>
-            <Icon name={saved ? "check" : "briefcase"} size={15} /> {saved ? "Saved" : "Save as template"}
-          </button>
-          <div style={{ flex: 1 }} />
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-accent" onClick={submit} disabled={!name.trim()} style={{ opacity: name.trim() ? 1 : 0.5 }}><Icon name="plus" size={15} /> Create</button>
+        <div>
+          <p className="kpj-dialog-label" id="kpj-np-colour">Colour</p>
+          <div className="kpj-swatches" role="group" aria-labelledby="kpj-np-colour">
+            {PROJECT_COLOURS.map((c) => (
+              <button key={c.value} type="button" className="kpj-swatch" aria-label={c.name} title={c.name} aria-pressed={color === c.value}
+                style={{ background: projectPaint(c.value).solid }} onClick={() => setColor(c.value)} />
+            ))}
+            {!COLORS.includes(color) && (
+              <span className="kpj-swatch" role="img" aria-label="The template's colour" data-chosen="true" style={{ background: projectPaint(color).solid }} />
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </Sheet>
   );
 }
