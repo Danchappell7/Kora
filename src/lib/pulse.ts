@@ -32,7 +32,7 @@ export interface PulseFacts {
   today?: string;
   /** "day" = since the last workday · "week" = since Monday */
   period?: "day" | "week";
-  /** how many task changes (task_events) fed the facts */
+  /** how many task changes (task_events) fed the facts; undefined when the history wasn't loaded */
   changes?: number;
 }
 
@@ -134,7 +134,7 @@ export function buildPulse(input: {
     since,
     today: todayISO,
     period,
-    changes: events.length,
+    changes: input.events ? events.length : undefined,
     people,
     totals: {
       done: done.length,

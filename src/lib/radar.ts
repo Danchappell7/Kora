@@ -115,7 +115,8 @@ const dayDiff = (a: Date, b: Date) => Math.round((b.getTime() - a.getTime()) / D
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const TIMES = ["", "once", "twice", "three times"];
 
-/** "today" · "tomorrow" · "on Friday" (this week) · "on 7 Oct" */
+const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** "today" · "tomorrow" · "on Friday" (within the week) · "Thu 8 Oct" (further out) */
 function dayWords(iso: string, today: Date): string {
   const d = localDay(iso);
   if (!d) return "soon";
@@ -123,7 +124,7 @@ function dayWords(iso: string, today: Date): string {
   if (n === 0) return "today";
   if (n === 1) return "tomorrow";
   if (n > 1 && n < 7) return "on " + d.toLocaleDateString("en-GB", { weekday: "long" });
-  return "on " + fmtDayMonth(d);
+  return `${WEEKDAY_SHORT[d.getDay()]} ${fmtDayMonth(d)}`;
 }
 const shortDate = (iso: string | null | undefined) => { const d = localDay(iso); return d ? fmtDayMonth(d) : "—"; };
 
@@ -136,9 +137,15 @@ const SEVERITY_RANK: Record<Risk["severity"], number> = { signal: 0, warn: 1, ne
  * Every risk, most severe first, then by impact (how many open tasks it holds
  * up), then by the soonest due date. `projectId` narrows it to one project;
  * `capacities` are weekly hours per person (default: Workload's, else 40h).
- * `events` are the workspace's task changes — pass the window they cover as
- * `eventsSince`, so a task quiet for longer than the window reads "over N days"
- * rather than a guess from when it was created.
+ * Members may carry `guest: true`: guests are never checked for capacity.
+ *
+ * `events` are the workspace's task changes (task_events). Pass them, with the
+ * moment they start from as `eventsSince`, and Radar also looks for slipping
+ * dates and stale work; a task with no change inside that window reads "over
+ * N days" quiet. Leave `events` out (undefined — not loaded, or the load
+ * failed) and those two kinds are skipped rather than guessed: without the
+ * history, a task whose status changed yesterday would look untouched since
+ * it was created. `[]` means "loaded, and nothing changed".
  */
 export function computeRisks(input: {
   tasks: Task[];
@@ -150,6 +157,8 @@ export function computeRisks(input: {
   eventsSince?: string;
 }): Risk[] {
   const { tasks, members } = input;
+  // is the change history known? (undefined = not loaded: skip what depends on it)
+  const history = input.events !== undefined;
   const events = input.events ?? [];
   const caps = input.capacities ?? readCapacities();
   const todayISO = input.today ?? toLocalISO(KANBO_TODAY);
@@ -197,8 +206,11 @@ export function computeRisks(input: {
   const OPEN_CHAIN: RiskFix = { kind: "open", label: "Open chain" };
   const soon = toLocalISO(addDays(today, 7));
 
-  /* blocked — marked blocked, or waiting on someone else's open task and due within a week
-     (a late blocker is left to blocker_late, which offers the better fix: a firm date) */
+  /* blocked — marked blocked, or waiting on someone else's open task and either already
+     started or due within a week. Not every link in a plan: one owner's own sequencing, or
+     work that hasn't started and isn't due for weeks, isn't at risk yet — flagging those
+     would bury the real ones. A late blocker is left to blocker_late, which offers the
+     better fix: a firm date. */
   const isLateFor = (b: Task, d: Task) => !!b.dueDate && (b.dueDate < todayISO || (!!d.dueDate && b.dueDate > d.dueDate));
   const blockedOn = new Map<string, string>(); // marked-blocked task → the blocker its risk names
   for (const t of open) {
@@ -206,12 +218,14 @@ export function computeRisks(input: {
     const blockers = blockersOf(t);
     const marked = t.status === "blocked";
     const other = blockers.find((b) => b.assigneeId !== t.assigneeId);
-    if (!marked && !(other && t.dueDate && t.dueDate <= soon && !isLateFor(other, t))) continue;
+    const pressing = t.status === "progress" || t.status === "review" || (!!t.dueDate && t.dueDate <= soon);
+    if (!marked && !(other && pressing && !isLateFor(other, t))) continue;
     const b = marked ? (other ?? blockers[0]) : other!;
     let reason: string;
     if (b) {
       if (marked) blockedOn.set(t.id, b.id);
-      const who = b.assigneeId ? `"${b.title}" (${nameOf(b.assigneeId)})` : `"${b.title}", which has no owner`;
+      const who = !b.assigneeId ? `"${b.title}", which has no owner`
+        : known(b.assigneeId) ? `"${b.title}" (${nameOf(b.assigneeId)})` : `"${b.title}", whose owner has left`;
       if (marked) {
         const since = [...(evs.get(t.id) ?? [])].reverse().find((e) => e.field === "status" && e.newValue === "blocked");
         const d = since ? dayDiff(localDay(since.createdAt) ?? today, today) : 0;
@@ -223,13 +237,16 @@ export function computeRisks(input: {
     } else {
       reason = t.assigneeId ? `Marked blocked · ${nameOf(t.assigneeId)}` : "Marked blocked, and nobody owns it";
     }
-    const target = b?.assigneeId || t.assigneeId || undefined;
+    // the fix acts on the blocker when there is one (else on the task itself): nudge its
+    // owner — or, when it has nobody (or someone who's left), give it an owner first
+    const focus = b ?? t;
+    const owner = known(focus.assigneeId) ? focus.assigneeId : undefined;
     push({
       id: `blocked:${t.id}`, kind: "blocked", severity: "signal",
       title: `${t.title} is blocked`, reason,
-      taskIds: b ? [t.id, b.id] : [t.id], memberId: known(target) ? target : undefined,
+      taskIds: b ? [t.id, b.id] : [t.id], memberId: owner,
       projectId: t.projectId, focusTaskId: b?.id,
-      fixes: [...nudge(target), OPEN_CHAIN],
+      fixes: owner ? [...nudge(owner), OPEN_CHAIN] : [{ kind: "assign", label: "Assign" }, OPEN_CHAIN],
     }, 1 + downstream(t.id), t.dueDate);
   }
 
@@ -255,20 +272,26 @@ export function computeRisks(input: {
     }, 1 + downstream(b.id), d.dueDate ?? b.dueDate);
   }
 
-  /* slipping — due later than first planned, moved twice or more (or by over a week) */
-  for (const t of open) {
-    if (!t.dueDate || !t.originalDueDate || t.dueDate <= t.originalDueDate) continue;
+  /* slipping — due later than first planned: moved later twice or more in the change history,
+     or (with no due moves in it) more than a week past the first date the task remembers.
+     Repeating tasks are left out: their dates move by design (each occurrence, "Skip →"),
+     and originalDueDate is a monthly series' anchor day, not a first plan. */
+  if (history) for (const t of open) {
+    if (!t.dueDate || (t.recurrence && t.recurrence !== "none")) continue;
     const dueEvents = (evs.get(t.id) ?? []).filter((e) => e.field === "due");
     const later = dueEvents.filter((e) => e.oldValue && e.newValue && e.newValue.slice(0, 10) > e.oldValue.slice(0, 10));
-    const moved = dayDiff(localDay(t.originalDueDate) ?? today, localDay(t.dueDate) ?? today);
     let title: string, chain: string;
     if (later.length >= 2) {
-      const dates = [t.originalDueDate, ...later.map((e) => e.newValue!.slice(0, 10))];
-      if (dates[dates.length - 1] !== t.dueDate) dates.push(t.dueDate);
+      // the first plan is where the earliest move started from (or the date it first set)
+      const first = (dueEvents[0].oldValue ?? dueEvents[0].newValue ?? "").slice(0, 10);
+      if (!first || t.dueDate <= first) continue;   // moved back to where it started
+      const dates = [first, ...dueEvents.map((e) => e.newValue?.slice(0, 10)).filter((x): x is string => !!x), t.dueDate];
       const steps = dates.filter((x, i) => i === 0 || x !== dates[i - 1]).map(shortDate);
       chain = (steps.length > 4 ? [steps[0], "…", ...steps.slice(-2)] : steps).join(" → ");
       title = `${t.title} has slipped ${TIMES[later.length] ?? `${later.length} times`}`;
-    } else if (!dueEvents.length && moved > 7) {
+    } else if (!dueEvents.length && t.originalDueDate && t.dueDate > t.originalDueDate) {
+      const moved = dayDiff(localDay(t.originalDueDate) ?? today, localDay(t.dueDate) ?? today);
+      if (moved <= 7) continue;
       chain = `${shortDate(t.originalDueDate)} → ${shortDate(t.dueDate)}`;
       title = `${t.title} has slipped by ${plural(moved, "day")}`;
     } else continue;
@@ -280,9 +303,9 @@ export function computeRisks(input: {
     }, 1 + downstream(t.id), t.dueDate);
   }
 
-  /* stale — in progress with no change for a week or more */
+  /* stale — in progress with no change for a week or more (only when the history is known) */
   const windowStart = localDay(input.eventsSince);
-  for (const t of open) {
+  if (history) for (const t of open) {
     if (t.status !== "progress") continue;
     const last = (evs.get(t.id) ?? []).reduce<Date | null>((acc, e) => { const d = localDay(e.createdAt); return d && (!acc || d > acc) ? d : acc; }, null);
     const created = localDay(t.createdAt);

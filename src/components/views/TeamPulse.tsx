@@ -13,7 +13,7 @@ import { getMember, KANBO_TODAY, toLocalISO } from "../../data/data";
 import { ROLE_META } from "../../lib/permissions";
 import type { Task, WorkspaceMember, WorkspaceEvent } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
-import { buildPulse, periodStart, plainText, pulseFactsForAi, pulseMarkdown, pulseSentenceParts, pulseTaskCount, sinceWords, type PulsePeriod, type PulsePerson } from "../../lib/pulse";
+import { buildPulse, periodStart, plainText, pulseFactsForAi, pulseMarkdown, pulseSentence, pulseSentenceParts, pulseTaskCount, sinceWords, type PulsePeriod, type PulsePerson } from "../../lib/pulse";
 import { computeRisks, loadTone, readCapacities } from "../../lib/radar";
 import { addDays, fmtDayMonth, localDay } from "./reportingUtils";
 import { RadarPanel } from "./RadarPanel";
@@ -23,6 +23,10 @@ function useOptionalToast() { try { return useToast(); } catch { return null; } 
 /** How far back the change history is read: Pulse needs a week at most; Radar
  *  looks for slips and quiet work over a month. One read covers both. */
 const HISTORY_DAYS = 30;
+/** The most changes one read returns (the store's page: its newest 500). A read
+ *  that comes back this full may have stopped short of HISTORY_DAYS, so the
+ *  history then only counts from the oldest change it holds. */
+const HISTORY_PAGE = 500;
 const SHOWN = 3;
 
 async function copyText(text: string): Promise<boolean> {
@@ -41,11 +45,16 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
+/** The write-up box fits its text (about 80 characters to a line in the 640px sheet, and
+ *  a line to spare), from 6 rows up to 18; past that it scrolls. Browsers with
+ *  field-sizing (see the CSS) fit it exactly. */
+const rowsFor = (text: string) =>
+  Math.min(18, Math.max(6, text.split("\n").reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 80)), 0) + 1));
 
 type Person = { id: string; name: string; role?: string; guest?: boolean };
 type WriteUp = { status: "loading" } | { status: "ready"; text: string; ai: boolean; note?: string };
 
-export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace }: {
+export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople }: {
   tasks: Task[];
   members: WorkspaceMember[];
   currentUserId: string;
@@ -53,13 +62,16 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
   readOnly: boolean;
   loadEvents: (sinceISO: string) => Promise<WorkspaceEvent[]>;
   onOpen: (id: string) => void;
-  onNudge: (taskId: string, userId: string, text: string) => Promise<void>;
+  /** posts the nudge as a comment; reject, or resolve false/null, when it wasn't posted */
+  onNudge: (taskId: string, userId: string, text: string) => Promise<unknown>;
   onPatch: (id: string, patch: Partial<Task>) => void;
   onOpenWorkload: () => void;
   onWriteUp?: (facts: unknown) => Promise<AiOutcome<string>>;
   /** the Personal workspace: Pulse is for teams, so it explains itself instead */
   personal?: boolean;
   onNewWorkspace?: () => void;
+  /** Team › People, where the team is invited (the action on an empty team) */
+  onOpenPeople?: () => void;
 }) {
   const toast = useOptionalToast();
   const [period, setPeriod] = useState<PulsePeriod>("day");
@@ -87,6 +99,17 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
     return () => { alive = false; };
   }, [historyStart, wsKey, attempt, personal]);
   const loading = events === null;
+  /* What the history can vouch for. After a failed read it's unknown: Pulse
+     carries on from completions, and Radar skips what needs the history
+     (slips, stale work) rather than reading "no changes" into it. A full page
+     may be only the newest changes, so it counts from the oldest one it holds. */
+  const history = useMemo((): { events: WorkspaceEvent[]; since: string } | undefined => {
+    if (!events || failed) return undefined;
+    if (events.length < HISTORY_PAGE) return { events, since: historyStart };
+    const oldest = events.reduce((min, e) => (e.createdAt < min ? e.createdAt : min), events[0].createdAt);
+    const day = localDay(oldest);
+    return { events, since: day && toLocalISO(day) > historyStart ? toLocalISO(day) : historyStart };
+  }, [events, failed, historyStart]);
 
   /* ---- who's on the team ---- */
   const people: Person[] = useMemo(() => {
@@ -94,8 +117,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
       const id = m.userId!;
       const name = getMember(id)?.name?.trim() || m.name?.trim() || m.email;
       const guest = m.role === "guest";
-      const domain = guest ? m.email.split("@")[1] : "";
-      const role = guest ? (domain ? `Guest · ${domain}` : "Guest") : (m.title?.trim() || ROLE_META[m.role]?.label || "");
+      // guests: the This week column already says "Guest", so this line says where they're from
+      const role = m.title?.trim() || (guest ? m.email.split("@")[1] ?? "" : ROLE_META[m.role]?.label || "");
       return { id, name, guest, role: id === currentUserId ? (role ? `${role} · you` : "You") : role };
     });
     if (rows.length) return rows;
@@ -109,17 +132,27 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
       const m = getMember(id);
       if (!m) continue;
       const guest = m.type === "external";
-      out.push({ id, name: m.name, guest, role: id === currentUserId ? "You" : guest ? `Guest · ${m.email.split("@")[1] ?? ""}`.replace(/ · $/, "") : undefined });
+      out.push({ id, name: m.name, guest, role: id === currentUserId ? "You" : guest ? m.email.split("@")[1] || undefined : undefined });
     }
     return out;
   }, [members, tasks, currentUserId]);
 
   const since = periodStart(period, todayISO);
-  const facts = useMemo(() => buildPulse({ tasks, members: people, events: events ?? [], today: todayISO, capacities, since, period }),
-    [tasks, people, events, todayISO, capacities, since, period]);
-  const risks = useMemo(() => computeRisks({ tasks, events: events ?? [], members: people, capacities, today: todayISO, eventsSince: historyStart }),
-    [tasks, events, people, capacities, todayISO, historyStart]);
+  const facts = useMemo(() => buildPulse({ tasks, members: people, events: history?.events, today: todayISO, capacities, since, period }),
+    [tasks, people, history, todayISO, capacities, since, period]);
+  const risks = useMemo(() => computeRisks({ tasks, events: history?.events, eventsSince: history?.since, members: people, capacities, today: todayISO }),
+    [tasks, history, people, capacities, todayISO]);
   const sinceWord = period === "week" ? "Monday" : sinceWords(since, todayISO);
+  // a switch of period is announced once, with the new lede; realtime changes to the lede aren't
+  const [announce, setAnnounce] = useState("");
+  const announced = useRef(period);
+  useEffect(() => {
+    if (announced.current === period) return;
+    announced.current = period;
+    setAnnounce(pulseSentence(facts));   // (it opens with the period: "This week the team…")
+    // (only when the period changes)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period]);
 
   /* ---- copy + write it up ---- */
   const copy = async (text: string, what: "slack" | "plain") => {
@@ -164,7 +197,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
 
   const nTasks = pulseTaskCount(facts);
   const provenance = {
-    summary: `from ${nTasks} ${nTasks === 1 ? "task" : "tasks"} and ${facts.changes ?? 0} ${facts.changes === 1 ? "change" : "changes"} since ${sinceWord}`,
+    // "and N changes" only when the history loaded and held some
+    summary: `from ${nTasks} ${nTasks === 1 ? "task" : "tasks"}${facts.changes ? ` and ${facts.changes} ${facts.changes === 1 ? "change" : "changes"}` : ""} since ${sinceWord}`,
     details: [
       `${facts.totals.done} finished, ${facts.totals.inFlight} in flight, ${facts.totals.blocked} blocked`,
       `${facts.people.length} ${facts.people.length === 1 ? "person" : "people"} in ${workspaceName}`,
@@ -191,10 +225,11 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
           {loading ? (
             <div className="kpulse-lede-skel" aria-hidden="true"><span className="skel" /><span className="skel" /></div>
           ) : (
-            <p className="kpulse-lede" aria-live="polite">
+            <p className="kpulse-lede">
               {pulseSentenceParts(facts).map((p, i) => p.strong ? <b key={i}>{p.text}</b> : <span key={i}>{p.text}</span>)}
             </p>
           )}
+          <span className="sr-only" role="status">{announce}</span>
           {failed && (
             <p className="kpulse-note" role="status">
               Couldn't load today's changes — showing what Kanbo knows from task dates.{" "}
@@ -208,6 +243,13 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
             onOpen={onOpen} onNudge={onNudge} onPatch={onPatch} onOpenWorkload={onOpenWorkload} />
         </aside>
 
+        {!loading && facts.people.length === 0 ? (
+          <div className="kpt kpt-empty">
+            <EmptyState art="users" size="md" title="Nobody here yet"
+              body="Invite your team, and Pulse fills in from what they finish, what's on today and what's blocked."
+              action={onOpenPeople && !readOnly ? <Button variant="primary" icon="plus" onClick={onOpenPeople}>Invite people</Button> : undefined} />
+          </div>
+        ) : (
         <div className="kpt" role="table" aria-label={`Pulse, ${doneLabel.toLowerCase()}`} aria-busy={loading || undefined}>
           <div role="rowgroup">
             <div className="kpt-row kpt-head" role="row">
@@ -227,18 +269,17 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
                   <span className="kpt-skel kpt-num"><span className="skel" style={{ width: 72, marginLeft: "auto" }} /></span>
                 </div>
               ))
-              : facts.people.length === 0
-                ? <div role="row"><span role="cell" className="kpt-empty">Nobody here yet. Invite your team from People, and Pulse fills in from their work.</span></div>
-                : facts.people.map((p) => <PulseRow key={p.id} p={p} tasks={tasks} people={people} doneLabel={doneLabel} onOpen={onOpen} />)}
+              : facts.people.map((p) => <PulseRow key={p.id} p={p} tasks={tasks} people={people} doneLabel={doneLabel} onOpen={onOpen} />)}
           </div>
         </div>
+        )}
       </div>
 
       <Sheet open={!!writeUp} onClose={closeWriteUp} label="Write it up" title="Write it up" width={640}
         footer={writeUp?.status === "ready" ? (
           <>
-            <Button variant="secondary" icon="copy" onClick={() => void copy(draft, "plain")}>Copy</Button>
-            <Button variant="primary" icon="send" onClick={() => void copy(draft, "slack")}>Copy for Slack</Button>
+            <Button variant="secondary" onClick={() => void copy(draft, "plain")}>Copy</Button>
+            <Button variant="primary" icon="copy" onClick={() => void copy(draft, "slack")}>Copy for Slack</Button>
           </>
         ) : undefined}>
         {writeUp?.status === "loading" ? (
@@ -249,11 +290,11 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
         ) : writeUp?.status === "ready" ? (
           writeUp.ai ? (
             <Vellum provenance={provenance}>
-              <textarea className="kpulse-text" aria-label="Standup text" rows={8} value={draft} onChange={(e) => setDraft(e.target.value)} />
+              <textarea className="kpulse-text" aria-label="Standup text" rows={rowsFor(draft)} value={draft} onChange={(e) => setDraft(e.target.value)} />
             </Vellum>
           ) : (
             <>
-              <textarea className="kpulse-text" data-plain="" aria-label="Standup text" rows={10} value={draft} onChange={(e) => setDraft(e.target.value)} />
+              <textarea className="kpulse-text" data-plain="" aria-label="Standup text" rows={rowsFor(draft)} value={draft} onChange={(e) => setDraft(e.target.value)} />
               {writeUp.note && <p className="kpulse-note">{writeUp.note}</p>}
             </>
           )
@@ -293,14 +334,25 @@ function PulseRow({ p, tasks, people, doneLabel, onOpen }: { p: PulsePerson; tas
       <span role="cell" className="kpt-load" data-label="This week">
         {p.guest ? <span className="kpt-guest">Guest</span> : (
           <>
-            <span className="kpt-hours" data-tone={tone}>{p.loadHours}h / {p.capacity}h</span>
-            <Meter value={p.loadHours} max={p.capacity * 1.25} marker={p.capacity} width={72} height={4} tone={tone}
-              label={`${p.name}: ${p.loadHours} of ${p.capacity} hours this week`} />
+            <span className="kpt-hours" data-tone={tone}>
+              <span aria-hidden="true">{p.loadHours}h / {p.capacity}h</span>
+              <span className="sr-only">{loadWords(p.loadHours, p.capacity, tone)}</span>
+            </span>
+            {/* the figures say it all to a screen reader; a progressbar's percentage (of 125% of capacity) would only confuse */}
+            <span className="kpt-meter" aria-hidden="true">
+              <Meter value={p.loadHours} max={p.capacity * 1.25} marker={p.capacity} width={72} height={4} tone={tone}
+                label={`${p.name}: ${p.loadHours} of ${p.capacity} hours this week`} />
+            </span>
           </>
         )}
       </span>
     </div>
   );
+}
+
+/** "42 of 40 hours this week, over capacity" */
+function loadWords(hours: number, capacity: number, tone: "ink" | "warn" | "signal"): string {
+  return `${hours} of ${capacity} hours this week${tone === "signal" ? ", over capacity" : tone === "warn" ? ", near capacity" : ""}`;
 }
 
 function dueNote(iso: string): { text: string; tone?: "signal" } | null {
@@ -348,7 +400,7 @@ const PULSE_CSS = `
 .kpulse-grid { display: grid; grid-template-columns: minmax(0, 1fr) var(--radar-w, 380px);
   grid-template-areas: "bar radar" "lede radar" "table radar"; grid-template-rows: auto auto 1fr; min-height: 100%;
   padding: 0 0 48px var(--gutter, 32px); box-sizing: border-box; }
-.kpulse-bar { grid-area: bar; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 48px; padding: 8px 32px 8px 0; }
+.kpulse-bar { grid-area: bar; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 48px; padding: 0 32px 0 0; }
 .kpulse-bar-end { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .kpulse-lede-wrap { grid-area: lede; padding: 12px 32px 0 0; }
 .kpulse-lede { max-width: var(--read-max, 720px); margin: 0; font: 500 22px/30px var(--font-head); letter-spacing: -0.015em; color: var(--ink); text-wrap: pretty; }
@@ -360,7 +412,7 @@ const PULSE_CSS = `
 .kpulse-link { padding: 0; border: 0; background: none; color: var(--accent-text, var(--accent)); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .kpulse-radar { grid-area: radar; min-width: 0; padding: 0 var(--gutter, 32px) 24px 24px; border-left: 1px solid var(--hairline); }
 .kpt { grid-area: table; min-width: 0; margin-top: 24px; padding-right: 32px; }
-.kpt-row { display: grid; grid-template-columns: 164px minmax(0, 1fr) minmax(0, 1.35fr) 104px; gap: 0 20px; align-items: start; }
+.kpt-row { display: grid; grid-template-columns: 180px minmax(0, 1fr) minmax(0, 1.35fr) 140px; gap: 0 20px; align-items: start; }
 .kpt-head { min-height: 32px; align-items: center; border-bottom: 1px solid var(--hairline); font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kpt [role="rowgroup"] + [role="rowgroup"] > .kpt-row { min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--hairline); }
 .kpt [role="rowgroup"] + [role="rowgroup"] > .kpt-row:last-child { border-bottom: 0; }
@@ -371,7 +423,7 @@ const PULSE_CSS = `
 .kpt-role { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kpt-initial { width: 28px; height: 28px; flex-shrink: 0; border-radius: 999px; display: grid; place-items: center; background: var(--fill-2); color: var(--ink-2); font: 600 12px/1 var(--font-ui, var(--font-display)); }
 .kpt-items { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.kpt-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; margin: -2px -6px; padding: 2px 6px; border: 0; border-radius: var(--r-sm, 6px);
+.kpt-item { display: flex; align-items: flex-start; gap: 8px; width: calc(100% + 12px); min-width: 0; margin: -2px -6px; padding: 2px 6px; border: 0; border-radius: var(--r-sm, 6px);
   background: transparent; color: var(--ink); text-align: left; cursor: pointer; transition: background var(--d-1, 90ms) var(--ease); }
 .kpt-item:hover { background: var(--fill-1); }
 .kpt-item .kglyph { margin-top: 3px; flex-shrink: 0; }
@@ -384,15 +436,17 @@ const PULSE_CSS = `
 .kpt-more:hover { background: var(--fill-1); color: var(--ink-2); }
 .kpt-none { font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-4); }
 .kpt-load { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; padding-top: 2px; }
-.kpt-hours { font: 500 12px/18px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.kpt-hours { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
 .kpt-hours[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
+.kpt-meter { display: flex; }
 .kpt-load .kmeter-wrap { flex: none; }
-.kpt-guest { font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpt-guest { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kpt-skel { display: grid; gap: 8px; padding-top: 4px; }
 .kpt-skel .skel { height: 12px; border-radius: var(--r-xs, 4px); }
-.kpt-empty { display: block; padding: 24px 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
-.kpulse-text { display: block; width: 100%; min-height: 200px; resize: vertical; padding: 0; border: 0; background: transparent; color: var(--ink);
+.kpt-empty { display: grid; place-items: center; padding: 40px 0 24px; }
+.kpulse-text { display: block; width: 100%; min-height: 132px; max-height: 420px; resize: vertical; padding: 0; border: 0; background: transparent; color: var(--ink);
   font: 400 14px/22px var(--font-ui, var(--font-display)); }
+@supports (field-sizing: content) { .kpulse-text { field-sizing: content; } }
 .kpulse-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
 .kpulse-text[data-plain] { padding: 12px; border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); }
 .kpulse-writing { display: grid; gap: 16px; padding: 8px 0 16px; }
@@ -402,7 +456,7 @@ const PULSE_CSS = `
 .kpulse-writing-skel .skel:nth-child(2) { width: 88%; } .kpulse-writing-skel .skel:nth-child(3) { width: 94%; } .kpulse-writing-skel .skel:nth-child(4) { width: 60%; }
 @container (max-width: 1180px) {
   .kpulse-grid { grid-template-columns: minmax(0, 1fr) 320px; }
-  .kpt-row { grid-template-columns: 148px minmax(0, 1fr) minmax(0, 1.3fr) 96px; gap: 0 16px; }
+  .kpt-row { grid-template-columns: 148px minmax(0, 1fr) minmax(0, 1.3fr) 120px; gap: 0 16px; }
 }
 @container (max-width: 959px) {
   .kpulse-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "lede" "radar" "table"; grid-template-rows: auto; padding-right: var(--gutter, 32px); }
@@ -417,7 +471,7 @@ const PULSE_CSS = `
   .kpt-row > [data-label]:nth-child(3) { grid-area: today; }
   .kpt-row > .kpt-load { grid-area: load; }
   .kpt-row > [data-label]:not(.kpt-load)::before { content: attr(data-label); display: block; margin-bottom: 4px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
-  .kpulse-lede { font-size: 20px; line-height: 28px; }
+  .kpulse-bar { padding-block: 8px; }
   .kpulse-bar-end { margin-left: 0; width: 100%; }
   .kpulse-bar-end .kbtn { flex: 1; }
 }

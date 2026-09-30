@@ -15,7 +15,7 @@ import { AVATAR_ACCEPT, AVATAR_MESSAGES, avatarExtension, avatarMime } from "../
 import { uiZoom } from "../../lib/appearance";
 import { inviteEmailNotice, type InviteEmailResult, type InvitedMember } from "../../data/store";
 import { capacityOf, loadForWeek, loadTone, readCapacities } from "../../lib/radar";
-import { startOfWeekMon } from "./reportingUtils";
+import { round1, startOfWeekMon } from "./reportingUtils";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -186,7 +186,7 @@ async function copyText(text: string): Promise<boolean> {
 /** The role, as a quiet pill; pending invites read "Invited". Members — the
  *  default — carry none (`always` shows it anyway, e.g. in the profile). */
 function RoleBadge({ m, always }: { m: WorkspaceMember; always?: boolean }) {
-  if (m.status === "invited") return <Pill tone="warn">Invited</Pill>;
+  if (m.status === "invited") return <Pill tone="neutral">Invited</Pill>;
   if (m.role === "member" && !always) return null;
   return <Pill tone={m.role === "owner" ? "accent" : "neutral"} title={roleBlurb(m.role)}>{ROLE_META[m.role]?.label}</Pill>;
 }
@@ -227,7 +227,7 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite }: 
     : invite?.copied === "failed" ? `Couldn't copy automatically — the sign-up link is ${window.location.origin}/`
     : null;
   const tone = load ? loadTone(load.hours, load.capacity) : "ink";
-  const hours = load ? `${Math.round(load.hours * 10) / 10}h / ${Math.round(load.capacity * 10) / 10}h` : "";
+  const hours = load ? `${round1(load.hours)}h / ${round1(load.capacity)}h` : "";
   return (
     <li className="kppl-row" data-pending={pending || undefined}>
       <button type="button" className="kppl-main" onClick={onSelect} aria-haspopup="dialog">
@@ -253,11 +253,18 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite }: 
         )}
         {!pending && (
           m.role === "guest" || !load
-            ? <span className="kppl-load"><span className="kppl-guest">{m.role === "guest" ? "Guest" : ""}</span></span>
+            // guests carry no team capacity (their pill already says Guest)
+            ? <span className="kppl-load"><span className="kppl-guest" aria-hidden="true">{m.role === "guest" ? "—" : ""}</span></span>
             : (
               <span className="kppl-load">
-                <Meter value={load.hours} max={load.capacity * 1.25} marker={load.capacity} width={96} height={4} tone={tone} label={`${name}: ${hours} this week`} />
-                <span className="kppl-hours" data-tone={tone}>{hours}</span>
+                {/* the figures carry it for screen readers: a progressbar's percentage (of 125% of capacity) would only confuse */}
+                <span className="kppl-meter" aria-hidden="true">
+                  <Meter value={load.hours} max={load.capacity * 1.25} marker={load.capacity} width={96} height={4} tone={tone} label={`${name}: ${hours} this week`} />
+                </span>
+                <span className="kppl-hours" data-tone={tone}>
+                  <span aria-hidden="true">{hours}</span>
+                  <span className="sr-only">{`${round1(load.hours)} of ${round1(load.capacity)} hours this week${tone === "signal" ? ", over capacity" : tone === "warn" ? ", near capacity" : ""}`}</span>
+                </span>
               </span>
             )
         )}
@@ -520,7 +527,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -545,6 +552,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   onNewWorkspace?: () => void;
   /** admins: a "Workspace settings" link to Settings › Workspace */
   onOpenWorkspaceSettings?: () => void;
+  /** company email domains that sign up without waiting (Admin › approved domains), for the
+   *  invite dialog's note. Only an app admin can read them; without it the note is general. */
+  approvedDomains?: string[];
   /** The workspace settings moved to Settings › Workspace (WorkspaceSettingsPanel);
       these are still accepted so older hosts compile, and are ignored. */
   onUpdateWorkspace?: (workspaceId: string, name: string, logoUrl: string | null) => void;
@@ -721,7 +731,13 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   const selected = selectedId ? wsMembers.find((x) => x.id === selectedId) : undefined;
   const loadOf = (m: WorkspaceMember): Load | undefined => (m.userId ? { hours: weekLoad.get(m.userId)?.hours ?? 0, capacity: capacityOf(capacities, m.userId) } : undefined);
   const nValid = valid.length;
-  const sendLabel = nValid ? `Send ${nValid} invite${nValid === 1 ? "" : "s"}` : "Send invites";
+  // the count on the button is what will actually go: people already here are skipped
+  const sendable = nValid - already.length;
+  const sendLabel = sendable > 0 ? `Send ${sendable} invite${sendable === 1 ? "" : "s"}` : nValid ? "Send invite" : "Send invites";
+  const domains = (approvedDomains ?? []).map((d) => d.trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
+  // "@foundrise.com" · "@a.com or @b.com" · "@a.com, @b.com or @c.com" · more: "approved company"
+  const domainWords = domains.length > 3 ? "approved company"
+    : domains.map((d) => `@${d}`).join(", ").replace(/, ([^,]*)$/, " or $1");
   const okCount = results?.items.filter((r) => r.ok).length ?? 0;
   const summary = !results ? "" : okCount === results.items.length ? `Invited ${okCount} ${okCount === 1 ? "person" : "people"}.`
     : `Invited ${okCount} of ${results.items.length}.${results.kept ? " What's left is still in the box above, to fix and send again." : ""}`;
@@ -748,7 +764,7 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
         </div>
 
         <section className="kppl-group" aria-labelledby="kppl-members">
-          <SectionLabel id="kppl-members" count={shownActive.length}>Members</SectionLabel>
+          <SectionLabel id="kppl-members" count={shownActive.length}>People</SectionLabel>
           {shownActive.length === 0 ? (
             <p className="kppl-none">{q || roleFilter !== "all" ? <>No one matches{q ? <> “{query.trim()}”</> : " that filter"}. <button type="button" className="kppl-link" onClick={() => { setQuery(""); setRoleFilter("all"); }}>Show everyone</button></> : "No one has joined yet."}</p>
           ) : (
@@ -799,7 +815,7 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submitInvite(); } }} />
               <span id="kinvite-help" className="kinvite-help">
                 Separate addresses with commas, spaces or new lines.
-                {nValid > 1 && <> <b>{nValid} people</b>.</>}
+                {sendable > 1 && <> <b>{sendable} people</b>.</>}
                 {invalid.length > 0 && <span className="kinvite-bad"> {invalid.length === 1 ? `“${invalid[0]}” doesn't look like an email address.` : `${invalid.length} entries don't look like email addresses.`}</span>}
                 {already.length > 0 && <span className="kinvite-bad"> {already.length === 1 ? `${memberName(already[0])} is already a member.` : `${already.length} of them are already members.`}</span>}
               </span>
@@ -811,7 +827,12 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
               </select>
               <span className="kinvite-help"><b>{ROLE_META[inviteRole]?.label}</b> · {roleBlurb(inviteRole)}</span>
             </label>
-            <p className="kinvite-note"><Icon name="lock" size={14} sw={1.75} />An invite lets them skip the waitlist: they join {ws?.name ?? "the workspace"} as soon as they sign up or sign in with the invited email.</p>
+            <p className="kinvite-note"><Icon name="lock" size={14} sw={1.75} />
+              <span>
+                An invite lets them skip the waitlist: they join {ws?.name ?? "the workspace"} as soon as they sign up or sign in with the invited email.
+                {domains.length > 0 && <> Anyone with an {domainWords} address can sign up without waiting, but still needs an invite to join.</>}
+              </span>
+            </p>
             {/* one live region, always mounted, so screen readers announce the outcome */}
             <div id="kinvite-msg" role="status" aria-live="polite" className="kinvite-status" data-kind={inviteMsg?.kind}>
               {inviteMsg && <Icon name={inviteMsg.kind === "error" ? "x" : "check"} size={14} sw={2} />}
@@ -848,7 +869,8 @@ const PEOPLE_CSS = `
 .kppl { flex: 1; min-width: 0; overflow-y: auto; container-type: inline-size; }
 .kppl[data-empty] { display: grid; place-items: center; padding: 0 var(--gutter, 32px); }
 .kppl-inner { max-width: var(--list-max, 1120px); margin: 0 auto; padding: 0 var(--gutter, 32px) 48px; }
-.kppl-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 56px; padding: 8px 0; }
+/* 48px, the same in-page bar as Pulse and Workload */
+.kppl-bar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; min-height: 48px; padding: 0; }
 .kppl-find { display: inline-flex; align-items: center; gap: 8px; width: 240px; max-width: 100%; height: var(--h-md, 32px); padding: 0 10px; border-radius: var(--r-sm, 6px);
   background: var(--field-bg, var(--surface)); border: 1px solid var(--field-border, var(--hairline-strong)); color: var(--icon-quiet, var(--ink-4));
   transition: border-color var(--d-1, 90ms) var(--ease); }
@@ -865,7 +887,10 @@ const PEOPLE_CSS = `
 .kppl-row:hover { background: var(--fill-1); }
 .kppl-main { flex: 1 1 520px; min-width: 0; display: grid; grid-template-columns: 32px minmax(180px, 1.1fr) minmax(0, 1.4fr) 176px 64px; align-items: center; gap: 0 16px;
   min-height: 56px; padding: 8px 12px; border: 0; border-radius: var(--r-sm, 6px); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
-.kppl-row[data-pending] .kppl-main { grid-template-columns: 32px minmax(180px, 1.1fr) minmax(0, 1.4fr); }
+/* pending invites keep the members' columns, so the note lines up with "Working on:" above;
+   their Resend and Copy link sit over the load and open columns they don't use */
+.kppl-row[data-pending] .kppl-work { grid-column: 3; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.kppl-row[data-pending] .kppl-actions { position: absolute; top: 14px; right: 12px; padding: 0; }
 .kppl-ghost { width: 32px; height: 32px; border-radius: 999px; display: grid; place-items: center; flex-shrink: 0; border: 1.5px dashed var(--hairline-strong); color: var(--icon-quiet, var(--ink-4)); }
 .kppl-ghost[data-size="40"] { width: 40px; height: 40px; }
 .kppl-id { display: flex; flex-direction: column; min-width: 0; }
@@ -878,6 +903,7 @@ const PEOPLE_CSS = `
 .kppl-task { color: var(--ink-2); }
 .kppl-work[data-muted] { color: var(--ink-4); }
 .kppl-load { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.kppl-meter { display: flex; }
 .kppl-load .kmeter-wrap { flex: none; }
 .kppl-hours { min-width: 66px; text-align: right; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
 .kppl-hours[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
@@ -895,6 +921,8 @@ const PEOPLE_CSS = `
   .kppl-main { grid-template-columns: 32px minmax(0, 1fr) 150px 56px; }
   .kppl-main .kppl-work { display: none; }
   .kppl-row[data-pending] .kppl-main { grid-template-columns: 32px minmax(0, 1fr); }
+  .kppl-row[data-pending] .kppl-actions { position: static; padding: 0 8px 0 0; }
+  .kppl-row[data-pending] .kppl-work { display: none; }
   .kppl-load .kmeter-wrap { width: 64px !important; }
 }
 @container (max-width: 560px) {
@@ -902,6 +930,7 @@ const PEOPLE_CSS = `
   .kppl-open { display: none; }
   .kppl-load .kmeter-wrap { display: none; }
   .kppl-find { flex: 1 1 100%; width: auto; }
+  .kppl-bar { padding-block: 8px; }
   .kppl-bar-end { width: 100%; margin-left: 0; }
   .kppl-bar-end .kbtn:last-child { flex: 1; }
   .kppl-feedback { padding-left: 12px; }

@@ -45,7 +45,9 @@ describe("TeamView", () => {
     const onInvite = vi.fn();
     team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" })], { onInvite });
     fireEvent.change(openInvite(), { target: { value: "maya@kanbo.app" } });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send 1 invite" })); });
+    // nobody new to invite: the button doesn't promise one
+    expect(screen.queryByRole("button", { name: "Send 1 invite" })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send invite" })); });
     expect(onInvite).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Maya Lin is already a member");
   });
@@ -228,7 +230,9 @@ describe("TeamView", () => {
     const field = openInvite();
     fireEvent.change(field, { target: { value: "A@partner.io, b@partner.io\nc@partner.io maya@kanbo.app oops@" } });
     expect(screen.getByText(/doesn't look like an email address/)).toBeInTheDocument();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send 4 invites" })); });
+    // Maya is already here, so three go out — and the dialog says three
+    expect(screen.getByText("3 people")).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send 3 invites" })); });
     expect(onInvite.mock.calls.map((c) => c[1])).toEqual(["a@partner.io", "b@partner.io", "c@partner.io"]);
     expect(onInvite).toHaveBeenCalledWith(WS, "a@partner.io", "member");
     const status = screen.getByRole("status");
@@ -250,7 +254,10 @@ describe("TeamView", () => {
     const maya = screen.getByRole("button", { name: /Maya Lin/ });
     expect(maya).toHaveTextContent("Working on: Migrate auth");
     expect(maya).toHaveTextContent("2 open");
-    expect(screen.getByRole("progressbar", { name: /Maya Lin: 30h \/ 40h this week/ })).toBeInTheDocument();
+    // the load reads as words to a screen reader (the meter beside it is decoration)
+    expect(maya).toHaveTextContent("30h / 40h");
+    expect(maya).toHaveTextContent("30 of 40 hours this week");
+    expect(screen.queryAllByRole("progressbar")).toHaveLength(0);
     expect(screen.getByRole("button", { name: /Theo Vance/ })).toHaveTextContent("Nothing in progress");
   });
 
@@ -269,6 +276,28 @@ describe("TeamView", () => {
     expect(screen.queryByRole("button", { name: /Maya Lin/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Everyone 3" }));
     expect(screen.getByRole("button", { name: /Maya Lin/ })).toBeInTheDocument();
+  });
+
+  it("guests say Guest once (their pill), pending invites read Invited, and the list is headed People", () => {
+    team([
+      member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" }),
+      member({ id: "w4", userId: "m-4", email: "idris@partner.io", role: "guest" }),
+      member({ id: "p1", email: "sam@partner.io", status: "invited" }),
+    ]);
+    const idris = screen.getByRole("button", { name: /Idris Bell/ });
+    expect(idris.textContent?.match(/Guest/g)).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /^People/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /sam@partner\.io/ })[0]).toHaveTextContent("Invited");
+  });
+
+  it("the invite dialog names the approved company domains when the host knows them", () => {
+    const { unmount } = team([]);
+    openInvite();
+    expect(screen.getByText(/An invite lets them skip the waitlist: they join Foundrise as soon as they sign up or sign in with the invited email\.$/)).toBeInTheDocument();
+    unmount();
+    team([], { approvedDomains: ["foundrise.com", "@Reco.io"] });
+    openInvite();
+    expect(screen.getByText(/Anyone with an @foundrise\.com or @reco\.io address can sign up without waiting, but still needs an invite to join\./)).toBeInTheDocument();
   });
 
   it("opens the profile drawer, and Escape closes it", () => {
