@@ -1,32 +1,24 @@
 /* ============================================================
-   KANBO — global search: query across every task with field filters,
-   plus saved searches. Reads tasks already in memory (instant).
+   KANBO — Search: every task, by text and field filters, plus the
+   team-wide presets and your saved searches. Reads tasks already in
+   memory (instant). Results are the same 36px rows as My tasks: the
+   status glyph is the completion checkbox (it never opens the task),
+   then the title, then project · due · priority · assignee.
+   J / K move, X selects, Enter opens, ⌘↵ completes.
    ============================================================ */
 import { useMemo, useState, useEffect, useRef } from "react";
-import { Icon, Avatar, StatusDot, PriorityFlag, EmptyArt } from "../primitives";
-import { getProject, getMember, fmtDue, dueState, STATUS_META, PRIORITY_META, toLocalISO, presetDate, todayISO } from "../../data/data";
+import { Icon, Avatar, StatusGlyph, PriorityGlyph, DateChip, ProjectDot, EmptyState, Button, IconButton, Kbd } from "../primitives";
+import { getProject, getMember, fmtDue, STATUS_META, PRIORITY_META, toLocalISO, presetDate, todayISO } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, searchRank, isQueryActive, hasSearchText, inArchivedProject, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import { smartListById } from "../../lib/smartLists";
+import { useListKeyboard } from "../../hooks/useListKeyboard";
 import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef } from "../../data/types";
 import { useEntrance } from "../../hooks/useEntrance";
+import "../tasks/taskViews.css";
 
 /** rows rendered at once; the count, "Select all" and exports say so */
 const DISPLAY_CAP = 200;
-
-/* a filter that is narrowing the results is tinted, so an applied filter is
-   visible at a glance (and the global :focus-visible ring still shows) */
-const selStyle = (on: boolean): React.CSSProperties => ({
-  height: 32, padding: "0 9px", borderRadius: 9, maxWidth: "100%",
-  border: `1px solid ${on ? "color-mix(in oklch, var(--accent) 55%, var(--hairline))" : "var(--hairline)"}`,
-  background: on ? "var(--accent-dim)" : "var(--surface)", color: on ? "var(--ink)" : "var(--ink-2)",
-  fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: on ? 600 : 400,
-});
-const chipStyle = (on: boolean): React.CSSProperties => ({
-  display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 999, cursor: "pointer", fontSize: 12.5, fontFamily: "var(--font-display)",
-  border: `1px solid ${on ? "color-mix(in oklch, var(--accent) 55%, var(--hairline))" : "var(--hairline)"}`,
-  background: on ? "var(--accent-dim)" : "var(--surface)", color: on ? "var(--ink)" : "var(--ink-2)",
-});
 
 type Opt = { value: string; label: string; group?: string };
 
@@ -37,12 +29,12 @@ function withCurrent(opts: Opt[], value: string, label: (v: string) => string): 
   return value === "all" || opts.some((o) => o.value === value) ? opts : [...opts, { value, label: label(value) }];
 }
 
+/** A filter that is narrowing the results is tinted, so an applied filter reads at a glance. */
 function FilterSelect({ label, anyLabel, value, options, onChange }: { label: string; anyLabel: string; value: string; options: Opt[]; onChange: (v: string) => void }) {
-  const on = value !== "all";
   const plain = options.filter((o) => !o.group);
   const groups = [...new Set(options.filter((o) => o.group).map((o) => o.group!))];
   return (
-    <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} style={selStyle(on)}>
+    <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className="ktv-search-select" data-on={value !== "all" || undefined}>
       <option value="all">{anyLabel}</option>
       {plain.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       {groups.map((g) => (
@@ -56,10 +48,11 @@ function FilterSelect({ label, anyLabel, value, options, onChange }: { label: st
 
 /** primary pointer is a mouse/trackpad (not a touchscreen) */
 const finePointer = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches;
+const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
 
 const unknownLabel = (v: string) => `${v.charAt(0).toUpperCase()}${v.slice(1)} (unknown)`;
 
-export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete, sections, customFields }: {
+export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete, sections, customFields, onToggle }: {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -75,15 +68,16 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   /** for the CSV export's Section and custom-field columns (same as the List toolbar's export) */
   sections?: { id: string; name: string }[];
   customFields?: CustomFieldDef[];
+  /** ticks a result off (or back on) from its status glyph; without it the glyph only shows the status */
+  onToggle?: (id: string) => void;
 }) {
   const entrance = useEntrance(presetKey);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const presetQuery = useMemo<Query | null>(() => (preset ? toQuery(preset) : null), [preset ? JSON.stringify(preset) : ""]);
   const [q, setQ] = useState<Query>(presetQuery ?? EMPTY);
-  const [inputFocused, setInputFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const toggleSel = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSel = (id: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const clearSel = () => setSelected(new Set());
   // apply a smart-list / saved-search preset when selected (or when its content
   // changes, e.g. the signed-in user resolves); reset to EMPTY on plain Search
@@ -104,14 +98,15 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   useEffect(() => {
     if (preset) return;
     if (finePointer()) inputRef.current?.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetKey]);
   // dropping a selected task out of the current results shouldn't keep it selected
   useEffect(() => { clearSel(); }, [presetKey, q]);
   const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
   const allTags = useMemo(() => [...new Set(tasks.flatMap((t) => t.tags || []))].sort((a, b) => a.localeCompare(b)), [tasks]);
   const hasArchivedProjects = projects.some((p) => p.archivedAt);
-  // one-click cross-project presets (combine + save your own). The sidebar's
-  // smart lists are personal; the "All …" chips here are the team-wide views.
+  // one-click cross-project presets (combine + save your own). My tasks is
+  // personal; the "All …" chips here are the team-wide views.
   const presets: { label: string; q: Partial<Query> }[] = [
     ...(currentUserId ? [{ label: "Assigned to me", q: { assignee: currentUserId, status: "open" } as Partial<Query> }] : []),
     ...(currentUserId ? [{ label: "My work this week", q: { assignee: currentUserId, due: "week", status: "open" } as Partial<Query> }] : []),
@@ -138,12 +133,14 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
     const ranked = hits.map((t, i) => ({ t, i, r: searchRank(t, q) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
     return { matched: ranked, hiddenArchived: hidden };
     // projects: archiving/restoring one changes what matches without touching tasks
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, q, active, projects, today]);
   const results = matched.slice(0, DISPLAY_CAP);   // rows rendered (capped)
   const capped = matched.length > results.length;  // more matched than shown
   // only tasks still in the current results count as selected — a selection
   // that left the view (bulk action, external update) is ignored.
   const selectedVisible = results.filter((t) => selected.has(t.id));
+  const bulk = !!(onBulkPatch || onBulkDelete);
 
   // context line for an open smart list / saved search
   const smart = smartListById(presetKey);
@@ -166,6 +163,16 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
     { value: "has", label: "Has a due date" }, { value: "none", label: "No due date" },
   ], q.due, unknownLabel);
 
+  // save the current search under a name typed in place (no prompt)
+  const [saving, setSaving] = useState<string | null>(null);
+  useEffect(() => { if (!active) setSaving(null); }, [active]);
+  const saveNow = () => {
+    const name = (saving ?? "").trim();
+    if (!name) return;
+    onSaveSearch(name, q as unknown as Record<string, unknown>);
+    setSaving(null);
+  };
+
   // keyboard: ↓ from the search box into the results, ↑/↓ between them
   const resultButtons = () => Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-search-result]") ?? []);
   const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -184,161 +191,203 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
     else if (i === 0) inputRef.current?.focus();
     else btns[i - 1]?.focus();
   };
+  // J / K through the results (↑ ↓ keep their own path back to the box), X selects, ⌘↵ completes
+  const kb = useListKeyboard({
+    rootRef: listRef, itemSelector: "[data-row-id]", idOf: (el) => el.dataset.rowId,
+    focusTargetOf: (el) => el.querySelector<HTMLElement>("[data-search-result]"),
+    onOpen,
+    onComplete: onToggle,
+    onToggleSelect: bulk ? toggleSel : undefined,
+    onClear: clearSel,
+    enabled: active && results.length > 0,
+  });
 
   const n = matched.length;
   const exportScope = n === 1 ? "this task" : `all ${n} tasks`;
+  const doneKey = isMac() ? "⌘↵" : "Ctrl ↵";
 
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 920, width: "100%", margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-        <Icon name="search" size={18} style={{ color: "var(--accent)" }} />
-        <input ref={inputRef} value={q.text} onChange={(e) => set({ text: e.target.value })} onKeyDown={onInputKey}
-          onFocus={() => setInputFocused(true)} onBlur={() => setInputFocused(false)}
-          placeholder="Search every task…" aria-label="Search tasks" enterKeyHint="search" autoComplete="off" spellCheck={false}
-          style={{ flex: 1, minWidth: 0, height: 40, padding: "0 12px", borderRadius: 11, border: `1px solid ${inputFocused ? "var(--accent)" : "var(--hairline)"}`, boxShadow: inputFocused ? "0 0 0 3px var(--accent-dim)" : "none", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 15, outline: "2px solid transparent", transition: "border-color .15s, box-shadow .15s" }} />
-      </div>
-
-      {presetName && presetQuery && (
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "-4px 0 12px", fontSize: 12.5, color: "var(--ink-3)", minHeight: 26 }}>
-          <Icon name={smart?.icon ?? "filter"} size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
-          <span style={{ minWidth: 0 }}>
-            <strong style={{ color: "var(--ink)", fontWeight: 600 }}>{presetName}</strong>
-            {onPreset ? (smart ? ` · ${smart.description}` : " · Saved search") : " · Filters changed"}
-          </span>
-          {!onPreset && <button type="button" onClick={() => setQ(presetQuery)} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12 }}>Reset to {presetName}</button>}
+    <div className="ktv ktv-search">
+      <div className="ktv-search-in">
+        <div className="ktv-search-box">
+          <Icon name="search" size={16} sw={1.75} />
+          <input ref={inputRef} value={q.text} onChange={(e) => set({ text: e.target.value })} onKeyDown={onInputKey}
+            placeholder="Search every task…" aria-label="Search tasks" enterKeyHint="search" autoComplete="off" spellCheck={false} />
         </div>
-      )}
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 }}>
-        {presets.map((p) => {
-          const on = queriesEqual(q, { ...EMPTY, ...p.q });
-          return <button key={p.label} type="button" aria-pressed={on} onClick={() => setQ(on ? EMPTY : { ...EMPTY, ...p.q })} className="lift" style={chipStyle(on)}>{p.label}</button>;
-        })}
-      </div>
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-        <FilterSelect label="Filter by status" anyLabel="Any status" value={q.status} options={statusOpts} onChange={(v) => set({ status: v })} />
-        <FilterSelect label="Filter by priority" anyLabel="Any priority" value={q.priority} options={priorityOpts} onChange={(v) => set({ priority: v })} />
-        <FilterSelect label="Filter by assignee or collaborator" anyLabel="Anyone" value={q.assignee} options={assigneeOpts} onChange={(v) => set({ assignee: v })} />
-        <FilterSelect label="Filter by project" anyLabel="Any project" value={q.projectId} options={projectOpts} onChange={(v) => set({ projectId: v })} />
-        {tagOpts.length > 0 && <FilterSelect label="Filter by tag" anyLabel="Any tag" value={q.tag} options={tagOpts} onChange={(v) => set({ tag: v })} />}
-        <FilterSelect label="Filter by due date" anyLabel="Any due date" value={q.due} options={dueOpts} onChange={(v) => set({ due: v })} />
-        {(hasArchivedProjects || q.includeArchived) && (
-          <button type="button" aria-pressed={!!q.includeArchived} onClick={() => set({ includeArchived: !q.includeArchived })}
-            title="Tasks in archived projects are hidden unless this is on"
-            style={{ ...chipStyle(!!q.includeArchived), height: 32, padding: "0 11px", borderRadius: 9, fontWeight: q.includeArchived ? 600 : 400 }}>
-            <Icon name="archive" size={13} /> Include archived projects
-          </button>
+        {presetName && presetQuery && (
+          <div className="ktv-search-ctx">
+            <Icon name={smart?.icon ?? "filter"} size={14} sw={1.75} />
+            <span style={{ minWidth: 0 }}>
+              <strong>{presetName}</strong>
+              {onPreset ? (smart ? ` · ${smart.description}` : " · Saved search") : " · Filters changed"}
+            </span>
+            {!onPreset && <Button variant="ghost" size="sm" onClick={() => setQ(presetQuery)}>Reset to {presetName}</Button>}
+          </div>
         )}
-        {active && (
-          <>
-            <button type="button" onClick={() => { const name = window.prompt("Name this search"); if (name?.trim()) onSaveSearch(name.trim(), q as unknown as Record<string, unknown>); }} className="btn btn-ghost" title="Save this search to your sidebar" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="filter" size={14} /> Save</button>
-            <button type="button" onClick={() => setQ(EMPTY)} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}>Clear</button>
-          </>
-        )}
-      </div>
 
-      {savedSearches.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 18 }}>
-          <span className="kicker" style={{ alignSelf: "center" }}>Saved</span>
-          {savedSearches.map((s) => {
-            const sq = toQuery(s.query);
-            const on = queriesEqual(q, sq);
-            return (
-              <span key={s.id} style={{ ...chipStyle(on), cursor: "default", gap: 6, padding: "4px 6px 4px 11px" }}>
-                <button type="button" aria-pressed={on} onClick={() => setQ(sq)} style={{ border: "none", background: "transparent", cursor: "pointer", color: "inherit", fontFamily: "var(--font-display)", fontSize: 12.5, padding: 0 }}>{s.name}</button>
-                <button type="button" onClick={() => onDeleteSavedSearch(s.id)} aria-label={`Delete saved search ${s.name}`} title="Delete saved search" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-4)", fontSize: 13 }}>×</button>
-              </span>
-            );
+        <div className="ktv-search-row" role="group" aria-label="Quick searches">
+          {presets.map((p) => {
+            const on = queriesEqual(q, { ...EMPTY, ...p.q });
+            return <button key={p.label} type="button" className="ktv-chip" aria-pressed={on} onClick={() => setQ(on ? EMPTY : { ...EMPTY, ...p.q })}>{p.label}</button>;
           })}
         </div>
-      )}
 
-      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-        <span className="kicker" role="status" aria-live="polite" aria-atomic="true">
-          {active ? `${n} result${n === 1 ? "" : "s"}${capped ? ` · showing first ${results.length}` : ""}` : "Type or pick a filter to search"}
-        </span>
-        {hiddenArchived > 0 && (
-          <button type="button" onClick={() => set({ includeArchived: true })} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12 }}>
-            <Icon name="archive" size={12} /> Show {hiddenArchived === 1 ? "1 task from an archived project" : `${hiddenArchived} tasks from archived projects`}
-          </button>
-        )}
-        {active && results.length > 0 && (
-          <span style={{ marginLeft: "auto", display: "flex", gap: 7, alignItems: "center" }}>
-            {(onBulkPatch || onBulkDelete) && (
-              <button type="button" onClick={() => setSelected(selectedVisible.length === results.length ? new Set() : new Set(results.map((t) => t.id)))} className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }}>
-                {selectedVisible.length === results.length ? "Clear" : capped ? `Select ${results.length} shown` : "Select all"}
-              </button>
-            )}
-            {/* exports always cover every match, not just the rows rendered */}
-            <button type="button" onClick={() => exportTasksCsv(matched, "search", { allTasks: tasks, sections, customFields, members })} className="btn btn-ghost" aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
-            <button type="button" onClick={() => printTasks(matched, presetName && onPreset ? presetName : "Search results")} className="btn btn-ghost" aria-label={`Print or save ${exportScope} as PDF`} title={`Print or save ${exportScope} as PDF`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> PDF</button>
-          </span>
-        )}
-      </div>
-      {selectedVisible.length > 0 && (onBulkPatch || onBulkDelete) && (() => {
-        const ids = selectedVisible.map((t) => t.id);
-        return (
-        <div className="glass anim-fadeup" style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderRadius: 12, marginBottom: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{ids.length} selected</span>
-          <div style={{ flex: 1 }} />
-          {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { status: "done", completedAt: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="check" size={14} /> Complete</button>}
-          {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { dueDate: toLocalISO(new Date()) }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendar" size={14} /> Due today</button>}
-          {onBulkPatch && <button onClick={() => { onBulkPatch(ids, { dueDate: presetDate("nextweek") }); clearSel(); }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5 }}><Icon name="calendarPlus" size={14} /> Next week</button>}
-          {onBulkDelete && <button onClick={() => { if (window.confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"}?`)) { onBulkDelete(ids); clearSel(); } }} className="btn btn-ghost" style={{ padding: "5px 11px", fontSize: 12.5, color: "var(--prio-urgent)" }}><Icon name="trash" size={14} /> Delete</button>}
-          <button onClick={clearSel} className="btn btn-ghost" style={{ padding: "5px 9px", fontSize: 12.5 }}>Cancel</button>
+        <div className="ktv-search-row">
+          <FilterSelect label="Filter by status" anyLabel="Any status" value={q.status} options={statusOpts} onChange={(v) => set({ status: v })} />
+          <FilterSelect label="Filter by priority" anyLabel="Any priority" value={q.priority} options={priorityOpts} onChange={(v) => set({ priority: v })} />
+          <FilterSelect label="Filter by assignee or collaborator" anyLabel="Anyone" value={q.assignee} options={assigneeOpts} onChange={(v) => set({ assignee: v })} />
+          <FilterSelect label="Filter by project" anyLabel="Any project" value={q.projectId} options={projectOpts} onChange={(v) => set({ projectId: v })} />
+          {tagOpts.length > 0 && <FilterSelect label="Filter by tag" anyLabel="Any tag" value={q.tag} options={tagOpts} onChange={(v) => set({ tag: v })} />}
+          <FilterSelect label="Filter by due date" anyLabel="Any due date" value={q.due} options={dueOpts} onChange={(v) => set({ due: v })} />
+          {(hasArchivedProjects || q.includeArchived) && (
+            <button type="button" className="ktv-chip ktv-chip-lg" aria-pressed={!!q.includeArchived} onClick={() => set({ includeArchived: !q.includeArchived })}
+              title="Tasks in archived projects are hidden unless this is on">
+              <Icon name="archive" size={14} sw={1.75} /><span>Include archived projects</span>
+            </button>
+          )}
+          {active && (
+            <span className="ktv-search-name">
+              {saving === null ? (
+                <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")} title="Save this search to your sidebar">Save</Button>
+              ) : (
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this search, then Enter" aria-label="Name this search"
+                  onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveNow(); else if (e.key === "Escape") setSaving(null); }}
+                  onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+              )}
+              <Button variant="ghost" size="sm" onClick={() => setQ(EMPTY)}>Clear</Button>
+            </span>
+          )}
         </div>
-        );
-      })()}
-      <div ref={listRef} onKeyDown={onListKey} className={"glass " + entrance} style={{ borderRadius: 16, overflow: "hidden" }}>
-        {active && results.map((t, i) => {
-          const proj = getProject(t.projectId);
-          const ds = dueState(t.dueDate, t.status);
-          const sel = selected.has(t.id);
-          const due = fmtDue(t.dueDate);
-          const openLabel = `Open ${t.title || "Untitled task"} (${[STATUS_META[t.status]?.label, proj && `${proj.name}${proj.archivedAt ? ", archived project" : ""}`, due && `due ${due}`].filter(Boolean).join(", ")})`;
-          return (
-            <div key={t.id} className="lift-row" onClick={() => onOpen(t.id)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", borderTop: i ? "1px solid var(--hairline)" : "none", background: sel ? "var(--accent-dim)" : undefined }}>
-              {(onBulkPatch || onBulkDelete) && (
-                <input type="checkbox" checked={sel} onClick={(e) => e.stopPropagation()} onChange={() => toggleSel(t.id)} aria-label={`Select ${t.title}`} style={{ cursor: "pointer", flexShrink: 0 }} />
-              )}
-              <StatusDot status={t.status} size={8} />
-              {/* a real button: Tab reaches it, Enter/Space open the task */}
-              <button type="button" data-search-result onClick={(e) => { e.stopPropagation(); onOpen(t.id); }} aria-label={openLabel} title={t.title}
-                className="truncate" style={{ flex: 1, minWidth: 0, display: "block", textAlign: "left", border: "none", background: "transparent", padding: "2px 0", margin: 0, borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 14, color: t.status === "done" ? "var(--ink-4)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>
-                {t.title || "Untitled task"}
-              </button>
-              {t.priority !== "medium" && <PriorityFlag priority={t.priority} size={13} />}
-              {proj && (
-                <span className="truncate hide-sm" title={proj.archivedAt ? `${proj.name} (archived project)` : undefined} style={{ fontSize: 12, color: "var(--ink-4)", maxWidth: 140, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                  {proj.archivedAt && <Icon name="archive" size={11} style={{ flexShrink: 0 }} />}
-                  <span className="truncate">{proj.name}</span>
+
+        {savedSearches.length > 0 && (
+          <div className="ktv-search-row" role="group" aria-label="Saved searches">
+            <span className="ktv-mlabel">Saved</span>
+            {savedSearches.map((s) => {
+              const sq = toQuery(s.query);
+              const on = queriesEqual(q, sq);
+              return (
+                <span key={s.id} className="ktv-saved" data-on={on || undefined}>
+                  <button type="button" aria-pressed={on} onClick={() => setQ(sq)}>{s.name}</button>
+                  <button type="button" onClick={() => onDeleteSavedSearch(s.id)} aria-label={`Delete saved search ${s.name}`} title="Delete saved search"><Icon name="x" size={12} sw={2} /></button>
                 </span>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="ktv-search-status">
+          <span role="status" aria-live="polite" aria-atomic="true">
+            {active ? `${n} result${n === 1 ? "" : "s"}${capped ? ` · showing first ${results.length}` : ""}` : "Type or pick a filter to search"}
+          </span>
+          {hiddenArchived > 0 && (
+            <Button variant="ghost" size="sm" icon="archive" onClick={() => set({ includeArchived: true })}>
+              {hiddenArchived === 1 ? "Show 1 task from an archived project" : `Show ${hiddenArchived} tasks from archived projects`}
+            </Button>
+          )}
+          {active && results.length > 0 && (
+            <span className="ktv-search-actions">
+              {bulk && (
+                <Button variant="ghost" size="sm" onClick={() => setSelected(selectedVisible.length === results.length ? new Set() : new Set(results.map((t) => t.id)))}>
+                  {selectedVisible.length === results.length ? "Clear" : capped ? `Select ${results.length} shown` : "Select all"}
+                </Button>
               )}
-              {t.dueDate && <span className="mono" style={{ fontSize: 11.5, color: ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{due}</span>}
-              <Avatar id={t.assigneeId} size={20} />
+              {/* exports always cover every match, not just the rows rendered */}
+              <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={() => exportTasksCsv(matched, "search", { allTasks: tasks, sections, customFields, members })}
+                aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`}>CSV</Button>
+              <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={() => printTasks(matched, presetName && onPreset ? presetName : "Search results")}
+                aria-label={`Print or save ${exportScope} as PDF`} title={`Print or save ${exportScope} as PDF`}>PDF</Button>
+            </span>
+          )}
+        </div>
+
+        {selectedVisible.length > 0 && bulk && (() => {
+          const ids = selectedVisible.map((t) => t.id);
+          return (
+            <div className="ktv-search-bulk" role="toolbar" aria-label="Bulk actions for selected results">
+              <span>{ids.length} selected</span>
+              {onBulkPatch && <Button variant="ghost" size="sm" icon="check" onClick={() => { onBulkPatch(ids, { status: "done", completedAt: toLocalISO(new Date()) }); clearSel(); }}>Complete</Button>}
+              {onBulkPatch && <Button variant="ghost" size="sm" icon="calendar" onClick={() => { onBulkPatch(ids, { dueDate: toLocalISO(new Date()) }); clearSel(); }}>Due today</Button>}
+              {onBulkPatch && <Button variant="ghost" size="sm" icon="calendarPlus" onClick={() => { onBulkPatch(ids, { dueDate: presetDate("nextweek") }); clearSel(); }}>Next week</Button>}
+              {onBulkDelete && <Button variant="ghost" size="sm" icon="trash" style={{ color: "var(--tv-signal)" }}
+                onClick={() => { if (window.confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"}?`)) { onBulkDelete(ids); clearSel(); } }}>Delete</Button>}
+              <IconButton icon="x" size="sm" label="Clear selection" onClick={clearSel} />
             </div>
           );
-        })}
-        {active && results.length === 0 && (
-          <div style={{ padding: "36px 18px 32px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>
-            <EmptyArt kind="search" size={112} />
-            <p style={{ fontSize: 15.5, color: "var(--ink)", margin: "12px 0 0", fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>{smart && onPreset && hiddenArchived === 0 ? "All clear" : "No tasks match"}</p>
-            <p style={{ margin: "4px 0 0" }}>
-              {hiddenArchived > 0 ? (hiddenArchived === 1 ? "1 task in an archived project matches." : `${hiddenArchived} tasks in archived projects match.`)
-                : smart && onPreset ? "Nothing of yours is in this list right now."
-                : "Try loosening a filter, or clear them to start over."}
-            </p>
-          </div>
-        )}
-        {!active && (
-          <div style={{ padding: "40px 18px 36px", textAlign: "center", color: "var(--ink-4)", fontSize: 13 }}>
-            <EmptyArt kind="search" size={112} />
-            <p style={{ fontSize: 15.5, color: "var(--ink)", margin: "12px 0 0", fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Find anything, instantly</p>
-            <p style={{ margin: "4px 0 0" }}>Search by text, status, priority, assignee, project, tag or due date. Words can be in any order; use "quotes" for an exact phrase.</p>
-          </div>
-        )}
+        })()}
+
+        <div ref={listRef} onKeyDown={onListKey} className={"ktv-search-results " + entrance} role="region" aria-label="Search results"
+          data-selecting={selectedVisible.length > 0 || undefined}>
+          {active && results.map((t) => {
+            const proj = getProject(t.projectId);
+            const sel = selected.has(t.id);
+            const due = fmtDue(t.dueDate);
+            const done = t.status === "done";
+            const title = t.title || "Untitled task";
+            const openLabel = `Open ${title} (${[STATUS_META[t.status]?.label, proj && `${proj.name}${proj.archivedAt ? ", archived project" : ""}`, due && `due ${due}`].filter(Boolean).join(", ")})`;
+            return (
+              <div key={t.id} role="group" aria-label={title} data-row-id={t.id} className="ktv-row" data-done={done || undefined}
+                data-selected={sel || undefined} data-cursor={kb.cursor === t.id || undefined} onClick={() => onOpen(t.id)}>
+                {bulk && (
+                  <button type="button" role="checkbox" aria-checked={sel} aria-label={`Select ${title}`} className="ktv-sel"
+                    onClick={(e) => { e.stopPropagation(); toggleSel(t.id); }}>
+                    {sel && <Icon name="check" size={11} sw={3} />}
+                  </button>
+                )}
+                <span className="ktv-lead">
+                  {onToggle
+                    ? <StatusGlyph status={t.status} label={title} celebrateKey={t.id} onToggle={() => onToggle(t.id)} />
+                    : <StatusGlyph status={t.status} readOnly />}
+                </span>
+                <div className="ktv-main">
+                  {/* a real button: Tab reaches it, Enter/Space open the task */}
+                  <button type="button" data-search-result className="ktv-title" onClick={(e) => { e.stopPropagation(); onOpen(t.id); }} aria-label={openLabel} title={title}>
+                    {title}
+                  </button>
+                </div>
+                <div className="ktv-cluster">
+                  {proj && (
+                    <span className="ktv-proj" title={proj.archivedAt ? `${proj.name} (archived project)` : proj.name}>
+                      {proj.archivedAt ? <Icon name="archive" size={12} sw={1.75} /> : <ProjectDot color={proj.color} />}
+                      <span>{proj.name}</span>
+                    </span>
+                  )}
+                  <span className="ktv-due">{t.dueDate && <DateChip value={t.dueDate} time={t.dueTime} size="sm" status={t.status} label="Due" readOnly onChange={() => {}} />}</span>
+                  <span className="ktv-trig" style={{ cursor: "inherit" }}><PriorityGlyph priority={t.priority} /></span>
+                  <span className="ktv-avatar"><Avatar id={t.assigneeId} size={20} /></span>
+                </div>
+              </div>
+            );
+          })}
+          {active && results.length === 0 && (
+            <div className="ktv-empty">
+              <EmptyState art="search" title={smart && onPreset && hiddenArchived === 0 ? "All clear" : "No tasks match"}
+                body={hiddenArchived > 0 ? (hiddenArchived === 1 ? "1 task in an archived project matches." : `${hiddenArchived} tasks in archived projects match.`)
+                  : smart && onPreset ? "Nothing of yours is in this list right now."
+                  : "Try loosening a filter, or clear them to start over."}
+                action={!(smart && onPreset) && <Button variant="secondary" icon="x" onClick={() => setQ(EMPTY)}>Clear search</Button>} />
+            </div>
+          )}
+          {!active && (
+            <div className="ktv-empty">
+              <EmptyState art="search" title="Find anything, instantly"
+                body={<>Search by text, status, priority, assignee, project, tag or due date. Words can be in any order; use "quotes" for an exact phrase.</>} />
+            </div>
+          )}
+        </div>
       </div>
+
+      {kb.hint && selectedVisible.length === 0 && (
+        <div className="ktv-float ktv-hint" role="note" aria-label="Keyboard shortcuts for these results">
+          <span><Kbd>J</Kbd><Kbd>K</Kbd> move</span>
+          {bulk && <span><Kbd>X</Kbd> select</span>}
+          <span><Kbd>↵</Kbd> open</span>
+          {onToggle && <span><Kbd>{doneKey}</Kbd> done</span>}
+          <span><Kbd>?</Kbd> all keys</span>
+          <IconButton icon="x" size="sm" label="Hide these hints" onClick={kb.dismissHint} />
+        </div>
+      )}
     </div>
   );
 }

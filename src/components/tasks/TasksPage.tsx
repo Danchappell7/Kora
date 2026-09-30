@@ -665,20 +665,20 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
       )}
       {menu === "actions" && (
         <Popover open anchorRef={actionsBtn} onClose={closeMenu} label="More actions" align="end" minWidth={220}>
-          <button type="button" className="ktv-mi" onClick={() => { closeMenu(); exportTasksCsv(exportList, exportName, exportOpts); }}>
+          <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); exportTasksCsv(exportList, exportName, exportOpts); }}>
             <Icon name="arrowUpRight" size={16} sw={1.75} /> Export CSV
           </button>
-          <button type="button" className="ktv-mi" onClick={() => { closeMenu(); printTasks(exportList, isMy ? "My tasks" : exportName); }}>
+          <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); printTasks(exportList, isMy ? "My tasks" : exportName); }}>
             <Icon name="arrowUpRight" size={16} sw={1.75} /> Export PDF
           </button>
           {((onOpenImport && !readOnly) || onAdvancedSearch) && <div className="ktv-msep" role="separator" />}
           {onOpenImport && !readOnly && (
-            <button type="button" className="ktv-mi" onClick={() => { closeMenu(); onOpenImport(); }}>
+            <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); onOpenImport(); }}>
               <Icon name="plus" size={16} sw={1.75} /> Import tasks…
             </button>
           )}
           {onAdvancedSearch && (
-            <button type="button" className="ktv-mi" onClick={() => { closeMenu(); onAdvancedSearch(); }}>
+            <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); onAdvancedSearch(); }}>
               <Icon name="search" size={16} sw={1.75} /> Advanced search…
             </button>
           )}

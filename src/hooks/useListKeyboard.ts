@@ -99,7 +99,7 @@ export function useListKeyboard(opts: ListKeyboardOptions): ListKeyboard {
     const onKey = (e: KeyboardEvent) => {
       const o = optsRef.current;
       if (e.defaultPrevented || e.isComposing) return;
-      const target = e.target as HTMLElement | null;
+      const target = e.target instanceof HTMLElement ? e.target : null;
       if (isTypingTarget(target)) return;
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
       const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
