@@ -87,14 +87,15 @@ function labelStep(labels: string[], spacing: number): number {
 }
 const showLabel = (i: number, n: number, step: number) => (n - 1 - i) % step === 0;
 
-/** A menu-style tooltip, placed over a chart at `x` (px from the chart's left). */
+/** A tooltip in the menu recipe (raised surface, r-lg, e2, padding 4, rows
+ *  inset 8), placed over a chart at `x` (px from the chart's left). */
 function ChartTip({ x, width, top = 0, children }: { x: number; width: number; top?: number; children: ReactNode }) {
   // keep it inside the chart: anchor left near the start, right near the end
   const shift = x < width * 0.2 ? "0%" : x > width * 0.8 ? "-100%" : "-50%";
   return (
     <div role="presentation" style={{
       position: "absolute", left: x, top, transform: `translate(${shift}, calc(-100% - 8px))`, zIndex: 2, pointerEvents: "none",
-      minWidth: 120, maxWidth: 240, padding: "8px 10px", borderRadius: "var(--r-md, 8px)",
+      minWidth: 136, maxWidth: 240, padding: 4, borderRadius: "var(--r-lg, 12px)",
       background: "var(--surface-raised)", boxShadow: "var(--e2, 0 0 0 1px var(--hairline-strong), var(--shadow-lg))",
       font: "500 12px/16px var(--font-ui, var(--font-display))", color: "var(--ink)", whiteSpace: "nowrap",
     }}>
@@ -105,14 +106,15 @@ function ChartTip({ x, width, top = 0, children }: { x: number; width: number; t
 /** One line inside a tooltip: swatch · label · value. */
 function TipRow({ swatch, label, value }: { swatch?: string; label: string; value: ReactNode }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 24, padding: "0 8px" }}>
       {swatch && <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 2, background: swatch, flexShrink: 0 }} />}
       <span style={{ color: "var(--ink-3)" }}>{label}</span>
       <span style={{ marginLeft: "auto", paddingLeft: 12, font: "600 12px/16px var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{value}</span>
     </div>
   );
 }
-const tipTitle: CSSProperties = { ...AXIS, color: "var(--ink-3)" };
+/** the tooltip's heading: the period in full */
+const tipTitle: CSSProperties = { ...AXIS, color: "var(--ink-3)", padding: "4px 8px 0" };
 
 /** A chart legend: short swatches (bars) or strokes (lines), 12px labels. */
 export function ChartLegend({ items }: { items: { label: string; color: string; shape?: "bar" | "line" }[] }) {
@@ -244,7 +246,17 @@ export function GroupedBars({ groups, series, h = 150, current, label, titles }:
   const colW = plotW / n;
   const step = labelStep(groups, colW);
   const barW = Math.max(4, Math.min(12, (colW - 12) / series.length - 3));
-  const fill = (s: BarSeries) => (s.grad ? GRAD_UP : s.color);
+  /* Longhands only, all set on every render. Mixing the background shorthand
+     with backgroundSize/Position lets a re-render (a week going from 0 to 1)
+     reset the longhands, which stretches the Done gradient over the bar
+     instead of the plot. */
+  const barPaint = (s: BarSeries, v: number): CSSProperties => ({
+    backgroundColor: v <= 0 ? TRACK : s.grad ? "transparent" : s.color,
+    backgroundImage: v > 0 && s.grad ? GRAD_UP : "none",
+    backgroundSize: `100% ${h}px`,
+    backgroundPosition: "bottom",
+    backgroundRepeat: "no-repeat",
+  });
   const summary = groups.map((g, i) => `${titles?.[i] ?? g}: ${series.map((s) => `${s.label} ${s.values[i] ?? 0}`).join(", ")}`).join("; ");
   return (
     <div>
@@ -273,8 +285,7 @@ export function GroupedBars({ groups, series, h = 150, current, label, titles }:
                   <div key={s.label} style={{
                     width: barW, flexShrink: 0, borderRadius: "3px 3px 1px 1px",
                     height: v > 0 ? (grown ? `max(${pct}%, 3px)` : 0) : 2,
-                    background: v > 0 ? fill(s) : TRACK,
-                    backgroundSize: s.grad ? `100% ${h}px` : undefined, backgroundPosition: s.grad ? "bottom" : undefined,
+                    ...barPaint(s, v),
                     transition: growTransition("height", gi * 24),
                   }} />
                 );
@@ -470,7 +481,22 @@ export function BarList({ rows, max, labelWidth = 140, label }: { rows: BarRow[]
 
 /* ---------------- StackedBar: parts of a whole ---------------- */
 
-/** One 10px bar split into coloured parts with hairline gaps (status mix). */
+/** Shares of a whole as whole percentages that add up to 100 (largest
+ *  remainder), so a legend never reads 99% or 101%. All zeros stay zeros. */
+export function shares(values: number[]): number[] {
+  const total = values.reduce((a, v) => a + Math.max(0, v), 0);
+  if (!total) return values.map(() => 0);
+  const exact = values.map((v) => (Math.max(0, v) / total) * 100);
+  const out = exact.map(Math.floor);
+  let left = 100 - out.reduce((a, v) => a + v, 0);
+  exact.map((v, i) => ({ i, r: v - Math.floor(v) }))
+    .sort((a, b) => b.r - a.r || a.i - b.i)
+    .forEach(({ i }) => { if (left > 0 && exact[i] > 0) { out[i]++; left--; } });
+  return out;
+}
+
+/** One 10px bar split into coloured parts with hairline gaps (status mix).
+ *  Its accessible name carries every part's count and share. */
 export function StackedBar({ segments, height = 10, label }: {
   segments: { key: string; label: string; value: number; color: string }[];
   height?: number;
@@ -478,12 +504,13 @@ export function StackedBar({ segments, height = 10, label }: {
 }) {
   const grown = useGrow();
   const total = segments.reduce((a, s) => a + s.value, 0);
-  const shown = segments.filter((s) => s.value > 0);
+  const pct = shares(segments.map((s) => s.value));
+  const shown = segments.map((s, i) => ({ ...s, pct: pct[i] })).filter((s) => s.value > 0);
   return (
-    <div role="img" aria-label={`${label}: ${shown.map((s) => `${s.label} ${s.value}`).join(", ") || "none"}`}
+    <div role="img" aria-label={`${label}: ${shown.map((s) => `${s.label} ${s.value} (${s.pct}%)`).join(", ") || "none"}`}
       style={{ display: "flex", gap: 2, height, borderRadius: 999, overflow: "hidden", background: total ? "transparent" : TRACK }}>
       {shown.map((s, i) => (
-        <span key={s.key} title={`${s.label} · ${s.value}`} style={{
+        <span key={s.key} title={`${s.label} · ${s.value} (${s.pct}%)`} style={{
           flexGrow: grown ? s.value : 0, flexShrink: 0, flexBasis: 0, minWidth: 3, background: s.color,
           borderRadius: i === 0 && i === shown.length - 1 ? 999 : i === 0 ? "999px 2px 2px 999px" : i === shown.length - 1 ? "2px 999px 999px 2px" : 2,
           transition: growTransition("flex-grow"),

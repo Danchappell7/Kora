@@ -4,9 +4,9 @@ import {
   csvCell, csvText, localDay, startOfWeekMon, addDays, weeklyThroughput, taskLoadInWeek, workloadForWeek,
   fmtHours, goalTree, goalDescendants, goalProgressMap, resolveTagId, projectHealth, workdays,
   scopeTasks, overviewFacts, kpiSentence, phraseText, fmtDay, fmtMinutes, weeklyFacts, weeklySummaryText,
-  weeklySummaryDetails, plainSummary, cycleHistogram,
+  weeklySummaryDetails, plainSummary, cycleHistogram, summaryInput, SUMMARY_TASK_CAP,
 } from "./reportingUtils";
-import { niceMax } from "../charts";
+import { niceMax, shares } from "../charts";
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 let n = 0;
@@ -242,7 +242,7 @@ describe("insights: the weekly summary", () => {
   const wed = new Date(2026, 8, 30);
   const names: Record<string, string> = { p1: "Launch", p2: "Brand" };
   it("gathers the past week and the next, most urgent first", () => {
-    const f = weeklyFacts([
+    const tasks = [
       task({ title: "Deck", status: "done", projectId: "p1", completedAt: "2026-09-29", dueDate: "2026-09-30", createdAt: "2026-09-25" }),
       task({ title: "Budget", status: "done", projectId: "p1", completedAt: "2026-09-28", dueDate: "2026-09-27" }),
       task({ title: "Palette", status: "done", projectId: "p2", completedAt: "2026-09-26" }),
@@ -252,7 +252,8 @@ describe("insights: the weekly summary", () => {
       task({ title: "Onboarding", status: "blocked" }),
       task({ title: "Pricing", dueDate: "2026-10-02" }),
       task({ title: "CI", dueDate: "2026-10-20" }),
-    ], wed);
+    ];
+    const f = weeklyFacts(tasks, wed);
     expect(f.finished.map((t) => t.title)).toEqual(["Deck", "Budget", "Palette"]);
     expect({ withDue: f.withDue, onTime: f.onTime, created: f.created }).toEqual({ withDue: 2, onTime: 1, created: 1 });
     expect(f.inFlight.map((t) => t.title)).toEqual(["Auth", "Tokens"]);
@@ -268,7 +269,35 @@ describe("insights: the weekly summary", () => {
       "- **Next 7 days:** 1 task due, starting with “Pricing” on Fri 2 Oct.",
     ]);
     expect(plainSummary(text)).not.toContain("**");
-    expect(weeklySummaryDetails(f)[0]).toBe("3 finished between Thu 24 Sep and Wed 30 Sep, 1 of 2 on time");
+    // "How I got here" describes exactly what Kanbo is sent: the week's finished work and the open work
+    const sent = summaryInput(tasks, f);
+    expect(sent.tasks.map((t) => t.title)).toEqual(["Auth", "Onboarding", "Pricing", "Tokens", "CI", "Deck", "Budget", "Palette"]);
+    expect(weeklySummaryDetails(f, sent)).toEqual([
+      "3 finished between Thu 24 Sep and Wed 30 Sep, 1 of 2 on time",
+      "5 open: 1 overdue, 1 blocked, 2 under way",
+      "1 due in the next 7 days",
+      "Each task's title, status, priority, dates, assignee and project; nothing else",
+    ]);
+  });
+  it("counts 'the next 7 days' as today and the six after it", () => {
+    const f = weeklyFacts([task({ dueDate: "2026-09-30" }), task({ dueDate: "2026-10-06" }), task({ dueDate: "2026-10-07" })], wed);
+    expect(f.dueSoon.map((t) => t.dueDate)).toEqual(["2026-09-30", "2026-10-06"]);
+  });
+  it("sends Kanbo at most 120 tasks, the most pressing open work first, and says so", () => {
+    const open = Array.from({ length: 200 }, (_, i) => task({ title: "Open " + i, dueDate: i < 3 ? "2026-09-20" : undefined }));
+    const done = Array.from({ length: 60 }, () => task({ status: "done", completedAt: "2026-09-29" }));
+    const old = Array.from({ length: 300 }, () => task({ status: "done", completedAt: "2026-03-01" }));
+    const all = [...old, ...done, ...open];
+    const f = weeklyFacts(all, wed);
+    const sent = summaryInput(all, f);
+    expect(sent.tasks).toHaveLength(SUMMARY_TASK_CAP);
+    expect({ open: sent.open, finished: sent.finished, openTotal: sent.openTotal, finishedTotal: sent.finishedTotal })
+      .toEqual({ open: 80, finished: 40, openTotal: 200, finishedTotal: 60 });
+    expect(sent.tasks.slice(0, 3).map((t) => t.title)).toEqual(["Open 0", "Open 1", "Open 2"]); // overdue first
+    expect(sent.tasks.some((t) => t.completedAt === "2026-03-01")).toBe(false); // older work isn't sent
+    const details = weeklySummaryDetails(f, sent);
+    expect(details[0]).toBe("The 40 most recent of 60 tasks finished between Thu 24 Sep and Wed 30 Sep");
+    expect(details[1]).toBe("The 80 most pressing of 200 open tasks, overdue and blocked first");
   });
   it("says so plainly when the week was quiet", () => {
     const text = weeklySummaryText(weeklyFacts([task({})], wed), () => undefined);
@@ -283,6 +312,12 @@ describe("insights: the weekly summary", () => {
 describe("insights: cycle time and axes", () => {
   it("buckets cycle times by whole days", () => {
     expect(cycleHistogram([0, 0, 1, 2, 3, 7, 8, 14, 15, 40]).map((b) => b.n)).toEqual([2, 2, 2, 2, 2]);
+  });
+  it("gives shares of a whole that add up to 100", () => {
+    expect(shares([1, 1, 1])).toEqual([34, 33, 33]);
+    expect(shares([3, 1, 0, 3])).toEqual([43, 14, 0, 43]);
+    expect(shares([0, 0])).toEqual([0, 0]);
+    expect(shares([1, 299]).reduce((a, b) => a + b, 0)).toBe(100);
   });
   it("rounds an axis top to whole, even steps", () => {
     expect([0, 1, 2, 3, 5, 7, 9, 10, 11, 21, 41].map((v) => niceMax(v))).toEqual([2, 2, 2, 4, 6, 8, 10, 10, 12, 30, 50]);

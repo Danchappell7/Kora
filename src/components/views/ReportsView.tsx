@@ -141,13 +141,13 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
   // ---- the weekly summary (the past 7 days of the scoped work) ----
   const wFacts = useMemo(() => weeklyFacts(scoped, KANBO_TODAY), [scoped, today]);
   const projectName = (id: string) => getProject(id)?.name;
-  const scopedRef = useRef(scoped);
-  scopedRef.current = scoped;
   // Without an aiSummary prop, ask Kanbo directly — only when there's a backend
   // and AI is on in Settings; otherwise the summary is written on-device.
+  // Either way it's sent the tasks InsightsSummary picks (summaryInput), so
+  // "How I got here" can say exactly what Kanbo read.
   const aiAllowed = store.configured && loadAppearance().ai !== false;
-  const askStore = async (): Promise<AiOutcome<string>> => {
-    const text = await store.aiSummary(scopedRef.current, toLocalISO(KANBO_TODAY));
+  const askStore = async (sent: Task[]): Promise<AiOutcome<string>> => {
+    const text = await store.aiSummary(sent, toLocalISO(KANBO_TODAY));
     if (text) return { data: text, source: "ai" };
     const notice = store.aiNotice();
     return { data: null, source: notice && /used today|requests/i.test(notice) ? "limit" : "unavailable", detail: notice ?? undefined };
@@ -193,7 +193,7 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
     const range = `${fmtDayMonth(wFacts.from)} – ${fmtDayMonth(wFacts.to)}`;
     const md = includeSummary ? (summary?.text ?? weeklySummaryText(wFacts, projectName)) : null;
     const summaryBlock = md
-      ? `<h2>Weekly summary</h2><p class="note">${summary?.source === "ai" ? `Written by Kanbo from ${wFacts.total} tasks · ${esc(range)}` : esc(range)}</p>${summaryHtml(md)}`
+      ? `<h2>Weekly summary</h2><p class="note">${summary?.source === "ai" && summary.sent != null ? `Written by Kanbo from ${summary.sent} task${summary.sent === 1 ? "" : "s"} · ${esc(range)}` : `Built from the past 7 days' tasks · ${esc(range)}`}</p>${summaryHtml(md)}`
       : "";
     const wk = (i: number) => i === report.weekStarts.length - 1 ? "This week (so far)" : `${fmtDayMonth(report.weekStarts[i])} ${report.weekStarts[i].getFullYear()}`;
     const trendRow = report.weekStarts.map((_, i) => `<tr><td>${esc(wk(i))}</td><td>${report.created[i]}</td><td>${report.completed[i]}</td></tr>`).join("");
@@ -275,14 +275,16 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
           </div>
         </div>
 
-        <InsightsSummary facts={wFacts} projectName={projectName} value={summary} onValue={setSummary} aiSummary={aiSummary}
+        <InsightsSummary facts={wFacts} tasks={scoped} projectName={projectName} value={summary} onValue={setSummary} aiSummary={aiSummary}
           include={includeSummary} onInclude={setIncludeSummary} who={who} resetKey={scopeKey} />
 
         <div className="kin-grid">
           <InsightsCard title="Throughput" meta="Created and completed per week"
             lead={report.velocity > 0
               ? <>Averaging <b>{report.velocity}</b> completed a week{trend}.</>
-              : <>Nothing was completed in the last {weeks} full weeks.</>}>
+              : report.completed[current] > 0
+                ? <><b>{report.completed[current]}</b> completed so far this week; nothing in the {weeks} full weeks before.</>
+                : <>Nothing was completed in the last {weeks} full weeks.</>}>
             <GroupedBars groups={report.labels} titles={report.titles} current={current} h={168}
               label="Tasks created and completed per week, Monday to Sunday; the last week is this week so far"
               series={[

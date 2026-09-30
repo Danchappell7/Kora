@@ -7,7 +7,7 @@
    ============================================================ */
 import { useMemo, useState, type ReactNode } from "react";
 import { Avatar, Button, EmptyState, PriorityGlyph, ProjectDot, StatusGlyph } from "../primitives";
-import { Bars, BarList, StackedBar, type BarDatum, type BarRow } from "../charts";
+import { Bars, BarList, StackedBar, shares, type BarDatum, type BarRow } from "../charts";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { focusKeys, todayKey } from "../../hooks/useFocusTimer";
 import { STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, todayISO, getProject, getMember } from "../../data/data";
@@ -139,6 +139,10 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
       : b.n - a.n);
   const breakdown = breakdownAll.slice(0, BREAKDOWN_ROWS);
   const statusCounts = STATUS_ORDER.map((s) => ({ s, n: counts.get(s) ?? 0 }));
+  // the legend gives each status's share, not its count: the KPI sentence
+  // already states the blocked figure, and each number is stated once
+  const statusShares = shares(statusCounts.map((b) => b.n));
+  const shareText = (i: number) => (statusCounts[i].n > 0 && statusShares[i] === 0 ? "<1%" : `${statusShares[i]}%`);
 
   // ---- who carried the work (team) / where your work went (you) ----
   const people = members.map((m) => {
@@ -217,20 +221,20 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
             <Bars data={week} h={172} label="Tasks completed per day, last 7 days" unit="completed" />
           </InsightsCard>
 
-          <InsightsCard title="Breakdown" actions={selects}>
+          <InsightsCard title="Breakdown" meta={pool.length ? `${pool.length} ${pool.length === 1 ? "task" : "tasks"}` : undefined} actions={selects}>
             {pool.length === 0 ? (
               <p className="kin-empty">No tasks in this view.</p>
             ) : activeDim === "status" ? (
               <>
-                <div aria-hidden="true">
-                  <StackedBar label="Tasks by status" segments={statusCounts.map((b) => ({ key: b.s, label: STATUS_META[b.s].label, value: b.n, color: statusFill(b.s) }))} />
-                </div>
-                <ul className="kin-legend" aria-label="Tasks by status">
-                  {statusCounts.map((b) => (
-                    <li key={b.s}>
-                      <span aria-hidden="true" style={{ display: "inline-flex" }}><StatusGlyph status={b.s} size={14} /></span>
+                {/* the bar's accessible name carries each count and share; the legend repeats it for the eye */}
+                <StackedBar label={`${pool.length} ${pool.length === 1 ? "task" : "tasks"} by status`}
+                  segments={statusCounts.map((b) => ({ key: b.s, label: STATUS_META[b.s].label, value: b.n, color: statusFill(b.s) }))} />
+                <ul className="kin-legend" aria-hidden="true">
+                  {statusCounts.map((b, i) => (
+                    <li key={b.s} data-empty={b.n === 0 || undefined}>
+                      <span style={{ display: "inline-flex" }}><StatusGlyph status={b.s} size={14} /></span>
                       {STATUS_META[b.s].label}
-                      <span className="kin-mono">{b.n}</span>
+                      <span className="kin-mono">{shareText(i)}</span>
                     </li>
                   ))}
                 </ul>

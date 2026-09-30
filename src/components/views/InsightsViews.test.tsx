@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import type { Task, Project } from "../../data/types";
+import type { AiOutcome } from "../../lib/askTypes";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
+import { GroupedBars } from "../charts";
 import { AnalyticsView } from "./AnalyticsView";
 import { ReportsView } from "./ReportsView";
 import { addDays } from "./reportingUtils";
@@ -15,6 +17,20 @@ const day = (offset: number) => toLocalISO(addDays(KANBO_TODAY, offset));
 const proj = (id: string, name: string): Project => ({ id, name, emoji: "", color: "red", workspaceId: "ws" });
 // a figure never ends a line: the space after it is non-breaking
 const kpiText = () => (document.querySelector(".kin-kpi")?.textContent ?? "").replace(/\u00a0/g, " ");
+/** the page's text, without its stylesheet */
+const pageText = () => {
+  const page = document.body.cloneNode(true) as HTMLElement;
+  page.querySelectorAll("style").forEach((el) => el.remove());
+  return page.textContent ?? "";
+};
+/** how many times a figure is shown on the page, as a whole number (not part of "113" or "13.5") */
+const timesShown = (fig: string) => pageText().match(new RegExp(`(?<![\\d.])${fig}(?![\\d.])`, "g"))?.length ?? 0;
+/** a promise the test settles by hand */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
 
 describe("AnalyticsView", () => {
   it("Ask Kanbo button calls onAsk", () => {
@@ -55,6 +71,20 @@ describe("AnalyticsView", () => {
     // four cards, in pairs
     expect(document.querySelectorAll(".kin-grid > .kin-card")).toHaveLength(4);
   });
+  it("states every KPI figure once on the page: the status legend gives shares, not counts", () => {
+    const tasks = [
+      // 13 finished in the past week (12 on time), 4 more a while ago
+      ...Array.from({ length: 13 }, (_, i) => task({ status: "done", dueDate: day(i === 0 ? -6 : 0), completedAt: day(-1 - (i % 3)) })),
+      ...Array.from({ length: 4 }, () => task({ status: "done", completedAt: day(-20) })),
+      ...Array.from({ length: 11 }, () => task({ status: "todo", dueDate: day(-2) })), // overdue
+      ...Array.from({ length: 9 }, () => task({ status: "blocked" })),
+    ];
+    render(<AnalyticsView tasks={tasks} />);
+    expect(kpiText()).toBe("In the past week the team finished 13 tasks — 92% on time. 11 are overdue and 9 are blocked.");
+    for (const fig of ["13", "92%", "11", "9"]) expect(timesShown(fig)).toBe(1);
+    // the bar still names every count and share for screen readers
+    expect(screen.getByRole("img", { name: /^37 tasks by status: To do 11 \(30%\), Blocked 9 \(24%\), Done 17 \(46%\)$/ })).toBeInTheDocument();
+  });
   it("Me scope filters to your tasks (assigned or shared with you)", () => {
     const onScopeChange = vi.fn();
     const tasks = [
@@ -73,6 +103,12 @@ describe("AnalyticsView", () => {
     // on your own, "who carried the work" becomes "where your work went"
     expect(screen.queryByRole("heading", { name: /Team output/ })).toBeNull();
     expect(screen.getByRole("heading", { name: /By project/ })).toBeInTheDocument();
+  });
+  it("speaks for the team when it can't tell who \"me\" is, whatever the scope says", () => {
+    const tasks = [task({ status: "done", assigneeId: "m-2", completedAt: day(0) }), task({ status: "done", assigneeId: "m-3", completedAt: day(0) })];
+    render(<AnalyticsView tasks={tasks} scope="me" onScopeChange={vi.fn()} />);
+    expect(kpiText()).toContain("the team finished 2 tasks");
+    expect(screen.queryByRole("group", { name: "Scope" })).toBeNull();
   });
   it("follows a controlled scope and hides Me · Team in a Personal workspace", () => {
     const tasks = [task({ status: "done", assigneeId: "me", completedAt: day(0) }), task({ status: "done", assigneeId: "", completedAt: day(0) })];
@@ -111,6 +147,24 @@ describe("AnalyticsView", () => {
     render(<AnalyticsView tasks={[t]} onOpen={onOpen} />);
     fireEvent.click(screen.getByRole("button", { name: "Open task Migrate billing" }));
     expect(onOpen).toHaveBeenCalledWith(t.id);
+  });
+});
+
+describe("charts", () => {
+  it("keeps the Done gradient sized to the plot when a week goes from 0 to 1", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const bars = (done: number) => (
+      <GroupedBars groups={["1 Sep", "8 Sep"]} h={168}
+        series={[{ label: "Created", color: "var(--ink-3)", values: [1, 1] }, { label: "Completed", color: "var(--accent)", values: [1, done], grad: true }]} />
+    );
+    const { container, rerender } = render(bars(0));
+    rerender(bars(1));
+    const done = container.querySelectorAll<HTMLElement>("[role=img] > div:last-child > div")[1].children[1] as HTMLElement;
+    expect(done.style.backgroundImage).toContain("linear-gradient");
+    expect(done.style.backgroundSize).toBe("100% 168px");
+    expect(done.style.backgroundPosition).toBe("bottom");
+    expect(error.mock.calls.flat().join(" ")).not.toMatch(/conflicting property|Updating a style property/);
+    error.mockRestore();
   });
 });
 
@@ -182,10 +236,70 @@ describe("ReportsView", () => {
     const aiSummary = vi.fn().mockResolvedValue({ data: null, source: "unavailable" });
     render(<ReportsView tasks={[task({ createdAt: day(-2) })]} projects={[]} aiSummary={aiSummary} />);
     fireEvent.click(screen.getByRole("button", { name: "Write this week's summary" }));
-    expect(await screen.findByText(/Kanbo couldn't write it just now/)).toBeInTheDocument();
+    expect(await screen.findByText(/Kanbo couldn't write it just now/, { selector: ".kin-foot" })).toBeInTheDocument();
     expect(screen.getByText(/Nothing finished/)).toBeInTheDocument();
     expect(document.querySelector(".kvellum")).toBeNull();
     expect(screen.getByRole("button", { name: "Try Kanbo again" })).toBeInTheDocument();
+  });
+  it("keeps keyboard focus when writing the summary, and moves it to the summary once written", () => {
+    render(<ReportsView tasks={[task({ status: "done", createdAt: day(-3), completedAt: day(-1) })]} projects={[proj("p-launch", "Launch")]} />);
+    const btn = screen.getByRole("button", { name: "Write this week's summary" });
+    btn.focus();
+    fireEvent.click(btn);
+    expect(document.activeElement).toBe(document.querySelector(".kin-summary-body"));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+  it("keeps Kanbo's buttons mounted and busy while it writes, and announces each step in one status region", async () => {
+    const first = deferred<AiOutcome<string>>(), second = deferred<AiOutcome<string>>();
+    const aiSummary = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    render(<ReportsView tasks={[task({ createdAt: day(-2) })]} projects={[]} aiSummary={aiSummary} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(""); // there from the start, so what lands in it is announced
+    const write = screen.getByRole("button", { name: "Write this week's summary" });
+    write.focus();
+    fireEvent.click(write);
+    expect(document.activeElement).toBe(write);
+    expect(write).toHaveAttribute("aria-busy", "true");
+    expect(status).toHaveTextContent("Kanbo is writing up the team's week…");
+    await act(async () => { first.resolve({ data: null, source: "unavailable" }); });
+    expect(document.activeElement).toBe(document.querySelector(".kin-summary-body"));
+    expect(status).toHaveTextContent(/Kanbo couldn't write it just now/);
+    const again = screen.getByRole("button", { name: "Try Kanbo again" });
+    again.focus();
+    fireEvent.click(again);
+    expect(again).toHaveAttribute("aria-busy", "true");
+    expect(document.activeElement).toBe(again);
+    await act(async () => { second.resolve({ data: "- **Shipped** the deck", source: "ai" }); });
+    // the same button, now offering a rewrite; focus never left it
+    expect(again).toHaveAccessibleName("Rewrite");
+    expect(document.activeElement).toBe(again);
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status).toHaveTextContent("Kanbo wrote this week's summary.");
+    expect(document.querySelectorAll(".kin-summary")).toHaveLength(1);
+  });
+  it("tells Kanbo only about this week's work, and says exactly what it read", async () => {
+    const old = Array.from({ length: 300 }, () => task({ status: "done", createdAt: day(-200), completedAt: day(-150) }));
+    const open = task({ title: "Brief the press", createdAt: day(-2) });
+    const aiSummary = vi.fn().mockResolvedValue({ data: "- **Shipped**", source: "ai" });
+    const write = vi.fn();
+    const popup = { document: { write, close: vi.fn() }, focus: vi.fn(), print: vi.fn() };
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    render(<ReportsView tasks={[...old, open]} projects={[]} aiSummary={aiSummary} />);
+    fireEvent.click(screen.getByRole("button", { name: "Write this week's summary" }));
+    const prov = await screen.findByRole("button", { name: /How I got here/ });
+    expect(aiSummary).toHaveBeenCalledWith([open]);
+    expect(prov).toHaveTextContent(/from 1 task,/);
+    fireEvent.click(prov);
+    expect(screen.getByText("1 open: 0 overdue, 0 blocked, 0 under way")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export as PDF" }));
+    expect(String(write.mock.calls[0][0])).toContain("Written by Kanbo from 1 task ·");
+    openSpy.mockRestore();
+  });
+  it("leads Throughput with this week when the full weeks were empty", () => {
+    render(<ReportsView tasks={[task({ status: "done", completedAt: day(0) }), task({ status: "done", completedAt: day(0) })]} projects={[]} />);
+    const card = screen.getByRole("heading", { name: /Throughput/ }).closest("section")!;
+    expect(card.querySelector(".kin-lead")!.textContent!.replace(/\u00a0/g, " "))
+      .toBe("2 completed so far this week; nothing in the 8 full weeks before.");
   });
   it("Me scope narrows Trends to your work and steps the person filter aside", () => {
     const tasks = [

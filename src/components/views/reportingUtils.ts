@@ -252,14 +252,12 @@ export interface WeeklyFacts {
   /** open and past due, the longest-overdue first */
   overdue: Task[];
   blocked: Task[];
-  /** open and due from today to a week out, soonest first */
+  /** open and due in the next seven days (today and the six after it), soonest first */
   dueSoon: Task[];
   /** created in the window */
   created: number;
   /** the project with the most completions in the window */
   topProject: { id: string; n: number } | null;
-  /** how many tasks the summary looked at */
-  total: number;
 }
 
 const PRIO_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
@@ -286,7 +284,7 @@ export function weeklyFacts(tasks: Task[], today: Date): WeeklyFacts {
     else if (t.status === "progress" || t.status === "review") inFlight.push(t);
     const due = localDay(t.dueDate);
     if (due && due < to) overdue.push(t);
-    else if (due && due <= soon) dueSoon.push(t);
+    else if (due && due < soon) dueSoon.push(t);
   }
   finished.sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
   inFlight.sort(byUrgency);
@@ -295,7 +293,7 @@ export function weeklyFacts(tasks: Task[], today: Date): WeeklyFacts {
   dueSoon.sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "") || byUrgency(a, b));
   let topProject: WeeklyFacts["topProject"] = null;
   perProject.forEach((n, id) => { if (!topProject || n > topProject.n) topProject = { id, n }; });
-  return { from, to, finished, withDue, onTime, inFlight, overdue, blocked, dueSoon, created, topProject, total: tasks.length };
+  return { from, to, finished, withDue, onTime, inFlight, overdue, blocked, dueSoon, created, topProject };
 }
 
 const quote = (s: string) => `“${s.trim()}”`;
@@ -344,16 +342,56 @@ export function weeklySummaryText(f: WeeklyFacts, projectName: (id: string) => s
   return lines.map((l) => `- ${l}`).join("\n");
 }
 
-/** The facts behind a summary, one per line, for its "How I got here" list. */
-export function weeklySummaryDetails(f: WeeklyFacts): string[] {
-  const n = f.finished.length;
-  return [
-    `${n} finished between ${fmtDay(f.from)} and ${fmtDay(f.to)}${f.withDue ? `, ${f.onTime} of ${f.withDue} on time` : ""}`,
-    `${f.inFlight.length} under way, ${f.blocked.length} blocked`,
-    `${f.overdue.length} overdue`,
-    `${f.dueSoon.length} due in the next 7 days`,
-    `${f.created} created in the same 7 days`,
-  ];
+/** At most this many tasks go to Kanbo for the weekly summary. The ai-assist
+ *  function reads 120 (AI_TASK_CAP in data/store.ts); trimming to it here,
+ *  in the same shape, means "How I got here" can say exactly what was sent. */
+export const SUMMARY_TASK_CAP = 120;
+/** room kept for the week's finished work when there's a lot open */
+const SUMMARY_DONE_SLOTS = 40;
+
+/** What Kanbo is sent to write the weekly summary. */
+export interface SummaryInput {
+  /** the tasks to send: open work, most pressing first, then the week's finished work, newest first */
+  tasks: Task[];
+  /** how many of `tasks` are open, and how many were finished in the window */
+  open: number;
+  finished: number;
+  /** the same counts before any trimming */
+  openTotal: number;
+  finishedTotal: number;
+}
+
+/** The weekly summary's input: the past seven days' finished work plus the
+ *  open work, overdue and blocked first, trimmed to SUMMARY_TASK_CAP. Older
+ *  finished work isn't sent: the summary is about this week. */
+export function summaryInput(tasks: Task[], f: WeeklyFacts, cap = SUMMARY_TASK_CAP): SummaryInput {
+  const seen = new Set<string>();
+  const open: Task[] = [];
+  const add = (t: Task) => { if (!seen.has(t.id)) { seen.add(t.id); open.push(t); } };
+  [...f.overdue, ...f.blocked, ...f.dueSoon, ...f.inFlight].forEach(add);
+  tasks.filter((t) => t.status !== "done").sort(byUrgency).forEach(add);
+  const openTake = Math.min(open.length, cap - Math.min(f.finished.length, SUMMARY_DONE_SLOTS));
+  const doneTake = Math.min(f.finished.length, cap - openTake);
+  return {
+    tasks: [...open.slice(0, openTake), ...f.finished.slice(0, doneTake)],
+    open: openTake, finished: doneTake, openTotal: open.length, finishedTotal: f.finished.length,
+  };
+}
+
+/** "How I got here" under Kanbo's weekly summary: what it was sent, one fact a line. */
+export function weeklySummaryDetails(f: WeeklyFacts, sent: SummaryInput): string[] {
+  const span = `between ${fmtDay(f.from)} and ${fmtDay(f.to)}`;
+  const lines = [sent.finished < sent.finishedTotal
+    ? `The ${sent.finished} most recent of ${sent.finishedTotal} tasks finished ${span}`
+    : `${sent.finished} finished ${span}${f.withDue ? `, ${f.onTime} of ${f.withDue} on time` : ""}`];
+  if (sent.open < sent.openTotal) {
+    lines.push(`The ${sent.open} most pressing of ${sent.openTotal} open tasks, overdue and blocked first`);
+  } else {
+    lines.push(`${sent.open} open: ${f.overdue.length} overdue, ${f.blocked.length} blocked, ${f.inFlight.length} under way`);
+    lines.push(`${f.dueSoon.length} due in the next 7 days`);
+  }
+  lines.push("Each task's title, status, priority, dates, assignee and project; nothing else");
+  return lines;
 }
 
 /** Markdown bullets as plain text, for the clipboard and the PDF. */
