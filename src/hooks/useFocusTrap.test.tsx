@@ -250,6 +250,83 @@ describe("useFocusTrap — stacked dialogs", () => {
     rerender(<Both top={false} />);
     expect(field).toHaveFocus();
   });
+
+  // The command palette's actions do this: onAction(…) then onClose() in one
+  // batched update, so the palette closes in the same commit New task opens.
+  it("when one dialog is swapped for another in one update, focus still goes back to where you started", () => {
+    function Swap() {
+      const [palette, setPalette] = useState(false);
+      const [next, setNext] = useState(false);
+      const paletteRef = useFocusTrap<HTMLDivElement>(palette);
+      const nextRef = useFocusTrap<HTMLDivElement>(next, () => setNext(false));
+      return (
+        <>
+          <button onClick={() => setPalette(true)}>Board card</button>
+          {palette && (
+            <div ref={paletteRef} role="dialog" aria-modal="true" aria-label="Palette">
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+              <input aria-label="Search" autoFocus onKeyDown={(e) => { if (e.key === "Enter") { setNext(true); setPalette(false); } }} />
+            </div>
+          )}
+          {next && (
+            <div ref={nextRef} role="dialog" aria-modal="true" aria-label="New task">
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+              <input aria-label="Task title" autoFocus />
+              <button onClick={() => setNext(false)}>Cancel</button>
+            </div>
+          )}
+        </>
+      );
+    }
+    render(<Swap />);
+    const card = screen.getByText("Board card");
+    act(() => card.focus());
+    fireEvent.click(card);
+    const search = screen.getByLabelText("Search");
+    expect(search).toHaveFocus();
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(screen.queryByRole("dialog", { name: "Palette" })).toBeNull();
+    expect(screen.getByLabelText("Task title")).toHaveFocus();
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(card).toHaveFocus();
+  });
+
+  it("swapping dialogs on top of another dialog hands focus back to the control you were on underneath", () => {
+    function Swap() {
+      const [palette, setPalette] = useState(false);
+      const [next, setNext] = useState(false);
+      const baseRef = useFocusTrap<HTMLDivElement>(true);
+      const paletteRef = useFocusTrap<HTMLDivElement>(palette);
+      const nextRef = useFocusTrap<HTMLDivElement>(next, () => setNext(false));
+      return (
+        <>
+          <div ref={baseRef} role="dialog" aria-modal="true" aria-label="Task">
+            <button>Task start</button>
+            <button onClick={() => setPalette(true)}>More</button>
+          </div>
+          {palette && (
+            <div ref={paletteRef} role="dialog" aria-modal="true" aria-label="Palette">
+              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+              <input aria-label="Search" autoFocus onKeyDown={(e) => { if (e.key === "Enter") { setNext(true); setPalette(false); } }} />
+            </div>
+          )}
+          {next && (
+            <div ref={nextRef} role="dialog" aria-modal="true" aria-label="Confirm">
+              <button data-autofocus onClick={() => setNext(false)}>Cancel</button>
+            </div>
+          )}
+        </>
+      );
+    }
+    render(<Swap />);
+    const more = screen.getByText("More");
+    act(() => more.focus());
+    fireEvent.click(more);
+    fireEvent.keyDown(screen.getByLabelText("Search"), { key: "Enter" });
+    expect(screen.getByText("Cancel")).toHaveFocus();
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(more).toHaveFocus();
+  });
 });
 
 describe("isEditableTarget", () => {

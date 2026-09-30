@@ -26,6 +26,9 @@ const stack: HTMLElement[] = [];
 // how to put focus back inside each open trap: the control you were last in,
 // else [data-autofocus], else the first focusable element, else the dialog
 const reentry = new WeakMap<HTMLElement, () => void>();
+// where focus should go back to for a trap that replaced another in the same
+// update — the closing trap's openers, handed over before the new one's effect runs
+const handoff = new WeakMap<HTMLElement, HTMLElement[]>();
 
 export interface FocusTrapOptions {
   /** Escape pressed in a text field, textarea, select or contentEditable.
@@ -63,7 +66,9 @@ export interface FocusTrapOptions {
  *       dropped to <body> — it calls `onEscape`.
  * - On close, focus goes back to where it was before the dialog opened. If
  *   that's gone, or a dialog underneath is still open and it isn't in there,
- *   focus goes back into that dialog instead of dropping to <body>.
+ *   focus goes back into that dialog instead of dropping to <body>. When one
+ *   dialog is swapped for another in a single update, the new one inherits
+ *   the old one's opener, so closing it still lands where you started.
  */
 export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: () => void, options?: FocusTrapOptions) {
   const ref = useRef<T>(null);
@@ -103,7 +108,8 @@ export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: 
     // else where it is now (a menu that opened us may have put it back on its
     // trigger) — whichever is still on the page by then
     const outside = (x: Element | null | undefined): x is HTMLElement => x instanceof HTMLElement && x !== document.body && !el.contains(x);
-    const openers = [opener.current?.el, document.activeElement].filter(outside);
+    // (plus, last, where a dialog we replaced in this same update started)
+    const openers = [opener.current?.el, document.activeElement, ...(handoff.get(el) ?? [])].filter(outside);
     const isTop = () => stack[stack.length - 1] === el;
     const focusable = () =>
       Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE))
@@ -180,8 +186,16 @@ export function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape?: 
       document.removeEventListener("keydown", onEsc);
       document.removeEventListener("focusin", onFocusIn);
       reentry.delete(el);
-      // (the stack entry went in the layout cleanup, so `under` is already the
-      // dialog beneath us, if any)
+      handoff.delete(el);
+      // (the stack entry went in the layout cleanup, so the stack is already
+      // what's left open, plus anything that opened in this same update)
+      // A trap whose effect hasn't run yet opened in this same update, so it
+      // isn't beneath us: it replaces us (the command palette closing as the
+      // dialog it picked opens). It inherits where we started, so closing it
+      // still lands there, and its own effect moves focus in.
+      const replacements = stack.filter((s) => !reentry.has(s));
+      for (const s of replacements) handoff.set(s, [...(handoff.get(s) ?? []), ...openers]);
+      if (replacements.length) return;
       // hand focus back — but never steal it from a dialog that opened on top
       const now = document.activeElement;
       if (now && now !== document.body && !el.contains(now)) return;
