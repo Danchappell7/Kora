@@ -331,7 +331,8 @@ export function Segmented<T extends string>({ options, value, onChange, ariaLabe
 /* ---------- Tooltip (CSS via data-tip) ----------
    Inverse (ink on the page colour), 12/16, no arrow. It waits 400ms before
    showing, so sweeping the pointer across a toolbar doesn't flicker, and
-   fades in 90ms. Hidden on touch, where there's no hover. */
+   fades in 90ms. Hidden on touch, where there's no hover. Controls at the
+   top of the window (the page header) add data-tip-pos="bottom". */
 export function GlobalTipStyles() {
   return (
     <style>{`
@@ -345,6 +346,7 @@ export function GlobalTipStyles() {
         transition: opacity var(--d-1, 90ms) var(--ease) 0s, transform var(--d-1, 90ms) var(--ease) 0s;
       }
       [data-tip]:hover::after { opacity: 1; transform: translate(-50%, 0); transition-delay: 400ms; }
+      [data-tip-pos="bottom"]::after { top: calc(100% + 6px); bottom: auto; transform: translate(-50%, -2px); }
       [data-tip=""]::after { display: none; }
       @media (hover: none) { [data-tip]::after { display: none; } }
     `}</style>
