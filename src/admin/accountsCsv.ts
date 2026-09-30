@@ -6,16 +6,10 @@
    leading apostrophe, which they show as plain text.
    ============================================================ */
 import type { AdminAccount } from "../data/store";
+import { csvCell, downloadCsv, toCsv } from "../lib/exportTasks";
 
-// = + - @ start a formula; a leading tab or carriage return can smuggle one in
-const FORMULA_START = /^[=+\-@\t\r]/;
-
-/** One CSV cell: formula-safe, quoted, with inner quotes doubled. */
-export function csvCell(value: unknown): string {
-  let s = value == null ? "" : String(value);
-  if (FORMULA_START.test(s)) s = "'" + s;
-  return `"${s.replace(/"/g, '""')}"`;
-}
+/** One CSV cell: formula-safe, quoted, with inner quotes doubled (the shared task-export guard). */
+export { csvCell };
 
 export const ACCOUNT_CSV_HEAD = ["Name", "Email", "Joined", "Last active", "Approved", "Admin", "Suspended"];
 
@@ -25,22 +19,13 @@ export const ACCOUNT_CSV_HEAD = ["Name", "Email", "Joined", "Last active", "Appr
  * (RFC 4180).
  */
 export function accountsCsv(rows: AdminAccount[]): string {
-  const body = rows.map((a) => [
+  return toCsv([ACCOUNT_CSV_HEAD, ...rows.map((a) => [
     a.name, a.email, a.createdAt, a.updatedAt,
     a.approved === false ? "no" : "yes", a.isAdmin ? "yes" : "no", a.suspended ? "yes" : "no",
-  ].map(csvCell).join(","));
-  return "﻿" + [ACCOUNT_CSV_HEAD.map(csvCell).join(","), ...body].join("\r\n") + "\r\n";
+  ])]);
 }
 
 /** Download the accounts table as `kanbo-accounts-YYYY-MM-DD.csv`. */
 export function downloadAccountsCsv(rows: AdminAccount[]): void {
-  const url = URL.createObjectURL(new Blob([accountsCsv(rows)], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `kanbo-accounts-${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // revoking straight away can cancel the download in some browsers
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadCsv(`kanbo-accounts-${new Date().toISOString().slice(0, 10)}.csv`, accountsCsv(rows));
 }

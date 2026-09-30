@@ -10,7 +10,7 @@ import { Icon, EmptyArt } from "../primitives";
 import { LineChart, GroupedBars } from "../charts";
 import { StatTile } from "./HomeView";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { KANBO_TODAY, toLocalISO, getProject, getMember } from "../../data/data";
+import { KANBO_TODAY, toLocalISO, todayISO, getProject, getMember } from "../../data/data";
 import type { Task } from "../../data/types";
 import { useEntrance } from "../../hooks/useEntrance";
 import { daysBetween, downloadCsv, fmtDayMonth, localDay, median, round1, weeklyThroughput } from "./reportingUtils";
@@ -41,6 +41,10 @@ export function ReportsView({ tasks, projects, members = [], onOpen }: {
   const assignee = assigneeSel === "all" || members.some((m) => m.id === assigneeSel) ? assigneeSel : "all";
   useEffect(() => { if (projectSel !== projectId) setProjectId(projectId); }, [projectSel, projectId]);
   useEffect(() => { if (assigneeSel !== assignee) setAssignee(assignee); }, [assigneeSel, assignee]);
+
+  // the week buckets, ages and overdue counts read today's date, so the memos
+  // below recompute when the day changes (a Reports tab left open overnight)
+  const today = todayISO();
 
   // scope the whole report by project + assignee
   const scoped = useMemo(() => tasks.filter((t) => {
@@ -86,7 +90,7 @@ export function ReportsView({ tasks, projects, members = [], onOpen }: {
     const oldestOpen = [...open].filter((t) => t.createdAt).sort((a, b) => ageOf(b) - ageOf(a)).slice(0, 5);
 
     return { ...tp, labels, windowStart, avgCycle, medCycle, onTimePct, ageBuckets, oldestOpen, ageOf, openCount: open.length };
-  }, [scoped, weeks]);
+  }, [scoped, weeks, today]);
 
   // per-project comparison table (respects assignee filter, ignores project filter)
   const projComparison = useMemo(() => {
@@ -100,7 +104,7 @@ export function ReportsView({ tasks, projects, members = [], onOpen }: {
       const cyc = ts.filter((t) => t.status === "done" && t.completedAt && t.createdAt).map((t) => daysBetween(t.createdAt!, t.completedAt!));
       return { pid, name: getProject(pid)?.name ?? "—", total: ts.length, done, open: ts.length - done, overdue, completion: ts.length ? Math.round((done / ts.length) * 100) : 0, avgCycle: cyc.length ? round1(cyc.reduce((a, b) => a + b, 0) / cyc.length) : null };
     }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)); // every project — never truncated
-  }, [tasks, assignee]);
+  }, [tasks, assignee, today]);
 
   const selStyle: CSSProperties = { height: 32, padding: "0 10px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 12.5, outline: "none" };
   const weekLabel = (i: number) => {
@@ -223,7 +227,7 @@ export function ReportsView({ tasks, projects, members = [], onOpen }: {
             {report.ageBuckets.map((b) => (
               <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
                 <span style={{ width: 76, flexShrink: 0, fontSize: 12.5, color: "var(--ink-2)" }}>{b.label}</span>
-                <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--fill-2, var(--hairline))", overflow: "hidden" }}>
+                <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
                   <div style={{ width: `${(b.n / maxAge) * 100}%`, height: "100%", borderRadius: 6, background: b.lo >= 28 ? "var(--prio-urgent)" : b.lo >= 14 ? "var(--prio-high)" : "var(--accent)", minWidth: b.n ? 4 : 0, transition: "width .6s var(--ease)" }} />
                 </div>
                 <span className="mono tnum" style={{ width: 30, textAlign: "right", fontSize: 12.5, color: "var(--ink-3)", flexShrink: 0 }}>{b.n}</span>

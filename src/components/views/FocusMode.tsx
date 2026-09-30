@@ -88,7 +88,7 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
           <svg aria-hidden="true" viewBox={`0 0 ${size} ${size}`} width="100%" height="100%" style={{ transform: "rotate(-90deg)" }}>
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--hairline-strong)" strokeWidth={stroke} />
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={ringColor} strokeWidth={stroke} strokeLinecap="round"
-              strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)} style={{ transition: reduceMotion ? undefined : "stroke-dashoffset 1s linear", filter: `drop-shadow(0 0 10px ${ringColor})` }} />
+              strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)} style={{ transition: reduceMotion ? undefined : "stroke-dashoffset 1s linear", filter: `drop-shadow(0 0 calc(var(--glow-r, 8px) * 1.25) ${ringColor})` }} />
           </svg>
           <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
             <div style={{ textAlign: "center" }}>

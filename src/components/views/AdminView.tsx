@@ -309,7 +309,7 @@ function TrendChart({ days }: { days: AdminDay[] }) {
     <div className="glass" style={{ borderRadius: 18, padding: "18px 20px 14px", marginBottom: 18 }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <span style={{ width: 9, height: 9, borderRadius: 99, background: active.color, boxShadow: `0 0 8px ${active.color}` }} />
+          <span style={{ width: 9, height: 9, borderRadius: 99, background: active.color, boxShadow: `0 0 var(--glow-r, 8px) ${active.color}` }} />
           <span style={{ fontSize: 15, fontWeight: 600 }}>{active.label}</span>
           <span style={{ fontSize: 12, color: "var(--ink-4)" }}>· last {range} days</span>
         </div>
@@ -410,7 +410,7 @@ function Breakdown({ title, icon, data, palette }: { title: string; icon: "check
         {entries.map(([k, v]) => (
           <div key={k} style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ width: 64, fontSize: 12, color: "var(--ink-3)", textTransform: "capitalize", flexShrink: 0 }}>{k}</span>
-            <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
+            <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
               <div style={{ width: `${total ? (v / max) * 100 : 0}%`, height: "100%", borderRadius: 6, background: palette[k], minWidth: v ? 5 : 0, transition: "width .7s var(--ease)" }} />
             </div>
             <span className="mono tnum" style={{ width: 28, textAlign: "right", fontSize: 12, color: "var(--ink-2)", flexShrink: 0 }}>{v}</span>
@@ -688,7 +688,7 @@ function BillingPanel({ billing, onReload }: { billing: AdminBilling; onReload: 
           return (
             <div key={m.k} style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ width: 74, fontSize: 12, color: "var(--ink-3)", flexShrink: 0 }}>{m.label}</span>
-              <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
+              <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
                 <div style={{ width: `${(m.v / max) * 100}%`, height: "100%", borderRadius: 6, background: SUB_COLORS[m.k], minWidth: m.v ? 5 : 0, transition: "width .7s var(--ease)" }} />
               </div>
               <span className="mono tnum" style={{ width: 28, textAlign: "right", fontSize: 12, color: "var(--ink-2)", flexShrink: 0 }}>{m.v}</span>
@@ -747,7 +747,7 @@ function FunnelCard({ funnel }: { funnel: AdminFunnel }) {
           return (
             <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ width: 78, fontSize: 12, color: "var(--ink-3)", flexShrink: 0 }} title={s.hint || undefined}>{s.label}</span>
-              <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--surface-2)", overflow: "hidden" }}>
+              <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
                 <div style={{ width: `${pct}%`, height: "100%", borderRadius: 6, background: s.color, minWidth: s.v ? 5 : 0, transition: "width .7s var(--ease)" }} />
               </div>
               <span className="mono tnum" style={{ width: 58, textAlign: "right", fontSize: 12, color: "var(--ink-2)", flexShrink: 0 }}>{s.v} · {pct}%</span>

@@ -28,7 +28,9 @@ function GettingStarted({ steps }: { steps: { label: string; done: boolean; acti
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
         {steps.map((s) => (
           <button key={s.label} onClick={s.done ? undefined : s.action} disabled={s.done} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, border: "1px solid var(--hairline)", background: s.done ? "var(--surface-2)" : "var(--surface)", cursor: s.done ? "default" : "pointer", textAlign: "left" }}>
-            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)", color: s.done ? "var(--avatar-ink, var(--bg-deep))" : "var(--accent)" }}>
+            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)",
+              // the tick is cut out of the green in the page colour: ≥ 5:1 in both themes (dark ink was 2.8:1 on light's deeper green)
+              color: s.done ? "var(--bg)" : "var(--accent)" }}>
               {s.done ? <Icon name="check" size={13} sw={3} /> : <Icon name="arrowRight" size={13} />}
             </span>
             <span style={{ flex: 1, minWidth: 0 }}>
@@ -60,18 +62,26 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam }: {
-  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
+export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam, canCreateProject = true }: {
+  /** everything in the workspace — project cards, the clean-slate check and the "first task" step */
+  tasks: Task[];
+  /** the viewer's own work (assigned to them or collaborating) — the brief, stat tiles, focus queue and weekly chart.
+      Defaults to `tasks`, so a caller that doesn't split them sees the old behaviour. */
+  myTasks?: Task[];
+  projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
+  /** false for a guest in this workspace — they can't create projects, so no "New project" / "Create a project" CTA */
+  canCreateProject?: boolean;
 }) {
   // phones and tablets have no q key to press — point them at a button instead
   const touchOnly = useMediaQuery("(hover: none)");
-  const open = tasks.filter((t) => t.status !== "done");
+  // the brief and its widgets are personal: in a team workspace they count only the viewer's work, never every teammate's
+  const open = myTasks.filter((t) => t.status !== "done");
   const counts = {
-    todo: tasks.filter((t) => t.status === "todo").length,
-    progress: tasks.filter((t) => t.status === "progress").length,
-    review: tasks.filter((t) => t.status === "review").length,
-    blocked: tasks.filter((t) => t.status === "blocked").length,
-    done: tasks.filter((t) => t.status === "done").length,
+    todo: myTasks.filter((t) => t.status === "todo").length,
+    progress: myTasks.filter((t) => t.status === "progress").length,
+    review: myTasks.filter((t) => t.status === "review").length,
+    blocked: myTasks.filter((t) => t.status === "blocked").length,
+    done: myTasks.filter((t) => t.status === "done").length,
   };
   // "due today" means due today; anything past due is counted (and labelled) separately
   const dueToday = open.filter((t) => dueState(t.dueDate, t.status) === "today");
@@ -84,10 +94,10 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
   // real "this week" metrics from completedAt
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const last7 = Array.from({ length: 7 }, (_, i) => { const d = new Date(todayMid); d.setDate(d.getDate() - (6 - i)); return d; });
-  const weekData = last7.map((d) => { const iso = toLocalISO(d); return tasks.filter((t) => t.completedAt === iso).length; });
+  const weekData = last7.map((d) => { const iso = toLocalISO(d); return myTasks.filter((t) => t.completedAt === iso).length; });
   const doneThisWeek = weekData.reduce((a, b) => a + b, 0);
-  const completionRate = tasks.length ? Math.round((counts.done / tasks.length) * 100) : 0;
-  const inProgressProjects = new Set(tasks.filter((t) => t.status === "progress").map((t) => t.projectId)).size;
+  const completionRate = myTasks.length ? Math.round((counts.done / myTasks.length) * 100) : 0;
+  const inProgressProjects = new Set(myTasks.filter((t) => t.status === "progress").map((t) => t.projectId)).size;
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -98,7 +108,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
     const starters: { icon: IconName; title: string; body: string; onClick: () => void; primary?: boolean }[] = [
       { icon: "plus", title: "Add your first task", body: "Capture something on your plate — Kanbo sorts out the rest.", onClick: onNewTask, primary: true },
       { icon: "calendarPlus", title: "Plan your day", body: "Auto-plan lays your tasks around your meetings.", onClick: () => setRoute({ view: "plan" }) },
-      { icon: "layers", title: "Create a project", body: "Group related work and track progress in one place.", onClick: onNewProject },
+      ...(canCreateProject ? [{ icon: "layers" as IconName, title: "Create a project", body: "Group related work and track progress in one place.", onClick: onNewProject }] : []),
       { icon: "clock", title: "Start a focus block", body: "Put the timer on and do one thing properly.", onClick: openFocus },
     ];
     return (
@@ -138,7 +148,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
 
   const gsSteps = [
     { label: "Add your first task", done: tasks.length > 0, action: onNewTask, cta: "Capture one" },
-    { label: "Plan your day", done: tasks.some((t) => t.scheduled != null || t.planToday), action: () => setRoute({ view: "plan" }), cta: "Open Plan my day" },
+    { label: "Plan your day", done: myTasks.some((t) => t.scheduled != null || t.planToday), action: () => setRoute({ view: "plan" }), cta: "Open Plan my day" },
     { label: "Connect your calendar", done: !!calendarConnected, action: () => setRoute({ view: "calendar" }), cta: "Connect Google" },
     { label: "Invite your team", done: !!hasTeam, action: () => setRoute({ view: "team" }), cta: "Create a workspace" },
   ];
@@ -240,7 +250,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
       {/* projects */}
       <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>Active projects</h2>
-        <button onClick={onNewProject} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "6px 11px", fontSize: 12.5 }}><Icon name="plus" size={14} /> New project</button>
+        {canCreateProject && <button onClick={onNewProject} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "6px 11px", fontSize: 12.5 }}><Icon name="plus" size={14} /> New project</button>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 14 }}>
         {projects.filter((p) => p.workspaceId !== null || p.id === "p-personal").slice(0, 6).map((p) => {
@@ -258,8 +268,8 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "var(--ink-4)", marginBottom: 7 }}>
                 <span className="kicker">Progress</span><span className="mono tnum" style={{ color: prog > 0 ? "var(--accent)" : "var(--ink-4)" }}>{prog}%</span>
               </div>
-              <div style={{ height: 6, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}>
-                <div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: p.color, boxShadow: prog > 0 ? `0 0 10px color-mix(in oklch, ${p.color} 70%, transparent)` : "none", transition: "width .9s var(--ease)" }} />
+              <div style={{ height: 6, borderRadius: 99, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
+                <div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: p.color, boxShadow: prog > 0 ? `0 0 calc(var(--glow-r, 8px) * 1.25) color-mix(in oklch, ${p.color} 70%, transparent)` : "none", transition: "width .9s var(--ease)" }} />
               </div>
             </button>
           );

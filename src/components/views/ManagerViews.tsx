@@ -10,7 +10,7 @@ import { addDays, fmtDayMonth, fmtHours, goalDescendants, goalProgressMap, goalT
 
 const inp: React.CSSProperties = { height: 32, padding: "0 9px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" };
 /* progress / capacity tracks: a visible well on white cards in the light theme */
-const TRACK = "var(--fill-2, var(--hairline))";
+const TRACK = "var(--track, var(--surface-2))";
 const nameInput: CSSProperties = { flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 600, color: "var(--ink)", padding: "2px 0" };
 const closeBtn: CSSProperties = { border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px", borderRadius: 6, flexShrink: 0 };
 const fmtDay = fmtDayMonth;

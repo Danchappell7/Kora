@@ -90,6 +90,21 @@ describe("exports", () => {
   });
 });
 
+describe("export columns", () => {
+  it("hands the CSV export sections, custom fields and every task (for parent names), like the List toolbar's", () => {
+    const parent = task({ id: "p", title: "Launch plan", status: "done" });
+    const child = task({ id: "c", title: "Book venue", parentId: "p", sectionId: "s1" });
+    const sections = [{ id: "s1", name: "Logistics" }];
+    const customFields = [{ id: "f1", projectId: child.projectId, name: "Budget", type: "number" }] as never[];
+    renderSearch({ tasks: [parent, child], preset: { status: "open" }, presetKey: "k", sections, customFields });
+    fireEvent.click(screen.getByRole("button", { name: "Export this task as CSV" }));
+    const [rows, name, opts] = vi.mocked(exportTasksCsv).mock.calls[0];
+    expect(rows.map((t) => t.id)).toEqual(["c"]);
+    expect(name).toBe("search");
+    expect(opts).toEqual(expect.objectContaining({ sections, customFields, allTasks: [parent, child] }));
+  });
+});
+
 describe("export copy", () => {
   it("names a single result as 'this task'", () => {
     renderSearch({ tasks: [task({ id: "a", title: "Only one" })], preset: { status: "open" }, presetKey: "k" });

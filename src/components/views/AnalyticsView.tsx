@@ -241,7 +241,7 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
         ) : breakdown.map((b) => (
           <div key={b.k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
             <span className="truncate" title={dimLabel(b.k)} style={{ width: 130, flexShrink: 0, fontSize: 12.5, color: "var(--ink-2)" }}>{dimLabel(b.k)}</span>
-            <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--fill-2, var(--hairline))", overflow: "hidden" }}>
+            <div style={{ flex: 1, height: 9, borderRadius: 6, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
               <div style={{ width: `${(b.n / breakdownMax) * 100}%`, height: "100%", borderRadius: 6, background: "var(--accent)", minWidth: 4, transition: "width .6s var(--ease)" }} />
             </div>
             <span className="mono tnum" style={{ width: 30, textAlign: "right", fontSize: 12.5, color: "var(--ink-3)", flexShrink: 0 }}>{b.n}</span>
@@ -292,7 +292,7 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
             {memberStats.map((s) => (
               <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span className="truncate" style={{ width: 130, flexShrink: 0, fontSize: 13, color: "var(--ink-2)" }}>{s.name}</span>
-                <div style={{ flex: 1, display: "flex", height: 10, borderRadius: 6, background: "var(--fill-2, var(--hairline))", overflow: "hidden" }} title={`${s.done} done · ${s.open} open`}>
+                <div style={{ flex: 1, display: "flex", height: 10, borderRadius: 6, background: "var(--track, var(--surface-2))", overflow: "hidden" }} title={`${s.done} done · ${s.open} open`}>
                   <div style={{ width: `${(s.done / maxMemberDone) * 100}%`, background: "var(--st-done)", transition: "width .6s var(--ease)" }} />
                   <div style={{ width: `${(s.open / maxMemberDone) * 100}%`, background: "color-mix(in oklch, var(--accent) 55%, transparent)", transition: "width .6s var(--ease)" }} />
                 </div>
@@ -362,7 +362,7 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
         {/* status breakdown */}
         <Card>
           <h3 style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 16 }}>By status</h3>
-          <div style={{ display: "flex", height: 12, borderRadius: 99, overflow: "hidden", marginBottom: 16, background: "var(--fill-2, var(--hairline))" }}>
+          <div style={{ display: "flex", height: 12, borderRadius: 99, overflow: "hidden", marginBottom: 16, background: "var(--track, var(--surface-2))" }}>
             {statusBreak.map((b) => b.n > 0 && <div key={b.s} title={STATUS_META[b.s].label} style={{ width: (b.n / totalS * 100) + "%", background: STATUS_META[b.s].color }} />)}
           </div>
           {statusBreak.map((b) => (
@@ -376,7 +376,7 @@ export function AnalyticsView({ tasks, members = [], customFields = [], projects
         {/* priority breakdown */}
         <Card>
           <h3 style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 16 }}>By priority</h3>
-          <div style={{ display: "flex", height: 12, borderRadius: 99, overflow: "hidden", marginBottom: 16, background: "var(--fill-2, var(--hairline))" }}>
+          <div style={{ display: "flex", height: 12, borderRadius: 99, overflow: "hidden", marginBottom: 16, background: "var(--track, var(--surface-2))" }}>
             {priorityBreak.map((b) => b.n > 0 && <div key={b.p} title={PRIORITY_META[b.p].label} style={{ width: (b.n / tasks.length * 100) + "%", background: PRIORITY_META[b.p].color }} />)}
           </div>
           {priorityBreak.map((b) => (

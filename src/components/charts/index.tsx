@@ -3,6 +3,11 @@
    ============================================================ */
 import { useEffect, useState } from "react";
 
+/* Glows: `filter: var(--chart-glow)` is drop-shadow(0 0 6px currentColor) in
+   dark and none in light (coloured smudges on paper), so each glowing mark
+   sets its CSS colour to its series colour. */
+const glow = (color: string) => ({ color, filter: "var(--chart-glow, none)" });
+
 /* Charts grow in on mount: bars rise, rings fill, lines draw. Flips on a
    short timer (not rAF) so it still resolves in a background tab — a chart
    is never left stuck at zero. Reduced-motion collapses the transition. */
@@ -23,7 +28,7 @@ export function Ring({ value, size = 96, stroke = 9, color = "var(--accent)", la
       <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--hairline-strong)" strokeWidth={stroke} />
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={off} style={{ transition: "stroke-dashoffset 1.1s var(--ease-out)", filter: `drop-shadow(0 0 6px ${color})` }} />
+          strokeDasharray={c} strokeDashoffset={off} style={{ transition: "stroke-dashoffset 1.1s var(--ease-out)", ...glow(color) }} />
       </svg>
       <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", textAlign: "center" }}>
         <div>
@@ -50,8 +55,8 @@ export function Sparkline({ data, w = 220, h = 56, color = "var(--accent)", fill
       <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.28" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs>
       {fill && <path d={area} fill={`url(#${gid})`} />}
       <path d={d} pathLength={1} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-        style={{ strokeDasharray: 1, strokeDashoffset: grown ? 0 : 1, transition: "stroke-dashoffset 1s var(--ease-out)", filter: `drop-shadow(0 0 4px ${color})` }} />
-      {pts.length > 0 && <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="3.2" fill={color} style={{ filter: `drop-shadow(0 0 5px ${color})` }} />}
+        style={{ strokeDasharray: 1, strokeDashoffset: grown ? 0 : 1, transition: "stroke-dashoffset 1s var(--ease-out)", ...glow(color) }} />
+      {pts.length > 0 && <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="3.2" fill={color} style={glow(color)} />}
     </svg>
   );
 }
@@ -65,7 +70,7 @@ export function Bars({ data, h = 130, color = "var(--accent)" }: { data: BarDatu
       {data.map((d, i) => (
         <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 8, height: "100%", justifyContent: "flex-end" }}>
           <div className="mono tnum" style={{ fontSize: 11, color: "var(--ink-3)" }}>{d.value}</div>
-          <div style={{ width: "100%", maxWidth: 30, height: grown ? `${(d.value / max) * 100}%` : "0%", minHeight: 4, borderRadius: 7, background: d.highlight ? color : "var(--surface-2)", border: d.highlight ? "none" : "1px solid var(--hairline-strong)", boxShadow: d.highlight ? `0 0 16px ${color}` : "none", transition: `height .8s var(--ease-out) ${i * 45}ms` }} />
+          <div style={{ width: "100%", maxWidth: 30, height: grown ? `${(d.value / max) * 100}%` : "0%", minHeight: 4, borderRadius: 7, background: d.highlight ? color : "var(--surface-2)", border: d.highlight ? "none" : "1px solid var(--hairline-strong)", boxShadow: d.highlight ? `0 0 calc(var(--glow-r, 8px) * 2) ${color}` : "none", transition: `height .8s var(--ease-out) ${i * 45}ms` }} />
           <span className="kicker" style={{ fontSize: 9.5 }}>{d.label}</span>
         </div>
       ))}
@@ -163,7 +168,7 @@ export function Heatmap({ weeks = 14 }: { weeks?: number }) {
         <div key={w} style={{ display: "grid", gridTemplateRows: "repeat(7,1fr)", gap: 4 }}>
           {Array.from({ length: 7 }, (_, d) => {
             const c = cells.find((x) => x.w === w && x.d === d)!;
-            return <div key={d} title={`${c.v} sessions`} style={{ aspectRatio: "1", borderRadius: 3, background: shade(c.v), boxShadow: c.v >= 3 ? "0 0 8px var(--accent-glow)" : "none" }} />;
+            return <div key={d} title={`${c.v} sessions`} style={{ aspectRatio: "1", borderRadius: 3, background: shade(c.v), boxShadow: c.v >= 3 ? "0 0 var(--glow-r, 8px) var(--accent-glow)" : "none" }} />;
           })}
         </div>
       ))}

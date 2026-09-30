@@ -4,11 +4,11 @@
    ============================================================ */
 import { useMemo, useState, useEffect, useRef } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag, EmptyArt } from "../primitives";
-import { getProject, getMember, fmtDue, dueState, STATUS_META, PRIORITY_META, toLocalISO, presetDate } from "../../data/data";
+import { getProject, getMember, fmtDue, dueState, STATUS_META, PRIORITY_META, toLocalISO, presetDate, todayISO } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, searchRank, isQueryActive, hasSearchText, inArchivedProject, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import { smartListById } from "../../lib/smartLists";
-import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
+import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef } from "../../data/types";
 import { useEntrance } from "../../hooks/useEntrance";
 
 /** rows rendered at once; the count, "Select all" and exports say so */
@@ -59,7 +59,7 @@ const finePointer = () => typeof window !== "undefined" && typeof window.matchMe
 
 const unknownLabel = (v: string) => `${v.charAt(0).toUpperCase()}${v.slice(1)} (unknown)`;
 
-export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete }: {
+export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete, sections, customFields }: {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -72,11 +72,14 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   presetKey?: string; // changes whenever a smart list is (re-)selected
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
+  /** for the CSV export's Section and custom-field columns (same as the List toolbar's export) */
+  sections?: { id: string; name: string }[];
+  customFields?: CustomFieldDef[];
 }) {
   const entrance = useEntrance(presetKey);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const presetQuery = useMemo<Query | null>(() => (preset ? toQuery(preset) : null), [preset ? JSON.stringify(preset) : ""]); // eslint-disable-line react-hooks/exhaustive-deps
+  const presetQuery = useMemo<Query | null>(() => (preset ? toQuery(preset) : null), [preset ? JSON.stringify(preset) : ""]);
   const [q, setQ] = useState<Query>(presetQuery ?? EMPTY);
   const [inputFocused, setInputFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -101,7 +104,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   useEffect(() => {
     if (preset) return;
     if (finePointer()) inputRef.current?.focus({ preventScroll: true });
-  }, [presetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [presetKey]);
   // dropping a selected task out of the current results shouldn't keep it selected
   useEffect(() => { clearSel(); }, [presetKey, q]);
   const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
@@ -119,6 +122,9 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   ];
 
   const active = isQueryActive(q);
+  // due = today / overdue / this week read the date, so the results move at
+  // midnight with the sidebar counts instead of disagreeing with them
+  const today = todayISO();
   const { matched, hiddenArchived } = useMemo(() => {
     // nothing is listed until there's a search, so don't scan every task for it
     if (!active) return { matched: [] as Task[], hiddenArchived: 0 };
@@ -132,7 +138,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
     const ranked = hits.map((t, i) => ({ t, i, r: searchRank(t, q) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
     return { matched: ranked, hiddenArchived: hidden };
     // projects: archiving/restoring one changes what matches without touching tasks
-  }, [tasks, q, active, projects]);
+  }, [tasks, q, active, projects, today]);
   const results = matched.slice(0, DISPLAY_CAP);   // rows rendered (capped)
   const capped = matched.length > results.length;  // more matched than shown
   // only tasks still in the current results count as selected — a selection
@@ -265,7 +271,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
               </button>
             )}
             {/* exports always cover every match, not just the rows rendered */}
-            <button type="button" onClick={() => exportTasksCsv(matched, "search")} className="btn btn-ghost" aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
+            <button type="button" onClick={() => exportTasksCsv(matched, "search", { allTasks: tasks, sections, customFields, members })} className="btn btn-ghost" aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
             <button type="button" onClick={() => printTasks(matched, presetName && onPreset ? presetName : "Search results")} className="btn btn-ghost" aria-label={`Print or save ${exportScope} as PDF`} title={`Print or save ${exportScope} as PDF`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> PDF</button>
           </span>
         )}

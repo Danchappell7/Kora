@@ -5,14 +5,16 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, useId } from "react";
 import { flushSync } from "react-dom";
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, CSSProperties, RefObject } from "react";
-import { Icon } from "../primitives";
+import { Icon, chipInk, chipFill, chipEdge } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useToast } from "../Toast";
 import { useAuth } from "../../auth/AuthProvider";
 import {
   getProject, dueState, fmtDue, fmtClock, fmtClockRange, fmtDurMin,
-  parseCapture, planDay, ENERGY, EVENTS, DAY_START, DAY_END,
+  parseCapture, planDay, ENERGY, EVENTS, DAY_START, DAY_END, todayISO,
 } from "../../data/data";
+import type { CaptureOptions } from "../../data/data";
+import { uiZoom } from "../../lib/appearance";
 import type { Task, CalEvent, EnergyKind, ExternalEvent } from "../../data/types";
 import {
   durOf, energyKindOf, energyMetaOf, layoutLanes, mergeIntervals, totalMinutes,
@@ -119,8 +121,9 @@ export function EnergyChip({ energy, small }: { energy: EnergyKind; small?: bool
   if (!e) return null;
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", fontFamily: "var(--font-mono)", fontSize: small ? 9.5 : 10.5, fontWeight: 500,
-      color: e.color, padding: small ? "1px 6px" : "2px 7px", borderRadius: 6,
-      background: `color-mix(in oklch, ${e.color} 12%, transparent)`, border: `1px solid color-mix(in oklch, ${e.color} 26%, transparent)` }}>
+      // text pushed off the raw palette colour so e.g. "Creative" stays ≥ 4.5:1 on its tint in light
+      color: chipInk(e.color), padding: small ? "1px 6px" : "2px 7px", borderRadius: 6,
+      background: chipFill(e.color), border: `1px solid ${chipEdge(e.color)}` }}>
       <Icon name={e.icon} size={small ? 10 : 11} /> {e.label}
     </span>
   );
@@ -132,7 +135,7 @@ function PlanNowLine({ nowMin }: { nowMin: number }) {
   const top = (nowMin - DAY_START) * PXM;
   return (
     <div aria-hidden="true" style={{ position: "absolute", left: 54, right: 12, top, zIndex: 6, pointerEvents: "none" }}>
-      <span style={{ position: "absolute", left: -54, top: -7, width: 48, textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent)" }}>{fmtClock(nowMin)}</span>
+      <span style={{ position: "absolute", left: -54, top: -7, width: 48, textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent-text, var(--accent))" }}>{fmtClock(nowMin)}</span>
       <span style={{ position: "absolute", left: -4, top: -4, width: 9, height: 9, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 0 4px var(--accent-dim), 0 0 10px var(--accent-glow)" }} />
       <div style={{ height: 2, background: "var(--accent)", borderRadius: 2, opacity: 0.85, boxShadow: "0 0 8px var(--accent-glow)" }} />
     </div>
@@ -190,7 +193,7 @@ function PlanTaskBlock({ task, start, lane, nowMin, helpId, onStartDrag, onOpen,
           <span className="truncate" style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{task.title}</span>
           <span aria-hidden="true" style={stretched} />
         </button>
-        {active && <span aria-hidden="true" className="mono" style={{ position: "relative", zIndex: 1, fontSize: 9, fontWeight: 700, color: "var(--accent)", letterSpacing: ".1em", pointerEvents: "none" }}>NOW</span>}
+        {active && <span aria-hidden="true" className="mono" style={{ position: "relative", zIndex: 1, fontSize: 9, fontWeight: 700, color: "var(--accent-text, var(--accent))", letterSpacing: ".1em", pointerEvents: "none" }}>NOW</span>}
         <button type="button" className="plan-block-x" title="Back to Intake" aria-label={`Move “${task.title}” back to Intake`}
           onPointerDown={(ev) => ev.stopPropagation()}
           onClick={(ev) => { ev.stopPropagation(); onRemove(task.id, ev.detail === 0); }}
@@ -200,7 +203,7 @@ function PlanTaskBlock({ task, start, lane, nowMin, helpId, onStartDrag, onOpen,
       </div>
       {tall && (
         <div aria-hidden="true" style={{ display: "flex", alignItems: "center", gap: 9, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-4)", minWidth: 0, pointerEvents: "none" }}>
-          <span style={{ color: e.color, whiteSpace: "nowrap" }}>{range}</span>
+          <span style={{ color: chipInk(e.color), whiteSpace: "nowrap" }}>{range}</span>
           {proj && <span className="truncate" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ink-3)", minWidth: 0 }}><span style={{ width: 6, height: 6, borderRadius: 2, background: proj.color, flexShrink: 0 }} />{proj.name}</span>}
         </div>
       )}
@@ -214,7 +217,7 @@ function PlanDropPreview({ start, dur }: { start: number | null; dur: number }) 
   return (
     <div style={{ position: "absolute", left: 54, right: 12, top, height: h, borderRadius: 14, zIndex: 5, pointerEvents: "none",
       background: "var(--accent-dim)", border: "2px dashed var(--accent)", display: "flex", alignItems: "center", paddingLeft: 13 }}>
-      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)" }}>{fmtClock(start)} – {fmtClock(start + dur)}</span>
+      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "var(--accent-text, var(--accent))" }}>{fmtClock(start)} – {fmtClock(start + dur)}</span>
     </div>
   );
 }
@@ -276,11 +279,15 @@ function DayCanvas({ blocks, events, nowMin, helpId, onStartDrag, onOpen, onRemo
 }
 
 /* ---------- capture ---------- */
-function PlanCapture({ onCapture, inputRef, hint = true }: { onCapture: (t: Task) => void; inputRef: RefObject<HTMLInputElement>; hint?: boolean }) {
+function PlanCapture({ onCapture, inputRef, hint = true, defaults }: { onCapture: (t: Task) => void; inputRef: RefObject<HTMLInputElement>; hint?: boolean; defaults?: CaptureOptions }) {
   const [text, setText] = useState("");
   const [focused, setFocused] = useState(false);
-  const preview = useMemo(() => (text.trim().length > 1 ? parseCapture(text) : null), [text]);
-  const submit = () => { const t = parseCapture(text); if (t) { onCapture(t); setText(""); } };
+  // "today" / "tomorrow" in the text resolve against the date, so the preview
+  // re-reads it when the day changes under a half-typed capture
+  const today = todayISO();
+  const projectId = defaults?.projectId, assigneeId = defaults?.assigneeId;
+  const preview = useMemo(() => (text.trim().length > 1 ? parseCapture(text, { projectId, assigneeId }) : null), [text, today, projectId, assigneeId]);
+  const submit = () => { const t = parseCapture(text, { projectId, assigneeId }); if (t) { onCapture(t); setText(""); } };
   return (
     <div style={{ position: "relative" }}>
       <div className="glass" style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 14px", borderRadius: 16,
@@ -295,7 +302,7 @@ function PlanCapture({ onCapture, inputRef, hint = true }: { onCapture: (t: Task
       </div>
       {focused && preview && (
         <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, right: 0, zIndex: 30, padding: "13px 15px", borderRadius: 16, boxShadow: "var(--shadow-lg)", background: "var(--surface-raised)" }}>
-          <div className="kicker" style={{ marginBottom: 9, color: "var(--accent)" }}>Kanbo understood</div>
+          <div className="kicker" style={{ marginBottom: 9, color: "var(--accent-text, var(--accent))" }}>Kanbo understood</div>
           <div style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 10 }}>{preview.title}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
             <span className="pchip"><Icon name="clock" size={12} /> {fmtDurMin(durOf(preview))}</span>
@@ -401,7 +408,7 @@ function IntakeRail({ items, empty, dragId, onStartDrag, onSchedule, onOpen, onN
         <div style={{ position: "absolute", inset: 0, zIndex: 20, display: "grid", placeItems: "center", pointerEvents: "none", background: "color-mix(in oklch, var(--accent) 12%, transparent)", backdropFilter: "blur(2px)" }}>
           <div className="glass anim-scalein" style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 18px", borderRadius: 14, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", border: "1px dashed var(--accent)" }}>
             <Icon name="arrowLeft" size={16} style={{ color: "var(--accent)" }} />
-            <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--accent)" }}>Release to move back to Intake</span>
+            <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--accent-text, var(--accent))" }}>Release to move back to Intake</span>
           </div>
         </div>
       )}
@@ -456,7 +463,7 @@ function PlanToast({ msg, onClose }: { msg: string | null; onClose: () => void }
 }
 
 /* ---------- the view ---------- */
-export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false, currentUserId }: {
+export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false, currentUserId, captureDefaults }: {
   tasks: Task[];
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onCreate: (t: Task) => void;
@@ -465,6 +472,8 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   calendarConnected?: boolean;
   /** the signed-in user; scopes the new-day carry-over to their own tasks (defaults to the auth user) */
   currentUserId?: string;
+  /** where a capture is filed (the active workspace's project, the signed-in user) — used by the preview and the new task */
+  captureDefaults?: CaptureOptions;
 }) {
   const authUserId = useAuthUserId();
   const me = currentUserId ?? authUserId;
@@ -737,7 +746,8 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
     const c = canvasRef.current; if (!c) return null;
     const r = c.getBoundingClientRect();
     if (x < r.left - 40 || x > r.right + 40) return null;
-    const m = snapTo(DAY_START + (y - r.top - grab) / PXM);
+    // pointer and rect are screen px; at Small/Large text the day is zoomed, so a minute is PXM × zoom of them
+    const m = snapTo(DAY_START + (y - r.top - grab) / (PXM * uiZoom()));
     return clamp(m, DAY_START, DAY_END - dur);
   }, []);
 
@@ -760,7 +770,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
     if (!touch) e.preventDefault(); // no text selection while dragging with a mouse
     const x0 = e.clientX, y0 = e.clientY, pid = e.pointerId;
     const top = canvasRef.current?.getBoundingClientRect().top ?? 0;
-    const grab = source === "canvas" && task.scheduled != null ? y0 - ((task.scheduled - DAY_START) * PXM + top) : 16;
+    const grab = source === "canvas" && task.scheduled != null ? y0 - ((task.scheduled - DAY_START) * PXM * uiZoom() + top) : 16;
     const base: DragState = {
       taskId: task.id, dur: durOf(task), title: task.title, energy: energyKindOf(task), source, grab,
       origin: source === "canvas" ? task.scheduled ?? null : null, x0, y0, touch, pointerId: pid,
@@ -895,12 +905,13 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
   }, []);
 
   const ghostEnergy = drag ? (ENERGY[drag.energy] ?? ENERGY.admin) : null;
+  const zoom = drag ? uiZoom() : 1; // the fixed ghost sits inside the zoomed page: screen px ÷ zoom
   return (
     <div ref={rootRef} style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: 0 }}>
       <span id={helpId} className="sr-only">Press Enter to open. Use the up and down arrow keys to move it by 15 minutes, or hold Shift to move it by an hour. Press Delete to send it back to Intake.</span>
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
       <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
-        <div style={{ padding: "16px 24px 12px" }}><PlanCapture onCapture={onCreate} inputRef={captureRef} hint={!isMobile} /></div>
+        <div style={{ padding: "16px 24px 12px" }}><PlanCapture onCapture={onCreate} inputRef={captureRef} hint={!isMobile} defaults={captureDefaults} /></div>
         {carryTasks.length > 0 && (
           <CarryBanner label={carryLabel(carry.from, day)} count={carryTasks.length}
             onCarry={() => resolveCarry("carry")} onClear={() => resolveCarry("clear")} onKeep={() => resolveCarry("keep")} />
@@ -915,7 +926,7 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
         {/* capacity meter */}
         <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "0 24px 12px" }}>
           <div role="meter" aria-label="Day booked" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pctBusy} aria-valuetext={meterTitle} title={meterTitle}
-            style={{ flex: 1, maxWidth: 340, height: 8, borderRadius: 5, background: "var(--fill-2, var(--surface-2))", overflow: "hidden", display: "flex" }}>
+            style={{ flex: 1, maxWidth: 340, height: 8, borderRadius: 5, background: "var(--track, var(--surface-2))", overflow: "hidden", display: "flex" }}>
             <div style={{ width: `${(meetingMin / workMin) * 100}%`, background: "var(--ink-4)" }} />
             <div style={{ width: `${(scheduledMin / workMin) * 100}%`, background: overCapacity ? "var(--prio-urgent)" : "var(--accent)", transition: "width .5s var(--ease)" }} />
           </div>
@@ -939,10 +950,10 @@ export function PlanView({ tasks, onUpdate, onCreate, onOpen, externalEvents = [
         railRef={railRef} headingRef={intakeHeadingRef} slippedCount={slipped.length} onPullSlipped={pullSlipped} />
       {drag && ghostEnergy && (
         // on touch the ghost floats above the finger so it isn't hidden under it
-        <div aria-hidden="true" style={{ position: "fixed", left: drag.touch ? pointer.x - 24 : pointer.x + 14, top: drag.touch ? pointer.y - 58 : pointer.y - 10, zIndex: 80, pointerEvents: "none", maxWidth: 240,
+        <div aria-hidden="true" style={{ position: "fixed", left: pointer.x / zoom + (drag.touch ? -24 : 14), top: pointer.y / zoom + (drag.touch ? -58 : -10), zIndex: 80, pointerEvents: "none", maxWidth: 240,
           padding: "8px 12px", borderRadius: 12, background: "var(--surface-raised)", border: "1px solid var(--hairline-strong)", borderLeft: `3px solid ${ghostEnergy.color}`, boxShadow: "var(--shadow-lg)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", transform: reduceMotion ? undefined : "rotate(-1.5deg)" }}>
           <span className="truncate" style={{ fontSize: 13, fontWeight: 600, display: "block" }}>{drag.title}</span>
-          {previewStart != null && <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--accent)", marginTop: 2 }}>{fmtClockRange(previewStart, previewStart + drag.dur)}</span>}
+          {previewStart != null && <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--accent-text, var(--accent))", marginTop: 2 }}>{fmtClockRange(previewStart, previewStart + drag.dur)}</span>}
         </div>
       )}
     </div>

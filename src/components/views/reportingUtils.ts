@@ -5,6 +5,7 @@
    ============================================================ */
 import { useRef } from "react";
 import type { Task, Goal, TagDef } from "../../data/types";
+import { csvCell, downloadCsv as downloadCsvText, toCsv } from "../../lib/exportTasks";
 
 export const DAY_MS = 86400000;
 export const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -13,24 +14,16 @@ export const fmtHours = (n: number): string => `${round1(n)}h`;
 
 /* ---------------- CSV ---------------- */
 
-/** One quoted CSV cell. Values that a spreadsheet would run as a formula
- *  (leading = + - @ tab or CR) get a leading apostrophe, so a task called
- *  `=HYPERLINK(...)` opens as text. Plain numbers ("-3", "4.5") are left alone. */
-export function csvCell(v: unknown): string {
-  let s = String(v ?? "");
-  if (/^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+(\.\d+)?$/.test(s)) s = "'" + s;
-  return `"${s.replace(/"/g, '""')}"`;
-}
+// One formula-injection guard for every CSV Kanbo writes: csvCell quotes the
+// value and gives anything a spreadsheet would run as a formula (leading
+// = + - @ tab or CR) a leading apostrophe; plain numbers ("-3", "4.5") are
+// left alone. It lives with the task export in lib/exportTasks.
+export { csvCell };
 export const csvText = (rows: unknown[][]): string => rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
 
-/** Save rows as a CSV file. The BOM makes Excel read names with accents as UTF-8. */
+/** Save rows as a CSV file (UTF-8 BOM so Excel reads accented names; the object URL is revoked late so Safari/Firefox don't cancel the download). */
 export function downloadCsv(rows: unknown[][], filename: string): void {
-  const url = URL.createObjectURL(new Blob(["﻿" + csvText(rows)], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  // revoking synchronously can cancel the download in Safari/Firefox
-  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  downloadCsvText(filename, toCsv(rows));
 }
 
 /* ---------------- dates ---------------- */
