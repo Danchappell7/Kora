@@ -53,6 +53,14 @@ describe("inboxTriage — groups", () => {
     expect(g.reply.map((a) => a.id)).toEqual(["m1"]);
   });
 
+  it("a mention stops needing your reply once its task is done or archived", () => {
+    const done = task("done", { status: "done" });
+    const gone = task("archived", { archivedAt: "2026-09-30T10:00:00.000Z" });
+    const g = triage([item("m1", "mention", "done"), item("m2", "mention", "archived"), item("m3", "mention", "t1")], { me: "me", tasks: [...tasks, done, gone] });
+    expect(g.reply.map((a) => a.id)).toEqual(["m3"]);
+    expect(g.fyi.map((a) => a.id)).toEqual(["m1", "m2"]);
+  });
+
   it("without a user id, a request counts as yours", () => {
     expect(groupOf(item("r", "created", "req-theirs"), { task: tasks[2] })).toBe("newToYou");
   });

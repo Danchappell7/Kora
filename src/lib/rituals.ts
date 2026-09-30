@@ -99,6 +99,13 @@ export function nextMondayISO(iso: string = todayISO()): string {
   return addDaysISO(iso, ((8 - dow) % 7) || 7);
 }
 
+/** Where "Next week" lands from `iso`: the coming Monday, or the one after it
+ *  when the coming Monday is tomorrow (on a Sunday), so it never repeats "Tomorrow". */
+export function nextWeekISO(iso: string = todayISO()): string {
+  const monday = nextMondayISO(iso);
+  return monday === addDaysISO(iso, 1) ? addDaysISO(monday, 7) : monday;
+}
+
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -126,16 +133,50 @@ export function finishedToday(tasks: Task[], today: string = todayISO()): Task[]
 /** Where a leftover goes from the Shut down sheet. */
 export type LeftoverMove = "tomorrow" | "nextweek" | "someday" | "drop";
 
+const OFF_TODAY = { planToday: false, scheduled: null } as const;
+
+/** Re-date a task to `target` and take it off today's plan. A due date only
+ *  ever moves later: when `current` is already after `target`, the date is
+ *  left out of the patch and only the plan changes. */
+export function redatePatch(target: string, current?: string): Partial<Task> {
+  return current && current > target ? { ...OFF_TODAY } : { dueDate: target, ...OFF_TODAY };
+}
+
 /** The patch for one leftover move. Every move takes the task off today's plan;
- *  "drop" keeps its due date, "someday" clears it. */
-export function movePatch(move: LeftoverMove, today: string = todayISO()): Partial<Task> {
-  const off = { planToday: false, scheduled: null } as const;
+ *  "drop" keeps its due date, "someday" clears it. Pass the task's `current`
+ *  due date and Tomorrow / Next week never pull it earlier. */
+export function movePatch(move: LeftoverMove, today: string = todayISO(), current?: string): Partial<Task> {
   switch (move) {
-    case "tomorrow": return { dueDate: addDaysISO(today, 1), ...off };
-    case "nextweek": return { dueDate: nextMondayISO(today), ...off };
-    case "someday": return { dueDate: undefined, ...off };
-    case "drop": return { ...off };
+    case "tomorrow": return redatePatch(addDaysISO(today, 1), current);
+    case "nextweek": return redatePatch(nextWeekISO(today), current);
+    case "someday": return { dueDate: undefined, ...OFF_TODAY };
+    case "drop": return { ...OFF_TODAY };
   }
+}
+
+/** Where one leftover can go, and where "Move all to tomorrow" sends it.
+ *  Shut down is personal, so it never changes a date that is someone else's
+ *  or pulls a deadline forward:
+ *  · your own task: Tomorrow and Next week while they're no earlier than its
+ *    due date, Someday, and Drop from today when it's planned but not due today;
+ *  · a teammate's task (you collaborate on it): only Drop from today, which
+ *    clears your own plan. Due today, it's theirs to move: no choices.
+ *  `all` is Tomorrow where offered, else Drop, else nothing. */
+export function leftoverChoices(
+  t: Pick<Task, "assigneeId" | "dueDate" | "planToday" | "scheduled">, me: string, today: string = todayISO(),
+): { moves: LeftoverMove[]; all: LeftoverMove | null; mine: boolean } {
+  const mine = !!me && t.assigneeId === me;
+  // a task due today stays on today whatever its plan, so Drop wouldn't take it off
+  const canDrop = (!!t.planToday || t.scheduled != null) && t.dueDate !== today;
+  const moves: LeftoverMove[] = [];
+  if (mine) {
+    if (!t.dueDate || t.dueDate <= addDaysISO(today, 1)) moves.push("tomorrow");
+    if (!t.dueDate || t.dueDate <= nextWeekISO(today)) moves.push("nextweek");
+    moves.push("someday");
+  }
+  if (canDrop) moves.push("drop");
+  const all = moves.includes("tomorrow") ? "tomorrow" : moves.includes("drop") ? "drop" : null;
+  return { moves, all, mine };
 }
 
 /** The fields a move changes, as they were: what an Undo puts back. */
@@ -143,16 +184,15 @@ export function beforeMove(t: Task): Pick<Task, "dueDate" | "planToday" | "sched
   return { dueDate: t.dueDate, planToday: !!t.planToday, scheduled: t.scheduled ?? null };
 }
 
-/** "Done for today. 5 finished, 2 moved to tomorrow." */
+/** "Done for today. 5 finished, 2 moved to tomorrow, 1 taken off your plan." */
 export function closingLine(finished: number, moves: LeftoverMove[]): string {
+  const count = (m: LeftoverMove) => moves.filter((x) => x === m).length;
   const parts: string[] = [];
   if (finished > 0) parts.push(`${finished} finished`);
-  if (moves.length) {
-    const where = moves.every((m) => m === "tomorrow") ? "moved to tomorrow"
-      : moves.every((m) => m === "nextweek") ? "moved to next week"
-      : "moved off today";
-    parts.push(`${moves.length} ${where}`);
-  }
+  const dated = ([["tomorrow", "to tomorrow"], ["nextweek", "to next week"], ["someday", "to someday"]] as const)
+    .filter(([m]) => count(m) > 0);
+  dated.forEach(([m, where], i) => parts.push(`${count(m)}${i === 0 ? " moved" : ""} ${where}`));
+  if (count("drop")) parts.push(`${count("drop")} taken off your plan`);
   return parts.length ? `Done for today. ${parts.join(", ")}.` : "Done for today.";
 }
 
@@ -180,22 +220,33 @@ export function weekStartISO(iso: string = todayISO()): string {
   return addDaysISO(iso, -((dow + 6) % 7));
 }
 
-/** Tasks finished this week so far (Monday to today). */
-export function finishedThisWeek(tasks: Task[], today: string = todayISO()): Task[] {
-  const start = weekStartISO(today);
+/** The week a review looks back on (Monday `start` to Sunday `end`) and the
+ *  Monday of the week it plans. Done on a Monday morning it reviews the week
+ *  just finished and plans this one; any other day it reviews this week and
+ *  plans the next. So Friday afternoon and the Monday after agree. */
+export function reviewWeek(today: string = todayISO()): { start: string; end: string; plan: string } {
+  const monday = weekStartISO(today);
+  const start = monday === today ? addDaysISO(today, -7) : monday;
+  return { start, end: addDaysISO(start, 6), plan: addDaysISO(start, 7) };
+}
+
+/** Tasks finished from `from` (default: this Monday) to today, newest first. */
+export function finishedThisWeek(tasks: Task[], today: string = todayISO(), from: string = weekStartISO(today)): Task[] {
   return tasks.filter((t) => {
     if (t.status !== "done" || !t.completedAt || t.archivedAt) return false;
     const at = new Date(t.completedAt);
     if (Number.isNaN(at.getTime())) return false;
     const day = toLocalISO(at);
-    return day >= start && day <= today;
+    return day >= from && day <= today;
   }).sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
 }
 
-/** What this week leaves behind: open tasks due this week (or earlier) that
- *  haven't been done, soonest first. */
-export function carriedOver(tasks: Task[], today: string = todayISO()): Task[] {
-  const end = addDaysISO(weekStartISO(today), 6);
-  return tasks.filter((t) => t.status !== "done" && !t.archivedAt && !!t.dueDate && t.dueDate <= end)
+/** What the week leaves behind: open tasks due by its `end` (default: this
+ *  Sunday) or earlier, soonest first. With `me`, only the tasks assigned to
+ *  you: a teammate's due date is theirs to move. */
+export function carriedOver(tasks: Task[], today: string = todayISO(), opts: { end?: string; me?: string } = {}): Task[] {
+  const end = opts.end ?? addDaysISO(weekStartISO(today), 6);
+  return tasks.filter((t) => t.status !== "done" && !t.archivedAt && !!t.dueDate && t.dueDate <= end
+    && (opts.me === undefined || t.assigneeId === opts.me))
     .sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "") || a.title.localeCompare(b.title));
 }

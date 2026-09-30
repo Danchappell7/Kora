@@ -1,6 +1,7 @@
 /* ============================================================
    KANBO — Inbox triage: the feed sorted by what it asks of you.
-   · Needs your reply — someone mentioned you (until you archive it)
+   · Needs your reply — someone mentioned you (until you archive it,
+     or the task is done)
    · New to you — work handed to you: assignments, and requests
      that arrived through a project's request form assigned to you
    · FYI — everything else (comments, updates, your own history)
@@ -55,7 +56,9 @@ const taskLookup = (tasks: TriageContext["tasks"]): ReadonlyMap<string, Task> =>
 
 /** Which group one item belongs to. */
 export function groupOf(a: Activity, ctx: { me?: string; task?: Task }): TriageGroup {
-  if (a.kind === "mention") return "reply";
+  // a mention on a finished (or archived) task no longer waits on you; one whose
+  // task isn't loaded yet still does
+  if (a.kind === "mention") return ctx.task && (ctx.task.status === "done" || ctx.task.archivedAt) ? "fyi" : "reply";
   if (a.kind === "assigned") return "newToYou";
   if (a.kind === "created" && isRequestTask(ctx.task) && (!ctx.me || ctx.task?.assigneeId === ctx.me)) return "newToYou";
   return "fyi";

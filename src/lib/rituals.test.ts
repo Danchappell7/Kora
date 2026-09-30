@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   isoWeek, readBig3, writeBig3, shutdownDone, markShutdownDone, leftovers, dayInColour, addDaysISO, nextMondayISO,
-  shortDay, dayLabel, finishedToday, movePatch, beforeMove, closingLine, shutdownSummary, weekStartISO, finishedThisWeek, carriedOver,
+  nextWeekISO, shortDay, dayLabel, finishedToday, movePatch, redatePatch, leftoverChoices, beforeMove, closingLine, shutdownSummary, weekStartISO,
+  reviewWeek, finishedThisWeek, carriedOver,
 } from "./rituals";
 import type { Task } from "../data/types";
 
@@ -121,6 +122,18 @@ describe("rituals — the shut down's arithmetic", () => {
     expect(weekStartISO("2026-10-04")).toBe("2026-09-28");     // Sunday belongs to the week before
   });
 
+  it("on a Sunday, Next week is the Monday after tomorrow, never the same day as Tomorrow", () => {
+    const sunday = "2026-10-04";
+    expect(nextWeekISO(today)).toBe("2026-10-05");             // Wednesday: the coming Monday
+    expect(nextWeekISO("2026-10-05")).toBe("2026-10-12");      // Monday: a week on
+    expect(nextWeekISO(sunday)).toBe("2026-10-12");            // Sunday: not tomorrow
+    expect(movePatch("tomorrow", sunday)).toEqual({ dueDate: "2026-10-05", planToday: false, scheduled: null });
+    expect(movePatch("nextweek", sunday)).toEqual({ dueDate: "2026-10-12", planToday: false, scheduled: null });
+    // due Wednesday: Tomorrow (Mon 5) would pull it forward, Next week (Mon 12) moves it later
+    expect(leftoverChoices(task("x", { planToday: true, dueDate: "2026-10-07" }), "me", sunday).moves).toEqual(["nextweek", "someday", "drop"]);
+    expect(leftoverChoices(task("x", { planToday: true, dueDate: "2026-10-14" }), "me", sunday).moves).toEqual(["someday", "drop"]);
+  });
+
   it("each move takes the task off today; Tomorrow and Next week re-date it, Someday clears it", () => {
     expect(movePatch("tomorrow", today)).toEqual({ dueDate: "2026-10-01", planToday: false, scheduled: null });
     expect(movePatch("nextweek", today)).toEqual({ dueDate: "2026-10-05", planToday: false, scheduled: null });
@@ -132,10 +145,44 @@ describe("rituals — the shut down's arithmetic", () => {
     expect(beforeMove(task("y"))).toEqual({ dueDate: undefined, planToday: false, scheduled: null });
   });
 
+  it("a due date only ever moves later", () => {
+    // due in two weeks and planned for today: Tomorrow takes it off today's plan and keeps the deadline
+    expect(movePatch("tomorrow", today, "2026-10-14")).toEqual({ planToday: false, scheduled: null });
+    expect(movePatch("nextweek", today, "2026-10-14")).toEqual({ planToday: false, scheduled: null });
+    expect(movePatch("tomorrow", today, today)).toEqual({ dueDate: "2026-10-01", planToday: false, scheduled: null });
+    expect(movePatch("nextweek", today, "2026-10-05")).toEqual({ dueDate: "2026-10-05", planToday: false, scheduled: null });
+    expect(redatePatch("2026-10-05", "2026-09-20")).toEqual({ dueDate: "2026-10-05", planToday: false, scheduled: null });
+    expect(redatePatch("2026-10-05", "2026-10-06")).toEqual({ planToday: false, scheduled: null });
+  });
+
+  it("your own leftovers can go anywhere that isn't earlier than their deadline", () => {
+    const mine = (extra: Partial<Task>) => leftoverChoices(task("x", extra), "me", today);
+    expect(mine({ dueDate: today })).toEqual({ moves: ["tomorrow", "nextweek", "someday"], all: "tomorrow", mine: true });
+    expect(mine({ planToday: true })).toEqual({ moves: ["tomorrow", "nextweek", "someday", "drop"], all: "tomorrow", mine: true });
+    // due Saturday: next Monday is later, tomorrow isn't
+    expect(mine({ planToday: true, dueDate: "2026-10-03" })).toEqual({ moves: ["nextweek", "someday", "drop"], all: "drop", mine: true });
+    expect(mine({ scheduled: 600, dueDate: "2026-10-14" })).toEqual({ moves: ["someday", "drop"], all: "drop", mine: true });
+    // due today AND planned: Drop wouldn't take it off today, so it isn't offered
+    expect(mine({ planToday: true, dueDate: today }).moves).not.toContain("drop");
+  });
+
+  it("a teammate's task you collaborate on: only your own plan moves, never their date", () => {
+    const theirs = (extra: Partial<Task>) => leftoverChoices(task("x", { assigneeId: "m-1", collaborators: ["me"], ...extra }), "me", today);
+    expect(theirs({ planToday: true, dueDate: "2026-10-14" })).toEqual({ moves: ["drop"], all: "drop", mine: false });
+    expect(theirs({ planToday: true })).toEqual({ moves: ["drop"], all: "drop", mine: false });
+    expect(theirs({ dueDate: today })).toEqual({ moves: [], all: null, mine: false });
+    expect(theirs({ dueDate: today, scheduled: 540 })).toEqual({ moves: [], all: null, mine: false });
+    // no assignee, or no signed-in id: not yours to re-date either
+    expect(leftoverChoices(task("x", { assigneeId: undefined, planToday: true }), "me", today).mine).toBe(false);
+    expect(leftoverChoices(task("x", { assigneeId: "", planToday: true }), "", today).mine).toBe(false);
+  });
+
   it("the closing line counts what happened", () => {
     expect(closingLine(5, ["tomorrow", "tomorrow"])).toBe("Done for today. 5 finished, 2 moved to tomorrow.");
     expect(closingLine(1, ["nextweek"])).toBe("Done for today. 1 finished, 1 moved to next week.");
-    expect(closingLine(3, ["tomorrow", "someday", "drop"])).toBe("Done for today. 3 finished, 3 moved off today.");
+    expect(closingLine(3, ["tomorrow", "someday", "drop"])).toBe("Done for today. 3 finished, 1 moved to tomorrow, 1 to someday, 1 taken off your plan.");
+    expect(closingLine(2, ["drop", "drop", "nextweek", "tomorrow"])).toBe("Done for today. 2 finished, 1 moved to tomorrow, 1 to next week, 2 taken off your plan.");
+    expect(closingLine(0, ["drop"])).toBe("Done for today. 1 taken off your plan.");
     expect(closingLine(4, [])).toBe("Done for today. 4 finished.");
     expect(closingLine(0, ["tomorrow"])).toBe("Done for today. 1 moved to tomorrow.");
     expect(closingLine(0, [])).toBe("Done for today.");
@@ -163,6 +210,24 @@ describe("rituals — the week", () => {
     expect(finishedThisWeek(ts, today).map((t) => t.id)).toEqual(["fri", "mon"]);
   });
 
+  it("a review on Friday and on the Monday after look at the same week and plan the same one", () => {
+    const week = { start: "2026-09-28", end: "2026-10-04", plan: "2026-10-05" };
+    expect(reviewWeek(today)).toEqual(week);               // Friday
+    expect(reviewWeek("2026-10-04")).toEqual(week);        // Sunday
+    expect(reviewWeek("2026-10-05")).toEqual(week);        // Monday morning: last week, planning this one
+    expect(reviewWeek("2026-10-06")).toEqual({ start: "2026-10-05", end: "2026-10-11", plan: "2026-10-12" });
+  });
+
+  it("on a Monday, wins and leftovers are last week's", () => {
+    const monday = "2026-10-05";
+    const ts = [
+      task("lastfri", { status: "done", completedAt: at("2026-10-02", 16) }),
+      task("today", { status: "done", completedAt: at(monday, 8) }),
+      task("older", { status: "done", completedAt: at("2026-09-25", 16) }),
+    ];
+    expect(finishedThisWeek(ts, monday, reviewWeek(monday).start).map((t) => t.id)).toEqual(["today", "lastfri"]);
+  });
+
   it("carried over is what's still open and due by the end of this week", () => {
     const ts = [
       task("overdue", { dueDate: "2026-09-20" }),
@@ -173,5 +238,14 @@ describe("rituals — the week", () => {
       task("nodate"),
     ];
     expect(carriedOver(ts, today).map((t) => t.id)).toEqual(["overdue", "fri", "sun"]);
+    expect(carriedOver(ts, today, { end: "2026-10-05" }).map((t) => t.id)).toEqual(["overdue", "fri", "sun", "nextweek"]);
+  });
+
+  it("with your id, only what's assigned to you carries over (a teammate's date is theirs)", () => {
+    const ts = [
+      task("mine", { dueDate: today }),
+      task("theirs", { dueDate: today, assigneeId: "m-1", collaborators: ["me"] }),
+    ];
+    expect(carriedOver(ts, today, { me: "me" }).map((t) => t.id)).toEqual(["mine"]);
   });
 });
