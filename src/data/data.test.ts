@@ -4,7 +4,8 @@ import {
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
   DAY_START, DAY_END, nextDueDate, nextOccurrence, nextOccurrenceChildren,
   refreshClock, KANBO_TODAY, NOW_MIN, presetDate, todayISO, parseTaskTokens,
-  seriesAnchorDay,
+  seriesAnchorDay, TASKS, DEMO_ACTIVITY, DEMO_TASK_EVENTS, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES,
+  DEMO_RULES, DEMO_FORMS,
 } from "./data";
 import type { Task } from "./types";
 
@@ -550,5 +551,62 @@ describe("parseTaskTokens shares the fixes", () => {
     expect(b).toMatchObject({ focusMin: 180, priority: "high", dueDate: dayOffset(1), title: "Prepare review" });
     expect(parseTaskTokens("Email Sara tomorrow 90m").title).toBe("Email Sara");
     expect(parseTaskTokens("Plan next week").dueDate).toBe(dayOffset(7));
+  });
+});
+
+/* ---------- the living demo ---------- */
+describe("demo seed", () => {
+  const byId = (id: string) => TASKS.find((t) => t.id === id)!;
+
+  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30", () => {
+    expect(TASKS.map((t) => t.id)).toEqual(Array.from({ length: 30 }, (_, i) => `t-${i + 1}`));
+    expect(byId("t-1")).toMatchObject({ title: "Finalise Q3 launch narrative deck", status: "progress", projectId: "p-launch", assigneeId: "m-self" });
+    expect(byId("t-1").subtasks.filter((s) => s.done)).toHaveLength(2);
+    expect(byId("t-2")).toMatchObject({ status: "blocked", assigneeId: "m-1", dependencies: ["t-4"] });
+    expect(TASKS.every((t) => !!t.createdBy && !!t.createdAt)).toBe(true);
+  });
+
+  it("writes British English", () => {
+    const copy = TASKS.flatMap((t) => [t.title, t.description, t.aiReason ?? ""]).join(" ");
+    expect(copy).not.toMatch(/\b(finalize|color|organize|prioritize|canceled)\b/i);
+  });
+
+  it("puts Maya over a 40h week and leaves the press release unowned", () => {
+    const maya = ["t-2", "t-6", "t-10", "t-18"].reduce((h, id) => h + (byId(id).effortHours ?? 0), 0);
+    expect(maya).toBe(44);
+    expect(byId("t-17")).toMatchObject({ assigneeId: "", dueDate: dayOffset(2), projectId: "p-launch" });
+    // the deck really is holding up three tasks
+    expect(TASKS.filter((t) => t.dependencies.includes("t-1")).map((t) => t.id)).toEqual(["t-17", "t-20", "t-23"]);
+    expect(byId("t-23").isMilestone).toBe(true);
+  });
+
+  it("has a date that slipped twice and a task that went quiet", () => {
+    expect(byId("t-3").originalDueDate).toBe(dayOffset(-4));
+    const slips = DEMO_TASK_EVENTS.filter((e) => e.taskId === "t-3" && e.field === "due");
+    expect(slips.map((e) => e.newValue).sort()).toEqual([dayOffset(-1), dayOffset(3)].sort());
+    const t9 = DEMO_TASK_EVENTS.filter((e) => e.taskId === "t-9");
+    expect(t9).toHaveLength(1);
+    expect(Date.now() - Date.parse(t9[0].createdAt)).toBeGreaterThan(8 * 86400000);
+    expect(Date.now() - Date.parse(byId("t-9").createdAt!)).toBeGreaterThan(19 * 86400000);
+  });
+
+  it("gives Pulse two days of history, newest first, by real people", () => {
+    const names = new Set(DEMO_TASK_EVENTS.filter((e) => Date.now() - Date.parse(e.createdAt) < 3 * 86400000).map((e) => e.actorName));
+    expect([...names]).toEqual(expect.arrayContaining(["Maya Lin", "Theo Vance", "Sana Rao"]));
+    const times = DEMO_TASK_EVENTS.map((e) => e.createdAt);
+    expect(times).toEqual([...times].sort().reverse());
+    expect(DEMO_TASK_EVENTS.every((e) => TASKS.some((t) => t.id === e.taskId))).toBe(true);
+  });
+
+  it("fills the Inbox, Goals, Portfolios, updates, Rules and Requests", () => {
+    expect(DEMO_ACTIVITY).toHaveLength(6);
+    expect(DEMO_ACTIVITY.filter((a) => !a.readAt).map((a) => a.kind).sort()).toEqual(["assigned", "mention"]);
+    expect(DEMO_ACTIVITY.every((a) => a.taskTitle === TASKS.find((t) => t.id === a.taskId)?.title)).toBe(true);
+    expect(DEMO_GOALS.map((g) => g.status)).toEqual(["on_track", "at_risk"]);
+    expect(DEMO_PORTFOLIOS).toEqual([expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] })]);
+    expect(DEMO_STATUS_UPDATES.some((u) => u.projectId === "p-infra")).toBe(false);
+    expect(DEMO_RULES[0]).toMatchObject({ projectId: "p-launch", trigger: "task_created", actions: [{ type: "add_tag", value: "eng" }] });
+    expect(DEMO_FORMS[0]).toMatchObject({ name: "Launch requests", fields: ["description", "priority", "dueDate"] });
+    expect(EVENTS.map((e) => e.id)).toEqual(expect.arrayContaining(["e1", "e2", "e3", "e4", "e5"]));
   });
 });
