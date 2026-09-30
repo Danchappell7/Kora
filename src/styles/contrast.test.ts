@@ -3,8 +3,10 @@
    in BOTH themes) and checks WCAG 2.x ratios for text, chips, controls and
    every accent colour. */
 import { describe, it, expect } from "vitest";
-import { contrast, over, oklchToRgb, parseColor, type RGBA } from "../lib/contrast";
-import { ACCENTS, applyAppearance, accentTheme, LIGHT_PANEL } from "../lib/appearance";
+import { contrast, over, oklchToRgb, parseColor, rgbToOklch, type RGBA } from "../lib/contrast";
+import { ACCENTS, applyAppearance, accentTheme, LIGHT_CANVAS, LIGHT_PANEL, LIGHT_WELL } from "../lib/appearance";
+import { projectPaint } from "../components/primitives/kit";
+import { MEMBERS, PROJECTS, TAGS } from "../data/data";
 
 type Theme = "light" | "dark";
 
@@ -87,7 +89,11 @@ function accentInline(accent: (typeof ACCENTS)[number]["id"]): Record<string, st
   return props;
 }
 
-const TEXT_STATUS = ["--st-todo", "--st-progress", "--st-review", "--st-blocked", "--st-done", "--prio-low", "--prio-medium", "--prio-high", "--prio-urgent"];
+const TEXT_STATUS = ["--st-todo", "--st-progress", "--st-review", "--st-blocked", "--st-done", "--prio-low", "--prio-medium", "--prio-high", "--prio-urgent", "--signal", "--warn", "--ok"];
+const STATUS_FILLS = ["--st-todo-fill", "--st-progress-fill", "--st-review-fill", "--st-blocked-fill", "--st-done-fill", "--warn-fill"];
+/** the colour stops of a gradient token, e.g. the three oklch() stops of --grad-action */
+const stops = (gradient: string) => gradient.match(/(oklch\([^)]*\)|#[0-9a-f]{3,6}\b)/gi) ?? [];
+const WHITE = parseColor("#fff")!;
 const TAG_PALETTE = ["oklch(0.74 0.16 305)", "oklch(0.74 0.14 230)", "oklch(0.75 0.13 155)", "oklch(0.78 0.15 70)", "oklch(0.66 0.2 20)", "oklch(0.7 0.02 240)", "oklch(0.78 0.1 45)"];
 
 describe.each(["light", "dark"] as const)("%s theme tokens", (theme) => {
@@ -137,6 +143,75 @@ describe.each(["light", "dark"] as const)("%s theme tokens", (theme) => {
     expect(contrast(parseColor("oklch(0.99 0.01 20)")!, tok("--danger-fill", t))).toBeGreaterThanOrEqual(4.5);
   });
 
+  it("status fills (glyphs, bars, charts) are ≥ 3:1 on the canvas and on cards", () => {
+    for (const n of STATUS_FILLS) {
+      for (const [k, under] of [["canvas", bgs.canvas], ["card", bgs.card]] as const) expect(contrast(tok(n, t), under), `${n} on ${k}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("quiet icons (--icon-quiet) are ≥ 3:1 on every surface", () => {
+    expect(worst(tok("--icon-quiet", t), bgs)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("the focus ring (--accent) is ≥ 3:1 on every surface, for every accent", () => {
+    for (const a of ACCENTS) expect(worst(tok("--accent", tokens(theme, accentInline(a.id))), bgs), a.id).toBeGreaterThanOrEqual(3);
+  });
+
+  it("brand gradient marks (--grad: meters, rings, the AI mark) are ≥ 3:1 on the canvas", () => {
+    const marks = stops(resolve("var(--grad)", t));
+    expect(marks).toHaveLength(3);
+    for (const c of marks) expect(contrast(color(c), bgs.canvas), c).toBeGreaterThanOrEqual(3);
+  });
+
+  it("pill text reads on its tint (and its hover tint) on every surface — sidebar, lanes and wells too — for every tone and accent", () => {
+    // as kanbo.css draws it: the tone mixed toward --pill-ink-mix by --pill-ink-shift,
+    // on the tone at the .kpill tint (and the deeper tint of a hovered button pill)
+    const pct = (re: RegExp) => parseFloat(css.match(re)![1]) / 100;
+    const tints = [pct(/\n\.kpill \{[^}]*background: color-mix\(in oklch, var\(--pill\) ([\d.]+)%/), pct(/\nbutton\.kpill:hover \{ background: color-mix\(in oklch, var\(--pill\) ([\d.]+)%/)];
+    const mix = resolve("var(--pill-ink-mix)", t), shift = parseFloat(resolve("var(--pill-ink-shift)", t)) / 100;
+    expect(css).toMatch(/\n\.kpill \{[^}]*color: color-mix\(in oklch, var\(--pill\), var\(--pill-ink-mix\) var\(--pill-ink-shift\)\);/);
+    const ink = (c: RGBA) => {
+      const o = rgbToOklch(c);
+      return mix === "black" ? oklchToRgb(o.l * (1 - shift), o.c * (1 - shift), o.h) : oklchToRgb(o.l + (1 - o.l) * shift, o.c * (1 - shift), o.h);
+    };
+    const check = (c: RGBA, what: string) => {
+      for (const a of tints) for (const [k, under] of Object.entries(bgs)) {
+        expect(contrast(ink(c), over({ ...c, a }, under)), `${what} on ${k} at ${a * 100}%`).toBeGreaterThanOrEqual(4.5);
+      }
+    };
+    for (const n of ["--ok", "--warn", "--signal", "--ink-3"]) check(tok(n, t), n);
+    for (const a of ACCENTS) check(tok("--accent-text", tokens(theme, accentInline(a.id))), a.id);
+  });
+
+  it("meta text stays AA on hovered, pressed and selected rows", () => {
+    const rows = {
+      hover: over(tok("--fill-1", t), bgs.canvas),
+      pressed: over(tok("--fill-2", t), bgs.canvas),
+      selected: over(tok("--bg-selected", t), bgs.canvas),
+      "sidebar hover": over(tok("--fill-1", t), bgs.panel),
+      "sidebar active": bgs[theme === "dark" ? "well" : "card"],
+    };
+    for (const n of ["--ink-3", "--ink-4"]) expect(worst(tok(n, t), rows), n).toBeGreaterThanOrEqual(4.5);
+    expect(worst(tok("--accent-text", t), rows), "accent text").toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("tooltips (--bg on --ink) and avatar initials read clearly", () => {
+    expect(contrast(tok("--bg", t), tok("--ink", t))).toBeGreaterThanOrEqual(7);
+    const n = (k: string) => parseFloat(resolve(`var(${k})`, t));
+    for (let h = 0; h < 360; h += 15) {
+      const disc = oklchToRgb(n("--av-bg-l"), n("--av-bg-c"), h);
+      expect(contrast(oklchToRgb(n("--av-fg-l"), n("--av-fg-c"), h), disc), `hue ${h}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("project and tag dots (projectPaint at --pl) are ≥ 3:1 on the canvas and the sidebar", () => {
+    const palette = [...PROJECTS.map((p) => p.color), ...Object.values(TAGS).map((g) => g.color), ...MEMBERS.map((m) => m.color), "#1f6feb", "not a colour"];
+    for (const c of palette) {
+      const dot = color(resolve(projectPaint(c).solid, t));
+      for (const [k, under] of [["canvas", bgs.canvas], ["sidebar", bgs.panel]] as const) expect(contrast(dot, under), `${c} on ${k}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it("tag chips (chipInk on chipFill) ≥ 4.5:1 for the whole tag palette", () => {
     const fill = parseFloat(resolve("var(--chip-fill)", t)) / 100;
     const mix = resolve("var(--chip-ink-mix)", t), shift = resolve("var(--chip-ink-shift)", t);
@@ -158,13 +233,23 @@ describe("accent model (appearance.ts ↔ kanbo.css)", () => {
     expect(resolve("var(--accent-fill)", dark)).toContain("black 4.5%");
   });
 
-  it("LIGHT_PANEL mirrors the light --bg-deep", () => {
+  it("LIGHT_PANEL mirrors the light --bg-deep (and LIGHT_CANVAS --bg, LIGHT_WELL --surface-2)", () => {
     expect(resolve("var(--bg-deep)", tokens("light"))).toBe(LIGHT_PANEL);
+    expect(resolve("var(--bg)", tokens("light"))).toBe(LIGHT_CANVAS);
+    expect(resolve("var(--surface-2)", tokens("light"))).toBe(LIGHT_WELL);
   });
 
   it("teal, green and amber carry deep ink in dark; every accent keeps white text in light", () => {
     for (const id of ["teal", "green", "amber"] as const) expect(accentTheme(id, "dark").ink).toBe("dark");
     for (const a of ACCENTS) expect(accentTheme(a.id, "light").ink).toBe("light");
+  });
+
+  it("white text on the hero gradient (--grad-action and its hover) ≥ 4.5:1 at every stop", () => {
+    for (const name of ["--grad-action", "--grad-action-hover"]) {
+      const ss = stops(resolve(`var(${name})`, tokens("light")));
+      expect(ss, name).toHaveLength(3);
+      for (const c of ss) expect(contrast(WHITE, color(c)), `${name} ${c}`).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   it("switching back to violet clears every inline accent override", () => {

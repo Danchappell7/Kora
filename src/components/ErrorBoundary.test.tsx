@@ -13,13 +13,20 @@ describe("ErrorBoundary (inline)", () => {
   beforeEach(() => { broken = true; quiet = vi.spyOn(console, "error").mockImplementation(() => {}); });
   afterEach(() => quiet.mockRestore());
 
-  it("contains a crash to the view and offers Go home / Retry", () => {
+  it("contains a crash to the view and offers Go to Today / Reload", () => {
     const home = vi.fn();
     render(<div><p>Sidebar still here</p><ErrorBoundary inline onHome={home}><Flaky /></ErrorBoundary></div>);
-    expect(screen.getByRole("alert")).toHaveTextContent("This view hit a problem");
+    expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong on this page");
     expect(screen.getByText("Sidebar still here")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go to Today" }));
+    expect(home).toHaveBeenCalledTimes(1);
+  });
+
+  it("Reload renders the view again", () => {
+    render(<ErrorBoundary inline><Flaky /></ErrorBoundary>);
+    expect(screen.queryByRole("button", { name: "Go to Today" })).toBeNull(); // nowhere to go without onHome
     broken = false;
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     expect(screen.getByText("View content")).toBeInTheDocument();
     broken = true;
   });
@@ -34,7 +41,8 @@ describe("ErrorBoundary (inline)", () => {
 
   it("keeps the full-page fallback by default", () => {
     render(<ErrorBoundary><Flaky /></ErrorBoundary>);
-    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Reload Kanbo" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Something went wrong on this page" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Go to Today" })).toBeInTheDocument();
   });
 });

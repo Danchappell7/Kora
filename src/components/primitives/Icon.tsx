@@ -1,5 +1,6 @@
 /* ============================================================
-   KANBO — Icon (lucide-style stroke set)
+   KANBO — Icon (lucide-style stroke set: 24px grid, round caps and
+   joins; the kit draws them at 16px with a 1.75 stroke)
    ============================================================ */
 import type { CSSProperties } from "react";
 import type { IconName } from "../../data/types";
@@ -56,19 +57,19 @@ const ICONS: Record<IconName, string> = {
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
   trash: "M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M10 11v6M14 11v6",
   menu: "M3 6h18M3 12h18M3 18h18",
-  /* first cut for the redesign (W0): simple strokes in the same style, so
-     nothing renders blank; P01 may redraw them */
-  pulse: "M3 12h4l3-8 4 16 3-8h4",
-  radar: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 1 4-4M12 12l6.4-6.4M16 16h.01",
-  kanbo: "M4 4h4v16H4zM10 4h4v11h-4zM16 4h4v7h-4z",
-  undo: "M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3",
-  keyboard: "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M8 14h8",
-  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
-  send: "M22 2L11 13M22 2l-7 20-4-9-9-4z",
-  sliders: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6",
+  /* Paper & Navy additions, drawn on the same 24px grid (round caps and joins) */
+  pulse: "M3 12h3.5l2.5-6.5 5 13 2.5-6.5H21",
+  radar: "M20.2 8.3A9 9 0 1 1 15.7 3.8M16.4 9.8A5 5 0 1 1 14.2 7.6M12 12l6.4-6.4M12 12h.01",
+  // the brand's three-block board glyph: columns at 60% · 100% · 40%, hung from the top
+  kanbo: "M4.25 3h1.5A1.25 1.25 0 0 1 7 4.25v8.05a1.25 1.25 0 0 1-1.25 1.25h-1.5A1.25 1.25 0 0 1 3 12.3V4.25A1.25 1.25 0 0 1 4.25 3zM11.25 3h1.5A1.25 1.25 0 0 1 14 4.25v14.5A1.25 1.25 0 0 1 12.75 20h-1.5A1.25 1.25 0 0 1 10 18.75V4.25A1.25 1.25 0 0 1 11.25 3zM18.25 3h1.5A1.25 1.25 0 0 1 21 4.25v4.3a1.25 1.25 0 0 1-1.25 1.25h-1.5A1.25 1.25 0 0 1 17 8.55v-4.3A1.25 1.25 0 0 1 18.25 3z",
+  undo: "M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11",
+  keyboard: "M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM6.5 9h.01M10 9h.01M14 9h.01M17.5 9h.01M6.5 12.5h.01M17.5 12.5h.01M8.5 15.5h7",
+  copy: "M10 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2zM16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3",
+  send: "M21.4 2.6L10.6 13.4M21.4 2.6l-6.6 18.3a.6.6 0 0 1-1.1.05L10.6 13.4 3.05 10.3a.6.6 0 0 1 .05-1.1z",
+  sliders: "M20 5h-7M9 5H4M20 12h-9M7 12H4M20 19h-5M11 19H4M13 3v4M7 10v4M15 17v4",
   hourglass: "M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2",
-  sunset: "M12 10V2M4.9 10.9l1.4 1.4M2 18h2M20 18h2M19.1 10.9l-1.4 1.4M22 22H2M16 6l-4 4-4-4M16 18a4 4 0 0 0-8 0",
-  notes: "M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M9 13h6M9 17h6M9 9h1",
+  sunset: "M12 10V3M8.5 6.5L12 10l3.5-3.5M4.9 11.9l1.4 1.4M19.1 11.9l-1.4 1.4M2 18h2M20 18h2M16 18a4 4 0 0 0-8 0M22 21H2",
+  notes: "M6 4h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM8 2v4M12 2v4M16 2v4M8 11h8M8 15h8M8 19h5",
 };
 
 interface IconProps {

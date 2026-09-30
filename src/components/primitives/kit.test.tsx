@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createRef, useState } from "react";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import * as primitives from "./index";
 import {
   Button, IconButton, Kbd, Tabs, Meter, StatusGlyph, PriorityGlyph, DateChip, AiMark, Provenance, Vellum,
@@ -418,6 +418,79 @@ describe("Sheet", () => {
     fireEvent.mouseDown(layer);
     fireEvent.click(layer);
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it("a bottom sheet drags down by its handle: a short pull springs back, a long one closes", () => {
+    // jsdom has no PointerEvent: a MouseEvent with a pointerId carries clientY and button
+    const had = "PointerEvent" in window;
+    if (!had) {
+      (window as unknown as { PointerEvent: unknown }).PointerEvent = class extends MouseEvent {
+        pointerId: number;
+        constructor(type: string, init: PointerEventInit = {}) { super(type, init); this.pointerId = init.pointerId ?? 1; }
+      };
+    }
+    const onClose = vi.fn();
+    render(<Sheet open onClose={onClose} label="Quick capture" side="bottom"><p>Body</p></Sheet>);
+    const sheet = screen.getByRole("dialog", { name: "Quick capture" });
+    const handle = sheet.querySelector(".ksheet-handle")!;
+    fireEvent.pointerDown(handle, { button: 0, clientY: 400, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientY: 430, pointerId: 1 });
+    expect(sheet.style.translate).toBe("0 30px");
+    fireEvent.pointerMove(handle, { clientY: 380, pointerId: 1 }); // never lifts above its edge
+    expect(sheet.style.translate).toBe("0 0px");
+    fireEvent.pointerUp(handle, { clientY: 380, pointerId: 1 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(sheet.style.translate).toBe("");
+    fireEvent.pointerDown(handle, { button: 0, clientY: 400, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientY: 700, pointerId: 1 });
+    fireEvent.pointerUp(handle, { clientY: 700, pointerId: 1 });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    if (!had) delete (window as unknown as { PointerEvent?: unknown }).PointerEvent;
+  });
+
+  it("a drag-close carries on down from where it was let go; an owner that keeps it open gets it back at rest", () => {
+    const had = "PointerEvent" in window;
+    if (!had) {
+      (window as unknown as { PointerEvent: unknown }).PointerEvent = class extends MouseEvent {
+        pointerId: number;
+        constructor(type: string, init: PointerEventInit = {}) { super(type, init); this.pointerId = init.pointerId ?? 1; }
+      };
+    }
+    vi.useFakeTimers();
+    try {
+      const pull = (sheet: HTMLElement, dy: number) => {
+        const handle = sheet.querySelector(".ksheet-handle")!;
+        fireEvent.pointerDown(handle, { button: 0, clientY: 100, pointerId: 1 });
+        fireEvent.pointerMove(handle, { clientY: 100 + dy, pointerId: 1 });
+        fireEvent.pointerUp(handle, { clientY: 100 + dy, pointerId: 1 });
+      };
+      function Closes() {
+        const [open, setOpen] = useState(true);
+        return <Sheet open={open} onClose={() => setOpen(false)} label="Quick capture" side="bottom"><p>Body</p></Sheet>;
+      }
+      const { unmount } = render(<Closes />);
+      const leaving = screen.getByRole("dialog", { name: "Quick capture" });
+      pull(leaving, 150);
+      // the exit fade starts where the finger let go and travels on from there (ksheetOutDown reads --drag-y)
+      expect(document.querySelector(".ksheet-layer")).toHaveAttribute("data-state", "closing");
+      expect(leaving.style.translate).toBe("0 150px");
+      expect(leaving.style.getPropertyValue("--drag-y")).toBe("150px");
+      unmount();
+
+      // a "discard changes?" guard: onClose declines
+      render(<Sheet open onClose={() => {}} label="New task" side="bottom"><p>Body</p></Sheet>);
+      const kept = screen.getByRole("dialog", { name: "New task" });
+      pull(kept, 300);
+      act(() => { vi.advanceTimersByTime(0); });
+      expect(kept.style.translate).toBe("");
+      expect(kept.style.getPropertyValue("--drag-y")).toBe("");
+      expect(kept).toHaveAttribute("data-settling", "true");
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(kept).not.toHaveAttribute("data-settling");
+    } finally {
+      vi.useRealTimers();
+      if (!had) delete (window as unknown as { PointerEvent?: unknown }).PointerEvent;
+    }
   });
 
   it("focuses initialFocus when given", async () => {

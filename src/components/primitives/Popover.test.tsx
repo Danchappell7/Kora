@@ -57,6 +57,58 @@ function Harness({ onClose, onRowClick = () => {} }: { onClose?: () => void; onR
 }
 
 describe("Popover", () => {
+  it("its hover/focus fill for hand-styled items leaves kit controls alone (a danger item stays red, a primary Save keeps its fill)", () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByText("Status"));
+    const panel = screen.getByRole("menu");
+    const css = document.querySelector("[data-kpop] style")!.textContent!;
+    const painting = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, sel, body]) => /button/.test(sel) && /(^|;|\s)(color|background):/.test(body)).map(([, sel]) => sel.trim());
+    expect(painting.length).toBeGreaterThan(0);
+    const probe = (html: string) => { const box = document.createElement("div"); box.innerHTML = html; panel.appendChild(box); return box.firstElementChild as HTMLElement; };
+    const kit = [
+      probe('<button class="kmenu-item" data-tone="danger">Delete</button>'),
+      probe('<button class="kbtn" data-variant="primary">Save</button>'),
+      probe('<button class="btn btn-accent">Save</button>'),
+      probe('<button class="kibtn" aria-pressed="true">Pin</button>'),
+      probe('<button class="ktoggle-switch" role="switch" aria-checked="true"></button>'),
+    ];
+    const legacy = probe('<button style="background: transparent">Move to Monday</button>');
+    for (const rule of painting) for (const sel of rule.split(/,(?![^(]*\))/)) {
+      const bare = sel.replace(/:(hover|focus-visible)/g, "").trim(); // (jsdom can't hover: match the rest)
+      for (const el of kit) expect(el.matches(bare), `${bare} → ${el.outerHTML}`).toBe(false);
+      expect(legacy.matches(bare), bare).toBe(true);
+    }
+  });
+
+  it("leaves in 90ms: the menu itself goes at once (focus returns) while an inert copy fades where it stood", async () => {
+    // jsdom has no Web Animations API (so everywhere else a closed menu simply goes): stand one in
+    const proto = HTMLElement.prototype as unknown as { animate?: unknown };
+    const had = proto.animate;
+    const runs: Array<{ onfinish: (() => void) | null; oncancel: (() => void) | null }> = [];
+    proto.animate = vi.fn(() => { const a = { onfinish: null, oncancel: null }; runs.push(a); return a; });
+    try {
+      render(<Harness />);
+      const trigger = screen.getByText("Status");
+      fireEvent.click(trigger);
+      await waitFor(() => expect(screen.getByRole("menu")).toContainElement(document.activeElement as HTMLElement));
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Done" })).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+      const copy = document.body.querySelector<HTMLElement>("[inert]")!;
+      expect(copy).toHaveAttribute("aria-hidden", "true");
+      expect(copy).not.toHaveAttribute("role");
+      expect(copy).not.toHaveAttribute("data-kpop-panel");
+      expect(copy.style.pointerEvents).toBe("none");
+      expect(copy.textContent).toContain("Done");
+      expect(runs).toHaveLength(1);
+      runs[0].onfinish?.();
+      expect(document.body.querySelector("[inert]")).toBeNull();
+    } finally {
+      if (had) proto.animate = had; else delete proto.animate;
+    }
+  });
+
   it("renders into document.body, outside the (clipping) row", () => {
     const { container } = render(<Harness />);
     fireEvent.click(screen.getByText("Status"));

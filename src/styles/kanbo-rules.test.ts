@@ -18,6 +18,19 @@ function rules(src: string): Array<[string[], string]> {
 }
 const all = rules(css);
 const selectorsSetting = (prop: RegExp) => all.filter(([, body]) => prop.test(body)).flatMap(([sels]) => sels);
+/** The body of every `@media …` block (brace-matched, so nested rules come whole). */
+function mediaBlocks(src: string): Array<{ query: string; body: string }> {
+  const out: Array<{ query: string; body: string }> = [];
+  const re = /@media([^{]*)\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    let depth = 1, i = re.lastIndex;
+    for (; i < src.length && depth; i++) depth += src[i] === "{" ? 1 : src[i] === "}" ? -1 : 0;
+    out.push({ query: m[1].trim(), body: src.slice(re.lastIndex, i - 1) });
+  }
+  return out;
+}
+const bodyOf = (selector: string) => all.filter(([sels]) => sels.includes(selector)).map(([, body]) => body).join(";");
 
 describe("hover-revealed row actions", () => {
   const reveals = selectorsSetting(/opacity:\s*1/);
@@ -86,5 +99,83 @@ describe("kit primitives", () => {
   it("never blurs what's behind a kit surface (no glass)", () => {
     const blurred = all.filter(([sels, body]) => sels.some((s) => KIT.test(s)) && /backdrop-filter/.test(body)).flatMap(([sels]) => sels);
     expect(blurred).toEqual([]);
+  });
+});
+
+describe("Paper & Navy", () => {
+  it("has no glass: cards and overlays never blur what's behind them", () => {
+    for (const sel of [".glass", ".kbackdrop", ".kbackdrop::before"]) {
+      const body = bodyOf(sel);
+      expect(body, sel).not.toMatch(/backdrop-filter:(?!\s*none)/);
+    }
+    expect(bodyOf(".glass::before"), "the glass top edge is retired").toBe("");
+  });
+
+  it("the backdrop is one static halo: no aurora drift, intro or grain", () => {
+    expect(bodyOf(".app-bg")).toMatch(/background:\s*var\(--halo\)/);
+    expect(bodyOf(".app-bg")).not.toMatch(/animation/);
+    expect(bodyOf(".app-bg::after")).toBe("");
+    expect(all.some(([sels, body]) => sels.some((x) => x.includes(".app-bg")) && /animation/.test(body))).toBe(false);
+    expect(bodyOf(".app-grid")).toMatch(/display:\s*none/);
+  });
+
+  it("section labels are sentence case, never uppercase eyebrows", () => {
+    const kicker = bodyOf(".kicker");
+    expect(kicker).toMatch(/text-transform:\s*none/);
+    expect(kicker).not.toMatch(/uppercase/);
+    expect(kicker).toMatch(/letter-spacing:\s*0/);
+  });
+
+  it("switches off the route change and the completion pop under reduced motion", () => {
+    const reduced = mediaBlocks(css).filter((b) => /prefers-reduced-motion:\s*reduce/.test(b.query)).map((b) => b.body).join("\n");
+    for (const cls of [".kroute", ".kglyph-pop", ".kcheck-pop", ".kstagger", ".ktoast", ".kland"]) expect(reduced, cls).toContain(cls);
+  });
+
+  it("never declares a bare :root inside @media (the token parser would read it as a theme token)", () => {
+    for (const { query, body } of mediaBlocks(css)) {
+      const bare = rules(body).flatMap(([sels]) => sels).filter((sel) => sel === ":root");
+      expect(bare, `@media ${query}`).toEqual([]);
+    }
+  });
+
+  it("buttons only come in three heights (28 · 32 · 40) and never lift on hover", () => {
+    // (the controls themselves: not things inside them such as a button's kbd,
+    // nor the invisible 44px touch target drawn on ::before)
+    const heights = all.filter(([sels]) => !sels.join(",").includes("::") && sels.some((x) => /^\.(btn|btn-icon|btn-accent|btn-ghost|kbtn|kibtn|kseg)(?![\w-])[^ >]*$/.test(x)))
+      .flatMap(([, body]) => [...body.matchAll(/(?:^|;|\s)height:\s*([^;!]+)/g)].map((m) => m[1].trim()));
+    expect(heights.length).toBeGreaterThan(0);
+    for (const h of heights) expect(["var(--h-sm)", "var(--h-md)", "var(--h-lg)"], h).toContain(h);
+    const lifts = all.filter(([sels, body]) => sels.some((x) => /:hover/.test(x)) && /translateY\(-/.test(body)).flatMap(([sels]) => sels);
+    expect(lifts).toEqual([]);
+  });
+
+  it("legacy buttons sized by inline padding land on the scale", () => {
+    // (an :is() list holds commas, so match on the whole selector text)
+    const sm = all.find(([sels]) => { const x = sels.join(","); return x.startsWith(".btn:is(") && x.includes('[style*="padding: 5px"]'); });
+    const lg = all.find(([sels]) => { const x = sels.join(","); return x.startsWith(".btn:is(") && x.includes('[style*="padding: 11px"]'); });
+    expect(sm?.[1]).toMatch(/height:\s*var\(--h-sm\)/);
+    expect(lg?.[1]).toMatch(/height:\s*var\(--h-lg\)/);
+  });
+
+  it("menu items fill on hover and keyboard focus themselves, and a danger item stays in the signal colour", () => {
+    expect(bodyOf(".kmenu-item:hover:not(:disabled)")).toMatch(/background:\s*var\(--fill-1\)/);
+    expect(bodyOf(".kmenu-item:focus-visible")).toMatch(/background:\s*var\(--fill-1\)/);
+    const danger = [".kmenu-item[data-tone=\"danger\"]:hover:not(:disabled)", ".kmenu-item[data-tone=\"danger\"]:focus-visible"];
+    for (const s of danger) {
+      const body = bodyOf(s);
+      expect(body, s).toMatch(/background:\s*var\(--signal-tint\)/);
+      for (const m of body.matchAll(/(?:^|;|\s)color:\s*([^;]+)/g)) expect(m[1].trim(), s).toBe("var(--signal)");
+    }
+  });
+
+  it("a bottom sheet let go mid-drag exits on downward from where it was, and dragging never restarts its entrance", () => {
+    expect(css).toMatch(/@keyframes ksheetOutDown \{ to \{[^}]*translate: 0 calc\(var\(--drag-y, 0px\)[^}]*\} \}/);
+    // switching the animation off while dragging would replay the entrance on release
+    expect(bodyOf(".ksheet[data-dragging=\"true\"]")).not.toMatch(/animation/);
+  });
+
+  it("docks the task panel at 1280px and wider", () => {
+    const wide = mediaBlocks(css).find((b) => /min-width:\s*1280px/.test(b.query));
+    expect(wide?.body).toMatch(/\[data-panel="open"\] #main\s*\{[^}]*margin-right:\s*var\(--detail-w\)/);
   });
 });

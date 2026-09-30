@@ -1,237 +1,288 @@
 /* ============================================================
-   KANBO — design system
-   Apple "white glass" super-premium. visionOS-style frosted
-   translucent surfaces, SF typography, soft deep shadows.
-   Default = white glass. [data-theme="dark"] = dark glass alt.
+   KANBO — design system: "Paper & Navy"
+   Quiet precision, warmed. Two themes on the brand's navy hue (268):
+     Paper (light) — white work on a tinted frame
+     Navy  (dark)  — Canvas Navy #0B1020 with one faint violet halo
+   Colour is information (status, signal, accent, project identity);
+   the blue→violet→magenta gradient only ever means momentum.
+   Three control heights (28 · 32 · 40), eight type sizes, one radius
+   scale, one overlay recipe, one completion signal. No glass.
+
+   IMPORTANT: `:root` matches <html> in BOTH themes, so every token
+   declared in the Paper block must be declared again in the Navy block,
+   or the light value leaks (src/styles/contrast.test.ts checks it, and
+   every text/control pair below against WCAG AA).
+   Responsive and density overrides use `html:root` or attribute
+   selectors, never a bare `:root` inside @media: the contrast test's
+   token parser would read it as a theme token.
    ============================================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/* ============ theme-independent ============ */
 :root {
-  /* ---- Type — KANBO brand: Sora (headings) · Manrope (body/UI) · JetBrains Mono ---- */
+  /* type families (legacy names kept; --font-display is the UI face) */
   --font-display: 'Manrope', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-ui: var(--font-display);
   --font-head: 'Sora', 'Manrope', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* ---- KANBO brand accent — blue→violet→magenta (violet as the solid signal) ----
-     The accent, status and priority colours are theme-tuned, so they live in
-     the LIGHT and DARK blocks below. Non-violet accents are applied by
-     lib/appearance.ts, which writes oklch(var(--accent-l) C H) style values
-     inline so each theme's lightness still applies. */
-  /* brand gradient (hero element, used with restraint) */
-  --brand-blue: #5B7CFA;
-  --brand-violet: #8B5CF6;
-  --brand-magenta: #C24BE0;
-  --brand-grad: linear-gradient(135deg, #5B7CFA, #8B5CF6 52%, #C24BE0);
-  --brand-grad-soft: linear-gradient(135deg, oklch(0.66 0.19 270 / 0.16), oklch(0.62 0.22 320 / 0.16));
+  /* type scale: 8 steps, weights 400/500/600 only, nothing under 11px */
+  --t-data: 11px;    --lh-data: 16px;     /* JetBrains Mono 500, tabular: times, durations, counts, dates in columns, kbd, ids */
+  --t-meta: 12px;    --lh-meta: 16px;     /* Manrope 500: meta, labels; 600 for section labels */
+  --t-ui: 13px;      --lh-ui: 20px;       /* Manrope 500/600: controls, tabs, menus, table cells */
+  --t-row: 14px;     --lh-row: 20px;      /* Manrope 500: task titles in rows and cards, sidebar nav */
+  --t-body: 15px;    --lh-body: 24px;     /* Manrope 400: descriptions, comments, Kanbo's answers */
+  --t-title: 20px;   --lh-title: 28px;    /* Sora 600, -0.012em: page, task and dialog titles */
+  --t-display: 28px; --lh-display: 36px;  /* Sora 500, -0.02em: Today brief, Pulse lede, Insights sentence (phone 22/30) */
+  --t-hero: 40px;    --lh-hero: 44px;     /* Sora 600, -0.028em: shut-down count, Inbox zero; max one per screen */
 
-  --radius: 18px;
-  --radius-sm: 12px;
-  --radius-lg: 26px;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1); /* small, tasteful overshoot */
+  /* brand + gradients */
+  --brand-blue: #5B7CFA; --brand-violet: #8B5CF6; --brand-magenta: #C24BE0;
+  --grad: linear-gradient(90deg, #5B7CFA 0%, #8B5CF6 52%, #C24BE0 100%);            /* marks, meters, rings: ≥ 3:1 on both canvases */
+  --brand-grad: linear-gradient(135deg, #5B7CFA, #8B5CF6 52%, #C24BE0);             /* legacy name, logo */
+  --grad-action: linear-gradient(100deg, oklch(0.52 0.19 268), oklch(0.50 0.22 292) 55%, oklch(0.52 0.21 318)); /* white text 5.6 / 6.5 / 6.0:1 */
+  --grad-action-hover: linear-gradient(100deg, oklch(0.48 0.19 268), oklch(0.46 0.22 292) 55%, oklch(0.48 0.21 318));
+  --brand-grad-soft: linear-gradient(135deg, oklch(0.66 0.19 270 / 0.12), oklch(0.62 0.22 320 / 0.12));
+
+  /* space (4px base) + layout */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px; --s-12: 48px; --s-16: 64px;
+  --gutter: 32px;            /* 16px under 860px (below) */
+  --sidebar-w: 232px; --detail-w: 480px; --rail-w: 360px; --radar-w: 380px;
+  --list-max: 1120px; --read-max: 720px;
+  --header-h: 56px; --tabs-h: 44px;
+
+  /* controls: exactly three heights (+ the touch target) */
+  --h-sm: 28px; --h-md: 32px; --h-lg: 40px; --h-touch: 44px;
+  --row-h: 36px;             /* compact density 30px; phone rows 56px */
+
+  /* radius */
+  --r-xs: 4px;   /* kbd, square checkbox, tag squares */
+  --r-sm: 6px;   /* 28/32 controls, rows, chips, canvas blocks, menu items */
+  --r-md: 8px;   /* 40px buttons, board cards, inputs in dialogs, toasts */
+  --r-lg: 12px;  /* cards, popovers, panels */
+  --r-xl: 16px;  /* dialogs, palette, sheets */
+  --r-2xl: 20px; /* phone sheet top corners */
+  --r-full: 999px;
+  --radius: var(--r-lg); --radius-sm: var(--r-md); --radius-lg: var(--r-xl);   /* legacy names */
+
+  /* motion */
+  --d-1: 90ms;   /* hover, press, cursor move */
+  --d-2: 160ms;  /* popovers, glyph fill, row settle, tab switch */
+  --d-3: 240ms;  /* panel, sheets, route change, ghost blocks landing (40ms stagger) */
+  --d-4: 480ms;  /* celebrations only: Shut down close, Inbox zero; at most once a day */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);          /* legacy name, same curve */
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.3, 1.3, 0.6, 1);   /* completion pop ONLY */
+
+  /* layers */
+  --z-header: 10; --z-panel: 60; --z-popover: 80; --z-dialog: 100; --z-palette: 120; --z-toast: 140;
 }
+[data-density="compact"] { --row-h: 30px; }
+@media (max-width: 859px) { html:root { --gutter: 16px; --row-h: 56px; } }
 
-/* ===================== LIGHT — "porcelain" (default) =====================
-   Three clear layers instead of one lavender wash:
-     canvas  (--bg)       cool near-white, barely tinted
-     panel   (--bg-deep)  a step darker — sidebar, board lanes, wells
-     card    (--surface*) paper-white with a crisp hairline + soft shadow
-   Contrast (WCAG 2.x, worst case across canvas / panel / cards / wells):
-     --ink 15.4 · --ink-2 9.6 · --ink-3 6.6 · --ink-4 5.0 — all text-safe;
-     accent, status and priority colours are ≥ 4.5:1 as text, including on
-     their own 14% chip tint (src/styles/contrast.test.ts guards all of it).
-     The aurora is an ambient top-light, not a tint on every card, and glass
-     saturation is low so it can't colour-cast.
-
-   IMPORTANT: `:root` matches <html> in BOTH themes, so every token declared
-   here must also be declared in the DARK block, or the light value leaks. */
+/* ============ PAPER (light) ============ */
 :root, [data-theme="light"] {
-  --bg: oklch(0.966 0.005 265);
-  --bg-deep: oklch(0.944 0.007 266);
-  --ink: oklch(0.20 0.018 266);
-  --ink-2: oklch(0.35 0.016 266);
-  --ink-3: oklch(0.44 0.013 266);
-  --ink-4: oklch(0.505 0.012 266);
-
-  /* paper-white cards on a tinted canvas; --surface-2 is a secondary fill a
-     step DARKER than cards (wells, chips, inactive controls) */
-  --surface: oklch(1 0 0 / 0.94);
-  --surface-2: oklch(0.955 0.005 266);
+  /* surfaces: white work on a tinted frame */
+  --bg: oklch(0.992 0.002 268);            /* content canvas */
+  --bg-deep: oklch(0.968 0.005 268);       /* sidebar, board lanes, wells, meetings; MUST equal appearance.ts LIGHT_PANEL */
+  --bg-sunken: var(--bg-deep);
+  --surface: oklch(1 0 0);                 /* cards (opaque; no glass) */
+  --surface-2: oklch(0.964 0.005 268);     /* chips, inactive controls, wells inside cards */
   --surface-solid: oklch(1 0 0);
-  --surface-raised: oklch(1 0 0);
-  /* ink-tint fills for hover / pressed / selected (work on any surface) */
-  --fill-1: oklch(0.28 0.02 266 / 0.055);
-  --fill-2: oklch(0.28 0.02 266 / 0.085);
-  /* progress / meter tracks: an ink tint, so a track reads on the canvas as
-     well as on white cards (the opaque --surface-2 all but vanished on the
-     canvas). Components: background var(--track, var(--surface-2)). */
-  --track: var(--fill-2);
+  --surface-raised: oklch(1 0 0);          /* popovers, panels, dialogs, task blocks */
+  --bg-raised: var(--surface-raised);
+  --bg-selected: color-mix(in oklch, var(--accent) 8%, transparent);   /* violet: oklch(0.54 0.215 288 / 0.08); follows the chosen accent */
+  --fill-1: oklch(0.25 0.02 268 / 0.05);   /* hover */
+  --fill-2: oklch(0.25 0.02 268 / 0.08);   /* pressed, skeleton */
+  --bg-hover: var(--fill-1);
+  --track: var(--fill-2);                  /* meters and progress tracks */
 
-  --hairline: oklch(0.28 0.02 266 / 0.12);
-  --hairline-strong: oklch(0.28 0.02 266 / 0.22);
-  --edge-light: oklch(1 0 0 / 0.95);
-  /* boundary of a control whose outline IS the control (empty checkbox):
-     ≥ 3:1 on every surface (WCAG 1.4.11) */
-  --control-border: oklch(0.62 0.012 266);
-  /* form fields: a whisper off-white (lifts off the canvas, sits into white
-     cards) with a defined edge; focus adds a 2px accent ring */
-  --field-bg: oklch(0.985 0.003 265);
-  --field-border: oklch(0.28 0.02 266 / 0.26);
-  --field-border-hover: oklch(0.28 0.02 266 / 0.40);
-  /* modal scrim: a cool graphite veil, so dialogs lift off the page */
-  --scrim: oklch(0.22 0.025 266 / 0.30);
+  /* ink (worst case across bg / bg-deep / surface / surface-2 / raised / solid) */
+  --ink: oklch(0.21 0.022 268);            /* 16.0:1 */
+  --ink-1: var(--ink);
+  --ink-2: oklch(0.38 0.018 268);          /* 9.0:1 */
+  --ink-3: oklch(0.47 0.014 268);          /* 6.1:1 */
+  --ink-4: oklch(0.515 0.012 268);         /* 5.0:1, still text-safe on a hovered sidebar row (4.67:1) */
+  --icon-quiet: oklch(0.64 0.01 268);      /* 3.0:1 NON-TEXT only: idle icons, empty glyph rings */
 
-  /* accent — deeper in light so it passes as text (violet 5.0:1 on canvas)
-     and carries white text (5.3:1). --accent-l/-strong-l let appearance.ts
-     derive any accent hue at this theme's lightness. */
+  /* lines */
+  --hairline: oklch(0.25 0.025 268 / 0.10);
+  --hairline-strong: oklch(0.25 0.025 268 / 0.18);
+  --line: var(--hairline); --line-strong: var(--hairline-strong);
+  --edge-light: transparent;                /* the glass top edge is retired */
+  --control-border: oklch(0.62 0.012 268);  /* 3.28:1: empty checkbox, radio, switch */
+  --field-bg: oklch(1 0 0);
+  --field-border: oklch(0.25 0.025 268 / 0.20);
+  --field-border-hover: oklch(0.25 0.025 268 / 0.34);
+  --scrim: oklch(0.2 0.03 268 / 0.22);      /* dialogs, palette; NO blur */
+  --scrim-soft: oklch(0.2 0.03 268 / 0.12); /* task panel overlay under 1280px */
+
+  /* accent: model and values unchanged (appearance.ts derives the other six accents) */
   --accent-l: var(--accent-l-light, 0.54);
   --accent-strong-l: var(--accent-strong-l-light, 0.49);
-  --accent-dim-a: 0.10;
-  --accent-glow-a: 0.22;
-  --accent: oklch(0.54 0.215 288);
+  --accent-dim-a: 0.10; --accent-glow-a: 0.22;
+  --accent: oklch(0.54 0.215 288);                  /* 5.0:1 as text; the focus ring */
   --accent-strong: oklch(0.49 0.22 290);
   --accent-dim: oklch(0.54 0.215 288 / 0.10);
   --accent-glow: oklch(0.54 0.215 288 / 0.22);
   --accent-text: var(--accent);
+  --accent-tint: var(--accent-dim);
+  --accent-line: color-mix(in oklch, var(--accent) 45%, transparent);   /* ghost-block dashes, selected rings */
   --on-accent: var(--on-accent-light, oklch(0.99 0.01 287));
-  /* solid accent fill that carries --on-accent text (primary buttons), and
-     its hover (deeper for white text, lighter for accents that carry ink) */
   --accent-fill: color-mix(in oklch, var(--accent), black var(--accent-shade-light, 0%));
   --accent-hover: var(--accent-hover-light, var(--accent-strong));
 
-  /* status & priority — deep enough to be text-safe (≥ 4.5:1) on canvas,
-     panel, cards AND on their own 14% chip tint ("At risk" pill), while
-     staying vivid as dots, bars and timeline fills */
-  --st-todo: oklch(0.495 0.02 260);
-  --st-progress: oklch(0.495 0.17 256);
-  --st-review: oklch(0.50 0.125 62);
-  --st-blocked: oklch(0.505 0.19 22);
-  --st-done: oklch(0.475 0.12 156);
+  /* status: the plain token is text-safe ink (≥ 4.5:1, also on its own 14% tint);
+     -fill is for glyphs, bars and charts (≥ 3:1) */
+  --st-todo: oklch(0.495 0.02 260);    --st-todo-fill: oklch(0.64 0.02 268);
+  --st-progress: oklch(0.495 0.17 256);--st-progress-fill: oklch(0.60 0.18 258);
+  --st-review: oklch(0.50 0.125 62);   --st-review-fill: oklch(0.64 0.15 62);
+  --st-blocked: oklch(0.505 0.19 22);  --st-blocked-fill: oklch(0.60 0.21 25);
+  --st-done: oklch(0.475 0.12 156);    --st-done-fill: oklch(0.62 0.15 158);
   --prio-low: oklch(0.495 0.02 260);
   --prio-medium: oklch(0.49 0.15 252);
   --prio-high: oklch(0.50 0.13 62);
   --prio-urgent: oklch(0.50 0.2 22);
-  /* solid destructive fill that carries white text */
-  --danger-fill: var(--st-blocked);
+  --signal: oklch(0.52 0.19 25);   --signal-tint: oklch(0.52 0.19 25 / 0.08);   /* overdue, blocked, over capacity, errors */
+  --warn: oklch(0.52 0.12 65);     --warn-fill: var(--st-review-fill);           /* at risk, ≥ 90% load, stale */
+  --ok: oklch(0.49 0.12 160);                                                    /* on track, success */
+  --danger-fill: var(--st-blocked);                                              /* white text 6.3:1 */
 
-  /* no neon on paper: glows collapse to nothing, chips darken their ink */
-  --glow-r: 0px;
-  --chart-glow: none;
-  --avatar-ink: oklch(0.22 0.02 266);
-  --chip-ink-mix: black;
-  --chip-ink-shift: 42%;
-  --chip-fill: 14%;
-  --chip-edge: 34%;
+  /* identity */
+  --pl: 0.62;  --pc-min: 0.08; --pc-max: 0.16;       /* project/tag dot lightness + chroma clamp */
+  --av-bg-l: 0.93; --av-bg-c: 0.045; --av-fg-l: 0.42; --av-fg-c: 0.13;   /* avatar disc / initials (≥ 6.3:1) */
+  --avatar-ink: oklch(0.22 0.02 268);
+  --chip-ink-mix: black; --chip-ink-shift: 42%; --chip-fill: 14%; --chip-edge: 34%;
+  --pill-ink-mix: black; --pill-ink-shift: 8%;   /* Pill text a shade deeper than its tone: AA on its tint over wells and the sidebar */
 
-  --glass-blur: 24px;
-  --glass-sat: 1.15;
-  /* layered, neutral shadows: a 0.5px ring + tight contact + soft ambient */
-  --shadow: 0 0 0 0.5px oklch(0.25 0.02 266 / 0.05), 0 1px 2px oklch(0.25 0.02 266 / 0.06), 0 4px 12px -4px oklch(0.25 0.03 266 / 0.09);
-  --shadow-lg: 0 1px 2px oklch(0.25 0.02 266 / 0.06), 0 12px 28px -8px oklch(0.25 0.03 266 / 0.16), 0 36px 72px -24px oklch(0.25 0.04 266 / 0.20);
+  /* elevation. e1/e2/e3 carry their own hairline ring (use them with NO
+     border); the -drop parts are the shadow alone, for surfaces that already
+     draw a 1px border (.glass, legacy --shadow / --shadow-lg callers), so an
+     edge is never drawn twice */
+  --e1-drop: 0 1px 2px oklch(0.2 0.03 268 / 0.06);
+  --e2-drop: 0 12px 32px -12px oklch(0.2 0.03 268 / 0.20);
+  --e1: 0 0 0 1px var(--hairline), var(--e1-drop);
+  --e2: 0 0 0 1px var(--hairline), var(--e2-drop);
+  --e3: 0 0 0 1px var(--hairline), 0 24px 64px -16px oklch(0.2 0.03 268 / 0.30);
+  --e-lift: 0 1px 2px oklch(0.2 0.03 268 / 0.06), 0 8px 20px -10px oklch(0.2 0.03 268 / 0.18);   /* a card under the pointer */
+  --shadow: var(--e1-drop); --shadow-lg: var(--e2-drop);        /* legacy names */
+  --hero-glow: 0 1px 2px oklch(0.35 0.15 290 / 0.25), 0 8px 20px -8px oklch(0.5 0.22 300 / 0.45);
+  --glow-r: 0px; --chart-glow: none;
 
-  /* ambient top-light, not a wash */
-  --aurora-1: oklch(0.88 0.08 var(--aurora-h, 262) / 0.28); /* tinted by the chosen accent */
-  --aurora-2: oklch(0.90 0.06 320 / 0.14);
-  --aurora-3: oklch(0.94 0.05 200 / 0.12);
-  --grid-line: transparent;
-  --grain-opacity: 0.02;
-  --grain-blend: multiply;
+  /* AI surfaces (model-written text ONLY) */
+  --vellum-edge: linear-gradient(115deg, oklch(0.62 0.17 268 / 0.55), oklch(0.58 0.2 292 / 0.55) 55%, oklch(0.6 0.2 318 / 0.55));
+  --vellum-wash: radial-gradient(420px 160px at 100% 0%, oklch(0.62 0.17 268 / 0.06), transparent 70%);
+
+  /* retired ambience (kept declared so nothing leaks) */
+  --halo: none;
+  --glass-blur: 0px; --glass-sat: 1;
+  --aurora-1: transparent; --aurora-2: transparent; --aurora-3: transparent;
+  --grid-line: transparent; --grain-opacity: 0; --grain-blend: normal;
 
   color-scheme: light;
 }
 
-/* ===================== DARK GLASS (alternate) ===================== */
+/* ============ NAVY (dark) ============ */
 [data-theme="dark"] {
-  --bg: oklch(0.20 0.014 264);
-  --bg-deep: oklch(0.16 0.014 266);
-  --ink: oklch(0.97 0.005 264);
-  --ink-2: oklch(0.78 0.012 264);
-  /* raised for WCAG AA on the lighter glass panels (--surface-2 is the
-     worst case): ink-3 ≥ 5.7:1, ink-4 ≥ 4.6:1 everywhere */
-  --ink-3: oklch(0.72 0.012 266);
-  --ink-4: oklch(0.665 0.012 266);
-
-  --surface: oklch(0.30 0.018 264 / 0.5);
-  --surface-2: oklch(0.34 0.02 264 / 0.6);
-  --surface-solid: oklch(0.24 0.016 264);
-  --surface-raised: oklch(0.28 0.018 264 / 0.9);
-  --fill-1: oklch(1 0 0 / 0.06);
-  --fill-2: oklch(1 0 0 / 0.10);
+  --bg: oklch(0.175 0.03 268);             /* = brand Canvas Navy #0B1020 */
+  --bg-deep: oklch(0.15 0.028 268);        /* the sidebar recedes */
+  --bg-sunken: var(--bg-deep);
+  --surface: oklch(0.205 0.032 268);
+  --surface-2: oklch(0.235 0.032 268);
+  --surface-solid: oklch(0.215 0.032 268);
+  --surface-raised: oklch(0.235 0.034 268);
+  --bg-raised: var(--surface-raised);
+  --bg-selected: color-mix(in oklch, var(--accent-text) 10%, transparent);
+  --fill-1: oklch(1 0 0 / 0.05);
+  --fill-2: oklch(1 0 0 / 0.08);
+  --bg-hover: var(--fill-1);
   --track: var(--surface-2);
 
-  --hairline: oklch(0.92 0.01 264 / 0.12);
-  --hairline-strong: oklch(0.92 0.01 264 / 0.20);
-  --edge-light: oklch(1 0 0 / 0.10);
-  --control-border: oklch(0.56 0.012 266);
-  --field-bg: var(--surface);
-  --field-border: var(--hairline);
-  --field-border-hover: var(--hairline-strong);
-  --scrim: color-mix(in oklch, var(--bg-deep) 60%, transparent);
+  --ink: oklch(0.965 0.006 268);           /* 15.1:1 */
+  --ink-1: var(--ink);
+  --ink-2: oklch(0.83 0.018 268);          /* 9.9:1 */
+  --ink-3: oklch(0.74 0.022 268);          /* 7.2:1 */
+  --ink-4: oklch(0.68 0.02 268);           /* 5.8:1 */
+  --icon-quiet: oklch(0.56 0.02 268);      /* 3.6:1 non-text */
+
+  --hairline: oklch(0.9 0.03 268 / 0.10);
+  --hairline-strong: oklch(0.9 0.03 268 / 0.18);
+  --line: var(--hairline); --line-strong: var(--hairline-strong);
+  --edge-light: transparent;
+  --control-border: oklch(0.58 0.02 268);  /* 3.9:1 */
+  --field-bg: var(--bg-deep);
+  --field-border: var(--hairline-strong);
+  --field-border-hover: oklch(0.9 0.03 268 / 0.28);
+  --scrim: oklch(0.12 0.025 268 / 0.62);
+  --scrim-soft: oklch(0.12 0.025 268 / 0.35);
 
   --accent-l: var(--accent-l-dark, 0.605);
   --accent-strong-l: var(--accent-strong-l-dark, 0.55);
-  --accent-dim-a: 0.12;
-  --accent-glow-a: 0.32;
-  --accent: oklch(0.605 0.205 287);
+  --accent-dim-a: 0.12; --accent-glow-a: 0.32;
+  --accent: oklch(0.605 0.205 287);        /* focus ring 4.0:1 on the canvas */
   --accent-strong: oklch(0.55 0.225 290);
   --accent-dim: oklch(0.605 0.205 287 / 0.12);
   --accent-glow: oklch(0.605 0.205 287 / 0.32);
-  /* the glowing mid-tone violet can't carry text on its own dark panels, so
-     text-on-dark uses a lighter tint (≥ 5.4:1 on every surface) */
-  --accent-text: var(--accent-text-dark, oklch(0.72 0.15 287));
+  --accent-text: var(--accent-text-dark, oklch(0.72 0.15 287));   /* 6.5:1 */
+  --accent-tint: var(--accent-dim);
+  --accent-line: color-mix(in oklch, var(--accent-text) 45%, transparent);
   --on-accent: var(--on-accent-dark, oklch(0.99 0.01 287));
-  /* buttons sit a shade deeper than the glow so white text reaches 4.5:1 */
-  --accent-fill: color-mix(in oklch, var(--accent), black var(--accent-shade-dark, 4.5%));
+  --accent-fill: color-mix(in oklch, var(--accent), black var(--accent-shade-dark, 4.5%));   /* white text 4.5:1 */
   --accent-hover: var(--accent-hover-dark, var(--accent-strong));
 
-  /* status & priority — the neutral, blue and red members are lifted just
-     enough to pass 4.5:1 as text on glass cards and their own chip tint */
-  --st-todo: oklch(0.69 0.02 260);
-  --st-progress: oklch(0.69 0.16 256);
-  --st-review: oklch(0.72 0.15 70);
-  --st-blocked: oklch(0.705 0.18 18);
-  --st-done: oklch(0.665 0.16 156);
-  --prio-low: oklch(0.69 0.02 260);
-  --prio-medium: oklch(0.69 0.14 250);
-  --prio-high: oklch(0.70 0.16 70);
-  --prio-urgent: oklch(0.715 0.18 20);
-  /* the lifted reds are for text and dots; white-on-red buttons need depth */
-  --danger-fill: oklch(0.57 0.2 20);
+  --st-todo: oklch(0.72 0.02 260);     --st-todo-fill: oklch(0.60 0.02 268);
+  --st-progress: oklch(0.72 0.15 256); --st-progress-fill: oklch(0.68 0.17 258);
+  --st-review: oklch(0.76 0.14 70);    --st-review-fill: oklch(0.76 0.15 70);
+  --st-blocked: oklch(0.72 0.17 20);   --st-blocked-fill: oklch(0.68 0.19 25);
+  --st-done: oklch(0.72 0.15 156);     --st-done-fill: oklch(0.72 0.16 158);
+  --prio-low: oklch(0.72 0.02 260);
+  --prio-medium: oklch(0.72 0.13 250);
+  --prio-high: oklch(0.76 0.15 70);
+  --prio-urgent: oklch(0.73 0.17 20);
+  --signal: oklch(0.73 0.16 25);   --signal-tint: oklch(0.73 0.16 25 / 0.10);
+  --warn: oklch(0.80 0.13 75);     --warn-fill: var(--st-review-fill);
+  --ok: oklch(0.76 0.14 160);
+  --danger-fill: oklch(0.57 0.2 20);  /* white 4.8:1 */
 
-  --glow-r: 8px;
-  --chart-glow: drop-shadow(0 0 6px currentColor);
+  --pl: 0.74;  --pc-min: 0.08; --pc-max: 0.15;
+  --av-bg-l: 0.34; --av-bg-c: 0.07; --av-fg-l: 0.90; --av-fg-c: 0.07;
   --avatar-ink: var(--bg-deep);
-  --chip-ink-mix: white;
-  --chip-ink-shift: 12%;
-  --chip-fill: 12%;
-  --chip-edge: 30%;
+  --chip-ink-mix: white; --chip-ink-shift: 12%; --chip-fill: 12%; --chip-edge: 30%;
+  --pill-ink-mix: white; --pill-ink-shift: 0%;
 
-  --glass-blur: 30px;
-  --glass-sat: 1.9;
-  --shadow: 0 1px 0 oklch(1 0 0 / 0.05) inset, 0 12px 32px -12px oklch(0 0 0 / 0.6);
-  --shadow-lg: 0 1px 0 oklch(1 0 0 / 0.06) inset, 0 34px 70px -22px oklch(0 0 0 / 0.7);
+  --e1-drop: inset 0 1px 0 oklch(1 0 0 / 0.04);
+  --e2-drop: inset 0 1px 0 oklch(1 0 0 / 0.04), 0 16px 40px -12px oklch(0 0 0 / 0.55);
+  --e1: var(--e1-drop), 0 0 0 1px var(--hairline);
+  --e2: 0 0 0 1px var(--hairline-strong), var(--e2-drop);
+  --e3: 0 0 0 1px var(--hairline-strong), inset 0 1px 0 oklch(1 0 0 / 0.05), 0 32px 80px -16px oklch(0 0 0 / 0.65);
+  --e-lift: inset 0 1px 0 oklch(1 0 0 / 0.05), 0 12px 28px -14px oklch(0 0 0 / 0.6);
+  --shadow: var(--e1-drop); --shadow-lg: var(--e2-drop);
+  --hero-glow: 0 8px 24px -10px oklch(0.6 0.22 300 / 0.55);
+  --glow-r: 0px; --chart-glow: none;
 
-  --aurora-1: oklch(0.6 0.18 var(--aurora-h, 264) / 0.28);
-  --aurora-2: oklch(0.55 0.15 320 / 0.22);
-  --aurora-3: oklch(0.6 0.12 200 / 0.20);
-  --grid-line: transparent;
-  --grain-opacity: 0.07;
-  --grain-blend: normal;
+  --vellum-edge: linear-gradient(115deg, oklch(0.66 0.17 268 / 0.6), oklch(0.64 0.2 292 / 0.6) 55%, oklch(0.66 0.2 318 / 0.6));
+  --vellum-wash: radial-gradient(420px 160px at 100% 0%, oklch(0.62 0.17 268 / 0.10), transparent 70%);
+
+  --halo: radial-gradient(900px 520px at 88% -8%, oklch(0.55 0.2 285 / 0.10), transparent 65%);  /* the ONLY ambient light */
+  --glass-blur: 0px; --glass-sat: 1;
+  --aurora-1: transparent; --aurora-2: transparent; --aurora-3: transparent;
+  --grid-line: transparent; --grain-opacity: 0; --grain-blend: normal;
 
   color-scheme: dark;
 }
 
-/* form controls (checkboxes, radios, range sliders) follow the brand accent */
+/* native form controls (range sliders, radios) follow the brand accent */
 :root { accent-color: var(--accent); }
 
+/* ============ base ============ */
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
   color: var(--ink);
-  font-family: var(--font-display);
+  font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -240,6 +291,8 @@ body {
   font-optical-sizing: auto;
   overflow: hidden;
 }
+/* controls speak the UI face, not the platform's */
+button, input, select, textarea { font-family: inherit; }
 /* Full-height shells fill the window through the 100% chain, not 100vh.
    Settings → Text size scales the app with `zoom` on <html>, and browsers
    zoom vh too: a 100vh shell was 8% taller than the window at "Large"
@@ -255,11 +308,13 @@ body {
 #root > [style^="min-height: 100vh"],
 #root > [style*="; min-height: 100vh"] { min-height: 100% !important; }
 
-/* KANBO brand: Sora for display headings + page titles.
-   Balanced wrapping keeps headings from leaving a lonely last word;
-   pretty wrapping does the same for body paragraphs. */
-h1, h2, h3 { font-family: var(--font-head); letter-spacing: -0.02em; text-wrap: balance; }
-h1 { letter-spacing: -0.028em; }
+/* Headings default to Sora at the title tracking; in-app section headings
+   (SectionLabel, cards) set the UI face themselves, since Sora is only for
+   page, task and dialog titles, display ledes and the one hero number.
+   Balanced wrapping keeps headings from leaving a lonely last word; pretty
+   wrapping does the same for paragraphs. */
+h1, h2, h3, h4 { margin: 0; font-weight: 600; text-wrap: balance; }
+h1, h2, h3 { font-family: var(--font-head); letter-spacing: -0.012em; }
 p { text-wrap: pretty; }
 .brand-grad-text {
   background: var(--brand-grad); -webkit-background-clip: text; background-clip: text;
@@ -271,158 +326,228 @@ p { text-wrap: pretty; }
 /* thin scrollbars */
 *::-webkit-scrollbar { width: 9px; height: 9px; }
 *::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 99px; border: 2px solid transparent; background-clip: padding-box; }
-*::-webkit-scrollbar-thumb:hover { background: var(--ink-4); background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--icon-quiet); background-clip: padding-box; }
 * { scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent; }
 
-/* ---- atmospheric backdrop: soft color vibrancy behind the frosted glass ---- */
+/* ---- the backdrop: Navy's one static violet halo (none on Paper) ----
+   No aurora, no drift, no grain. .app-grid is retired. */
 .app-bg {
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background:
-    radial-gradient(760px 560px at 82% -6%, var(--aurora-1), transparent 62%),
-    radial-gradient(720px 600px at -6% 18%, var(--aurora-2), transparent 60%),
-    radial-gradient(900px 700px at 50% 116%, var(--aurora-3), transparent 60%);
+  background: var(--halo);
 }
-/* one-time breathe-in per page load (AppBg decides which element gets it).
-   Deliberately NOT a continuous drift by default: every glass card re-blurs
-   whatever moves beneath it, so a perpetual animation costs GPU/battery. */
-.app-bg-intro { animation: kauroraIn 1.6s var(--ease-out); }
-@keyframes kauroraIn { from { opacity: 0.45; transform: scale(1.05); } }
-/* opt-in (Settings → Appearance → Ambient motion): a very slow drift. Off by
-   default because glass re-blurs anything moving beneath it every frame. */
-@keyframes kauroraDrift {
-  0% { transform: translate3d(0, 0, 0) scale(1); }
-  50% { transform: translate3d(-3%, 2%, 0) scale(1.06); }
-  100% { transform: translate3d(2%, -1.5%, 0) scale(1.03); }
-}
-[data-ambient="on"] .app-bg { animation: kauroraDrift 48s ease-in-out infinite alternate; }
-[data-ambient="on"] .app-bg.app-bg-intro { animation: kauroraIn 1.6s var(--ease-out), kauroraDrift 48s ease-in-out 1.6s infinite alternate; }
-/* film grain: a static, near-invisible texture that makes surfaces feel
-   like material rather than flat colour. Static = the blur cost is paid once. */
-.app-bg::after {
-  content: ""; position: absolute; inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
-  opacity: var(--grain-opacity, 0.05);
-  /* light: multiply, so the grain reads as paper tooth instead of a grey veil */
-  mix-blend-mode: var(--grain-blend, normal);
-}
-@media (prefers-reduced-motion: reduce) { .app-bg, .app-bg-intro, [data-ambient="on"] .app-bg { animation: none !important; } }
-.app-grid {
-  position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 52px 52px;
-  mask-image: radial-gradient(circle at 50% 30%, black, transparent 85%);
-}
+.app-grid { display: none; }
 
-/* ---- glass surface ---- */
+/* ---- card surface (legacy name; no glass: no blur, no top edge) ---- */
 .glass {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--hairline);
   border-radius: var(--radius);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 1.9));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 1.9));
-  box-shadow: var(--shadow);
-  position: relative;
-}
-.glass::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  border-top: 1px solid var(--edge-light);
-  -webkit-mask: linear-gradient(black, transparent 38%);
-  mask: linear-gradient(black, transparent 38%);
+  box-shadow: var(--e1-drop);
 }
 
 /* ---- type helpers ---- */
 /* numbers in mono never jitter as they change (timers, counts, KPIs) */
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* section labels: sentence case, never an uppercase eyebrow */
 .kicker {
-  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
-  letter-spacing: 0.16em; text-transform: uppercase;
-  /* 10.5px labels are small text: --ink-3 keeps them ≥ 5:1 in both themes */
+  font: 600 12px/16px var(--font-ui); letter-spacing: 0; text-transform: none;
   color: var(--ink-3);
 }
 .tnum { font-variant-numeric: tabular-nums; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 /* hide on small screens (landing nav secondary action, dense table meta) */
 @media (max-width: 600px) { .hide-sm { display: none !important; } }
-h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 
-/* ---- focus ring ---- */
+/* ---- focus ring helper ---- */
 .ring-accent { box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-glow); }
 
-/* ---- buttons ---- */
-.btn {
-  font-family: var(--font-display); font-weight: 590; font-size: 13.5px;
-  display: inline-flex; align-items: center; gap: 8px;
-  border-radius: 12px; padding: 9px 15px; cursor: pointer;
-  border: 1px solid transparent; transition: all 0.18s var(--ease); white-space: nowrap;
-  color: var(--ink);
+/* ============================================================
+   Buttons: one system for the legacy classes and the kit.
+     .btn         = md secondary      .kbtn[data-variant="secondary"]
+     .btn-ghost   = md secondary      (the legacy "ghost" was a framed button)
+     .btn-accent  = md primary        .kbtn[data-variant="primary"]
+     .btn-icon    = 32px square ghost .kibtn
+   Heights are only ever 28 · 32 · 40. No hover lift.
+   ============================================================ */
+.btn, .kbtn {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  height: var(--h-md); padding: 0 12px; border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font: 600 13px/1 var(--font-ui); letter-spacing: 0; white-space: nowrap; text-decoration: none;
+  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: background var(--d-1) var(--ease), border-color var(--d-1) var(--ease),
+    color var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease), transform var(--d-1) var(--ease);
 }
-.btn-ghost { background: var(--surface-2); border-color: var(--hairline); color: var(--ink-2); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
-.btn-ghost:hover { background: var(--surface-raised); color: var(--ink); border-color: var(--hairline-strong); box-shadow: var(--shadow); }
-.btn-accent {
-  background: var(--accent-fill, var(--accent)); color: var(--on-accent); font-weight: 650;
-  box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 8px 22px -8px var(--accent-glow);
-}
-.btn-accent:hover { background: var(--accent-hover, var(--accent-strong)); box-shadow: 0 1px 2px oklch(0.4 0.1 264 / 0.3), 0 12px 30px -6px var(--accent-glow); transform: translateY(-1px); }
-.btn-icon {
-  width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 12px;
-  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
-}
-.btn-icon:hover { background: var(--surface-raised); color: var(--ink); border-color: var(--hairline-strong); }
+.kbtn { justify-content: center; }
 
-/* ---- animations ---- */
-/* entrance keyframes animate the individual translate/scale properties, which
-   COMPOSE with an element's own inline transform (e.g. a dialog centred with
-   translate(-50%,-50%)) instead of overwriting it mid-animation. */
-@keyframes fadeUp { from { translate: 0 12px; } to { translate: 0 0; } }
-/* house rule: entrances never start below 0.35 opacity, so a throttled or
-   backgrounded tab (or a capture mid-animation) never shows an empty panel */
+/* secondary: raised surface, a firm hairline, ink text; hover lays a tint over it */
+.btn, .btn-ghost, .kbtn[data-variant="secondary"] {
+  background: var(--surface-raised); border-color: var(--hairline-strong); color: var(--ink);
+  box-shadow: var(--e1-drop);
+}
+.btn:hover:not(:disabled), .btn-ghost:hover:not(:disabled), .kbtn[data-variant="secondary"]:hover:not(:disabled) {
+  background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised);
+  border-color: var(--field-border-hover);
+}
+.btn:active:not(:disabled), .btn-ghost:active:not(:disabled), .kbtn[data-variant="secondary"]:active:not(:disabled) {
+  background: linear-gradient(var(--fill-2), var(--fill-2)), var(--surface-raised);
+}
+
+/* ghost (kit only): bare until hovered */
+.kbtn[data-variant="ghost"] { background: transparent; color: var(--ink-2); }
+.kbtn[data-variant="ghost"]:hover:not(:disabled) { background: var(--fill-1); color: var(--ink); }
+.kbtn[data-variant="ghost"]:active:not(:disabled) { background: var(--fill-2); color: var(--ink); }
+
+/* primary: the accent's solid signal */
+.btn-accent, .kbtn[data-variant="primary"] {
+  background: var(--accent-fill, var(--accent)); border-color: transparent; color: var(--on-accent);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.12), var(--e1-drop);
+}
+.btn-accent:hover:not(:disabled), .kbtn[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent-strong)); border-color: transparent;
+}
+.btn-accent:active:not(:disabled), .kbtn[data-variant="primary"]:active:not(:disabled) {
+  background: var(--accent-hover, var(--accent-strong)); box-shadow: none;
+}
+
+/* hero: the ONE gradient action on a screen */
+.kbtn[data-variant="hero"] {
+  color: oklch(1 0 0); border-color: transparent;
+  background: var(--grad-action);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.18), var(--hero-glow);
+}
+.kbtn[data-variant="hero"]:hover:not(:disabled) { background: var(--grad-action-hover); }
+
+/* danger: destructive fill carrying white text */
+.kbtn[data-variant="danger"] { background: var(--danger-fill); border-color: transparent; color: oklch(1 0 0); }
+.kbtn[data-variant="danger"]:hover:not(:disabled) { background: color-mix(in oklch, var(--danger-fill), black 10%); }
+
+/* sizes: sm 28 · md 32 · lg 40 */
+.kbtn[data-size="sm"] { height: var(--h-sm); padding: 0 10px; gap: 5px; font-size: 12px; }
+.kbtn[data-size="lg"] { height: var(--h-lg); padding: 0 16px; gap: 8px; font-size: 14px; border-radius: var(--r-md); }
+/* legacy call sites size .btn with an inline padding; land those on the
+   scale too (React writes padding: "5px 11px" into the style attribute
+   verbatim, so the vertical padding is what's matched) */
+.btn:is([style*="padding: 3px"], [style*="padding: 4px"], [style*="padding: 5px"]) { height: var(--h-sm); gap: 5px; }
+.btn:is([style*="padding: 9px"], [style*="padding: 10px"], [style*="padding: 11px"], [style*="padding: 12px"], [style*="padding: 13px"]) {
+  height: var(--h-lg); gap: 8px; font-size: 14px; border-radius: var(--r-md);
+}
+
+.kbtn[data-full="true"] { width: 100%; }
+.kbtn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.btn:disabled, .kbtn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.kbtn[aria-busy="true"] { cursor: progress; }
+/* press: half a pixel down for one beat (off under reduced motion) */
+.btn:active:not(:disabled), .kbtn:active:not(:disabled) { transform: translateY(0.5px); }
+
+/* trailing shortcut hint */
+.kbtn .kkbd { opacity: 0.7; height: 16px; min-width: 16px; padding: 0 4px; margin-left: 2px; }
+.kbtn:is([data-variant="primary"], [data-variant="hero"], [data-variant="danger"]) .kkbd {
+  color: inherit; background: oklch(1 0 0 / 0.16); border-color: oklch(1 0 0 / 0.22); box-shadow: none;
+}
+@keyframes kspin { to { transform: rotate(360deg); } }
+.kspin {
+  width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%;
+  border: 1.75px solid currentColor; border-right-color: transparent; opacity: 0.8;
+  animation: kspin 0.7s linear infinite;
+}
+
+/* ---- IconButton: square 28 · 32 · 40, ghost by default ---- */
+.btn-icon, .kibtn {
+  position: relative; display: inline-grid; place-items: center; flex-shrink: 0;
+  width: var(--h-md); height: var(--h-md); padding: 0; border-radius: var(--r-sm);
+  border: 1px solid transparent; background: transparent; color: var(--ink-3); cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--d-1) var(--ease), color var(--d-1) var(--ease), border-color var(--d-1) var(--ease);
+}
+.kibtn[data-size="sm"] { width: var(--h-sm); height: var(--h-sm); }
+.kibtn[data-size="lg"] { width: var(--h-lg); height: var(--h-lg); border-radius: var(--r-md); }
+.btn-icon:hover:not(:disabled), .kibtn:hover:not(:disabled) { background: var(--fill-1); color: var(--ink); }
+.btn-icon:active:not(:disabled), .kibtn:active:not(:disabled) { background: var(--fill-2); }
+.kibtn[data-variant="secondary"] { background: var(--surface-raised); border-color: var(--hairline-strong); color: var(--ink-2); box-shadow: var(--e1-drop); }
+.kibtn[data-variant="secondary"]:hover:not(:disabled) { background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised); color: var(--ink); }
+:is(.btn-icon, .kibtn)[aria-pressed="true"] { color: var(--accent-text); background: var(--bg-selected); }
+.kibtn[data-tone="danger"]:hover:not(:disabled) { color: var(--signal); background: var(--signal-tint); }
+.btn-icon:disabled, .kibtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.kibtn-badge {
+  position: absolute; top: -3px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+  font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; text-align: center;
+  background: var(--accent-fill, var(--accent)); color: var(--on-accent); box-shadow: 0 0 0 2px var(--bg);
+  pointer-events: none;
+}
+.kibtn-badge[data-dot="true"] { top: 4px; right: 4px; min-width: 0; width: 8px; height: 8px; padding: 0; }
+/* legacy inline sizes (30 · 26) land on the scale (32 · 28) */
+.btn-icon[style*="width: 30px"] { width: var(--h-md) !important; height: var(--h-md) !important; }
+.btn-icon[style*="width: 26px"] { width: var(--h-sm) !important; height: var(--h-sm) !important; }
+/* an inline border:none marks a toolbar icon: it stays bare wherever it sits.
+   React writes border:none into the style attribute as LONGHANDS in Chrome
+   ("border-width: medium; border-style: none; …" — checked in Chromium
+   152), so both spellings are matched (the ";" stops a per-side
+   "border-style: none none solid" counting). .btn-icon-quiet is the class form. */
+.btn-icon:is(.btn-icon-quiet, [style*="border: none"], [style*="border-style: none;"]) { background: transparent; border-color: transparent; }
+.btn-icon:is(.btn-icon-quiet, [style*="border: none"], [style*="border-style: none;"]):hover:not(:disabled) { background: var(--fill-1); }
+/* Most icon buttons also set a quiet inline colour (--ink-3/--ink-4), which
+   beats the CSS hover colour: give them their hover ink back, and make
+   destructive ones read as destructive before the click. */
+.btn-icon:is([style*="color: var(--ink-3)"], [style*="color: var(--ink-4)"]):hover { color: var(--ink) !important; }
+.btn-icon:is([title^="Delete"], [aria-label^="Delete"], [aria-label^="Remove"]):hover {
+  color: var(--signal) !important; background: var(--signal-tint);
+}
+
+/* destructive confirm buttons are filled inline with --st-blocked or
+   --prio-urgent, which (in Navy) are tuned for TEXT; as a button fill they
+   use the deeper --danger-fill so the white label stays ≥ 4.5:1 */
+button[style*="background: var(--st-blocked)"], button[style*="background: var(--prio-urgent)"] { background: var(--danger-fill) !important; }
+
+/* ============================================================
+   Motion. 90ms hover/press · 160ms popovers and glyphs · 240ms panels,
+   sheets and route changes · 480ms celebrations only. Entrances animate
+   the individual translate/scale properties, which COMPOSE with an
+   element's own inline transform (a dialog centred with
+   translate(-50%,-50%)) instead of overwriting it mid-animation.
+   House rule: entrances never start below 0.35 opacity, so a throttled
+   or backgrounded tab (or a capture mid-animation) never shows an empty
+   panel; the base state is always VISIBLE and nothing uses a backwards
+   fill except the stagger (whose floor is 0.35).
+   ============================================================ */
+@keyframes fadeUp { from { opacity: 0.35; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
 @keyframes fadeIn { from { opacity: 0.35; } to { opacity: 1; } }
-@keyframes scaleIn { from { scale: 0.97; translate: 0 4px; } to { scale: 1; translate: 0 0; } }
-@keyframes slideInRight { from { translate: 24px 0; } to { translate: 0 0; } }
-@keyframes slideInUp { from { translate: 0 28px; } to { translate: 0 0; } }
-@keyframes pulseGlow { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+@keyframes scaleIn { from { opacity: 0.35; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
+@keyframes slideInRight { from { opacity: 0.35; translate: 16px 0; } to { opacity: 1; translate: 0 0; } }
+@keyframes slideInUp { from { opacity: 0.35; translate: 0 24px; } to { opacity: 1; translate: 0 0; } }
 @keyframes spinSlow { to { transform: rotate(360deg); } }
 .spin { animation: spinSlow 1s linear infinite; }
 @keyframes dash { to { stroke-dashoffset: 0; } }
-/* Base state is VISIBLE — animation is enhancement only, never gates content.
-   No `both`/backwards fill, so a paused/backgrounded frame still shows content. */
-.anim-fadeup { animation: fadeUp 0.5s var(--ease); }
-.anim-fadein { animation: fadeIn 0.4s var(--ease); }
-/* modals, popovers, menus settle with a slight spring instead of a flat ease */
-.anim-scalein { animation: scaleIn 0.36s var(--ease-spring); transform-origin: 50% 0; }
+.anim-fadeup { animation: fadeUp var(--d-3) var(--ease); }
+.anim-fadein { animation: fadeIn var(--d-2) var(--ease); }
+/* modals, popovers, menus: a short rise, no spring (the spring is for completion only) */
+.anim-scalein { animation: scaleIn var(--d-2) var(--ease); }
 
-/* ---- premium motion ---- */
-/* Staggered entrance: put .kstagger on a container and its children assemble
-   in sequence. Opacity floor is 0.35 (never 0) so a paused/backgrounded
-   frame still shows content — consistent with the rule above. */
-@keyframes kstaggerIn { from { opacity: 0.35; translate: 0 6px; } }
-.kstagger > * { animation: kstaggerIn 0.46s var(--ease-out) backwards; }
-.kstagger > *:nth-child(2) { animation-delay: 28ms; }
-.kstagger > *:nth-child(3) { animation-delay: 56ms; }
-.kstagger > *:nth-child(4) { animation-delay: 84ms; }
-.kstagger > *:nth-child(5) { animation-delay: 112ms; }
-.kstagger > *:nth-child(6) { animation-delay: 140ms; }
-.kstagger > *:nth-child(7) { animation-delay: 168ms; }
-.kstagger > *:nth-child(8) { animation-delay: 196ms; }
-.kstagger > *:nth-child(9) { animation-delay: 224ms; }
-.kstagger > *:nth-child(10) { animation-delay: 252ms; }
-.kstagger > *:nth-child(11) { animation-delay: 280ms; }
-.kstagger > *:nth-child(n+12) { animation-delay: 300ms; }
+/* route change: the new view settles in */
+@keyframes kroute { from { opacity: 0.35; translate: 0 4px; } }
+.kroute { animation: kroute var(--d-3) var(--ease); }
+
+/* Staggered entrance: put .kstagger on a container and its children
+   assemble in sequence (40ms apart, the last one starting at 240ms). */
+@keyframes kstaggerIn { from { opacity: 0.35; translate: 0 4px; } }
+.kstagger > * { animation: kstaggerIn var(--d-3) var(--ease) backwards; }
+.kstagger > *:nth-child(2) { animation-delay: 40ms; }
+.kstagger > *:nth-child(3) { animation-delay: 80ms; }
+.kstagger > *:nth-child(4) { animation-delay: 120ms; }
+.kstagger > *:nth-child(5) { animation-delay: 160ms; }
+.kstagger > *:nth-child(6) { animation-delay: 200ms; }
+.kstagger > *:nth-child(n+7) { animation-delay: 240ms; }
 /* after the entrance window the container switches to .kstagger-settled: its
-   children's own entrance classes (e.g. StatTile's anim-fadeup) must NOT then
-   start for the first time (that re-played a 12px jump ~0.8s after load), and
-   anything mounted later appears instantly. */
+   children's own entrance classes (e.g. anim-fadeup) must NOT then start for
+   the first time, and anything mounted later appears instantly. */
 .kstagger-settled > * { animation: none; }
 
-/* Modal backdrops: one consistent scrim + frosted depth across every dialog
-   (overrides the per-modal inline backgrounds and blurs). The scrim lives on
-   a ::before layer and only THAT layer fades in: most dialogs render inside
-   their backdrop, so fading the backdrop element used to fade the dialog
-   (TaskDetail, New task, Settings…) in from opacity 0. The dialogs carry
-   their own transform-only entrance. */
+/* ---- overlays: one recipe. A scrim, never a blur. ----
+   The scrim lives on a ::before layer and only THAT layer fades in: most
+   dialogs render inside their backdrop, so fading the backdrop element used
+   to fade the dialog in from nothing. The dialogs carry their own
+   entrance. Per-modal inline backgrounds and blurs are overridden. */
 .kbackdrop {
   background: transparent !important;
   -webkit-backdrop-filter: none !important;
@@ -431,27 +556,27 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .kbackdrop::before {
   content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background: var(--scrim);
-  -webkit-backdrop-filter: blur(10px) saturate(1.35);
-  backdrop-filter: blur(10px) saturate(1.35);
-  animation: kbackdropIn 0.22s var(--ease-out);
+  animation: kbackdropIn var(--d-2) var(--ease);
 }
-/* light: less saturation, so the aurora doesn't bloom through the veil */
-[data-theme="light"] .kbackdrop::before {
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  backdrop-filter: blur(10px) saturate(1.1);
-}
+/* the task panel's overlay under 1280px is a softer dim */
+.kbackdrop[data-scrim="soft"]::before { background: var(--scrim-soft); }
 @keyframes kbackdropIn { from { opacity: 0.35; } }
 
-/* Signature completion moment on the shared checkbox */
-.kcheck { position: relative; }
-@keyframes kcheckPop { 0% { transform: scale(0.8); } 55% { transform: scale(1.14); } 100% { transform: scale(1); } }
-.kcheck-pop { animation: kcheckPop 0.5s var(--ease-spring); }
-@keyframes kcheckRing { from { transform: scale(1); opacity: 0.65; } to { transform: scale(2); opacity: 0; } }
-.kcheck-pop::after {
-  content: ""; position: absolute; inset: -2px; border-radius: 8px; pointer-events: none;
-  border: 2px solid var(--accent); animation: kcheckRing 0.55s var(--ease-out) forwards;
+/* ---- the completion signal ----
+   One moment for every checkbox: the fill pops 0.6 → 1 on the spring and the
+   tick draws itself, 160ms each. No ring burst. */
+/* the square checkbox (sub-tasks, yes/no fields, bulk-select); its empty
+   outline IS the control, so it's the ≥ 3:1 control border */
+.kcheck {
+  position: relative; display: grid; place-items: center; flex-shrink: 0; padding: 0; cursor: pointer;
+  border-radius: var(--r-xs); border: 1.5px solid var(--control-border); background: transparent; color: var(--on-accent);
+  transition: background var(--d-2) var(--ease), border-color var(--d-2) var(--ease);
 }
-.kcheck-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: dash 0.3s 0.06s var(--ease-out) forwards; }
+.kcheck:hover:not([aria-checked="true"]) { border-color: var(--ink-3); background: var(--fill-1); }
+.kcheck[aria-checked="true"] { background: var(--accent-fill); border-color: var(--accent-fill); }
+@keyframes kcheckPop { from { scale: 0.6; } to { scale: 1; } }
+.kcheck-pop { animation: kcheckPop var(--d-2) var(--ease-spring); }
+.kcheck-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: dash var(--d-2) 40ms var(--ease) forwards; }
 
 /* completed-row title: the strike sweeps across instead of snapping on */
 @keyframes kstrike { from { background-size: 0% 1.5px; } }
@@ -459,70 +584,78 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
   text-decoration: none !important;
   background-image: linear-gradient(currentColor, currentColor);
   background-repeat: no-repeat; background-position: 0 56%; background-size: 100% 1.5px;
-  animation: kstrike 0.42s var(--ease-out);
+  animation: kstrike var(--d-2) var(--ease);
 }
-/* drag-and-drop landing: cards spring into place; wide rows get a glow instead */
-@keyframes kland { 0% { transform: scale(0.94) translateY(-3px); box-shadow: var(--shadow-lg); } 60% { transform: scale(1.015); } 100% { transform: none; } }
-.kland { animation: kland 0.5s var(--ease-spring); }
-@keyframes klandRow { from { background-color: var(--accent-dim); box-shadow: inset 3px 0 0 var(--accent); } }
-.kland-row { animation: klandRow 1s var(--ease-out); }
-/* tactile press on cards and rows */
-.lift:active { transform: translateY(-1px) scale(0.985); transition-duration: .08s; }
-.lift-row:active { background: var(--surface-2); }
+/* drag-and-drop landing: cards settle into place; wide rows get a brief tint */
+@keyframes kland { from { scale: 0.97; translate: 0 -2px; box-shadow: var(--e-lift); } }
+.kland { animation: kland var(--d-3) var(--ease); }
+@keyframes klandRow { from { background-color: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); } }
+.kland-row { animation: klandRow var(--d-4) var(--ease); }
 
-/* empty-state illustrations: gentle float + a soft arrival */
-@keyframes kfloat { 50% { transform: translateY(-4px); } }
-.kempty-art { animation: scaleIn 0.5s var(--ease-spring), kfloat 6s ease-in-out 0.5s infinite; }
-@media (prefers-reduced-motion: reduce) {
-  .kstagger > *, .kbackdrop::before, .kempty-art, .kland, .kland-row, .kcheck-pop, .kcheck-pop::after, .kstrike-anim { animation: none !important; }
-  .kcheck-draw { stroke-dashoffset: 0; animation: none !important; }
-}
+/* cards answer the pointer with an edge and a shadow, never a lift */
+.lift { transition: border-color var(--d-1) var(--ease), box-shadow var(--d-2) var(--ease); }
+.lift:hover { border-color: var(--hairline-strong); }
+.glass.lift:hover { box-shadow: var(--e-lift); }
+.lift-row { transition: background var(--d-1) var(--ease), opacity var(--d-3) var(--ease); }
+.lift-row:hover { background: var(--fill-1); }
+.lift-row:active { background: var(--fill-2); }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
-}
-@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
-
-/* tactile press feedback on all buttons (subtle, respects reduced-motion) */
-.btn:active, .btn-icon:active { transform: translateY(0.5px) scale(0.985); }
+/* empty-state art is static */
+.kempty-art { display: block; }
 
 /* ---- misc ---- */
 .divider { height: 1px; background: var(--hairline); border: 0; }
 .clickable { cursor: pointer; }
 
-/* plan: meta chip, AI shimmer, intake add hover */
-.pchip { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-3); padding: 2px 7px; border-radius: 7px; background: var(--surface-2); border: 1px solid var(--hairline); }
+/* plan: meta chip, "Kanbo is thinking" text, intake add hover */
+.pchip {
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  height: 20px; padding: 0 6px; border-radius: var(--r-xs);
+  font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3);
+  background: var(--fill-1); border: 1px solid var(--hairline);
+}
 @keyframes shimmer { to { background-position: 200% 0; } }
-.ai-think { background: linear-gradient(90deg, var(--ink-3) 30%, var(--accent) 50%, var(--ink-3) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+/* only ever rendered while a request is in flight */
+.ai-think { background: linear-gradient(90deg, var(--ink-3) 30%, var(--accent-text) 50%, var(--ink-3) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
 
-/* skeleton loading blocks (app-shell first paint) */
-.skel { position: relative; overflow: hidden; background: var(--surface-2); border-radius: 8px; }
-.skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, color-mix(in oklch, var(--ink) 7%, transparent), transparent); animation: skelShimmer 1.4s ease-in-out infinite; }
+/* skeleton loading blocks */
+.skel, .kskel { position: relative; overflow: hidden; background: var(--fill-2); border-radius: var(--r-sm); }
+.skel::after, .kskel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, var(--fill-1), transparent); animation: skelShimmer 1.4s ease-in-out infinite; }
 @keyframes skelShimmer { to { transform: translateX(100%); } }
-@media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
-.iadd:hover { color: var(--accent-text, var(--accent)) !important; border-color: var(--accent) !important; }
+.iadd:hover { color: var(--accent-text) !important; border-color: var(--accent) !important; }
 
 /* Plan-my-day scheduled block — reveal the "remove from day" ✕ on hover/focus */
-.plan-block-x { opacity: 0; transition: opacity .14s var(--ease), background .14s var(--ease), color .14s var(--ease); }
+.plan-block-x { opacity: 0; transition: opacity var(--d-1) var(--ease), background var(--d-1) var(--ease), color var(--d-1) var(--ease); }
 .plan-block:hover .plan-block-x, .plan-block:focus-within .plan-block-x { opacity: 1; }
-.plan-block-x:hover { background: color-mix(in oklch, var(--prio-urgent) 16%, transparent) !important; color: var(--prio-urgent) !important; }
+.plan-block-x:hover { background: var(--signal-tint) !important; color: var(--signal) !important; }
 @media (hover: none) { .plan-block-x { opacity: 1; } } /* touch: always show, no hover */
 
-/* sidebar nav + project items — CSS-driven hover/active (no JS style mutation) */
-.knav { position: relative; display: flex; align-items: center; gap: 11px; width: 100%; padding: 8px 11px; border-radius: 10px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 14px; color: var(--ink-3); text-align: left; transition: background .16s var(--ease), color .16s var(--ease); }
-.knav:hover { background: var(--surface); color: var(--ink-2); }
-.knav[data-active="true"] { background: var(--surface-2); color: var(--ink); font-weight: 500; }
-.kproj { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 11px; border-radius: 9px; cursor: pointer; border: none; background: transparent; font-family: var(--font-display); font-size: 13.5px; color: var(--ink-3); text-align: left; transition: background .15s; }
-.kproj:hover { background: var(--surface); }
-.kproj[data-active="true"] { background: var(--surface-2); color: var(--ink); }
+/* sidebar nav (32px) and project rows (30px) — CSS-driven hover/active */
+.knav {
+  position: relative; display: flex; align-items: center; gap: 10px; width: 100%;
+  height: 32px; padding: 0 8px; border-radius: var(--r-sm); border: none; background: transparent; cursor: pointer;
+  font: 500 14px/20px var(--font-ui); color: var(--ink-2); text-align: left;
+  transition: background var(--d-1) var(--ease), color var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease);
+}
+.kproj {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  height: 30px; padding: 0 8px; border-radius: var(--r-sm); border: none; background: transparent; cursor: pointer;
+  font: 500 13px/20px var(--font-ui); color: var(--ink-2); text-align: left;
+  transition: background var(--d-1) var(--ease), color var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease);
+}
+.knav:hover, .kproj:hover { background: var(--fill-1); color: var(--ink); }
+.knav[data-active="true"], .kproj[data-active="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--e1); }
+[data-theme="dark"] :is(.knav, .kproj)[data-active="true"] { background: var(--surface-2); }
+/* the old 3px glowing active bar is retired (the raised row says it) */
+.knav[data-active="true"] > span:first-child:empty { display: none; }
 /* (the project row's pin / archive / delete group is styled beside the
    component, in Sidebar.tsx's SIDEBAR_CSS) */
 
 /* tag chip delete (hover-reveal) */
-.tagchip-del { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 99px; background: var(--danger-fill, var(--st-blocked)); color: oklch(0.99 0.01 20); cursor: pointer; opacity: 0; transition: opacity .14s; box-shadow: var(--shadow); }
+.tagchip-del { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 99px; background: var(--danger-fill); color: oklch(0.99 0.01 20); cursor: pointer; opacity: 0; transition: opacity var(--d-1); box-shadow: var(--e1-drop); }
 
 /* saved-search remove (hover-reveal) */
-.ksaved-del { opacity: 0; transition: opacity .12s; }
+.ksaved-del { opacity: 0; transition: opacity var(--d-1); }
 
 /* Hover-revealed actions must also appear for KEYBOARD users: a focusable
    control at opacity 0 means Tab lands on something invisible and Space/Enter
@@ -545,133 +678,84 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 .ksel:focus-visible,
 button:is([aria-label="Select task"], [aria-label="Deselect task"]):focus-visible { opacity: 1 !important; }
 .task-row:has(button:focus-visible) button[aria-label="Select task"] { opacity: 1 !important; }
+/* the multi-select boxes are checkboxes: their empty outline is the
+   control, so it gets the ≥ 3:1 control border */
+button:is([aria-label="Select task"], [aria-label="Deselect task"]), .ksel { --hairline-strong: var(--control-border); }
 
-/* hover-lift helpers (CSS so no stale inline transforms) */
-.lift { transition: transform .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease); }
-.lift:hover { transform: translateY(-2px); border-color: var(--hairline-strong); }
-.lift-row { transition: background .14s, opacity .35s var(--ease); }
-.lift-row:hover { background: var(--surface); }
 /* skip layout/paint for off-screen rows so large lists stay smooth
    (the `auto` intrinsic size self-corrects to the real rendered height) */
 .krow-cv { content-visibility: auto; contain-intrinsic-size: auto 58px; }
 
-/* segmented control — CSS-driven active state */
-.kseg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--surface); border: 1px solid var(--hairline); }
-.kseg-btn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-family: var(--font-display); font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; border: none; background: transparent; color: var(--ink-3); transition: color .18s var(--ease), background .18s var(--ease); }
-.kseg-btn:hover { color: var(--ink-2); }
-.kseg-btn[data-active="true"] { color: var(--ink); background: var(--surface-raised); box-shadow: var(--shadow), 0 0 0 1px var(--hairline); }
+/* ---- Segmented: a 28px track, the active segment raised on it ---- */
+.kseg {
+  display: inline-flex; align-items: stretch; gap: 2px; flex-shrink: 0;
+  height: var(--h-sm); padding: 2px; border-radius: var(--r-sm); background: var(--fill-1);
+}
+.kseg-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: none; border-radius: var(--r-xs);
+  background: transparent; cursor: pointer; white-space: nowrap;
+  font: 600 13px/1 var(--font-ui); color: var(--ink-3);
+  transition: color var(--d-1) var(--ease), background var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease);
+}
+.kseg-btn:hover:not([data-active="true"]) { color: var(--ink); }
+.kseg-btn[data-active="true"] { color: var(--ink); background: var(--surface-raised); box-shadow: var(--e1); }
+.kseg-btn svg { color: var(--icon-quiet); }
+.kseg-btn[data-active="true"] svg { color: var(--accent-text); }
+.kseg-btn:focus-visible { outline-offset: 0; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-tip] { position: relative; }
 
-/* ---- light-theme refinements ----
-   On a near-white canvas a white hover is invisible, so light hovers use a
-   faint ink tint (--fill-1/--fill-2) instead; the top bar gets a frosted band
-   so content scrolls under a defined edge. Dark theme is untouched. */
-[data-theme="light"] .lift-row:hover { background: oklch(0.28 0.02 266 / 0.035); }
-[data-theme="light"] .lift-row:active { background: var(--fill-1); }
-[data-theme="light"] .knav:hover, [data-theme="light"] .kproj:hover { background: var(--fill-1); }
-[data-theme="light"] .knav[data-active="true"], [data-theme="light"] .kproj[data-active="true"] {
-  background: var(--surface-solid); box-shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.08), 0 0 0 0.5px oklch(0.28 0.02 266 / 0.16);
-}
-/* the active nav bar is a solid 3px accent stroke on paper — no neon glow */
-[data-theme="light"] .knav[data-active="true"] > span:first-child { box-shadow: none !important; }
-[data-theme="light"] .topbar { background: color-mix(in oklch, var(--bg) 78%, transparent); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
-/* phone drawer: the sidebar is translucent glass, and over the graphite scrim
-   it turned grey — as a drawer it's a solid panel */
-[data-theme="light"] [role="dialog"][aria-label="Menu"] aside { background: var(--bg-deep) !important; }
-[data-theme="light"] .btn-ghost { background: var(--surface-solid); border-color: oklch(0.28 0.02 266 / 0.16); box-shadow: 0 1px 1.5px oklch(0.25 0.02 266 / 0.06); }
-[data-theme="light"] .btn-ghost:hover { background: var(--surface-solid); border-color: var(--hairline-strong); box-shadow: var(--shadow); }
-[data-theme="light"] .btn-ghost:active { background: var(--surface-2); }
-/* icon buttons: bordered ones are white keycaps like .btn-ghost; borderless
-   toolbar ones are transparent until hovered, then an ink tint.
-   "Borderless" = inline border:none, which React writes through the CSSOM:
-   Chrome serialises it into the style attribute as LONGHANDS
-   ("border-width: medium; border-style: none; …" — checked in Chromium 152),
-   so that spelling is matched as well as the shorthand one (the ";" stops a
-   per-side "border-style: none none solid" counting). .btn-icon-quiet is
-   the class form. */
-[data-theme="light"] .btn-icon { background: var(--surface-solid); }
-[data-theme="light"] .btn-icon:is(.btn-icon-quiet, [style*="border: none"], [style*="border-style: none;"]) { background: transparent; }
-[data-theme="light"] .btn-icon:hover { background: var(--fill-1); border-color: var(--hairline-strong); }
-[data-theme="light"] .btn-icon:active { background: var(--fill-2); }
-/* segmented control: iOS-style grey track with a white thumb */
-[data-theme="light"] .kseg { background: var(--fill-1); border-color: transparent; }
-[data-theme="light"] .kseg-btn:hover:not([data-active="true"]) { color: var(--ink); }
-[data-theme="light"] .kseg-btn[data-active="true"] {
-  background: var(--surface-solid);
-  box-shadow: 0 1px 2px oklch(0.25 0.02 266 / 0.10), 0 0 0 0.5px oklch(0.28 0.02 266 / 0.14);
-}
-/* loading skeletons read as grey placeholders on white cards */
-[data-theme="light"] .skel { background: var(--fill-2); }
+/* the phone drawer is a solid panel over the scrim */
+[role="dialog"][aria-label="Menu"] aside { background: var(--bg-deep) !important; }
 /* progress / meter tracks (project progress, goals, workload, reports, admin
    usage, plan-my-day capacity) are inline-styled with this exact pair, which
    is serialised verbatim (a shorthand holding var() can't be expanded into
    longhands); nothing else in the app uses it. Components moving to
    var(--track, var(--surface-2)) get the same result without this match. */
-[data-theme="light"] div[style*="background: var(--surface-2); overflow: hidden;"] { background: var(--track) !important; }
-/* cards lift with a shadow, not just a nudge */
-[data-theme="light"] .glass.lift:hover { box-shadow: var(--shadow-lg); }
-/* board lanes: a recessed bg-deep well with a hairline edge, so white cards
-   sit IN a visible column. Lanes are inline-styled in OtherViews, so they're
-   matched on that style (.klane is the class form); the drag-over state
-   swaps the inline background to --accent-dim, which this leaves alone. */
+div[style*="background: var(--surface-2); overflow: hidden;"] { background: var(--track) !important; }
+/* board lanes on Paper: a recessed bg-deep well with a hairline edge, so
+   white cards sit IN a visible column. Lanes are inline-styled in
+   OtherViews, so they're matched on that style (.klane is the class form);
+   the drag-over state swaps the inline background to --accent-dim, which
+   this leaves alone. */
 [data-theme="light"] div[style*="background: color-mix(in oklch, var(--bg-deep) 28%, transparent)"],
 [data-theme="light"] .klane:not([style*="accent-dim"]) {
-  background: color-mix(in oklch, var(--bg-deep) 70%, transparent) !important;
+  background: var(--bg-deep) !important;
   box-shadow: inset 0 0 0 1px var(--hairline) !important;
 }
 [data-theme="light"] button[style*="background: color-mix(in oklch, var(--bg-deep) 28%, transparent)"] {
-  background: color-mix(in oklch, var(--bg-deep) 70%, transparent) !important;
+  background: var(--bg-deep) !important;
 }
 /* form fields: components style fields inline with --surface/--surface-2 and
    --hairline; inside a text field those tokens resolve to the field tokens,
    so every bordered field gets a defined edge without touching inline
    styles (borderless inline editors and accent-bordered states are
    unaffected). */
-[data-theme="light"] :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"]), textarea, select) {
+:is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"]), textarea, select) {
   --surface: var(--field-bg);
   --surface-2: var(--field-bg);
   --hairline: var(--field-border);
   --hairline-strong: var(--field-border-hover);
 }
 
-/* ---- icon buttons (both themes; after the light block so these win) ----
-   Most icon buttons are borderless toolbar buttons (inline border:none) that
-   also set a quiet inline colour (--ink-3/--ink-4), which beat the CSS hover
-   colour. Give them their hover ink back, and make destructive ones read as
-   destructive before the click. .btn-icon-quiet is the class form. */
-.btn-icon:is([style*="color: var(--ink-3)"], [style*="color: var(--ink-4)"]):hover { color: var(--ink) !important; }
-.btn-icon:is([title^="Delete"], [aria-label^="Delete"], [aria-label^="Remove"]):hover {
-  color: var(--st-blocked) !important; background: color-mix(in oklch, var(--st-blocked) 12%, transparent);
-}
-
-/* destructive confirm buttons are filled inline with --st-blocked or
-   --prio-urgent, which (in dark) are tuned for TEXT; as a button fill they
-   use the deeper --danger-fill so the white label stays ≥ 4.5:1 */
-button[style*="background: var(--st-blocked)"], button[style*="background: var(--prio-urgent)"] { background: var(--danger-fill) !important; }
-
-/* the multi-select boxes on rows/cards are checkboxes: their empty outline
-   is the control, so it gets the ≥ 3:1 control border */
-button:is([aria-label="Select task"], [aria-label="Deselect task"]), .ksel { --hairline-strong: var(--control-border); }
-
-/* ---- premium selects (both themes): custom chevron instead of the OS widget.
-   !important is needed because components set the \`background\` shorthand
+/* ---- selects: a quiet chevron instead of the OS widget.
+   !important is needed because components set the `background` shorthand
    inline, which would otherwise wipe the chevron image. */
 select {
   -webkit-appearance: none; -moz-appearance: none; appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6f7b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23575b63' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
   background-repeat: no-repeat !important; background-position: right 9px center !important; background-size: 12px 12px !important;
   padding-right: 28px !important; cursor: pointer;
 }
 [data-theme="dark"] select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3a7b4' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a5abb9' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
 }
 select:hover { border-color: var(--field-border-hover, var(--hairline-strong)) !important; }
 select[multiple] { background-image: none !important; padding-right: 8px !important; }
 
-/* ---- focus-visible ring for keyboard users (accessibility) ---- */
-/* outline follows each element's own radius (no forced border-radius, which
-   used to square off round buttons/chips on keyboard focus) */
+/* ---- focus-visible ring for keyboard users: 2px accent, 2px off ---- */
+/* the outline follows each element's own radius (no forced border-radius,
+   which used to square off round buttons/chips on keyboard focus) */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:focus:not(:focus-visible) { outline: none; }
 /* Text fields: almost every field sets outline:none inline, which silently
@@ -696,6 +780,12 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
   outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px;
 }
 
+/* ---- task panel: docked at ≥ 1280px (the list stays interactive) ---- */
+@media (min-width: 1280px) {
+  #main { transition: margin-right var(--d-3) var(--ease); }
+  [data-panel="open"] #main { margin-right: var(--detail-w); }
+}
+
 /* ---- responsive ---- */
 @media (max-width: 860px) {
   .topbar { gap: 10px; padding: 12px 16px; flex-wrap: wrap; }
@@ -709,14 +799,15 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
      capture on a device with no keyboard shortcut */
   .topbar-search { flex: 0 0 auto !important; width: 40px; height: 40px !important; padding: 0 !important; justify-content: center; }
   .topbar-search kbd { display: none; }
-  [data-tip]::after { display: none; } /* tooltips are awkward on touch */
   .topbar { padding: 12px 14px; }
   .topbar h1 { font-size: 19px; }
   .topbar-create-label { display: none; }      /* Create button → icon-only */
   .topbar-create-label svg { display: none; }
 }
 
-/* ---- touch devices: no hover, so reveal hover-only affordances + grow tap targets ---- */
+/* ---- touch devices: no hover, so reveal hover-only affordances; every
+   control keeps its drawn size (28 · 32 · 40) and gains an invisible
+   44px hit area instead ---- */
 @media (hover: none), (pointer: coarse) {
   /* controls that fade in on hover must be permanently reachable by a finger */
   .tagchip-del { opacity: 1 !important; }
@@ -724,16 +815,19 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
   /* the saved-search × sits at the row's right edge: pad the row so its
      count badge moves clear of it instead of hiding under an invisible target */
   .ksaved-row .knav { padding-right: 36px; }
-  .lift:hover { transform: none; } /* no phantom hover-lift stuck after a tap */
-  /* comfortable 40px+ touch targets */
-  .btn-icon { width: 40px; height: 40px; }
-  .btn { padding: 10px 15px; }
+}
+@media (pointer: coarse) {
+  :is(.btn, .btn-icon, .kibtn, .kglyph, .kcheck, .kbtn[data-size="sm"], .kdate:not([data-static="true"]))::before {
+    content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); translate: -50% -50%;
+  }
+  .kdate { position: relative; }
 }
 
 /* ---- phone layout ---- */
 @media (max-width: 860px) {
   html, body { overflow-x: hidden; }            /* never scroll sideways */
-  .knav { padding: 11px 12px; font-size: 15px; } /* roomier nav rows */
+  .knav { height: var(--h-lg); padding: 0 10px; font-size: 15px; } /* roomier drawer rows */
+  .kproj { height: var(--h-lg); padding: 0 10px; font-size: 14px; }
 }
 
 /* respect the notch / home indicator on modern phones */
@@ -742,98 +836,71 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
 }
 
 /* ============================================================
-   Kit primitives (components/primitives/kit.tsx)
-   Keyed on classes + data attributes. Every token that is new in the
-   Paper & Navy pass is read with a fallback to today's equivalent, so the
-   kit renders correctly now and adopts the new values when they land.
+   Component classes (components/primitives/kit.tsx, and plain markup
+   that wants the same look). Keyed on classes + data attributes.
    ============================================================ */
 
 /* ---- Kbd ---- */
 .kkbd {
   display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
-  min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-xs, 4px);
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-xs);
   font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap;
   color: var(--ink-3); background: var(--fill-1); border: 1px solid var(--hairline);
   box-shadow: inset 0 -1px 0 var(--hairline);
 }
 
-/* ---- Button: sm 28 · md 32 · lg 40 ---- */
-.kbtn {
-  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0;
-  height: var(--h-md, 32px); padding: 0 12px; border-radius: var(--r-sm, 6px); border: 1px solid transparent;
-  font: 600 13px/1 var(--font-ui, var(--font-display)); letter-spacing: 0; white-space: nowrap;
-  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
-  transition: background var(--d-1, 90ms) var(--ease), border-color var(--d-1, 90ms) var(--ease),
-    color var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease), transform var(--d-1, 90ms) var(--ease);
+/* ---- Field: 32px (28 · 40), the header-search variant is a borderless well ---- */
+.kfield {
+  min-width: 0; height: var(--h-md); padding: 0 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--field-border); background: var(--field-bg); color: var(--ink);
+  font: 500 13px/20px var(--font-ui);
+  transition: border-color var(--d-1) var(--ease), background var(--d-1) var(--ease);
 }
-.kbtn[data-size="sm"] { height: var(--h-sm, 28px); padding: 0 10px; gap: 5px; font-size: 12px; }
-.kbtn[data-size="lg"] { height: var(--h-lg, 40px); padding: 0 16px; gap: 8px; font-size: 14px; border-radius: var(--r-md, 8px); }
-.kbtn[data-full="true"] { width: 100%; }
-.kbtn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.kbtn[data-variant="secondary"] { background: var(--surface-raised); border-color: var(--hairline-strong); color: var(--ink); }
-.kbtn[data-variant="secondary"]:hover:not(:disabled) { background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised); }
-.kbtn[data-variant="secondary"]:active:not(:disabled) { background: linear-gradient(var(--fill-2), var(--fill-2)), var(--surface-raised); }
-.kbtn[data-variant="ghost"] { background: transparent; color: var(--ink-2); }
-.kbtn[data-variant="ghost"]:hover:not(:disabled) { background: var(--fill-1); color: var(--ink); }
-.kbtn[data-variant="ghost"]:active:not(:disabled) { background: var(--fill-2); color: var(--ink); }
-.kbtn[data-variant="primary"] { background: var(--accent-fill, var(--accent)); color: var(--on-accent); }
-.kbtn[data-variant="primary"]:hover:not(:disabled) { background: var(--accent-hover, var(--accent-strong)); }
-.kbtn[data-variant="hero"] {
-  color: oklch(1 0 0);
-  background: var(--grad-action, linear-gradient(100deg, oklch(0.52 0.19 268), oklch(0.50 0.22 292) 55%, oklch(0.52 0.21 318)));
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.18), var(--hero-glow, 0 1px 2px oklch(0.35 0.15 290 / 0.25), 0 8px 20px -8px oklch(0.5 0.22 300 / 0.45));
-}
-.kbtn[data-variant="hero"]:hover:not(:disabled) {
-  background: var(--grad-action-hover, linear-gradient(100deg, oklch(0.48 0.19 268), oklch(0.46 0.22 292) 55%, oklch(0.48 0.21 318)));
-}
-.kbtn[data-variant="danger"] { background: var(--danger-fill, var(--st-blocked)); color: oklch(1 0 0); }
-.kbtn[data-variant="danger"]:hover:not(:disabled) { background: color-mix(in oklch, var(--danger-fill, var(--st-blocked)), black 10%); }
-.kbtn:active:not(:disabled) { transform: translateY(0.5px); }
-.kbtn:disabled { opacity: 0.45; cursor: not-allowed; }
-.kbtn[aria-busy="true"] { cursor: progress; }
-.kbtn .kkbd { opacity: 0.7; height: 16px; min-width: 16px; padding: 0 4px; margin-left: 2px; }
-.kbtn:is([data-variant="primary"], [data-variant="hero"], [data-variant="danger"]) .kkbd {
-  color: inherit; background: oklch(1 0 0 / 0.16); border-color: oklch(1 0 0 / 0.22); box-shadow: none;
-}
-@keyframes kspin { to { transform: rotate(360deg); } }
-.kspin {
-  width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%;
-  border: 1.75px solid currentColor; border-right-color: transparent; opacity: 0.8;
-  animation: kspin 0.7s linear infinite;
-}
+.kfield::placeholder { color: var(--ink-4); opacity: 1; }
+.kfield:hover:not(:disabled) { border-color: var(--field-border-hover); }
+.kfield[data-size="sm"] { height: var(--h-sm); padding: 0 8px; font-size: 12px; }
+.kfield[data-size="lg"] { height: var(--h-lg); padding: 0 12px; border-radius: var(--r-md); font-size: 14px; }
+textarea.kfield { height: auto; min-height: 80px; padding: 6px 10px; resize: vertical; }
+.kfield[data-variant="search"] { background: var(--fill-1); border-color: transparent; }
+.kfield[data-variant="search"]:hover:not(:disabled) { background: var(--fill-2); border-color: transparent; }
+.kfield:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ---- IconButton: square 28 · 32 · 40, ghost by default ---- */
-.kibtn {
-  position: relative; display: inline-grid; place-items: center; flex-shrink: 0;
-  width: var(--h-md, 32px); height: var(--h-md, 32px); padding: 0; border-radius: var(--r-sm, 6px);
-  border: 1px solid transparent; background: transparent; color: var(--ink-3); cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease), border-color var(--d-1, 90ms) var(--ease);
+/* ---- Menu (inside Popover): 32px items with a quiet 16px icon and a Kbd on
+   the right; hover and keyboard focus fill --fill-1. A checked item shows
+   .kmenu-check (an accent tick); danger items read in the signal colour and
+   stay signal on hover and focus, over the signal tint. ---- */
+.kmenu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px;
+  border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer; text-align: left; white-space: nowrap;
+  font: 500 13px/20px var(--font-ui); color: var(--ink);
+  transition: background var(--d-1) var(--ease);
 }
-.kibtn[data-size="sm"] { width: var(--h-sm, 28px); height: var(--h-sm, 28px); }
-.kibtn[data-size="lg"] { width: var(--h-lg, 40px); height: var(--h-lg, 40px); border-radius: var(--r-md, 8px); }
-.kibtn:hover:not(:disabled) { background: var(--fill-1); color: var(--ink); }
-.kibtn:active:not(:disabled) { background: var(--fill-2); }
-.kibtn[data-variant="secondary"] { background: var(--surface-raised); border-color: var(--hairline-strong); color: var(--ink-2); }
-.kibtn[data-variant="secondary"]:hover:not(:disabled) { background: linear-gradient(var(--fill-1), var(--fill-1)), var(--surface-raised); color: var(--ink); }
-.kibtn[aria-pressed="true"] { color: var(--accent-text, var(--accent)); background: var(--bg-selected, var(--accent-dim)); }
-.kibtn[data-tone="danger"]:hover:not(:disabled) {
-  color: var(--signal, var(--st-blocked));
-  background: color-mix(in oklch, var(--signal, var(--st-blocked)) 12%, transparent);
+.kmenu-item > svg:first-child { flex-shrink: 0; color: var(--icon-quiet); }
+.kmenu-item > .kkbd, .kmenu-check { margin-left: auto; }
+.kmenu-check { flex-shrink: 0; color: var(--accent-text); }
+.kmenu-item:hover:not(:disabled), .kmenu-item:focus-visible { background: var(--fill-1); }
+.kmenu-item:focus-visible { outline-offset: -2px; }
+.kmenu-item[data-tone="danger"], .kmenu-item[data-tone="danger"] > svg:first-child { color: var(--signal); }
+.kmenu-item[data-tone="danger"]:hover:not(:disabled), .kmenu-item[data-tone="danger"]:focus-visible { background: var(--signal-tint); }
+.kmenu-item:disabled { opacity: 0.45; cursor: not-allowed; }
+.kmenu-label { padding: 8px 8px 4px; font: 600 12px/16px var(--font-ui); color: var(--ink-3); }
+.kmenu-sep { height: 1px; margin: 4px -4px; border: 0; background: var(--hairline); }
+
+/* ---- Row: a list row. No stripes, no borders between rows. ---- */
+.krow {
+  position: relative; display: flex; align-items: center; gap: 12px; min-width: 0;
+  height: var(--row-h); padding: 0 12px; border-radius: var(--r-sm);
+  font: 500 var(--t-row)/var(--lh-row) var(--font-ui); color: var(--ink);
+  transition: background var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease);
 }
-.kibtn:disabled { opacity: 0.45; cursor: not-allowed; }
-.kibtn-badge {
-  position: absolute; top: -3px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
-  font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; text-align: center;
-  background: var(--accent-fill, var(--accent)); color: var(--on-accent); box-shadow: 0 0 0 2px var(--bg);
-  pointer-events: none;
-}
-.kibtn-badge[data-dot="true"] { top: 4px; right: 4px; min-width: 0; width: 8px; height: 8px; padding: 0; }
+.krow:hover { background: var(--fill-1); }
+.krow:is([aria-selected="true"], [data-selected="true"]) { background: var(--bg-selected); }
+.krow[data-cursor="true"] { box-shadow: inset 2px 0 0 var(--accent); }
 
 /* ---- Tabs: a 44px row (36px sm), 2px accent underline on the active tab ---- */
 .ktabs {
   display: flex; align-items: stretch; gap: 16px; min-width: 0;
-  height: var(--tabs-h, 44px); box-shadow: inset 0 -1px 0 var(--hairline);
+  height: var(--tabs-h); box-shadow: inset 0 -1px 0 var(--hairline);
 }
 .ktabs[data-size="sm"] { height: 36px; }
 .ktabs-list {
@@ -848,11 +915,11 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
 .ktab {
   position: relative; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
   padding: 0 2px; border: 0; background: none; cursor: pointer; text-decoration: none; white-space: nowrap;
-  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3);
-  transition: color var(--d-1, 90ms) var(--ease);
+  font: 500 13px/20px var(--font-ui); color: var(--ink-3);
+  transition: color var(--d-1) var(--ease);
 }
 .ktab:hover { color: var(--ink-2); }
-.ktab:focus-visible { outline-offset: -2px; border-radius: var(--r-sm, 6px); }
+.ktab:focus-visible { outline-offset: -2px; border-radius: var(--r-sm); }
 .ktab:is([aria-selected="true"], [aria-current="page"]) { color: var(--ink); font-weight: 600; }
 .ktab:is([aria-selected="true"], [aria-current="page"])::after {
   content: ""; position: absolute; left: 2px; right: 2px; bottom: 0; height: 2px; border-radius: 2px;
@@ -863,174 +930,193 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
 .ktab-label { display: inline-flex; flex-direction: column; }
 .ktab-label::after { content: attr(data-label); height: 0; overflow: hidden; visibility: hidden; font-weight: 600; user-select: none; pointer-events: none; }
 .ktab-count { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
-.ktab-count[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
-.ktab svg { color: var(--icon-quiet, var(--ink-4)); }
-.ktab:is([aria-selected="true"], [aria-current="page"]) svg { color: var(--accent-text, var(--accent)); }
+.ktab-count[data-tone="signal"] { color: var(--signal); }
+.ktab svg { color: var(--icon-quiet); }
+.ktab:is([aria-selected="true"], [aria-current="page"]) svg { color: var(--accent-text); }
 .ktabs-sep { flex-shrink: 0; align-self: center; width: 1px; height: 16px; margin: 0 -6px; background: var(--hairline-strong); }
 .ktabs-trailing { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* ---- Meter ---- */
 .kmeter-wrap { display: inline-flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; vertical-align: middle; }
-.kmeter { position: relative; display: block; flex: 1 1 auto; min-width: 16px; height: 4px; border-radius: 999px; background: var(--track, var(--surface-2)); }
+.kmeter { position: relative; display: block; flex: 1 1 auto; min-width: 16px; height: 4px; border-radius: 999px; background: var(--track); }
 .kmeter-fill {
   position: absolute; inset: 0 auto 0 0; max-width: 100%; border-radius: inherit;
-  background: var(--grad, linear-gradient(90deg, #5B7CFA 0%, #8B5CF6 52%, #C24BE0 100%));
-  transition: width var(--d-3, 240ms) var(--ease);
+  background: var(--grad);
+  transition: width var(--d-3) var(--ease);
 }
 .kmeter-fill[data-tone="accent"] { background: var(--accent); }
 .kmeter-fill[data-tone="ink"] { background: var(--ink-3); }
-.kmeter-fill[data-tone="ok"] { background: var(--ok, var(--st-done)); }
-.kmeter-fill[data-tone="warn"] { background: var(--warn-fill, var(--st-review)); }
-.kmeter-fill[data-tone="signal"] { background: var(--signal, var(--st-blocked)); }
+.kmeter-fill[data-tone="ok"] { background: var(--st-done-fill); }
+.kmeter-fill[data-tone="warn"] { background: var(--warn-fill); }
+.kmeter-fill[data-tone="signal"] { background: var(--st-blocked-fill); }
 .kmeter-marker { position: absolute; top: 50%; width: 1px; height: 8px; border-radius: 1px; translate: -50% -50%; background: var(--ink-2); }
 .kmeter-value { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 
-/* ---- StatusGlyph: the completion checkbox (24px+ hit area around a 14/16/20 glyph) ---- */
+/* ---- StatusGlyph: the completion checkbox (a 24px+ hit area around a 14/16/20 glyph) ---- */
 .kglyph {
   position: relative; display: inline-grid; place-items: center; flex-shrink: 0;
   width: calc(var(--g, 16px) + 8px); height: calc(var(--g, 16px) + 8px); margin: -4px;
   padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit;
   cursor: pointer; -webkit-tap-highlight-color: transparent;
-  transition: background var(--d-1, 90ms) var(--ease);
+  transition: background var(--d-1) var(--ease);
 }
 .kglyph[data-static="true"] { cursor: default; }
 .kglyph:not([data-static="true"]):hover { background: var(--fill-1); }
 .kglyph:focus-visible { outline-offset: 0; }
 .kglyph-art { display: block; overflow: visible; }
 @keyframes kglyphPop { from { scale: 0.6; } to { scale: 1; } }
-.kglyph-pop { animation: kglyphPop var(--d-2, 160ms) var(--ease-spring); }
+.kglyph-pop { animation: kglyphPop var(--d-2) var(--ease-spring); }
 @keyframes kglyphDraw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 /* base state is the finished tick: if the animation never runs, the tick still shows */
-.kglyph-draw { stroke-dasharray: 1; stroke-dashoffset: 0; animation: kglyphDraw var(--d-2, 160ms) 40ms var(--ease-out) backwards; }
+.kglyph-draw { stroke-dasharray: 1; stroke-dashoffset: 0; animation: kglyphDraw var(--d-2) 40ms var(--ease) backwards; }
 
 /* ---- PriorityGlyph ---- */
 .kprio { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .kprio svg { display: block; flex-shrink: 0; }
-.kprio-label { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kprio-label { font: 500 12px/16px var(--font-ui); color: var(--ink-2); }
+
+/* ---- Tag: a dot and a word (no filled pill) ---- */
+.ktag { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; white-space: nowrap; font: 500 12px/16px var(--font-ui); color: var(--ink-2); }
+.ktag[data-size="sm"] { font-size: 11px; gap: 5px; }
+.ktag-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; }
+.ktag-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- AI score: a mono number beside Kanbo's mark ---- */
+.kscore { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kscore[data-tone="high"] { color: var(--accent-text); font-weight: 600; }
+.kscore[data-tone="mid"] { color: var(--ink-2); }
 
 /* ---- DateChip (sm 24 inline · md 32) ---- */
 .kdate-wrap { display: inline-flex; flex-direction: column; align-items: flex-start; min-width: 0; vertical-align: middle; }
 .kdate {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
-  height: 24px; padding: 0 6px; border-radius: var(--r-sm, 6px); border: 1px solid transparent; background: transparent;
+  height: 24px; padding: 0 6px; border-radius: var(--r-sm); border: 1px solid transparent; background: transparent;
   font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap;
   color: var(--ink-3); cursor: pointer; -webkit-tap-highlight-color: transparent;
-  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
+  transition: background var(--d-1) var(--ease), color var(--d-1) var(--ease);
 }
 .kdate[data-size="md"] { height: 32px; padding: 0 10px; font-size: 12px; }
 .kdate[data-static="true"] { cursor: default; padding: 0; height: auto; }
 .kdate:not([data-static="true"]):hover { background: var(--fill-1); }
 .kdate[aria-expanded="true"] { background: var(--fill-2); }
-.kdate[data-tone="overdue"] { color: var(--signal, var(--st-blocked)); }
-.kdate[data-tone="now"] { color: var(--accent-text, var(--accent)); }
-.kdate[data-empty="true"] { font-family: var(--font-ui, var(--font-display)); font-size: 12px; color: var(--ink-4); }
+.kdate[data-tone="overdue"] { color: var(--signal); }
+.kdate[data-tone="now"] { color: var(--accent-text); }
+.kdate[data-empty="true"] { font-family: var(--font-ui); font-size: 12px; color: var(--ink-4); }
 .kdate[data-empty="true"]:not([data-static="true"]):hover { color: var(--ink-2); }
-.kdate-note { margin-top: 2px; padding-left: 7px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kdate-note { margin-top: 2px; padding-left: 7px; font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
 .kdate-wrap[data-size="md"] .kdate-note { padding-left: 11px; }   /* under the chip's text, not its hover box */
 .kdate-wrap[data-static="true"] .kdate-note { padding-left: 0; }
 
 /* the picker (inside Popover) */
-.kdp { display: grid; gap: 12px; padding: 12px; font-family: var(--font-ui, var(--font-display)); }
+.kdp { display: grid; gap: 12px; padding: 12px; font-family: var(--font-ui); }
 .kdp-quick { display: flex; flex-wrap: wrap; gap: 6px; }
 .kdp-q {
   height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--hairline-strong); background: transparent;
-  font: 500 12px/1 var(--font-ui, var(--font-display)); color: var(--ink-2); cursor: pointer; white-space: nowrap;
+  font: 500 12px/1 var(--font-ui); color: var(--ink-2); cursor: pointer; white-space: nowrap;
 }
 [data-kpop-panel] .kdp .kdp-q[aria-pressed="true"] {
-  border-color: var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent));
-  background: var(--bg-selected, var(--accent-dim)) !important; color: var(--accent-text, var(--accent)) !important;
+  border-color: var(--accent-line);
+  background: var(--bg-selected) !important; color: var(--accent-text) !important;
 }
 .kdp-field {
-  width: 100%; height: 32px; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  width: 100%; height: 32px; padding: 0 10px; border-radius: var(--r-sm);
   border: 1px solid var(--field-border); background: var(--field-bg); color: var(--ink);
-  font: 500 13px/20px var(--font-ui, var(--font-display));
+  font: 500 13px/20px var(--font-ui);
 }
 .kdp-field::placeholder { color: var(--ink-4); }
 .kdp-field:hover { border-color: var(--field-border-hover); }
 .kdp-preview { display: flex; align-items: center; gap: 4px; min-height: 16px; margin-top: 6px; padding: 0 2px; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
-.kdp-preview:is([data-state="miss"], [data-state="idle"]) { font-family: var(--font-ui, var(--font-display)); font-size: 12px; color: var(--ink-4); }
+.kdp-preview:is([data-state="miss"], [data-state="idle"]) { font-family: var(--font-ui); font-size: 12px; color: var(--ink-4); }
 .kdp-preview[data-state="idle-touch"] { display: none; }
 .kdp-enter { margin-left: auto; color: var(--ink-4); }
 .kdp-cal { display: grid; gap: 4px; }
 .kdp-head { display: flex; align-items: center; justify-content: space-between; height: 28px; }
-.kdp-month { padding-left: 4px; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kdp-month { padding-left: 4px; font: 600 13px/20px var(--font-ui); color: var(--ink); }
 .kdp-nav { display: inline-flex; gap: 2px; }
 .kdp-grid { display: grid; gap: 2px; }
 .kdp-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-.kdp-wd { display: grid; place-items: center; height: 24px; font: 600 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+.kdp-wd { display: grid; place-items: center; height: 24px; font: 600 11px/16px var(--font-ui); color: var(--ink-4); }
 .kdp-day {
-  height: 32px; padding: 0; border: 0; border-radius: var(--r-sm, 6px); background: transparent; cursor: pointer;
+  height: 32px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer;
   font: 500 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2);
 }
 .kdp-day[data-outside="true"] { color: var(--ink-4); }
-.kdp-day[data-today="true"] { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-text, var(--accent)); font-weight: 600; }
+.kdp-day[data-today="true"] { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-text); font-weight: 600; }
 [data-kpop-panel] .kdp .kdp-day[aria-selected="true"] {
   background: var(--accent-fill, var(--accent)) !important; color: var(--on-accent) !important; box-shadow: none; font-weight: 600;
 }
 [data-kpop-panel] .kdp .kdp-day[aria-selected="true"]:focus-visible { outline: 2px solid var(--on-accent); outline-offset: -4px; }
-.kdp-time { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--hairline); color: var(--icon-quiet, var(--ink-4)); }
+.kdp-time { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--hairline); color: var(--icon-quiet); }
 .kdp-time .kdp-field { flex: 1; font-family: var(--font-mono); font-size: 12px; }
 
-/* ---- AiMark ---- */
+/* ---- AiMark: Kanbo's three-block glyph ---- */
 .kaimark-wrap { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; vertical-align: middle; }
 .kaimark { display: block; flex-shrink: 0; overflow: visible; }
 @keyframes kaiBar { 0%, 100% { transform: scaleY(1); } 45% { transform: scaleY(0.45); } }
 .kaimark[data-thinking="true"] rect { transform-box: fill-box; transform-origin: 50% 0; animation: kaiBar 0.9s var(--ease) infinite; }
 .kaimark[data-thinking="true"] rect:nth-of-type(2) { animation-delay: 0.15s; }
 .kaimark[data-thinking="true"] rect:nth-of-type(3) { animation-delay: 0.3s; }
-.kaimark-dots { display: none; font: 600 12px/1 var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kaimark-dots { display: none; font: 600 12px/1 var(--font-ui); color: var(--ink-3); }
 
 /* ---- Provenance + Vellum (model-written text only) ---- */
-.kprov { margin: 12px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kprov { margin: 12px 0 0; font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
 .kprov-btn {
   display: inline-flex; align-items: center; gap: 4px; margin: -2px -4px; padding: 2px 4px;
-  border: 0; border-radius: var(--r-xs, 4px); background: none; font: inherit; color: inherit; cursor: pointer; text-align: left;
+  border: 0; border-radius: var(--r-xs); background: none; font: inherit; color: inherit; cursor: pointer; text-align: left;
 }
 .kprov-btn:hover { color: var(--ink-2); }
-.kprov-btn svg { flex-shrink: 0; transition: transform var(--d-2, 160ms) var(--ease); }
+.kprov-btn svg { flex-shrink: 0; transition: transform var(--d-2) var(--ease); }
 .kprov-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
-.kprov-list { display: grid; gap: 2px; margin: 8px 0 0; padding: 0 0 0 16px; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kprov-list { display: grid; gap: 2px; margin: 8px 0 0; padding: 0 0 0 16px; font: 500 12px/18px var(--font-ui); color: var(--ink-3); }
 .kprov-list[hidden] { display: none; }
 .kprov-list li::marker { color: var(--ink-4); }
 .kvellum {
-  position: relative; isolation: isolate; padding: 16px 20px; border-radius: var(--r-lg, 12px); border: 1px solid transparent;
+  position: relative; isolation: isolate; padding: 16px 20px; border-radius: var(--r-lg); border: 1px solid transparent;
   background:
     linear-gradient(var(--surface-raised), var(--surface-raised)) padding-box,
     linear-gradient(var(--surface-solid), var(--surface-solid)) padding-box,
-    var(--vellum-edge, linear-gradient(115deg, oklch(0.62 0.17 268 / 0.55), oklch(0.58 0.2 292 / 0.55) 55%, oklch(0.6 0.2 318 / 0.55))) border-box;
+    var(--vellum-edge) border-box;
 }
 .kvellum::after {
   content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
-  background: var(--vellum-wash, radial-gradient(420px 160px at 100% 0%, oklch(0.62 0.17 268 / 0.08), transparent 70%));
+  background: var(--vellum-wash);
 }
 
-/* ---- EmptyState ---- */
+/* ---- EmptyState: art, a title, one line of help, the action inside ---- */
 .kempty { display: flex; flex-direction: column; align-items: center; max-width: 420px; margin: 0 auto; padding: 48px 24px; text-align: center; }
 .kempty[data-size="sm"] { padding: 24px 16px; }
 .kempty[data-size="lg"] { padding: 72px 24px; }
-.kempty-title { margin: 16px 0 0; font: 600 15px/24px var(--font-ui, var(--font-display)); letter-spacing: 0; color: var(--ink); text-wrap: balance; }
+.kempty-title { margin: 16px 0 0; font: 600 15px/24px var(--font-ui); letter-spacing: 0; color: var(--ink); text-wrap: balance; }
 .kempty > .kempty-title:first-child { margin-top: 0; }
-.kempty-body { max-width: 360px; margin: 4px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kempty-body { max-width: 360px; margin: 4px 0 0; font: 400 13px/20px var(--font-ui); color: var(--ink-3); text-wrap: pretty; }
 .kempty-body p { margin: 0; }
 .kempty-action { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
+/* an error's mark: a signal-tinted disc in place of the art */
+.kempty-mark { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%; color: var(--signal); background: var(--signal-tint); }
 
 /* ---- Sheet: one overlay recipe; phones get a bottom sheet ---- */
-.ksheet-layer { position: fixed; inset: 0; z-index: var(--z-dialog, 100); display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; }
+.ksheet-layer { position: fixed; inset: 0; z-index: var(--z-dialog); display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; }
 .ksheet-layer[data-side="right"] { align-items: stretch; justify-content: flex-end; padding: 0; }
 .ksheet-layer[data-side="bottom"] { align-items: flex-end; padding: 0; }
 .ksheet {
   position: relative; display: flex; flex-direction: column; min-height: 0;
   width: min(var(--sheet-w, 480px), 100%); max-height: 100%;
-  border-radius: var(--r-xl, 16px); color: var(--ink);
-  /* raised surface over a solid base: opaque whatever the theme's --surface-raised alpha */
-  background: linear-gradient(var(--surface-raised), var(--surface-raised)), var(--surface-solid);
-  box-shadow: var(--e3, var(--shadow-lg));
-  animation: ksheetIn var(--d-3, 240ms) var(--ease);
+  border-radius: var(--r-xl); color: var(--ink);
+  background: var(--surface-raised);
+  box-shadow: var(--e3);
+  animation: ksheetIn var(--d-3) var(--ease);
 }
-.ksheet-layer[data-side="right"] .ksheet { height: 100%; border-radius: 0; box-shadow: -1px 0 0 var(--hairline), var(--e3, var(--shadow-lg)); animation-name: ksheetInRight; }
-.ksheet-layer[data-side="bottom"] .ksheet { max-height: 92%; border-radius: var(--r-2xl, 20px) var(--r-2xl, 20px) 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); animation-name: ksheetUp; }
-.ksheet-handle { display: none; position: absolute; top: 8px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 999px; background: var(--hairline-strong); }
+.ksheet-layer[data-side="right"] .ksheet { height: 100%; border-radius: 0; box-shadow: -1px 0 0 var(--hairline), var(--e3); animation-name: ksheetInRight; }
+.ksheet-layer[data-side="bottom"] .ksheet { max-height: 92%; border-radius: var(--r-2xl) var(--r-2xl) 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); animation-name: ksheetUp; }
+.ksheet-handle {
+  display: none; position: absolute; top: 0; left: 50%; z-index: 1; width: 64px; height: 20px; margin-left: -32px;
+  touch-action: none; cursor: grab;
+}
+.ksheet-handle::before { content: ""; position: absolute; top: 8px; left: 14px; width: 36px; height: 4px; border-radius: 999px; background: var(--hairline-strong); }
 .ksheet-layer[data-side="bottom"] .ksheet-handle { display: block; }
+/* a released drag springs back; while the finger is down the sheet follows it exactly */
+.ksheet[data-settling="true"] { transition: translate var(--d-2) var(--ease); }
+.ksheet[data-dragging="true"] { transition: none; }
 .ksheet-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-height: 56px; padding: 0 12px 0 24px; }
 .ksheet-title {
   flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1044,18 +1130,19 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
 @keyframes ksheetUp { from { opacity: 0.35; translate: 0 24px; } }
 @keyframes ksheetOut { to { opacity: 0; translate: 0 8px; } }
 @keyframes ksheetOutRight { to { opacity: 0; translate: 16px 0; } }
-@keyframes ksheetOutDown { to { opacity: 0; translate: 0 24px; } }
+/* a sheet let go of mid-drag keeps travelling down from where it was (--drag-y) */
+@keyframes ksheetOutDown { to { opacity: 0; translate: 0 calc(var(--drag-y, 0px) * 2 + 24px); } }
 @keyframes kscrimOut { to { opacity: 0; } }
 .ksheet-layer[data-state="closing"] { pointer-events: none; }
-.ksheet-layer[data-state="closing"]::before { animation: kscrimOut var(--d-2, 160ms) var(--ease-exit, cubic-bezier(0.4, 0, 1, 1)) forwards; }
-.ksheet-layer[data-state="closing"] .ksheet { animation: ksheetOut var(--d-2, 160ms) var(--ease-exit, cubic-bezier(0.4, 0, 1, 1)) forwards; }
+.ksheet-layer[data-state="closing"]::before { animation: kscrimOut var(--d-2) var(--ease-exit) forwards; }
+.ksheet-layer[data-state="closing"] .ksheet { animation: ksheetOut var(--d-2) var(--ease-exit) forwards; }
 .ksheet-layer[data-state="closing"][data-side="right"] .ksheet { animation-name: ksheetOutRight; }
 .ksheet-layer[data-state="closing"][data-side="bottom"] .ksheet { animation-name: ksheetOutDown; }
 @media (max-width: 859px) {
   .ksheet-layer[data-side] { align-items: flex-end; justify-content: center; padding: 0; }
   .ksheet-layer[data-side] .ksheet {
-    width: 100%; height: auto; max-height: 92%; border-radius: var(--r-2xl, 20px) var(--r-2xl, 20px) 0 0;
-    box-shadow: var(--e3, var(--shadow-lg)); padding-bottom: env(safe-area-inset-bottom, 0px); animation-name: ksheetUp;
+    width: 100%; height: auto; max-height: 92%; border-radius: var(--r-2xl) var(--r-2xl) 0 0;
+    box-shadow: var(--e3); padding-bottom: env(safe-area-inset-bottom, 0px); animation-name: ksheetUp;
   }
   .ksheet-layer[data-side] .ksheet-handle { display: block; }
   .ksheet-layer[data-state="closing"][data-side] .ksheet { animation-name: ksheetOutDown; }
@@ -1064,18 +1151,20 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
   .ksheet-foot { padding-left: 16px; padding-right: 16px; }
 }
 
-/* ---- Pill: tone ink on a 10% tint of itself ---- */
+/* ---- Pill: the tone's ink on a 10% tint of itself (Paper deepens the ink a
+   shade, so it stays AA on the sidebar, lanes and wells as well as the canvas) ---- */
 .kpill {
   --pill: var(--ink-3);
   display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; height: 20px; padding: 0 8px; border: 0; border-radius: 999px;
-  font: 600 12px/1 var(--font-ui, var(--font-display)); white-space: nowrap;
-  color: var(--pill); background: color-mix(in oklch, var(--pill) 10%, transparent);
+  font: 600 12px/1 var(--font-ui); white-space: nowrap;
+  color: color-mix(in oklch, var(--pill), var(--pill-ink-mix) var(--pill-ink-shift));
+  background: color-mix(in oklch, var(--pill) 10%, transparent);
 }
-.kpill[data-tone="accent"] { --pill: var(--accent-text, var(--accent)); }
-.kpill[data-tone="ok"] { --pill: var(--ok, var(--st-done)); }
-.kpill[data-tone="warn"] { --pill: var(--warn, var(--st-review)); }
-.kpill[data-tone="signal"] { --pill: var(--signal, var(--st-blocked)); }
-button.kpill { cursor: pointer; transition: background var(--d-1, 90ms) var(--ease); }
+.kpill[data-tone="accent"] { --pill: var(--accent-text); }
+.kpill[data-tone="ok"] { --pill: var(--ok); }
+.kpill[data-tone="warn"] { --pill: var(--warn); }
+.kpill[data-tone="signal"] { --pill: var(--signal); }
+button.kpill { cursor: pointer; transition: background var(--d-1) var(--ease); }
 button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparent); }
 
 /* ---- ProjectDot ---- */
@@ -1083,10 +1172,10 @@ button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparen
 
 /* ---- SectionLabel ---- */
 .ksection { display: flex; align-items: center; gap: 8px; min-height: 28px; color: var(--ink-3); }
-.ksection[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
+.ksection[data-tone="signal"] { color: var(--signal); }
 .ksection-title {
   display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; margin: 0;
-  font: 600 12px/16px var(--font-ui, var(--font-display)); letter-spacing: 0; color: inherit; text-wrap: nowrap;
+  font: 600 12px/16px var(--font-ui); letter-spacing: 0; color: inherit; text-wrap: nowrap;
 }
 .ksection-count { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
 .ksection[data-tone="signal"] .ksection-count { color: inherit; }
@@ -1095,17 +1184,17 @@ button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparen
 /* ---- Toggle (switch) ---- */
 .ktoggle { display: flex; align-items: flex-start; gap: 16px; }
 .ktoggle-text { display: grid; gap: 2px; flex: 1; min-width: 0; }
-.ktoggle-label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); cursor: pointer; }
-.ktoggle-desc { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.ktoggle-label { font: 600 13px/20px var(--font-ui); color: var(--ink); cursor: pointer; }
+.ktoggle-desc { font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
 .ktoggle-switch {
   position: relative; flex-shrink: 0; width: 32px; height: 20px; padding: 0; border: 0; border-radius: 999px; cursor: pointer;
-  background: var(--fill-2); box-shadow: inset 0 0 0 1px var(--control-border, var(--hairline-strong));
-  transition: background var(--d-2, 160ms) var(--ease), box-shadow var(--d-2, 160ms) var(--ease);
+  background: var(--fill-2); box-shadow: inset 0 0 0 1px var(--control-border);
+  transition: background var(--d-2) var(--ease), box-shadow var(--d-2) var(--ease);
 }
 .ktoggle-thumb {
   position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
-  background: var(--control-border, var(--ink-4));
-  transition: translate var(--d-2, 160ms) var(--ease), background var(--d-2, 160ms) var(--ease);
+  background: var(--control-border);
+  transition: translate var(--d-2) var(--ease), background var(--d-2) var(--ease);
 }
 .ktoggle-switch:hover:not(:disabled) .ktoggle-thumb { background: var(--ink-3); }
 .ktoggle-switch[aria-checked="true"] { background: var(--accent-fill, var(--accent)); box-shadow: none; }
@@ -1113,18 +1202,43 @@ button.kpill:hover { background: color-mix(in oklch, var(--pill) 16%, transparen
 .ktoggle[data-disabled="true"] { opacity: 0.45; }
 .ktoggle[data-disabled="true"] :is(.ktoggle-label, .ktoggle-switch) { cursor: not-allowed; }
 
-/* ---- touch: 44px hit areas without changing layout ---- */
-@media (pointer: coarse) {
-  .kibtn::before, .kglyph::before, .kbtn[data-size="sm"]::before, .kdate:not([data-static="true"])::before {
-    content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); translate: -50% -50%;
-  }
-  .kdate { position: relative; }
+/* ---- Toast: bottom-left, a raised 40px strip; the Undo carries ⌘Z ---- */
+.ktoasts {
+  /* above every overlay layer still in use (Quick capture 1000, popovers 1100) */
+  position: fixed; left: 24px; bottom: 24px; z-index: 1200;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  max-width: calc(100vw - 48px); pointer-events: none;
 }
+.ktoast {
+  pointer-events: auto; display: flex; align-items: center; gap: 10px;
+  width: 380px; max-width: 100%; min-height: 40px; padding: 6px 6px 6px 14px;
+  border-radius: var(--r-md); background: var(--surface-raised); box-shadow: var(--e2);
+  font: 500 13px/20px var(--font-ui); color: var(--ink);
+  animation: ktoastIn var(--d-2) var(--ease);
+}
+@keyframes ktoastIn { from { opacity: 0.35; translate: 0 6px; } }
+.ktoast-icon { display: grid; place-items: center; flex-shrink: 0; margin-left: -2px; }
+.ktoast[data-type="error"] .ktoast-icon { color: var(--signal); }
+.ktoast[data-type="success"] .ktoast-icon { color: var(--ok); }
+.ktoast-msg { flex: 1; min-width: 0; margin: 0; padding: 4px 0; overflow-wrap: anywhere; }
+.ktoast-acts { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.ktoast .kbtn[data-variant="ghost"] { color: var(--accent-text); }
+@media (max-width: 859px) {
+  .ktoasts { left: 16px; right: 16px; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); max-width: none; align-items: stretch; }
+  .ktoast { width: auto; }
+}
+@media (hover: none) { .ktoast .kkbd { display: none; } }   /* no keyboard, no shortcut hint */
 
 /* ---- reduced motion: no transforms, no loops ---- */
 @media (prefers-reduced-motion: reduce) {
-  .kbtn:active:not(:disabled) { transform: none; }
-  .kglyph-pop, .kglyph-draw, .kspin, .ksheet, .ksheet-layer::before, .kaimark[data-thinking="true"] rect { animation: none !important; }
-  .kglyph-draw { stroke-dashoffset: 0; }
+  .kstagger > *, .kroute, .kbackdrop::before, .kland, .kland-row, .kcheck-pop, .kstrike-anim, .anim-fadeup, .anim-scalein,
+  .kglyph-pop, .kglyph-draw, .kspin, .ksheet, .ksheet-layer::before, .ktoast, .kaimark[data-thinking="true"] rect, .ai-think, .skel::after, .kskel::after { animation: none !important; }
+  .btn:active:not(:disabled), .kbtn:active:not(:disabled) { transform: none; }
+  .kcheck-draw, .kglyph-draw { stroke-dashoffset: 0; }
+  .ai-think { color: var(--accent-text); background: none; }
   .kaimark[data-thinking="true"] + .kaimark-dots { display: inline; }
 }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
