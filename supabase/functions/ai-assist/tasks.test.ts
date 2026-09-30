@@ -2,7 +2,7 @@
 // ai-assist input shaping: big workspaces are trimmed to the tasks that
 // matter, never rejected, and every field stays bounded.
 import { describe, expect, it } from "vitest";
-import { cleanTasks, MAX_TASKS } from "./tasks.ts";
+import { cleanTasks, DESCRIPTION_MAX, MAX_TASKS, MAX_TASKS_COMMAND } from "./tasks.ts";
 
 const task = (i: number, over: Record<string, unknown> = {}) => ({
   id: `t${i}`, title: `Task number ${i} with a realistic sort of title`, status: "todo", priority: "med",
@@ -63,5 +63,42 @@ describe("cleanTasks", () => {
     expect(t.tags![0]).toHaveLength(40);
     expect(t.focusMin).toBe(1440);
     expect(cleanTasks("nope")).toEqual([]);
+  });
+
+  it("keeps who a task is for and who asked for it (the dropped-assignee fix)", () => {
+    const [t] = cleanTasks([{
+      ...task(1), assignee: "Maya Chen", collaborators: ["Theo Park", "Sana Okafor"], createdBy: "Daniel Okai",
+      startDate: "2026-09-28", dueDate: "2026-10-02", dueTime: "15:00", description: "Final pass on the narrative before the board sees it.",
+      projectName: "Q3 Product Launch", project: "Q3 Product Launch",
+    }]);
+    expect(t).toMatchObject({
+      assignee: "Maya Chen", collaborators: ["Theo Park", "Sana Okafor"], createdBy: "Daniel Okai",
+      startDate: "2026-09-28", dueDate: "2026-10-02", dueTime: "15:00", projectName: "Q3 Product Launch",
+      description: "Final pass on the narrative before the board sees it.",
+    });
+    // an unassigned task says so, rather than looking like the field was lost
+    expect(cleanTasks([{ ...task(2), assignee: null }])[0].assignee).toBeNull();
+  });
+
+  it("bounds the new fields too", () => {
+    const [t] = cleanTasks([{
+      ...task(1), assignee: "a".repeat(500), createdBy: "c".repeat(500), collaborators: Array(40).fill("n".repeat(200)),
+      description: "d".repeat(5000), dueTime: "15:00:00.000+01:00",
+    }]);
+    expect(t.assignee).toHaveLength(80);
+    expect(t.createdBy).toHaveLength(80);
+    expect(t.collaborators).toHaveLength(10);
+    expect(t.collaborators![0]).toHaveLength(80);
+    expect(t.description).toHaveLength(DESCRIPTION_MAX);
+    expect(t.dueTime).toHaveLength(8);
+    // an empty description isn't sent at all
+    expect("description" in cleanTasks([{ ...task(1), description: "" }])[0]).toBe(false);
+  });
+
+  it("command mode keeps the app's own relevance order, up to MAX_TASKS_COMMAND", () => {
+    const list = Array.from({ length: 400 }, (_, i) => task(i, { dueDate: i % 2 ? "2026-10-01" : null, status: i % 3 ? "todo" : "done" }));
+    const out = cleanTasks(list, "command");
+    expect(out).toHaveLength(MAX_TASKS_COMMAND);
+    expect(out.map((t) => t.id)).toEqual(list.slice(0, MAX_TASKS_COMMAND).map((t) => t.id));
   });
 });
