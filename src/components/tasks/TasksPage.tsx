@@ -1,64 +1,81 @@
 /* ============================================================
-   KANBO — the tasks page: My tasks and a project's tasks, with the
-   view switcher (list, board, timeline, calendar, files, matrix),
-   grouping, sort, filters and export.
+   KANBO — the tasks page: My tasks (Open · Waiting on · Done, saved
+   views) and a project's tasks (List · Board · Timeline · Calendar ·
+   More, then the project's own tabs). One 44px row carries the tabs
+   and every tool: the view menu, a title filter, Filter (quick
+   presets + fields), Display (group, sort, density, done) and ⋯
+   (export, import, advanced search). Active filters show as pills on
+   one quiet line underneath.
    ============================================================ */
-import { useState, useEffect } from "react";
-import { Icon, Segmented, type SegmentedOption } from "../primitives";
-import { ListView } from "./ListView";
-import { BoardView, TimelineView, CalendarView, FilesView, MatrixView } from "./OtherViews";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useId, type ReactNode } from "react";
+import { Icon, Avatar, Segmented, Tabs, Button, IconButton, StatusGlyph, projectPaint, EmptyState, Toggle, Kbd, type TabItem } from "../primitives";
+import { Popover } from "../primitives/Popover";
+import { ListView, type ListGroup } from "./ListView";
+import { BoardView, TimelineView, CalendarView, FilesView, MatrixView, type BoardGroup } from "./OtherViews";
 import { exportTasksCsv, printTasks, type TaskExportOptions } from "../../lib/exportTasks";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { readFilters, validFilters, filtersKey, EMPTY_FILTERS, type TaskFilters } from "../../lib/taskOps";
-import { dueState, KANBO_TODAY } from "../../data/data";
-import type { Task, Project, Status, TagDef, Section, CustomFieldDef } from "../../data/types";
+import { bucketOpen, bucketWaiting, bucketDone, doneToday, dueFocusGroup, firstNameOf, type TaskBucket } from "../../lib/myTaskBuckets";
+import { dueState, getMember, KANBO_TODAY, STATUS_META, STATUS_ORDER, PRIORITY_META } from "../../data/data";
+import type { Task, Project, Status, TagDef, Section, CustomFieldDef, IconName } from "../../data/types";
 import type { TaskView, GroupBy } from "../../app-types";
+import { dueDateForBucket } from "./ListView";
+import "./taskViews.css";
 
-const VIEW_OPTS: SegmentedOption<TaskView>[] = [
-  { value: "list", label: "List", icon: "list" },
-  { value: "board", label: "Board", icon: "board" },
-  { value: "timeline", label: "Timeline", icon: "timeline" },
-  { value: "calendar", label: "Calendar", icon: "calendar" },
-  { value: "files", label: "Files", icon: "folder" },
-  { value: "matrix", label: "Matrix", icon: "grid" },
+const VIEWS: { id: TaskView; label: string; icon: IconName }[] = [
+  { id: "list", label: "List", icon: "list" },
+  { id: "board", label: "Board", icon: "board" },
+  { id: "timeline", label: "Timeline", icon: "timeline" },
+  { id: "calendar", label: "Calendar", icon: "calendar" },
+  { id: "files", label: "Files", icon: "folder" },
+  { id: "matrix", label: "Matrix", icon: "grid" },
 ];
+const isTaskView = (s: string | undefined): s is TaskView => !!s && VIEWS.some((v) => v.id === s);
+const MORE_VIEWS: TaskView[] = ["files", "matrix"];
 
-const GROUP_OPTS: SegmentedOption<GroupBy>[] = [
-  { value: "status", label: "Status" },
-  { value: "section", label: "Section" },
-  { value: "due", label: "Due" },
-  { value: "priority", label: "Priority" },
-  { value: "project", label: "Project" },
-  { value: "none", label: "None" },
+const GROUPS: { id: GroupBy; label: string }[] = [
+  { id: "due", label: "Due" }, { id: "status", label: "Status" }, { id: "section", label: "Section" },
+  { id: "priority", label: "Priority" }, { id: "project", label: "Project" }, { id: "none", label: "None" },
 ];
-
-const PRIORITY_FILTERS: { value: string; label: string }[] = [
-  { value: "all", label: "All priorities" },
-  { value: "urgent", label: "Urgent" },
-  { value: "high", label: "High" },
-  { value: "medium", label: "Medium" },
-  { value: "low", label: "Low" },
+const SORTS: { id: string; label: string }[] = [
+  { id: "manual", label: "Manual" }, { id: "due", label: "Due" }, { id: "priority", label: "Priority" }, { id: "title", label: "Name" },
 ];
+const BOARD_GROUPS: { id: BoardGroup; label: string }[] = [
+  { id: "status", label: "Status" }, { id: "priority", label: "Priority" }, { id: "project", label: "Project" }, { id: "assignee", label: "Assignee" },
+];
+const DUE_LABEL: Record<string, string> = { overdue: "Overdue", today: "Due today", week: "Next 7 days" };
+const MY_GROUP_KEY = "kanbo-groupby-my";
+const BOARD_GROUP_KEY = "kanbo-board-group";
 
-function FilterSection({ label, children }: { label: string; children: React.ReactNode }) {
+/** The page's filters: today's per-page filters plus status and section (kept in the same saved record). */
+type PageFilters = TaskFilters & { status?: string; section?: string };
+
+const readLocal = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+const writeLocal = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+/** the density Appearance last applied (<html data-density>), else its saved value */
+const readDensity = (): "comfortable" | "compact" => {
+  try {
+    const d = document.documentElement.getAttribute("data-density");
+    if (d === "compact" || d === "comfortable") return d;
+  } catch { /* no DOM */ }
+  return readLocal("kanbo-density") === "compact" ? "compact" : "comfortable";
+};
+
+/** A toggle chip (Filter presets, field values, Display choices). */
+function Chip({ on, onClick, children, label }: { on: boolean; onClick: () => void; children: ReactNode; label?: string }) {
+  return <button type="button" className="ktv-chip" aria-pressed={on} aria-label={label} onClick={onClick}>{children}</button>;
+}
+function PopSection({ title, note, children }: { title: string; note?: string; children: ReactNode }) {
   return (
-    <div style={{ marginBottom: 4 }}>
-      <div className="kicker" style={{ padding: "6px 8px 4px" }}>{label}</div>
+    <div className="ktv-pop-sec" role="group" aria-label={title}>
+      <h4>{title}{note && <small>{note}</small>}</h4>
       {children}
     </div>
   );
 }
-function FilterOption({ label, active, onClick, dot }: { label: string; active: boolean; onClick: () => void; dot?: string }) {
-  return (
-    <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: active ? "var(--ink)" : "var(--ink-3)", background: active ? "var(--surface-2)" : "transparent" }}>
-      <span style={{ width: 13, display: "grid", placeItems: "center", flexShrink: 0 }}>{active && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}</span>
-      {dot && <span style={{ width: 8, height: 8, borderRadius: 3, background: dot, flexShrink: 0 }} />}
-      <span className="truncate">{label}</span>
-    </button>
-  );
-}
 
-export function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts }: {
+export function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts,
+  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -81,6 +98,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;
   archivedTasks?: Task[];
+  /** legacy: a block above the tabs row (the old project header) */
   header?: React.ReactNode;
   sections?: Section[];
   onCreateSection?: (projectId: string, name: string) => void;
@@ -99,32 +117,88 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   exportName?: string;
   /** what the CSV needs to fill its Section, Parent task and custom-field columns */
   exportOpts?: TaskExportOptions;
+  /** My tasks: open · waiting · done. A project: a view (list, board…) or one of `extraTabs`. */
+  tab?: string;
+  onTab?: (id: string) => void;
+  /** a project's own tabs after the views: Updates · Requests · Rules · About */
+  extraTabs?: TabItem[];
+  renderExtra?: (tab: string) => React.ReactNode;
+  /** one 32px line under the tabs row (a project's risk / update line) */
+  notice?: React.ReactNode;
+  /** My tasks ?due=…: scroll to and flash that group */
+  dueFocus?: "today" | "overdue" | "week";
+  currentUserId?: string;
+  savedViews?: { id: string; name: string; count: number }[];
+  onOpenSavedView?: (id: string) => void;
+  /** name, and the view as a search query (text, status, priority, assignee, tag, due) */
+  onSaveView?: (name: string, query?: Record<string, string>) => void;
+  /** Waiting on: nudge whoever has the task */
+  onNudge?: (taskId: string) => void;
+  onAdvancedSearch?: () => void;
+  /** Filter › Manage tags… */
+  onManageTags?: () => void;
+  /** row density (Appearance); without it the page keeps its own */
+  density?: "comfortable" | "compact";
+  onDensity?: (d: "comfortable" | "compact") => void;
+  /** tasks are still arriving: skeleton rows */
+  loading?: boolean;
+  /** the task open in the task panel (App's detail id): its row or card stays marked */
+  activeTaskId?: string;
 }) {
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [compact, setCompact] = useState(() => { try { return localStorage.getItem("kanbo-density") === "compact"; } catch { return false; } });
-  const toggleCompact = () => setCompact((c) => { const n = !c; try { localStorage.setItem("kanbo-density", n ? "compact" : "comfortable"); } catch { /* private mode */ } return n; });
-  const [sortOpen, setSortOpen] = useState(false);
-  const [sort, setSort] = useState<string>(() => { try { return localStorage.getItem("kanbo-sort") || "manual"; } catch { return "manual"; } });
-  useEffect(() => { try { localStorage.setItem("kanbo-sort", sort); } catch { /* ignore */ } }, [sort]);
+  const isMy = filterScope === "my";
+  const isMobile = useMediaQuery("(max-width: 860px)");
+
+  /* ---------------- tabs ---------------- */
+  const [localTab, setLocalTab] = useState<string>(() => (isMy ? "open" : view));
+  const rawTab = tabProp ?? localTab;
+  const myTab = isMy ? (rawTab === "waiting" || rawTab === "done" ? rawTab : "open") : "open";
+  const extraIds = new Set((extraTabs ?? []).map((t) => t.id));
+  const extraActive = !isMy && extraIds.has(rawTab) && !!renderExtra;
+  // a project's tab names the view it shows (a deep link to /p/:id/board wins over the last one used)
+  const shownView: TaskView = !isMy && isTaskView(rawTab) ? rawTab : view;
+
+  /* ---------------- per-page state ---------------- */
+  const [myGroup, setMyGroupState] = useState<GroupBy>(() => {
+    const s = readLocal(MY_GROUP_KEY) as GroupBy | null;
+    return s && GROUPS.some((g) => g.id === s) ? s : "due";
+  });
+  const setMyGroup = (g: GroupBy) => { setMyGroupState(g); writeLocal(MY_GROUP_KEY, g); };
+  const group = isMy ? myGroup : groupBy;
+  const setGroup = isMy ? setMyGroup : setGroupBy;
+  const [boardGroup, setBoardGroupState] = useState<BoardGroup>(() => {
+    const s = readLocal(BOARD_GROUP_KEY) as BoardGroup | null;
+    return s && BOARD_GROUPS.some((g) => g.id === s) ? s : "status";
+  });
+  const setBoardGroup = (g: BoardGroup) => { setBoardGroupState(g); writeLocal(BOARD_GROUP_KEY, g); };
+  // Density belongs to Settings › Appearance (App's appearance state). The page only reads it,
+  // and offers Display › Density when App hands it the setter: a copy of its own would be
+  // overwritten by App's next appearance save and leave Settings showing a stale value.
+  const density = densityProp ?? readDensity();
+  const [sort, setSort] = useState<string>(() => readLocal("kanbo-sort") || "manual");
+  useEffect(() => { writeLocal("kanbo-sort", sort); }, [sort]);
+
   // The page is keyed by route, so the title filter starts empty on every
   // project / My tasks switch. Filters persist per route (not app-wide), so a
   // filter set in one project can never hide every task in another.
   const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<TaskFilters>(() => readFilters(filterScope));
-  useEffect(() => { try { localStorage.setItem(filtersKey(filterScope), JSON.stringify({ ...filters, showArchived: false })); } catch { /* ignore */ } }, [filters, filterScope]);
-  const setFilter = (patch: Partial<TaskFilters>) => setFilters((f) => ({ ...f, ...patch }));
+  const [filters, setFilters] = useState<PageFilters>(() => readFilters(filterScope));
+  useEffect(() => { writeLocal(filtersKey(filterScope), JSON.stringify({ ...filters, showArchived: false })); }, [filters, filterScope]);
+  const setFilter = (patch: Partial<PageFilters>) => setFilters((f) => ({ ...f, ...patch }));
   const clearFilters = () => { setFilters({ ...EMPTY_FILTERS, custom: {} }); setSearch(""); };
-  const isMobile = useMediaQuery("(max-width: 860px)");
   // ignore saved filters that can't apply here (another project's custom field,
-  // someone who isn't in this workspace, a deleted tag)
-  const effective = validFilters(filters, {
+  // someone who isn't in this workspace, a deleted tag or section)
+  const valid = validFilters(filters, {
     memberIds: new Set(members.map((m) => m.id)),
     fieldIds: new Set(customFields.map((f) => f.id)),
     tagIds: new Set(Object.keys(allTags)),
-  });
-  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone, showArchived, custom: customFilter } = effective;
+  }) as PageFilters;
+  const statusFilter = valid.status && (valid.status === "all" || valid.status in STATUS_META) ? valid.status : "all";
+  const sectionFilter = valid.section && (valid.section === "all" || valid.section === "__none" || sections.some((s) => s.id === valid.section)) ? valid.section : "all";
+  const { priority: priorityFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, hideDone, showArchived, custom: customFilter } = valid;
   const cfActive = Object.values(customFilter ?? {}).some((v) => v && v !== "all");
-  const filterActive = priorityFilter !== "all" || assigneeFilter !== "all" || tagFilter !== "all" || dueFilter !== "all" || hideDone || cfActive;
+  const q = search.trim().toLowerCase();
+
+  /* ---------------- the filter ---------------- */
   const dueOk = (t: Task) => {
     if (dueFilter === "all") return true;
     const ds = dueState(t.dueDate, t.status);
@@ -137,171 +211,566 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     }
     return true;
   };
-  const q = search.trim().toLowerCase();
-  const filtered = (showArchived ? archivedTasks : tasks).filter((t) =>
+  const passes = (t: Task, ignoreDone = false) =>
     (priorityFilter === "all" || t.priority === priorityFilter) &&
-    (!hideDone || t.status !== "done") &&
+    (statusFilter === "all" || t.status === statusFilter) &&
+    (ignoreDone || !hideDone || t.status !== "done") &&
     (assigneeFilter === "all" || t.assigneeId === assigneeFilter) &&
     (tagFilter === "all" || (t.tags || []).includes(tagFilter)) &&
+    (sectionFilter === "all" || (sectionFilter === "__none" ? !t[sectionField] : t[sectionField] === sectionFilter)) &&
     dueOk(t) &&
     Object.entries(customFilter ?? {}).every(([fid, v]) => { if (!v || v === "all") return true; const cv = (t.custom ?? {})[fid]; return Array.isArray(cv) ? cv.includes(v) : String(cv ?? "") === v; }) &&
-    (q === "" || t.title.toLowerCase().includes(q)));
+    (q === "" || t.title.toLowerCase().includes(q));
+  const activeCount = [priorityFilter !== "all", statusFilter !== "all", assigneeFilter !== "all", tagFilter !== "all", sectionFilter !== "all", dueFilter !== "all", hideDone, !!showArchived]
+    .filter(Boolean).length + Object.values(customFilter ?? {}).filter((v) => v && v !== "all").length;
+  const filterActive = activeCount > 0 || cfActive;
   const narrowed = filterActive || q !== "";
+
+  /* ---------------- what each tab shows ---------------- */
+  const me = currentUserId ?? "";
+  const source = showArchived ? archivedTasks : tasks;
+  const waiting = useMemo(() => (isMy ? bucketWaiting(allTasks, me) : null), [isMy, allTasks, me]);
+  const done = useMemo(() => (isMy ? bucketDone(allTasks.filter((t) => !t.archivedAt), me || "\u0000", 30) : null), [isMy, allTasks, me]);
+  const [showOlder, setShowOlder] = useState(false);
+
+  const keep = (list: TaskBucket[], ignoreDone = false): TaskBucket[] =>
+    list.map((g) => ({ ...g, items: g.items.filter((t) => passes(t, ignoreDone)) })).filter((g) => g.items.length > 0);
+
+  let shownTasks: Task[];
+  let listGroups: ListGroup[] | undefined;
+  if (!isMy) {
+    shownTasks = source.filter((t) => passes(t));
+  } else if (myTab === "waiting") {
+    listGroups = keep(waiting?.groups ?? []).map((g) => ({ ...g, addable: false }));
+    shownTasks = listGroups.flatMap((g) => g.items);
+  } else if (myTab === "done") {
+    const all = [...(done?.groups ?? []), ...(showOlder ? done?.older ?? [] : [])];
+    listGroups = keep(all, true).map((g) => ({ ...g, addable: false }));
+    shownTasks = listGroups.flatMap((g) => g.items);
+  } else {
+    const openMine = source.filter((t) => t.status !== "done" && passes(t));
+    const finished = showArchived || hideDone ? [] : doneToday(source).filter((t) => passes(t));
+    shownTasks = [...openMine, ...finished];
+    if (group === "due" && !showArchived) {
+      listGroups = [
+        ...bucketOpen(openMine).map((b) => { const d = dueDateForBucket(b.key); return { ...b, addPatch: d ? { dueDate: d } : {} }; }),
+        ...(finished.length ? [{ key: "done-today", label: "Done today", items: finished, addable: false }] : []),
+      ];
+    }
+  }
+  const openCount = isMy ? tasks.filter((t) => t.status !== "done").length : 0;
+  const waitingCount = waiting ? waiting.groups.reduce((n, g) => n + g.items.length, 0) : 0;
+
+  /* ---------------- the toolbar row ---------------- */
+  // The row folds its tools (the title field moves into Filter, labels become icons)
+  // only when the tabs and the full set of tools can't share it — a project's nine
+  // tabs at 1280, a tablet with the task panel open, phones — so no tab is ever pushed
+  // out of sight behind the tools.
+  const barRef = useRef<HTMLDivElement>(null);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  const saveRef = useRef<HTMLDivElement>(null);
+  const fullToolsW = useRef(0);
+  // Saved views open Search (another page), so they are links after the tablist, never tabs in
+  // it: arrowing along the tabs (which selects as it goes, and wraps) must not leave the page.
+  const shownSaved = isMy && onOpenSavedView ? (savedViews ?? []).slice(0, 4) : [];
+  const savedKey = shownSaved.map((v) => `${v.id}:${v.name}:${v.count}`).join("|");
+  const savedRef = useRef<HTMLElement>(null);
+  const savedW = useRef({ key: "", w: 0 });
+  // 0: everything · 1: the title field folds into Filter · 2: and the tools become icons
+  const [fold, setFold] = useState<0 | 1 | 2>(0);
+  const foldRef = useRef(fold);
+  foldRef.current = fold;
+  const fit = useCallback(() => {
+    const bar = barRef.current;
+    if (!bar || !bar.clientWidth) return; // not laid out (tests, hidden)
+    const tools = toolsRef.current;
+    if (foldRef.current === 0 && tools) fullToolsW.current = tools.offsetWidth + (saveRef.current?.offsetWidth ?? 0);
+    const list = bar.querySelector<HTMLElement>(".ktabs-list");
+    const cs = window.getComputedStyle(bar);
+    const room = bar.clientWidth - parseFloat(cs.paddingLeft || "0") - parseFloat(cs.paddingRight || "0");
+    // the saved views fold into the view menu with the tools; remember their width while they show
+    const sv = savedRef.current;
+    if (sv?.offsetWidth) savedW.current = { key: savedKey, w: sv.offsetWidth + 12 };
+    else if (savedW.current.key !== savedKey) savedW.current = { key: savedKey, w: shownSaved.reduce((n, v) => n + v.name.length * 7 + 40, shownSaved.length ? 16 : 0) };
+    const tabsW = (list?.scrollWidth ?? 0) + 24 + (shownSaved.length ? savedW.current.w : 0);
+    const full = fullToolsW.current || (isMy ? 580 : 460);
+    const without = full - 208; // the 200px title field and its gap
+    // a little slack on the way back, so the row doesn't flicker at a boundary
+    const slack = (level: 0 | 1 | 2) => (foldRef.current > level ? 16 : 0);
+    const next: 0 | 1 | 2 = tabsW + full + slack(0) <= room ? 0 : tabsW + without + slack(1) <= room ? 1 : 2;
+    if (next !== foldRef.current) setFold(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMy, savedKey]);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el || typeof ResizeObserver !== "function") return;
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fit]);
+  /** the title field lives in the Filter popover */
+  const compactBar = fold >= 1 || isMobile;
+  /** Filter and Display are icon buttons */
+  const iconTools = fold >= 2 || isMobile;
+
+  const [menu, setMenu] = useState<null | "view" | "more" | "filter" | "display" | "actions">(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const viewBtn = useRef<HTMLButtonElement>(null);
+  const moreTab = useRef<HTMLElement | null>(null);
+  const filterBtn = useRef<HTMLButtonElement>(null);
+  const displayBtn = useRef<HTMLButtonElement>(null);
+  const actionsBtn = useRef<HTMLButtonElement>(null);
+
+  // a project's tab IS its view: onTab (the address) switches both, so call one or the other
+  const pickView = (v: TaskView) => {
+    setMenu(null);
+    if (isMy || !onTab) setView(v);
+    if (!isMy) { setLocalTab(v); onTab?.(v); }
+  };
+  const tabItems: TabItem[] = isMy
+    ? [
+        { id: "open", label: "Open", count: openCount },
+        { id: "waiting", label: "Waiting on", count: waitingCount || undefined },
+        { id: "done", label: "Done" },
+      ]
+    : [
+        ...VIEWS.filter((v) => !MORE_VIEWS.includes(v.id)).map((v) => ({ id: v.id, label: v.label })),
+        { id: "more", label: MORE_VIEWS.includes(shownView) ? VIEWS.find((v) => v.id === shownView)!.label : "More" },
+        ...(extraTabs ?? []).map((t) => ({ ...t, secondary: true })),
+      ];
+  const tabValue = isMy ? myTab : extraActive ? rawTab : MORE_VIEWS.includes(shownView) ? "more" : shownView;
+  const rowKey = tabItems.map((t) => `${t.id}:${t.label}:${t.count ?? ""}`).join("|");
+  const onTabChange = (id: string) => {
+    if (id === "more") return; // its menu opens on click (below), never on arrow-key focus
+    if (!isMy && isTaskView(id) && !onTab) setView(id);
+    setLocalTab(id);
+    onTab?.(id);
+  };
+
+  // save the current filters as a view (named inline, no prompt)
+  const [saving, setSaving] = useState<string | null>(null);
+  const saveHintId = useId();
+  const saveView = () => {
+    const name = (saving ?? "").trim();
+    setSaving(null);
+    if (!name || !onSaveView) return;
+    onSaveView(name, {
+      text: search.trim(),
+      status: statusFilter !== "all" ? statusFilter : myTab === "done" ? "done" : "open",
+      priority: priorityFilter,
+      assignee: assigneeFilter !== "all" ? assigneeFilter : me || "all",
+      tag: tagFilter,
+      due: dueFilter,
+      projectId: "all",
+    });
+  };
+
+  const saveControl = isMy && onSaveView && !readOnly && (narrowed || saving !== null) ? (
+    <div ref={saveRef} className="ktv-save">
+      {saving === null ? (
+        <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")}>Save view</Button>
+      ) : (
+        <span className="ktv-save-wrap">
+          {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+          <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this view" aria-label="Name this view"
+            aria-describedby={`${saveHintId}`}
+            onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveView(); else if (e.key === "Escape") setSaving(null); }}
+            onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+          <span id={saveHintId} className="ktv-save-kbd"><span className="sr-only">Press Enter to save, Escape to cancel</span><Kbd>↵</Kbd></span>
+        </span>
+      )}
+    </div>
+  ) : null;
+
+  useLayoutEffect(() => { fit(); }, [fit, rowKey, extraActive, saving, isMobile]);
+
+  const savedNav = shownSaved.length > 0 && !iconTools ? (
+    <nav ref={savedRef} className="ktv-views" aria-label="Saved views">
+      {shownSaved.map((v) => (
+        <button key={v.id} type="button" className="ktab" onClick={() => onOpenSavedView?.(v.id)}
+          aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`} title="Opens in Search">
+          <span className="ktab-label" data-label={v.name}>{v.name}</span>
+          <span className="ktab-count">{v.count}</span>
+        </button>
+      ))}
+    </nav>
+  ) : null;
+
+  const findField = (wide: boolean) => (
+    <div className="ktv-find" data-wide={wide || undefined}>
+      <Icon name="search" size={14} sw={1.75} />
+      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter…" aria-label="Filter tasks by title"
+        onKeyDown={(e) => { if (e.key === "Escape" && search) { e.stopPropagation(); setSearch(""); } }} />
+      {search && <button type="button" className="ktv-find-clear" onClick={() => setSearch("")} aria-label="Clear search"><Icon name="x" size={14} sw={1.75} /></button>}
+    </div>
+  );
+  // the name is "Filter" or "Filter · on"; how many are on is its description (and the pills row).
+  // Once the title field has folded into Filter, a title filter counts as one of them.
+  const titleInFilter = compactBar && q !== "";
+  const filterOn = filterActive || titleInFilter;
+  const filterLabel = filterOn ? "Filter · on" : "Filter";
+  const filterCountId = useId();
+  const filterCount = activeCount + (titleInFilter ? 1 : 0) || 1;
+  const currentView = VIEWS.find((v) => v.id === shownView) ?? VIEWS[0];
+  const exportList = shownTasks;
+
+  const tools = !extraActive && (
+    <div ref={toolsRef} className="ktv-tools">
+      {isMy && (iconTools
+        ? <IconButton ref={viewBtn} icon={currentView.icon} size="sm" label={`View: ${currentView.label}`} onClick={() => setMenu((m) => (m === "view" ? null : "view"))} aria-haspopup="menu" aria-expanded={menu === "view"} />
+        : <Button ref={viewBtn} variant="secondary" size="sm" icon={currentView.icon} iconRight="chevronDown" onClick={() => setMenu((m) => (m === "view" ? null : "view"))} aria-haspopup="menu" aria-expanded={menu === "view"} aria-label={`View: ${currentView.label}`}>{currentView.label}</Button>)}
+      {!compactBar && findField(false)}
+      {filterOn && <span id={filterCountId} className="sr-only">{filterCount} {filterCount === 1 ? "filter" : "filters"} on</span>}
+      {iconTools
+        ? <IconButton ref={filterBtn} icon="filter" size="sm" label={filterLabel} badge={filterOn || undefined} data-on={filterOn || undefined}
+            aria-describedby={filterOn ? filterCountId : undefined} onClick={() => setMenu((m) => (m === "filter" ? null : "filter"))} aria-haspopup="dialog" aria-expanded={menu === "filter"} />
+        : (
+          <Button ref={filterBtn} variant="ghost" size="sm" icon="filter" data-on={filterOn || undefined} aria-label={filterLabel} aria-describedby={filterOn ? filterCountId : undefined}
+            onClick={() => setMenu((m) => (m === "filter" ? null : "filter"))} aria-haspopup="dialog" aria-expanded={menu === "filter"}>
+            Filter{filterOn && <span className="ktv-count" aria-hidden="true">{filterCount}</span>}
+          </Button>
+        )}
+      {iconTools
+        ? <IconButton ref={displayBtn} icon="sliders" size="sm" label="Display" onClick={() => setMenu((m) => (m === "display" ? null : "display"))} aria-haspopup="dialog" aria-expanded={menu === "display"} />
+        : <Button ref={displayBtn} variant="ghost" size="sm" icon="sliders" onClick={() => setMenu((m) => (m === "display" ? null : "display"))} aria-haspopup="dialog" aria-expanded={menu === "display"}>Display</Button>}
+      <IconButton ref={actionsBtn} icon="more" size="sm" label="More actions" onClick={() => setMenu((m) => (m === "actions" ? null : "actions"))} aria-haspopup="menu" aria-expanded={menu === "actions"} />
+    </div>
+  );
+
+  /* ---------------- active-filter pills ---------------- */
+  const memberName = (id: string) => members.find((m) => m.id === id)?.name ?? getMember(id)?.name ?? "Someone";
+  const pills: { key: string; label: string; clear: () => void }[] = [];
+  if (compactBar && q) pills.push({ key: "q", label: `“${search.trim()}”`, clear: () => setSearch("") });
+  if (statusFilter !== "all") pills.push({ key: "status", label: STATUS_META[statusFilter as Status].label, clear: () => setFilter({ status: "all" }) });
+  if (priorityFilter !== "all") pills.push({ key: "priority", label: `${PRIORITY_META[priorityFilter as keyof typeof PRIORITY_META]?.label ?? priorityFilter} priority`, clear: () => setFilter({ priority: "all" }) });
+  if (dueFilter !== "all") pills.push({ key: "due", label: DUE_LABEL[dueFilter] ?? dueFilter, clear: () => setFilter({ due: "all" }) });
+  if (assigneeFilter !== "all") pills.push({ key: "assignee", label: memberName(assigneeFilter), clear: () => setFilter({ assignee: "all" }) });
+  if (tagFilter !== "all") pills.push({ key: "tag", label: allTags[tagFilter]?.label ?? tagFilter, clear: () => setFilter({ tag: "all" }) });
+  if (sectionFilter !== "all") pills.push({ key: "section", label: sectionFilter === "__none" ? "No section" : sections.find((s) => s.id === sectionFilter)?.name ?? "Section", clear: () => setFilter({ section: "all" }) });
+  for (const [fid, v] of Object.entries(customFilter ?? {})) {
+    if (!v || v === "all") continue;
+    const f = customFields.find((x) => x.id === fid);
+    pills.push({ key: `cf:${fid}`, label: `${f?.name ?? "Field"}: ${f?.type === "people" ? memberName(v) : v}`, clear: () => setFilter({ custom: { ...(customFilter ?? {}), [fid]: "all" } }) });
+  }
+  if (hideDone && !(isMy && myTab === "done")) pills.push({ key: "hideDone", label: "Hiding done", clear: () => setFilter({ hideDone: false }) });
+  if (showArchived) pills.push({ key: "archived", label: "Showing archived", clear: () => setFilter({ showArchived: false }) });
+
+  /* ---------------- the popovers ---------------- */
+  const presetChips = [
+    { label: "Overdue", on: dueFilter === "overdue", toggle: () => setFilter({ due: dueFilter === "overdue" ? "all" : "overdue" }) },
+    { label: "Today", on: dueFilter === "today", toggle: () => setFilter({ due: dueFilter === "today" ? "all" : "today" }) },
+    { label: "This week", on: dueFilter === "week", toggle: () => setFilter({ due: dueFilter === "week" ? "all" : "week" }) },
+    { label: "High priority", on: priorityFilter === "high", toggle: () => setFilter({ priority: priorityFilter === "high" ? "all" : "high" }) },
+    { label: "Urgent", on: priorityFilter === "urgent", toggle: () => setFilter({ priority: priorityFilter === "urgent" ? "all" : "urgent" }) },
+    { label: "Hide done", on: hideDone, toggle: () => setFilter({ hideDone: !hideDone }) },
+  ];
+  const one = (cur: string, v: string) => (cur === v ? "all" : v);
+  const filterPanel = (
+    <div className="ktv-pop" style={{ width: 320, maxWidth: "100%" }}>
+      {compactBar && findField(true)}
+      <PopSection title="Quick filters">
+        <div className="ktv-chips">{presetChips.map((c) => <Chip key={c.label} on={c.on} onClick={c.toggle}>{c.label}</Chip>)}</div>
+      </PopSection>
+      {!(isMy && myTab === "done") && (
+        <PopSection title="Status">
+          <div className="ktv-chips">
+            {STATUS_ORDER.map((s) => (
+              <Chip key={s} on={statusFilter === s} onClick={() => setFilter({ status: one(statusFilter, s) })}>
+                <StatusGlyph status={s} size={14} readOnly /><span>{STATUS_META[s].label}</span>
+              </Chip>
+            ))}
+          </div>
+        </PopSection>
+      )}
+      <PopSection title="Priority">
+        <div className="ktv-chips">
+          {(["urgent", "high", "medium", "low"] as const).map((p) => <Chip key={p} on={priorityFilter === p} onClick={() => setFilter({ priority: one(priorityFilter, p) })}>{PRIORITY_META[p].label}</Chip>)}
+        </div>
+      </PopSection>
+      {members.length > 1 && (
+        <PopSection title="Assignee">
+          <div className="ktv-chips">
+            {members.map((m) => (
+              <Chip key={m.id} on={assigneeFilter === m.id} onClick={() => setFilter({ assignee: one(assigneeFilter, m.id) })}>
+                <Avatar id={m.id} size={16} /><span>{m.id === currentUserId ? "Me" : m.name.split(/\s+/)[0]}</span>
+              </Chip>
+            ))}
+          </div>
+        </PopSection>
+      )}
+      {Object.keys(allTags).length > 0 && (
+        <PopSection title="Tags">
+          <div className="ktv-chips">
+            {Object.entries(allTags).map(([id, t]) => (
+              <Chip key={id} on={tagFilter === id} onClick={() => setFilter({ tag: one(tagFilter, id) })}>
+                <span className="ktv-dot" style={{ background: projectPaint(t.color).solid }} /><span>{t.label}</span>
+              </Chip>
+            ))}
+          </div>
+        </PopSection>
+      )}
+      {sections.length > 0 && (
+        <PopSection title="Section">
+          <div className="ktv-chips">
+            {[...sections].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map((s) => <Chip key={s.id} on={sectionFilter === s.id} onClick={() => setFilter({ section: one(sectionFilter, s.id) })}><span>{s.name}</span></Chip>)}
+            <Chip on={sectionFilter === "__none"} onClick={() => setFilter({ section: one(sectionFilter, "__none") })}>No section</Chip>
+          </div>
+        </PopSection>
+      )}
+      {customFields.filter((f) => f.type === "dropdown" || f.type === "people" || f.type === "multiselect").map((f) => {
+        const cur = customFilter?.[f.id] ?? "all";
+        const opts = f.type === "people" ? members.map((m) => ({ v: m.id, l: m.name })) : f.options.map((o) => ({ v: o, l: o }));
+        return (
+          <PopSection key={f.id} title={f.name}>
+            <div className="ktv-chips">
+              {opts.map((o) => <Chip key={o.v} on={cur === o.v} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: one(cur, o.v) } })}><span>{o.l}</span></Chip>)}
+            </div>
+          </PopSection>
+        );
+      })}
+      {(archivedTasks.length > 0 || showArchived) && (
+        <Toggle checked={!!showArchived} onChange={(v) => setFilter({ showArchived: v })} label={`Show archived (${archivedTasks.length})`} />
+      )}
+      {isMy && (
+        <PopSection title="Scope">
+          <div className="ktv-chips">
+            <Chip on onClick={() => {}}>This workspace</Chip>
+            {onOpenSavedView && <Chip on={false} onClick={() => { setMenu(null); onOpenSavedView("mine"); }}>All workspaces</Chip>}
+          </div>
+        </PopSection>
+      )}
+      <div className="ktv-pop-foot">
+        {onManageTags && <Button variant="ghost" size="sm" icon="settings" onClick={() => { setMenu(null); onManageTags(); }}>Manage tags…</Button>}
+        {(filterActive || q) && <Button variant="ghost" size="sm" onClick={clearFilters}>Clear all</Button>}
+      </div>
+    </div>
+  );
+
+  const groupNote = isMy && myTab === "waiting" ? "by person" : isMy && myTab === "done" ? "by day" : undefined;
+  const displayPanel = (
+    <div className="ktv-pop" style={{ width: 280, maxWidth: "100%" }}>
+      {shownView === "list" && (
+        <>
+          <PopSection title="Group" note={groupNote}>
+            {groupNote ? null : (
+              <div className="ktv-chips">
+                {GROUPS.filter((g) => g.id !== "section" || sections.length > 0 || !isMy).map((g) => <Chip key={g.id} on={group === g.id} onClick={() => setGroup(g.id)}>{g.label}</Chip>)}
+              </div>
+            )}
+          </PopSection>
+          <PopSection title="Sort">
+            <div className="ktv-chips">
+              {SORTS.map((s) => <Chip key={s.id} on={!smart && sort === s.id} onClick={() => { setSmart(false); setSort(s.id); }}>{s.label}</Chip>)}
+              <Chip on={smart} onClick={() => setSmart((v) => !v)} label="Kanbo's order">Kanbo's order</Chip>
+            </div>
+          </PopSection>
+          {onDensity && (
+            <PopSection title="Density">
+              <Segmented ariaLabel="Density" value={density} onChange={onDensity}
+                options={[{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }]} />
+            </PopSection>
+          )}
+        </>
+      )}
+      {shownView === "board" && (
+        <PopSection title="Columns">
+          <div className="ktv-chips">{BOARD_GROUPS.map((g) => <Chip key={g.id} on={boardGroup === g.id} onClick={() => setBoardGroup(g.id)}>{g.label}</Chip>)}</div>
+        </PopSection>
+      )}
+      {!(isMy && myTab === "done") && (
+        <Toggle checked={!hideDone} onChange={(v) => setFilter({ hideDone: !v })} label="Show done"
+          description={isMy && myTab === "open" ? "What you finished today stays at the bottom." : undefined} />
+      )}
+    </div>
+  );
+
+  /* ---------------- the views ---------------- */
+  const nudged = useRef(new Set<string>());
+  const [, bump] = useState(0);
+  const waitingMeta = (t: Task): ReactNode => {
+    const r = waiting?.reasons.get(t.id);
+    if (!r) return null;
+    return r.kind === "with"
+      ? <span className="ktv-with">with <b>{firstNameOf(r.personId)}</b></span>
+      : <span className="ktv-with" title={`Waiting on “${r.blocker}” (${firstNameOf(r.personId)})`}>needs <b>“{r.blocker}”</b></span>;
+  };
+  const waitingAction = (t: Task): ReactNode => {
+    const r = waiting?.reasons.get(t.id);
+    if (!r || !onNudge || readOnly) return null;
+    const target = r.kind === "needs" && r.blockerId ? r.blockerId : t.id;
+    const sent = nudged.current.has(target);
+    return (
+      <Button variant="ghost" size="sm" icon={sent ? "check" : "send"} disabled={sent}
+        aria-label={sent ? `Nudged ${firstNameOf(r.personId)}` : `Nudge ${firstNameOf(r.personId)} about “${r.kind === "needs" ? r.blocker : t.title}”`}
+        onClick={() => { onNudge(target); nudged.current.add(target); bump((n) => n + 1); }}>
+        {sent ? "Nudged" : "Nudge"}
+      </Button>
+    );
+  };
+
+  const emptyOpen = isMy && myTab === "open" && !loading && !narrowed && !showArchived && tasks.every((t) => t.status === "done") ? (
+    <div className="ktv-empty">
+      <EmptyState art="tasks" title="You're all clear" body="Nothing open on your plate right now."
+        action={!readOnly && (
+          <>
+            <Button variant="primary" icon="plus" onClick={() => onAdd("todo")}>New task</Button>
+            {onOpenImport && <Button variant="ghost" onClick={onOpenImport}>Import tasks</Button>}
+          </>
+        )} />
+    </div>
+  ) : null;
+  const emptyWaiting = <div className="ktv-empty"><EmptyState art="users" title="Nothing waiting on others" body="Tasks you create for teammates show up here." /></div>;
+  const emptyDone = <div className="ktv-empty"><EmptyState art="tasks" title="Nothing finished in the last 30 days" body={done?.olderCount ? undefined : "Tasks you complete show up here, by day."}
+    action={done?.olderCount && !showOlder ? <Button variant="secondary" onClick={() => setShowOlder(true)}>Show older ({done.olderCount})</Button> : undefined} /></div>;
+  const doneFooter = isMy && myTab === "done" && done && done.olderCount > 0 && done.groups.length > 0 ? (
+    <button type="button" className="ktv-more" style={{ marginTop: 8 }} onClick={() => setShowOlder((v) => !v)} aria-expanded={showOlder}>
+      <Icon name="chevronDown" size={14} style={{ transform: showOlder ? "rotate(180deg)" : undefined }} /> {showOlder ? "Hide older" : `Show older (${done.olderCount})`}
+    </button>
+  ) : null;
+
   // filters hide everything: say so (the list view renders its own empty state)
-  const hiddenByFilters = narrowed && filtered.length === 0 && (showArchived ? archivedTasks : tasks).length > 0 && view !== "list";
+  const hiddenByFilters = narrowed && shownTasks.length === 0 && source.length > 0 && shownView !== "list";
+  const listEmpty = isMy ? (myTab === "waiting" ? emptyWaiting : myTab === "done" ? emptyDone : emptyOpen ?? undefined) : undefined;
+
+  const skeleton = (
+    <div className="ktv-scroll ktv-skel" aria-busy="true" aria-label="Loading tasks">
+      {Array.from({ length: 8 }, (_, i) => (
+        <div key={i} className="ktv-skel-row"><i /><i style={{ width: `${[46, 38, 52, 30, 44, 36, 48, 34][i]}%` }} /><i style={{ width: 64, marginLeft: "auto" }} /></div>
+      ))}
+    </div>
+  );
+
+  let body: ReactNode;
+  if (extraActive) body = <div className="ktv-scroll">{renderExtra!(rawTab)}</div>;
+  else if (loading) body = skeleton;
+  else if (isMy && myTab === "open" && emptyOpen && shownView === "list") body = <div className="ktv-scroll">{emptyOpen}</div>;
+  else if (shownView === "list") {
+    body = (
+      <ListView tasks={shownTasks} allTasks={allTasks} projects={projects} compact={density === "compact"} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask}
+        groupBy={group} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport}
+        members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields}
+        sectionField={sectionField} sectionProjectId={sectionProjectId} filtered={narrowed || !!showArchived} onClearFilters={clearFilters} readOnly={readOnly}
+        groups={listGroups} showProject={isMy} quietAssigneeFor={isMy && myTab !== "waiting" ? currentUserId : undefined}
+        renderMeta={isMy && myTab === "waiting" ? waitingMeta : undefined} renderAction={isMy && myTab === "waiting" ? waitingAction : undefined}
+        focusGroup={isMy && myTab === "open" && group === "due" ? dueFocusGroup(dueFocus) : undefined} focusKey={dueFocus}
+        emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} activeId={activeTaskId} />
+    );
+  } else {
+    body = (
+      <>
+        {hiddenByFilters && (
+          <div role="status" className="ktv-filtered">
+            <Icon name="filter" size={16} sw={1.75} />
+            <span>No tasks match {q !== "" ? `“${search.trim()}”` : "these filters"}.</span>
+            <Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button>
+          </div>
+        )}
+        {shownView === "board" && <BoardView tasks={shownTasks} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete}
+          members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} group={boardGroup} onGroupChange={setBoardGroup} showProject={isMy} onToggle={onToggle} activeId={activeTaskId} />}
+        {shownView === "timeline" && <TimelineView tasks={shownTasks} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
+        {shownView === "calendar" && <CalendarView tasks={shownTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
+        {shownView === "files" && <FilesView tasks={shownTasks} onOpen={onOpen} />}
+        {shownView === "matrix" && <MatrixView tasks={shownTasks} onOpen={onOpen} />}
+      </>
+    );
+  }
 
   return (
-    <>
+    <div className="ktv ktv-page">
       {header}
-      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, padding: isMobile ? "10px 14px" : "12px 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, flexWrap: "wrap" }}>
-        <Segmented options={VIEW_OPTS} value={view} onChange={setView} ariaLabel="View" />
-        {!isMobile && <div style={{ width: 1, height: 22, background: "var(--hairline)" }} />}
-        {view === "list" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {!isMobile && <span className="kicker">Group</span>}
-            <Segmented options={GROUP_OPTS} value={groupBy} onChange={setGroupBy} ariaLabel="Group by" />
-          </div>
-        )}
-        {/* wraps rather than running off the edge on a narrow window (a focused button out
-            there would scroll the whole app sideways) */}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: isMobile ? 8 : 10, flexWrap: "wrap", justifyContent: "flex-end", minWidth: 0 }}>
-        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-          <Icon name="search" size={14} style={{ position: "absolute", left: 10, color: "var(--ink-4)", pointerEvents: "none" }} />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter tasks…" aria-label="Filter tasks by title"
-            style={{ width: isMobile ? 120 : 168, height: 34, padding: "0 10px 0 30px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none" }} />
-          {search && <button onClick={() => setSearch("")} aria-label="Clear search" style={{ position: "absolute", right: 6, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 15, lineHeight: 1 }}>×</button>}
-        </div>
-        {view === "list" && (
-          <div style={{ position: "relative" }}>
-            <button onClick={() => setSortOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: sort !== "manual" ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: sort !== "manual" ? "var(--accent-dim)" : "transparent", color: sort !== "manual" ? "var(--accent)" : "var(--ink-2)" }}>
-              <Icon name="sort" size={15} /> Sort
+      <div ref={barRef} className="ktv-bar"
+        onClick={(e) => {
+          // "More ▾" opens its menu on click (and on Enter/Space, which click a button)
+          const more = (e.target as HTMLElement).closest<HTMLElement>('[data-tab-id="more"]');
+          if (more) { moreTab.current = more; setMenu((m) => (m === "more" ? null : "more")); }
+        }}>
+        <Tabs items={tabItems} value={tabValue} onChange={onTabChange} label={isMy ? "My tasks" : "Project views"} />
+        {savedNav}
+        {!compactBar && saveControl}
+        {tools}
+      </div>
+      {pills.length > 0 && !extraActive && (
+        <div className="ktv-pills" role="group" aria-label="Active filters">
+          {pills.map((p) => (
+            <button key={p.key} type="button" className="kpill" data-tone="accent" onClick={p.clear} aria-label={`Remove filter: ${p.label}`}>
+              {p.label}<Icon name="x" size={12} sw={2} />
             </button>
-            {sortOpen && (
-              <>
-                <div onClick={() => setSortOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 180, padding: 6, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                  {[{ v: "manual", l: "Manual" }, { v: "due", l: "Due date" }, { v: "priority", l: "Priority" }, { v: "title", l: "Name (A–Z)" }].map((o) => (
-                    <button key={o.v} onClick={() => { setSort(o.v); setSortOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 9px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: sort === o.v ? "var(--ink)" : "var(--ink-3)", background: sort === o.v ? "var(--surface-2)" : "transparent" }}>
-                      <span style={{ width: 13, display: "grid", placeItems: "center" }}>{sort === o.v && <Icon name="check" size={13} style={{ color: "var(--accent)" }} />}</span>{o.l}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        <div style={{ position: "relative" }}>
-          <button onClick={() => setFilterOpen((v) => !v)} className="btn" style={{ padding: "8px 11px", border: filterActive ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: filterActive ? "var(--accent-dim)" : "transparent", color: filterActive ? "var(--accent)" : "var(--ink-2)" }}>
-            <Icon name="filter" size={15} /> Filter{filterActive ? " · on" : ""}
-          </button>
-          {filterOpen && (
+          ))}
+          <button type="button" className="ktv-pills-clear" onClick={clearFilters}>Clear filters</button>
+          {compactBar && saveControl}
+        </div>
+      )}
+      {notice && !extraActive && <div className="ktv-notice">{notice}</div>}
+      {body}
+
+      {menu === "view" && (
+        <Popover open anchorRef={viewBtn} onClose={closeMenu} label="View" minWidth={200}>
+          {VIEWS.filter((v) => !MORE_VIEWS.includes(v.id)).map((v) => (
+            <button key={v.id} type="button" role="menuitemradio" aria-checked={shownView === v.id} className="ktv-mi" onClick={() => pickView(v.id)}>
+              <Icon name={v.icon} size={16} sw={1.75} /> {v.label}{shownView === v.id && <span className="ktv-mi-end"><Icon name="check" size={14} sw={2.2} /></span>}
+            </button>
+          ))}
+          <div className="ktv-msep" role="separator" />
+          <div className="ktv-mlabel" aria-hidden="true">More</div>
+          {VIEWS.filter((v) => MORE_VIEWS.includes(v.id)).map((v) => (
+            <button key={v.id} type="button" role="menuitemradio" aria-checked={shownView === v.id} className="ktv-mi" onClick={() => pickView(v.id)}>
+              <Icon name={v.icon} size={16} sw={1.75} /> {v.label}{shownView === v.id && <span className="ktv-mi-end"><Icon name="check" size={14} sw={2.2} /></span>}
+            </button>
+          ))}
+          {iconTools && shownSaved.length > 0 && (
             <>
-              <div onClick={() => setFilterOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-              <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, width: 224, maxHeight: 420, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                <div style={{ display: "flex", alignItems: "center", padding: "2px 6px 8px" }}>
-                  <span className="kicker">Filters</span>
-                  {filterActive && <button onClick={() => setFilters({ ...EMPTY_FILTERS, custom: {} })} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear all</button>}
-                </div>
-
-                <FilterSection label="Priority">
-                  {PRIORITY_FILTERS.map((p) => <FilterOption key={p.value} label={p.label} active={priorityFilter === p.value} onClick={() => setFilter({ priority: p.value })} />)}
-                </FilterSection>
-
-                <FilterSection label="Due">
-                  {[{ v: "all", l: "Any time" }, { v: "overdue", l: "Overdue" }, { v: "today", l: "Due today" }, { v: "week", l: "Next 7 days" }].map((d) => <FilterOption key={d.v} label={d.l} active={dueFilter === d.v} onClick={() => setFilter({ due: d.v })} />)}
-                </FilterSection>
-
-                {members.length > 1 && (
-                  <FilterSection label="Assignee">
-                    <FilterOption label="Anyone" active={assigneeFilter === "all"} onClick={() => setFilter({ assignee: "all" })} />
-                    {members.map((m) => <FilterOption key={m.id} label={m.name} active={assigneeFilter === m.id} onClick={() => setFilter({ assignee: m.id })} />)}
-                  </FilterSection>
-                )}
-
-                {Object.keys(allTags).length > 0 && (
-                  <FilterSection label="Tag">
-                    <FilterOption label="Any tag" active={tagFilter === "all"} onClick={() => setFilter({ tag: "all" })} />
-                    {Object.entries(allTags).map(([id, t]) => <FilterOption key={id} label={t.label} dot={t.color} active={tagFilter === id} onClick={() => setFilter({ tag: id })} />)}
-                  </FilterSection>
-                )}
-
-                {/* custom-field filters (dropdown / people fields) */}
-                {customFields.filter((f) => f.type === "dropdown" || f.type === "people" || f.type === "multiselect").map((f) => {
-                  const cur = customFilter?.[f.id] ?? "all";
-                  const opts = f.type === "people" ? members.map((m) => ({ v: m.id, l: m.name })) : f.options.map((o) => ({ v: o, l: o }));
-                  return (
-                    <FilterSection key={f.id} label={f.name}>
-                      <FilterOption label="Any" active={cur === "all"} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: "all" } })} />
-                      {opts.map((o) => <FilterOption key={o.v} label={o.l} active={cur === o.v} onClick={() => setFilter({ custom: { ...(customFilter ?? {}), [f.id]: o.v } })} />)}
-                    </FilterSection>
-                  );
-                })}
-
-                <div className="divider" style={{ margin: "6px 4px" }} />
-                <button onClick={() => setFilter({ hideDone: !hideDone })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
-                  <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${hideDone ? "var(--accent)" : "var(--hairline-strong)"}`, background: hideDone ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{hideDone && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
-                  Hide completed
+              <div className="ktv-msep" role="separator" />
+              <div className="ktv-mlabel" aria-hidden="true">Saved views</div>
+              {shownSaved.map((v) => (
+                <button key={v.id} type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); onOpenSavedView?.(v.id); }}
+                  aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`}>
+                  <Icon name="filter" size={16} sw={1.75} /> <span className="truncate">{v.name}</span><span className="ktv-mi-end">{v.count}</span>
                 </button>
-                {archivedTasks.length > 0 && (
-                  <button onClick={() => setFilter({ showArchived: !showArchived })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", fontSize: 13, fontFamily: "var(--font-display)", color: "var(--ink-2)", background: "transparent" }}>
-                    <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${showArchived ? "var(--accent)" : "var(--hairline-strong)"}`, background: showArchived ? "var(--accent)" : "transparent", display: "grid", placeItems: "center" }}>{showArchived && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}</span>
-                    <Icon name="archive" size={13} style={{ color: "var(--ink-4)" }} /> Show archived <span className="mono" style={{ color: "var(--ink-4)", marginLeft: "auto" }}>{archivedTasks.length}</span>
-                  </button>
-                )}
-              </div>
+              ))}
             </>
           )}
-        </div>
-        <button onClick={() => setSmart((v) => !v)} className="btn" style={{
-          padding: "8px 12px", border: smart ? "1px solid var(--accent)" : "1px solid var(--hairline)",
-          background: smart ? "var(--accent-dim)" : "transparent", color: smart ? "var(--accent)" : "var(--ink-2)", fontWeight: 500,
-        }}>
-          <Icon name="sparkles" size={15} /> AI sort {smart ? "on" : "off"}
-        </button>
-        {view === "list" && (
-          <button onClick={toggleCompact} className="btn" title={compact ? "Switch to comfortable rows" : "Switch to compact rows"} style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}>
-            <Icon name={compact ? "list" : "menu"} size={15} /> {compact ? "Comfortable" : "Compact"}
-          </button>
-        )}
-        {!isMobile && (
-          <>
-            <button onClick={() => exportTasksCsv(filtered, exportName, exportOpts)} className="btn" title="Export these tasks to CSV" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> CSV</button>
-            <button onClick={() => printTasks(filtered, "Tasks export")} className="btn" title="Export these tasks to PDF (print)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="arrowUpRight" size={15} /> PDF</button>
-            {onOpenImport && !readOnly && <button onClick={onOpenImport} className="btn" title="Import tasks (paste a list or upload a file)" style={{ padding: "8px 11px", border: "1px solid var(--hairline)", background: "transparent", color: "var(--ink-2)" }}><Icon name="plus" size={15} /> Import</button>}
-          </>
-        )}
-        </div>
-      </div>
-      {(view === "list" || view === "board") && (
-        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: isMobile ? "8px 14px" : "8px 24px", flexWrap: "wrap", borderBottom: "1px solid var(--hairline)", flexShrink: 0 }}>
-          <span className="kicker" style={{ marginRight: 2 }}>Quick</span>
-          {[
-            { label: "Overdue", active: dueFilter === "overdue", on: () => setFilter({ due: dueFilter === "overdue" ? "all" : "overdue" }) },
-            { label: "Today", active: dueFilter === "today", on: () => setFilter({ due: dueFilter === "today" ? "all" : "today" }) },
-            { label: "This week", active: dueFilter === "week", on: () => setFilter({ due: dueFilter === "week" ? "all" : "week" }) },
-            { label: "High priority", active: priorityFilter === "high", on: () => setFilter({ priority: priorityFilter === "high" ? "all" : "high" }) },
-            { label: "Urgent", active: priorityFilter === "urgent", on: () => setFilter({ priority: priorityFilter === "urgent" ? "all" : "urgent" }) },
-            { label: "Hide done", active: hideDone, on: () => setFilter({ hideDone: !hideDone }) },
-          ].map((c) => (
-            <button key={c.label} onClick={c.on} style={{ padding: "4px 11px", borderRadius: 99, cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, border: `1px solid ${c.active ? "var(--accent)" : "var(--hairline)"}`, background: c.active ? "var(--accent-dim)" : "transparent", color: c.active ? "var(--accent)" : "var(--ink-3)" }}>{c.label}</button>
+        </Popover>
+      )}
+      {menu === "more" && (
+        <Popover open anchorRef={moreTab} onClose={closeMenu} label="More views" minWidth={180}>
+          {VIEWS.filter((v) => MORE_VIEWS.includes(v.id)).map((v) => (
+            <button key={v.id} type="button" role="menuitemradio" aria-checked={shownView === v.id && !extraActive} className="ktv-mi" onClick={() => pickView(v.id)}>
+              <Icon name={v.icon} size={16} sw={1.75} /> {v.label}{shownView === v.id && !extraActive && <span className="ktv-mi-end"><Icon name="check" size={14} sw={2.2} /></span>}
+            </button>
           ))}
-          {filterActive && <button onClick={() => setFilters({ ...EMPTY_FILTERS, custom: {} })} style={{ marginLeft: 4, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-display)" }}>Clear</button>}
-        </div>
+        </Popover>
       )}
-      {hiddenByFilters && (
-        <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, margin: isMobile ? "10px 14px 0" : "12px 24px 0", padding: "10px 14px", borderRadius: 12, border: "1px solid var(--hairline)", background: "var(--fill-1, var(--surface-2))", flexShrink: 0 }}>
-          <Icon name="filter" size={15} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
-          <span style={{ flex: 1, fontSize: 13, color: "var(--ink-2)" }}>No tasks match {q !== "" ? `“${search.trim()}”` : "these filters"}.</span>
-          <button onClick={clearFilters} className="btn btn-ghost" style={{ padding: "4px 11px", fontSize: 12.5 }}>Clear filters</button>
-        </div>
+      {menu === "filter" && (
+        <Popover open anchorRef={filterBtn} onClose={closeMenu} role="dialog" label="Filter" align="end" minWidth={0} maxHeight={560}>
+          {filterPanel}
+        </Popover>
       )}
-      {view === "list" && <ListView tasks={filtered} allTasks={allTasks} projects={projects} compact={compact} onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} groupBy={groupBy} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport} members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields} sectionField={sectionField} sectionProjectId={sectionProjectId}
-        filtered={narrowed || showArchived} onClearFilters={clearFilters} readOnly={readOnly} />}
-      {view === "board" && <BoardView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} />}
-      {view === "timeline" && <TimelineView tasks={filtered} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
-      {view === "calendar" && <CalendarView tasks={filtered} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
-      {view === "files" && <FilesView tasks={filtered} onOpen={onOpen} />}
-      {view === "matrix" && <MatrixView tasks={filtered} onOpen={onOpen} />}
-    </>
+      {menu === "display" && (
+        <Popover open anchorRef={displayBtn} onClose={closeMenu} role="dialog" label="Display" align="end" minWidth={0}>
+          {displayPanel}
+        </Popover>
+      )}
+      {menu === "actions" && (
+        <Popover open anchorRef={actionsBtn} onClose={closeMenu} label="More actions" align="end" minWidth={220}>
+          <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); exportTasksCsv(exportList, exportName, exportOpts); }}>
+            <Icon name="arrowUpRight" size={16} sw={1.75} /> Export CSV
+          </button>
+          <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); printTasks(exportList, isMy ? "My tasks" : exportName); }}>
+            <Icon name="arrowUpRight" size={16} sw={1.75} /> Export PDF
+          </button>
+          {((onOpenImport && !readOnly) || onAdvancedSearch) && <div className="ktv-msep" role="separator" />}
+          {onOpenImport && !readOnly && (
+            <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); onOpenImport(); }}>
+              <Icon name="plus" size={16} sw={1.75} /> Import tasks…
+            </button>
+          )}
+          {onAdvancedSearch && (
+            <button type="button" role="menuitem" className="ktv-mi" onClick={() => { closeMenu(); onAdvancedSearch(); }}>
+              <Icon name="search" size={16} sw={1.75} /> Advanced search…
+            </button>
+          )}
+        </Popover>
+      )}
+    </div>
   );
 }

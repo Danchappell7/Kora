@@ -1,15 +1,20 @@
 /* ============================================================
-   KANBO — Board (Kanban), Timeline (Gantt), Calendar, Matrix
-   and Files views
+   KANBO — Board (Kanban), Timeline (Gantt), Month calendar,
+   Matrix and Files views
    ============================================================ */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, memo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Icon, Avatar, StatusDot, Tag, PriorityFlag, EmptyArt, wasJustLanded, markJustLanded } from "../primitives";
+import {
+  Icon, Avatar, wasJustLanded, markJustLanded, Segmented,
+  StatusGlyph, PriorityGlyph, DateChip, ProjectDot, projectPaint, Button, IconButton, EmptyState,
+} from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
-import { bulkItemStyle, BulkMenuButton, CustomChips } from "./ListView";
+import { useListKeyboard, type ListKeyAction } from "../../hooks/useListKeyboard";
+import { BulkMenuButton, CustomChips, useFloatBounds } from "./ListView";
+import { parseDateText } from "../../lib/nlp";
 import {
-  getProject, getMember, dueState, fmtDue,
+  getProject, getMember, dueState, fmtDue, TAGS,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
 import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent, Attachment, CustomFieldDef } from "../../data/types";
@@ -21,18 +26,29 @@ import {
   planReorder, barSpan, clipSpan, effectiveStartISO, timelineMovePatch, timelineStartPatch,
   wipKeyFor, loadWipLimits, parseWipLimit, chunk, type BarSpan,
 } from "./otherViewsLogic";
+import "./taskViews.css";
 
-type BoardGroup = "status" | "priority" | "project" | "assignee";
+export type BoardGroup = "status" | "priority" | "project" | "assignee";
 
 const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
   google: { label: "Google Calendar", color: "oklch(0.7 0.18 25)" },
   microsoft: { label: "Microsoft / Outlook", color: "oklch(0.62 0.16 250)" },
 };
 
-// subtle hover / focus fill that reads in both themes (new token first, then a fallback)
-const FILL_HOT = "var(--fill-1, color-mix(in oklch, var(--ink) 7%, transparent))";
-const dayLabel = (iso: string, opts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }) =>
-  new Date(iso + "T00:00:00").toLocaleDateString(undefined, opts);
+// fixed English names, so every browser says "Sep" (some en-GB builds say "Sept")
+const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WD_LONG = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MON_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const localDate = (iso: string) => new Date(iso.slice(0, 10) + "T00:00:00");
+/** "Wed 30 Sep" · "30 Sep" · "Wednesday 30 September" */
+const dayLabel = (iso: string, style: "short" | "dm" | "long" = "short") => {
+  const d = localDate(iso);
+  if (style === "dm") return `${d.getDate()} ${MON[d.getMonth()]}`;
+  if (style === "long") return `${WD_LONG[d.getDay()]} ${d.getDate()} ${MON_LONG[d.getMonth()]}`;
+  return `${WD[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]}`;
+};
+const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 /** Keyboard (not mouse) focus — browsers without :focus-visible just treat all focus as visible. */
 const isFocusVisible = (el: Element) => { try { return el.matches(":focus-visible"); } catch { return true; } };
 
@@ -114,11 +130,11 @@ function Popover({ anchor, onClose, label, role = "menu", align = "start", minWi
 
   return createPortal(
     <>
-      <div ref={backdropRef} onClick={(e) => { e.stopPropagation(); closeRef.current(); }} style={{ position: "fixed", inset: 0, zIndex: 80 }} />
+      <div ref={backdropRef} data-kpop="" onClick={(e) => { e.stopPropagation(); closeRef.current(); }} style={{ position: "fixed", inset: 0, zIndex: 80 }} />
       <div ref={boxRef} style={{ position: "fixed", zIndex: 81, visibility: ready ? "visible" : "hidden" }}>
-        <div ref={panelRef} role={role} aria-label={label} aria-modal={role === "dialog" ? true : undefined}
+        <div ref={panelRef} role={role} aria-label={label} aria-modal={role === "dialog" ? true : undefined} data-kpop-panel=""
           onKeyDown={onKeyDown} onClick={(e) => e.stopPropagation()} className={ready ? "anim-scalein" : undefined}
-          style={{ minWidth, maxWidth, overflowY: "auto", padding: 5, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
+          style={{ minWidth, maxWidth, overflowY: "auto", padding: 4, borderRadius: "var(--r-lg, 12px)", background: "var(--surface-raised)", boxShadow: "var(--e2, var(--shadow-lg))", border: "1px solid var(--hairline)" }}>
           {children}
         </div>
       </div>
@@ -128,22 +144,24 @@ function Popover({ anchor, onClose, label, role = "menu", align = "start", minWi
 }
 
 function MenuItem({ checked, onSelect, children }: { checked?: boolean; onSelect: () => void; children: ReactNode }) {
-  const [hot, setHot] = useState(false);
   return (
-    <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked}
-      onClick={onSelect} onMouseEnter={(e) => e.currentTarget.focus({ preventScroll: true })}
-      onFocus={() => setHot(true)} onBlur={() => setHot(false)}
-      style={{ ...bulkItemStyle, background: hot ? FILL_HOT : "transparent" }}>
+    <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className="ktv-mi"
+      onClick={onSelect} onMouseEnter={(e) => e.currentTarget.focus({ preventScroll: true })}>
       {children}
-      {checked && <Icon name="check" size={13} style={{ marginLeft: "auto", color: "var(--accent)" }} />}
+      {checked && <span className="ktv-mi-end"><Icon name="check" size={14} sw={2.2} /></span>}
     </button>
   );
 }
 
 /* ---------------- KANBAN ---------------- */
+/** the date picker's typed field ("fri", "in 2 weeks"); the chip's own parser covers the rest */
+const parseDue = (text: string) => parseDateText(text);
 type Half = "top" | "bottom";
 type CardMenu = null | "priority" | "assignee" | "status" | "move";
 const CARD_CAP = 50; // cards rendered per column before "Show more"
+const EMPTY_COLUMN: Record<string, string> = {
+  todo: "Nothing to do", progress: "Nothing in progress", review: "Nothing in review", blocked: "Nothing blocked", done: "Nothing done yet",
+};
 
 interface KanbanCardProps {
   task: Task; subDone: number; subTotal: number; blocked: boolean;
@@ -158,21 +176,21 @@ interface KanbanCardProps {
   selected: boolean; selectionActive: boolean; onSelect?: (id: string) => void;
   customFields: CustomFieldDef[]; members: { id: string; name: string }[];
   onKeyMove?: (id: string, key: string) => void; onMenuDone: (id: string) => void; hintId?: string;
+  showProject: boolean; cursor: boolean;
+  /** open in the task panel */
+  active?: boolean;
 }
 
 const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
   const { task, onPatch, members } = p;
   const proj = getProject(task.projectId);
-  const ds = dueState(task.dueDate, task.status);
   const [menu, setMenu] = useState<CardMenu>(null);
   const statusBtn = useRef<HTMLButtonElement>(null);
   const prioBtn = useRef<HTMLButtonElement>(null);
   const assignBtn = useRef<HTMLButtonElement>(null);
   const moveBtn = useRef<HTMLButtonElement>(null);
   const PRIORITIES_INLINE: Priority[] = ["urgent", "high", "medium", "low"];
-  const [hovered, setHovered] = useState(false);
-  const [selFocus, setSelFocus] = useState(false);
-  // spring "settle" when this card was just dropped (survives a re-mount into a new column)
+  // a settle when this card was just dropped (survives a re-mount into a new column)
   const [landed, setLanded] = useState(() => wasJustLanded(task.id));
   useEffect(() => { if (wasJustLanded(task.id)) setLanded(true); }, [task.id, task.position]);
   useEffect(() => { if (!landed) return; const t = window.setTimeout(() => setLanded(false), 520); return () => window.clearTimeout(t); }, [landed]);
@@ -184,135 +202,129 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
   const toggle = (m: Exclude<CardMenu, null>) => setMenu((cur) => (cur === m ? null : m));
   const assignee = getMember(task.assigneeId);
   const dueText = task.dueDate ? fmtDue(task.dueDate) : null;
-  const dueColor = task.dueDate ? (ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent-text, var(--accent))" : "var(--ink-4)") : "var(--ink-4)";
+  const done = task.status === "done";
+  const loud = task.priority === "urgent" || task.priority === "high";
+  const tags = (task.tags || []).filter((id) => TAGS[id]);
   const label = [task.title, STATUS_META[task.status].label, `${PRIORITY_META[task.priority].label} priority`,
     dueText ? `due ${dueText}` : null, assignee ? `assigned to ${assignee.name}` : null, p.blocked ? "blocked" : null].filter(Boolean).join(", ");
-  const triggerStyle: React.CSSProperties = { border: "none", background: "transparent", padding: 3, margin: -3, borderRadius: 6, cursor: "pointer", display: "inline-flex" };
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   // keyboard focus on the card's open button rings the whole card
   const [ring, setRing] = useState(false);
 
   return (
-    // a labelled group, not a button: it holds its own buttons and a date input, which a
+    // a labelled group, not a button: it holds its own buttons and a date chip, which a
     // role="button" would flatten for screen readers. Mouse clicks anywhere open the task;
     // keyboard and screen-reader users get the real button below.
     <div data-card-id={task.id} role="group" aria-label={task.title}
       onClick={() => p.onOpen(task.id)}
-      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-      className={"glass clickable lift" + (landed ? " kland" : "")} draggable={p.canDrag}
+      className={"ktv-card" + (landed ? " kland" : "")} draggable={p.canDrag}
+      data-selected={p.selected || undefined} data-ring={ring || undefined} data-cursor={p.cursor || undefined} data-active={p.active || undefined}
+      data-drag={p.dragging || undefined} data-drop={p.dropHint ?? undefined} data-draggable={p.canDrag || undefined} data-done={done || undefined}
       onDragStart={p.canDrag ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; p.onPickup(task.id); } : undefined}
       onDragEnd={p.canDrag ? p.onDragDone : undefined}
       onDragOver={p.canDrag && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); p.onHoverCard(task.id, halfFrom(e)); } : undefined}
-      onDrop={p.canDrag && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); p.onCardDrop(id, task.id, halfFrom(e)); } : undefined}
-      style={{ padding: 13, borderRadius: 12, cursor: p.canDrag ? "grab" : "pointer", opacity: p.dragging ? 0.4 : 1, position: "relative",
-        // cards sit on a flat lane, so a per-card backdrop blur buys nothing and costs a compositing layer each
-        backdropFilter: "none", WebkitBackdropFilter: "none",
-        outline: ring ? "2px solid var(--accent)" : p.selected ? "1.5px solid var(--accent)" : undefined, outlineOffset: ring ? 2 : undefined,
-        background: p.selected ? "var(--accent-dim)" : undefined,
-        boxShadow: p.dropHint === "top" ? "inset 0 3px 0 -1px var(--accent)" : p.dropHint === "bottom" ? "inset 0 -3px 0 -1px var(--accent)" : undefined }}>
+      onDrop={p.canDrag && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); p.onCardDrop(id, task.id, halfFrom(e)); } : undefined}>
       {/* first in the tab order: Enter / Space opens, Alt+arrows move. Visually hidden (so it
           never gets in the way of dragging the card) — the card shows its focus ring instead. */}
       <button type="button" data-card-open className="sr-only" aria-label={label} aria-describedby={p.hintId}
         onClick={(e) => { e.stopPropagation(); p.onOpen(task.id); }}
         onKeyDown={(e) => { if (e.altKey && p.onKeyMove && e.key.startsWith("Arrow")) { e.preventDefault(); e.stopPropagation(); p.onKeyMove(task.id, e.key); } }}
         onFocus={(e) => setRing(isFocusVisible(e.currentTarget))} onBlur={() => setRing(false)} />
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-        {p.onSelect && (
-          <button onClick={(e) => { e.stopPropagation(); p.onSelect?.(task.id); }} aria-label={p.selected ? `Deselect ${task.title}` : `Select ${task.title}`} className="ksel"
-            style={{ width: 17, height: 17, borderRadius: 5, flexShrink: 0, padding: 0, cursor: "pointer", display: "grid", placeItems: "center", marginTop: 1,
-              border: `1.6px solid ${p.selected ? "var(--accent)" : "var(--hairline-strong)"}`, background: p.selected ? "var(--accent)" : "transparent",
-              opacity: p.selected || p.selectionActive || hovered || selFocus ? 1 : 0, transition: "opacity .12s" }}
-            onFocus={() => setSelFocus(true)} onBlur={() => setSelFocus(false)}>
-            {p.selected && <Icon name="check" size={11} sw={3} style={{ color: "var(--on-accent)" }} />}
-          </button>
-        )}
+      {p.onSelect && (
+        <button type="button" className="ktv-sel ksel" role="checkbox" aria-checked={p.selected} onClick={(e) => { e.stopPropagation(); p.onSelect?.(task.id); }}
+          aria-label={p.selected ? `Deselect ${task.title}` : `Select ${task.title}`}>
+          {p.selected && <Icon name="check" size={11} sw={3} />}
+        </button>
+      )}
+      <div className="ktv-card-top">
         {onPatch ? (
-          <span style={{ display: "inline-flex", marginTop: 2 }} onClick={(e) => e.stopPropagation()}>
-            <button ref={statusBtn} onClick={() => toggle("status")} aria-label={`Status: ${STATUS_META[task.status].label}. Change status of ${task.title}`}
-              aria-haspopup="menu" aria-expanded={menu === "status"} title={STATUS_META[task.status].label} style={triggerStyle}><StatusDot status={task.status} size={9} /></button>
+          <span style={{ display: "inline-flex" }} onClick={stop}>
+            <button ref={statusBtn} type="button" className="ktv-trig" data-card-status onClick={() => toggle("status")} aria-label={`Status: ${STATUS_META[task.status].label}. Change status of ${task.title}`}
+              aria-haspopup="menu" aria-expanded={menu === "status"} title={STATUS_META[task.status].label}><StatusGlyph status={task.status} size={14} readOnly /></button>
             {menu === "status" && (
-              <Popover anchor={statusBtn.current} label={`Status of ${task.title}`} onClose={() => setMenu(null)} minWidth={160}>
+              <Popover anchor={statusBtn.current} label={`Status of ${task.title}`} onClose={() => setMenu(null)} minWidth={176}>
                 {STATUS_ORDER.map((s) => (
                   <MenuItem key={s} checked={task.status === s} onSelect={() => choose(() => { if (s !== task.status) onPatch(task.id, { status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined }); })}>
-                    <StatusDot status={s} size={9} /> {STATUS_META[s].label}
+                    <StatusGlyph status={s} size={14} readOnly /> {STATUS_META[s].label}
                   </MenuItem>
                 ))}
               </Popover>
             )}
           </span>
-        ) : null}
-        {onPatch ? (
-          <span style={{ display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
-            <button ref={prioBtn} onClick={() => toggle("priority")} aria-label={`Priority: ${PRIORITY_META[task.priority].label}. Change priority of ${task.title}`}
-              aria-haspopup="menu" aria-expanded={menu === "priority"} style={triggerStyle}><PriorityFlag priority={task.priority} size={13} /></button>
-            {menu === "priority" && (
-              <Popover anchor={prioBtn.current} label={`Priority of ${task.title}`} onClose={() => setMenu(null)} minWidth={160}>
-                {PRIORITIES_INLINE.map((pr) => (
-                  <MenuItem key={pr} checked={task.priority === pr} onSelect={() => choose(() => { if (pr !== task.priority) onPatch(task.id, { priority: pr }); })}>
-                    <PriorityFlag priority={pr} size={13} /> {PRIORITY_META[pr].label}
-                  </MenuItem>
-                ))}
-              </Popover>
-            )}
-          </span>
-        ) : <PriorityFlag priority={task.priority} size={13} />}
-        {task.isMilestone && <span title="Milestone" style={{ width: 9, height: 9, transform: "rotate(45deg)", background: "var(--st-review)", borderRadius: 2, flexShrink: 0, marginTop: 3 }} />}
-        <span style={{ flex: 1, fontSize: 13.5, lineHeight: 1.35, fontWeight: 450, overflowWrap: "anywhere" }}>{task.title}</span>
+        ) : <span style={{ display: "inline-flex", padding: 3 }} title={STATUS_META[task.status].label}><StatusGlyph status={task.status} size={14} readOnly /></span>}
+        {task.isMilestone && <span className="ktv-milestone" title="Milestone" style={{ marginTop: 6 }} />}
+        <span className="ktv-card-title">{task.title}</span>
       </div>
-      {(task.tags || []).length > 0 && <div style={{ display: "flex", gap: 6, marginTop: 9, flexWrap: "wrap" }}>{task.tags.slice(0, 2).map((tg) => <Tag key={tg} id={tg} small />)}</div>}
-      {p.customFields.length > 0 && (task.custom && Object.keys(task.custom).length > 0) && <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}><CustomChips task={task} fields={p.customFields} members={members} /></div>}
-      {p.blocked && (
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 9, fontSize: 11, color: "var(--st-blocked)" }}>
-          <Icon name="lock" size={12} /> Blocked
+      {(tags.length > 0 || (p.customFields.length > 0 && task.custom && Object.keys(task.custom).length > 0)) && (
+        <div className="ktv-card-tags">
+          {tags.slice(0, 2).map((id) => <span key={id} className="ktv-tag"><i style={{ background: projectPaint(TAGS[id].color).solid }} />{TAGS[id].label}</span>)}
+          {tags.length > 2 && <span className="ktv-mono" style={{ color: "var(--ink-3)" }}>+{tags.length - 2}</span>}
+          {p.customFields.length > 0 && <CustomChips task={task} fields={p.customFields} members={members} />}
         </div>
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 11 }}>
-        {proj && <span title={proj.name} style={{ width: 7, height: 7, borderRadius: 2, background: proj.color }} />}
-        {p.subTotal > 0 && (
-          <span title={`${p.subDone} of ${p.subTotal} sub-tasks done`} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>
-            <Icon name="layers" size={12} /> {p.subDone}/{p.subTotal}
-          </span>
-        )}
-        <div style={{ flex: 1 }} />
-        {onPatch ? (
-          <label onClick={(e) => e.stopPropagation()} style={{ position: "relative", display: "inline-flex", alignItems: "center" }} title="Set due date">
-            <span className="mono" style={{ fontSize: 11, color: dueColor, cursor: "pointer" }}>{dueText ?? "—"}</span>
-            <input type="date" value={task.dueDate || ""} onChange={(e) => onPatch(task.id, { dueDate: e.target.value || undefined })} aria-label={`Due date for ${task.title}`} style={{ position: "absolute", inset: 0, width: "100%", opacity: 0, cursor: "pointer" }} />
-          </label>
-        ) : (dueText && <span className="mono" style={{ fontSize: 11, color: dueColor }}>{dueText}</span>)}
-        {onPatch && members.length > 0 ? (
-          <span style={{ display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
-            <button ref={assignBtn} onClick={() => toggle("assignee")} aria-label={`${assignee ? `Assigned to ${assignee.name}` : "Unassigned"}. Change assignee of ${task.title}`}
-              aria-haspopup="menu" aria-expanded={menu === "assignee"} style={{ ...triggerStyle, borderRadius: 99 }}>
-              {assignee ? <Avatar id={task.assigneeId} size={22} /> : <span style={{ width: 22, height: 22, borderRadius: 99, display: "grid", placeItems: "center", border: "1.5px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={12} /></span>}
-            </button>
-            {menu === "assignee" && (
-              <Popover anchor={assignBtn.current} align="end" label={`Assignee of ${task.title}`} onClose={() => setMenu(null)} minWidth={190} maxWidth={280}>
-                {members.map((m) => (
-                  <MenuItem key={m.id} checked={task.assigneeId === m.id} onSelect={() => choose(() => { if (m.id !== task.assigneeId) onPatch(task.id, { assigneeId: m.id }); })}>
-                    <Avatar id={m.id} size={18} /> <span className="truncate">{m.name}</span>
-                  </MenuItem>
-                ))}
-              </Popover>
-            )}
-          </span>
-        ) : <Avatar id={task.assigneeId} size={22} />}
-        {/* touch devices can't drag between columns — give a tap-to-move menu */}
-        {p.isMobile && p.onMove && (
-          <span style={{ display: "inline-flex" }} onClick={(e) => e.stopPropagation()}>
-            <button ref={moveBtn} className="btn-icon" aria-label={`Move ${task.title} to another status`} aria-haspopup="menu" aria-expanded={menu === "move"}
-              onClick={() => toggle("move")} style={{ border: "none", width: 30, height: 30, color: "var(--ink-3)" }}><Icon name="layers" size={15} /></button>
-            {menu === "move" && (
-              <Popover anchor={moveBtn.current} align="end" label={`Move ${task.title} to`} onClose={() => setMenu(null)} minWidth={176}>
-                <div className="kicker" aria-hidden style={{ padding: "4px 9px 6px" }}>Move to</div>
-                {STATUS_ORDER.map((s) => (
-                  <MenuItem key={s} checked={task.status === s} onSelect={() => choose(() => { if (s !== task.status) p.onMove?.(task.id, s); })}>
-                    <StatusDot status={s} size={7} /> {STATUS_META[s].label}
-                  </MenuItem>
-                ))}
-              </Popover>
-            )}
-          </span>
-        )}
+      <div className="ktv-card-meta">
+        <span onClick={stop} data-card-due style={{ display: "inline-flex" }}>
+          {onPatch
+            ? <DateChip value={task.dueDate} time={task.dueTime} withTime size="sm" status={task.status} label={`Due date for ${task.title}`} placeholder="Add date" parse={parseDue}
+                onChange={(date, time) => onPatch(task.id, { dueDate: date, dueTime: date ? time : undefined })} />
+            : task.dueDate ? <DateChip value={task.dueDate} time={task.dueTime} size="sm" status={task.status} label="Due" readOnly onChange={() => {}} /> : null}
+        </span>
+        {p.subTotal > 0 && <span className="ktv-m ktv-mono" title={`${p.subDone} of ${p.subTotal} sub-tasks done`}><Icon name="layers" size={12} />{p.subDone}/{p.subTotal}</span>}
+        {p.blocked && <span className="ktv-m ktv-m-signal" role="img" aria-label="Blocked" title="Blocked"><Icon name="lock" size={12} /></span>}
+        <span className="ktv-card-end">
+          {onPatch ? (
+            <span style={{ display: "inline-flex" }} onClick={stop}>
+              <button ref={prioBtn} type="button" className="ktv-trig" data-card-priority data-hidden={loud ? undefined : true} onClick={() => toggle("priority")}
+                aria-label={`Priority: ${PRIORITY_META[task.priority].label}. Change priority of ${task.title}`} aria-haspopup="menu" aria-expanded={menu === "priority"}>
+                <PriorityGlyph priority={task.priority} />
+              </button>
+              {menu === "priority" && (
+                <Popover anchor={prioBtn.current} align="end" label={`Priority of ${task.title}`} onClose={() => setMenu(null)} minWidth={168}>
+                  {PRIORITIES_INLINE.map((pr) => (
+                    <MenuItem key={pr} checked={task.priority === pr} onSelect={() => choose(() => { if (pr !== task.priority) onPatch(task.id, { priority: pr }); })}>
+                      <span style={{ display: "inline-grid", placeItems: "center", width: 16 }}><PriorityGlyph priority={pr} /></span> {PRIORITY_META[pr].label}
+                    </MenuItem>
+                  ))}
+                </Popover>
+              )}
+            </span>
+          ) : loud ? <PriorityGlyph priority={task.priority} /> : null}
+          {p.showProject && proj && <ProjectDot color={proj.color} title={proj.name} />}
+          {onPatch && members.length > 0 ? (
+            <span style={{ display: "inline-flex" }} onClick={stop}>
+              <button ref={assignBtn} type="button" className="ktv-trig" data-card-assignee onClick={() => toggle("assignee")} aria-label={`${assignee ? `Assigned to ${assignee.name}` : "Unassigned"}. Change assignee of ${task.title}`}
+                aria-haspopup="menu" aria-expanded={menu === "assignee"}>
+                {assignee ? <Avatar id={task.assigneeId} size={20} /> : <span className="ktv-unassigned"><Icon name="user" size={11} /></span>}
+              </button>
+              {menu === "assignee" && (
+                <Popover anchor={assignBtn.current} align="end" label={`Assignee of ${task.title}`} onClose={() => setMenu(null)} minWidth={200} maxWidth={280}>
+                  {members.map((m) => (
+                    <MenuItem key={m.id} checked={task.assigneeId === m.id} onSelect={() => choose(() => { if (m.id !== task.assigneeId) onPatch(task.id, { assigneeId: m.id }); })}>
+                      <Avatar id={m.id} size={20} /> <span className="truncate">{m.name}</span>
+                    </MenuItem>
+                  ))}
+                </Popover>
+              )}
+            </span>
+          ) : <Avatar id={task.assigneeId} size={20} />}
+          {/* touch devices can't drag between columns — give a tap-to-move menu */}
+          {p.isMobile && p.onMove && (
+            <span style={{ display: "inline-flex" }} onClick={stop}>
+              <button ref={moveBtn} type="button" className="ktv-trig" aria-label={`Move ${task.title} to another status`} aria-haspopup="menu" aria-expanded={menu === "move"}
+                onClick={() => toggle("move")}><Icon name="layers" size={16} /></button>
+              {menu === "move" && (
+                <Popover anchor={moveBtn.current} align="end" label={`Move ${task.title} to`} onClose={() => setMenu(null)} minWidth={184}>
+                  <div className="ktv-mlabel" aria-hidden>Move to</div>
+                  {STATUS_ORDER.map((s) => (
+                    <MenuItem key={s} checked={task.status === s} onSelect={() => choose(() => { if (s !== task.status) p.onMove?.(task.id, s); })}>
+                      <StatusGlyph status={s} size={14} readOnly /> {STATUS_META[s].label}
+                    </MenuItem>
+                  ))}
+                </Popover>
+              )}
+            </span>
+          )}
+        </span>
       </div>
     </div>
   );
@@ -329,26 +341,27 @@ function WipLimitEditor({ column, current, perBoard, onSave, onClose }: { column
     onSave(v); onClose();
   };
   return (
-    <form noValidate onSubmit={(e) => { e.preventDefault(); submit(); }} style={{ padding: "6px 7px 7px", width: 236, display: "flex", flexDirection: "column", gap: 8 }}>
-      <label htmlFor={inputId} style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>WIP limit for {column}</label>
-      <input id={inputId} data-autofocus type="number" inputMode="numeric" min={1} max={999} value={draft}
+    <form noValidate onSubmit={(e) => { e.preventDefault(); submit(); }} style={{ padding: 8, width: 248, display: "flex", flexDirection: "column", gap: 8 }}>
+      <label htmlFor={inputId} style={{ font: "600 12px/16px var(--font-ui, var(--font-display))", color: "var(--ink-2)" }}>WIP limit for {column}</label>
+      <input id={inputId} data-autofocus type="number" inputMode="numeric" min={1} max={999} value={draft} className="kdp-field"
         onChange={(e) => { setDraft(e.target.value); setError(""); }} placeholder="No limit" aria-invalid={!!error} aria-describedby={`${inputId}-help`}
-        style={{ height: 34, padding: "0 10px", borderRadius: 9, border: `1px solid ${error ? "var(--prio-urgent)" : "var(--hairline-strong)"}`, background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-mono)", fontSize: 13.5 }} />
-      <p id={`${inputId}-help`} role={error ? "alert" : undefined} style={{ margin: 0, fontSize: 11.5, lineHeight: 1.45, color: error ? "var(--prio-urgent)" : "var(--ink-4)" }}>
+        style={{ fontFamily: "var(--font-mono)", borderColor: error ? "var(--signal, var(--prio-urgent))" : undefined }} />
+      <p id={`${inputId}-help`} role={error ? "alert" : undefined} style={{ margin: 0, font: "500 12px/16px var(--font-ui, var(--font-display))", color: error ? "var(--signal, var(--prio-urgent))" : "var(--ink-3)" }}>
         {error || `The count turns red when the column holds more than this. Saved ${perBoard ? "for this board " : ""}on this device.`}
       </p>
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-        {current != null && <button type="button" className="btn btn-ghost" onClick={() => { onSave(null); onClose(); }} style={{ padding: "6px 10px", fontSize: 12.5, marginRight: "auto" }}>Remove</button>}
-        <button type="button" className="btn btn-ghost" onClick={onClose} style={{ padding: "6px 10px", fontSize: 12.5 }}>Cancel</button>
-        <button type="submit" className="btn btn-accent" style={{ padding: "6px 12px", fontSize: 12.5 }}>Save</button>
+        {current != null && <Button variant="ghost" size="sm" onClick={() => { onSave(null); onClose(); }} style={{ marginRight: "auto" }}>Remove</Button>}
+        <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+        <Button variant="primary" size="sm" type="submit">Save</Button>
       </div>
     </form>
   );
 }
 
 interface BoardCol { key: string; label: string; status?: Status; dot?: string; avatar?: string; accepts: boolean; hint?: string }
+const BOARD_GROUPS: { value: BoardGroup; label: string }[] = [{ value: "status", label: "Status" }, { value: "priority", label: "Priority" }, { value: "project", label: "Project" }, { value: "assignee", label: "Assignee" }];
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey }: {
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle, activeId }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void;
   onMove: (taskId: string, status: Status, position?: number) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
@@ -360,6 +373,15 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   readOnly?: boolean;
   /** which board this is (e.g. a project id, or "__my" for My tasks) — WIP limits are saved per board */
   scopeKey?: string;
+  /** the columns, when the page chooses them (Display › Columns); otherwise the board's own switch */
+  group?: BoardGroup;
+  onGroupChange?: (g: BoardGroup) => void;
+  /** a project dot on each card (off inside a project) */
+  showProject?: boolean;
+  /** ⌘↵ on a card (completes it like its row would); falls back to moving it to Done */
+  onToggle?: (id: string) => void;
+  /** the task open in the task panel */
+  activeId?: string;
 }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
   const editable = !readOnly;
@@ -367,6 +389,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const canDrag = editable && !isMobile;
   const bulkEnabled = editable && !!onBulkPatch;
   const rootRef = useRef<HTMLDivElement>(null);
+  // phones, or a column squeezed by the docked task panel: the bulk bar's buttons are icons
+  const iconBulk = useFloatBounds(rootRef, 620) || isMobile;
   const hintId = useId();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMenu, setBulkMenu] = useState<null | "status" | "priority" | "assignee">(null);
@@ -383,15 +407,16 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const [announce, setAnnounce] = useState("");
   const [wipEdit, setWipEdit] = useState<{ key: string; label: string; anchor: HTMLElement } | null>(null);
   const focusReq = useRef<{ id: string; force: boolean } | null>(null);
-  const [group, setGroup] = useState<BoardGroup>(() => {
+  const [ownGroup, setOwnGroup] = useState<BoardGroup>(() => {
     try { const s = localStorage.getItem("kanbo-board-group") as BoardGroup | null; if (s && ["status", "priority", "project", "assignee"].includes(s)) return s; } catch { /* ignore */ }
     return "status";
   });
+  const group = groupProp ?? ownGroup;
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try { const s = localStorage.getItem("kanbo-board-collapsed"); if (s) return new Set(JSON.parse(s)); } catch { /* ignore */ }
     return new Set();
   });
-  useEffect(() => { try { localStorage.setItem("kanbo-board-group", group); } catch { /* ignore */ } }, [group]);
+  useEffect(() => { if (!groupProp) { try { localStorage.setItem("kanbo-board-group", ownGroup); } catch { /* ignore */ } } }, [ownGroup, groupProp]);
   useEffect(() => { try { localStorage.setItem("kanbo-board-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ } }, [collapsed]);
 
   // per-column WIP limits, saved per board when the page says which board this is (scopeKey);
@@ -441,7 +466,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   for (const k of Object.keys(colItems)) colItems[k].sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.id.localeCompare(b.id));
   const columns: BoardCol[] =
     group === "status" ? STATUS_ORDER.map((s) => ({ key: s, label: STATUS_META[s].label, status: s, accepts: true }))
-    : group === "priority" ? (["urgent", "high", "medium", "low"] as Priority[]).map((pr) => ({ key: pr, label: PRIORITY_META[pr].label, dot: PRIORITY_META[pr].color, accepts: true }))
+    : group === "priority" ? (["urgent", "high", "medium", "low"] as Priority[]).map((pr) => ({ key: pr, label: PRIORITY_META[pr].label, accepts: true }))
     : group === "project" ? [
         ...[...new Set(boardTasks.map((t) => t.projectId))].map((pid) => ({ pid, pr: getProject(pid) })).filter((x): x is { pid: string; pr: Project } => !!x.pr)
           .map(({ pid, pr }) => ({ key: pid, label: pr.name, dot: pr.color, accepts: true })),
@@ -547,25 +572,31 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   });
   const toggleCollapse = (key: string) => setCollapsed((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
 
-  const GROUPS: { v: BoardGroup; label: string }[] = [{ v: "status", label: "Status" }, { v: "priority", label: "Priority" }, { v: "project", label: "Project" }, { v: "assignee", label: "Assignee" }];
-  const colBg = "color-mix(in oklch, var(--bg-deep) 28%, transparent)";
+  // J/K through the cards (column by column), X selects, S/P/D/A edit, ⌘↵ completes
+  const kb = useListKeyboard({
+    rootRef, itemSelector: "[data-card-id]", idOf: (el) => el.dataset.cardId,
+    focusTargetOf: (el) => el.querySelector<HTMLElement>("[data-card-open]"),
+    onOpen,
+    onComplete: editable ? (id) => { const t = byId.get(id); if (!t) return; if (onToggle) onToggle(id); else if (t.status !== "done") onMove(id, "done"); focusReq.current = { id, force: true }; } : undefined,
+    onToggleSelect: bulkEnabled ? toggleSelect : undefined,
+    onClear: clearSel,
+    onAction: editable ? (action: ListKeyAction, _id: string, el: HTMLElement) => {
+      const sel = action === "status" ? "[data-card-status]" : action === "priority" ? "[data-card-priority]" : action === "due" ? "[data-card-due] button" : action === "assign" ? "[data-card-assignee]" : null;
+      if (sel) el.querySelector<HTMLElement>(sel)?.click();
+    } : undefined,
+  });
 
   return (
-    <div ref={rootRef} style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
-      {/* board group selector */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 24px 0" }}>
-        <span className="kicker" id={`${hintId}-cols`}>Columns</span>
-        <div role="group" aria-labelledby={`${hintId}-cols`} style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
-          {GROUPS.map((g) => (
-            <button key={g.v} onClick={() => setGroup(g.v)} aria-pressed={group === g.v} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500,
-              background: group === g.v ? "var(--accent)" : "transparent", color: group === g.v ? "var(--on-accent)" : "var(--ink-3)" }}>{g.label}</button>
-          ))}
-        </div>
-        {readOnly && <span style={{ display: "inline-flex", alignItems: "center", gap: 5, marginLeft: 4, fontSize: 12, color: "var(--ink-4)" }}><Icon name="lock" size={12} /> View only</span>}
-      </div>
-      <p id={hintId} className="sr-only">{editable ? "Press Enter to open. Alt plus the arrow keys moves the card up, down or to the next column." : "Press Enter to open."}</p>
+    <div ref={rootRef} className="ktv" style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
       <div role="status" aria-live="polite" className="sr-only">{announce}</div>
-      <div style={{ display: "flex", gap: 16, padding: "16px 24px 28px", minHeight: "100%" }}>
+      {!onGroupChange && (
+        <div className="ktv-viewbar">
+          <span className="ktv-mlabel" style={{ padding: 0 }} id={`${hintId}-cols`}>Columns</span>
+          <Segmented options={BOARD_GROUPS} value={group} onChange={(g) => setOwnGroup(g)} ariaLabel="Columns" />
+        </div>
+      )}
+      <p id={hintId} className="sr-only">{editable ? "Press Enter to open. Alt plus the arrow keys moves the card up, down or to the next column." : "Press Enter to open."}</p>
+      <div className="ktv-board" data-selecting={selectionActive || undefined}>
         {columns.map((col) => {
           const items = colItems[col.key] ?? [];
           const cap = shown[col.key] ?? CARD_CAP;
@@ -573,42 +604,43 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
           const hiddenCount = items.length - visible.length;
           const isCollapsed = collapsed.has(col.key);
           const dropOk = canDrag && col.accepts;
-          const lead = col.status ? null
-            : col.avatar && getMember(col.avatar) ? <Avatar id={col.avatar} size={18} />
-            : <span style={{ width: 9, height: 9, borderRadius: 99, background: col.dot || "var(--ink-4)", flexShrink: 0 }} />;
+          const lead = col.status ? <StatusGlyph status={col.status} size={14} readOnly />
+            : col.avatar && getMember(col.avatar) ? <Avatar id={col.avatar} size={20} />
+            : col.dot ? <ProjectDot color={col.dot} size={10} />
+            : col.key in PRIORITY_META ? <PriorityGlyph priority={col.key as Priority} />
+            : <span className="ktv-dot" style={{ background: "var(--icon-quiet, var(--ink-4))" }} />;
           if (isCollapsed) {
             return (
-              <button key={col.key} onClick={() => toggleCollapse(col.key)} title={`Expand ${col.label}`} aria-expanded={false} aria-label={`Expand ${col.label} column, ${items.length} task${items.length === 1 ? "" : "s"}`}
-                style={{ width: 46, flexShrink: 0, border: "1px solid var(--hairline)", borderRadius: 14, background: colBg, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "12px 0" }}>
-                <Icon name="chevronRight" size={15} style={{ color: "var(--ink-4)" }} />
-                {col.status ? <StatusDot status={col.status} /> : lead}
-                <span className="mono tnum" style={{ fontSize: 11, color: "var(--ink-4)" }}>{items.length}</span>
-                <span style={{ writingMode: "vertical-rl", fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", marginTop: 4 }}>{col.label}</span>
+              <button key={col.key} type="button" className="ktv-colrail" onClick={() => toggleCollapse(col.key)} aria-expanded={false}
+                aria-label={`Expand ${col.label} column, ${items.length} task${items.length === 1 ? "" : "s"}`}>
+                <Icon name="chevronRight" size={14} />
+                {lead}
+                <span className="ktv-mono">{items.length}</span>
+                <b>{col.label}</b>
               </button>
             );
           }
           const limit = wip[wipKey(col.key)];
           const over = limit != null && items.length > limit;
           const countLabel = `${items.length} task${items.length === 1 ? "" : "s"} in ${col.label}${limit != null ? `, WIP limit ${limit}${over ? ", over the limit" : ""}` : ""}`;
-          const countStyle: React.CSSProperties = { fontSize: 11.5, border: "none", borderRadius: 6, padding: "1px 7px", fontWeight: over ? 700 : 400, color: over ? "var(--prio-urgent)" : "var(--ink-4)", background: over ? "color-mix(in oklch, var(--prio-urgent) 15%, transparent)" : "var(--surface)" };
           return (
-            <div key={col.key} role="group" aria-label={`${col.label} column`} style={{ width: isMobile ? 270 : 296, flexShrink: 0, display: "flex", flexDirection: "column" }}
+            <div key={col.key} role="group" aria-label={`${col.label} column`} className="ktv-col"
               onDragOver={dropOk ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(col.key); setHover(null); } } : undefined}
               onDragLeave={dropOk ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === col.key ? null : d); } : undefined}
               onDrop={dropOk ? (e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); if (id) onColumnDrop(id, col.key); else endHover(); } : undefined}>
-              <div style={{ display: "flex", alignItems: "center", gap: 9, padding: col.hint ? "0 4px 4px" : "0 4px 12px" }}>
-                <button onClick={() => toggleCollapse(col.key)} className="btn-icon" title="Collapse column" aria-expanded aria-label={`Collapse ${col.label} column`} style={{ width: 20, height: 20, border: "none", background: "transparent", color: "var(--ink-4)", flexShrink: 0 }}><Icon name="chevronRight" size={13} style={{ transform: "rotate(90deg)" }} /></button>
-                {col.status ? <StatusDot status={col.status} glow /> : lead}
-                <span className="truncate" style={{ fontSize: 13.5, fontWeight: 600 }}>{col.label}</span>
+              <div className="ktv-col-head">
+                {lead}
+                <span className="ktv-col-name">{col.label}</span>
                 {editable
-                  ? <button onClick={(e) => setWipEdit({ key: col.key, label: col.label, anchor: e.currentTarget })} title="Set WIP limit" aria-label={`${countLabel}. Set WIP limit`} aria-haspopup="dialog" className="mono tnum" style={{ ...countStyle, cursor: "pointer" }}>{items.length}{limit != null ? `/${limit}` : ""}</button>
-                  : <span className="mono tnum" aria-label={countLabel} style={countStyle}>{items.length}{limit != null ? `/${limit}` : ""}</span>}
-                {col.status && editable && <button onClick={() => onAdd(col.status!)} className="btn-icon" title="Add task" aria-label={`Add task to ${col.label}`} style={{ marginLeft: "auto", width: 24, height: 24, border: "none", color: "var(--ink-4)" }}><Icon name="plus" size={15} /></button>}
+                  ? <button type="button" className="ktv-wip" data-over={over || undefined} onClick={(e) => setWipEdit({ key: col.key, label: col.label, anchor: e.currentTarget })} title="Set WIP limit" aria-label={`${countLabel}. Set WIP limit`} aria-haspopup="dialog">{items.length}{limit != null ? `/${limit}` : ""}</button>
+                  : <span className="ktv-wip" data-over={over || undefined} aria-label={countLabel}>{items.length}{limit != null ? `/${limit}` : ""}</span>}
+                <span className="ktv-col-tools">
+                  {col.status && editable && <IconButton icon="plus" size="sm" label={`Add task to ${col.label}`} onClick={() => onAdd(col.status!)} />}
+                  <IconButton icon="chevronLeft" size="sm" label={`Collapse ${col.label} column`} aria-expanded onClick={() => toggleCollapse(col.key)} />
+                </span>
               </div>
-              {col.hint && <p style={{ margin: "0 4px 10px 33px", fontSize: 11.5, lineHeight: 1.4, color: "var(--ink-4)" }}>{col.hint}</p>}
-              <div className="klane" style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
-                background: dragOver === col.key ? "var(--accent-dim)" : colBg,
-                boxShadow: dragOver === col.key && !hover ? "inset 0 0 0 2px var(--accent)" : "none" }}>
+              {col.hint && <p className="ktv-col-hint">{col.hint}</p>}
+              <div className="klane ktv-lane" data-drop={(dragOver === col.key && !hover) || undefined}>
                 {visible.map((t) => {
                   const kc = kidCounts.get(t.id);
                   return (
@@ -619,18 +651,14 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
                       onPickup={setDragId} onDragDone={endHover} onHoverCard={onHoverCard} onCardDrop={onCardDrop}
                       selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
                       customFields={customFields} members={members}
-                      onKeyMove={editable ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId} />
+                      onKeyMove={editable ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId}
+                      showProject={showProject} cursor={kb.cursor === t.id} active={activeId === t.id} />
                   );
                 })}
+                {items.length === 0 && <div className="ktv-lane-empty">{col.status ? EMPTY_COLUMN[col.status] : "Nothing here"}</div>}
                 {hiddenCount > 0 && (
-                  <button onClick={() => setShown((s) => ({ ...s, [col.key]: cap + CARD_CAP }))} aria-label={`Show ${Math.min(CARD_CAP, hiddenCount)} more tasks in ${col.label}`}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-3)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500 }}>
-                    <Icon name="chevronDown" size={14} /> Show {Math.min(CARD_CAP, hiddenCount)} more{hiddenCount > CARD_CAP ? <span style={{ color: "var(--ink-4)", fontWeight: 400 }}> · {hiddenCount} hidden</span> : null}
-                  </button>
-                )}
-                {col.status && editable && (
-                  <button onClick={() => onAdd(col.status!)} aria-label={`Add task to ${col.label}`} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 11, border: "1px dashed var(--hairline-strong)", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
-                    <Icon name="plus" size={14} /> Add task
+                  <button type="button" className="ktv-morecards" onClick={() => setShown((s) => ({ ...s, [col.key]: cap + CARD_CAP }))} aria-label={`Show ${Math.min(CARD_CAP, hiddenCount)} more tasks in ${col.label}`}>
+                    <Icon name="chevronDown" size={14} /> Show {Math.min(CARD_CAP, hiddenCount)} more{hiddenCount > CARD_CAP ? <span style={{ color: "var(--ink-4)" }}> · {hiddenCount} hidden</span> : null}
                   </button>
                 )}
               </div>
@@ -646,25 +674,24 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
       )}
 
       {bulkEnabled && selectionActive && (
-        <div className="anim-fadeup" style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", zIndex: 60,
-          display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 14, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", border: "1px solid var(--hairline)" }}>
-          <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", padding: "0 8px" }}>{selIds.length} selected</span>
-          <span style={{ width: 1, height: 22, background: "var(--hairline)" }} />
-          <button className="btn btn-ghost" onClick={() => applyBulk({ status: "done", completedAt: toLocalISO(new Date()) })} style={{ padding: "7px 11px", fontSize: 13 }}><Icon name="check" size={15} /> Done</button>
-          <BulkMenuButton label="Status" icon="layers" open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
-            {STATUS_ORDER.map((s) => (<button key={s} onClick={() => applyBulk({ status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })} style={bulkItemStyle}><StatusDot status={s} size={7} /> {STATUS_META[s].label}</button>))}
+        <div role="toolbar" aria-label="Bulk actions for selected tasks" className="ktv-float">
+          <span className="ktv-float-count" aria-live="polite">{selIds.length} selected</span>
+          <span className="ktv-float-sep" aria-hidden="true" />
+          <Button variant="ghost" size="sm" icon="check" onClick={() => applyBulk({ status: "done", completedAt: toLocalISO(new Date()) })} aria-label={iconBulk ? "Mark selected as done" : undefined}>{!iconBulk && "Done"}</Button>
+          <BulkMenuButton label="Status" icon="layers" iconOnly={iconBulk} open={bulkMenu === "status"} onToggle={() => setBulkMenu((m) => m === "status" ? null : "status")}>
+            {STATUS_ORDER.map((s) => (<button key={s} type="button" className="ktv-mi" onClick={() => applyBulk({ status: s, completedAt: s === "done" ? toLocalISO(new Date()) : undefined })}><StatusGlyph status={s} size={14} readOnly /> {STATUS_META[s].label}</button>))}
           </BulkMenuButton>
-          <BulkMenuButton label="Priority" icon="flag" open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
-            {BULK_PRIORITIES.map((pr) => (<button key={pr} onClick={() => applyBulk({ priority: pr })} style={bulkItemStyle}><PriorityFlag priority={pr} size={13} /> {PRIORITY_META[pr].label}</button>))}
+          <BulkMenuButton label="Priority" icon="flag" iconOnly={iconBulk} open={bulkMenu === "priority"} onToggle={() => setBulkMenu((m) => m === "priority" ? null : "priority")}>
+            {BULK_PRIORITIES.map((pr) => (<button key={pr} type="button" className="ktv-mi" onClick={() => applyBulk({ priority: pr })}><span style={{ display: "inline-grid", placeItems: "center", width: 16 }}><PriorityGlyph priority={pr} /></span> {PRIORITY_META[pr].label}</button>))}
           </BulkMenuButton>
           {members.length > 0 && (
-            <BulkMenuButton label="Assign" icon="user" open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
-              {members.map((m) => (<button key={m.id} onClick={() => applyBulk({ assigneeId: m.id })} style={bulkItemStyle}><Avatar id={m.id} size={18} /> {m.name}</button>))}
+            <BulkMenuButton label="Assign" icon="user" iconOnly={iconBulk} open={bulkMenu === "assignee"} onToggle={() => setBulkMenu((m) => m === "assignee" ? null : "assignee")}>
+              {members.map((m) => (<button key={m.id} type="button" className="ktv-mi" onClick={() => applyBulk({ assigneeId: m.id })}><Avatar id={m.id} size={20} /> {m.name}</button>))}
             </BulkMenuButton>
           )}
-          <button className="btn btn-ghost" onClick={() => { onBulkDelete?.(selIds); clearSel(); }} style={{ padding: "7px 11px", fontSize: 13, color: "var(--prio-urgent)" }}><Icon name="trash" size={15} /> Delete</button>
-          <span style={{ width: 1, height: 22, background: "var(--hairline)" }} />
-          <button className="btn-icon" onClick={clearSel} aria-label="Clear selection" style={{ border: "none", width: 30, height: 30 }}><Icon name="x" size={16} /></button>
+          <Button variant="ghost" size="sm" icon="trash" onClick={() => { onBulkDelete?.(selIds); clearSel(); }} aria-label={iconBulk ? "Delete selected tasks" : undefined} style={{ color: "var(--signal, var(--prio-urgent))" }}>{!iconBulk && "Delete"}</Button>
+          <span className="ktv-float-sep" aria-hidden="true" />
+          <IconButton icon="x" size="sm" label="Clear selection" onClick={clearSel} />
         </div>
       )}
     </div>
@@ -673,7 +700,10 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
 
 /* ---------------- TIMELINE (Gantt) ---------------- */
 type TimelineZoom = "2w" | "6w";
-const shortDate = (iso: string) => dayLabel(iso, { day: "numeric", month: "short" });
+const STATUS_BAR: Record<Status, string> = {
+  todo: "var(--st-todo-fill, var(--st-todo))", progress: "var(--st-progress-fill, var(--st-progress))", review: "var(--st-review-fill, var(--st-review))",
+  blocked: "var(--st-blocked-fill, var(--st-blocked))", done: "var(--st-done-fill, var(--st-done))",
+};
 
 export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
   tasks: Task[]; allTasks?: Task[]; onOpen: (id: string) => void; onPatch?: (id: string, patch: Partial<Task>) => void;
@@ -709,18 +739,18 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
   const DAYS = wide ? 42 : 16;
   const LEAD = wide ? 7 : 2;   // days shown before today in the default window
   const STEP = wide ? 28 : 7;  // how far ‹ and › move the window
-  // tighter columns + label on phones so more of the chart is visible
-  const colW = wide ? (isMobile ? 18 : 26) : (isMobile ? 46 : 78);
-  const inset = wide ? 2 : 6;
-  const labelW = isMobile ? 124 : 230, rowH = 46, HEADER_H = 34, MORE_H = 42, ROW_CAP = 50;
+  // tighter columns + lane on phones so more of the chart is visible
+  const colW = wide ? (isMobile ? 18 : 26) : (isMobile ? 46 : 72);
+  const inset = wide ? 2 : 4;
+  const laneW = isMobile ? 104 : 160, rowH = 36, MORE_H = 36, ROW_CAP = 50;
   const trackW = DAYS * colW;
   const todayIso = toLocalISO(KANBO_TODAY);
   const windowStart = addDaysISO(todayIso, offset - LEAD);
   const dayIsos = Array.from({ length: DAYS }, (_, i) => addDaysISO(windowStart, i));
-  const dates = dayIsos.map((iso) => new Date(iso + "T00:00:00"));
+  const dates = dayIsos.map((iso) => localDate(iso));
   const todayIdx = daysBetweenISO(windowStart, todayIso);
   const lastYear = dates[DAYS - 1].getFullYear();
-  const rangeLabel = `${shortDate(dayIsos[0])} – ${shortDate(dayIsos[DAYS - 1])}${lastYear !== KANBO_TODAY.getFullYear() ? ` ${lastYear}` : ""}`;
+  const rangeLabel = `${dayLabel(dayIsos[0], "dm")} – ${dayLabel(dayIsos[DAYS - 1], "dm")}${lastYear !== KANBO_TODAY.getFullYear() ? ` ${lastYear}` : ""}`;
 
   // group by the projects actually present in these tasks (works for real
   // accounts, not just the demo seed); long projects render their first rows
@@ -741,12 +771,11 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
   const layout = new Map<string, { y: number; barL: number | null; barR: number | null }>();
   let yAcc = 0;
   byProject.forEach((g) => {
-    yAcc += HEADER_H;
     g.rows.forEach((t) => {
       const sp = spans.get(t.id);
       const c = sp ? clipSpan(sp, DAYS) : null;
       const v = c && typeof c === "object" ? c : null;
-      layout.set(t.id, { y: yAcc + rowH / 2, barL: v ? labelW + v.vs * colW + inset : null, barR: v ? labelW + (v.ve + 1) * colW - inset : null });
+      layout.set(t.id, { y: yAcc + rowH / 2, barL: v ? laneW + v.vs * colW + inset : null, barR: v ? laneW + (v.ve + 1) * colW - inset : null });
       yAcc += rowH;
     });
     if (g.hidden > 0) yAcc += MORE_H;
@@ -809,7 +838,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
       const patch = timelineMovePatch(t, e.dataTransfer.getData("text/kanbo-tl-grab") || null, dropIso);
       if (!patch) return;
       onPatch(moveId, patch);
-      say(t.dueDate ? `“${t.title}” moved — now due ${dayLabel(patch.dueDate!)}` : `“${t.title}” scheduled for ${dayLabel(patch.dueDate!)}`);
+      say(t.dueDate ? `“${t.title}” moved: now due ${dayLabel(patch.dueDate!)}` : `“${t.title}” scheduled for ${dayLabel(patch.dueDate!)}`);
     } else if (startId) {
       const t = byId.get(startId); if (!t) return;
       const r = timelineStartPatch(t, dropIso);
@@ -836,173 +865,152 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
 
   if (byProject.length === 0) {
     return (
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "grid", placeItems: "center" }}>
-        <div style={{ textAlign: "center", color: "var(--ink-4)", maxWidth: 380 }}>
-          <div style={{ marginBottom: 14 }}><EmptyArt kind="layers" /></div>
-          <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Nothing to chart yet</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0", lineHeight: 1.5 }}>Add a few tasks and they'll lay out here on a timeline by project and due date.</p>
-        </div>
+      <div className="ktv" style={{ flex: 1, overflowY: "auto" }}>
+        <EmptyState art="layers" title="Nothing to chart yet" body="Add a few tasks and they'll lay out here on a timeline, by project and due date." />
       </div>
     );
   }
 
-  const axisBg = "color-mix(in oklch, var(--bg) 88%, transparent)";
-  const stickyBg = "color-mix(in oklch, var(--bg) 94%, transparent)";
   // edge markers are sticky flex items of the track, so they sit at the visible edge of the
-  // chart (just right of the task labels, or at the right-hand edge) whatever the scroll or width
-  const edgeChip: React.CSSProperties = { position: "sticky", flexShrink: 0, height: 22, display: "inline-flex", alignItems: "center", gap: 2, borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface-solid)", color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: 10.5, cursor: "pointer", boxShadow: "var(--shadow)", whiteSpace: "nowrap", zIndex: 1 };
+  // chart (just right of the project lanes, or at the right-hand edge) whatever the scroll or width
+  const edgeChip: React.CSSProperties = { position: "sticky" };
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+    <div className="ktv" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       {/* window navigation + zoom */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: isMobile ? "10px 14px" : "12px 24px", flexWrap: "wrap", borderBottom: "1px solid var(--hairline)", flexShrink: 0 }}>
+      <div className="ktv-viewbar" style={{ paddingBottom: 8 }}>
         <div role="group" aria-label="Timeline dates" style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
-          <button className="btn-icon" aria-label={wide ? "Previous four weeks" : "Previous week"} onClick={() => goTo((o) => o - STEP)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronLeft" size={17} /></button>
-          <button className="btn btn-ghost" onClick={() => goTo(() => 0)} aria-label="Jump to today" style={{ fontSize: 12.5, padding: "5px 11px", opacity: offset === 0 ? 0.6 : 1 }}>Today</button>
-          <button className="btn-icon" aria-label={wide ? "Next four weeks" : "Next week"} onClick={() => goTo((o) => o + STEP)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronRight" size={17} /></button>
+          <IconButton icon="chevronLeft" size="sm" label={wide ? "Previous four weeks" : "Previous week"} onClick={() => goTo((o) => o - STEP)} />
+          <Button variant="ghost" size="sm" onClick={() => goTo(() => 0)} aria-label="Jump to today">Today</Button>
+          <IconButton icon="chevronRight" size="sm" label={wide ? "Next four weeks" : "Next week"} onClick={() => goTo((o) => o + STEP)} />
         </div>
-        <span aria-live="polite" style={{ fontSize: 14, fontWeight: 600, minWidth: 128 }}>{rangeLabel}</span>
-        <div role="group" aria-label="Zoom" style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
-          {([["2w", "2 weeks"], ["6w", "6 weeks"]] as const).map(([z, l]) => (
-            <button key={z} onClick={() => { resetScroll.current = true; setZoom(z); }} aria-pressed={zoom === z} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500,
-              background: zoom === z ? "var(--accent)" : "transparent", color: zoom === z ? "var(--on-accent)" : "var(--ink-3)" }}>{l}</button>
-          ))}
-        </div>
-        <div style={{ flex: 1 }} />
-        <span role="status" aria-live="polite" style={{ fontSize: 12.5, color: notice?.warn ? "var(--prio-urgent)" : "var(--ink-3)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          {notice && <>{!notice.warn && <Icon name="check" size={13} />}{notice.text}</>}
+        <span className="ktv-range" aria-live="polite">{rangeLabel}</span>
+        <Segmented ariaLabel="Zoom" value={zoom} onChange={(z) => { resetScroll.current = true; setZoom(z); }} options={[{ value: "2w", label: "2 weeks" }, { value: "6w", label: "6 weeks" }]} />
+        <span style={{ flex: 1 }} />
+        <span role="status" aria-live="polite" className="ktv-note" data-warn={notice?.warn || undefined}>
+          {notice && <>{!notice.warn && <Icon name="check" size={14} />}{notice.text}</>}
         </span>
-        {criticalSet.size > 0 && <span style={{ fontSize: 11.5, color: "var(--prio-urgent)", display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--prio-urgent)" }} />Critical path</span>}
+        {criticalSet.size > 0 && <span className="ktv-legend"><span className="ktv-dot" style={{ background: "var(--signal, var(--prio-urgent))" }} />Critical path</span>}
       </div>
       <p id={hintId} className="sr-only">Press Enter to open. Alt plus Left or Right arrow moves the task by a day; add Shift to change only its start date.</p>
 
-      <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
-        <div style={{ minWidth: labelW + trackW, padding: "0 0 40px" }}>
+      <div ref={scrollRef} className="ktv-tl" style={{ ["--tl-lane" as string]: `${laneW}px` }}>
+        <div style={{ minWidth: laneW + trackW, paddingBottom: 40 }}>
           {/* axis */}
-          <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: axisBg, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: "1px solid var(--hairline)" }}>
-            <div style={{ width: labelW, flexShrink: 0, padding: "12px 18px", display: "flex", alignItems: "center", gap: 8, position: "sticky", left: 0, zIndex: 1, background: axisBg }}><span className="kicker">Task</span></div>
+          <div className="ktv-tl-axis">
+            <div className="ktv-tl-corner" />
             {dates.map((d, i) => {
               const isToday = i === todayIdx;
               const weekend = d.getDay() === 0 || d.getDay() === 6;
               const monthMark = wide && (i === 0 || d.getDate() === 1);
-              const top = wide ? (monthMark ? d.toLocaleDateString(undefined, { month: "short" }) : d.toLocaleDateString(undefined, { weekday: "narrow" })) : d.toLocaleDateString(undefined, { weekday: "short" });
+              const top = wide ? (monthMark ? MON[d.getMonth()] : WD[d.getDay()][0]) : WD[d.getDay()];
               return (
-                <div key={dayIsos[i]} style={{ width: colW, flexShrink: 0, textAlign: "center", padding: "10px 0", background: weekend ? "color-mix(in oklch, var(--bg-deep) 22%, transparent)" : "transparent",
-                  borderLeft: wide && (d.getDay() === 1 || d.getDate() === 1) ? "1px solid var(--hairline)" : undefined }}>
-                  <div className="kicker" style={{ color: isToday ? "var(--accent-text, var(--accent))" : monthMark ? "var(--ink-2)" : "var(--ink-4)", letterSpacing: wide ? "0.02em" : undefined, whiteSpace: "nowrap" }}>{top}</div>
-                  <div className="mono tnum" style={{ fontSize: wide ? 11.5 : 14, fontWeight: 600, marginTop: 2, color: isToday ? "var(--accent-text, var(--accent))" : "var(--ink-2)" }}>{d.getDate()}</div>
+                <div key={dayIsos[i]} className="ktv-tl-day" data-weekend={weekend || undefined} data-month={monthMark || undefined} data-week={(wide && (d.getDay() === 1 || d.getDate() === 1)) || undefined} style={{ width: colW }}>
+                  <span>{top}</span>
+                  <span className={isToday ? "ktv-tl-today" : undefined}>{d.getDate()}</span>
                 </div>
               );
             })}
           </div>
 
-          {/* rows */}
-          <div style={{ position: "relative" }} onDragLeave={canEdit ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropCol(null); } : undefined}>
-            {/* drop-day highlight while dragging */}
-            {dropCol != null && <div aria-hidden style={{ position: "absolute", top: 0, bottom: 0, left: labelW + dropCol * colW, width: colW, background: "var(--accent-dim)", pointerEvents: "none" }} />}
-            {/* today line */}
-            {todayIdx >= 0 && todayIdx < DAYS && <div aria-hidden style={{ position: "absolute", top: 0, bottom: 0, left: labelW + todayIdx * colW + colW / 2, width: 2, background: "var(--accent)", opacity: 0.4, zIndex: 1, boxShadow: "0 0 calc(var(--glow-r, 8px) * 1.5) var(--accent)", pointerEvents: "none" }} />}
-            {/* dependency connectors */}
+          {/* lanes */}
+          <div className="ktv-tl-lanes" onDragLeave={canEdit ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropCol(null); } : undefined}>
+            {dates.map((d, i) => (d.getDay() === 0 || d.getDay() === 6) && <div key={`we-${i}`} aria-hidden className="ktv-tl-weekend" style={{ left: laneW + i * colW, width: colW }} />)}
+            {dropCol != null && <div aria-hidden className="ktv-tl-drop" style={{ left: laneW + dropCol * colW, width: colW }} />}
+            {/* the today line and the dependency connectors run behind the bars, so no label is crossed */}
+            {todayIdx >= 0 && todayIdx < DAYS && <div aria-hidden className="ktv-tl-nowline" style={{ left: laneW + todayIdx * colW + colW / 2 }} />}
             {depLines.length > 0 && (
-              <svg aria-hidden width={labelW + trackW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 1, overflow: "visible" }}>
+              <svg aria-hidden width={laneW + trackW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", overflow: "visible" }}>
                 <defs>
-                  <marker id="tl-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--ink-4)" /></marker>
-                  <marker id="tl-arrow-crit" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--prio-urgent)" /></marker>
+                  <marker id={`${hintId}-arrow`} markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--icon-quiet, var(--ink-4))" /></marker>
+                  <marker id={`${hintId}-crit`} markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--signal, var(--prio-urgent))" /></marker>
                 </defs>
-                {depLines.map((l) => { const mx = (l.x1 + l.x2) / 2; return <path key={l.key} d={`M${l.x1},${l.y1} C${mx},${l.y1} ${mx},${l.y2} ${l.x2},${l.y2}`} fill="none" stroke={l.crit ? "var(--prio-urgent)" : "var(--ink-4)"} strokeWidth={l.crit ? 2 : 1.5} opacity={l.crit ? 0.8 : 0.4} markerEnd={l.crit ? "url(#tl-arrow-crit)" : "url(#tl-arrow)"} />; })}
+                {depLines.map((l) => { const mx = (l.x1 + l.x2) / 2; return <path key={l.key} d={`M${l.x1},${l.y1} C${mx},${l.y1} ${mx},${l.y2} ${l.x2},${l.y2}`} fill="none" stroke={l.crit ? "var(--signal, var(--prio-urgent))" : "var(--icon-quiet, var(--ink-4))"} strokeWidth={l.crit ? 1.75 : 1.25} opacity={l.crit ? 0.9 : 0.7} markerEnd={`url(#${hintId}-${l.crit ? "crit" : "arrow"})`} />; })}
               </svg>
             )}
             {byProject.map((g) => (
-              <div key={g.project.id}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, height: HEADER_H, padding: "0 18px", position: "sticky", left: 0, width: labelW, zIndex: 2 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: g.project.color, flexShrink: 0 }} />
-                  <span className="truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{g.project.name}</span>
+              <div key={g.project.id} className="ktv-tl-group">
+                <div className="ktv-tl-lane">
+                  <div className="ktv-tl-lane-in"><ProjectDot color={g.project.color} /><span>{g.project.name}</span><small>{g.items.length}</small></div>
                 </div>
-                {g.rows.map((t) => {
-                  const sp = spans.get(t.id) ?? null;
-                  const c = sp ? clipSpan(sp, DAYS) : null;
-                  const v = c && typeof c === "object" ? c : null;
-                  const done = t.status === "done";
-                  const crit = criticalSet.has(t.id);
-                  const color = done ? "var(--st-done)" : g.project.color;
-                  const barW = v ? (v.ve - v.vs + 1) * colW - inset * 2 : 0;
-                  const rL = v?.clipL ? 2 : 8, rR = v?.clipR ? 2 : 8;
-                  return (
-                    <div key={t.id} style={{ display: "flex", height: rowH, alignItems: "center", position: "relative" }}>
-                      <button onClick={() => onOpen(t.id)} title={t.title} style={{ width: labelW, flexShrink: 0, height: rowH, padding: "0 18px", fontSize: 13, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 8,
-                        border: "none", background: stickyBg, cursor: "pointer", textAlign: "left", fontFamily: "var(--font-display)", position: "sticky", left: 0, zIndex: 2, outlineOffset: -2 }}>
-                        <StatusDot status={t.status} size={7} /><span className="truncate">{t.title}</span>
-                      </button>
-                      <div style={{ position: "absolute", left: labelW, top: 0, bottom: 0, width: trackW, display: "flex", alignItems: "center" }}
+                <div className="ktv-tl-rows" style={{ width: trackW }}>
+                  {g.rows.map((t) => {
+                    const sp = spans.get(t.id) ?? null;
+                    const c = sp ? clipSpan(sp, DAYS) : null;
+                    const v = c && typeof c === "object" ? c : null;
+                    const done = t.status === "done";
+                    const crit = criticalSet.has(t.id);
+                    const barW = v ? (v.ve - v.vs + 1) * colW - inset * 2 : 0;
+                    const barStyle = { left: v ? v.vs * colW + inset : 0, width: barW, ["--bar" as string]: STATUS_BAR[t.status], scrollMarginLeft: laneW + 12, scrollMarginRight: 16 } as React.CSSProperties;
+                    const barBody = (
+                      <>
+                        {canEdit && <span aria-hidden draggable className="ktv-tl-grip" onClick={(e) => e.stopPropagation()} onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/kanbo-tl-start", t.id); e.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => setDropCol(null)} title="Drag to set the start date" />}
+                        {barW >= 36 && <span className="ktv-tl-label">{t.title}</span>}
+                        {barW >= 96 && <Avatar id={t.assigneeId} size={16} />}
+                      </>
+                    );
+                    return (
+                      <div key={t.id} className="ktv-tl-row" style={{ width: trackW, display: "flex", alignItems: "center" }}
                         onDragOver={canEdit ? onTrackDragOver : undefined} onDrop={canEdit ? onTrackDrop : undefined}>
-                        {v && sp && t.dueDate && (
-                          <div role={canEdit ? "button" : undefined} tabIndex={canEdit ? 0 : undefined}
-                            aria-label={canEdit ? `${t.title}: ${sp.impliedStart ? "" : `starts ${dayLabel(t.startDate!)}, `}due ${dayLabel(t.dueDate)}` : undefined}
-                            aria-describedby={canEdit ? hintId : undefined}
-                            onClick={() => onOpen(t.id)} className="clickable" draggable={canEdit}
-                            onKeyDown={canEdit ? (e) => {
+                        {v && sp && t.dueDate && (canEdit ? (
+                          <div role="button" tabIndex={0} className="ktv-tl-bar" data-crit={crit || undefined} data-done={done || undefined} data-clip-l={v.clipL || undefined} data-clip-r={v.clipR || undefined}
+                            aria-label={`${t.title}: ${sp.impliedStart ? "" : `starts ${dayLabel(t.startDate!)}, `}due ${dayLabel(t.dueDate)}`}
+                            aria-describedby={hintId}
+                            onClick={() => onOpen(t.id)} draggable
+                            onKeyDown={(e) => {
                               if (e.target !== e.currentTarget) return;
                               if (!e.altKey && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(t.id); return; }
                               if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.preventDefault(); nudge(t, e.key === "ArrowLeft" ? -1 : 1, e.shiftKey); }
-                            } : undefined}
-                            onDragStart={canEdit ? (e) => {
+                            }}
+                            onDragStart={(e) => {
                               // remember the day under the cursor: the drop moves the task by (drop day − this day)
                               const track = e.currentTarget.parentElement as HTMLElement;
                               e.dataTransfer.setData("text/kanbo-timeline", t.id);
                               e.dataTransfer.setData("text/kanbo-tl-grab", dayIsos[colAt(e.clientX, track)]);
                               e.dataTransfer.effectAllowed = "move";
-                            } : undefined}
-                            onDragEnd={canEdit ? () => setDropCol(null) : undefined}
-                            title={canEdit ? `${t.title} — drag to reschedule` : t.title}
-                            style={{
-                              position: "absolute", top: rowH / 2 - 13, left: v.vs * colW + inset, width: barW, height: 26,
-                              borderRadius: `${rL}px ${rR}px ${rR}px ${rL}px`, display: "flex", alignItems: "center", gap: 7, padding: barW < 40 ? "0 4px" : "0 9px", overflow: "hidden", cursor: canEdit ? "grab" : "pointer",
-                              background: done ? "color-mix(in oklch, var(--st-done) 18%, transparent)" : `color-mix(in oklch, ${g.project.color} 22%, transparent)`,
-                              border: crit ? "1.5px solid var(--prio-urgent)" : `1px solid color-mix(in oklch, ${color} 45%, transparent)`,
-                              transition: "left .18s var(--ease), width .18s var(--ease), transform .16s",
-                              scrollMarginLeft: labelW + 12, scrollMarginRight: 16,
                             }}
-                            onMouseEnter={(e) => (e.currentTarget.style.transform = "translateY(-1px)")}
-                            onMouseLeave={(e) => (e.currentTarget.style.transform = "none")}>
-                            {canEdit && <span aria-hidden draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/kanbo-tl-start", t.id); e.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => setDropCol(null)} title="Drag to set the start date" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 7, cursor: "ew-resize", borderTopLeftRadius: rL, borderBottomLeftRadius: rL, background: "color-mix(in oklch, var(--ink) 12%, transparent)" }} />}
-                            {barW >= 30 && <span style={{ width: 6, height: 6, borderRadius: 99, background: color, flexShrink: 0 }} />}
-                            {barW >= 44 && <span className="truncate" style={{ fontSize: 11.5, color: "var(--ink)" }}>{t.title}</span>}
-                            {barW >= 96 && <Avatar id={t.assigneeId} size={16} />}
+                            onDragEnd={() => setDropCol(null)}
+                            title={`${t.title}: drag to reschedule`} style={barStyle}>
+                            {barBody}
                           </div>
-                        )}
+                        ) : (
+                          <button type="button" className="ktv-tl-bar" aria-label={t.title} data-done={done || undefined} data-clip-l={v.clipL || undefined} data-clip-r={v.clipR || undefined}
+                            onClick={() => onOpen(t.id)} title={t.title} style={barStyle}>
+                            {barBody}
+                          </button>
+                        ))}
                         {/* bars outside the window: an edge marker that jumps to them */}
                         {c === "before" && sp && t.dueDate && (
-                          <button onClick={() => goTo((o) => o + sp.s - 2)} title={`Due ${dayLabel(t.dueDate)} — show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, before these dates. Show it`} style={{ ...edgeChip, left: labelW + 6, marginLeft: 6, padding: "0 8px 0 3px" }}>
-                            <Icon name="chevronLeft" size={12} />{shortDate(t.dueDate)}
+                          <button type="button" className="ktv-tl-edge" onClick={() => goTo((o) => o + sp.s - 2)} title={`${t.title}: due ${dayLabel(t.dueDate)}. Show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, before these dates. Show it`}
+                            style={{ ...edgeChip, left: laneW + 6, marginLeft: 6, padding: "0 8px 0 4px" }}>
+                            <Icon name="chevronLeft" size={12} />{dayLabel(t.dueDate, "dm")}<span>· {t.title}</span>
                           </button>
                         )}
                         {c === "after" && sp && t.dueDate && (
-                          <button onClick={() => goTo((o) => o + sp.s - 2)} title={`Due ${dayLabel(t.dueDate)} — show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, after these dates. Show it`} style={{ ...edgeChip, right: 10, marginLeft: "auto", marginRight: 6, padding: "0 3px 0 8px" }}>
-                            {shortDate(t.dueDate)}<Icon name="chevronRight" size={12} />
+                          <button type="button" className="ktv-tl-edge" onClick={() => goTo((o) => o + sp.s - 2)} title={`${t.title}: due ${dayLabel(t.dueDate)}. Show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, after these dates. Show it`}
+                            style={{ ...edgeChip, right: 10, marginLeft: "auto", marginRight: 6, padding: "0 4px 0 8px" }}>
+                            <span>{t.title} ·</span>{dayLabel(t.dueDate, "dm")}<Icon name="chevronRight" size={12} />
                           </button>
                         )}
                         {/* tasks with no due date: a draggable placeholder so they can be scheduled */}
                         {!sp && (
-                          <div onClick={() => onOpen(t.id)} className="clickable" draggable={canEdit}
+                          <button type="button" className="ktv-tl-nodate" onClick={() => onOpen(t.id)} draggable={canEdit}
                             onDragStart={canEdit ? (e) => { e.dataTransfer.setData("text/kanbo-timeline", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
                             onDragEnd={canEdit ? () => setDropCol(null) : undefined}
-                            title={canEdit ? "Drag onto a day to schedule" : "No due date"}
-                            style={{ position: "absolute", top: rowH / 2 - 11, left: 6, height: 22, borderRadius: 8, display: "flex", alignItems: "center", gap: 6, padding: "0 9px", cursor: canEdit ? "grab" : "pointer", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", whiteSpace: "nowrap" }}>
-                            <Icon name="calendarPlus" size={12} style={{ color: "var(--ink-4)" }} />
-                            <span style={{ fontSize: 11, color: "var(--ink-4)" }}>No date</span>
-                          </div>
+                            aria-label={`${t.title}, no due date${canEdit ? ". Drag onto a day to schedule it" : ""}`}
+                            title={canEdit ? "Drag onto a day to schedule" : "No due date"} style={{ left: 6 }}>
+                            <Icon name="calendarPlus" size={12} /><span>{t.title}</span>
+                          </button>
                         )}
                       </div>
+                    );
+                  })}
+                  {g.hidden > 0 && (
+                    <div className="ktv-tl-moregroup" style={{ position: "sticky", left: laneW, width: "max-content" }}>
+                      <Button variant="ghost" size="sm" icon="chevronDown" onClick={() => setExpanded((s) => new Set(s).add(g.project.id))}>Show {g.hidden} more in {g.project.name}</Button>
                     </div>
-                  );
-                })}
-                {g.hidden > 0 && (
-                  <div style={{ height: MORE_H, display: "flex", alignItems: "center", padding: "0 18px", position: "sticky", left: 0, width: "max-content", zIndex: 2 }}>
-                    <button className="btn btn-ghost" onClick={() => setExpanded((s) => new Set(s).add(g.project.id))} style={{ fontSize: 12.5, padding: "5px 11px" }}>
-                      <Icon name="chevronDown" size={14} /> Show {g.hidden} more in {g.project.name}
-                    </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -1013,12 +1021,9 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
 }
 
 /** A plain list row with a hover / focus fill (for lists inside dialogs, not menus). */
-function RowButton({ onClick, children, autoFocus, style }: { onClick: () => void; children: ReactNode; autoFocus?: boolean; style?: React.CSSProperties }) {
-  const [hot, setHot] = useState(false);
+function RowButton({ onClick, children, autoFocus }: { onClick: () => void; children: ReactNode; autoFocus?: boolean }) {
   return (
-    <button type="button" onClick={onClick} data-autofocus={autoFocus ? "" : undefined}
-      onMouseEnter={() => setHot(true)} onMouseLeave={() => setHot(false)} onFocus={() => setHot(true)} onBlur={() => setHot(false)}
-      style={{ ...bulkItemStyle, background: hot ? FILL_HOT : "transparent", ...style }}>
+    <button type="button" onClick={onClick} data-autofocus={autoFocus ? "" : undefined} className="ktv-mi">
       {children}
     </button>
   );
@@ -1032,61 +1037,60 @@ function ConnectCalendarMenu({ connections, onConnect, onDisconnect, syncing }: 
   syncing?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
   const connectedFor = (p: CalProvider) => connections.find((c) => c.provider === p);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       {connections.map((c) => {
         const meta = PROVIDER_META[c.provider];
         return (
-          <span key={c.provider} className="glass" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "5px 10px 5px 11px", borderRadius: 99, fontSize: 12.5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 99, background: meta.color, boxShadow: `0 0 var(--glow-r, 8px) ${meta.color}` }} />
+          <span key={c.provider} className="ktv-saved" style={{ height: 28 }}>
+            <span className="ktv-dot" style={{ background: meta.color, marginRight: 6 }} />
             <span style={{ color: "var(--ink-2)" }}>{c.accountEmail || meta.label}</span>
-            <button className="btn-icon" title={`Disconnect ${meta.label}`} aria-label={`Disconnect ${meta.label}`} onClick={() => onDisconnect(c.provider)} style={{ border: "none", width: 22, height: 22, color: "var(--ink-4)" }}><Icon name="x" size={13} /></button>
+            <button type="button" title={`Disconnect ${meta.label}`} aria-label={`Disconnect ${meta.label}`} onClick={() => onDisconnect(c.provider)}><Icon name="x" size={12} /></button>
           </span>
         );
       })}
-      {syncing && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Syncing…</span>}
-      <div style={{ position: "relative", marginLeft: "auto" }}>
-        <button className="btn btn-ghost" onClick={() => setOpen((v) => !v)} style={{ fontSize: 13 }}>
-          <Icon name="calendarPlus" size={15} /> Connect calendar <Icon name="chevronDown" size={14} />
-        </button>
-        {open && (
-          <>
-            <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-            <div className="glass anim-scalein" style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 31, width: 248, padding: 6, borderRadius: 12, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
-              {(Object.keys(PROVIDER_META) as CalProvider[]).map((p) => {
-                const meta = PROVIDER_META[p];
-                const conn = connectedFor(p);
-                return (
-                  <button key={p} onClick={() => { setOpen(false); conn ? onDisconnect(p) : onConnect(p); }}
-                    style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13.5, textAlign: "left", color: "var(--ink-2)" }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 99, background: meta.color, flexShrink: 0 }} />
-                    <span style={{ flex: 1 }}>{meta.label}</span>
-                    {conn ? <span style={{ fontSize: 11, color: "var(--ink-4)" }}>Disconnect</span> : <Icon name="plus" size={14} style={{ color: "var(--ink-4)" }} />}
-                  </button>
-                );
-              })}
-              <div className="divider" style={{ margin: "4px 4px" }} />
-              <p style={{ margin: 0, padding: "4px 10px 6px", fontSize: 11, color: "var(--ink-4)", lineHeight: 1.45 }}>We only read your events to show them here. Disconnect anytime.</p>
-            </div>
-          </>
-        )}
-      </div>
+      {syncing && <span className="ktv-note">Syncing…</span>}
+      <Button ref={btn} variant="ghost" size="sm" icon="calendarPlus" iconRight="chevronDown" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>Connect calendar</Button>
+      {open && (
+        <Popover anchor={btn.current} align="end" label="Connect a calendar" onClose={() => setOpen(false)} minWidth={248}>
+          {(Object.keys(PROVIDER_META) as CalProvider[]).map((p) => {
+            const meta = PROVIDER_META[p];
+            const conn = connectedFor(p);
+            return (
+              <MenuItem key={p} onSelect={() => { setOpen(false); if (conn) onDisconnect(p); else onConnect(p); }}>
+                <span className="ktv-dot" style={{ background: meta.color, margin: "0 4px" }} />
+                <span style={{ flex: 1 }}>{meta.label}</span>
+                {conn ? <span className="ktv-mi-end">Disconnect</span> : <Icon name="plus" size={14} />}
+              </MenuItem>
+            );
+          })}
+          <div className="ktv-msep" />
+          <p style={{ margin: 0, padding: "4px 8px 6px", font: "500 12px/16px var(--font-ui, var(--font-display))", color: "var(--ink-3)" }}>We only read your events to show them here. Disconnect any time.</p>
+        </Popover>
+      )}
     </div>
   );
 }
 
-export function CalendarView({ tasks, onOpen, onPatch, connections = [], externalEvents = [], onConnect, onDisconnect, syncing, readOnly = false }: {
+export function CalendarView({ tasks, onOpen, onPatch, connections = [], externalEvents = [], onConnect, onDisconnect, syncing, readOnly = false, scope, onScopeChange, onOpenSettings }: {
   tasks: Task[];
   onOpen: (id: string) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
   connections?: CalendarConnection[];
   externalEvents?: ExternalEvent[];
+  /** the connect / disconnect menu shows only when these are passed (connect lives in Settings) */
   onConnect?: (p: CalProvider) => void;
   onDisconnect?: (p: CalProvider) => void;
   syncing?: boolean;
   /** view-only calendar (guests): tasks open, but can't be dragged to another day */
   readOnly?: boolean;
+  /** Today › Month: whose tasks — mine, or the team's */
+  scope?: "mine" | "team";
+  onScopeChange?: (s: "mine" | "team") => void;
+  /** with no calendar connected, a prompt links to Settings › Calendar */
+  onOpenSettings?: () => void;
 }) {
   const canEdit = !!onPatch && !readOnly;
   const [mode, setMode] = useState<"month" | "week">("month");
@@ -1098,13 +1102,9 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
   const [dropDay, setDropDay] = useState<string | null>(null);
   const viewMonth = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth() + monthOffset, 1);
   const year = viewMonth.getFullYear(), month = viewMonth.getMonth();
-  const first = new Date(year, month, 1);
-  const startDow = (first.getDay() + 6) % 7; // Mon-first
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  // only highlight "today" when we're actually viewing the current month
-  const todayD = monthOffset === 0 ? KANBO_TODAY.getDate() : -1;
   const iso = (d: number) => toLocalISO(new Date(year, month, d));
-  const monthLabel = viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const monthLabel = `${MON_LONG[month]} ${year}`;
   // switching month ↔ week keeps you looking at the same stretch of time, and switching
   // straight back returns to exactly where you were
   const switchMode = (m: "month" | "week") => {
@@ -1114,26 +1114,24 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
     setMonthOffset(next.month); setWeekOffset(next.week);
     setMode(m);
   };
-  // a rendered element (not an inline component) so focus stays on ‹ › between clicks
-  const monthNav = (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <button className="btn-icon" aria-label="Previous month" onClick={() => setMonthOffset((m) => m - 1)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronLeft" size={17} /></button>
-      <span aria-live="polite" style={{ fontSize: 14, fontWeight: 600, minWidth: 124, textAlign: "center" }}>{monthLabel}</span>
-      <button className="btn-icon" aria-label="Next month" onClick={() => setMonthOffset((m) => m + 1)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronRight" size={17} /></button>
-      {monthOffset !== 0 && <button className="btn btn-ghost" onClick={() => setMonthOffset(0)} style={{ fontSize: 12.5, padding: "5px 11px" }}>Today</button>}
-    </div>
-  );
   const weekStartDate = mondayOf(KANBO_TODAY);
   weekStartDate.setDate(weekStartDate.getDate() + weekOffset * 7);
   const weekEndDate = new Date(weekStartDate); weekEndDate.setDate(weekStartDate.getDate() + 6);
-  const fmtDM = (d: Date) => d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  const weekLabel = `${fmtDM(weekStartDate)} – ${fmtDM(weekEndDate)}${weekEndDate.getFullYear() !== KANBO_TODAY.getFullYear() ? ` ${weekEndDate.getFullYear()}` : ""}`;
-  const weekNav = (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <button className="btn-icon" aria-label="Previous week" onClick={() => setWeekOffset((w) => w - 1)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronLeft" size={17} /></button>
-      <span aria-live="polite" style={{ fontSize: 14, fontWeight: 600, minWidth: 124, textAlign: "center" }}>{weekOffset === 0 ? "This week" : weekLabel}</span>
-      <button className="btn-icon" aria-label="Next week" onClick={() => setWeekOffset((w) => w + 1)} style={{ border: "none", width: 32, height: 32 }}><Icon name="chevronRight" size={17} /></button>
-      {weekOffset !== 0 && <button className="btn btn-ghost" onClick={() => setWeekOffset(0)} style={{ fontSize: 12.5, padding: "5px 11px" }}>Today</button>}
+  const weekLabel = `${weekStartDate.getDate()} ${MON[weekStartDate.getMonth()]} – ${weekEndDate.getDate()} ${MON[weekEndDate.getMonth()]}${weekEndDate.getFullYear() !== KANBO_TODAY.getFullYear() ? ` ${weekEndDate.getFullYear()}` : ""}`;
+  // a rendered element (not an inline component) so focus stays on ‹ › between clicks
+  const nav = mode === "month" ? (
+    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <IconButton icon="chevronLeft" size="sm" label="Previous month" onClick={() => setMonthOffset((m) => m - 1)} />
+      <span className="ktv-range" aria-live="polite">{monthLabel}</span>
+      <IconButton icon="chevronRight" size="sm" label="Next month" onClick={() => setMonthOffset((m) => m + 1)} />
+      {monthOffset !== 0 && <Button variant="ghost" size="sm" onClick={() => setMonthOffset(0)}>Today</Button>}
+    </div>
+  ) : (
+    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <IconButton icon="chevronLeft" size="sm" label="Previous week" onClick={() => setWeekOffset((w) => w - 1)} />
+      <span className="ktv-range" aria-live="polite">{weekOffset === 0 ? "This week" : weekLabel}</span>
+      <IconButton icon="chevronRight" size="sm" label="Next week" onClick={() => setWeekOffset((w) => w + 1)} />
+      {weekOffset !== 0 && <Button variant="ghost" size="sm" onClick={() => setWeekOffset(0)}>Today</Button>}
     </div>
   );
 
@@ -1146,12 +1144,22 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
     const key = e.allDay ? (e.start || "").slice(0, 10) : toLocalISO(new Date(e.start));
     if (key) (evByDate[key] ||= []).push(e);
   }
-  const fmtTime = (e: ExternalEvent) => {
-    if (e.allDay) return "";
-    const d = new Date(e.start);
-    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  };
+  const fmtTime = (e: ExternalEvent) => (e.allDay ? "" : hhmm(new Date(e.start)));
   const isMobile = useMediaQuery("(max-width: 860px)");
+  const todayIso = toLocalISO(KANBO_TODAY);
+
+  const scopeSwitch = scope && onScopeChange && (
+    <Segmented ariaLabel="Whose tasks" value={scope} onChange={onScopeChange} options={[{ value: "mine", label: "Mine" }, { value: "team", label: "Team" }]} />
+  );
+  const prompt = onOpenSettings && connections.length === 0 && (
+    <div className="ktv-cal-prompt">
+      <Icon name="calendar" size={16} sw={1.75} />
+      <span>Connect Google Calendar in Settings to see your meetings.</span>
+      <Button variant="ghost" size="sm" onClick={onOpenSettings}>Open Settings</Button>
+    </div>
+  );
+  const connectMenu = onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />;
+  const taskName = (t: Task) => `${t.title} (${STATUS_META[t.status].label})`;
 
   // ---- mobile: an agenda list (the 7-col grid can't fit a phone) ----
   if (isMobile) {
@@ -1163,66 +1171,50 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
       if (dt.length || de.length) agenda.push({ d, iso: di, tasks: dt, events: de });
     }
     return (
-      <div style={{ flex: 1, overflowY: "auto", padding: "14px 14px 28px" }}>
-        {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
-        <div style={{ marginBottom: 14 }}>{monthNav}</div>
+      <div className="ktv ktv-cal">
+        <div className="ktv-cal-head">
+          {nav}
+          <div className="ktv-cal-end">{scopeSwitch}{connectMenu}</div>
+        </div>
+        {prompt}
         {agenda.length === 0 ? (
-          <div style={{ textAlign: "center", color: "var(--ink-4)", padding: "40px 16px" }}>
-            <div style={{ marginBottom: 14 }}><EmptyArt kind="calendar" /></div>
-            <p style={{ fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" }}>Nothing scheduled this month</p>
-            <p style={{ fontSize: 13, margin: "5px 0 0" }}>Tasks with a due date and connected-calendar events show up here.</p>
+          <EmptyState art="calendar" title="Nothing scheduled this month" body="Tasks with a due date, and your connected calendar's events, show up here." />
+        ) : agenda.map((day) => (
+          <div key={day.iso} className="ktv-agenda-day">
+            <h3 data-today={day.iso === todayIso || undefined}>{dayLabel(day.iso, "long")}{day.iso === todayIso && <span className="ktv-mono">Today</span>}</h3>
+            {day.events.map((e) => (
+              <div key={e.id} className="ktv-agenda-item" data-event="true">
+                <Icon name="calendar" size={14} />
+                <span>{e.title}</span>
+                <span className="ktv-mono" style={{ color: "var(--ink-3)" }}>{fmtTime(e) || "All day"}</span>
+              </div>
+            ))}
+            {day.tasks.map((t) => {
+              const proj = getProject(t.projectId);
+              return (
+                <button key={t.id} type="button" className="ktv-agenda-item" onClick={() => onOpen(t.id)} aria-label={taskName(t)}>
+                  <StatusGlyph status={t.status} size={16} readOnly />
+                  <span style={{ color: t.status === "done" ? "var(--ink-3)" : undefined, textDecoration: t.status === "done" ? "line-through" : undefined }}>{t.title}</span>
+                  {proj && <ProjectDot color={proj.color} />}
+                  <Avatar id={t.assigneeId} size={20} />
+                </button>
+              );
+            })}
           </div>
-        ) : agenda.map((day) => {
-          const dt = new Date(year, month, day.d);
-          const isToday = day.d === todayD;
-          return (
-            <div key={day.iso} style={{ marginBottom: 18 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span className="mono tnum" style={{ display: "grid", placeItems: "center", minWidth: 30, height: 30, borderRadius: 9, fontSize: 13, fontWeight: 600, color: isToday ? "var(--on-accent)" : "var(--ink-2)", background: isToday ? "var(--accent)" : "var(--surface-2)", boxShadow: isToday ? "0 0 12px var(--accent-glow)" : "none" }}>{day.d}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: isToday ? "var(--accent-text, var(--accent))" : "var(--ink-3)" }}>{dt.toLocaleDateString(undefined, { weekday: "long" })}</span>
-                <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{dt.toLocaleDateString(undefined, { month: "short" })}</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                {day.events.map((e) => {
-                  const color = PROVIDER_META[(e.provider as CalProvider)]?.color || "var(--ink-3)";
-                  const time = fmtTime(e);
-                  return (
-                    <div key={e.id} className="glass" style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, borderLeft: `3px solid ${color}` }}>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: "var(--ink-2)" }} className="truncate">{e.title}</span>
-                      <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-4)", flexShrink: 0 }}>{time || "All day"}</span>
-                    </div>
-                  );
-                })}
-                {day.tasks.map((t) => {
-                  const proj = getProject(t.projectId);
-                  return (
-                    <button key={t.id} onClick={() => onOpen(t.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, width: "100%", textAlign: "left", cursor: "pointer", border: "1px solid var(--hairline)", background: "var(--surface)", borderLeft: `3px solid ${proj?.color || "var(--accent)"}` }}>
-                      <PriorityFlag priority={t.priority} size={13} />
-                      <span className="truncate" style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: t.status === "done" ? "var(--ink-4)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
-                      <Avatar id={t.assigneeId} size={22} />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
+        ))}
       </div>
     );
   }
 
-  // unified date grid for month OR a week (full Date per cell)
-  const gridDates: (Date | null)[] = mode === "week"
+  // one date grid for a month (whole weeks, Monday first) or a single week
+  const gridDates: Date[] = mode === "week"
     ? Array.from({ length: 7 }, (_, i) => { const d = new Date(weekStartDate); d.setDate(weekStartDate.getDate() + i); return d; })
-    : (() => { const arr: (Date | null)[] = []; for (let i = 0; i < startDow; i++) arr.push(null); for (let d = 1; d <= daysInMonth; d++) arr.push(new Date(year, month, d)); while (arr.length % 7) arr.push(null); return arr; })();
-  const todayIso = toLocalISO(new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()));
-  const modeToggle = (
-    <div role="group" aria-label="Calendar range" style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
-      {(["month", "week"] as const).map((m) => (
-        <button key={m} onClick={() => switchMode(m)} aria-pressed={mode === m} style={{ padding: "5px 11px", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 500, textTransform: "capitalize", background: mode === m ? "var(--accent)" : "transparent", color: mode === m ? "var(--on-accent)" : "var(--ink-3)" }}>{m}</button>
-      ))}
-    </div>
-  );
+    : (() => {
+        const first = new Date(year, month, 1);
+        const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
+        const weeks = Math.ceil((((first.getDay() + 6) % 7) + daysInMonth) / 7);
+        return Array.from({ length: weeks * 7 }, (_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return d; });
+      })();
   // dropping a task on a day moves its due date there (and a start date with it, keeping the length)
   const dropOnDay = (dayIso: string) => (e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes("text/kanbo-cal")) return;
@@ -1233,111 +1225,86 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
     const patch = timelineMovePatch(t, t.dueDate ?? null, dayIso);
     if (patch) onPatch(id, patch);
   };
-  const popDay = dayPop ? { dt: tasksByDay.get(dayPop.iso) ?? [], de: evByDate[dayPop.iso] ?? [], long: dayLabel(dayPop.iso, { weekday: "long", day: "numeric", month: "long" }) } : null;
+  const popDay = dayPop ? { dt: tasksByDay.get(dayPop.iso) ?? [], de: evByDate[dayPop.iso] ?? [], long: dayLabel(dayPop.iso, "long") } : null;
 
   return (
-    <div style={{ flex: 1, overflow: "auto", padding: "18px 24px 28px" }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-        {mode === "month" ? monthNav : weekNav}
-        {modeToggle}
-        <div style={{ flex: 1 }} />
-        {onConnect && onDisconnect && <ConnectCalendarMenu connections={connections} onConnect={onConnect} onDisconnect={onDisconnect} syncing={syncing} />}
+    <div className="ktv ktv-cal">
+      <div className="ktv-cal-head">
+        {nav}
+        <div className="ktv-cal-end">
+          {connectMenu}
+          {/* Today › Month already sits under a Day · Week · Month switcher: a second "Week" there would mean something else */}
+          {!scopeSwitch && <Segmented ariaLabel="Calendar range" value={mode} onChange={switchMode} options={[{ value: "month", label: "Month" }, { value: "week", label: "Week" }]} />}
+          {scopeSwitch}
+        </div>
       </div>
+      {prompt}
       <div style={{ overflowX: "auto" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 1, marginBottom: 8, minWidth: 560 }}>
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="kicker" style={{ textAlign: "center", padding: "4px 0" }}>{d}</div>)}
-      </div>
-      <div className="glass" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gridAutoRows: mode === "week" ? "minmax(320px,1fr)" : "minmax(118px,1fr)", gap: 1, padding: 1, borderRadius: 16, overflow: "hidden", background: "var(--hairline)", minWidth: 560 }}>
-        {gridDates.map((date, i) => {
-          const dayIso = date ? toLocalISO(date) : "";
-          const dayTasks = date ? (tasksByDay.get(dayIso) ?? []) : [];
-          const dayEvents = date ? (evByDate[dayIso] ?? []) : [];
-          const isToday = !!date && dayIso === todayIso;
-          const taskCap = mode === "week" ? 99 : 3;
-          const evCap = mode === "week" ? 99 : 2;
-          const overflow = Math.max(0, dayTasks.length - taskCap) + Math.max(0, dayEvents.length - evCap);
-          const dropping = dropDay === dayIso && !!date;
-          return (
-            <div key={date ? dayIso : `pad-${i}`}
-              onDragOver={canEdit && date ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-cal")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDropDay((d) => (d === dayIso ? d : dayIso)); } } : undefined}
-              onDragLeave={canEdit && date ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropDay((d) => (d === dayIso ? null : d)); } : undefined}
-              onDrop={canEdit && date ? dropOnDay(dayIso) : undefined}
-              style={{ background: dropping ? "color-mix(in oklch, var(--accent) 12%, var(--surface-solid))" : date ? "var(--surface)" : "color-mix(in oklch, var(--bg-deep) 30%, transparent)", boxShadow: dropping ? "inset 0 0 0 2px var(--accent)" : undefined, padding: 9, minHeight: 0, display: "flex", flexDirection: "column", gap: 5, transition: "background .12s" }}>
-              {date && (
-                <>
-                  <span className="mono tnum" style={{ fontSize: 12, fontWeight: 600, alignSelf: "flex-start", color: isToday ? "var(--on-accent)" : "var(--ink-3)", background: isToday ? "var(--accent)" : "transparent", borderRadius: 7, padding: isToday ? "1px 7px" : "1px 2px", boxShadow: isToday ? "0 0 12px var(--accent-glow)" : "none" }}>{date.getDate()}</span>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4, overflow: "hidden" }}>
-                    {dayEvents.slice(0, evCap).map((e) => {
-                      const color = PROVIDER_META[(e.provider as CalProvider)]?.color || "var(--ink-3)";
-                      const time = fmtTime(e);
-                      return (
-                        <span key={e.id} className="truncate" title={`${time ? time + " · " : ""}${e.title}`} style={{
-                          display: "flex", alignItems: "center", gap: 5, fontSize: 11, padding: "3px 6px", borderRadius: 6,
-                          color: "var(--ink-3)", background: `color-mix(in oklch, ${color} 12%, transparent)`, borderLeft: `2px solid ${color}`,
-                        }}>
-                          {time && <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)", flexShrink: 0 }}>{time}</span>}
-                          <span className="truncate">{e.title}</span>
-                        </span>
-                      );
-                    })}
-                    {dayTasks.slice(0, taskCap).map((t) => {
-                      const proj = getProject(t.projectId);
-                      return (
-                        <button key={t.id} onClick={() => onOpen(t.id)} className="truncate" draggable={canEdit}
-                          onDragStart={canEdit ? (e) => { e.dataTransfer.setData("text/kanbo-cal", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
-                          onDragEnd={canEdit ? () => setDropDay(null) : undefined}
-                          title={canEdit ? `${t.title} — drag to another day to reschedule` : t.title}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 5, fontSize: 11, padding: "3px 6px", borderRadius: 6, cursor: canEdit ? "grab" : "pointer",
-                            border: "none", textAlign: "left", color: t.status === "done" ? "var(--ink-4)" : "var(--ink-2)",
-                            textDecoration: t.status === "done" ? "line-through" : "none",
-                            background: `color-mix(in oklch, ${proj?.color || "var(--accent)"} 14%, transparent)`,
-                            borderLeft: `2px solid ${proj?.color || "var(--accent)"}`,
-                          }}>
-                          <span className="truncate">{t.title}</span>
-                        </button>
-                      );
-                    })}
-                    {overflow > 0 && (
-                      <button onClick={(e) => setDayPop({ iso: dayIso, anchor: e.currentTarget })} aria-haspopup="dialog"
-                        aria-label={`Show all ${dayTasks.length + dayEvents.length} items on ${dayLabel(dayIso, { weekday: "long", day: "numeric", month: "long" })}`}
-                        style={{ alignSelf: "flex-start", fontSize: 11, fontWeight: 600, color: "var(--ink-3)", padding: "2px 6px", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", fontFamily: "var(--font-display)" }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = FILL_HOT; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                        +{overflow} more
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
+        <div className="ktv-cal-wd" aria-hidden="true">{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <span key={d}>{d}</span>)}</div>
+        <div className="ktv-cal-grid" data-mode={mode}>
+          {gridDates.map((date) => {
+            const dayIso = toLocalISO(date);
+            const dayTasks = tasksByDay.get(dayIso) ?? [];
+            const dayEvents = evByDate[dayIso] ?? [];
+            const outside = mode === "month" && date.getMonth() !== month;
+            const taskCap = mode === "week" ? 99 : 3;
+            const evCap = mode === "week" ? 99 : 2;
+            const overflow = Math.max(0, dayTasks.length - taskCap) + Math.max(0, dayEvents.length - evCap);
+            const weekend = date.getDay() === 0 || date.getDay() === 6;
+            return (
+              <div key={dayIso} className="ktv-cal-cell" data-outside={outside || undefined} data-weekend={weekend || undefined} data-drop={dropDay === dayIso || undefined}
+                onDragOver={canEdit ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-cal")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDropDay((d) => (d === dayIso ? d : dayIso)); } } : undefined}
+                onDragLeave={canEdit ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropDay((d) => (d === dayIso ? null : d)); } : undefined}
+                onDrop={canEdit ? dropOnDay(dayIso) : undefined}>
+                <span className="ktv-cal-num" data-today={dayIso === todayIso || undefined} aria-label={dayLabel(dayIso, "long")}>{date.getDate()}</span>
+                {dayEvents.slice(0, evCap).map((e) => {
+                  const time = fmtTime(e);
+                  return (
+                    <span key={e.id} className="ktv-cal-event" title={`${time ? time + " · " : ""}${e.title}`}>
+                      {time && <time>{time}</time>}
+                      <span>{e.title}</span>
+                    </span>
+                  );
+                })}
+                {dayTasks.slice(0, taskCap).map((t) => (
+                  <button key={t.id} type="button" className="ktv-cal-task" data-done={t.status === "done" || undefined} onClick={() => onOpen(t.id)} draggable={canEdit}
+                    onDragStart={canEdit ? (e) => { e.dataTransfer.setData("text/kanbo-cal", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
+                    onDragEnd={canEdit ? () => setDropDay(null) : undefined}
+                    aria-label={taskName(t)} title={canEdit ? `${t.title}: drag to another day to reschedule` : t.title}>
+                    <span aria-hidden="true" style={{ display: "inline-flex" }}><StatusGlyph status={t.status} size={14} readOnly /></span>
+                    <span>{t.title}</span>
+                  </button>
+                ))}
+                {overflow > 0 && (
+                  <button type="button" className="ktv-cal-more" onClick={(e) => setDayPop({ iso: dayIso, anchor: e.currentTarget })} aria-haspopup="dialog"
+                    aria-label={`Show all ${dayTasks.length + dayEvents.length} items on ${dayLabel(dayIso, "long")}`}>
+                    +{overflow} more
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {dayPop && popDay && (
-        <Popover anchor={dayPop.anchor} role="dialog" label={`Everything on ${popDay.long}`} onClose={() => setDayPop(null)} minWidth={264} maxWidth={320}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 4px 8px 9px" }}>
-            <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{popDay.long}</span>
-            <span className="mono tnum" style={{ fontSize: 11.5, color: "var(--ink-4)" }}>{popDay.dt.length + popDay.de.length}</span>
-            <button className="btn-icon" aria-label="Close" onClick={() => setDayPop(null)} style={{ marginLeft: "auto", border: "none", width: 26, height: 26 }}><Icon name="x" size={14} /></button>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {popDay.de.map((e) => {
-              const color = PROVIDER_META[(e.provider as CalProvider)]?.color || "var(--ink-3)";
-              const time = fmtTime(e);
-              return (
-                <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 9px", fontSize: 12.5, color: "var(--ink-3)", borderLeft: `2px solid ${color}`, marginLeft: 2 }}>
-                  <span className="truncate" style={{ flex: 1, minWidth: 0 }}>{e.title}</span>
-                  <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-4)", flexShrink: 0 }}>{time || "All day"}</span>
-                </div>
-              );
-            })}
+        <Popover anchor={dayPop.anchor} role="dialog" label={`Everything on ${popDay.long}`} onClose={() => setDayPop(null)} minWidth={272} maxWidth={320}>
+          <div className="ktv-dayp">
+            <div className="ktv-dayp-head">
+              <span>{popDay.long}</span>
+              <span className="ktv-mono" style={{ color: "var(--ink-4)" }}>{popDay.dt.length + popDay.de.length}</span>
+              <IconButton icon="x" size="sm" label="Close" onClick={() => setDayPop(null)} />
+            </div>
+            {popDay.de.map((e) => (
+              <div key={e.id} className="ktv-cal-event" style={{ height: 28, margin: "0 4px" }}>
+                <time>{fmtTime(e) || "All day"}</time><span>{e.title}</span>
+              </div>
+            ))}
             {popDay.dt.map((t, i) => (
               <RowButton key={t.id} autoFocus={i === 0} onClick={() => { setDayPop(null); onOpen(t.id); }}>
-                <PriorityFlag priority={t.priority} size={13} />
-                <span className="truncate" style={{ flex: 1, minWidth: 0, color: t.status === "done" ? "var(--ink-4)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
-                <Avatar id={t.assigneeId} size={18} />
+                <StatusGlyph status={t.status} size={14} readOnly />
+                <span className="truncate" style={{ flex: 1, minWidth: 0, color: t.status === "done" ? "var(--ink-3)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
+                <Avatar id={t.assigneeId} size={20} />
               </RowButton>
             ))}
           </div>
@@ -1356,45 +1323,36 @@ export function MatrixView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: stri
   const open = hideNestedSubtasks(tasks.filter((t) => t.status !== "done" && !t.archivedAt));
   const isUrgent = (t: Task) => !!t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() <= todayMid + 2 * 86400000;
   const isImportant = (t: Task) => t.priority === "urgent" || t.priority === "high";
-  const quads = [
-    { key: "do", title: "Do first", sub: "Important & urgent", color: "var(--prio-urgent)", items: open.filter((t) => isImportant(t) && isUrgent(t)) },
-    { key: "schedule", title: "Schedule", sub: "Important, not urgent", color: "var(--accent)", items: open.filter((t) => isImportant(t) && !isUrgent(t)) },
-    { key: "delegate", title: "Delegate", sub: "Urgent, not important", color: "var(--st-review)", items: open.filter((t) => !isImportant(t) && isUrgent(t)) },
-    { key: "later", title: "Later", sub: "Neither — trim or defer", color: "var(--ink-4)", items: open.filter((t) => !isImportant(t) && !isUrgent(t)) },
+  const quads: { key: string; title: string; sub: string; tone?: "signal"; items: Task[] }[] = [
+    { key: "do", title: "Do first", sub: "Important and urgent", tone: "signal", items: open.filter((t) => isImportant(t) && isUrgent(t)) },
+    { key: "schedule", title: "Schedule", sub: "Important, not urgent", items: open.filter((t) => isImportant(t) && !isUrgent(t)) },
+    { key: "delegate", title: "Delegate", sub: "Urgent, not important", items: open.filter((t) => !isImportant(t) && isUrgent(t)) },
+    { key: "later", title: "Later", sub: "Neither: trim or defer", items: open.filter((t) => !isImportant(t) && !isUrgent(t)) },
   ];
   return (
-    <div style={{ flex: 1, overflow: "auto", padding: "16px 24px 28px" }}>
-      <p style={{ fontSize: 12.5, color: "var(--ink-4)", margin: "0 0 14px" }}>Urgency from due date, importance from priority. Focus on “Do first”, protect time for “Schedule”.</p>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+    <div className="ktv ktv-matrix">
+      <p>Urgency comes from the due date, importance from priority. Focus on “Do first”; protect time for “Schedule”.</p>
+      <div className="ktv-quads">
         {quads.map((q) => {
           const all = expandedQ.has(q.key);
           const list = all ? q.items : q.items.slice(0, QUAD_CAP);
           const hidden = q.items.length - list.length;
           return (
-            <div key={q.key} role="group" aria-label={`${q.title}: ${q.sub}`} className="glass" style={{ borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", minHeight: 240, borderTop: `3px solid ${q.color}` }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10 }}>
-                <span style={{ fontSize: 14, fontWeight: 700, color: q.color }}>{q.title}</span>
-                <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{q.sub}</span>
-                <span className="mono tnum" style={{ marginLeft: "auto", fontSize: 12, color: "var(--ink-4)" }}>{q.items.length}</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7, overflowY: "auto", flex: 1 }}>
-                {q.items.length === 0 ? <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Nothing here.</span> : list.map((t) => {
-                  const proj = getProject(t.projectId);
-                  return (
-                    <button key={t.id} onClick={() => onOpen(t.id)} className="lift" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer", textAlign: "left" }}>
-                      <StatusDot status={t.status} size={7} />
-                      <span className="truncate" style={{ flex: 1, fontSize: 13, color: "var(--ink)" }}>{t.title}</span>
-                      {proj && <span style={{ width: 7, height: 7, borderRadius: 2, background: proj.color, flexShrink: 0 }} />}
-                      {t.dueDate && <span className="mono" style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{fmtDue(t.dueDate)}</span>}
-                    </button>
-                  );
-                })}
-                {hidden > 0 && (
-                  <button onClick={() => setExpandedQ((s) => new Set(s).add(q.key))} className="btn btn-ghost" style={{ justifyContent: "center", fontSize: 12.5, padding: "7px 11px" }}>
-                    <Icon name="chevronDown" size={14} /> Show all {q.items.length}
+            <div key={q.key} role="group" aria-label={`${q.title}: ${q.sub}`} className="ktv-quad" data-tone={q.tone}>
+              <div className="ktv-quad-head"><b>{q.title}</b><span>{q.sub}</span><small>{q.items.length}</small></div>
+              {q.items.length === 0 ? <span className="ktv-quad-empty">Nothing here.</span> : list.map((t) => {
+                const proj = getProject(t.projectId);
+                const ds = dueState(t.dueDate, t.status);
+                return (
+                  <button key={t.id} type="button" className="ktv-quad-item" onClick={() => onOpen(t.id)}>
+                    <StatusGlyph status={t.status} size={14} readOnly />
+                    <span>{t.title}</span>
+                    {proj && <ProjectDot color={proj.color} title={proj.name} />}
+                    {t.dueDate && <span className="ktv-mono" style={{ color: ds === "overdue" ? "var(--signal, var(--prio-urgent))" : "var(--ink-3)" }}>{fmtDue(t.dueDate)}</span>}
                   </button>
-                )}
-              </div>
+                );
+              })}
+              {hidden > 0 && <Button variant="ghost" size="sm" icon="chevronDown" onClick={() => setExpandedQ((s) => new Set(s).add(q.key))}>Show all {q.items.length}</Button>}
             </div>
           );
         })}
@@ -1473,55 +1431,42 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
 
   // only files of tasks in view — belt and braces against a list fetched for another set of tasks
   const shown = files.filter((a) => taskById.has(a.taskId));
-  const emptyWrap: React.CSSProperties = { textAlign: "center", padding: "70px 24px", color: "var(--ink-4)" };
-  const emptyTitle: React.CSSProperties = { fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" };
 
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px 40px", maxWidth: 880, width: "100%", margin: "0 auto" }}>
+    <div className="ktv ktv-files">
       {status === "loading" ? (
-        <div role="status" style={{ textAlign: "center", padding: "60px 24px", color: "var(--ink-4)", fontSize: 13 }}>Loading files…</div>
+        <div role="status" className="ktv-note" style={{ justifyContent: "center", padding: "56px 0" }}>Loading files…</div>
       ) : status === "error" ? (
-        <div role="alert" style={emptyWrap}>
-          <div style={{ marginBottom: 14 }}><EmptyArt kind="folder" /></div>
-          <p style={emptyTitle}>Couldn't load files</p>
-          <p style={{ fontSize: 13, margin: "5px 0 14px", lineHeight: 1.5 }}>Something went wrong fetching attachments. Your files are safe — check your connection and try again.</p>
-          <button className="btn btn-ghost" onClick={() => load(false)} style={{ fontSize: 13 }}><Icon name="refresh" size={14} /> Retry</button>
+        <div role="alert">
+          <EmptyState art="folder" title="Couldn't load files" body="Something went wrong fetching attachments. Your files are safe: check your connection and try again."
+            action={<Button variant="secondary" icon="refresh" onClick={() => load(false)}>Retry</Button>} />
         </div>
       ) : shown.length === 0 ? (
-        <div style={emptyWrap}>
-          <div style={{ marginBottom: 14 }}><EmptyArt kind="folder" /></div>
-          <p style={emptyTitle}>No files yet</p>
-          <p style={{ fontSize: 13, margin: "5px 0 0" }}>Attachments added to tasks here will appear in one place.</p>
-        </div>
+        <EmptyState art="folder" title="No files yet" body="Attachments added to tasks here will appear in one place." />
       ) : (
         <>
           {refreshFailed && (
-            <div role="alert" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", marginBottom: 12, borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", fontSize: 12.5, color: "var(--ink-3)" }}>
-              <span style={{ flex: 1 }}>Couldn't refresh files, so some links may have expired or new files may be missing.</span>
-              <button className="btn btn-ghost" onClick={() => load(true)} style={{ fontSize: 12.5, padding: "5px 10px" }}><Icon name="refresh" size={13} /> Retry</button>
+            <div role="alert" className="ktv-banner">
+              <span>Couldn't refresh files, so some links may have expired or new files may be missing.</span>
+              <Button variant="ghost" size="sm" icon="refresh" onClick={() => load(true)}>Retry</Button>
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+          <div className="ktv-files-grid">
             {shown.map((att) => {
               const task = taskById.get(att.taskId);
               const img = att.mime?.startsWith("image/") && att.url && !broken.has(att.id);
               return (
-                <div key={att.id} className="glass lift" style={{ borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", backdropFilter: "none", WebkitBackdropFilter: "none" }}>
-                  <button type="button" onClick={() => task && onOpen(task.id)} disabled={!task} aria-label={task ? `${att.name}, attached to ${task.title}. Open task` : att.name}
-                    style={{ display: "block", width: "100%", padding: 0, border: "none", background: "transparent", textAlign: "left", cursor: task ? "pointer" : "default", color: "inherit", font: "inherit", outlineOffset: -2 }}>
-                    <div style={{ height: 110, background: "var(--surface-2)", display: "grid", placeItems: "center", overflow: "hidden" }}>
-                      {img ? <img src={att.url} alt="" loading="lazy" onError={() => setBroken((s) => new Set(s).add(att.id))} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Icon name="folder" size={26} style={{ color: "var(--ink-4)" }} />}
+                <div key={att.id} className="ktv-file">
+                  <button type="button" className="ktv-file-open" onClick={() => task && onOpen(task.id)} disabled={!task} aria-label={task ? `${att.name}, attached to ${task.title}. Open task` : att.name}>
+                    <div className="ktv-file-thumb">
+                      {img ? <img src={att.url} alt="" loading="lazy" onError={() => setBroken((s) => new Set(s).add(att.id))} /> : <Icon name="folder" size={24} sw={1.5} />}
                     </div>
-                    <div style={{ padding: "10px 12px 0" }}>
-                      <div className="truncate" style={{ fontSize: 13, fontWeight: 500 }}>{att.name}</div>
-                      <div className="truncate" style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 2 }}>{bytes(att.size)}{task ? " · " + task.title : ""}</div>
-                    </div>
+                    <div className="ktv-file-name">{att.name}</div>
+                    <div className="ktv-file-sub"><span className="ktv-mono">{bytes(att.size)}</span>{task ? ` · ${task.title}` : ""}</div>
                   </button>
-                  <div style={{ padding: "6px 12px 10px" }}>
-                    {att.url
-                      ? <a href={att.url} target="_blank" rel="noreferrer" aria-label={`Open ${att.name} in a new tab`} style={{ fontSize: 11.5, color: "var(--accent-text, var(--accent))", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}><Icon name="arrowUpRight" size={12} /> Open</a>
-                      : <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Link unavailable</span>}
-                  </div>
+                  {att.url
+                    ? <a href={att.url} target="_blank" rel="noreferrer" className="ktv-file-link" aria-label={`Open ${att.name} in a new tab`}><Icon name="arrowUpRight" size={12} /> Open</a>
+                    : <span className="ktv-file-link" style={{ color: "var(--ink-3)" }}>Link unavailable</span>}
                 </div>
               );
             })}

@@ -208,7 +208,8 @@ describe("App (demo mode)", () => {
 
   const importText = async (text: string) => {
     key("g"); key("t");
-    fireEvent.click(await screen.findByTitle(/Import tasks/));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Import tasks/ }));
     const dialog = await screen.findByRole("dialog", { name: "Import tasks" });
     fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: text } });
     // My tasks has no project of its own: the modal asks where the rows go
@@ -296,6 +297,7 @@ describe("App (demo mode)", () => {
   it("keeps filters per page: a filter set in My tasks doesn't hide a project's tasks", async () => {
     await boot();
     key("g"); key("t");
+    fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
     fireEvent.click(await screen.findByRole("button", { name: "High priority" }));
     expect(screen.getByRole("button", { name: /Filter · on/ })).toBeInTheDocument();
     fireEvent.click(projectButton("Brand Refresh"));

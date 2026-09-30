@@ -219,8 +219,8 @@ describe("CalendarView", () => {
     const label = () => screen.getByText(/^[A-Z][a-z]+ \d{4}$/).textContent;
     for (let step = 0; step < 4; step++) {
       const before = label();
-      fireEvent.click(screen.getByRole("button", { name: "week" }));
-      fireEvent.click(screen.getByRole("button", { name: "month" }));
+      fireEvent.click(screen.getByRole("button", { name: "Week" }));
+      fireEvent.click(screen.getByRole("button", { name: "Month" }));
       expect(label()).toBe(before);
       fireEvent.click(screen.getByRole("button", { name: "Next month" }));
     }
@@ -228,7 +228,7 @@ describe("CalendarView", () => {
 
   it("week view moves between weeks", () => {
     render(<CalendarView tasks={[]} onOpen={noop} />);
-    fireEvent.click(screen.getByRole("button", { name: "week" }));
+    fireEvent.click(screen.getByRole("button", { name: "Week" }));
     expect(screen.getByText("This week")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Next week" }));
     expect(screen.queryByText("This week")).toBeNull();

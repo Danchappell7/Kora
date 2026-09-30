@@ -285,3 +285,61 @@ describe("autofocus", () => {
     expect(screen.getByText(/assigned to you or where you're a collaborator/i)).toBeInTheDocument();
   });
 });
+
+describe("rows", () => {
+  it("the status glyph is the completion checkbox: it ticks the task off without opening it", () => {
+    const onToggle = vi.fn();
+    const { onOpen } = renderSearch({ tasks: [task({ id: "a", title: "Budget review" })], preset: { status: "open" }, presetKey: "k", onToggle });
+    const glyph = screen.getByRole("checkbox", { name: "Done: Budget review" });
+    expect(glyph).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(glyph);
+    expect(onToggle).toHaveBeenCalledWith("a");
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("without onToggle the glyph only shows the status", () => {
+    renderSearch({ tasks: [task({ id: "a", title: "Budget review", status: "review" })], preset: { status: "open" }, presetKey: "k" });
+    expect(screen.queryByRole("checkbox", { name: /^Done:/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "In review" })).toBeInTheDocument();
+  });
+
+  it("J moves a cursor onto the first result and Enter opens it", () => {
+    const { onOpen } = renderSearch({ tasks: [task({ id: "a", title: "Alpha" }), task({ id: "b", title: "Beta" })], preset: { status: "open" }, presetKey: "k" });
+    act(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Open Alpha/ }));
+    expect(screen.getByRole("group", { name: "Alpha" })).toHaveAttribute("data-cursor", "true");
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(screen.getByRole("group", { name: "Beta" })).toHaveAttribute("data-cursor", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "Enter", metaKey: false });
+    // Enter on the focused title button opens natively (a click); the hook stands aside
+    fireEvent.click(document.activeElement!);
+    expect(onOpen).toHaveBeenCalledWith("b");
+  });
+});
+
+describe("saving a search", () => {
+  it("names it in place, with no prompt", () => {
+    const prompt = vi.spyOn(window, "prompt");
+    const onSaveSearch = vi.fn();
+    renderSearch({ tasks: [task({ id: "a", title: "Alpha" })], onSaveSearch });
+    fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: "alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const field = screen.getByRole("textbox", { name: "Name this search" });
+    fireEvent.change(field, { target: { value: "Alpha work" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onSaveSearch).toHaveBeenCalledWith("Alpha work", expect.objectContaining({ text: "alpha" }));
+    expect(prompt).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox", { name: "Name this search" })).not.toBeInTheDocument();
+    prompt.mockRestore();
+  });
+
+  it("Escape puts the Save button back without saving", () => {
+    const onSaveSearch = vi.fn();
+    renderSearch({ tasks: [task({ id: "a", title: "Alpha" })], onSaveSearch, preset: { status: "open" }, presetKey: "k" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Name this search" }), { key: "Escape" });
+    expect(onSaveSearch).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+  });
+});
