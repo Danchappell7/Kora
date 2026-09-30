@@ -526,6 +526,20 @@ describe("TaskDetail — frame", () => {
     }
   });
 
+  it("docked, closing hands focus back to where you came into the panel from", async () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+    try {
+      const { unmount } = await setup({ docked: true });
+      act(() => screen.getByRole("button", { name: "Close task" }).focus());
+      unmount();
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+
   it("the breadcrumb's project closes the panel and opens the project", async () => {
     const onOpenProject = vi.fn();
     const project = { id: "p1", name: "Q3 Product Launch", color: "oklch(0.62 0.14 230)", icon: "🚀", workspaceId: "w1" } as never;

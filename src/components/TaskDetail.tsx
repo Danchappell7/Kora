@@ -363,8 +363,10 @@ const numOrUndef = (s: string): number | undefined => { if (s.trim() === "") ret
 /** A property value that opens the platform's own picker: the row shows the
  *  glyph and words; an invisible native <select> covers it (keyboard, screen
  *  readers and phone pickers all get the real control). */
-function PropSelect({ id, value, options, onChange, text, leading, empty, wide, small, selectRef, title }: {
+function PropSelect({ id, value, options, onChange, text, leading, empty, wide, small, selectRef, title, label }: {
   id: string;
+  /** the accessible name, when no <label for> names it */
+  label?: string;
   value: string;
   options: { value: string; label: string }[];
   onChange: (v: string) => void;
@@ -383,7 +385,7 @@ function PropSelect({ id, value, options, onChange, text, leading, empty, wide, 
         <span className="ktd-val-text">{text}</span>
         {!small && <Icon name="chevronDown" size={14} sw={1.75} className="ktd-chev" />}
       </span>
-      <select ref={selectRef} id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+      <select ref={selectRef} id={id} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </span>
@@ -722,6 +724,14 @@ export function TaskDetail(props: TaskDetailProps) {
   // a task opened from inside the panel (a sub-task, a blocker) replaces the
   // row you were on: focus parks on the panel rather than the page behind
   const parkFocus = useRef(false);
+  // docked there's no trap to hand focus back on close: remember where it came from
+  const returnTo = useRef<HTMLElement | null>(null);
+  const dockedRef = useRef(isDocked);
+  dockedRef.current = isDocked;
+  useEffect(() => () => {
+    const back = returnTo.current, a = document.activeElement;
+    if (dockedRef.current && back?.isConnected && (!a || a === document.body)) back.focus({ preventScroll: true });
+  }, []);
 
   // if the open task disappears (deleted here or by a realtime sync), close the
   // panel cleanly instead of leaving a blank ghost mounted
@@ -739,6 +749,7 @@ export function TaskDetail(props: TaskDetailProps) {
           keyboard users see the global focus ring (drawn just inside the edge) */}
       <div ref={trapRef} role="dialog" aria-modal={!isDocked} aria-label={`Task: ${task.title}`} tabIndex={-1}
         className="ktd" data-docked={isDocked || undefined} data-mobile={isMobile || undefined}
+        onFocusCapture={(e) => { const from = e.relatedTarget; if (from instanceof HTMLElement && !e.currentTarget.contains(from)) returnTo.current = from; }}
         onKeyDown={isDocked ? (e) => {
           // docked there's no focus trap to close it: an Escape nothing inside took closes the panel
           if (e.key !== "Escape" || e.defaultPrevented || e.nativeEvent.isComposing) return;
@@ -1742,7 +1753,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
                   {hasSections && !addingSection && (
                     <>
                       <span className="ktd-crumb-sep" aria-hidden="true">/</span>
-                      <PropSelect id={ids.section} value={task.sectionId ?? ""} empty={!section} text={section?.name ?? "No section"} title="Section"
+                      <PropSelect id={ids.section} label="Section" value={task.sectionId ?? ""} empty={!section} text={section?.name ?? "No section"} title="Section"
                         options={sectionOptions}
                         onChange={(v) => {
                           if (v === NEW_SECTION) { setAddingSection(true); return; }
@@ -1777,7 +1788,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, parkFocus, isMobile, docked, 
               )}
               {(energy || (est != null && !readOnly)) && (readOnly
                 ? <span className="ktd-note">{energy ? ENERGY[energy].label : ""}</span>
-                : <PropSelect id={ids.energy} small value={energy ?? ""} empty={!energy} title="Energy this needs"
+                : <PropSelect id={ids.energy} label="Energy" small value={energy ?? ""} empty={!energy} title="Energy this needs"
                     text={energy ? ENERGY[energy].label : "Energy"} leading={energy ? <Icon name={ENERGY[energy].icon} size={12} sw={2} /> : undefined}
                     options={[{ value: "", label: "No energy level" }, ...(Object.keys(ENERGY) as EnergyKind[]).map((k) => ({ value: k, label: ENERGY[k].label }))]}
                     onChange={(v) => onPatch(task.id, { energy: (v || undefined) as EnergyKind | undefined })} />)}
