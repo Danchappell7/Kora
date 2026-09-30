@@ -16,11 +16,13 @@ export { EmptyArt } from "./EmptyArt";
 export { EmojiPicker } from "./EmojiPicker";
 
 /* ---------- colour chips ----------
-   Tinted chips (tags, energy, provider, AI score) keep their colour identity
-   with a translucent fill + edge, while the TEXT is pushed away from the
-   background: 42% toward black on paper, 12% toward white on glass, so
-   every tag colour stays ≥ 4.5:1 on its own tint. Black and white have no
-   hue, so the mix keeps the tag's own hue. */
+   Chips tinted with a RAW palette colour (tags, energy levels, calendar
+   providers) keep their colour identity with a translucent fill + edge,
+   while the TEXT is pushed away from the background: 42% toward black on
+   paper, 12% toward white on glass, so every tag colour stays ≥ 4.5:1 on its
+   own tint. Black and white have no hue, so the mix keeps the tag's own hue.
+   Chips coloured with a status/priority TOKEN (AiScore, "At risk") don't
+   need this: those tokens are tuned per theme to pass on their own tint. */
 export const chipInk = (c: string) => `color-mix(in oklch, ${c}, var(--chip-ink-mix, black) var(--chip-ink-shift, 0%))`;
 export const chipFill = (c: string) => `color-mix(in oklch, ${c} var(--chip-fill, 12%), transparent)`;
 export const chipEdge = (c: string) => `color-mix(in oklch, ${c} var(--chip-edge, 30%), transparent)`;
@@ -128,8 +130,10 @@ export function wasJustLanded(key?: string): boolean {
 // springs, a ring bursts outward, the tick draws itself, and phones get a light
 // haptic tap. Un-checking (and anything already done on first render) is calm.
 // Pass `celebrateKey` (the task id) so the moment survives a row re-mount, and
-// `label` (the task or subtask title) so screen readers hear WHICH item.
-export function Check({ done, onToggle, size = 18, celebrateKey, label }: { done?: boolean; onToggle?: () => void; size?: number; celebrateKey?: string; label?: string }) {
+// `label` (the task or subtask title) so screen readers hear WHICH item
+// ("Done: Write brief"). When the box isn't a completion toggle at all (a
+// yes/no custom field), `name` replaces the whole accessible name ("Approved").
+export function Check({ done, onToggle, size = 18, celebrateKey, label, name }: { done?: boolean; onToggle?: () => void; size?: number; celebrateKey?: string; label?: string; name?: string }) {
   const [pop, setPop] = useState(() => !!done && wasJustCompleted(celebrateKey));
   // A complete-click only ARMS the celebration; it plays when `done` actually
   // flips. So if completion is cancelled (e.g. "this task is blocked — mark it
@@ -159,7 +163,7 @@ export function Check({ done, onToggle, size = 18, celebrateKey, label }: { done
     // A checkbox (state is aria-checked) with a name that doesn't flip with
     // the state, so it never reads as "Mark as not done, pressed".
     <button type="button" role="checkbox" aria-checked={!!done} onClick={click}
-      aria-label={label ? `Done: ${label}` : "Done"}
+      aria-label={name || (label ? `Done: ${label}` : "Done")}
       className={"kcheck" + (pop ? " kcheck-pop" : "")}
       style={{
         width: size, height: size, borderRadius: 6, flexShrink: 0, cursor: "pointer", padding: 0,

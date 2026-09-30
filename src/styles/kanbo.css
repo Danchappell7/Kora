@@ -64,6 +64,10 @@
   /* ink-tint fills for hover / pressed / selected (work on any surface) */
   --fill-1: oklch(0.28 0.02 266 / 0.055);
   --fill-2: oklch(0.28 0.02 266 / 0.085);
+  /* progress / meter tracks: an ink tint, so a track reads on the canvas as
+     well as on white cards (the opaque --surface-2 all but vanished on the
+     canvas). Components: background var(--track, var(--surface-2)). */
+  --track: var(--fill-2);
 
   --hairline: oklch(0.28 0.02 266 / 0.12);
   --hairline-strong: oklch(0.28 0.02 266 / 0.22);
@@ -155,6 +159,7 @@
   --surface-raised: oklch(0.28 0.018 264 / 0.9);
   --fill-1: oklch(1 0 0 / 0.06);
   --fill-2: oklch(1 0 0 / 0.10);
+  --track: var(--surface-2);
 
   --hairline: oklch(0.92 0.01 264 / 0.12);
   --hairline-strong: oklch(0.92 0.01 264 / 0.20);
@@ -526,16 +531,28 @@ h1,h2,h3,h4 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
 /* Hover-revealed actions must also appear for KEYBOARD users: a focusable
    control at opacity 0 means Tab lands on something invisible and Space/Enter
    fires an action nobody could see (delete a tag, archive a project). They
-   show while their row has focus anywhere inside it, and on their own focus. */
-.kproj-row:hover .kproj-del, .kproj-row:focus-within .kproj-del, .kproj-del:focus-visible,
-.tagchip:hover .tagchip-del, .tagchip:focus-within .tagchip-del, .tagchip-del:focus-visible,
-.ksaved-row:hover .ksaved-del, .ksaved-row:focus-within .ksaved-del, .ksaved-del:focus-visible { opacity: 1; }
-.kproj-row:hover .kproj-count, .kproj-row:focus-within .kproj-count { opacity: 0; }
+   show while KEYBOARD focus is anywhere in their row, and on their own focus.
+   Not :focus-within — Chrome focuses a button on mouse click, so a clicked
+   project/tag/saved list would keep its delete controls stuck on screen
+   (covering the name) until focus moved on; :focus-visible is keyboard-only
+   for buttons. The :has() rules are separate so a browser without :has()
+   drops only them, never the hover rule. */
+.kproj-row:hover .kproj-del, .kproj-del:focus-visible,
+.tagchip:hover .tagchip-del, .tagchip-del:focus-visible,
+.ksaved-row:hover .ksaved-del, .ksaved-del:focus-visible { opacity: 1; }
+.kproj-row:has(:focus-visible) .kproj-del,
+.tagchip:has(:focus-visible) .tagchip-del,
+.ksaved-row:has(:focus-visible) .ksaved-del { opacity: 1; }
+.kproj-row:hover .kproj-count { opacity: 0; }
+.kproj-row:has(:focus-visible) .kproj-count { opacity: 0; }
 /* multi-select boxes on list rows and board cards fade in on hover (opacity
-   is inline in ListView/OtherViews), so keyboard focus must reveal them too */
+   is inline in ListView/OtherViews), so keyboard focus must reveal them too.
+   The row rule looks for a focused BUTTON only: text/date inputs match
+   :focus-visible even on a mouse click (a picked due date would leave the
+   box showing). */
 .ksel:focus-visible,
 button:is([aria-label="Select task"], [aria-label="Deselect task"]):focus-visible { opacity: 1 !important; }
-.task-row:focus-within button[aria-label="Select task"] { opacity: 1 !important; }
+.task-row:has(button:focus-visible) button[aria-label="Select task"] { opacity: 1 !important; }
 
 /* hover-lift helpers (CSS so no stale inline transforms) */
 .lift { transition: transform .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease); }
@@ -574,9 +591,15 @@ button:is([aria-label="Select task"], [aria-label="Deselect task"]):focus-visibl
 [data-theme="light"] .btn-ghost:hover { background: var(--surface-solid); border-color: var(--hairline-strong); box-shadow: var(--shadow); }
 [data-theme="light"] .btn-ghost:active { background: var(--surface-2); }
 /* icon buttons: bordered ones are white keycaps like .btn-ghost; borderless
-   toolbar ones are transparent until hovered, then an ink tint */
+   toolbar ones are transparent until hovered, then an ink tint.
+   "Borderless" = inline border:none, which React writes through the CSSOM:
+   Chrome serialises it into the style attribute as LONGHANDS
+   ("border-width: medium; border-style: none; …" — checked in Chromium 152),
+   so that spelling is matched as well as the shorthand one (the ";" stops a
+   per-side "border-style: none none solid" counting). .btn-icon-quiet is
+   the class form. */
 [data-theme="light"] .btn-icon { background: var(--surface-solid); }
-[data-theme="light"] .btn-icon:is(.btn-icon-quiet, [style*="border: none"]) { background: transparent; }
+[data-theme="light"] .btn-icon:is(.btn-icon-quiet, [style*="border: none"], [style*="border-style: none;"]) { background: transparent; }
 [data-theme="light"] .btn-icon:hover { background: var(--fill-1); border-color: var(--hairline-strong); }
 [data-theme="light"] .btn-icon:active { background: var(--fill-2); }
 /* segmented control: iOS-style grey track with a white thumb */
@@ -588,6 +611,12 @@ button:is([aria-label="Select task"], [aria-label="Deselect task"]):focus-visibl
 }
 /* loading skeletons read as grey placeholders on white cards */
 [data-theme="light"] .skel { background: var(--fill-2); }
+/* progress / meter tracks (project progress, goals, workload, reports, admin
+   usage, plan-my-day capacity) are inline-styled with this exact pair, which
+   is serialised verbatim (a shorthand holding var() can't be expanded into
+   longhands); nothing else in the app uses it. Components moving to
+   var(--track, var(--surface-2)) get the same result without this match. */
+[data-theme="light"] div[style*="background: var(--surface-2); overflow: hidden;"] { background: var(--track) !important; }
 /* cards lift with a shadow, not just a nudge */
 [data-theme="light"] .glass.lift:hover { box-shadow: var(--shadow-lg); }
 /* board lanes: a recessed bg-deep well with a hairline edge, so white cards
@@ -659,8 +688,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--accent) !important; outline-offset: 1px;
 }
 /* borderless inline editors (task/goal names, subtask entry) get a rounded
-   ring with room to breathe instead of a hard box on the text */
-:is(input, textarea)[style*="border: none"]:focus-visible { outline-offset: 3px; border-radius: 6px; }
+   ring with room to breathe instead of a hard box on the text. Inline
+   border:none is matched in both serialisations (see .btn-icon above);
+   data-focus-ring="inline" is the explicit form. */
+:is(input, textarea):is([style*="border: none"], [style*="border-style: none;"], [data-focus-ring="inline"]):focus-visible { outline-offset: 3px; border-radius: 6px; }
 /* The palette and quick-capture inputs ARE their dialog (the dialog's own
    frame is the focus context); a ring inside it would be noise. Opt-out
    for similar hero inputs: data-focus-ring="none". */
@@ -697,6 +728,12 @@ label:has(> input[style*="opacity: 0"]:focus-visible) {
 @media (hover: none), (pointer: coarse) {
   /* controls that fade in on hover must be permanently reachable by a finger */
   .kproj-del { opacity: 1 !important; }
+  /* …except the sidebar's one-tap Archive (the first of the two actions):
+     permanently shown beside Delete on a phone it's an easy mis-tap that
+     hides the project for the whole team. On touch, archiving goes through
+     the project Overview's Archive button, which confirms first. */
+  .kproj-del[title^="Archive"] { display: none !important; }
+  .kproj-del:has(+ .kproj-del) { display: none !important; }
   .tagchip-del { opacity: 1 !important; }
   .ksaved-del { opacity: 1 !important; }
   .kproj-row .kproj-count { opacity: 0 !important; } /* hide count so it doesn't sit under the delete button */

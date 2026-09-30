@@ -19,6 +19,13 @@ describe("Check", () => {
     render(<Check done={false} />);
     expect(screen.getByRole("checkbox", { name: "Done" })).toBeInTheDocument();
   });
+
+  it("takes a full name when it isn't a completion box (a yes/no custom field)", () => {
+    render(<Check done name="Approved" label="ignored" />);
+    const box = screen.getByRole("checkbox", { name: "Approved" });
+    expect(box).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByRole("checkbox", { name: /Done/ })).toBeNull();
+  });
 });
 
 describe("Segmented", () => {
