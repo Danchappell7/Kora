@@ -3,7 +3,10 @@ import type { Task, Goal } from "../../data/types";
 import {
   csvCell, csvText, localDay, startOfWeekMon, addDays, weeklyThroughput, taskLoadInWeek, workloadForWeek,
   fmtHours, goalTree, goalDescendants, goalProgressMap, resolveTagId, projectHealth, workdays,
+  scopeTasks, overviewFacts, kpiSentence, phraseText, fmtDay, fmtMinutes, weeklyFacts, weeklySummaryText,
+  weeklySummaryDetails, plainSummary, cycleHistogram, summaryInput, SUMMARY_TASK_CAP,
 } from "./reportingUtils";
+import { niceMax, shares } from "../charts";
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 let n = 0;
@@ -186,5 +189,138 @@ describe("projectHealth", () => {
     expect(projectHealth([task({ dueDate: "2026-09-29" }), task({}), task({}), task({}), task({})], today)?.kind).toBe("at_risk");
     const off = projectHealth([task({ dueDate: "2026-09-01" }), task({ dueDate: "2026-09-02" }), task({ dueDate: "2026-09-03" }), task({})], today);
     expect(off).toMatchObject({ kind: "off_track", overdue: 3 });
+  });
+});
+
+describe("insights: scope", () => {
+  it("Me keeps what's assigned to you or shared with you; Team keeps everything", () => {
+    const mine = task({ assigneeId: "me" }), shared = task({ assigneeId: "x", collaborators: ["me"] }), theirs = task({ assigneeId: "x" });
+    expect(scopeTasks([mine, shared, theirs], "me", "me")).toEqual([mine, shared]);
+    expect(scopeTasks([mine, shared, theirs], "team", "me")).toHaveLength(3);
+    expect(scopeTasks([mine, theirs], "me", undefined)).toHaveLength(2); // no "me" to filter by
+  });
+});
+
+describe("insights: the KPI sentence", () => {
+  const wed = new Date(2026, 8, 30);
+  it("counts the past seven days, on-time among dated work, and open trouble", () => {
+    const f = overviewFacts([
+      task({ status: "done", completedAt: "2026-09-30", dueDate: "2026-09-30" }),
+      task({ status: "done", completedAt: "2026-09-24", dueDate: "2026-09-23" }),   // late, still in the window
+      task({ status: "done", completedAt: "2026-09-23" }),                          // outside the window
+      task({ status: "done", completedAt: new Date(2026, 8, 28, 0, 30).toISOString() }), // a timestamp: the viewer's day
+      task({ status: "todo", dueDate: "2026-09-29" }),
+      task({ status: "blocked" }),
+    ], wed);
+    expect(f).toMatchObject({ finished: 3, withDue: 2, onTime: 1, onTimePct: 50, overdue: 1, blocked: 1, open: 2 });
+  });
+  it("reads naturally in every combination, stating each figure once", () => {
+    const base = { finished: 14, withDue: 12, onTime: 8, onTimePct: 67, overdue: 3, blocked: 1, open: 9, total: 30 };
+    expect(phraseText(kpiSentence(base, "you"))).toBe("In the past week you finished 14 tasks — 67% on time. 3 are overdue and 1 is blocked.");
+    expect(phraseText(kpiSentence({ ...base, finished: 1, onTimePct: null, overdue: 0, blocked: 0 }, "team")))
+      .toBe("In the past week the team finished 1 task. Nothing is overdue or blocked.");
+    expect(phraseText(kpiSentence({ ...base, finished: 0, overdue: 1, blocked: 0 }, "team")))
+      .toBe("Nothing has been finished in the past week. 1 task is overdue.");
+    expect(phraseText(kpiSentence({ ...base, finished: 0, overdue: 0, blocked: 2 }, "you")))
+      .toBe("You haven't finished anything in the past week. 2 tasks are blocked.");
+    expect(phraseText(kpiSentence({ ...base, open: 0, overdue: 0, blocked: 0 }, "you", 80)))
+      .toBe("In the past week you finished 14 tasks — 67% on time. Everything is done. You've logged 1h 20m of focus today.");
+    // focus is yours alone: never in the team's sentence
+    expect(phraseText(kpiSentence(base, "team", 80))).not.toContain("focus");
+    // the attention figures are marked for the signal colour
+    expect(kpiSentence(base, "team").filter((p) => typeof p !== "string" && p.tone === "signal")).toHaveLength(2);
+  });
+  it("formats days and durations the British way", () => {
+    expect(fmtDay(new Date(2026, 8, 30))).toBe("Wed 30 Sep");
+    expect(fmtMinutes(45)).toBe("45m");
+    expect(fmtMinutes(120)).toBe("2h");
+    expect(fmtMinutes(95)).toBe("1h 35m");
+  });
+});
+
+describe("insights: the weekly summary", () => {
+  const wed = new Date(2026, 8, 30);
+  const names: Record<string, string> = { p1: "Launch", p2: "Brand" };
+  it("gathers the past week and the next, most urgent first", () => {
+    const tasks = [
+      task({ title: "Deck", status: "done", projectId: "p1", completedAt: "2026-09-29", dueDate: "2026-09-30", createdAt: "2026-09-25" }),
+      task({ title: "Budget", status: "done", projectId: "p1", completedAt: "2026-09-28", dueDate: "2026-09-27" }),
+      task({ title: "Palette", status: "done", projectId: "p2", completedAt: "2026-09-26" }),
+      task({ title: "Old", status: "done", completedAt: "2026-09-01" }),
+      task({ title: "Tokens", status: "review", priority: "high" }),
+      task({ title: "Auth", status: "progress", priority: "urgent", dueDate: "2026-09-28" }),
+      task({ title: "Onboarding", status: "blocked" }),
+      task({ title: "Pricing", dueDate: "2026-10-02" }),
+      task({ title: "CI", dueDate: "2026-10-20" }),
+    ];
+    const f = weeklyFacts(tasks, wed);
+    expect(f.finished.map((t) => t.title)).toEqual(["Deck", "Budget", "Palette"]);
+    expect({ withDue: f.withDue, onTime: f.onTime, created: f.created }).toEqual({ withDue: 2, onTime: 1, created: 1 });
+    expect(f.inFlight.map((t) => t.title)).toEqual(["Auth", "Tokens"]);
+    expect(f.overdue.map((t) => t.title)).toEqual(["Auth"]);
+    expect(f.blocked.map((t) => t.title)).toEqual(["Onboarding"]);
+    expect(f.dueSoon.map((t) => t.title)).toEqual(["Pricing"]);
+    expect(f.topProject).toEqual({ id: "p1", n: 2 });
+    const text = weeklySummaryText(f, (id) => names[id]);
+    expect(text.split("\n")).toEqual([
+      "- **Finished 3 tasks**; 1 of the 2 with a due date landed on time. Launch moved most, with 2 done.",
+      "- **Under way:** 2 tasks, led by “Auth”.",
+      "- **Needs attention:** 1 overdue (“Auth”) and 1 blocked (“Onboarding”).",
+      "- **Next 7 days:** 1 task due, starting with “Pricing” on Fri 2 Oct.",
+    ]);
+    expect(plainSummary(text)).not.toContain("**");
+    // "How I got here" describes exactly what Kanbo is sent: the week's finished work and the open work
+    const sent = summaryInput(tasks, f);
+    expect(sent.tasks.map((t) => t.title)).toEqual(["Auth", "Onboarding", "Pricing", "Tokens", "CI", "Deck", "Budget", "Palette"]);
+    expect(weeklySummaryDetails(f, sent)).toEqual([
+      "3 finished between Thu 24 Sep and Wed 30 Sep, 1 of 2 on time",
+      "5 open: 1 overdue, 1 blocked, 2 under way",
+      "1 due in the next 7 days",
+      "Each task's title, status, priority, dates, assignee and project; nothing else",
+    ]);
+  });
+  it("counts 'the next 7 days' as today and the six after it", () => {
+    const f = weeklyFacts([task({ dueDate: "2026-09-30" }), task({ dueDate: "2026-10-06" }), task({ dueDate: "2026-10-07" })], wed);
+    expect(f.dueSoon.map((t) => t.dueDate)).toEqual(["2026-09-30", "2026-10-06"]);
+  });
+  it("sends Kanbo at most 120 tasks, the most pressing open work first, and says so", () => {
+    const open = Array.from({ length: 200 }, (_, i) => task({ title: "Open " + i, dueDate: i < 3 ? "2026-09-20" : undefined }));
+    const done = Array.from({ length: 60 }, () => task({ status: "done", completedAt: "2026-09-29" }));
+    const old = Array.from({ length: 300 }, () => task({ status: "done", completedAt: "2026-03-01" }));
+    const all = [...old, ...done, ...open];
+    const f = weeklyFacts(all, wed);
+    const sent = summaryInput(all, f);
+    expect(sent.tasks).toHaveLength(SUMMARY_TASK_CAP);
+    expect({ open: sent.open, finished: sent.finished, openTotal: sent.openTotal, finishedTotal: sent.finishedTotal })
+      .toEqual({ open: 80, finished: 40, openTotal: 200, finishedTotal: 60 });
+    expect(sent.tasks.slice(0, 3).map((t) => t.title)).toEqual(["Open 0", "Open 1", "Open 2"]); // overdue first
+    expect(sent.tasks.some((t) => t.completedAt === "2026-03-01")).toBe(false); // older work isn't sent
+    const details = weeklySummaryDetails(f, sent);
+    expect(details[0]).toBe("The 40 most recent of 60 tasks finished between Thu 24 Sep and Wed 30 Sep");
+    expect(details[1]).toBe("The 80 most pressing of 200 open tasks, overdue and blocked first");
+  });
+  it("says so plainly when the week was quiet", () => {
+    const text = weeklySummaryText(weeklyFacts([task({})], wed), () => undefined);
+    expect(text).toBe([
+      "- **Nothing finished** in the past 7 days.",
+      "- **Needs attention:** nothing overdue or blocked.",
+      "- **Next 7 days:** nothing due yet.",
+    ].join("\n"));
+  });
+});
+
+describe("insights: cycle time and axes", () => {
+  it("buckets cycle times by whole days", () => {
+    expect(cycleHistogram([0, 0, 1, 2, 3, 7, 8, 14, 15, 40]).map((b) => b.n)).toEqual([2, 2, 2, 2, 2]);
+  });
+  it("gives shares of a whole that add up to 100", () => {
+    expect(shares([1, 1, 1])).toEqual([34, 33, 33]);
+    expect(shares([3, 1, 0, 3])).toEqual([43, 14, 0, 43]);
+    expect(shares([0, 0])).toEqual([0, 0]);
+    expect(shares([1, 299]).reduce((a, b) => a + b, 0)).toBe(100);
+  });
+  it("rounds an axis top to whole, even steps", () => {
+    expect([0, 1, 2, 3, 5, 7, 9, 10, 11, 21, 41].map((v) => niceMax(v))).toEqual([2, 2, 2, 4, 6, 8, 10, 10, 12, 30, 50]);
+    expect(niceMax(9) / 2).toBe(5);
   });
 });

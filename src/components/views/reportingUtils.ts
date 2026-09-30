@@ -134,6 +134,284 @@ export function weeklyThroughput(tasks: Task[], fullWeeks: number, today: Date):
   return { weekStarts, created, completed, cumCreated, cumCompleted, velocity, trend, totalCreated: sum(created), totalDone: sum(completed) };
 }
 
+/* ---------------- Insights: scope, facts and sentences ---------------- */
+
+/** Whose work Insights is about: yours (assigned to you, or shared with you
+ *  as a collaborator) or the whole workspace's. */
+export type InsightsScope = "me" | "team";
+
+/** The tasks in a scope. Without a user id there's no "me" to filter by. */
+export function scopeTasks(tasks: Task[], scope: InsightsScope, userId?: string): Task[] {
+  if (scope !== "me" || !userId) return tasks;
+  return tasks.filter((t) => t.assigneeId === userId || (t.collaborators ?? []).includes(userId));
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** "Wed 30 Sep" (en-GB order, no comma, never "Sept"). */
+export const fmtDay = (d: Date): string => `${WEEKDAYS[d.getDay()]} ${fmtDayMonth(d)}`;
+
+/** "1h 20m", "45m", "2h" — durations the way the rest of Kanbo writes them. */
+export function fmtMinutes(min: number): string {
+  const m = Math.max(0, Math.round(min));
+  const h = Math.floor(m / 60), r = m % 60;
+  return h ? (r ? `${h}h ${r}m` : `${h}h`) : `${r}m`;
+}
+
+const plural = (n: number, one: string, many = one + "s") => (n === 1 ? one : many);
+const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+/** completed on or before its due day (a timestamp is read as the viewer's own day) */
+const landedOnTime = (t: Task) => {
+  const done = localDay(t.completedAt), due = localDay(t.dueDate);
+  return !!done && !!due && done <= due;
+};
+
+/** The numbers the Overview's KPI sentence is built from. "Past week" is today
+ *  and the six days before it, the same seven days the Completed chart shows. */
+export interface OverviewFacts {
+  finished: number;
+  /** of `finished`, how many had a due date */
+  withDue: number;
+  onTime: number;
+  /** on time as a share of the finished tasks that had a due date; null when none did */
+  onTimePct: number | null;
+  overdue: number;
+  blocked: number;
+  open: number;
+  total: number;
+}
+
+export function overviewFacts(tasks: Task[], today: Date): OverviewFacts {
+  const end = midnight(today), start = addDays(end, -6);
+  let finished = 0, withDue = 0, onTime = 0, overdue = 0, blocked = 0, open = 0;
+  for (const t of tasks) {
+    if (t.status === "done") {
+      const d = localDay(t.completedAt);
+      if (!d || d < start || d > end) continue;
+      finished++;
+      if (t.dueDate) { withDue++; if (landedOnTime(t)) onTime++; }
+      continue;
+    }
+    open++;
+    if (t.status === "blocked") blocked++;
+    const due = localDay(t.dueDate);
+    if (due && due < end) overdue++;
+  }
+  return { finished, withDue, onTime, onTimePct: withDue ? Math.round((onTime / withDue) * 100) : null, overdue, blocked, open, total: tasks.length };
+}
+
+/** A sentence as text runs and figures, so a view can set the figures in bold
+ *  (and colour the ones that need attention) without re-parsing the words. */
+export type Phrase = Array<string | { n: string; tone?: "signal" }>;
+
+/** "In the past week you finished 14 tasks — 67% on time. 3 are overdue and 1 is blocked."
+ *  Every figure appears once. `who` is "you" (Me scope, or a Personal workspace)
+ *  or "team"; `focusMin` (yours, today) is added in the "you" voice only. */
+export function kpiSentence(f: OverviewFacts, who: "you" | "team", focusMin = 0): Phrase {
+  const out: Phrase = [];
+  if (f.finished > 0) {
+    out.push(`In the past week ${who === "you" ? "you" : "the team"} finished `, { n: String(f.finished) }, ` ${plural(f.finished, "task")}`);
+    if (f.onTimePct != null) out.push(" — ", { n: `${f.onTimePct}%` }, " on time.");
+    else out.push(".");
+  } else {
+    out.push(who === "you" ? "You haven't finished anything in the past week." : "Nothing has been finished in the past week.");
+  }
+  // "3 are overdue" follows a sentence about tasks; after "nothing finished" it needs the noun
+  const noun = (n: number) => (f.finished > 0 ? "" : ` ${plural(n, "task")}`);
+  const is = (n: number) => (n === 1 ? "is" : "are");
+  if (f.overdue > 0 && f.blocked > 0) {
+    out.push(" ", { n: String(f.overdue), tone: "signal" }, `${noun(f.overdue)} ${is(f.overdue)} overdue and `, { n: String(f.blocked), tone: "signal" }, ` ${is(f.blocked)} blocked.`);
+  } else if (f.overdue > 0) {
+    out.push(" ", { n: String(f.overdue), tone: "signal" }, `${noun(f.overdue)} ${is(f.overdue)} overdue.`);
+  } else if (f.blocked > 0) {
+    out.push(" ", { n: String(f.blocked), tone: "signal" }, `${noun(f.blocked)} ${is(f.blocked)} blocked.`);
+  } else if (f.open > 0) {
+    out.push(" Nothing is overdue or blocked.");
+  } else if (f.total > 0) {
+    out.push(" Everything is done.");
+  }
+  if (who === "you" && focusMin > 0) out.push(" You've logged ", { n: fmtMinutes(focusMin) }, " of focus today.");
+  return out;
+}
+
+/** The plain text of a phrase (tests, aria, copy). */
+export const phraseText = (p: Phrase): string => p.map((x) => (typeof x === "string" ? x : x.n)).join("");
+
+/* ---------------- Insights: the weekly summary ---------------- */
+
+/** What the Trends weekly summary is written from: the past seven days
+ *  (today and the six before it) plus what's due in the next seven. */
+export interface WeeklyFacts {
+  from: Date;
+  to: Date;
+  /** completed in the window, newest first */
+  finished: Task[];
+  withDue: number;
+  onTime: number;
+  /** open and under way (in progress or in review), most urgent first */
+  inFlight: Task[];
+  /** open and past due, the longest-overdue first */
+  overdue: Task[];
+  blocked: Task[];
+  /** open and due in the next seven days (today and the six after it), soonest first */
+  dueSoon: Task[];
+  /** created in the window */
+  created: number;
+  /** the project with the most completions in the window */
+  topProject: { id: string; n: number } | null;
+}
+
+const PRIO_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+const byUrgency = (a: Task, b: Task) =>
+  (PRIO_RANK[a.priority] ?? 9) - (PRIO_RANK[b.priority] ?? 9) || (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999");
+
+export function weeklyFacts(tasks: Task[], today: Date): WeeklyFacts {
+  const to = midnight(today), from = addDays(to, -6), soon = addDays(to, 7);
+  const finished: Task[] = [], inFlight: Task[] = [], overdue: Task[] = [], blocked: Task[] = [], dueSoon: Task[] = [];
+  let withDue = 0, onTime = 0, created = 0;
+  const perProject = new Map<string, number>();
+  for (const t of tasks) {
+    const c = localDay(t.createdAt);
+    if (c && c >= from && c <= to) created++;
+    if (t.status === "done") {
+      const d = localDay(t.completedAt);
+      if (!d || d < from || d > to) continue;
+      finished.push(t);
+      perProject.set(t.projectId, (perProject.get(t.projectId) ?? 0) + 1);
+      if (t.dueDate) { withDue++; if (landedOnTime(t)) onTime++; }
+      continue;
+    }
+    if (t.status === "blocked") blocked.push(t);
+    else if (t.status === "progress" || t.status === "review") inFlight.push(t);
+    const due = localDay(t.dueDate);
+    if (due && due < to) overdue.push(t);
+    else if (due && due < soon) dueSoon.push(t);
+  }
+  finished.sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
+  inFlight.sort(byUrgency);
+  blocked.sort(byUrgency);
+  overdue.sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "") || byUrgency(a, b));
+  dueSoon.sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "") || byUrgency(a, b));
+  let topProject: WeeklyFacts["topProject"] = null;
+  perProject.forEach((n, id) => { if (!topProject || n > topProject.n) topProject = { id, n }; });
+  return { from, to, finished, withDue, onTime, inFlight, overdue, blocked, dueSoon, created, topProject };
+}
+
+const quote = (s: string) => `“${s.trim()}”`;
+const dueLabel = (t: Task, today: Date): string => {
+  const d = localDay(t.dueDate);
+  if (!d) return "";
+  const n = Math.round((d.getTime() - midnight(today).getTime()) / DAY_MS);
+  return n === 0 ? "today" : n === 1 ? "tomorrow" : `on ${fmtDay(d)}`;
+};
+
+/** The on-device weekly summary: four short markdown bullets (the same shape
+ *  the AI writes) covering what finished, what's under way, what needs
+ *  attention and what's next. Subject-less, so it reads right in Me and Team. */
+export function weeklySummaryText(f: WeeklyFacts, projectName: (id: string) => string | undefined): string {
+  const lines: string[] = [];
+  const n = f.finished.length;
+  if (n) {
+    let line = `**Finished ${n} ${plural(n, "task")}**`;
+    if (f.withDue === n) line += `, ${f.onTime === n ? (n === 1 ? "on time" : "all on time") : `${f.onTime} on time`}`;
+    else if (f.withDue > 0) line += `; ${f.onTime} of the ${f.withDue} with a due date landed on time`;
+    const top = f.topProject ? projectName(f.topProject.id) : undefined;
+    line += ".";
+    if (top && f.topProject && f.topProject.n > 1 && f.topProject.n < n) line += ` ${top} moved most, with ${f.topProject.n} done.`;
+    else if (top && f.topProject && f.topProject.n === n && n > 1) line += ` All of it in ${top}.`;
+    lines.push(line);
+  } else {
+    lines.push("**Nothing finished** in the past 7 days.");
+  }
+  if (f.inFlight.length) {
+    const k = f.inFlight.length;
+    lines.push(`**Under way:** ${k} ${plural(k, "task")}${k > 1 ? ", led by" : ":"} ${quote(f.inFlight[0].title)}.`);
+  }
+  const od = f.overdue.length, bl = f.blocked.length;
+  if (od || bl) {
+    const parts: string[] = [];
+    if (od) parts.push(`${od} overdue${od > 1 ? `, the oldest ${quote(f.overdue[0].title)}` : ` (${quote(f.overdue[0].title)})`}`);
+    if (bl) parts.push(`${bl} blocked${bl > 1 ? "" : ` (${quote(f.blocked[0].title)})`}`);
+    lines.push(`**Needs attention:** ${parts.join(od > 1 && bl ? "; " : " and ")}.`);
+  } else {
+    lines.push("**Needs attention:** nothing overdue or blocked.");
+  }
+  const s = f.dueSoon.length;
+  lines.push(s
+    ? `**Next 7 days:** ${s} ${plural(s, "task")} due, starting with ${quote(f.dueSoon[0].title)} ${dueLabel(f.dueSoon[0], f.to)}.`
+    : "**Next 7 days:** nothing due yet.");
+  return lines.map((l) => `- ${l}`).join("\n");
+}
+
+/** At most this many tasks go to Kanbo for the weekly summary. The ai-assist
+ *  function reads 120 (AI_TASK_CAP in data/store.ts); trimming to it here,
+ *  in the same shape, means "How I got here" can say exactly what was sent. */
+export const SUMMARY_TASK_CAP = 120;
+/** room kept for the week's finished work when there's a lot open */
+const SUMMARY_DONE_SLOTS = 40;
+
+/** What Kanbo is sent to write the weekly summary. */
+export interface SummaryInput {
+  /** the tasks to send: open work, most pressing first, then the week's finished work, newest first */
+  tasks: Task[];
+  /** how many of `tasks` are open, and how many were finished in the window */
+  open: number;
+  finished: number;
+  /** the same counts before any trimming */
+  openTotal: number;
+  finishedTotal: number;
+}
+
+/** The weekly summary's input: the past seven days' finished work plus the
+ *  open work, overdue and blocked first, trimmed to SUMMARY_TASK_CAP. Older
+ *  finished work isn't sent: the summary is about this week. */
+export function summaryInput(tasks: Task[], f: WeeklyFacts, cap = SUMMARY_TASK_CAP): SummaryInput {
+  const seen = new Set<string>();
+  const open: Task[] = [];
+  const add = (t: Task) => { if (!seen.has(t.id)) { seen.add(t.id); open.push(t); } };
+  [...f.overdue, ...f.blocked, ...f.dueSoon, ...f.inFlight].forEach(add);
+  tasks.filter((t) => t.status !== "done").sort(byUrgency).forEach(add);
+  const openTake = Math.min(open.length, cap - Math.min(f.finished.length, SUMMARY_DONE_SLOTS));
+  const doneTake = Math.min(f.finished.length, cap - openTake);
+  return {
+    tasks: [...open.slice(0, openTake), ...f.finished.slice(0, doneTake)],
+    open: openTake, finished: doneTake, openTotal: open.length, finishedTotal: f.finished.length,
+  };
+}
+
+/** "How I got here" under Kanbo's weekly summary: what it was sent, one fact a line. */
+export function weeklySummaryDetails(f: WeeklyFacts, sent: SummaryInput): string[] {
+  const span = `between ${fmtDay(f.from)} and ${fmtDay(f.to)}`;
+  const lines = [sent.finished < sent.finishedTotal
+    ? `The ${sent.finished} most recent of ${sent.finishedTotal} tasks finished ${span}`
+    : `${sent.finished} finished ${span}${f.withDue ? `, ${f.onTime} of ${f.withDue} on time` : ""}`];
+  if (sent.open < sent.openTotal) {
+    lines.push(`The ${sent.open} most pressing of ${sent.openTotal} open tasks, overdue and blocked first`);
+  } else {
+    lines.push(`${sent.open} open: ${f.overdue.length} overdue, ${f.blocked.length} blocked, ${f.inFlight.length} under way`);
+    lines.push(`${f.dueSoon.length} due in the next 7 days`);
+  }
+  lines.push("Each task's title, status, priority, dates, assignee and project; nothing else");
+  return lines;
+}
+
+/** Markdown bullets as plain text, for the clipboard and the PDF. */
+export const plainSummary = (md: string): string => md.replace(/\*\*(.+?)\*\*/g, "$1").replace(/__(.+?)__/g, "$1");
+
+/* ---------------- Trends: cycle time ---------------- */
+
+export const CYCLE_BUCKETS = [
+  { label: "Same day", lo: 0, hi: 1 },
+  { label: "1–2 days", lo: 1, hi: 3 },
+  { label: "3–7 days", lo: 3, hi: 8 },
+  { label: "1–2 weeks", lo: 8, hi: 15 },
+  { label: "Over 2 weeks", lo: 15, hi: Infinity },
+] as const;
+
+/** How many cycle times (whole days, created → done) fall in each bucket. */
+export function cycleHistogram(days: number[]): { label: string; n: number }[] {
+  return CYCLE_BUCKETS.map((b) => ({ label: b.label, n: days.filter((d) => d >= b.lo && d < b.hi).length }));
+}
+
 /* ---------------- Workload ---------------- */
 
 export interface TaskWeekLoad { hours: number; overdue: boolean }
