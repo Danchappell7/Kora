@@ -8,11 +8,8 @@
 
 /* aliases with today's fallbacks; on the root so menus portalled to <body> share them */
 :root {
-  /* the canvas as it looks behind a sticky strip: Navy's fixed halo over --bg, so a header that
-     sits on the page (or sticks while it scrolls) never shows as a darker band */
-  --tv-canvas: var(--halo, none) fixed, var(--bg);
-  --tv-hover: var(--fill-1, color-mix(in oklch, var(--ink) 5%, transparent));
-  --tv-press: var(--fill-2, color-mix(in oklch, var(--ink) 8%, transparent));
+  --tv-hover: var(--fill-1, color-mix(in oklab, var(--ink) 5%, transparent));
+  --tv-press: var(--fill-2, color-mix(in oklab, var(--ink) 8%, transparent));
   --tv-selected: var(--bg-selected, var(--accent-dim));
   --tv-signal: var(--signal, var(--prio-urgent));
   --tv-quiet: var(--icon-quiet, var(--ink-4));
@@ -22,12 +19,13 @@
 .ktv {
   --tv-gutter: var(--gutter, 32px);
   --tv-row: var(--row-h, 36px);
+  /* where group headers stick: the top of the list (desktop), under the phone header (44px once scrolled) */
   --tv-sticky: var(--sticky-top, 0px);
   display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0;
 }
 [data-density="compact"] .ktv, .ktv[data-density="compact"] { --tv-row: var(--row-h, 30px); }
 @media (max-width: 859px) {
-  .ktv { --tv-gutter: var(--gutter, 16px); }
+  .ktv { --tv-gutter: var(--gutter, 16px); --tv-sticky: var(--sticky-top, 44px); }
 }
 
 /* ---------------- the one toolbar row ---------------- */
@@ -46,8 +44,10 @@
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
 }
 .ktv-save { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ktv-save-wrap { position: relative; display: inline-flex; align-items: center; }
+.ktv-save-kbd { position: absolute; right: 5px; display: inline-flex; pointer-events: none; }
 .ktv-save-field {
-  width: 168px; height: var(--h-sm, 28px); padding: 0 10px; border-radius: var(--r-sm, 6px);
+  width: 184px; height: var(--h-sm, 28px); padding: 0 30px 0 10px; border-radius: var(--r-sm, 6px);
   border: 1px solid var(--accent); background: var(--field-bg); color: var(--ink);
   font: 500 13px/20px var(--tv-ui);
 }
@@ -143,7 +143,7 @@
 .ktv-chip .kglyph { margin: -4px -2px -4px -4px; }
 [data-kpop-panel] .ktv-chip:hover { background: var(--tv-hover) !important; color: var(--ink) !important; }
 [data-kpop-panel] .ktv-chip[aria-pressed="true"] {
-  border-color: var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent));
+  border-color: var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent));
   background: var(--tv-selected) !important; color: var(--accent-text, var(--accent)) !important;
 }
 .ktv-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
@@ -167,11 +167,15 @@
 
 /* the quiet "Add task" row lives in the gap under each group, so it costs no space */
 .ktv-group { position: relative; padding-bottom: 24px; }
+/* A header sits on the page until it sticks, then turns opaque over the rows scrolling beneath it
+   (like the page header). A sticky layer can't paint Navy's viewport-fixed halo, so an always-opaque
+   strip would show as a band wherever the halo falls. */
 .ktv-ghead {
   position: sticky; top: var(--tv-sticky); z-index: 2; display: flex; align-items: center; gap: 8px;
-  height: 32px; background: var(--tv-canvas);
+  height: 32px; background: transparent;
 }
-.ktv-ghead[data-drop="true"] { background: color-mix(in oklch, var(--accent) 9%, var(--bg)); box-shadow: inset 0 -2px 0 var(--accent); }
+.ktv-ghead[data-stuck="true"] { background: var(--bg); box-shadow: 0 1px 0 var(--hairline); }
+.ktv-ghead[data-drop="true"] { background: color-mix(in oklab, var(--accent) 9%, var(--bg)); box-shadow: inset 0 -2px 0 var(--accent); }
 .ktv-gtitle {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin: 0 0 0 -6px; padding: 0 6px; height: 28px;
   border: 0; border-radius: var(--r-sm, 6px); background: transparent; cursor: pointer; color: var(--ink-3);
@@ -189,7 +193,7 @@
 .ktv-gtools { display: flex; align-items: center; gap: 2px; margin-left: auto; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
 .ktv-ghead:hover .ktv-gtools, .ktv-ghead:focus-within .ktv-gtools { opacity: 1; }
 .ktv-flash > .ktv-ghead { animation: ktvFlash 1.1s var(--ease-out, var(--ease)); }
-@keyframes ktvFlash { 0%, 30% { background: color-mix(in oklch, var(--accent) 12%, var(--bg)); } }
+@keyframes ktvFlash { 0%, 30% { background: color-mix(in oklab, var(--accent) 12%, var(--bg)); } }
 
 /* the select boxes sit in the gutter, left of the status glyph */
 .ktv-sel {
@@ -211,7 +215,11 @@
   transition: background var(--d-1, 90ms) var(--ease), opacity var(--d-2, 160ms) var(--ease);
 }
 .ktv-row:hover { background: var(--tv-hover); }
-.ktv-row[data-selected="true"] { background: var(--tv-selected); }
+.ktv-row[data-selected="true"], .ktv-row[data-active="true"] { background: var(--tv-selected); }
+/* the task open in the panel keeps an accent edge (the keyboard cursor draws the same one) */
+.ktv-row[data-active="true"]::before {
+  content: ""; position: absolute; left: 3px; top: 7px; bottom: 7px; width: 2px; border-radius: 2px; background: var(--accent);
+}
 /* the keyboard cursor (J / K, Tab): the whole row lights, with an accent edge, instead of a ring round
    the title. Only for keyboard focus, so a mouse click on a row's control leaves no trace. */
 @supports selector(:has(a)) {
@@ -255,9 +263,16 @@
   border: 1px solid var(--accent); background: var(--field-bg); color: var(--ink); font: 500 14px/20px var(--tv-ui);
 }
 
-/* inline meta after the title */
-.ktv-meta { display: inline-flex; align-items: center; gap: 10px; flex-shrink: 1; min-width: 0; overflow: hidden; color: var(--ink-3); font: 500 12px/16px var(--tv-ui); white-space: nowrap; }
-.ktv-meta > * { flex-shrink: 0; }
+/* inline meta after the title. The title keeps its room: the meta gives way first (a far
+   bigger shrink factor), and an item that no longer fits wraps onto a clipped second line
+   instead of being cut mid-word, so the meta drops whole items from the end. */
+.ktv-meta {
+  display: inline-flex; flex-wrap: wrap; align-items: center; align-content: flex-start; gap: 8px 10px;
+  flex: 0 1000 auto; min-width: 0; height: 22px; overflow: hidden;
+  color: var(--ink-3); font: 500 12px/16px var(--tv-ui); white-space: nowrap;
+}
+/* every item sits on the title's line (22px, the tallest item), text and icon rows alike */
+.ktv-meta > * { min-width: 0; min-height: 22px; line-height: 22px; overflow: hidden; text-overflow: ellipsis; }
 .ktv-meta svg { color: var(--ink-3); }
 .ktv-m { display: inline-flex; align-items: center; gap: 4px; }
 .ktv-mono { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -268,6 +283,7 @@
   background: transparent; color: var(--ink-3); cursor: pointer;
 }
 .ktv-subbtn:hover { background: var(--tv-hover); color: var(--ink); }
+.ktv-subbtn:focus-visible { outline-offset: -2px; } /* inside the meta line, which clips */
 .ktv-subbtn svg { transition: transform var(--d-2, 160ms) var(--ease); }
 .ktv-subbtn[aria-expanded="true"] svg { transform: rotate(90deg); }
 .ktv-tag { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); }
@@ -277,9 +293,17 @@
 .ktv-milestone { width: 8px; height: 8px; border-radius: 2px; rotate: 45deg; flex-shrink: 0; background: var(--st-review-fill, var(--st-review)); }
 
 /* the right-hand cluster: columns line up row to row */
-.ktv-cluster { display: flex; align-items: center; gap: 12px; flex-shrink: 0; margin-left: auto; }
-.ktv-action { display: flex; align-items: center; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
-.ktv-row:hover .ktv-action, .ktv-row:focus-within .ktv-action, .ktv-action[data-sticky="true"] { opacity: 1; }
+.ktv-cluster { position: relative; display: flex; align-items: center; gap: 12px; flex-shrink: 0; margin-left: auto; }
+/* a row's hover action (Waiting on: Nudge) floats over the end of the title's space instead of
+   holding an empty slot on every row; its backing is the row's own colour, faded in from the left */
+.ktv-action {
+  --tv-rowbg: linear-gradient(var(--tv-hover), var(--tv-hover)), var(--bg);
+  position: absolute; right: 100%; top: 50%; translate: 0 -50%; display: flex; align-items: center; padding: 0 8px 0 28px;
+  background: var(--tv-rowbg); -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px); mask-image: linear-gradient(90deg, transparent, #000 24px);
+  opacity: 0; pointer-events: none; transition: opacity var(--d-1, 90ms) var(--ease);
+}
+.ktv-row[data-selected="true"] .ktv-action, .ktv-row[data-active="true"] .ktv-action { --tv-rowbg: linear-gradient(var(--tv-selected), var(--tv-selected)), var(--bg); }
+.ktv-row:hover .ktv-action, .ktv-row:focus-within .ktv-action, .ktv-action[data-sticky="true"] { opacity: 1; pointer-events: auto; }
 .ktv-proj { display: inline-flex; align-items: center; gap: 7px; width: 140px; min-width: 0; color: var(--ink-3); font: 500 12px/16px var(--tv-ui); }
 .ktv-proj > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ktv-due { display: flex; justify-content: flex-end; width: 84px; }
@@ -317,7 +341,7 @@
 .ktv-add > span:first-child { display: inline-grid; place-items: center; width: 16px; }
 .ktv-group:hover .ktv-add, .ktv-add:focus-visible, .ktv-add[data-drop="true"], .ktv-add[data-open="true"] { opacity: 1; }
 .ktv-add:hover { background: var(--tv-hover); color: var(--ink-2); }
-.ktv-add[data-drop="true"] { background: color-mix(in oklch, var(--accent) 9%, transparent); box-shadow: inset 0 2px 0 var(--accent); }
+.ktv-add[data-drop="true"] { background: color-mix(in oklab, var(--accent) 9%, transparent); box-shadow: inset 0 2px 0 var(--accent); }
 .ktv-add[data-open="true"] { position: relative; height: var(--tv-row); }
 .ktv-add-field {
   flex: 1; min-width: 0; height: 28px; margin-left: 17px; padding: 0 10px; border-radius: var(--r-sm, 6px);
@@ -392,6 +416,9 @@
 
 /* ---------------- phones: two-line rows, the page scrolls ---------------- */
 @media (max-width: 859px) {
+  /* no inner scroll box: the page scrolls, so group headers stick under the page header
+     (clip, unlike hidden, doesn't make the list a scroll container of its own) */
+  .ktv-scroll { overflow-x: clip; overflow-y: visible; }
   .ktv-row {
     display: grid; grid-template-columns: 20px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 12px; row-gap: 2px;
     height: auto; min-height: 56px; padding-top: 8px; padding-bottom: 8px; align-content: center;
@@ -403,10 +430,10 @@
   .ktv-row .ktv-meta { display: none; }
   .ktv-row .ktv-proj { width: auto; max-width: 45%; }
   .ktv-row .ktv-due { width: auto; order: -1; }
-  .ktv-row .ktv-due .kdate[data-empty="true"] { display: none; }
+  .ktv-row .ktv-due:empty, .ktv-row .ktv-due:has(.kdate[data-empty="true"]) { display: none; }
   .ktv-row .ktv-avatar { margin-left: auto; }
   .ktv-row .ktv-trig[data-hidden="true"] { display: none; }
-  .ktv-row .ktv-action { opacity: 1; }
+  .ktv-row .ktv-action { position: static; translate: none; padding: 0; background: none; -webkit-mask-image: none; mask-image: none; opacity: 1; pointer-events: auto; }
   .ktv-sel { display: none; }
   .ktv-list[data-selecting="true"] .ktv-row { grid-template-columns: 16px 20px minmax(0, 1fr); }
   .ktv-list[data-selecting="true"] .ktv-row .ktv-sel { display: grid; position: static; translate: none; grid-row: 1 / span 2; align-self: center; }
@@ -421,31 +448,35 @@
   .ktv-rowwrap { contain-intrinsic-size: auto 56px; }
 }
 @media (hover: none), (pointer: coarse) {
-  .ktv-add, .ktv-gtools, .ktv-action { opacity: 1; }
+  .ktv-add, .ktv-gtools, .ktv-col-head .ktv-col-tools { opacity: 1; }
+  .ktv-row .ktv-action { position: static; translate: none; padding: 0; background: none; -webkit-mask-image: none; mask-image: none; opacity: 1; pointer-events: auto; }
   .ktv-trig[data-hidden="true"] { opacity: 1; }
 }
 
 /* ---------------- board ---------------- */
 /* min-content + clip: the board is as wide as its columns (so it scrolls sideways when they
    can't fit), and nothing else (a hidden tooltip at the last column's edge) widens it */
-.ktv-board { display: flex; gap: 12px; min-height: 100%; min-width: min-content; padding: 12px var(--tv-gutter) 32px; overflow-x: clip; }
+.ktv-board { display: flex; flex: 1 0 auto; gap: 12px; min-width: min-content; padding: 12px var(--tv-gutter) 32px; overflow-x: clip; }
 .ktv-col { display: flex; flex-direction: column; flex: 1 1 0; min-width: 184px; max-width: 360px; }
-.ktv-col-head { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 4px 0 2px; }
+.ktv-col-head { position: relative; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 4px 0 2px; }
 .ktv-col-head .ktv-col-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/20px var(--tv-ui); color: var(--ink); }
-.ktv-col-head .ktv-col-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
+.ktv-col-head .ktv-col-tools {
+  position: absolute; right: 0; top: 50%; translate: 0 -50%; display: flex; align-items: center; gap: 2px; padding-left: 12px;
+  background: linear-gradient(90deg, transparent, var(--bg) 12px); opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease);
+}
 .ktv-col:hover .ktv-col-tools, .ktv-col-head:focus-within .ktv-col-tools { opacity: 1; }
 .ktv-wip {
   height: 20px; padding: 0 6px; border: 0; border-radius: var(--r-xs, 4px); background: transparent; cursor: pointer;
   font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4);
 }
 button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
-.ktv-wip[data-over="true"] { color: var(--tv-signal); font-weight: 600; background: var(--signal-tint, color-mix(in oklch, var(--tv-signal) 10%, transparent)); }
+.ktv-wip[data-over="true"] { color: var(--tv-signal); font-weight: 600; background: var(--signal-tint, color-mix(in oklab, var(--tv-signal) 10%, transparent)); }
 .ktv-col-hint { margin: -2px 4px 8px; font: 500 12px/16px var(--tv-ui); color: var(--ink-4); }
 .ktv-lane {
   display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 120px; padding: 8px; border-radius: var(--r-lg, 12px);
   background: var(--bg-deep); transition: background var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease);
 }
-.ktv-lane[data-drop="true"] { background: color-mix(in oklch, var(--accent) 8%, var(--bg-deep)); box-shadow: inset 0 0 0 1.5px var(--accent-line, var(--accent)); }
+.ktv-lane[data-drop="true"] { background: color-mix(in oklab, var(--accent) 8%, var(--bg-deep)); box-shadow: inset 0 0 0 1.5px var(--accent-line, var(--accent)); }
 .ktv-lane-empty { display: grid; place-items: center; min-height: 64px; padding: 16px 8px; font: 500 12px/16px var(--tv-ui); color: var(--ink-4); text-align: center; }
 .ktv-card {
   position: relative; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-md, 8px);
@@ -454,6 +485,7 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 }
 .ktv-card:hover { box-shadow: 0 0 0 1px var(--hairline-strong), 0 2px 6px -2px oklch(0.2 0.03 268 / 0.14); }
 .ktv-card[data-selected="true"] { box-shadow: 0 0 0 1.5px var(--accent); background: linear-gradient(var(--tv-selected), var(--tv-selected)), var(--surface-raised); }
+.ktv-card[data-active="true"]:not([data-selected="true"]) { box-shadow: 0 0 0 1.5px var(--accent-line, var(--accent)), var(--e1, var(--shadow)); }
 .ktv-card[data-ring="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ktv-card[data-drag="true"] { opacity: 0.4; }
 .ktv-card[data-drop="top"]::before, .ktv-card[data-drop="bottom"]::before {
@@ -480,7 +512,7 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   display: flex; flex-direction: column; align-items: center; gap: 10px; width: 44px; flex-shrink: 0; padding: 12px 0;
   border: 0; border-radius: var(--r-lg, 12px); background: var(--bg-deep); cursor: pointer; color: var(--ink-3);
 }
-.ktv-colrail:hover { color: var(--ink); background: color-mix(in oklch, var(--ink) 4%, var(--bg-deep)); }
+.ktv-colrail:hover { color: var(--ink); background: color-mix(in oklab, var(--ink) 4%, var(--bg-deep)); }
 .ktv-colrail > b { writing-mode: vertical-rl; font: 600 13px/20px var(--tv-ui); color: var(--ink-2); }
 .ktv-morecards {
   display: flex; align-items: center; justify-content: center; gap: 6px; height: 32px; border: 0; border-radius: var(--r-md, 8px);
@@ -500,8 +532,8 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 /* ---------------- timeline ---------------- */
 .ktv-tl { --tl-lane: 160px; flex: 1; min-height: 0; overflow: auto; }
 @media (max-width: 859px) { .ktv-tl { --tl-lane: 104px; } }
-.ktv-tl-axis { position: sticky; top: 0; z-index: 4; display: flex; background: var(--tv-canvas); box-shadow: inset 0 -1px 0 var(--hairline); }
-.ktv-tl-corner { position: sticky; left: 0; z-index: 1; width: var(--tl-lane); flex-shrink: 0; background: var(--tv-canvas); box-shadow: inset -1px 0 0 var(--hairline); }
+.ktv-tl-axis { position: sticky; top: 0; z-index: 4; display: flex; background: var(--bg); box-shadow: inset 0 -1px 0 var(--hairline); }
+.ktv-tl-corner { position: sticky; left: 0; z-index: 1; width: var(--tl-lane); flex-shrink: 0; background: var(--bg); box-shadow: inset -1px 0 0 var(--hairline); }
 .ktv-tl-day { position: relative; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; height: 44px; }
 .ktv-tl-day > span:first-child { font: 500 11px/16px var(--tv-ui); color: var(--ink-4); }
 .ktv-tl-day > span:last-child { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
@@ -516,13 +548,13 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 .ktv-tl-group { display: flex; box-shadow: inset 0 -1px 0 var(--hairline); }
 .ktv-tl-lane {
   position: sticky; left: 0; z-index: 3; width: var(--tl-lane); flex-shrink: 0; align-self: stretch;
-  background: var(--tv-canvas); box-shadow: inset -1px 0 0 var(--hairline);
+  background: var(--bg); box-shadow: inset -1px 0 0 var(--hairline);
 }
 .ktv-tl-lane-in {
   position: sticky; top: 44px; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px 0 var(--tv-gutter);
   font: 600 12px/16px var(--tv-ui); color: var(--ink-2);
 }
-.ktv-tl-lane-in > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktv-tl-lane-in > span { min-width: 0; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .ktv-tl-lane-in small { margin-left: auto; font: 500 11px/16px var(--font-mono); color: var(--ink-4); }
 @media (max-width: 859px) { .ktv-tl-lane-in { padding-left: 12px; } }
 .ktv-tl-rows { position: relative; flex-shrink: 0; }
@@ -531,12 +563,12 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   --bar: var(--st-todo-fill, var(--st-todo));
   position: absolute; top: 6px; height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 9px; overflow: hidden;
   border: 0; border-radius: var(--r-sm, 6px); cursor: pointer; text-align: left; color: var(--ink);
-  background: color-mix(in oklch, var(--bar) 22%, var(--bg));
+  background: color-mix(in oklab, var(--bar) 22%, var(--bg));
   box-shadow: inset 3px 0 0 var(--bar);
   font: 500 12px/16px var(--tv-ui);
   transition: left var(--d-2, 160ms) var(--ease), width var(--d-2, 160ms) var(--ease), background var(--d-1, 90ms) var(--ease);
 }
-.ktv-tl-bar:hover { background: color-mix(in oklch, var(--bar) 32%, var(--bg)); }
+.ktv-tl-bar:hover { background: color-mix(in oklab, var(--bar) 32%, var(--bg)); }
 .ktv-tl-bar[data-crit="true"] { box-shadow: inset 3px 0 0 var(--bar), inset 0 0 0 1.5px var(--tv-signal); }
 .ktv-tl-bar[data-clip-l="true"] { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 .ktv-tl-bar[data-clip-r="true"] { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
@@ -547,7 +579,7 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent);
 }
 .ktv-tl-grip { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
-.ktv-tl-grip:hover { background: color-mix(in oklch, var(--bar) 45%, transparent); }
+.ktv-tl-grip:hover { background: color-mix(in oklab, var(--bar) 45%, transparent); }
 .ktv-tl-nodate {
   position: absolute; top: 7px; left: 6px; max-width: 260px; height: 22px; display: flex; align-items: center; gap: 6px; padding: 0 8px;
   border: 1px dashed var(--hairline-strong); border-radius: var(--r-sm, 6px); background: transparent; color: var(--ink-3); cursor: pointer;
@@ -562,7 +594,7 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 }
 .ktv-tl-edge > span { overflow: hidden; text-overflow: ellipsis; font-family: var(--tv-ui); font-size: 12px; }
 .ktv-tl-edge:hover { color: var(--ink); }
-.ktv-tl-nowline { position: absolute; top: 0; bottom: 0; width: 1.5px; margin-left: -0.75px; background: var(--accent); pointer-events: none; z-index: 2; }
+.ktv-tl-nowline { position: absolute; top: 0; bottom: 0; width: 1.5px; margin-left: -0.75px; background: var(--accent); pointer-events: none; }
 .ktv-tl-drop { position: absolute; top: 0; bottom: 0; background: var(--tv-selected); pointer-events: none; }
 .ktv-tl-weekend { position: absolute; top: 0; bottom: 0; background: var(--tv-hover); pointer-events: none; }
 .ktv-tl-moregroup { display: flex; align-items: center; height: 36px; padding-left: 8px; }
@@ -589,7 +621,7 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   border-right: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); transition: background var(--d-1, 90ms) var(--ease);
 }
 .ktv-cal-grid[data-mode="week"] .ktv-cal-cell { min-height: 360px; }
-.ktv-cal-cell[data-weekend="true"] { background: color-mix(in oklch, var(--ink) 1.5%, transparent); }
+.ktv-cal-cell[data-weekend="true"] { background: color-mix(in oklab, var(--ink) 1.5%, transparent); }
 .ktv-cal-cell[data-drop="true"] { background: var(--tv-selected); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .ktv-cal-num {
   align-self: flex-start; display: inline-grid; place-items: center; min-width: 22px; height: 22px; margin: 0 0 2px; padding: 0 4px; border-radius: 999px;
@@ -690,19 +722,19 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   height: var(--h-sm, 28px); max-width: 100%; padding: 0 26px 0 10px; border-radius: var(--r-sm, 6px);
   border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--ink-2); font: 500 12px/16px var(--tv-ui);
 }
-.ktv-search-select[data-on="true"] { border-color: var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent)); background-color: var(--tv-selected); color: var(--ink); font-weight: 600; }
+.ktv-search-select[data-on="true"] { border-color: var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background-color: var(--tv-selected); color: var(--ink); font-weight: 600; }
 .ktv-saved {
   display: inline-flex; align-items: center; height: 24px; padding: 0 2px 0 9px; border-radius: 999px; border: 1px solid var(--hairline-strong);
   font: 500 12px/1 var(--tv-ui); color: var(--ink-2);
 }
-.ktv-saved[data-on="true"] { border-color: var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent)); background: var(--tv-selected); color: var(--accent-text, var(--accent)); }
+.ktv-saved[data-on="true"] { border-color: var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background: var(--tv-selected); color: var(--accent-text, var(--accent)); }
 .ktv-saved > button { height: 22px; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 0; }
 .ktv-saved > button + button { display: grid; place-items: center; width: 20px; margin-left: 4px; border-radius: 50%; color: var(--ink-4); }
 .ktv-saved > button + button:hover { background: var(--tv-hover); color: var(--ink); }
 .ktv-search .ktv-chip { height: var(--h-sm, 28px); padding: 0 12px; font-size: 13px; }
 .ktv-search .ktv-chip svg { color: var(--tv-quiet); }
 .ktv-search .ktv-chip[aria-pressed="true"] {
-  border-color: var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent)); background: var(--tv-selected); color: var(--accent-text, var(--accent));
+  border-color: var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background: var(--tv-selected); color: var(--accent-text, var(--accent));
 }
 .ktv-search .ktv-chip[aria-pressed="true"] svg { color: currentColor; }
 .ktv-search .ktv-chip:hover:not([aria-pressed="true"]) { background: var(--tv-hover); color: var(--ink); }

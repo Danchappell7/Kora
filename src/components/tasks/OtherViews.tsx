@@ -174,6 +174,8 @@ interface KanbanCardProps {
   customFields: CustomFieldDef[]; members: { id: string; name: string }[];
   onKeyMove?: (id: string, key: string) => void; onMenuDone: (id: string) => void; hintId?: string;
   showProject: boolean; cursor: boolean;
+  /** open in the task panel */
+  active?: boolean;
 }
 
 const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
@@ -213,7 +215,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
     <div data-card-id={task.id} role="group" aria-label={task.title}
       onClick={() => p.onOpen(task.id)}
       className={"ktv-card" + (landed ? " kland" : "")} draggable={p.canDrag}
-      data-selected={p.selected || undefined} data-ring={ring || undefined} data-cursor={p.cursor || undefined}
+      data-selected={p.selected || undefined} data-ring={ring || undefined} data-cursor={p.cursor || undefined} data-active={p.active || undefined}
       data-drag={p.dragging || undefined} data-drop={p.dropHint ?? undefined} data-draggable={p.canDrag || undefined} data-done={done || undefined}
       onDragStart={p.canDrag ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; p.onPickup(task.id); } : undefined}
       onDragEnd={p.canDrag ? p.onDragDone : undefined}
@@ -356,7 +358,7 @@ function WipLimitEditor({ column, current, perBoard, onSave, onClose }: { column
 interface BoardCol { key: string; label: string; status?: Status; dot?: string; avatar?: string; accepts: boolean; hint?: string }
 const BOARD_GROUPS: { value: BoardGroup; label: string }[] = [{ value: "status", label: "Status" }, { value: "priority", label: "Priority" }, { value: "project", label: "Project" }, { value: "assignee", label: "Assignee" }];
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle }: {
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle, activeId }: {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void;
   onMove: (taskId: string, status: Status, position?: number) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
@@ -375,6 +377,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   showProject?: boolean;
   /** ⌘↵ on a card (completes it like its row would); falls back to moving it to Done */
   onToggle?: (id: string) => void;
+  /** the task open in the task panel */
+  activeId?: string;
 }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
   const editable = !readOnly;
@@ -643,7 +647,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
                       selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
                       customFields={customFields} members={members}
                       onKeyMove={editable ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId}
-                      showProject={showProject} cursor={kb.cursor === t.id} />
+                      showProject={showProject} cursor={kb.cursor === t.id} active={activeId === t.id} />
                   );
                 })}
                 {items.length === 0 && <div className="ktv-lane-empty">{col.status ? EMPTY_COLUMN[col.status] : "Nothing here"}</div>}
@@ -908,10 +912,10 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
           <div className="ktv-tl-lanes" onDragLeave={canEdit ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropCol(null); } : undefined}>
             {dates.map((d, i) => (d.getDay() === 0 || d.getDay() === 6) && <div key={`we-${i}`} aria-hidden className="ktv-tl-weekend" style={{ left: laneW + i * colW, width: colW }} />)}
             {dropCol != null && <div aria-hidden className="ktv-tl-drop" style={{ left: laneW + dropCol * colW, width: colW }} />}
+            {/* the today line and the dependency connectors run behind the bars, so no label is crossed */}
             {todayIdx >= 0 && todayIdx < DAYS && <div aria-hidden className="ktv-tl-nowline" style={{ left: laneW + todayIdx * colW + colW / 2 }} />}
-            {/* dependency connectors */}
             {depLines.length > 0 && (
-              <svg aria-hidden width={laneW + trackW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 1, overflow: "visible" }}>
+              <svg aria-hidden width={laneW + trackW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", overflow: "visible" }}>
                 <defs>
                   <marker id={`${hintId}-arrow`} markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--icon-quiet, var(--ink-4))" /></marker>
                   <marker id={`${hintId}-crit`} markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--signal, var(--prio-urgent))" /></marker>

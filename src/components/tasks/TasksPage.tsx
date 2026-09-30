@@ -7,8 +7,8 @@
    (export, import, advanced search). Active filters show as pills on
    one quiet line underneath.
    ============================================================ */
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
-import { Icon, Avatar, Segmented, Tabs, Button, IconButton, StatusGlyph, ProjectDot, projectPaint, EmptyState, Toggle, type TabItem } from "../primitives";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useId, type ReactNode } from "react";
+import { Icon, Avatar, Segmented, Tabs, Button, IconButton, StatusGlyph, projectPaint, EmptyState, Toggle, Kbd, type TabItem } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { ListView, type ListGroup } from "./ListView";
 import { BoardView, TimelineView, CalendarView, FilesView, MatrixView, type BoardGroup } from "./OtherViews";
@@ -67,7 +67,7 @@ function PopSection({ title, note, children }: { title: string; note?: string; c
 }
 
 export function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts,
-  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false }: {
+  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -134,6 +134,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   onDensity?: (d: "comfortable" | "compact") => void;
   /** tasks are still arriving: skeleton rows */
   loading?: boolean;
+  /** the task open in the task panel (App's detail id): its row or card stays marked */
+  activeTaskId?: string;
 }) {
   const isMy = filterScope === "my";
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -335,6 +337,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
 
   // save the current filters as a view (named inline, no prompt)
   const [saving, setSaving] = useState<string | null>(null);
+  const saveHintId = useId();
   const saveView = () => {
     const name = (saving ?? "").trim();
     setSaving(null);
@@ -355,10 +358,14 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
       {saving === null ? (
         <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")}>Save view</Button>
       ) : (
-        // eslint-disable-next-line jsx-a11y/no-autofocus
-        <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this view, then Enter" aria-label="Name this view"
-          onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveView(); else if (e.key === "Escape") setSaving(null); }}
-          onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+        <span className="ktv-save-wrap">
+          {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+          <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this view" aria-label="Name this view"
+            aria-describedby={`${saveHintId}`}
+            onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveView(); else if (e.key === "Escape") setSaving(null); }}
+            onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+          <span id={saveHintId} className="ktv-save-kbd"><span className="sr-only">Press Enter to save, Escape to cancel</span><Kbd>↵</Kbd></span>
+        </span>
       )}
     </div>
   ) : null;
@@ -612,7 +619,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         groups={listGroups} showProject={isMy} quietAssigneeFor={isMy && myTab !== "waiting" ? currentUserId : undefined}
         renderMeta={isMy && myTab === "waiting" ? waitingMeta : undefined} renderAction={isMy && myTab === "waiting" ? waitingAction : undefined}
         focusGroup={isMy && myTab === "open" && group === "due" ? dueFocusGroup(dueFocus) : undefined} focusKey={dueFocus}
-        emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} />
+        emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} activeId={activeTaskId} />
     );
   } else {
     body = (
@@ -625,7 +632,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
           </div>
         )}
         {shownView === "board" && <BoardView tasks={shownTasks} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete}
-          members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} group={boardGroup} onGroupChange={setBoardGroup} showProject={isMy} onToggle={onToggle} />}
+          members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} group={boardGroup} onGroupChange={setBoardGroup} showProject={isMy} onToggle={onToggle} activeId={activeTaskId} />}
         {shownView === "timeline" && <TimelineView tasks={shownTasks} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
         {shownView === "calendar" && <CalendarView tasks={shownTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
         {shownView === "files" && <FilesView tasks={shownTasks} onOpen={onOpen} />}

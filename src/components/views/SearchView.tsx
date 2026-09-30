@@ -6,7 +6,7 @@
    then the title, then project · due · priority · assignee.
    J / K move, X selects, Enter opens, ⌘↵ completes.
    ============================================================ */
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useId } from "react";
 import { Icon, Avatar, StatusGlyph, PriorityGlyph, DateChip, ProjectDot, EmptyState, Button, IconButton, Kbd } from "../primitives";
 import { getProject, getMember, fmtDue, STATUS_META, PRIORITY_META, toLocalISO, presetDate, todayISO } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
@@ -52,7 +52,7 @@ const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(n
 
 const unknownLabel = (v: string) => `${v.charAt(0).toUpperCase()}${v.slice(1)} (unknown)`;
 
-export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete, sections, customFields, onToggle }: {
+export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete, sections, customFields, onToggle, activeId }: {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -70,6 +70,8 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   customFields?: CustomFieldDef[];
   /** ticks a result off (or back on) from its status glyph; without it the glyph only shows the status */
   onToggle?: (id: string) => void;
+  /** the task open in the task panel: its row stays marked */
+  activeId?: string;
 }) {
   const entrance = useEntrance(presetKey);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -165,6 +167,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
 
   // save the current search under a name typed in place (no prompt)
   const [saving, setSaving] = useState<string | null>(null);
+  const saveHintId = useId();
   useEffect(() => { if (!active) setSaving(null); }, [active]);
   const saveNow = () => {
     const name = (saving ?? "").trim();
@@ -251,10 +254,14 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
               {saving === null ? (
                 <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")} title="Save this search to your sidebar">Save</Button>
               ) : (
-                // eslint-disable-next-line jsx-a11y/no-autofocus
-                <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this search, then Enter" aria-label="Name this search"
-                  onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveNow(); else if (e.key === "Escape") setSaving(null); }}
-                  onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+                <span className="ktv-save-wrap">
+                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                  <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this search" aria-label="Name this search"
+                    aria-describedby={saveHintId}
+                    onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveNow(); else if (e.key === "Escape") setSaving(null); }}
+                    onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+                  <span id={saveHintId} className="ktv-save-kbd"><span className="sr-only">Press Enter to save, Escape to cancel</span><Kbd>↵</Kbd></span>
+                </span>
               )}
               <Button variant="ghost" size="sm" onClick={() => setQ(EMPTY)}>Clear</Button>
             </span>
@@ -328,7 +335,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
             const openLabel = `Open ${title} (${[STATUS_META[t.status]?.label, proj && `${proj.name}${proj.archivedAt ? ", archived project" : ""}`, due && `due ${due}`].filter(Boolean).join(", ")})`;
             return (
               <div key={t.id} role="group" aria-label={title} data-row-id={t.id} className="ktv-row" data-done={done || undefined}
-                data-selected={sel || undefined} data-cursor={kb.cursor === t.id || undefined} onClick={() => onOpen(t.id)}>
+                data-selected={sel || undefined} data-cursor={kb.cursor === t.id || undefined} data-active={activeId === t.id || undefined} onClick={() => onOpen(t.id)}>
                 {bulk && (
                   <button type="button" role="checkbox" aria-checked={sel} aria-label={`Select ${title}`} className="ktv-sel"
                     onClick={(e) => { e.stopPropagation(); toggleSel(t.id); }}>

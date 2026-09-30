@@ -204,13 +204,15 @@ interface TaskRowProps {
   /** quiet the assignee (it's you): shown on hover only */
   quietAssignee?: boolean;
   cursor?: boolean;
+  /** this task is open in the task panel */
+  active?: boolean;
   /** play the completion moment when this row mounts already done (false right after it settled) */
   celebrate?: boolean;
   meta?: ReactNode;
   action?: ReactNode;
 }
 
-const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, onCheck, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, touchSelect = false, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onEdit, members = NO_MEMBERS, customFields = NO_FIELDS, showProject = true, quietAssignee = false, cursor = false, celebrate = true, meta, action }: TaskRowProps) {
+const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, onCheck, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, touchSelect = false, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onEdit, members = NO_MEMBERS, customFields = NO_FIELDS, showProject = true, quietAssignee = false, cursor = false, active = false, celebrate = true, meta, action }: TaskRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -276,7 +278,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
     <div className="ktv-rowwrap">
       <div role="group" aria-label={task.title} data-row-id={task.id} data-selected={selected || undefined}
         className={"ktv-row task-row" + (landed ? " kland-row" : "")}
-        data-done={done || undefined} data-cursor={cursor || undefined} data-drag={dragging || undefined}
+        data-done={done || undefined} data-cursor={cursor || undefined} data-active={active || undefined} data-drag={dragging || undefined}
         data-drop={dropHint ?? undefined} data-draggable={draggable || undefined}
         onClick={(e) => {
           if (press.current?.fired) { press.current = null; e.preventDefault(); return; }
@@ -350,6 +352,8 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           )}
           {!editingTitle && (
             <span className="ktv-meta">
+              {/* the page's own note leads (Waiting on: "with Maya"): it's why the row is here, so it's the last to give way */}
+              {meta}
               {hasSubs && (
                 <button type="button" className="ktv-subbtn ktv-mono" aria-expanded={expanded} onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
                   aria-label={`${expanded ? "Hide" : "Show"} sub-tasks of ${q}, ${subDone} of ${subTotal} done`}>
@@ -363,7 +367,6 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
               )}
               {task.recurrence && task.recurrence !== "none" && <span className="ktv-m" role="img" aria-label={`Repeats ${task.recurrence}`} title={`Repeats ${task.recurrence}`}><Icon name="refresh" size={12} /></span>}
               {task.comments > 0 && <span className="ktv-m" title={`${task.comments} comment${task.comments === 1 ? "" : "s"}`}><Icon name="message" size={12} /><span className="ktv-mono">{task.comments}</span></span>}
-              {meta}
               {tags.slice(0, 2).map((id) => <span key={id} className="ktv-tag"><i style={{ background: projectPaint(TAGS[id].color).solid }} />{TAGS[id].label}</span>)}
               {tags.length > 2 && <span className="ktv-mono" title={tags.slice(2).map((id) => TAGS[id].label).join(", ")}>+{tags.length - 2}</span>}
               <CustomChips task={task} fields={customFields} members={members} />
@@ -529,7 +532,7 @@ export interface ListGroup {
 }
 
 export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_PROJECTS, compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members: membersIn = NO_MEMBERS, sections: sectionsIn = NO_SECTIONS, onCreateSection, onRenameSection, onDeleteSection, customFields: customFieldsIn = NO_FIELDS, sectionField = "sectionId", sectionProjectId, filtered = false, onClearFilters, readOnly = false,
-  groups: groupsIn, showProject = true, quietAssigneeFor, renderMeta, renderAction, focusGroup, focusKey, emptyState, footer, allTags, keyboard = true, label = "Tasks" }: {
+  groups: groupsIn, showProject = true, quietAssigneeFor, renderMeta, renderAction, focusGroup, focusKey, emptyState, footer, allTags, keyboard = true, label = "Tasks", activeId }: {
   tasks: Task[]; allTasks: Task[]; projects?: Project[]; compact?: boolean; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
@@ -572,6 +575,8 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   /** J/K keyboard triage (default on) */
   keyboard?: boolean;
   label?: string;
+  /** the task open in the task panel: its row stays marked while you work beside it */
+  activeId?: string;
 }) {
   const entrance = useEntrance();
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -949,6 +954,37 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   });
   const menuTask = listMenu ? findTask(listMenu.id) : undefined;
 
+  // ---- sticky group headers: see-through on the page, opaque once they stick ----
+  // A header is stuck when its group has scrolled up past it. Checked on any scroll that
+  // moves this list (the list itself, or the page on phones) and after every render (groups
+  // open, close, fill and empty without one), reading every header before writing any.
+  const stickyCheck = useRef<null | (() => void)>(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb: () => void) => window.setTimeout(cb, 16);
+    const unraf = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : window.clearTimeout;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const heads = Array.from(root.querySelectorAll<HTMLElement>(".ktv-ghead"));
+      const stuck = heads.map((h) => !!h.parentElement && h.parentElement.getBoundingClientRect().top < h.getBoundingClientRect().top - 0.5);
+      heads.forEach((h, i) => { if (stuck[i]) h.dataset.stuck = "true"; else delete h.dataset.stuck; });
+    };
+    const schedule = () => { if (!frame) frame = raf(update); };
+    const onScroll = (e: Event) => { const t = e.target; if (t === document || (t instanceof Node && t.contains(root))) schedule(); };
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", schedule);
+    stickyCheck.current = schedule;
+    return () => {
+      window.removeEventListener("scroll", onScroll, { capture: true });
+      window.removeEventListener("resize", schedule);
+      if (frame) unraf(frame);
+      stickyCheck.current = null;
+    };
+  }, []);
+  useEffect(() => { stickyCheck.current?.(); });
+
   // ---- My tasks ?due=…: scroll to that group and flash it ----
   useEffect(() => {
     if (!focusGroup) return;
@@ -1066,7 +1102,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
                   onPickup={onPickup} onHover={onHoverRow} onRowDrop={onRowDrop} onMoveBy={dragEnabled ? onMoveBy : undefined} onRefocus={onRefocus}
                   onEdit={patch ? onEdit : undefined} members={members} customFields={customFields}
                   showProject={showProject} quietAssignee={!!quietAssigneeFor && t.assigneeId === quietAssigneeFor}
-                  cursor={kb.cursor === t.id} celebrate={!recentlySettled(t.id)}
+                  cursor={kb.cursor === t.id} active={activeId === t.id} celebrate={!recentlySettled(t.id)}
                   meta={renderMeta?.(t)} action={renderAction?.(t)} />
               ))}</div>
               {!isCollapsed && !expandedGroups.has(g.key) && g.items.length > ROW_CAP && (
