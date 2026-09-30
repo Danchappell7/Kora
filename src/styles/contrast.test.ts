@@ -3,7 +3,7 @@
    in BOTH themes) and checks WCAG 2.x ratios for text, chips, controls and
    every accent colour. */
 import { describe, it, expect } from "vitest";
-import { contrast, over, oklchToRgb, parseColor, type RGBA } from "../lib/contrast";
+import { contrast, over, oklchToRgb, parseColor, rgbToOklch, type RGBA } from "../lib/contrast";
 import { ACCENTS, applyAppearance, accentTheme, LIGHT_CANVAS, LIGHT_PANEL, LIGHT_WELL } from "../lib/appearance";
 import { projectPaint } from "../components/primitives/kit";
 import { MEMBERS, PROJECTS, TAGS } from "../data/data";
@@ -163,15 +163,24 @@ describe.each(["light", "dark"] as const)("%s theme tokens", (theme) => {
     for (const c of marks) expect(contrast(color(c), bgs.canvas), c).toBeGreaterThanOrEqual(3);
   });
 
-  it("pill tones read on their own 10% tint (and accent pills, for every accent)", () => {
-    const tinted = (c: RGBA, under: RGBA) => contrast(c, over({ ...c, a: 0.1 }, under));
-    for (const n of ["--ok", "--warn", "--signal", "--ink-3"]) {
-      for (const under of [bgs.canvas, bgs.card]) expect(tinted(tok(n, t), under), n).toBeGreaterThanOrEqual(4.5);
-    }
-    for (const a of ACCENTS) {
-      const c = tok("--accent-text", tokens(theme, accentInline(a.id)));
-      for (const under of [bgs.canvas, bgs.card]) expect(tinted(c, under), a.id).toBeGreaterThanOrEqual(4.5);
-    }
+  it("pill text reads on its tint (and its hover tint) on every surface — sidebar, lanes and wells too — for every tone and accent", () => {
+    // as kanbo.css draws it: the tone mixed toward --pill-ink-mix by --pill-ink-shift,
+    // on the tone at the .kpill tint (and the deeper tint of a hovered button pill)
+    const pct = (re: RegExp) => parseFloat(css.match(re)![1]) / 100;
+    const tints = [pct(/\n\.kpill \{[^}]*background: color-mix\(in oklch, var\(--pill\) ([\d.]+)%/), pct(/\nbutton\.kpill:hover \{ background: color-mix\(in oklch, var\(--pill\) ([\d.]+)%/)];
+    const mix = resolve("var(--pill-ink-mix)", t), shift = parseFloat(resolve("var(--pill-ink-shift)", t)) / 100;
+    expect(css).toMatch(/\n\.kpill \{[^}]*color: color-mix\(in oklch, var\(--pill\), var\(--pill-ink-mix\) var\(--pill-ink-shift\)\);/);
+    const ink = (c: RGBA) => {
+      const o = rgbToOklch(c);
+      return mix === "black" ? oklchToRgb(o.l * (1 - shift), o.c * (1 - shift), o.h) : oklchToRgb(o.l + (1 - o.l) * shift, o.c * (1 - shift), o.h);
+    };
+    const check = (c: RGBA, what: string) => {
+      for (const a of tints) for (const [k, under] of Object.entries(bgs)) {
+        expect(contrast(ink(c), over({ ...c, a }, under)), `${what} on ${k} at ${a * 100}%`).toBeGreaterThanOrEqual(4.5);
+      }
+    };
+    for (const n of ["--ok", "--warn", "--signal", "--ink-3"]) check(tok(n, t), n);
+    for (const a of ACCENTS) check(tok("--accent-text", tokens(theme, accentInline(a.id))), a.id);
   });
 
   it("meta text stays AA on hovered, pressed and selected rows", () => {

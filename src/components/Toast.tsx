@@ -1,18 +1,22 @@
 /* ============================================================
    KANBO — toast notifications (replaces alert())
-   Bottom-left, a raised 40px strip; at most three on screen (older ones
-   wait their turn with their clocks running). Timers pause while the
-   stack is hovered, holds keyboard focus, or the tab is hidden, so nobody
-   loses an Undo while reaching for it (WCAG 2.2.1).
-   Every Undo registers in lib/undoStack for as long as its toast is up,
-   and ⌘Z / Ctrl+Z runs the newest entry in that stack from anywhere —
-   a toast's Undo or any other undoable change (an applied Ask, a bulk
-   move). This provider owns the global ⌘Z: it marks the event handled
-   (preventDefault), so a second handler must check defaultPrevented.
+   Bottom-left, a raised 40px strip; 5s, 7s for an error, at least 10s with
+   an Undo. At most three on screen. A toast that's up stays up until it
+   goes (so the one you're reading or focused on never vanishes); later ones
+   wait their turn with their clocks stopped, so a Retry or an Undo is always
+   seen for its full time. Only a plain note (no action, not an error) makes
+   way early for a newer toast, and never while the stack is hovered or
+   holds focus. Clocks pause while the stack is hovered, holds keyboard
+   focus, or the tab is hidden, so nobody loses an Undo while reaching for
+   it (WCAG 2.2.1).
+   Every Undo registers in lib/undoStack from the moment it's made until its
+   toast goes, so undoLast() takes back changes newest first. ⌘Z / Ctrl+Z
+   itself belongs to App's keyboard handler (it calls undoLast()); this
+   provider adds no key handler of its own.
    ============================================================ */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Icon } from "./primitives";
-import { hasUndo, pushUndo, undoLast } from "../lib/undoStack";
+import { pushUndo } from "../lib/undoStack";
 
 type ToastType = "error" | "success" | "info";
 interface ToastAction { label: string; run: () => void }
@@ -28,12 +32,14 @@ interface ToastItem { id: number; message: string; type: ToastType; action?: Toa
  * never outlive the thing it undoes.
  *
  * Legacy callers that pass a number (or nothing) keep a FIXED lifetime of
- * `ms` (default 6s) with no pausing, because they may be committing on their
+ * `ms` (default 10s) with no pausing, because they may be committing on their
  * own timer of the same length — keeping the toast up longer would offer an
- * Undo that no longer works.
+ * Undo that no longer works. (A legacy toast that has to wait for a slot
+ * starts its clock when it appears; App's delete Undo still works after its
+ * own commit, as it saves the rows back.)
  *
- * `key`: a managed toast with the same key as one still on screen takes its
- * place (same slot, so keyboard focus on it isn't lost, with a fresh clock)
+ * `key`: a managed toast with the same key as one still on screen (or waiting
+ * for a slot) takes its place (same slot, so keyboard focus on it isn't lost, with a fresh clock)
  * instead of stacking another. The one it replaces ends as if dismissed: its
  * `onExpire` runs. Callers that want one running Undo (e.g. "Archived 3
  * notifications") merge their own state and pass the same key each time.
@@ -56,8 +62,11 @@ interface ToastApi {
 
 /** Minimum on-screen time for a managed action toast (Undo). */
 export const ACTION_TOAST_MIN_MS = 10000;
-const LEGACY_ACTION_MS = 6000;
-/** Toasts on screen at once; the rest queue (newest last). */
+const LEGACY_ACTION_MS = ACTION_TOAST_MIN_MS;
+/** How long a plain note stays up (§2.5); an error gets a little longer to read. */
+export const TOAST_MS = 5000;
+const ERROR_TOAST_MS = 7000;
+/** Toasts on screen at once; the rest wait their turn, oldest first. */
 export const MAX_VISIBLE_TOASTS = 3;
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -65,6 +74,9 @@ const ToastContext = createContext<ToastApi | null>(null);
 let _id = 0;
 
 interface Entry {
+  item: ToastItem;             // what it shows (held here while it waits for a slot)
+  shown: boolean;              // on screen; a waiting toast's clock doesn't run
+  plain: boolean;              // a note with no action that isn't an error: may make way for a newer toast
   remaining: number;           // ms left on the clock
   startedAt: number;           // when the current run of the clock started
   timer: ReturnType<typeof setTimeout> | null;
@@ -73,6 +85,7 @@ interface Entry {
   key?: string;                // a later toast with this key takes this one's place
   unregister?: () => void;     // takes its Undo back off the ⌘Z stack
 }
+type NewEntry = Pick<Entry, "remaining" | "pausable" | "onExpire" | "key" | "unregister">;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
 const UNDO_KEYS = isMac ? "⌘Z" : "Ctrl+Z";
@@ -84,15 +97,9 @@ const alertIcon = (
   </svg>
 );
 
-const isEditable = (el: EventTarget | null): boolean => {
-  const n = el as HTMLElement | null;
-  if (!n || typeof n.closest !== "function") return false;
-  return !!n.isContentEditable || !!n.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])");
-};
-
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<ToastItem[]>([]);
-  const entries = useRef<Map<number, Entry>>(new Map());
+  const [items, setItems] = useState<ToastItem[]>([]); // the ones on screen, oldest first
+  const entries = useRef<Map<number, Entry>>(new Map()); // every toast, on screen or waiting, in arrival order
   const stackRef = useRef<HTMLDivElement>(null);
   // why the clocks are paused — any one of these holds them
   const hover = useRef(false);
@@ -100,7 +107,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const hidden = useRef(typeof document !== "undefined" && document.visibilityState === "hidden");
   const paused = useRef(false);
 
-  const close = useCallback((id: number, reason: "expire" | "dismiss" | "action") => {
+  // take a toast away without filling its slot (close() does both)
+  const drop = useCallback((id: number, reason: "expire" | "dismiss" | "action") => {
     // always take it off screen, even without a clock (e.g. a toast whose entry
     // a StrictMode remount cleared) — × must never leave a toast stuck
     setItems((xs) => xs.some((x) => x.id === id) ? xs.filter((x) => x.id !== id) : xs);
@@ -109,42 +117,79 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (e.timer) clearTimeout(e.timer);
     e.unregister?.();
     entries.current.delete(id);
+    e.shown = false;
     if (reason !== "action" && e.onExpire) {
       try { e.onExpire(); } catch (err) { console.error(err); }
     }
   }, []);
 
+  // a toast's clock runs only while it's on screen, and (if pausable) while nothing holds the stack
+  const closeRef = useRef<(id: number, reason: "expire") => void>(() => {});
   const start = useCallback((id: number) => {
     const e = entries.current.get(id);
-    if (!e || e.timer) return;
+    if (!e || !e.shown || e.timer || (e.pausable && paused.current)) return;
     e.startedAt = Date.now();
-    e.timer = setTimeout(() => close(id, "expire"), Math.max(0, e.remaining));
-  }, [close]);
+    e.timer = setTimeout(() => closeRef.current(id, "expire"), Math.max(0, e.remaining));
+  }, []);
+
+  // Fill free slots with waiting toasts, oldest first. When the stack is full
+  // a plain note makes way — never while someone's hovering or focused on it.
+  const promote = useCallback(() => {
+    const all = [...entries.current];
+    const waiting = all.filter(([, e]) => !e.shown);
+    if (!waiting.length) return;
+    let onScreen = all.length - waiting.length;
+    const held = hover.current || focusWithin.current;
+    const appeared: ToastItem[] = [];
+    for (const [id, e] of waiting) {
+      if (onScreen >= MAX_VISIBLE_TOASTS) {
+        const note = held ? undefined : all.find(([, x]) => x.shown && x.plain);
+        if (!note) break; // the rest keep waiting, in order
+        drop(note[0], "expire");
+        onScreen--;
+      }
+      e.shown = true;
+      onScreen++;
+      appeared.push(e.item);
+      start(id);
+    }
+    // (a note shown and made way for in this same pass never reaches the screen)
+    const add = appeared.filter((it) => entries.current.get(it.id)?.shown);
+    if (add.length) setItems((xs) => [...xs, ...add]);
+  }, [drop, start]);
+
+  const close = useCallback((id: number, reason: "expire" | "dismiss" | "action") => {
+    drop(id, reason);
+    promote();
+  }, [drop, promote]);
+  closeRef.current = close;
 
   const syncPaused = useCallback(() => {
     const next = hover.current || focusWithin.current || hidden.current;
-    if (next === paused.current) return;
-    paused.current = next;
-    entries.current.forEach((e, id) => {
-      if (!e.pausable) return;
-      if (next) {
-        if (e.timer) {
-          clearTimeout(e.timer); e.timer = null;
-          e.remaining = Math.max(0, e.remaining - (Date.now() - e.startedAt));
-        }
-      } else start(id);
-    });
-  }, [start]);
+    if (next !== paused.current) {
+      paused.current = next;
+      entries.current.forEach((e, id) => {
+        if (!e.pausable) return;
+        if (next) {
+          if (e.timer) {
+            clearTimeout(e.timer); e.timer = null;
+            e.remaining = Math.max(0, e.remaining - (Date.now() - e.startedAt));
+          }
+        } else start(id);
+      });
+    }
+    // let go of the stack: a note that was held may now make way
+    if (!hover.current && !focusWithin.current) promote();
+  }, [start, promote]);
 
-  const push = useCallback((item: ToastItem, entry: Omit<Entry, "startedAt" | "timer">) => {
-    entries.current.set(item.id, { ...entry, startedAt: Date.now(), timer: null });
-    setItems((xs) => [...xs, item]);
-    // a pausable toast that arrives while the stack is held waits its turn
-    if (!(entry.pausable && paused.current)) start(item.id);
-  }, [start]);
+  const push = useCallback((item: ToastItem, entry: NewEntry) => {
+    const plain = !item.action && item.type !== "error";
+    entries.current.set(item.id, { ...entry, item, shown: false, plain, startedAt: Date.now(), timer: null });
+    promote();
+  }, [promote]);
 
   const toast = useCallback((message: string, type: ToastType = "info") => {
-    push({ id: ++_id, message, type }, { remaining: type === "error" ? 7000 : 4000, pausable: true });
+    push({ id: ++_id, message, type }, { remaining: type === "error" ? ERROR_TOAST_MS : TOAST_MS, pausable: true });
   }, [push]);
 
   // run a toast's action once, then take the toast (and its ⌘Z entry) away
@@ -156,11 +201,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   runActionRef.current = runById;
   const runAction = useCallback((it: ToastItem) => { if (it.action) runById(it.id, it.action.run); }, [runById]);
 
-  // an Undo is on the ⌘Z stack for exactly as long as its toast is up (the
-  // toast's own lifecycle takes it off, hence no stack timeout of its own)
-  const toastUndone = useRef(false);
+  // an Undo is on the ⌘Z stack from the moment it's made until its toast goes
+  // (waiting included, so undoLast() always takes back the newest change first;
+  // the toast's own lifecycle takes it off, hence no stack timeout of its own)
   const registerUndo = (id: number, message: string, label: string, run: () => void) =>
-    isUndo(label) ? pushUndo(message, () => { toastUndone.current = true; runActionRef.current(id, run); }, Infinity) : undefined;
+    isUndo(label) ? pushUndo(message, () => runActionRef.current(id, run), Infinity) : undefined;
 
   const action = useCallback((message: string, label: string, run: () => void, opts?: number | ToastActionOptions) => {
     if (typeof opts === "object" && opts !== null) {
@@ -171,11 +216,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         const [id, old] = prev;
         if (old.timer) clearTimeout(old.timer);
         old.unregister?.();
-        // re-registered, so it's the newest Undo for ⌘Z, though it keeps its slot
-        entries.current.set(id, { ...entry, startedAt: Date.now(), timer: null, unregister: registerUndo(id, message, label, run) });
-        setItems((xs) => xs.map((x) => (x.id === id ? { ...x, message, action: { label, run } } : x)));
+        // re-registered, so it's the newest Undo for ⌘Z, though it keeps its slot (or its place in the queue)
+        const item: ToastItem = { ...old.item, message, action: { label, run } };
+        entries.current.set(id, { ...old, ...entry, item, startedAt: Date.now(), timer: null, unregister: registerUndo(id, message, label, run) });
+        if (old.shown) setItems((xs) => xs.map((x) => (x.id === id ? item : x)));
         if (old.onExpire) { try { old.onExpire(); } catch (err) { console.error(err); } }
-        if (!paused.current) start(id);
+        start(id);
         return;
       }
       const id = ++_id;
@@ -194,24 +240,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [syncPaused]);
-
-  // ⌘Z / Ctrl+Z runs the newest undoable change from anywhere (text fields
-  // keep their own undo). A toast's Undo just takes its toast away; anything
-  // else says what it undid.
-  const toastRef = useRef<(message: string) => void>(() => {});
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "z") return;
-      if (isEditable(e.target) || isEditable(document.activeElement)) return;
-      if (!hasUndo()) return;
-      e.preventDefault();
-      toastUndone.current = false;
-      const label = undoLast();
-      if (label && !toastUndone.current) toastRef.current(`Undone: ${label}`);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   // a toast removed from under the pointer / focus never fires leave/blur —
   // re-read the real state whenever the stack changes
@@ -254,9 +282,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const error = useCallback((m: string) => toast(m, "error"), [toast]);
   const success = useCallback((m: string) => toast(m, "success"), [toast]);
-  toastRef.current = toast;
   const api = useMemo<ToastApi>(() => ({ toast, error, success, action, flush }), [toast, error, success, action, flush]);
-  const visible = items.slice(-MAX_VISIBLE_TOASTS);
 
   return (
     <ToastContext.Provider value={api}>
@@ -266,7 +292,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         onMouseLeave={() => { hover.current = false; syncPaused(); }}
         onFocus={() => { focusWithin.current = true; syncPaused(); }}
         onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { focusWithin.current = false; syncPaused(); } }}>
-        {visible.map((it) => {
+        {items.map((it) => {
           const undo = !!it.action && isUndo(it.action.label);
           return (
             <div key={it.id} className="ktoast" data-type={it.type}>

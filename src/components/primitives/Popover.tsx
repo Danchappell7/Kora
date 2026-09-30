@@ -7,7 +7,7 @@
    stays inside the viewport, and follows the trigger on scroll/resize.
    Keyboard: focus moves into the menu (to the checked item, or the
    first), ↑/↓/Home/End move between items, Escape or Tab close it and
-   focus returns to the trigger.
+   focus returns to the trigger. It enters in 160ms and leaves in 90ms.
    Import directly: import { Popover } from "../primitives/Popover".
    ============================================================ */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject, type SyntheticEvent } from "react";
@@ -65,16 +65,52 @@ function focusables(root: HTMLElement | null): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(ITEM_SELECTOR)).filter((el) => !el.hasAttribute("hidden"));
 }
 
-// Hover + keyboard-focus highlight for menu items. Items commonly carry an
-// inline `background: transparent`, hence !important. Scoped to open panels.
-// A separator (<hr> or .divider) is a hairline with 4px of air; a .kicker is
-// the 12/600 section label.
+// Hover + keyboard-focus highlight for older, hand-styled menu items. They
+// commonly carry an inline `background: transparent`, hence !important. Kit
+// controls (Button, IconButton, .kmenu-item, Toggle…) style their own hover
+// and focus, and must keep their fill and tone (a danger item stays red, a
+// primary Save stays accent), so they're left out. A separator (<hr>) is a
+// hairline with 4px of air.
+const LEGACY_ITEM = "button:not(.btn, .btn-accent, .btn-ghost, .btn-icon, .kbtn, .kibtn, .kmenu-item, .kpill, .kglyph, .kcheck, .kseg-btn, .ktab, .ktoggle-switch, .kdate, .kprov-btn)";
 const PANEL_CSS = `
-[data-kpop-panel] button:not(:disabled):hover, [data-kpop-panel] button:focus-visible { background: var(--fill-1, color-mix(in oklch, var(--ink) 7%, transparent)) !important; color: var(--ink) !important; }
-[data-kpop-panel] button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+[data-kpop-panel] ${LEGACY_ITEM}:not(:disabled):hover, [data-kpop-panel] ${LEGACY_ITEM}:focus-visible { background: var(--fill-1, color-mix(in oklch, var(--ink) 7%, transparent)) !important; color: var(--ink) !important; }
+[data-kpop-panel] ${LEGACY_ITEM}:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 [data-kpop-panel] > hr { height: 1px; margin: 4px -4px; border: 0; background: var(--hairline); }
 @media (prefers-reduced-motion: reduce) { [data-kpop-panel] { animation: none !important; } }
 `;
+
+const EXIT_MS = 90;
+const reducedMotion = () => !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+/** The 90ms exit. The real panel goes at once (so focus, state and anything
+ *  reading the DOM never wait on an animation); an inert, hidden-from-AT copy
+ *  fades out where it stood. Needs the Web Animations API; skipped under
+ *  reduced motion, and for a panel that never got placed. */
+function fadeOutCopy(panel: HTMLElement, zIndex: number) {
+  if (!panel.isConnected || typeof panel.animate !== "function" || reducedMotion()) return;
+  if (panel.style.visibility === "hidden") return;
+  const ghost = panel.cloneNode(true) as HTMLElement;
+  ghost.removeAttribute("data-kpop-panel");
+  ghost.removeAttribute("role");
+  ghost.removeAttribute("aria-label");
+  ghost.setAttribute("aria-hidden", "true");
+  ghost.setAttribute("inert", "");
+  ghost.classList.remove("anim-scalein");
+  Object.assign(ghost.style, { zIndex: String(zIndex), pointerEvents: "none", animation: "none" });
+  // what the clone doesn't carry: typed text and the list's scroll position
+  const fields = panel.querySelectorAll<HTMLInputElement>("input, textarea");
+  ghost.querySelectorAll<HTMLInputElement>("input, textarea").forEach((el, i) => { if (fields[i]) el.value = fields[i].value; });
+  document.body.appendChild(ghost);
+  ghost.scrollTop = panel.scrollTop;
+  let gone = false;
+  const remove = () => { if (!gone) { gone = true; ghost.remove(); } };
+  try {
+    const a = ghost.animate([{ opacity: 1, translate: "0 0" }, { opacity: 0, translate: "0 4px" }], { duration: EXIT_MS, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" });
+    a.onfinish = remove;
+    a.oncancel = remove;
+  } catch { remove(); return; }
+  window.setTimeout(remove, EXIT_MS + 100); // never leave it behind
+}
 
 const stop = (e: SyntheticEvent) => e.stopPropagation();
 
@@ -103,7 +139,15 @@ export interface PopoverProps {
 }
 
 export function Popover({ open, anchorRef, onClose, children, side = "bottom", align = "start", offset = 6, role = "menu", label, minWidth = 150, maxHeight, className, style, autoFocus = true, initialFocus, zIndex = 1100 }: PopoverProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // React detaches the ref (null) while the panel is still in the page, on
+  // close or unmount alike: that's the moment to leave the fading copy behind
+  const zRef = useRef(zIndex);
+  zRef.current = zIndex;
+  const setPanel = useCallback((el: HTMLDivElement | null) => {
+    if (!el && panelRef.current) fadeOutCopy(panelRef.current, zRef.current);
+    panelRef.current = el;
+  }, []);
   const [place, setPlace] = useState<PopoverPlacement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -243,7 +287,7 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
       onDoubleClick={stop} onDragStart={stop} onDragOver={stop} onDrop={stop}
       style={{ position: "fixed", inset: 0, zIndex }}>
       <style>{PANEL_CSS}</style>
-      <div ref={panelRef} data-kpop-panel="" role={role} aria-label={label} aria-orientation={isMenu && role === "menu" ? "vertical" : undefined}
+      <div ref={setPanel} data-kpop-panel="" role={role} aria-label={label} aria-orientation={isMenu && role === "menu" ? "vertical" : undefined}
         className={"anim-scalein" + (className ? " " + className : "")} onKeyDown={onKeyDown}
         style={{
           position: "fixed", top: place?.top ?? 0, left: place?.left ?? 0,

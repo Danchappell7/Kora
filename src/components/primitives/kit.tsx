@@ -941,17 +941,35 @@ export function Sheet({ open, onClose, label, title, side = "center", width, foo
   }, [open]);
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   const downOnScrim = useRef(false);
+  const openRef = useRef(open);
+  openRef.current = open;
 
   // drag the handle down to dismiss (the handle only shows on a bottom sheet;
   // keyboard and screen-reader users have Escape and Close)
   const drag = useRef<{ y: number; t: number; dy: number } | null>(null);
   const settleTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(settleTimer.current), []);
+  // spring back to rest from wherever the drag left it
+  const settle = (el: HTMLElement) => {
+    el.dataset.settling = "true";
+    el.style.translate = "";
+    el.style.removeProperty("--drag-y");
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => { delete el.dataset.settling; }, SHEET_EXIT_MS);
+  };
+  // reopened while it was still fading out of a drag-close: start from rest
+  useEffect(() => {
+    const el = trapRef.current;
+    if (open && el?.style.getPropertyValue("--drag-y")) { el.style.translate = ""; el.style.removeProperty("--drag-y"); }
+  }, [open, trapRef]);
   const onHandleDown = (e: ReactPointerEvent<HTMLSpanElement>) => {
-    if (e.button !== 0 || !trapRef.current) return;
+    const el = trapRef.current;
+    if (e.button !== 0 || !el) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     drag.current = { y: e.clientY, t: performance.now(), dy: 0 };
-    trapRef.current.dataset.dragging = "true";
+    window.clearTimeout(settleTimer.current);
+    delete el.dataset.settling; // caught mid-spring: follow the finger at once
+    el.dataset.dragging = "true";
   };
   const onHandleMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
     const d = drag.current, el = trapRef.current;
@@ -965,11 +983,16 @@ export function Sheet({ open, onClose, label, title, side = "center", width, foo
     if (!d || !el) return;
     delete el.dataset.dragging;
     const speed = d.dy / Math.max(1, performance.now() - d.t);
-    if (d.dy > Math.min(DRAG_CLOSE_PX, el.offsetHeight / 3) || (d.dy > 24 && speed > DRAG_CLOSE_SPEED)) { onClose(); return; }
-    el.dataset.settling = "true";
-    el.style.translate = "";
-    window.clearTimeout(settleTimer.current);
-    settleTimer.current = window.setTimeout(() => { delete el.dataset.settling; }, SHEET_EXIT_MS);
+    if (d.dy > Math.min(DRAG_CLOSE_PX, el.offsetHeight / 3) || (d.dy > 24 && speed > DRAG_CLOSE_SPEED)) {
+      // the exit carries on down from where the finger let go (ksheetOutDown reads --drag-y)
+      el.style.setProperty("--drag-y", `${d.dy}px`);
+      onClose();
+      // …unless the owner keeps it open (say, to ask about unsaved changes): then spring back
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(() => { if (openRef.current) settle(el); }, 0);
+      return;
+    }
+    settle(el);
   };
 
   if ((!open && !leaving) || typeof document === "undefined") return null;

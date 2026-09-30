@@ -155,6 +155,7 @@
   --av-bg-l: 0.93; --av-bg-c: 0.045; --av-fg-l: 0.42; --av-fg-c: 0.13;   /* avatar disc / initials (≥ 6.3:1) */
   --avatar-ink: oklch(0.22 0.02 268);
   --chip-ink-mix: black; --chip-ink-shift: 42%; --chip-fill: 14%; --chip-edge: 34%;
+  --pill-ink-mix: black; --pill-ink-shift: 8%;   /* Pill text a shade deeper than its tone: AA on its tint over wells and the sidebar */
 
   /* elevation. e1/e2/e3 carry their own hairline ring (use them with NO
      border); the -drop parts are the shadow alone, for surfaces that already
@@ -249,6 +250,7 @@
   --av-bg-l: 0.34; --av-bg-c: 0.07; --av-fg-l: 0.90; --av-fg-c: 0.07;
   --avatar-ink: var(--bg-deep);
   --chip-ink-mix: white; --chip-ink-shift: 12%; --chip-fill: 12%; --chip-edge: 30%;
+  --pill-ink-mix: white; --pill-ink-shift: 0%;
 
   --e1-drop: inset 0 1px 0 oklch(1 0 0 / 0.04);
   --e2-drop: inset 0 1px 0 oklch(1 0 0 / 0.04), 0 16px 40px -12px oklch(0 0 0 / 0.55);
@@ -864,17 +866,22 @@ textarea.kfield { height: auto; min-height: 80px; padding: 6px 10px; resize: ver
 .kfield:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---- Menu (inside Popover): 32px items with a quiet 16px icon and a Kbd on
-   the right; Popover supplies the hover/focus fill. A checked item shows
-   .kmenu-check (an accent tick); danger items read in the signal colour. ---- */
+   the right; hover and keyboard focus fill --fill-1. A checked item shows
+   .kmenu-check (an accent tick); danger items read in the signal colour and
+   stay signal on hover and focus, over the signal tint. ---- */
 .kmenu-item {
   display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px;
   border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer; text-align: left; white-space: nowrap;
   font: 500 13px/20px var(--font-ui); color: var(--ink);
+  transition: background var(--d-1) var(--ease);
 }
 .kmenu-item > svg:first-child { flex-shrink: 0; color: var(--icon-quiet); }
 .kmenu-item > .kkbd, .kmenu-check { margin-left: auto; }
 .kmenu-check { flex-shrink: 0; color: var(--accent-text); }
+.kmenu-item:hover:not(:disabled), .kmenu-item:focus-visible { background: var(--fill-1); }
+.kmenu-item:focus-visible { outline-offset: -2px; }
 .kmenu-item[data-tone="danger"], .kmenu-item[data-tone="danger"] > svg:first-child { color: var(--signal); }
+.kmenu-item[data-tone="danger"]:hover:not(:disabled), .kmenu-item[data-tone="danger"]:focus-visible { background: var(--signal-tint); }
 .kmenu-item:disabled { opacity: 0.45; cursor: not-allowed; }
 .kmenu-label { padding: 8px 8px 4px; font: 600 12px/16px var(--font-ui); color: var(--ink-3); }
 .kmenu-sep { height: 1px; margin: 4px -4px; border: 0; background: var(--hairline); }
@@ -1107,8 +1114,9 @@ textarea.kfield { height: auto; min-height: 80px; padding: 6px 10px; resize: ver
 }
 .ksheet-handle::before { content: ""; position: absolute; top: 8px; left: 14px; width: 36px; height: 4px; border-radius: 999px; background: var(--hairline-strong); }
 .ksheet-layer[data-side="bottom"] .ksheet-handle { display: block; }
-.ksheet[data-dragging="true"] { transition: none; animation: none; }
+/* a released drag springs back; while the finger is down the sheet follows it exactly */
 .ksheet[data-settling="true"] { transition: translate var(--d-2) var(--ease); }
+.ksheet[data-dragging="true"] { transition: none; }
 .ksheet-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-height: 56px; padding: 0 12px 0 24px; }
 .ksheet-title {
   flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1122,7 +1130,8 @@ textarea.kfield { height: auto; min-height: 80px; padding: 6px 10px; resize: ver
 @keyframes ksheetUp { from { opacity: 0.35; translate: 0 24px; } }
 @keyframes ksheetOut { to { opacity: 0; translate: 0 8px; } }
 @keyframes ksheetOutRight { to { opacity: 0; translate: 16px 0; } }
-@keyframes ksheetOutDown { to { opacity: 0; translate: 0 24px; } }
+/* a sheet let go of mid-drag keeps travelling down from where it was (--drag-y) */
+@keyframes ksheetOutDown { to { opacity: 0; translate: 0 calc(var(--drag-y, 0px) * 2 + 24px); } }
 @keyframes kscrimOut { to { opacity: 0; } }
 .ksheet-layer[data-state="closing"] { pointer-events: none; }
 .ksheet-layer[data-state="closing"]::before { animation: kscrimOut var(--d-2) var(--ease-exit) forwards; }
@@ -1142,12 +1151,14 @@ textarea.kfield { height: auto; min-height: 80px; padding: 6px 10px; resize: ver
   .ksheet-foot { padding-left: 16px; padding-right: 16px; }
 }
 
-/* ---- Pill: the tone's ink on a 10% tint of itself ---- */
+/* ---- Pill: the tone's ink on a 10% tint of itself (Paper deepens the ink a
+   shade, so it stays AA on the sidebar, lanes and wells as well as the canvas) ---- */
 .kpill {
   --pill: var(--ink-3);
   display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; height: 20px; padding: 0 8px; border: 0; border-radius: 999px;
   font: 600 12px/1 var(--font-ui); white-space: nowrap;
-  color: var(--pill); background: color-mix(in oklch, var(--pill) 10%, transparent);
+  color: color-mix(in oklch, var(--pill), var(--pill-ink-mix) var(--pill-ink-shift));
+  background: color-mix(in oklch, var(--pill) 10%, transparent);
 }
 .kpill[data-tone="accent"] { --pill: var(--accent-text); }
 .kpill[data-tone="ok"] { --pill: var(--ok); }

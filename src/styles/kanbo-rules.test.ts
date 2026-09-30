@@ -157,6 +157,23 @@ describe("Paper & Navy", () => {
     expect(lg?.[1]).toMatch(/height:\s*var\(--h-lg\)/);
   });
 
+  it("menu items fill on hover and keyboard focus themselves, and a danger item stays in the signal colour", () => {
+    expect(bodyOf(".kmenu-item:hover:not(:disabled)")).toMatch(/background:\s*var\(--fill-1\)/);
+    expect(bodyOf(".kmenu-item:focus-visible")).toMatch(/background:\s*var\(--fill-1\)/);
+    const danger = [".kmenu-item[data-tone=\"danger\"]:hover:not(:disabled)", ".kmenu-item[data-tone=\"danger\"]:focus-visible"];
+    for (const s of danger) {
+      const body = bodyOf(s);
+      expect(body, s).toMatch(/background:\s*var\(--signal-tint\)/);
+      for (const m of body.matchAll(/(?:^|;|\s)color:\s*([^;]+)/g)) expect(m[1].trim(), s).toBe("var(--signal)");
+    }
+  });
+
+  it("a bottom sheet let go mid-drag exits on downward from where it was, and dragging never restarts its entrance", () => {
+    expect(css).toMatch(/@keyframes ksheetOutDown \{ to \{[^}]*translate: 0 calc\(var\(--drag-y, 0px\)[^}]*\} \}/);
+    // switching the animation off while dragging would replay the entrance on release
+    expect(bodyOf(".ksheet[data-dragging=\"true\"]")).not.toMatch(/animation/);
+  });
+
   it("docks the task panel at 1280px and wider", () => {
     const wide = mediaBlocks(css).find((b) => /min-width:\s*1280px/.test(b.query));
     expect(wide?.body).toMatch(/\[data-panel="open"\] #main\s*\{[^}]*margin-right:\s*var\(--detail-w\)/);
