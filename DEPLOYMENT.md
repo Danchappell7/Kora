@@ -172,6 +172,9 @@ SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy daily-reminders --projec
 
 Only deploy `calendar` if you've set up Google or Microsoft calendar
 connections (see `CALENDAR_SETUP.md`). It also runs **without** a JWT check.
+It works with the app as it is today: connecting a calendar behaves exactly as
+before. It also has a safer way to finish connecting, which the app will start
+using in a later update (see **Calendar sync** under Reference).
 
 ```bash
 SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy calendar --project-ref htnchiljplrnjkwimgla --no-verify-jwt
@@ -311,7 +314,19 @@ Company email filters such as Microsoft Safe Links open links before the person
 does, which uses up one-time links. Kanbo's own emails already avoid this. To
 make Supabase's built-in emails do the same, go to
 <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/templates>
-and replace the message body of these two templates.
+and replace the message body of these three templates. Do **Confirm signup**
+before 7e: once "Confirm email" is on, it's the email every new colleague
+gets, and without this change their company's mail filter can use up the
+link before they click it.
+
+For **Confirm signup**:
+
+```html
+<h2>Confirm your email for Kanbo</h2>
+<p>Press the button below to confirm your email address and finish signing up.</p>
+<p><a href="{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=email">Confirm your email</a></p>
+<p>If you didn't sign up for Kanbo, you can ignore this email.</p>
+```
 
 For **Reset password**:
 
@@ -435,10 +450,15 @@ from SQL. Step 10 tests those.
    twice quickly: you should still get only one email.
 3. **Request access:** signed out, use the landing page's request form with
    another address. The admins should receive "New early-access request".
-4. **AI:** ask Kanbo a question from the command palette. You should get an
-   answer. The next day, `select * from public.ai_usage order by day desc limit 10;`
-   shows usage per person.
-5. If anything misbehaves, the function's logs say why:
+4. **Sign up on your company domain:** in a private window, sign up with an
+   address on a domain from step 8. A "Confirm your email" email should
+   arrive. Its button should open Kanbo with a **Continue** button, and after
+   pressing it you should be signed straight in, with no waiting for approval.
+5. **AI:** go to **Analytics**, type a question in the **Ask Kanbo** box and
+   press **Ask**. You should get an answer. The next day,
+   `select * from public.ai_usage order by day desc limit 10;` shows usage per
+   person.
+6. If anything misbehaves, the function's logs say why:
    `https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/<function-name>/logs`
    (for example `…/functions/invite-member/logs`).
 
@@ -508,6 +528,21 @@ SUPABASE_ACCESS_TOKEN=<token> supabase functions deploy stripe-webhook --project
 The Google and Microsoft set-up is in `CALENDAR_SETUP.md`. Deploy `calendar`
 with `--no-verify-jwt` (step 4). The Google/Microsoft redirect URL is
 `https://htnchiljplrnjkwimgla.supabase.co/functions/v1/calendar/callback`.
+
+The old way of connecting could let someone connect a colleague's calendar
+to their own account by sending them the Google approval link. Switch it off
+once the app update that finishes calendar connections itself is live. You
+can tell the update is in when `grep -n "finish=app" src/data/store.ts`, run
+in the project folder, prints a line, and connecting a calendar on
+www.kanbo.co.uk still shows "Calendar connected". Then add this secret at
+<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/secrets>:
+
+| Name | Value |
+|---|---|
+| `CALENDAR_APP_FINISH_ONLY` | `true` |
+
+Don't add it before that app update is live, or connecting a calendar will
+fail with "Couldn't connect that calendar".
 
 ### Local development
 

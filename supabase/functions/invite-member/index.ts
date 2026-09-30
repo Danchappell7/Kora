@@ -1,7 +1,8 @@
 // ============================================================
 // KANBO — email a workspace invite (Deno / Supabase Edge Function)
 // The app calls this right after the invite_member RPC succeeds (and again
-// for "Resend invite"). Body: { memberId }  — the workspace_members row id.
+// whenever it re-sends an invite). Body: { memberId } — the
+// workspace_members row id.
 //
 // Trust model: the caller comes from their JWT; the workspace role check is
 // the database's own ws_role(), run AS the caller, so only a workspace
@@ -20,17 +21,22 @@
 // (so the new account is auto-approved) and an existing pending account is
 // approved.
 //
-// Responses: { ok: true, sent: true, mode: "setup" | "signin" }
-//            { ok: true, sent: false, reason: "throttled" | "email_not_configured"
-//                                           | "email_failed" | "account_suspended" }
-//            401 / 403 / 404 / 409 / 429 / 502 { error }
+// Responses: { ok: true, sent: true }
+//            { ok: true, sent: false, reason: "throttled" (emailed under a
+//                minute ago — that link still works) | "email_not_configured"
+//                | "not_sent" (delivery failed, or we won't email this address;
+//                the exact cause is only logged, so the reply never tells an
+//                inviter whether an address has a Kanbo account) }
+//            429 { reason: "inviter_limit", error, retryAfter } — the invite
+//                row is saved; only the email is held back
+//            401 / 403 / 404 / 409 / 502 { error }
 //
 // Deploy:  supabase functions deploy invite-member        (Verify JWT: ON)
 // Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL           (shared)
 // Uses:    rate_limits from migration 0042 (works without it — fails open)
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { appUrlFrom, esc, escapeLike, isEmail, isUuid, oneLine, renderEmail, sendEmail, tokenLink } from "../_shared/email.ts";
+import { appUrlFrom, esc, isEmail, isUuid, oneLine, renderEmail, sendEmail, tokenLink, whereEmail } from "../_shared/email.ts";
 import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 import { findUserByEmail } from "../_shared/users.ts";
 
@@ -83,16 +89,17 @@ Deno.serve(async (req) => {
     if (!isEmail(email)) return json({ error: "that invite has an invalid email address" }, 400);
     if (!resendKey) return json({ ok: true, sent: false, reason: "email_not_configured" });
 
-    // ---- throttles: one email per invite per minute (double-clicks, "Resend"
-    // mashing — and a second link would kill the first); 60 invites/hour per
-    // inviter so invites can't be used to mass-mail from Kanbo's address ----
+    // ---- throttles: one email per invite per minute (double-clicks, re-send
+    // mashing — and a second link would kill the first); 500 invites/hour per
+    // inviter — room to invite a whole company in one sitting, but invites
+    // can't be used to mass-mail from Kanbo's address ----
     const inviteKey = `${KEY_PREFIX}invite:member:${memberId}`;
     const perInvite = await hit(admin, inviteKey, { windowSec: 60 });
     if (!perInvite.allowed) return json({ ok: true, sent: false, reason: "throttled", retryAfter: perInvite.retryAfter });
-    const perInviter = await hit(admin, `${KEY_PREFIX}invite:by:${me.id}`, { windowSec: 3600, max: 60 });
+    const perInviter = await hit(admin, `${KEY_PREFIX}invite:by:${me.id}`, { windowSec: 3600, max: 500 });
     if (!perInviter.allowed) {
       await release(admin, inviteKey);
-      return json({ ok: false, sent: false, error: "You've sent a lot of invites this hour — try again a little later.", retryAfter: perInviter.retryAfter }, 429);
+      return json({ ok: false, sent: false, reason: "inviter_limit", error: "You've sent a lot of invites this hour. They're saved; resend the emails a little later.", retryAfter: perInviter.retryAfter }, 429);
     }
     await sweep(admin);
 
@@ -119,8 +126,9 @@ Deno.serve(async (req) => {
 
     const existing = await findUserByEmail(admin, email);
     if (existing?.suspended) {
+      console.warn("invite-member: not emailing a suspended account");
       await release(admin, inviteKey);
-      return json({ ok: true, sent: false, reason: "account_suspended" });
+      return json({ ok: true, sent: false, reason: "not_sent" });
     }
     if (existing) {
       if (existing.approved === false) await admin.from("profiles").update({ approved: true }).eq("id", existing.id);
@@ -175,9 +183,9 @@ Deno.serve(async (req) => {
     });
     if (!res.ok) {
       await release(admin, inviteKey);
-      return json({ ok: true, sent: false, reason: "email_failed" });
+      return json({ ok: true, sent: false, reason: "not_sent" });
     }
-    return json({ ok: true, sent: true, mode });
+    return json({ ok: true, sent: true });
   } catch (e) {
     console.error("invite-member error", e);
     return json({ error: "Something went wrong sending that invite." }, 500);
@@ -189,8 +197,7 @@ Deno.serve(async (req) => {
 // deno-lint-ignore no-explicit-any
 async function recordApproval(admin: any, email: string, name: string, note: string) {
   try {
-    const { data: rows, error } = await admin.from("access_requests")
-      .select("id,status").ilike("email", escapeLike(email)).limit(20);
+    const { data: rows, error } = await whereEmail(admin.from("access_requests").select("id,status"), "email", email).limit(20);
     if (error) { console.warn("invite-member: access_requests lookup", error.message); return; }
     const list = (rows ?? []) as { id: string; status: string }[];
     if (list.some((r) => r.status === "approved")) return;

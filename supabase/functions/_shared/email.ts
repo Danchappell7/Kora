@@ -45,6 +45,17 @@ export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => "\\" + c);
 }
 
+/**
+ * Filter a query to rows whose `col` is this address, ignoring case. Uses an
+ * escaped ilike, except when the address contains `*`: PostgREST turns every
+ * `*` in a like pattern into `%` and that can't be escaped, so `*@company.com`
+ * would match the whole domain. Those fall back to an exact match.
+ */
+// deno-lint-ignore no-explicit-any
+export function whereEmail<Q extends { eq(c: string, v: string): any; ilike(c: string, p: string): any }>(q: Q, col: string, email: string): Q {
+  return email.includes("*") ? q.eq(col, email) : q.ilike(col, escapeLike(email));
+}
+
 export interface Layout {
   heading: string;          // plain text (escaped here)
   paragraphs: string[];     // trusted HTML fragments — escape anything user-supplied BEFORE passing

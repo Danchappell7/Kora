@@ -131,11 +131,20 @@ Deno.serve(async (req) => {
 
     // Resend allows ~2 requests/second on the default plan — pace + one retry on 429
     for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ from, to: email, subject: `${sorted.length} task${sorted.length === 1 ? "" : "s"} due on Kanbo`, html }),
-      });
+      let r: Response;
+      try {
+        r = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ from, to: email, subject: `${sorted.length} task${sorted.length === 1 ? "" : "s"} due on Kanbo`, html }),
+        });
+      } catch (e) {
+        // network error / timeout: count it, free today's slot and carry on
+        // with everyone else rather than failing the whole run
+        failed++; console.error("resend fetch", String((e as Error)?.message ?? e));
+        await release(supa, dayKey);
+        break;
+      }
       if (r.ok) { sent++; break; }
       if (r.status === 429 && attempt === 0) { await sleep(1500); continue; }
       failed++; console.error("resend", r.status, await r.text().catch(() => ""));

@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Unit tests for the Edge Functions' email helpers (escaping, links, Resend).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminRecipients, appUrlFrom, DEFAULT_APP_URL, esc, escapeLike, isEmail, oneLine, renderEmail, sendEmail, tokenLink } from "./email.ts";
+import { adminRecipients, appUrlFrom, DEFAULT_APP_URL, esc, escapeLike, isEmail, oneLine, renderEmail, sendEmail, tokenLink, whereEmail } from "./email.ts";
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -34,6 +34,17 @@ describe("escaping", () => {
 
   it("escapeLike makes wildcards literal", () => {
     expect(escapeLike("j_smith%@a.co")).toBe("j\\_smith\\%@a.co");
+  });
+
+  it("whereEmail never lets a `*` act as a wildcard", () => {
+    const calls: string[] = [];
+    const q = {
+      eq(c: string, v: string) { calls.push(`eq ${c} ${v}`); return q; },
+      ilike(c: string, p: string) { calls.push(`ilike ${c} ${p}`); return q; },
+    };
+    whereEmail(q, "email", "j_smith@a.co");
+    whereEmail(q, "email", "*@company.com"); // PostgREST reads * in a like pattern as %
+    expect(calls).toEqual(["ilike email j\\_smith@a.co", "eq email *@company.com"]);
   });
 
   it("isEmail accepts real addresses only", () => {

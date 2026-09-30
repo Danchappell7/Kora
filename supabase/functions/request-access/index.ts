@@ -19,8 +19,8 @@
 //          optional: ADMIN_NOTIFY_EMAIL
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { adminRecipients, appUrlFrom, esc, escapeLike, isEmail, oneLine, renderEmail, sendEmail } from "../_shared/email.ts";
-import { clientIp, hashKey, hit, KEY_PREFIX, sweep } from "../_shared/limits.ts";
+import { adminRecipients, appUrlFrom, esc, isEmail, oneLine, renderEmail, sendEmail, whereEmail } from "../_shared/email.ts";
+import { clientIp, hashKey, hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -32,6 +32,11 @@ const json = (b: unknown, status = 200) =>
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  // the per-email throttle key, once taken — handed back if we fail to save,
+  // so a retry isn't swallowed as a "repeat" of a request that doesn't exist
+  let emailKey = "";
+  let saved = false;
   try {
     const raw = await req.json().catch(() => ({})) as { name?: string; email?: string; note?: string };
     const email = String(raw.email ?? "").trim().toLowerCase();
@@ -39,23 +44,25 @@ Deno.serve(async (req) => {
     const note = String(raw.note ?? "").trim().slice(0, 1000);
     if (!isEmail(email)) return json({ error: "valid email required" }, 400);
 
-    const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-
     // same address again within a minute (double-submit, a script) → quiet no-op
-    const perEmail = await hit(admin, `${KEY_PREFIX}ra:email:${await hashKey(email)}`, { windowSec: 60 });
+    const key = `${KEY_PREFIX}ra:email:${await hashKey(email)}`;
+    const perEmail = await hit(admin, key, { windowSec: 60 });
     if (!perEmail.allowed) return json({ ok: true });
+    emailKey = key;
     await sweep(admin);
 
     // one open request per address — repeats are a quiet no-op
-    const { data: existing } = await admin.from("access_requests").select("id,status").ilike("email", escapeLike(email)).limit(5);
-    if ((existing ?? []).some((r) => r.status === "pending" || r.status === "approved")) return json({ ok: true });
+    // (a failed lookup isn't fatal: the insert below is de-duplicated by 0042 too)
+    const { data: existing, error: findErr } = await whereEmail(admin.from("access_requests").select("id,status"), "email", email).limit(5);
+    if (findErr) console.warn("request-access lookup", findErr.message);
+    if ((existing ?? []).some((r: { status: string }) => r.status === "pending" || r.status === "approved")) return json({ ok: true });
     const { error } = await admin.from("access_requests").insert({ name, email, note: note || null });
     if (error) {
       // a simultaneous duplicate hit the one-pending-per-email index: already recorded
       if (error.code === "23505") return json({ ok: true });
-      console.error("request-access insert", error.message);
-      return json({ error: "couldn't save your request" }, 500);
+      throw new Error(`insert: ${error.message}`);
     }
+    saved = true;
 
     // ---- tell the admins (best-effort; the request is already saved) ----
     const resendKey = Deno.env.get("RESEND_API_KEY");
@@ -93,6 +100,9 @@ Deno.serve(async (req) => {
     return json({ ok: true });
   } catch (e) {
     console.error("request-access error", e);
+    // saved already (the admin email is best-effort) → it's recorded; say so
+    if (saved) return json({ ok: true });
+    if (emailKey) await release(admin, emailKey);
     return json({ error: "couldn't save your request" }, 500);
   }
 });

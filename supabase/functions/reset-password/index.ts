@@ -19,16 +19,30 @@
 //   { ok: true, throttled: true, retryAfter }
 //                                         a link went to this address under a
 //                                         minute ago — that one still works
-//   { ok: true, fallback: true }          we couldn't deliver (Resend down or
+//   { ok: true, fallback: true }          we can't deliver (Resend down or
 //                                         not configured, or this network has
 //                                         sent a lot of resets) — the app then
 //                                         uses Supabase's built-in reset email
+//   { ok: true, fallback: true, retryAfter: 60 }
+//                                         Resend refused THIS send. The link we
+//                                         generated counts as "an email sent"
+//                                         to Supabase, which allows one per
+//                                         person per minute, so its built-in
+//                                         reset only works after retryAfter
+//                                         seconds. We then remember that Resend
+//                                         is failing for 10 minutes and send
+//                                         everyone straight to the built-in
+//                                         reset (no link generated first).
 // Limits (rate_limits from migration 0042; fails open without it):
 //   one email per address per minute and 5 per hour; 20 per IP per 10 min.
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { appUrlFrom, esc, isEmail, renderEmail, sendEmail, tokenLink } from "../_shared/email.ts";
-import { clientIp, hashKey, hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
+import { clientIp, hashKey, hit, KEY_PREFIX, recentlyHit, release, sweep } from "../_shared/limits.ts";
+
+/** Set when a Resend send fails; while live we don't try Resend at all. */
+const MAIL_DOWN_KEY = `${KEY_PREFIX}mail-down:reset-password`;
+const MAIL_DOWN_SEC = 600;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -50,6 +64,9 @@ Deno.serve(async (req) => {
 
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const appUrl = appUrlFrom(Deno.env.get("APP_URL"));
+    // Resend failed a moment ago → don't generate a link we probably can't
+    // deliver (that would also block Supabase's own reset for a minute)
+    if (await recentlyHit(admin, MAIL_DOWN_KEY, MAIL_DOWN_SEC)) return json({ ok: true, fallback: true });
 
     // ---- throttles ----
     // per address: a second link would invalidate the first, and nobody's
@@ -102,9 +119,12 @@ Deno.serve(async (req) => {
       to: email, subject: "Reset your Kanbo password", html, text,
     });
     if (!sent.ok) {
-      // couldn't deliver: let the app send Supabase's own reset email instead
+      // couldn't deliver: let the app send Supabase's own reset email instead.
+      // Resend's own rate limit (429) passes; anything else (bad key,
+      // unverified domain, outage) trips the breaker for everyone.
+      if (sent.status !== 429) await hit(admin, MAIL_DOWN_KEY, { windowSec: MAIL_DOWN_SEC });
       await release(admin, minuteKey);
-      return json({ ok: true, fallback: true });
+      return json({ ok: true, fallback: true, retryAfter: 60 });
     }
     return json({ ok: true });
   } catch (e) {

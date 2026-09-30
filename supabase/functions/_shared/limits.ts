@@ -11,7 +11,11 @@
 //
 // Writes are compare-and-swap (UPDATE … WHERE the row still has the values we
 // read), so two simultaneous requests can't both slip through a 1-per-minute
-// limit — the loser re-reads and sees the winner's hit.
+// limit — the loser re-reads and sees the winner's hit. Losers back off for a
+// few random milliseconds before re-reading, and a request that keeps losing
+// while the count is still under the limit is let through (not counted)
+// rather than refused: a burst of genuine calls — say 40 assignment emails
+// after a bulk reassign — must never be throttled below `max`.
 //
 // Pure module (no Deno globals, no remote imports) so vitest can exercise it
 // with an in-memory fake client: see limits.test.ts.
@@ -42,6 +46,12 @@ export interface Window {
 /** Namespace for every key we write, so housekeeping only ever touches ours. */
 export const KEY_PREFIX = "kanbo:";
 
+/** CAS attempts before giving up on counting a hit (see hit()). */
+const CAS_ATTEMPTS = 6;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Random, growing pause after a lost compare-and-swap so a burst spreads out. */
+const backoff = (attempt: number) => sleep(2 + Math.random() * 15 * (attempt + 1));
+
 const warned = new Set<string>();
 function failOpen(where: string, err: unknown): HitResult {
   const msg = String((err as { message?: string })?.message ?? err);
@@ -69,7 +79,8 @@ export async function hit(db: Db, key: string, opts: Window): Promise<HitResult>
   const windowMs = opts.windowSec * 1000;
   const nowIso = new Date(now).toISOString();
   try {
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+      if (attempt > 0) await backoff(attempt);
       // first hit in a fresh key: plain insert (ON CONFLICT DO NOTHING)
       const ins = await db.from("rate_limits")
         .upsert({ key, last_at: nowIso, count: 1 }, { onConflict: "key", ignoreDuplicates: true })
@@ -98,10 +109,28 @@ export async function hit(db: Db, key: string, opts: Window): Promise<HitResult>
       if (res.error) return failOpen("rate_limits", res.error);
       if (res.data && res.data.length) return { allowed: true, retryAfter: 0 };
     }
-    // lost the race five times in a row on one key: that's a burst, not a person
-    return { allowed: false, retryAfter: 1 };
+    // Kept losing the race, and every read said we were still under `max`:
+    // plenty of simultaneous callers, none of them over the limit. Let this
+    // one through uncounted rather than refuse a legitimate burst. (Over the
+    // limit, the read above refuses straight away — no retries needed.)
+    return { allowed: true, retryAfter: 0, degraded: true };
   } catch (e) {
     return failOpen("rate_limits", e);
+  }
+}
+
+/**
+ * Is `key` inside a live window (a hit() within the last `windowSec`)?
+ * Read-only — records nothing. False when unknown (no row, table missing, error).
+ */
+export async function recentlyHit(db: Db, key: string, windowSec: number, now = Date.now()): Promise<boolean> {
+  try {
+    const cur = await db.from("rate_limits").select("*").eq("key", key).maybeSingle();
+    if (cur.error || !cur.data) return false;
+    const at = Date.parse(cur.data.last_at);
+    return Number.isFinite(at) && now - at < windowSec * 1000;
+  } catch {
+    return false;
   }
 }
 
@@ -129,8 +158,6 @@ export interface AiUsageResult {
   used: number;
   limit: number;
   degraded?: boolean;
-  /** true when denied only because of a burst of simultaneous calls */
-  busy?: boolean;
 }
 
 /**
@@ -139,7 +166,9 @@ export interface AiUsageResult {
  */
 export async function countAiCall(db: Db, userId: string, day: string, limit: number): Promise<AiUsageResult> {
   try {
-    for (let attempt = 0; attempt < 5; attempt++) {
+    let calls = 0;
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+      if (attempt > 0) await backoff(attempt);
       const ins = await db.from("ai_usage")
         .upsert({ user_id: userId, day, calls: 1 }, { onConflict: "user_id,day", ignoreDuplicates: true })
         .select("calls");
@@ -149,7 +178,7 @@ export async function countAiCall(db: Db, userId: string, day: string, limit: nu
       const cur = await db.from("ai_usage").select("calls").eq("user_id", userId).eq("day", day).maybeSingle();
       if (cur.error) return { ...failOpen("ai_usage", cur.error), used: 0, limit };
       if (!cur.data) continue;
-      const calls = Number(cur.data.calls ?? 0);
+      calls = Number(cur.data.calls ?? 0);
       if (calls >= limit) return { allowed: false, used: calls, limit };
 
       let upd = db.from("ai_usage").update({ calls: calls + 1 }).eq("user_id", userId).eq("day", day);
@@ -158,7 +187,8 @@ export async function countAiCall(db: Db, userId: string, day: string, limit: nu
       if (res.error) return { ...failOpen("ai_usage", res.error), used: 0, limit };
       if (res.data && res.data.length) return { allowed: true, used: calls + 1, limit };
     }
-    return { allowed: false, used: -1, limit, busy: true };
+    // lots of simultaneous calls, all under the limit: allow, uncounted (see hit())
+    return { allowed: true, used: calls + 1, limit, degraded: true };
   } catch (e) {
     return { ...failOpen("ai_usage", e), used: 0, limit };
   }
@@ -184,12 +214,15 @@ export async function hashKey(value: string): Promise<string> {
 }
 
 /**
- * The caller's IP as seen by Supabase's edge (first X-Forwarded-For hop).
+ * The caller's IP, from headers the caller can't forge: Cloudflare's
+ * cf-connecting-ip (Supabase sits behind Cloudflare, which overwrites it),
+ * then x-real-ip, then the LAST X-Forwarded-For hop — the one our own edge
+ * appended. Never the first hop: proxies keep whatever the caller sent there,
+ * so a fake X-Forwarded-For per request would dodge every per-IP limit.
  * Empty string when unknown — callers then skip the per-IP limit.
  */
 export function clientIp(headers: Headers): string {
-  const xff = headers.get("x-forwarded-for") ?? "";
-  const first = xff.split(",")[0]?.trim() ?? "";
-  const ip = first || headers.get("cf-connecting-ip") || headers.get("x-real-ip") || "";
+  const hops = (headers.get("x-forwarded-for") ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  const ip = headers.get("cf-connecting-ip")?.trim() || headers.get("x-real-ip")?.trim() || hops[hops.length - 1] || "";
   return /^[0-9a-f:.]{3,45}$/i.test(ip) ? ip : "";
 }

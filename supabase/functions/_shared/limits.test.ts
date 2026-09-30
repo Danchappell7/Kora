@@ -2,7 +2,7 @@
 // Unit tests for the Edge Functions' throttle + AI metering helpers, run
 // against a tiny in-memory stand-in for the supabase-js query builder.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientIp, countAiCall, dayIn, hashKey, hit, KEY_PREFIX, release, sweep } from "./limits.ts";
+import { clientIp, countAiCall, dayIn, hashKey, hit, KEY_PREFIX, recentlyHit, release, sweep } from "./limits.ts";
 
 type Row = Record<string, unknown>;
 
@@ -146,6 +146,34 @@ describe("hit (fixed-window throttle)", () => {
     expect(r.allowed).toBe(false); // the other request won this window
     expect(db.rows("rate_limits")[0].count).toBe(1);
   });
+
+  it("never refuses a burst of simultaneous calls that's under the limit", async () => {
+    // e.g. 60 assignment emails fired at once after a bulk reassign (notify: 150 / 10 min)
+    const db = new FakeDb();
+    const res = await Promise.all(Array.from({ length: 60 }, () => hit(db, "kanbo:notify:u", { windowSec: 600, max: 150, now: T0 })));
+    expect(res.filter((r) => !r.allowed)).toHaveLength(0);
+    const count = Number(db.rows("rate_limits")[0].count);
+    expect(count).toBeGreaterThan(0);
+    expect(count).toBeLessThanOrEqual(60);
+  });
+
+  it("still lets exactly `max` through when a burst goes over it", async () => {
+    const db = new FakeDb();
+    const res = await Promise.all(Array.from({ length: 40 }, () => hit(db, "kanbo:t:burst", { windowSec: 600, max: 5, now: T0 })));
+    expect(res.filter((r) => r.allowed)).toHaveLength(5);
+    expect(db.rows("rate_limits")[0].count).toBe(5);
+  });
+
+  it("recentlyHit reports a live window without recording anything", async () => {
+    const db = new FakeDb();
+    expect(await recentlyHit(db, "flag", 600, T0)).toBe(false);
+    expect(db.rows("rate_limits")).toHaveLength(0);
+    await hit(db, "flag", { windowSec: 600, now: T0 });
+    expect(await recentlyHit(db, "flag", 600, T0 + 599_000)).toBe(true);
+    expect(await recentlyHit(db, "flag", 600, T0 + 601_000)).toBe(false);
+    db.missing.add("rate_limits");
+    expect(await recentlyHit(db, "flag", 600, T0)).toBe(false);
+  });
 });
 
 describe("sweep", () => {
@@ -198,6 +226,16 @@ describe("countAiCall (daily AI limit)", () => {
     expect(await countAiCall(db, U, "2026-10-05", 10)).toMatchObject({ allowed: true, used: 6 });
     expect(db.rows("ai_usage")[0].calls).toBe(6);
   });
+
+  it("doesn't refuse simultaneous calls under the limit, and holds the limit when over it", async () => {
+    const db = new FakeDb();
+    const under = await Promise.all(Array.from({ length: 30 }, () => countAiCall(db, U, "2026-10-05", 200)));
+    expect(under.every((r) => r.allowed)).toBe(true);
+    const db2 = new FakeDb();
+    const over = await Promise.all(Array.from({ length: 30 }, () => countAiCall(db2, U, "2026-10-05", 3)));
+    expect(over.filter((r) => r.allowed)).toHaveLength(3);
+    expect(db2.rows("ai_usage")[0].calls).toBe(3);
+  });
 });
 
 describe("helpers", () => {
@@ -213,8 +251,12 @@ describe("helpers", () => {
     expect(await hashKey("someone@company.co.uk")).not.toBe(a);
   });
 
-  it("clientIp takes the first forwarded hop and ignores junk", () => {
-    expect(clientIp(new Headers({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" }))).toBe("203.0.113.7");
+  it("clientIp can't be steered by a caller-supplied X-Forwarded-For", () => {
+    // Cloudflare's header wins over whatever the caller put in X-Forwarded-For
+    expect(clientIp(new Headers({ "x-forwarded-for": "1.2.3.4, 203.0.113.7", "cf-connecting-ip": "203.0.113.7" }))).toBe("203.0.113.7");
+    expect(clientIp(new Headers({ "x-forwarded-for": "1.2.3.4", "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
+    // otherwise the hop our own edge appended (the last), never the first
+    expect(clientIp(new Headers({ "x-forwarded-for": "1.2.3.4, 203.0.113.7" }))).toBe("203.0.113.7");
     expect(clientIp(new Headers({ "x-forwarded-for": "2001:db8::1" }))).toBe("2001:db8::1");
     expect(clientIp(new Headers({ "x-forwarded-for": "<script>" }))).toBe("");
     expect(clientIp(new Headers())).toBe("");
