@@ -242,6 +242,9 @@ export interface Attachment {
   path: string;
   url?: string;
   createdAt: string;
+  /** The file's current owner (attachments.user_id): the uploader, or the
+   *  task's owner once the uploader's account is deleted. */
+  userId?: string;
 }
 
 export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention";

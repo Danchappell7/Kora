@@ -188,7 +188,7 @@ describe("offlineQueue — scoped to the signed-in user", () => {
 interface FakeCall {
   table: string; op: "select" | "insert" | "upsert" | "update" | "delete" | "rpc";
   payload?: unknown; opts?: Record<string, unknown>; returning?: string; select?: string;
-  filters: [string, string, unknown][]; order?: string; limit?: number; single?: boolean;
+  filters: [string, string, unknown][]; order?: string; orders?: string[]; limit?: number; single?: boolean;
 }
 type FakeResult = { data?: unknown; error?: { message: string; code?: string } | null };
 
@@ -196,7 +196,12 @@ function makeFake(uid = "user-a") {
   const calls: FakeCall[] = [];
   const invokes: { name: string; body: unknown }[] = [];
   const signCalls: string[][] = [];
-  const channels: { topic: string; bindings: { type: string; filter: Record<string, unknown>; cb: (p: unknown) => void }[]; status?: (s: string) => void }[] = [];
+  const uploads: { path: string; contentType?: string }[] = [];
+  const channels: { topic: string; opts?: unknown; bindings: { type: string; filter: Record<string, unknown>; cb: (p: unknown) => void }[]; status?: (s: string) => void }[] = [];
+  // channels still registered with the client (realtime-js keeps one per topic until it has left)
+  const live: { topic: string }[] = [];
+  let removeGate: Promise<unknown> | null = null;
+  let invokeResult: (name: string, body: unknown) => { data?: unknown; error?: unknown } = () => ({ data: null, error: null });
   let authCb: ((event: string, session: unknown) => void) | null = null;
   const session = { user: { id: uid, email: uid + "@example.com" } };
   let handler: (c: FakeCall) => FakeResult | undefined = () => undefined;
@@ -216,7 +221,7 @@ function makeFake(uid = "user-a") {
       gt(col: string, v: unknown) { c.filters.push(["gt", col, v]); return b; },
       is(col: string, v: unknown) { c.filters.push(["is", col, v]); return b; },
       in(col: string, v: unknown) { c.filters.push(["in", col, v]); return b; },
-      order(col: string) { c.order = col; return b; },
+      order(col: string) { c.order = col; (c.orders ??= []).push(col); return b; },
       limit(n: number) { c.limit = n; return b; },
       single() { c.single = true; return b; },
       maybeSingle() { c.single = true; return b; },
@@ -232,26 +237,43 @@ function makeFake(uid = "user-a") {
       getSession: async () => ({ data: { session }, error: null }),
       onAuthStateChange(cb: (event: string, session: unknown) => void) { authCb = cb; return { data: { subscription: { unsubscribe() {} } } }; },
     },
-    functions: { invoke: async (name: string, o: { body: unknown }) => { invokes.push({ name, body: o?.body }); return { data: null, error: null }; } },
+    functions: { invoke: async (name: string, o: { body: unknown }) => { invokes.push({ name, body: o?.body }); const r = invokeResult(name, o?.body); return { data: r.data ?? null, error: r.error ?? null }; } },
     storage: {
       from: () => ({
         createSignedUrls: async (paths: string[]) => { signCalls.push(paths); return { data: paths.map((p) => ({ path: p, signedUrl: "https://signed/" + p, error: null })), error: null }; },
+        upload: async (path: string, _file: unknown, o?: { contentType?: string }) => { uploads.push({ path, contentType: o?.contentType }); return { data: { path }, error: null }; },
+        getPublicUrl: (path: string) => ({ data: { publicUrl: "https://public/" + path } }),
       }),
     },
-    channel(topic: string) {
+    channel(topic: string, opts?: unknown) {
+      // like realtime-js: a topic still registered (even one that's leaving) is handed back
+      const existing = live.find((c) => c.topic === "realtime:" + topic);
+      if (existing) return existing;
       const ch = {
-        topic, bindings: [] as { type: string; filter: Record<string, unknown>; cb: (p: unknown) => void }[], status: undefined as undefined | ((s: string) => void),
+        topic: "realtime:" + topic, opts, bindings: [] as { type: string; filter: Record<string, unknown>; cb: (p: unknown) => void }[], status: undefined as undefined | ((s: string) => void),
         on(type: string, filter: Record<string, unknown>, cb: (p: unknown) => void) { ch.bindings.push({ type, filter, cb }); return ch; },
         subscribe(cb?: (s: string) => void) { ch.status = cb; return ch; },
+        presenceState: () => ({}),
+        track: async () => "ok",
       };
       channels.push(ch);
+      live.push(ch);
       return ch;
     },
-    removeChannel: async () => "ok",
+    getChannels: () => live.slice(),
+    removeChannel: async (ch: { topic: string }) => {
+      await removeGate;
+      const i = live.indexOf(ch);
+      if (i >= 0) live.splice(i, 1);
+      return "ok";
+    },
   };
   return {
-    client, calls, invokes, signCalls, channels, reportError: vi.fn(),
+    client, calls, invokes, signCalls, uploads, channels, live, reportError: vi.fn(),
     setHandler(h: (c: FakeCall) => FakeResult | undefined) { handler = h; },
+    setInvoke(f: (name: string, body: unknown) => { data?: unknown; error?: unknown }) { invokeResult = f; },
+    /** hold every removeChannel until the returned release() is called */
+    holdRemovals() { let release = () => {}; removeGate = new Promise((r) => { release = () => { removeGate = null; r(undefined); }; }); return () => release(); },
     fireAuth(event: string, s: unknown) { authCb?.(event, s); },
   };
 }
@@ -825,5 +847,316 @@ describe("store (supabase) — offline queue durability", () => {
     } finally {
       delete (navigator as unknown as { locks?: unknown }).locks;
     }
+  });
+});
+
+/* ------------------------------------------------------------------
+   Integration wiring — writes that must stick, honest loads, invites,
+   realtime topics, calendar hand-off, AI refusals
+   ------------------------------------------------------------------ */
+describe("store (supabase) — integration wiring", () => {
+  beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
+
+  const upsertsOf = (fake: ReturnType<typeof makeFake>) => fake.calls.filter((c) => c.table === "tasks" && c.op === "upsert");
+
+  it("deleteProject throws when RLS quietly deletes nothing, so the tasks are left alone", async () => {
+    const fake = makeFake();
+    let allowed = false;
+    fake.setHandler((c) => (c.table === "projects" && c.op === "delete" ? { data: allowed ? [{ id: "p1" }] : [] } : undefined));
+    const { store: s } = await loadStore(fake);
+    await expect(s.deleteProject("p1")).rejects.toThrow(/wasn't deleted/);
+    const call = fake.calls.find((c) => c.table === "projects" && c.op === "delete");
+    expect(call?.filters).toContainEqual(["eq", "id", "p1"]);
+    expect(call?.returning).toBe("id");
+    allowed = true;
+    await expect(s.deleteProject("p1")).resolves.toBeUndefined();
+  });
+
+  it("a new task keeps its completion date, archive date and month-end anchor", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "tasks" && c.op === "upsert" ? { data: [{ id: (c.payload as { id: string }).id }] } : undefined));
+    const { store: s } = await loadStore(fake);
+    await s.createTask(mkTask(uuidN(1), { status: "done", completedAt: "2026-09-12", archivedAt: "2026-09-20T10:00:00Z", originalDueDate: "2026-01-31" }), "user-a");
+    expect(upsertsOf(fake)[0].payload).toMatchObject({ completed_at: "2026-09-12", archived_at: "2026-09-20T10:00:00Z", original_due_date: "2026-01-31" });
+    await s.createTask(mkTask(uuidN(2)), "user-a");
+    const plain = upsertsOf(fake)[1].payload as Record<string, unknown>;
+    expect("completed_at" in plain || "archived_at" in plain || "original_due_date" in plain).toBe(false);
+    // and an import sends them too
+    await s.createTasksBatch([mkTask(uuidN(3), { status: "done", completedAt: "2026-08-01" })], "user-a");
+    expect((upsertsOf(fake)[2].payload as Record<string, unknown>[])[0]).toMatchObject({ completed_at: "2026-08-01" });
+  });
+
+  it("a database without archived_at still saves the task, just without it", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => {
+      if (c.table !== "tasks" || c.op !== "upsert") return undefined;
+      if ("archived_at" in (c.payload as object)) return { error: { message: "Could not find the 'archived_at' column of 'tasks' in the schema cache" } };
+      return { data: [{ id: (c.payload as { id: string }).id }] };
+    });
+    const { store: s } = await loadStore(fake);
+    const saved = await s.createTask(mkTask(uuidN(4), { archivedAt: "2026-09-20T10:00:00Z", completedAt: "2026-09-19" }), "user-a");
+    expect(saved.id).toBe(uuidN(4));
+    const last = upsertsOf(fake).slice(-1)[0].payload as Record<string, unknown>;
+    expect(last.completed_at).toBe("2026-09-19");
+    expect("archived_at" in last).toBe(false);
+  });
+
+  it("edits to the month-end anchor are saved, and clearing it clears the column", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    await s.updateTask(uuidN(5), { dueDate: "2026-02-28", originalDueDate: "2026-01-31" });
+    await s.updateTask(uuidN(5), { recurrence: "none", originalDueDate: undefined });
+    const updates = fake.calls.filter((c) => c.table === "tasks" && c.op === "update").map((c) => c.payload);
+    expect(updates).toEqual([{ due_date: "2026-02-28", original_due_date: "2026-01-31" }, { recurrence: "none", original_due_date: null }]);
+  });
+
+  it("claims invites before reading the profile, so a just-approved account never sees the waitlist", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    await s.bootstrap({ id: "user-a" });
+    const claim = fake.calls.findIndex((c) => c.table === "rpc:claim_invites");
+    const profile = fake.calls.findIndex((c) => c.table === "profiles");
+    expect(claim).toBeGreaterThanOrEqual(0);
+    expect(claim).toBeLessThan(profile);
+  });
+
+  it("a failed projects/workspaces/members/tags query is flagged, not passed off as 'you have none'", async () => {
+    const fake = makeFake();
+    const good = {
+      projects: [{ id: "p-1", name: "Launch", emoji: "🚀", color: "red", workspace_id: "ws-1" }],
+      workspaces: [{ id: "ws-1", name: "Ops", owner_id: "user-a", created_at: "2026-01-01T00:00:00Z" }],
+      workspace_members: [{ id: "wm-1", workspace_id: "ws-1", user_id: "user-a", email: "a@x.io", name: "A", role: "owner", status: "active" }],
+      tags: [{ id: "tag-1", label: "Client", color: "blue" }],
+    } as Record<string, unknown[]>;
+    let failing = new Set<string>();
+    fake.setHandler((c) => {
+      if (c.op !== "select" || !(c.table in good)) return undefined;
+      return failing.has(c.table) ? { error: { message: "upstream request timeout", code: "57014" } } : { data: good[c.table] };
+    });
+    const { store: s } = await loadStore(fake);
+    const ok = await s.bootstrap({ id: "user-a" });
+    expect(ok.partial).toBeUndefined();
+
+    failing = new Set(["projects", "workspaces", "workspace_members", "tags"]);
+    const b = await s.bootstrap({ id: "user-a" });
+    expect(b.partial).toEqual({ projects: true, workspaces: true, members: true, tags: true });
+    // filled from the last good copy on this device rather than emptied
+    expect(b.projects.map((p) => p.id)).toContain("p-1");
+    expect(b.workspaces.map((w) => w.id)).toContain("ws-1");
+    expect(b.members.map((m) => m.id)).toEqual(["wm-1"]);
+    expect(b.tags["tag-1"]?.label).toBe("Client");
+    expect(fake.reportError).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: "bootstrap", part: "projects" }));
+    // the cached copy still holds them, and doesn't carry the flag
+    const snap = JSON.parse(localStorage.getItem("kanbo-offline-snapshot")!);
+    expect(snap.boot.projects.map((p: { id: string }) => p.id)).toContain("p-1");
+    expect(snap.boot.partial).toBeUndefined();
+  });
+
+  it("with no earlier copy, a failed query still boots — flagged, with just the built-ins", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "projects" && c.op === "select" ? { error: { message: "TypeError: Failed to fetch" } } : undefined));
+    const { store: s } = await loadStore(fake);
+    const b = await s.bootstrap({ id: "user-a" });
+    expect(b.partial).toEqual({ projects: true });
+    expect(b.projects.map((p) => p.id)).toEqual(["p-personal"]);
+  });
+
+  it("the signed-in person gets the lighter default avatar colour", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    await s.bootstrap({ id: "user-a" });
+    const data = await import("./data");
+    expect(data.getMember("user-a")?.color).toBe(data.SELF_COLOR);
+    expect(data.SELF_COLOR).toBe("oklch(0.72 0.14 264)");
+  });
+
+  it("orders goals, portfolios, rules and forms on the server so lists don't reshuffle", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    await s.bootstrap({ id: "user-a" });
+    const orders = (t: string) => fake.calls.find((c) => c.table === t && c.op === "select")?.orders;
+    expect(orders("goals")).toEqual(["position", "created_at"]);
+    expect(orders("portfolios")).toEqual(["created_at"]);
+    expect(orders("automation_rules")).toEqual(["created_at"]);
+    expect(orders("forms")).toEqual(["created_at"]);
+  });
+
+  it("attachments carry their current owner, for who may delete them", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "attachments" ? { data: [{ id: "a1", task_id: uuidN(1), user_id: "owner-b", name: "f", size: 1, mime: "text/plain", path: "gone-a/" + uuidN(1) + "/f", created_at: "2026-09-01" }] } : undefined));
+    const { store: s } = await loadStore(fake);
+    const [a] = await s.listProjectAttachments([uuidN(1)]);
+    expect(a.userId).toBe("owner-b");
+  });
+
+  describe("invite emails", () => {
+    const member = { id: "mem-1", workspace_id: "ws-1", user_id: null, email: "sam@acme.com", name: "", role: "member", status: "invited" };
+    const httpError = (status: number, body: unknown) => ({ name: "FunctionsHttpError", context: { status, json: async () => body } });
+
+    it("says whether the invitation email went, and why not", async () => {
+      const fake = makeFake();
+      fake.setHandler((c) => (c.table === "rpc:invite_member" ? { data: member } : undefined));
+      const { store: s } = await loadStore(fake);
+
+      fake.setInvoke(() => ({ data: { ok: true, sent: true } }));
+      const m = await s.inviteMember("ws-1", "sam@acme.com");
+      expect(m.id).toBe("mem-1");
+      expect(m.inviteEmail).toEqual({ sent: true });
+
+      fake.setInvoke(() => ({ data: { ok: true, sent: false, reason: "email_not_configured" } }));
+      expect((await s.inviteMember("ws-1", "sam@acme.com")).inviteEmail).toEqual({ sent: false, reason: "email_not_configured" });
+
+      // the invite row is saved even when the inviter is over the hourly limit
+      fake.setInvoke(() => ({ error: httpError(429, { reason: "inviter_limit", error: "You've sent a lot of invites this hour.", retryAfter: 1200 }) }));
+      const limited = await s.inviteMember("ws-1", "sam@acme.com");
+      expect(limited.id).toBe("mem-1");
+      expect(limited.inviteEmail).toMatchObject({ sent: false, reason: "inviter_limit", retryAfter: 1200 });
+
+      fake.setInvoke(() => ({ error: httpError(500, { error: "Something went wrong sending that invite." }) }));
+      expect((await s.inviteMember("ws-1", "sam@acme.com")).inviteEmail).toMatchObject({ sent: false, reason: "not_sent" });
+      expect(fake.reportError).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: "sendInviteEmail" }));
+    });
+
+    it("a resend re-runs the same call and reports a throttle rather than failing", async () => {
+      const fake = makeFake();
+      fake.setInvoke(() => ({ data: { ok: true, sent: false, reason: "throttled", retryAfter: 40 } }));
+      const { store: s } = await loadStore(fake);
+      expect(await s.sendInviteEmail("mem-1")).toEqual({ sent: false, reason: "throttled", retryAfter: 40 });
+      expect(fake.invokes).toEqual([{ name: "invite-member", body: { memberId: "mem-1" } }]);
+      fake.setInvoke(() => ({ error: httpError(409, { ok: false, sent: false, error: "already a member" }) }));
+      expect(await s.sendInviteEmail("mem-1")).toMatchObject({ sent: false, reason: "already_active" });
+    });
+  });
+
+  describe("realtime on a task", () => {
+    it("reopening a task's presence waits for the old channel to leave, then joins a fresh one", async () => {
+      const fake = makeFake();
+      const { store: s } = await loadStore(fake);
+      const unsub1 = s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.channels).toHaveLength(1);
+      const release = fake.holdRemovals();
+      unsub1();                                            // still leaving…
+      const onSync = vi.fn();
+      s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, onSync);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.channels).toHaveLength(1);               // …so nothing is reopened on top of it
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.channels).toHaveLength(2);               // a fresh channel, on the same room
+      expect(fake.channels[1]).not.toBe(fake.channels[0]);
+      expect(fake.channels[1].topic).toBe("realtime:presence-task-t1");
+      expect(fake.live).toEqual([fake.channels[1]]);
+      fake.channels[1].bindings.find((b) => b.type === "presence")?.cb({});
+      expect(onSync).toHaveBeenCalledWith([]);
+    });
+
+    it("closing a task before its presence channel opened never opens it", async () => {
+      const fake = makeFake();
+      const { store: s } = await loadStore(fake);
+      const unsub1 = s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+      const release = fake.holdRemovals();
+      unsub1();
+      const unsub2 = s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, vi.fn());
+      unsub2();                                            // closed again before the old one had gone
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.channels).toHaveLength(1);
+      expect(fake.live).toEqual([]);
+    });
+
+    it("each comment stream gets its own channel, so a quick reopen can't get a dead one back", async () => {
+      const fake = makeFake();
+      const { store: s } = await loadStore(fake);
+      const unsub = s.subscribeToTaskComments("t1", vi.fn());
+      unsub();
+      const onInsert = vi.fn();
+      s.subscribeToTaskComments("t1", onInsert);
+      expect(fake.channels).toHaveLength(2);
+      expect(fake.channels[0].topic).not.toBe(fake.channels[1].topic);
+      expect(fake.channels[1].bindings[0].filter).toMatchObject({ table: "comments", filter: "task_id=eq.t1" });
+      fake.channels[1].bindings[0].cb({ new: { id: "c1", task_id: "t1", user_id: "user-b", author_name: "B", body: "hi", created_at: "2026-09-30" } });
+      expect(onInsert).toHaveBeenCalledWith(expect.objectContaining({ id: "c1", body: "hi" }));
+    });
+  });
+
+  it("calendar: the app finishes the handshake only when it asks to", async () => {
+    const fake = makeFake();
+    fake.client.auth.getSession = async () => ({ data: { session: { user: { id: "user-a" }, access_token: "tok" } as never }, error: null });
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      const body = url.includes("action=finish") ? { ok: true, provider: "google", accountEmail: "a@gmail.com" } : { url: "https://accounts.example/consent" };
+      return { ok: true, status: 200, json: async () => body };
+    }));
+    const { store: s } = await loadStore(fake);
+    await s.getCalendarAuthUrl("google");
+    expect(urls[0]).toMatch(/action=connect&provider=google$/);
+    await s.getCalendarAuthUrl("google", { finishInApp: true });
+    expect(urls[1]).toMatch(/action=connect&provider=google&finish=app$/);
+    expect(await s.finishCalendarConnect("app:abc/1", "code&x")).toEqual({ provider: "google", accountEmail: "a@gmail.com" });
+    expect(urls[2]).toMatch(/action=finish&state=app%3Aabc%2F1&code=code%26x$/);
+  });
+
+  it("AI: says why when the daily limit is reached or the account isn't approved", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    fake.setInvoke(() => ({ error: { name: "FunctionsHttpError", context: { status: 429, json: async () => ({ error: "daily_limit", limit: 200, detail: "You've used today's 200 AI requests. They reset at midnight (UK time)." }) } } }));
+    expect(await s.aiSummary([], "2026-09-30")).toBeNull();
+    expect(s.aiNotice()).toMatch(/today's 200 AI requests/);
+    fake.setInvoke(() => ({ error: { name: "FunctionsHttpError", context: { status: 403, json: async () => ({ error: "not_allowed" }) } } }));
+    expect(await s.aiBreakdown("Plan launch", "")).toEqual([]);
+    expect(s.aiNotice()).toMatch(/awaiting approval/);
+    fake.setInvoke(() => ({ error: { name: "FunctionsHttpError", context: { status: 502, json: async () => ({ error: "anthropic_error", detail: "raw upstream text" }) } } }));
+    expect((await s.aiPrioritize([], "2026-09-30")).source).toBe("heuristic");
+    expect(s.aiNotice()).toBeNull();                        // nothing worth showing: the generic message stands
+    fake.setInvoke(() => ({ data: { answer: "Two things are overdue." } }));
+    expect(await s.aiAsk("What's overdue?", [], "2026-09-30")).toBe("Two things are overdue.");
+    expect(s.aiNotice()).toBeNull();
+  });
+
+  it("saving a profile without a photo leaves the saved photo alone", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "profiles" && c.op === "upsert" ? { data: { id: "user-a", first_name: "Ada", last_name: "L", pronouns: "", email: "a@x.io", avatar_url: "https://public/newer.png" } } : undefined));
+    const { store: s } = await loadStore(fake);
+    const saved = await s.saveProfile("user-a", { firstName: "Ada", lastName: "L", pronouns: "", email: "a@x.io" });
+    const up = fake.calls.find((c) => c.table === "profiles" && c.op === "upsert")!.payload as Record<string, unknown>;
+    expect("avatar_url" in up).toBe(false);
+    expect(saved.avatarUrl).toBe("https://public/newer.png");
+    await s.saveProfile("user-a", { firstName: "Ada", lastName: "L", pronouns: "", email: "a@x.io", avatarUrl: null });
+    expect(fake.calls.filter((c) => c.table === "profiles" && c.op === "upsert")[1].payload).toMatchObject({ avatar_url: null });
+  });
+
+  it("an avatar's file extension follows its type, not its name", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    const url = await s.uploadAvatar("user-a", new File(["x"], "photo.png", { type: "image/jpeg" }));
+    expect(fake.uploads[0].path).toMatch(/^user-a\/avatar-\d+\.jpg$/);
+    expect(url).toBe("https://public/" + fake.uploads[0].path);
+  });
+});
+
+describe("store (demo mode) — wiring", () => {
+  it("a project made from a template doesn't carry the template id", async () => {
+    const p = await store.createProject({ name: "Launch", emoji: "🚀", color: "red", workspaceId: null, templateId: "tpl-launch" }, "m-self");
+    expect(p.name).toBe("Launch");
+    expect("templateId" in p).toBe(false);
+  });
+  it("a demo upload belongs to whoever added it", async () => {
+    const a = await store.uploadAttachment("t-own", new File(["x"], "a.txt", { type: "text/plain" }), "m-self");
+    expect(a.userId).toBe("m-self");
+  });
+  it("a demo profile save without a photo keeps the photo", async () => {
+    await store.saveProfile("m-self", { firstName: "A", lastName: "B", pronouns: "", email: "a@b.c", avatarUrl: "blob:one" });
+    const p = await store.saveProfile("m-self", { firstName: "A", lastName: "C", pronouns: "", email: "a@b.c" });
+    expect(p.avatarUrl).toBe("blob:one");
+    expect(p.lastName).toBe("C");
+  });
+  it("sends no invitation email without a backend", async () => {
+    const m = await store.inviteMember("ws-x", "pat@acme.com");
+    expect(m.inviteEmail).toBeUndefined();
+    expect(await store.sendInviteEmail(m.id)).toEqual({ sent: false, reason: "email_not_configured" });
   });
 });
