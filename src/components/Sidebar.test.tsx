@@ -22,16 +22,23 @@ const task = (id: string, extra: Partial<Task>): Task => ({
   tags: [], dependencies: [], subtasks: [], focusMin: 0, comments: 0, aiScore: 0, workspaceId: "ws-1", ...extra,
 });
 
-function renderSidebar(opts: { route?: Route; workspace?: string | null; myRole?: Role; tasks?: Task[]; saved?: SavedSearch[]; onDeleteSavedSearch?: (id: string) => void | Promise<unknown>; projects?: Project[]; workspaces?: Workspace[]; currentUserId?: string; guardRoute?: boolean; focus?: FocusTimer } = {}) {
+type Opts = {
+  route?: Route; workspace?: string | null; myRole?: Role; tasks?: Task[]; saved?: SavedSearch[]; savedCounts?: Record<string, number>;
+  onDeleteSavedSearch?: (id: string) => void | Promise<unknown>; projects?: Project[]; workspaces?: Workspace[]; currentUserId?: string;
+  guardRoute?: boolean; focus?: FocusTimer; inboxCount?: number; teamBadge?: number; theme?: "light" | "dark"; withShortcuts?: boolean;
+};
+function renderSidebar(opts: Opts = {}) {
   const props = {
     setRoute: vi.fn(), setWorkspace: vi.fn(), onDeleteProject: vi.fn(), onArchiveProject: vi.fn(), onRestoreProject: vi.fn(), onSignOut: vi.fn(),
+    openFocus: vi.fn(), onNewProject: vi.fn(), onNewWorkspace: vi.fn(), onToggleTheme: vi.fn(), onOpenSettings: vi.fn(), onOpenShortcuts: vi.fn(), onOpenSearch: vi.fn(),
   };
-  const ui = (o: typeof opts) => (
+  const ui = (o: Opts) => (
     <ToastProvider>
-      <Sidebar route={o.route ?? { view: "home" }} workspace={o.workspace === undefined ? "ws-1" : o.workspace} workspaces={o.workspaces ?? workspaces} onNewWorkspace={() => {}}
-        focus={o.focus ?? focus} openFocus={() => {}} tasks={o.tasks ?? []} projects={o.projects ?? projects} inboxCount={0} currentUserId={o.currentUserId ?? "u-me"}
-        onNewProject={() => {}} onUpgrade={() => {}} onManageBilling={() => {}} myRole={o.myRole} guardRoute={o.guardRoute}
-        savedSearches={o.saved} onDeleteSavedSearch={o.onDeleteSavedSearch} {...props} />
+      <Sidebar route={o.route ?? { view: "plan" }} workspace={o.workspace === undefined ? "ws-1" : o.workspace} workspaces={o.workspaces ?? workspaces}
+        focus={o.focus ?? focus} tasks={o.tasks ?? []} projects={o.projects ?? projects} inboxCount={o.inboxCount ?? 0} currentUserId={o.currentUserId ?? "u-me"}
+        onUpgrade={() => {}} onManageBilling={() => {}} myRole={o.myRole} guardRoute={o.guardRoute}
+        savedSearches={o.saved} savedSearchCounts={o.savedCounts} onDeleteSavedSearch={o.onDeleteSavedSearch} teamBadge={o.teamBadge} theme={o.theme}
+        {...props} onOpenShortcuts={o.withShortcuts === false ? undefined : props.onOpenShortcuts} />
     </ToastProvider>
   );
   const r = render(ui(opts));
@@ -97,10 +104,11 @@ describe("Sidebar project actions", () => {
     expect(screen.getByRole("button", { name: "Pin project Q4 Launch" })).toBeInTheDocument();
   });
 
-  it("marks the open project and view with aria-current", () => {
+  it("marks the open project with aria-current (its row, not Projects or Today)", () => {
     renderSidebar({ route: { view: "project", projectId: "p-launch" }, myRole: "owner" });
     expect(screen.getByRole("button", { name: /^Q4 Launch/ })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("button", { name: /^Home$/ })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /^Today$/ })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /^Projects$/ })).not.toHaveAttribute("aria-current");
   });
 
   it("counts only open top-level tasks in a project badge, and assignee-or-collaborator tasks for My tasks", () => {
@@ -122,14 +130,14 @@ describe("Sidebar navigation safety", () => {
     fireEvent.click(screen.getByRole("button", { name: /Switch workspace/ }));
     fireEvent.click(screen.getByRole("button", { name: "Personal" }));
     expect(setWorkspace).toHaveBeenCalledWith(null);
-    expect(setRoute).toHaveBeenCalledWith({ view: "home" });
+    expect(setRoute).toHaveBeenCalledWith({ view: "plan" });
   });
 
   it("leaves a project a teammate archived, and says why", () => {
     const s = renderSidebar({ route: { view: "project", projectId: "p-launch" }, myRole: "member" });
     expect(s.setRoute).not.toHaveBeenCalled();
     s.rerender({ route: { view: "project", projectId: "p-launch" }, myRole: "member", projects: projects.map((p) => p.id === "p-launch" ? { ...p, archivedAt: "2026-09-30" } : p) });
-    expect(s.setRoute).toHaveBeenCalledWith({ view: "home" });
+    expect(s.setRoute).toHaveBeenCalledWith({ view: "plan" });
     expect(screen.getByRole("status")).toHaveTextContent("“Q4 Launch” was archived");
   });
 
@@ -139,7 +147,7 @@ describe("Sidebar navigation safety", () => {
     expect(s.setRoute).not.toHaveBeenCalled();
   });
 
-  it("follows a project opened from another workspace (palette, search) instead of bouncing Home", () => {
+  it("follows a project opened from another workspace (palette, search) instead of bouncing to Today", () => {
     const s = renderSidebar({ workspace: null, myRole: "member" });
     s.rerender({ workspace: null, myRole: "member", route: { view: "project", projectId: "p-launch" } });
     expect(s.setWorkspace).toHaveBeenCalledWith("ws-1");
@@ -150,7 +158,7 @@ describe("Sidebar navigation safety", () => {
     const s = renderSidebar({ route: { view: "project", projectId: "p-launch" }, myRole: "member" });
     s.rerender({ route: { view: "project", projectId: "p-launch" }, myRole: "member", workspace: null });
     expect(s.setWorkspace).not.toHaveBeenCalled();
-    expect(s.setRoute).toHaveBeenCalledWith({ view: "home" });
+    expect(s.setRoute).toHaveBeenCalledWith({ view: "plan" });
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
@@ -186,7 +194,8 @@ describe("Sidebar saved lists", () => {
     const onDeleteSavedSearch = vi.fn();
     const s = renderSidebar({ saved, onDeleteSavedSearch });
     fireEvent.click(screen.getByRole("button", { name: "Remove saved list Urgent bugs" }));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sign out" })); await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: "You" }));
+    await act(async () => { fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" })); await Promise.resolve(); });
     expect(onDeleteSavedSearch).toHaveBeenCalledWith("ss-1");
     expect(s.onSignOut).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
@@ -202,30 +211,184 @@ describe("Sidebar saved lists", () => {
   });
 });
 
-describe("Sidebar deep-work mini timer", () => {
-  const timer = (over: Partial<FocusTimer>) => ({ ...focus, seconds: 125, phase: "work", ...over }) as FocusTimer;
+describe("Sidebar Focus pill", () => {
+  const timer = (over: Partial<FocusTimer>) => ({ ...focus, seconds: 125, phase: "work", targetMin: 25, ...over }) as FocusTimer;
+
+  it("idles as “Focus” with its F key, and opens Focus mode", () => {
+    const s = renderSidebar();
+    const pill = screen.getByRole("button", { name: /^Focus/ });
+    expect(pill).toHaveAttribute("aria-keyshortcuts", "F");
+    fireEvent.click(pill);
+    expect(s.openFocus).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "End focus session" })).not.toBeInTheDocument();
+  });
+
+  it("shows the running time and task, and pauses", () => {
+    const setRunning = vi.fn();
+    renderSidebar({ focus: timer({ running: true, setRunning, taskId: "t1" }), tasks: [task("t1", { title: "Launch deck" })] });
+    expect(screen.getByText("02:05")).toBeInTheDocument();
+    expect(screen.getByText("Launch deck")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pause focus" }));
+    expect(setRunning).toHaveBeenCalled();
+  });
 
   it("says a break ended rather than calling it too short to bank", () => {
     renderSidebar({ focus: timer({ phase: "break", endSession: () => 0 }) });
-    fireEvent.click(screen.getByRole("button", { name: /^End$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "End focus session" }));
     expect(screen.getByText("Break ended")).toBeInTheDocument();
     expect(screen.queryByText("Too short to bank")).not.toBeInTheDocument();
   });
 
   it("banks a work session, and calls a zero-minute one too short", () => {
     const s = renderSidebar({ focus: timer({ endSession: () => 25 }) });
-    fireEvent.click(screen.getByRole("button", { name: /^End$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "End focus session" }));
     expect(screen.getByText("Banked 25m of deep work")).toBeInTheDocument();
     s.rerender({ focus: timer({ endSession: () => 0 }) });
-    fireEvent.click(screen.getByRole("button", { name: /^End$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "End focus session" }));
     expect(screen.getByText("Too short to bank")).toBeInTheDocument();
   });
 });
 
-describe("Sidebar smart lists", () => {
-  it("explain their scope in a tooltip", () => {
+describe("Sidebar places", () => {
+  it("lists Today, Inbox and My tasks, then Team's Projects and Team, inside the Main nav", () => {
     renderSidebar();
-    expect(screen.getByRole("button", { name: /^Assigned to me/ })).toHaveAttribute("title", "Open tasks assigned to you or where you're a collaborator");
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    const names = within(nav).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(names).toEqual(["Today", "Inbox", "My tasks", "Projects", "Team"]);
+    expect(within(nav).getByRole("heading", { name: "Team" })).toBeInTheDocument();
+    for (const gone of [/^Home$/, /^Analytics$/, /^Assigned to me/, /^Automations$/]) expect(screen.queryByRole("button", { name: gone })).not.toBeInTheDocument();
+  });
+
+  it("goes to each place's route", () => {
+    const s = renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    expect(s.setRoute).toHaveBeenLastCalledWith({ view: "plan" });
+    fireEvent.click(screen.getByRole("button", { name: "Team" }));
+    expect(s.setRoute).toHaveBeenLastCalledWith({ view: "pulse" });
+    fireEvent.click(screen.getByRole("button", { name: /^All projects/ }));
+    expect(s.setRoute).toHaveBeenLastCalledWith({ view: "projects" });
+  });
+
+  it("highlights the place a view belongs to (Search is My tasks, Goals is Projects)", () => {
+    const s = renderSidebar({ route: { view: "search" } });
+    expect(screen.getByRole("button", { name: "My tasks" })).toHaveAttribute("aria-current", "page");
+    s.rerender({ route: { view: "goals" } });
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "My tasks" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("names the Inbox badge with the unread count", () => {
+    renderSidebar({ inboxCount: 5 });
+    expect(screen.getByRole("button", { name: "Inbox, 5 unread" })).toHaveTextContent("5");
+  });
+
+  it("shows Team's risk count in team workspaces", () => {
+    renderSidebar({ teamBadge: 2 });
+    expect(screen.getByRole("button", { name: "Team, 2 at risk" })).toHaveTextContent("2");
+  });
+
+  it("shows Insights instead of Team in the Personal workspace", () => {
+    const s = renderSidebar({ workspace: null, teamBadge: 2 });
+    expect(screen.queryByRole("button", { name: /^Team/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Insights" }));
+    expect(s.setRoute).toHaveBeenCalledWith({ view: "analytics" });
+    s.rerender({ workspace: null, route: { view: "reports" } });
+    expect(screen.getByRole("button", { name: "Insights" })).toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("Sidebar saved views", () => {
+  const saved: SavedSearch[] = ["Urgent bugs", "Launch", "Waiting on legal", "Design QA", "Backlog"].map((name, i) => ({ id: `ss-${i}`, name, query: {} }));
+
+  it("nests up to three under My tasks, with “More…” opening the palette", () => {
+    const s = renderSidebar({ saved, savedCounts: { "ss-0": 4 } });
+    expect(screen.getByRole("button", { name: "Urgent bugs, 4 tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Waiting on legal/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Design QA/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^More saved views/ }));
+    expect(s.onOpenSearch).toHaveBeenCalled();
+  });
+
+  it("marks an open saved view as the current page instead of My tasks", () => {
+    renderSidebar({ saved, route: { view: "search", list: "ss-1" } });
+    expect(screen.getByRole("button", { name: /^Launch/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "My tasks" })).not.toHaveAttribute("aria-current");
+  });
+});
+
+describe("Sidebar projects list", () => {
+  const many: Project[] = Array.from({ length: 11 }, (_, i) => ({ id: `p${i}`, name: `Project ${i}`, emoji: "", color: "oklch(0.7 0.14 230)", workspaceId: "ws-1" }));
+  const listed = () => within(screen.getByRole("list", { name: "Projects" })).getAllByRole("listitem").map((li) => li.querySelector(".kproj-name")!.textContent);
+
+  it("lists at most eight, always including the open project, and keeps their order", () => {
+    renderSidebar({ projects: many, route: { view: "project", projectId: "p10" } });
+    const rows = listed();
+    expect(rows).toHaveLength(8);
+    expect(rows).toContain("Project 10");
+    expect(rows.indexOf("Project 10")).toBe(rows.length - 1); // in its own place, not jumped to the top
+    expect(screen.getByRole("button", { name: /^All projects/ })).toHaveTextContent("11");
+  });
+
+  it("fills the list with pinned, then recently opened, projects", () => {
+    localStorage.setItem("kanbo-pinned-projects", JSON.stringify(["p9"]));
+    localStorage.setItem("kanbo-recent-projects:u-me", JSON.stringify(["p8"]));
+    renderSidebar({ projects: many });
+    const rows = listed();
+    expect(rows[0]).toBe("Project 9");
+    expect(rows).toContain("Project 8");
+    expect(rows).not.toContain("Project 7");
+  });
+
+  it("offers to create the first project, except to guests", () => {
+    const s = renderSidebar({ projects: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Create one" }));
+    expect(s.onNewProject).toHaveBeenCalled();
+    s.rerender({ projects: [], myRole: "guest" });
+    expect(screen.getByText("No projects yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create one" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Sidebar footer", () => {
+  it("names the theme button after the theme it switches to", () => {
+    const s = renderSidebar({ theme: "dark" });
+    fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
+    expect(s.onToggleTheme).toHaveBeenCalled();
+    s.rerender({ theme: "light" });
+    expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeInTheDocument();
+  });
+
+  it("has no theme button without a theme", () => {
+    renderSidebar();
+    expect(screen.queryByRole("button", { name: /^Switch to/ })).not.toBeInTheDocument();
+  });
+
+  it("opens an account menu with Settings, Keyboard shortcuts and Sign out", () => {
+    const s = renderSidebar();
+    const me = screen.getByRole("button", { name: "You" });
+    expect(me).toHaveAttribute("aria-haspopup", "menu");
+    fireEvent.click(me);
+    const menu = screen.getByRole("menu", { name: "Account" });
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Settings⌘,", "Keyboard shortcuts?", "Sign out"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Keyboard shortcuts" }));
+    expect(s.onOpenShortcuts).toHaveBeenCalled();
+    expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(s.onOpenSettings).toHaveBeenCalled();
+  });
+});
+
+describe("Sidebar workspace switcher", () => {
+  it("lists the workspaces with the current one marked, and New workspace…", () => {
+    const s = renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Switch workspace, current: Acme" }));
+    const menu = screen.getByRole("dialog", { name: "Workspaces" });
+    expect(within(menu).getByRole("button", { name: "Acme" })).toHaveAttribute("aria-current", "true");
+    expect(within(menu).getByRole("button", { name: "Acme" })).toHaveFocus();
+    fireEvent.keyDown(within(menu).getByRole("button", { name: "Acme" }), { key: "ArrowDown" });
+    expect(within(menu).getByRole("button", { name: "New workspace…" })).toHaveFocus();
+    fireEvent.click(within(menu).getByRole("button", { name: "New workspace…" }));
+    expect(s.onNewWorkspace).toHaveBeenCalled();
   });
 });
 
