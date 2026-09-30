@@ -10,8 +10,13 @@
 // the next admin/member and re-attributes their tasks/projects/comments.
 // A user can only ever delete themselves — the id comes from the verified
 // token, never the request body.
+// Their face photos ("<uid>/avatar-*" in the public avatars bucket) are not
+// part of that cascade, so they are removed first (best-effort; workspace
+// logos stay with the workspaces). This covers every route to deletion, not
+// just the Settings screen's own clean-up.
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { forgetRemovedAvatar, removeAvatarPhotos } from "../_shared/avatars.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -29,9 +34,15 @@ Deno.serve(async (req) => {
     const { data: ures } = await supa.auth.getUser();
     if (!ures?.user) return json({ error: "unauthorized" }, 401);
 
+    const uid = ures.user.id;
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const { error } = await admin.auth.admin.deleteUser(ures.user.id);
-    if (error) return json({ error: error.message }, 400);
+    const photos = await removeAvatarPhotos(admin, uid);
+    const { error } = await admin.auth.admin.deleteUser(uid);
+    if (error) {
+      // still here, so don't leave the profile pointing at a photo just removed
+      await forgetRemovedAvatar(admin, uid, photos);
+      return json({ error: error.message }, 400);
+    }
 
     return json({ ok: true });
   } catch (e) {
