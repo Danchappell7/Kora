@@ -211,9 +211,14 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
   const [unsavedIds, setUnsavedIds] = useState<string[]>([]); // creates that failed — kept on screen until retried
-  // "What moved" is for people who knew the old layout: this browser had used Kanbo
-  // before this load (read before any effect below writes these preferences)
-  const [knewOldLayout] = useState(() => { try { return ["kanbo-view", "kanbo-groupby", "kanbo-theme"].some((k) => localStorage.getItem(k) !== null); } catch { return false; } });
+  // "What moved" is for people who knew the old layout: someone who has used the app
+  // in this browser before (opened My tasks or a project, or been through onboarding)
+  const [knewOldLayout] = useState(() => {
+    try {
+      for (let i = 0; i < localStorage.length; i++) if (/^kanbo-(filters:|pview-|onboarded)/.test(localStorage.key(i) ?? "")) return true;
+    } catch { /* private mode */ }
+    return false;
+  });
   const onboardCheckedRef = useRef(false);
   const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
   const [pendingSync, setPendingSync] = useState(0); // queued offline task writes awaiting replay
@@ -3038,7 +3043,7 @@ export default function App() {
   /* ---- Today ---- */
   // momentum: what's done today out of today's work (done today + still open for today)
   const doneToday = myTasks.filter((t) => t.status === "done" && t.completedAt === dayKey).length;
-  const openToday = myTasks.filter((t) => t.status !== "done" && (t.dueDate === dayKey || !!t.planToday || t.scheduled != null)).length;
+  const openToday = myTasks.filter((t) => t.status !== "done" && (t.dueDate === dayKey || !!t.planToday)).length;
   const dayTotal = doneToday + openToday;
   const setup = [
     { label: "Add your first task", done: allTasks.length > 0, action: () => openNewTask() },
@@ -3107,7 +3112,8 @@ export default function App() {
       case "inbox":
         return { title: "Inbox", meta: inboxCount > 0 ? `${inboxCount} new` : "Nothing new" };
       case "tasks": {
-        if (route.view === "search") return { title: "Search" };
+        // a smart list or saved view names itself
+        if (route.view === "search") return { title: "Search", meta: route.list ? SMART_LISTS.find((l) => l.id === route.list)?.label ?? savedActive?.name : undefined };
         const open = myTasks.filter((t) => t.status !== "done" && !t.parentId).length;
         return { title: "My tasks", meta: `${activeWsName} · ${open} open` };
       }
