@@ -238,16 +238,64 @@ export function projectTemplateTasks(tpl: ProjectTemplate, ctx: {
   });
 }
 
+/** how many starter tasks a saved project template keeps */
+export const MAX_BLUEPRINT_TASKS = 100;
+
+function sanitizeBlueprintTask(x: unknown): ProjectBlueprintTask | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
+  if (typeof r.title !== "string" || !r.title.trim()) return null;
+  const bt: ProjectBlueprintTask = { title: r.title.trim().slice(0, 500) };
+  if (PRIORITIES.includes(r.priority as Priority)) bt.priority = r.priority as Priority;
+  if (typeof r.focusMin === "number" && Number.isFinite(r.focusMin)) bt.focusMin = Math.max(5, Math.round(r.focusMin));
+  if (typeof r.dueInDays === "number" && Number.isFinite(r.dueInDays)) bt.dueInDays = Math.max(0, Math.round(r.dueInDays));
+  if (RECURRENCES.includes(r.recurrence as Recurrence) && r.recurrence !== "none") bt.recurrence = r.recurrence as Recurrence;
+  if (typeof r.description === "string" && r.description) bt.description = r.description.slice(0, 5000);
+  if (typeof r.section === "string" && r.section) bt.section = r.section;
+  return bt;
+}
+
 function sanitizeProjectTemplate(x: unknown): ProjectTemplate | null {
   if (!x || typeof x !== "object") return null;
   const r = x as Record<string, unknown>;
   if (typeof r.id !== "string" || !r.id || typeof r.name !== "string" || !r.name.trim()) return null;
-  return {
+  const tpl: ProjectTemplate = {
     id: r.id,
     name: r.name,
     emoji: typeof r.emoji === "string" && r.emoji ? r.emoji : "📁",
     color: typeof r.color === "string" && r.color ? r.color : "oklch(0.74 0.14 230)",
   };
+  // a template saved from a project carries its tasks (never its people or dates)
+  const tasks = Array.isArray(r.tasks)
+    ? r.tasks.map(sanitizeBlueprintTask).filter((t): t is ProjectBlueprintTask => !!t).slice(0, MAX_BLUEPRINT_TASKS)
+    : [];
+  if (tasks.length) tpl.tasks = tasks;
+  return tpl;
+}
+
+/**
+ * A project's work as a reusable blueprint: its top-level tasks in order
+ * (titles, priorities, estimates, repeats and notes). People, dates, sections
+ * and progress stay with the project, so a new project starts clean.
+ */
+export function projectBlueprint(tasks: Task[]): ProjectBlueprintTask[] {
+  return tasks
+    .filter((t) => !t.parentId && !t.archivedAt)
+    .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, MAX_BLUEPRINT_TASKS)
+    .map((t) => {
+      const bt: ProjectBlueprintTask = { title: t.title };
+      if (t.priority && t.priority !== "medium") bt.priority = t.priority;
+      if (t.focusMin && t.focusMin !== 30) bt.focusMin = t.focusMin;
+      if (t.recurrence && t.recurrence !== "none") bt.recurrence = t.recurrence;
+      if (t.description) bt.description = t.description;
+      return bt;
+    });
+}
+
+/** A project template by id: a built-in, or one the user saved. */
+export function findProjectTemplate(id: string): ProjectTemplate | undefined {
+  return getProjectTemplates().find((t) => t.id === id);
 }
 
 /** the user's saved project templates only (newest first) */
