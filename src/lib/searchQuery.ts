@@ -28,9 +28,16 @@ export function toQuery(partial: Record<string, unknown> | undefined | null): Qu
 }
 
 /** True when the query narrows anything (text or any filter). The archived
- *  switch only widens a search, so on its own it doesn't count as a search. */
+ *  switch only widens a search, so on its own it doesn't count as a search.
+ *  Text counts only once it holds a real term: a lone `"` (the first thing
+ *  typed when starting a phrase) matches nothing yet, so it isn't a search. */
 export function isQueryActive(q: Query): boolean {
-  return q.text.trim() !== "" || STRING_KEYS.some((k) => k !== "text" && q[k] !== "all");
+  return hasSearchText(q.text) || STRING_KEYS.some((k) => k !== "text" && q[k] !== "all");
+}
+
+/** Does this search text contain at least one term (not just spaces/quotes)? */
+export function hasSearchText(text: string): boolean {
+  return searchTerms(text).length > 0;
 }
 
 /** Same search? (text compared trimmed; a missing includeArchived is false) */
@@ -40,9 +47,14 @@ export function queriesEqual(a: Query, b: Query): boolean {
     && !!a.includeArchived === !!b.includeArchived;
 }
 
-/** Lower-case and strip accents, so "cafe" finds "Café" and "zoe" finds "Zoë". */
+/** Lower-case and strip accents, so "cafe" finds "Café" and "zoe" finds "Zoë".
+ *  Curly apostrophes (iOS smart punctuation) fold to a straight one, so
+ *  "sarah's" typed on a laptop finds "Sarah’s review" typed on a phone.
+ *  Plain-ASCII text (most of it) skips the Unicode work entirely. */
+const NON_ASCII = /[^\x00-\x7f]/;
 export function foldText(s: string): string {
-  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  if (!NON_ASCII.test(s)) return s.toLowerCase();
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\u2018\u2019\u201b\u2032]/g, "'").toLowerCase();
 }
 
 /** Split search text into terms. Words match in any order (every term must
@@ -65,14 +77,38 @@ export function searchTerms(text: string): string[] {
   return out;
 }
 
-/** Everything a text search looks through. Fields are joined with a newline so
- *  a quoted phrase can't match across two fields. */
-function haystack(t: Task): string {
-  return foldText([
-    t.title, t.description, getProject(t.projectId)?.name, getMember(t.assigneeId)?.name,
-    ...(t.collaborators ?? []).map((id) => getMember(id)?.name),
-    ...(t.tags || []),
-  ].filter(Boolean).join("\n"));
+/* Everything a text search looks through: the task's own title, description
+   and tags, plus its project's, assignee's and collaborators' names. A term
+   never contains a newline, so testing each field separately is the same as
+   searching the fields joined with "\n" (a phrase can't span two fields).
+
+   The task's own fields are folded once per task object and cached: edits
+   replace the Task object, and the cached source values are re-checked too,
+   so a stale fold can never be used. Names are short and folded on demand,
+   so renaming a project or member takes effect immediately. */
+interface FoldedTask { title: string; description: string; tagsKey: string; foldedTitle: string; own: string }
+const foldCache = new WeakMap<Task, FoldedTask>();
+function foldedTask(t: Task): FoldedTask {
+  const title = t.title || "", description = t.description || "", tagsKey = (t.tags || []).join("\n");
+  const hit = foldCache.get(t);
+  if (hit && hit.title === title && hit.description === description && hit.tagsKey === tagsKey) return hit;
+  const foldedTitle = foldText(title);
+  const entry: FoldedTask = { title, description, tagsKey, foldedTitle, own: [foldedTitle, foldText(description), foldText(tagsKey)].join("\n") };
+  foldCache.set(t, entry);
+  return entry;
+}
+function nameFields(t: Task): string[] {
+  return [getProject(t.projectId)?.name, getMember(t.assigneeId)?.name, ...(t.collaborators ?? []).map((id) => getMember(id)?.name)]
+    .filter((n): n is string => !!n).map(foldText);
+}
+function matchesTerms(t: Task, terms: string[]): boolean {
+  const own = foldedTask(t).own;
+  let names: string[] | null = null;
+  return terms.every((term) => {
+    if (own.includes(term)) return true;
+    if (!names) names = nameFields(t);
+    return names.some((n) => n.includes(term));
+  });
 }
 
 /** Is this task in a project that has been archived? */
@@ -86,10 +122,7 @@ export function taskMatchesQuery(t: Task, q: Query): boolean {
   // results, smart-list badges and saved-search counts unless asked for.
   if (!q.includeArchived && inArchivedProject(t)) return false;
   const terms = searchTerms(q.text);
-  if (terms.length) {
-    const hay = haystack(t);
-    if (!terms.every((term) => hay.includes(term))) return false;
-  }
+  if (terms.length && !matchesTerms(t, terms)) return false;
   if (q.status === "open") { if (t.status === "done") return false; }
   else if (q.status !== "all" && t.status !== q.status) return false;
   if (q.priority !== "all" && t.priority !== q.priority) return false;
@@ -115,6 +148,6 @@ export function taskMatchesQuery(t: Task, q: Query): boolean {
 export function searchRank(t: Task, q: Query): number {
   const terms = searchTerms(q.text);
   if (!terms.length) return 0;
-  const title = foldText(t.title || "");
+  const title = foldedTask(t).foldedTitle;
   return (terms.every((term) => title.includes(term)) ? 0 : 2) + (t.status === "done" ? 1 : 0);
 }

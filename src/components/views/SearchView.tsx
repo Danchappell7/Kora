@@ -6,7 +6,7 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import { Icon, Avatar, StatusDot, PriorityFlag, EmptyArt } from "../primitives";
 import { getProject, getMember, fmtDue, dueState, STATUS_META, PRIORITY_META, toLocalISO, presetDate } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
-import { taskMatchesQuery, searchRank, isQueryActive, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
+import { taskMatchesQuery, searchRank, isQueryActive, hasSearchText, inArchivedProject, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import { smartListById } from "../../lib/smartLists";
 import type { Task, Project, SavedSearch, Status, Priority } from "../../data/types";
 import { useEntrance } from "../../hooks/useEntrance";
@@ -54,6 +54,9 @@ function FilterSelect({ label, anyLabel, value, options, onChange }: { label: st
   );
 }
 
+/** primary pointer is a mouse/trackpad (not a touchscreen) */
+const finePointer = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches;
+
 const unknownLabel = (v: string) => `${v.charAt(0).toUpperCase()}${v.slice(1)} (unknown)`;
 
 export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete }: {
@@ -81,15 +84,23 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   const clearSel = () => setSelected(new Set());
   // apply a smart-list / saved-search preset when selected (or when its content
   // changes, e.g. the signed-in user resolves); reset to EMPTY on plain Search
-  // so a stale smart-list filter doesn't linger when you leave it.
-  useEffect(() => { setQ(presetQuery ?? EMPTY); }, [presetKey, presetQuery]);
+  // so a stale smart-list filter doesn't linger when you leave it. A preset
+  // that merely disappears under the same key (you deleted the saved search
+  // you're looking at, or its temporary id was swapped for the real one) keeps
+  // the current search on screen instead of wiping it.
+  const lastPresetKey = useRef(presetKey);
+  useEffect(() => {
+    const keyChanged = lastPresetKey.current !== presetKey;
+    lastPresetKey.current = presetKey;
+    if (presetQuery) setQ(presetQuery);
+    else if (keyChanged) setQ(EMPTY);
+  }, [presetKey, presetQuery]);
   // Put the cursor in the box only for a plain Search on a mouse/trackpad
   // device. Opening a smart list (or anything on a phone) shows results
   // instead of throwing the on-screen keyboard over them.
   useEffect(() => {
     if (preset) return;
-    const fine = typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches;
-    if (fine) inputRef.current?.focus({ preventScroll: true });
+    if (finePointer()) inputRef.current?.focus({ preventScroll: true });
   }, [presetKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // dropping a selected task out of the current results shouldn't keep it selected
   useEffect(() => { clearSel(); }, [presetKey, q]);
@@ -101,25 +112,27 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   const presets: { label: string; q: Partial<Query> }[] = [
     ...(currentUserId ? [{ label: "Assigned to me", q: { assignee: currentUserId, status: "open" } as Partial<Query> }] : []),
     ...(currentUserId ? [{ label: "My work this week", q: { assignee: currentUserId, due: "week", status: "open" } as Partial<Query> }] : []),
+    { label: "All due today", q: { due: "today" } },
     { label: "All due this week", q: { due: "week", status: "open" } },
     { label: "All overdue", q: { due: "overdue" } },
     { label: "Urgent", q: { priority: "urgent", status: "open" } },
   ];
 
   const active = isQueryActive(q);
-  const matched = useMemo(() => {
-    const hits = tasks.filter((t) => taskMatchesQuery(t, q));
-    if (!q.text.trim()) return hits;
+  const { matched, hiddenArchived } = useMemo(() => {
+    // nothing is listed until there's a search, so don't scan every task for it
+    if (!active) return { matched: [] as Task[], hiddenArchived: 0 };
+    // one pass with archived projects included: the default view then drops
+    // those tasks, and how many it dropped is offered as a one-click widen
+    const wide = tasks.filter((t) => taskMatchesQuery(t, { ...q, includeArchived: true }));
+    const hits = q.includeArchived ? wide : wide.filter((t) => !inArchivedProject(t));
+    const hidden = wide.length - hits.length;
+    if (!hasSearchText(q.text)) return { matched: hits, hiddenArchived: hidden };
     // text search: best matches (title hits, open work) first; stable otherwise
-    return hits.map((t, i) => ({ t, i, r: searchRank(t, q) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
+    const ranked = hits.map((t, i) => ({ t, i, r: searchRank(t, q) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
+    return { matched: ranked, hiddenArchived: hidden };
     // projects: archiving/restoring one changes what matches without touching tasks
-  }, [tasks, q, projects]);
-  // matches hidden only because their project is archived — offered as a one-click widen
-  const hiddenArchived = useMemo(() => {
-    if (!active || q.includeArchived || !hasArchivedProjects) return 0;
-    const wide = { ...q, includeArchived: true };
-    return tasks.filter((t) => taskMatchesQuery(t, wide)).length - matched.length;
-  }, [tasks, q, active, hasArchivedProjects, matched.length, projects]);
+  }, [tasks, q, active, projects]);
   const results = matched.slice(0, DISPLAY_CAP);   // rows rendered (capped)
   const capped = matched.length > results.length;  // more matched than shown
   // only tasks still in the current results count as selected — a selection
@@ -151,6 +164,9 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   const resultButtons = () => Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-search-result]") ?? []);
   const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") { const first = resultButtons()[0]; if (first) { e.preventDefault(); first.focus(); } }
+    // results are already live; on a phone the "Search" key just puts the
+    // keyboard away so they can be seen
+    else if (e.key === "Enter" && !e.nativeEvent.isComposing && !finePointer()) e.currentTarget.blur();
   };
   const onListKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -164,7 +180,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   };
 
   const n = matched.length;
-  const plural = (k: number, w = "task") => `${k} ${w}${k === 1 ? "" : "s"}`;
+  const exportScope = n === 1 ? "this task" : `all ${n} tasks`;
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 48px", maxWidth: 920, width: "100%", margin: "0 auto" }}>
@@ -238,7 +254,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
         </span>
         {hiddenArchived > 0 && (
           <button type="button" onClick={() => set({ includeArchived: true })} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12 }}>
-            <Icon name="archive" size={12} /> Show {plural(hiddenArchived)} from archived projects
+            <Icon name="archive" size={12} /> Show {hiddenArchived === 1 ? "1 task from an archived project" : `${hiddenArchived} tasks from archived projects`}
           </button>
         )}
         {active && results.length > 0 && (
@@ -249,8 +265,8 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
               </button>
             )}
             {/* exports always cover every match, not just the rows rendered */}
-            <button type="button" onClick={() => exportTasksCsv(matched, "search")} className="btn btn-ghost" aria-label={`Export all ${plural(n)} as CSV`} title={`Export all ${plural(n)} as CSV`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
-            <button type="button" onClick={() => printTasks(matched, presetName && onPreset ? presetName : "Search results")} className="btn btn-ghost" aria-label={`Print or save all ${plural(n)} as PDF`} title={`Print or save all ${plural(n)} as PDF`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> PDF</button>
+            <button type="button" onClick={() => exportTasksCsv(matched, "search")} className="btn btn-ghost" aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> CSV</button>
+            <button type="button" onClick={() => printTasks(matched, presetName && onPreset ? presetName : "Search results")} className="btn btn-ghost" aria-label={`Print or save ${exportScope} as PDF`} title={`Print or save ${exportScope} as PDF`} style={{ padding: "4px 10px", fontSize: 12 }}><Icon name="arrowUpRight" size={13} /> PDF</button>
           </span>
         )}
       </div>

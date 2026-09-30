@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { taskMatchesQuery, toQuery, isQueryActive, queriesEqual, searchTerms, searchRank, EMPTY_QUERY, type Query } from "./searchQuery";
+import { taskMatchesQuery, toQuery, isQueryActive, queriesEqual, searchTerms, searchRank, foldText, EMPTY_QUERY, type Query } from "./searchQuery";
 import { setReferenceData, dayOffset } from "../data/data";
 import type { Task, Member, Project } from "../data/types";
 
@@ -73,6 +73,37 @@ describe("text search", () => {
     expect(taskMatchesQuery(task({ title: "Cafe opening" }), q({ text: "café" }))).toBe(true);
   });
 
+  it("folds curly apostrophes, so phone and laptop typing find each other", () => {
+    expect(taskMatchesQuery(task({ title: "Sarah\u2019s review" }), q({ text: "sarah's" }))).toBe(true);
+    expect(taskMatchesQuery(task({ title: "Sarah's review" }), q({ text: "Sarah\u2019s" }))).toBe(true);
+    expect(foldText("ABC def")).toBe("abc def");
+    expect(foldText("Zo\u00eb Bront\u00eb")).toBe("zoe bronte");
+  });
+
+  it("sees edits and renames straight away (no stale cached text)", () => {
+    const before = task({ title: "Draft brief", projectId: "p-live" });
+    expect(taskMatchesQuery(before, q({ text: "brief" }))).toBe(true);
+    const after = { ...before, title: "Final memo" };
+    expect(taskMatchesQuery(after, q({ text: "brief" }))).toBe(false);
+    expect(taskMatchesQuery(after, q({ text: "memo" }))).toBe(true);
+    // an in-place edit is caught too
+    const mutable = task({ title: "Alpha" });
+    expect(taskMatchesQuery(mutable, q({ text: "alpha" }))).toBe(true);
+    mutable.title = "Omega";
+    expect(taskMatchesQuery(mutable, q({ text: "alpha" }))).toBe(false);
+    // renaming the project is picked up without touching the task
+    expect(taskMatchesQuery(after, q({ text: "marketing" }))).toBe(true);
+    setReferenceData({ projects: [project("p-live", "Q4 Sales")] });
+    expect(taskMatchesQuery(after, q({ text: "marketing" }))).toBe(false);
+    expect(taskMatchesQuery(after, q({ text: "sales memo" }))).toBe(true);
+  });
+
+  it("a phrase never spans two fields", () => {
+    const t2 = task({ title: "Budget", description: "review later" });
+    expect(taskMatchesQuery(t2, q({ text: '"budget review"' }))).toBe(false);
+    expect(taskMatchesQuery(t2, q({ text: "budget review" }))).toBe(true);
+  });
+
   it("parses terms robustly", () => {
     expect(searchTerms("  a   b ")).toEqual(["a", "b"]);
     expect(searchTerms('"unclosed phrase')).toEqual(["unclosed", "phrase"]);
@@ -117,6 +148,10 @@ describe("query helpers", () => {
     expect(isQueryActive(EMPTY_QUERY)).toBe(false);
     expect(isQueryActive(q({ includeArchived: true }))).toBe(false);
     expect(isQueryActive(q({ text: "  " }))).toBe(false);
+    // quote-only text (someone starting to type a phrase) has no terms yet
+    expect(isQueryActive(q({ text: '"' }))).toBe(false);
+    expect(isQueryActive(q({ text: '" "' }))).toBe(false);
+    expect(isQueryActive(q({ text: '"a' }))).toBe(true);
     expect(isQueryActive(q({ status: "open" }))).toBe(true);
   });
 

@@ -90,6 +90,15 @@ describe("exports", () => {
   });
 });
 
+describe("export copy", () => {
+  it("names a single result as 'this task'", () => {
+    renderSearch({ tasks: [task({ id: "a", title: "Only one" })], preset: { status: "open" }, presetKey: "k" });
+    fireEvent.click(screen.getByRole("button", { name: "Export this task as CSV" }));
+    expect(vi.mocked(exportTasksCsv).mock.calls[0][0]).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Print or save this task as PDF" })).toBeInTheDocument();
+  });
+});
+
 describe("keyboard access to results", () => {
   it("each result title is a button that opens the task once", () => {
     const { onOpen } = renderSearch({ tasks: [task({ id: "a", title: "Budget review", dueDate: dayOffset(0) })], preset: { status: "open" }, presetKey: "k" });
@@ -122,7 +131,7 @@ describe("archived projects", () => {
   it("are hidden by default, with a one-click way to include them", () => {
     renderSearch({ tasks, preset: { status: "open" }, presetKey: "k" });
     expect(screen.queryByText("Old task")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Show 1 task from archived projects/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 task from an archived project" }));
     expect(screen.getByText("Old task")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Include archived projects/ })).toHaveAttribute("aria-pressed", "true");
   });
@@ -151,6 +160,92 @@ describe("text search", () => {
     fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: "budget q3" } });
     const titles = screen.getAllByRole("button", { name: /^Open / }).map((b) => b.textContent);
     expect(titles).toEqual(["Q3 marketing budget review", "Plan week"]);
+  });
+});
+
+describe("quote-only text", () => {
+  const tasks = [task({ id: "a", title: "Alpha" }), task({ id: "b", title: "Beta" })];
+
+  it("a lone opening quote isn't a search yet, so nothing is listed", () => {
+    renderSearch({ tasks });
+    const input = screen.getByLabelText("Search tasks");
+    for (const text of ['"', '""', '" "', "“"]) {
+      fireEvent.change(input, { target: { value: text } });
+      expect(screen.getByRole("status")).toHaveTextContent("Type or pick a filter to search");
+      expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /as CSV/ })).not.toBeInTheDocument();
+    }
+    fireEvent.change(input, { target: { value: '"alp' } });
+    expect(screen.getByRole("status")).toHaveTextContent("1 result");
+  });
+
+  it("with a filter applied, quote-only text doesn't narrow or widen anything", () => {
+    renderSearch({ tasks: [...tasks, task({ id: "c", title: "Gamma", status: "done" })], preset: { status: "open" }, presetKey: "k" });
+    fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: '"' } });
+    expect(screen.getByRole("status")).toHaveTextContent("2 results");
+  });
+});
+
+describe("preset changes", () => {
+  const saved: SavedSearch = { id: "s1", name: "Budget", query: { text: "budget" } };
+  const tasks = [task({ id: "a", title: "Budget review" }), task({ id: "b", title: "Other" })];
+  const view = (over: Partial<Parameters<typeof SearchView>[0]>) => (
+    <SearchView tasks={tasks} projects={PROJECTS} members={[{ id: "u-me", name: "Dan" }]} currentUserId="u-me"
+      onOpen={vi.fn()} savedSearches={[saved]} onSaveSearch={vi.fn()} onDeleteSavedSearch={vi.fn()} {...over} />
+  );
+
+  it("deleting the saved search you're viewing keeps its results on screen", () => {
+    const { rerender } = render(view({ preset: { text: "budget" }, presetKey: "s1" }));
+    expect(screen.getByText("Budget review")).toBeInTheDocument();
+    // App: the saved search is gone, route.list still points at its id
+    rerender(view({ savedSearches: [], preset: undefined, presetKey: "s1" }));
+    expect((screen.getByLabelText("Search tasks") as HTMLInputElement).value).toBe("budget");
+    expect(screen.getByText("Budget review")).toBeInTheDocument();
+  });
+
+  it("leaving a smart list for plain Search still starts afresh", () => {
+    const { rerender } = render(view({ preset: { text: "budget" }, presetKey: "s1" }));
+    rerender(view({ preset: undefined, presetKey: undefined }));
+    expect((screen.getByLabelText("Search tasks") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("status")).toHaveTextContent("Type or pick a filter to search");
+  });
+
+  it("a preset whose content resolves later (signed-in user) is applied", () => {
+    const { rerender } = render(view({ preset: { assignee: "", status: "open" }, presetKey: "mine" }));
+    rerender(view({ preset: { assignee: "u-me", status: "open" }, presetKey: "mine" }));
+    expect((screen.getByLabelText("Filter by assignee or collaborator") as HTMLSelectElement).value).toBe("u-me");
+  });
+});
+
+describe("presets", () => {
+  it("offers a team-wide 'All due today' chip", () => {
+    const tasks = [task({ id: "a", title: "Mine today", dueDate: dayOffset(0) }), task({ id: "b", title: "Sarah today", assigneeId: "u-sarah", dueDate: dayOffset(0) }), task({ id: "c", title: "Tomorrow", dueDate: dayOffset(1) })];
+    renderSearch({ tasks });
+    const chip = screen.getByRole("button", { name: "All due today" });
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("2 results");
+    expect((screen.getByLabelText("Filter by due date") as HTMLSelectElement).value).toBe("today");
+  });
+});
+
+describe("the phone's Search key", () => {
+  it("puts the keyboard away on a touch device", () => {
+    setPointer(false);
+    renderSearch({ tasks: [task({ id: "a", title: "Alpha" })] });
+    const input = screen.getByLabelText("Search tasks");
+    act(() => input.focus());
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(document.activeElement).not.toBe(input);
+  });
+
+  it("leaves focus alone with a mouse or trackpad", () => {
+    setPointer(true);
+    renderSearch({ tasks: [task({ id: "a", title: "Alpha" })] });
+    const input = screen.getByLabelText("Search tasks");
+    act(() => input.focus());
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(document.activeElement).toBe(input);
   });
 });
 
