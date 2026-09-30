@@ -88,18 +88,204 @@ describe("App (demo mode)", () => {
     expect(screen.getByRole("dialog", { name: `Task: ${DECK}` })).toBeInTheDocument();
   });
 
-  it("sends a pending delete straight away when the tab is hidden", async () => {
-    track(vi.spyOn(window, "confirm").mockReturnValue(true));
-    const del = track(vi.spyOn(store, "deleteTask"));
-    await boot();
+  const deleteDeck = async () => {
     key("g"); key("t");
     await openTask(DECK);
     fireEvent.click(await screen.findByTitle("Delete task"));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: `Task: ${DECK}` })).not.toBeInTheDocument());
-    expect(del).not.toHaveBeenCalled(); // still inside the Undo window
+  };
+  const hideTab = () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));
+  };
+  /** Pretend to be a phone (touch screen, no hover) for effects that read it on mount. */
+  const asPhone = () => {
+    const orig = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ ...orig(q), matches: q.includes("pointer: coarse") })) as typeof window.matchMedia;
+    track({ mockRestore: () => { window.matchMedia = orig; } });
+  };
+
+  it("sends a pending delete straight away when the page is closed", async () => {
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    await boot();
+    await deleteDeck();
+    expect(del).not.toHaveBeenCalled(); // still inside the Undo window
+    window.dispatchEvent(new Event("pagehide"));
     await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
+  });
+
+  it("a quick switch to another tab on a computer keeps Undo lossless (nothing is sent or re-created)", async () => {
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await deleteDeck();
+    hideTab();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(del).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findAllByText(DECK)).not.toHaveLength(0);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("on a phone a hidden tab sends the delete; Undo restores a copy with its checklist and blocked-by links, and says so", async () => {
+    asPhone();
+    const real = store.bootstrap.bind(store);
+    // t-3 is blocked by the deck
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-3" ? { ...t, dependencies: ["t-1"] } : t)) };
+    }));
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    const create = track(vi.spyOn(store, "createTask"));
+    const addSub = track(vi.spyOn(store, "addSubtask"));
+    const tick = track(vi.spyOn(store, "setSubtaskDone"));
+    const link = track(vi.spyOn(store, "addDependency"));
+    await boot();
+    await deleteDeck();
+    hideTab();
+    await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText(/Restored “Finalize Q3 launch narrative deck” as a copy — it has a new link/)).toBeInTheDocument();
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ title: DECK, comments: 0 }), expect.anything()));
+    await waitFor(() => expect(addSub).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(tick).toHaveBeenCalledTimes(2)); // the two ticked checklist items stay ticked
+    const newId = create.mock.calls.find((c) => c[0].title === DECK)![0].id;
+    await waitFor(() => expect(link).toHaveBeenCalledWith("t-3", newId));
+  });
+
+  it("Undo after an early send doesn't re-create a task whose delete failed (it's still on the server)", async () => {
+    asPhone();
+    track(vi.spyOn(window, "confirm").mockReturnValue(true));
+    const del = track(vi.spyOn(store, "deleteTask")).mockRejectedValue(new Error("permission denied"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await deleteDeck();
+    hideTab();
+    await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
+    fireEvent.click(screen.getAllByRole("button", { name: "Undo" })[0]);
+    expect(await screen.findAllByText(DECK)).not.toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("Escape cancels an inline “Add task” draft instead of saving it", async () => {
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    key("g"); key("t");
+    fireEvent.click((await screen.findAllByText("Add task"))[0].closest("button")!);
+    const input = await screen.findByPlaceholderText("Task name, then Enter…");
+    input.focus();
+    fireEvent.change(input, { target: { value: "Draft I meant to cancel" } });
+    // real browser order: React's root listener, then the window listener, for the same event
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(create).not.toHaveBeenCalled();
+    expect(screen.queryByText("Draft I meant to cancel")).not.toBeInTheDocument();
+  });
+
+  it("Home shows the team's projects to a member with nothing assigned yet (not the empty-account screen)", async () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => ({ ...t, assigneeId: t.assigneeId === "m-self" ? "m-1" : t.assigneeId, collaborators: [] })) };
+    }));
+    await boot();
+    expect(await screen.findByText("Active projects")).toBeInTheDocument();
+    expect(screen.queryByText(/Your workspace is a clean slate/)).not.toBeInTheDocument();
+  });
+
+  it("Home's “Start focus block” starts the timer", async () => {
+    await boot();
+    fireEvent.click((await screen.findByText("Start focus block")).closest("button")!);
+    expect(await screen.findByText(/Deep Work · Focus mode/)).toBeInTheDocument();
+    expect(screen.getByText(/In flow/)).toBeInTheDocument();
+  });
+
+  const importText = async (text: string) => {
+    key("g"); key("t");
+    fireEvent.click(await screen.findByTitle(/Import tasks/));
+    const dialog = await screen.findByRole("dialog", { name: "Import tasks" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: text } });
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: /^Import \d+ tasks?$/ })); });
+  };
+
+  it("import: one failed row is flagged on its own, and Retry sends only that row", async () => {
+    const real = store.createTask.bind(store);
+    let n = 0;
+    const create = track(vi.spyOn(store, "createTask").mockImplementation(async (t, u) => { n++; if (n === 2) throw new Error("boom"); return real(t, u); }));
+    await boot();
+    await importText("Alpha import row\nBeta import row\nGamma import row");
+    expect(await screen.findByText(/^1 task couldn't be saved/)).toBeInTheDocument();
+    expect(create.mock.calls.map((c) => c[0].title).sort()).toEqual(["Alpha import row", "Beta import row", "Gamma import row"]);
+    await act(async () => { fireEvent.click(within(screen.getByText(/^1 task couldn't be saved/).parentElement!).getByRole("button", { name: "Retry" })); });
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(4));
+    expect(create.mock.calls[3][0].title).toBe("Beta import row");
+    await waitFor(() => expect(screen.queryByText(/couldn't be saved/)).not.toBeInTheDocument());
+  });
+
+  it("a task imported as done keeps its completion date on the server", async () => {
+    const update = track(vi.spyOn(store, "updateTask"));
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    await importText("Title,Status\nShipped the thing,done\nPlan the next thing,todo");
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    const shipped = create.mock.calls.find((c) => c[0].title === "Shipped the thing")![0];
+    await waitFor(() => expect(update).toHaveBeenCalledWith(shipped.id, { completedAt: shipped.completedAt }));
+    expect(shipped.completedAt).toBeTruthy();
+    expect(update.mock.calls.some((c) => c[0] === create.mock.calls.find((x) => x[0].title === "Plan the next thing")![0].id)).toBe(false);
+  });
+
+  it("a completion that fails to save takes back its next recurrence and logs nothing", async () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-1" ? { ...t, recurrence: "weekly" as const } : t)) };
+    }));
+    track(vi.spyOn(store, "updateTask")).mockRejectedValue(new Error("502"));
+    const create = track(vi.spyOn(store, "createTask"));
+    const del = track(vi.spyOn(store, "deleteTask"));
+    const logged = track(vi.spyOn(store, "logActivity"));
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    const status = within(panel).getAllByRole("combobox").find((el) => (el as HTMLSelectElement).value === "progress")!;
+    fireEvent.change(status, { target: { value: "done" } });
+    expect(await screen.findByText(/Couldn't save — change undone/)).toBeInTheDocument();
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ title: DECK, status: "todo" }), expect.anything()));
+    const next = create.mock.calls.find((c) => c[0].title === DECK)![0];
+    await waitFor(() => expect(del).toHaveBeenCalledWith(next.id));
+    expect((status as HTMLSelectElement).value).toBe("progress");
+    expect(logged.mock.calls.some((c) => c[0].kind === "completed")).toBe(false);
+  });
+
+  it("members can archive a team project; guests can read its status updates but not post or archive", async () => {
+    const real = store.bootstrap.bind(store);
+    let role: "member" | "guest" = "member";
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      const brand = b.projects.find((p) => p.name === "Brand Refresh")!;
+      return {
+        ...b,
+        projects: b.projects.map((p) => (p.id === brand.id ? { ...p, ownerId: "m-1" } : p)),
+        members: b.members.map((m) => (m.userId === "m-self" ? { ...m, role } : m)),
+        statusUpdates: [{ id: "su-1", projectId: brand.id, summary: "Logo round two is with the client", status: "on_track" as const, createdAt: new Date().toISOString() }],
+      };
+    }));
+    const { unmount } = renderApp();
+    await waitFor(() => expect(screen.getByText("Plan my day")).toBeInTheDocument());
+    fireEvent.click(projectButton("Brand Refresh"));
+    expect(await screen.findByTitle("Archive this project")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Post update" })).toBeInTheDocument();
+    unmount();
+    role = "guest";
+    await boot();
+    fireEvent.click(projectButton("Brand Refresh"));
+    expect(await screen.findByText("Logo round two is with the client")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Post update" })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Archive this project")).not.toBeInTheDocument();
   });
 
   it("keeps filters per page: a filter set in My tasks doesn't hide a project's tasks", async () => {

@@ -51,8 +51,9 @@ import type { ProfileDraft } from "./components/SettingsModal";
 import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./data/types";
 import type { Route, TaskView, GroupBy } from "./app-types";
 import {
-  newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, swapTmp, keepTmp, statusTransition, buildRecurrence,
-  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, readFilters, validFilters, filtersKey, EMPTY_FILTERS, type TaskFilters,
+  newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
+  unseenCreates, reloadProjects, reloadWorkspaces,
+  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, readFilters, validFilters, filtersKey, EMPTY_FILTERS, type TaskFilters, type Limiter,
 } from "./lib/taskOps";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -121,7 +122,9 @@ function relDay(iso: string): { label: string; days: number } {
 }
 
 function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate, onArchive }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void; onArchive?: (projectId: string) => void }) {
-  // one definition everywhere: top-level tasks (sub-tasks nest under their parent)
+  // progress and the task count are top-level tasks, like the page header (sub-tasks nest
+  // under their parent); what needs attention — overdue, due soon, blocked — counts every
+  // task, sub-tasks included, because that's real work that's late or stuck
   const tasks = allProjectTasks.filter((t) => !t.parentId);
   const [statusOpen, setStatusOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
@@ -155,10 +158,10 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
   const done = tasks.filter((t) => t.status === "done").length;
   const prog = total ? Math.round((done / total) * 100) : 0;
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
-  const dueSoon = tasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
+  const dueSoon = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
   // auto-computed RAG health — complements the manually-set project phase
-  const overdue = tasks.filter((t) => t.status !== "done" && t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() < todayMid).length;
-  const blockedCount = tasks.filter((t) => t.status === "blocked").length;
+  const overdue = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() < todayMid).length;
+  const blockedCount = allProjectTasks.filter((t) => t.status === "blocked").length;
   const health = (() => {
     if (total === 0) return null;
     const bits: string[] = [];
@@ -166,7 +169,7 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
     if (blockedCount) bits.push(`${blockedCount} blocked`);
     const detail = bits.length ? bits.join(" · ") : "nothing overdue or blocked";
     if (prog === 100) return { label: "Complete", color: "var(--st-done)", detail: "all tasks done" };
-    if (overdue >= 3 || overdue / total > 0.25 || (overdue >= 1 && blockedCount >= 2)) return { label: "Off track", color: "var(--prio-urgent)", detail };
+    if (overdue >= 3 || overdue / allProjectTasks.length > 0.25 || (overdue >= 1 && blockedCount >= 2)) return { label: "Off track", color: "var(--prio-urgent)", detail };
     if (overdue >= 1 || blockedCount >= 1) return { label: "At risk", color: "var(--st-review)", detail };
     return { label: "On track", color: "var(--st-done)", detail };
   })();
@@ -174,7 +177,15 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
   const printReport = () => {
     const w = window.open("", "_blank"); if (!w) return;
     const esc = (s: unknown) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
-    const rows = [...tasks].sort((a, b) => a.status.localeCompare(b.status)).map((t) => `<tr><td>${esc(t.title)}</td><td>${esc(STATUS_META[t.status].label)}</td><td>${esc(t.priority)}</td><td>${esc(t.dueDate || "")}</td><td>${esc(getMember(t.assigneeId)?.name || "")}</td></tr>`).join("");
+    // every task, each sub-task listed under its parent
+    const kids = new Map<string, Task[]>();
+    allProjectTasks.forEach((t) => { if (t.parentId) { const l = kids.get(t.parentId); if (l) l.push(t); else kids.set(t.parentId, [t]); } });
+    const ordered: { t: Task; depth: number }[] = [];
+    const seen = new Set<string>();
+    const walk = (t: Task, depth: number) => { if (seen.has(t.id)) return; seen.add(t.id); ordered.push({ t, depth }); (kids.get(t.id) ?? []).forEach((k) => walk(k, depth + 1)); };
+    [...tasks].sort((a, b) => a.status.localeCompare(b.status)).forEach((t) => walk(t, 0));
+    allProjectTasks.forEach((t) => walk(t, 0)); // a sub-task whose parent isn't in this list
+    const rows = ordered.map(({ t, depth }) => `<tr><td style="padding-left:${8 + Math.min(depth, 4) * 16}px">${depth ? "↳ " : ""}${esc(t.title)}</td><td>${esc(STATUS_META[t.status].label)}</td><td>${esc(t.priority)}</td><td>${esc(t.dueDate || "")}</td><td>${esc(getMember(t.assigneeId)?.name || "")}</td></tr>`).join("");
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(project.name)} — report</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;color:#1a1a1a;padding:32px;max-width:900px;margin:0 auto}h1{font-size:22px;margin:0 0 4px}.sub{color:#666;font-size:13px;margin:0 0 20px}.bar{height:10px;background:#eee;border-radius:6px;overflow:hidden;margin:8px 0 20px}.bar>div{height:100%;background:#6a5cff;width:${prog}%}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #eee}th{color:#888;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}@media print{.noprint{display:none}}</style></head><body><h1>${esc(project.emoji)} ${esc(project.name)}</h1><p class="sub">${total} tasks · ${prog}% complete · ${esc(new Date().toLocaleDateString())}</p><div class="bar"><div></div></div><table><thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Due</th><th>Assignee</th></tr></thead><tbody>${rows}</tbody></table><p class="noprint" style="margin-top:24px;color:#888;font-size:12px">Use your browser's Print dialog to save as PDF.</p></body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 250);
   };
@@ -311,13 +322,14 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
          {project.description || "Add a project description…"}
        </div>
      )}
-     {onPostStatus && (
+     {/* guests can read the updates; only people who can edit can post one */}
+     {(onPostStatus || history.length > 0) && (
        <div style={{ borderTop: "1px solid var(--hairline)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
            <span className="kicker">Status update</span>
            {latest && <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: STATUS_KIND_META[latest.status].color }}><span style={{ width: 7, height: 7, borderRadius: 99, background: STATUS_KIND_META[latest.status].color }} />{STATUS_KIND_META[latest.status].label}</span>}
            {latestAge && <span style={{ fontSize: 11.5, color: stale ? "var(--st-review)" : "var(--ink-4)" }} title={new Date(latest!.createdAt).toLocaleString("en-GB")}>{stale ? `Stale · last update ${latestAge.label}` : `Posted ${latestAge.label}`}</span>}
-           <button onClick={() => setUpdOpen((v) => !v)} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}>{updOpen ? "Cancel" : "Post update"}</button>
+           {onPostStatus && <button onClick={() => setUpdOpen((v) => !v)} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}>{updOpen ? "Cancel" : "Post update"}</button>}
          </div>
          {latest && !updOpen && <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5 }}>{latest.summary}</div>}
          {history.length > 1 && !updOpen && (
@@ -337,7 +349,7 @@ function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpda
              </Collapse>
            </div>
          )}
-         {updOpen && (
+         {updOpen && onPostStatus && (
            <>
              <div style={{ display: "flex", gap: 6 }}>
                {(Object.keys(STATUS_KIND_META) as StatusKind[]).map((k) => (
@@ -633,8 +645,13 @@ function FullLoader() {
  *  the insert is in flight (or failed); once saved it lingers for 30s so a reload
  *  that raced the insert can't make it blink out. */
 type PendingCreate = { id: string; task: Task; until: number | null };
-type CreateOpts = { log?: boolean; notify?: boolean };
+type CreateOpts = { log?: boolean; notify?: boolean; slot?: Limiter };
 type CommitOpts = { notify?: boolean; op?: string; onFailed?: (ids: string[]) => void; retry?: () => void };
+/** Side effects of status changes, held until the save settles: activity rows are
+ *  only logged for saves that stuck, and a failed completion takes back the
+ *  recurrence it spawned (a failed reopen puts back the one it removed). */
+type StatusFx = { logs: Map<string, () => void>; completing: Set<string>; unspawned: Map<string, Task> };
+const newStatusFx = (): StatusFx => ({ logs: new Map(), completing: new Set(), unspawned: new Map() });
 const UNDO_MS = 10000;
 
 /** Lets an error boundary catch errors thrown while building a view's props, too. */
@@ -755,6 +772,11 @@ export default function App() {
   const bootedRef = useRef(false);
   const retryUnsavedRef = useRef<() => void>(() => {});
   const removeTasksRef = useRef<(roots: Task[], label: string) => void>(() => {});
+  // projects/workspaces created here → the newest reload that had already started
+  // when they were created. Those reloads can't know about them, so they must not drop them.
+  const recentCreatesRef = useRef(new Map<string, { seq: number; until: number }>());
+  const requestReloadRef = useRef<(() => void) | null>(null); // realtime mode: ask for a fresh snapshot
+  const skipWsPersistRef = useRef(false); // the next workspace change isn't the user's choice — don't remember it
 
   const WRITE_TTL = 8000;
   const noteWrite = useCallback((ids: string | string[], patch: Partial<Task>) => {
@@ -866,7 +888,18 @@ export default function App() {
   useEffect(() => {
     if (tasks === null || onboardCheckedRef.current) return;
     onboardCheckedRef.current = true;
-    let done = false; try { done = localStorage.getItem(`kanbo-onboarded:${userIdRef.current}`) === "1"; } catch { /* private mode */ }
+    let done = false;
+    try {
+      const mine = `kanbo-onboarded:${userIdRef.current}`;
+      done = localStorage.getItem(mine) === "1";
+      // before onboarding was per person it was one flag per browser: whoever
+      // signs in here first inherits it (so nobody who finished it sees it again),
+      // and it's then retired so a second person on this browser still gets theirs
+      if (!done && localStorage.getItem("kanbo-onboarded") === "1") {
+        done = true;
+        localStorage.setItem(mine, "1"); localStorage.removeItem("kanbo-onboarded");
+      }
+    } catch { /* private mode */ }
     if (!done && projectsRef.current.filter((p) => p.id !== "p-personal").length === 0) setOnboardOpen(true);
   }, [tasks]);
   const finishOnboarding = useCallback(() => { try { localStorage.setItem(`kanbo-onboarded:${userIdRef.current}`, "1"); } catch { /* ignore */ } setOnboardOpen(false); }, []);
@@ -963,10 +996,14 @@ export default function App() {
         else if (o.newProject) setNewProjectOpen(false);
         else if (o.newTask) setNewTaskOpen(false);
         else if (o.focus) setFocusOpen(false);
-        // typing in the task panel: leave the field, keep the panel (and your draft)
-        else if (o.detail) { if (editable) (e.target as HTMLElement).blur(); else setDetailId(null); }
+        // typing in the task panel: leave the field, keep the panel (and your draft).
+        // Only the panel's own fields — elsewhere a field's Escape is its own business
+        // (an inline "Add task" treats Escape as cancel and blur as save).
+        else if (o.detail) {
+          const inPanel = editable && !!(e.target as HTMLElement).closest?.('[role="dialog"][aria-label^="Task:"]');
+          if (inPanel) (e.target as HTMLElement).blur(); else setDetailId(null);
+        }
         else if (o.sidebar) setSidebarOpen(false);
-        else if (editable) (e.target as HTMLElement).blur();
         return;
       }
       // single-key shortcuts — never while typing, with modifiers held, or while a dialog is open
@@ -1039,6 +1076,11 @@ export default function App() {
     return pending.length ? [...pending, ...merged] : merged;
   }, []);
 
+  /** A project or workspace was just created here: reloads already under way keep it. */
+  const noteCreated = useCallback((id: string) => {
+    recentCreatesRef.current.set(id, { seq: reloadSeqRef.current, until: Date.now() + 30000 });
+  }, []);
+
   /** Apply a bootstrap result. Returns false when a newer run's data is already on screen. */
   const applyBoot = useCallback((b: Bootstrap, seq: number, initial: boolean): boolean => {
     if (initial) {
@@ -1047,14 +1089,26 @@ export default function App() {
       let stored: string | null = null;
       try { stored = localStorage.getItem(lastWorkspaceKey(b.currentUserId)); } catch { /* private mode */ }
       setWorkspace(pickStartWorkspace(b.workspaces, b.defaultWorkspace, stored));
+      // where we open isn't a choice to remember (a list that loaded short would otherwise pin Personal)
+      skipWsPersistRef.current = true;
       bootedRef.current = true;
     }
-    if (seq < appliedSeqRef.current) return false;
+    if (seq < appliedSeqRef.current) {
+      // the store already pointed its lookups at this older snapshot — point them back at what's on screen
+      setReferenceData({ projects: projectsRef.current, workspaces: workspacesRef.current, tags: tagsRef.current });
+      return false;
+    }
     appliedSeqRef.current = seq;
     setTasks(mergeServerTasks(b.tasks));
     const tmpTags = Object.fromEntries(Object.entries(tagsRef.current).filter(([k]) => k.startsWith("tmp-")));
-    applyProjects(keepTmp(b.projects, projectsRef.current)); applyTags({ ...b.tags, ...tmpTags });
-    setWorkspaces(b.workspaces); setWsMembers(b.members); setProfile(b.profile);
+    // Projects and workspaces this snapshot can't be trusted to leave out: ones created
+    // here after the reload started, and — when a best-effort query came back short —
+    // ones the rest of the snapshot still vouches for. Everything else follows the server.
+    const justMade = unseenCreates(recentCreatesRef.current, seq);
+    applyProjects(reloadProjects(b.projects, projectsRef.current, b.tasks, justMade)); applyTags({ ...b.tags, ...tmpTags });
+    const ws = reloadWorkspaces(b.workspaces, workspacesRef.current, b.members, wsMembersRef.current, b.currentUserId, justMade);
+    setWorkspaces(ws.workspaces); setReferenceData({ workspaces: ws.workspaces });
+    setWsMembers(ws.members); setProfile(b.profile);
     setSections((cur) => keepTmp(b.sections, cur)); setCustomFields((cur) => keepTmp(b.customFields, cur)); setSavedSearches((cur) => keepTmp(b.savedSearches, cur));
     setGoals((cur) => keepTmp(b.goals, cur)); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
     setAutomationRules((cur) => keepTmp(b.automationRules, cur)); setForms((cur) => keepTmp(b.forms, cur));
@@ -1093,11 +1147,14 @@ export default function App() {
   // real-time multi-tab/device sync: re-pull data on remote changes. 500ms
   // trailing debounce with a 3s max wait (steady traffic can't starve it), and
   // numbered runs so an older reload that finishes late can't overwrite a newer one.
+  // One reload at a time: events that arrive while one runs queue a single follow-up.
   useEffect(() => {
     if (!store.configured || !authUserId) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let firstAt = 0, alive = true;
+    let firstAt = 0, alive = true, running = false, dirty = false;
     const reload = async () => {
+      if (running) { dirty = true; return; }
+      running = true;
       const seq = ++reloadSeqRef.current;
       try {
         const b = await store.bootstrap(auth.user);
@@ -1105,6 +1162,10 @@ export default function App() {
         const feed = await store.listActivity();
         if (alive && seq >= appliedSeqRef.current) setActivity(mergeReadState(feed));
       } catch (e) { reportError(e, { op: "realtime-reload" }); }
+      finally {
+        running = false;
+        if (dirty && alive) { dirty = false; schedule(); }
+      }
     };
     const schedule = () => {
       const now = Date.now();
@@ -1112,8 +1173,9 @@ export default function App() {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => { firstAt = 0; timer = undefined; reload(); }, Math.max(0, Math.min(500, firstAt + 3000 - now)));
     };
+    requestReloadRef.current = schedule;
     const unsub = store.subscribeToChanges(schedule);
-    return () => { alive = false; if (timer) clearTimeout(timer); unsub(); };
+    return () => { alive = false; requestReloadRef.current = null; if (timer) clearTimeout(timer); unsub(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUserId]);
 
@@ -1125,31 +1187,64 @@ export default function App() {
   };
 
   // remember the workspace per person, so the next visit opens where they left off
+  // (only the user's own switches — not where we opened, nor a switch we forced)
   useEffect(() => {
     if (tasks === null || !bootedRef.current) return;
     if (store.configured && currentUserId === "m-self") return;
+    if (skipWsPersistRef.current) { skipWsPersistRef.current = false; return; }
     try { localStorage.setItem(lastWorkspaceKey(currentUserId), workspace ?? "personal"); } catch { /* private mode */ }
   }, [workspace, currentUserId, tasks === null]);
 
-  // you left / were removed from a workspace, or it was closed: don't stay pointed at it
+  // you left / were removed from a workspace, or it was closed: don't stay pointed at it.
+  // A reload can come back short (a failed best-effort query), so the membership is
+  // checked directly before anyone is moved — and nothing happens if that check fails.
   const wsNamesRef = useRef(new Map<string | null, string>());
+  const wsCheckRef = useRef<string | null>(null);
   useEffect(() => {
     if (tasks === null) return;
-    if (workspace !== null && !workspaces.some((w) => w.id === workspace)) {
-      const name = wsNamesRef.current.get(workspace);
+    workspaces.forEach((w) => wsNamesRef.current.set(w.id, w.name));
+    if (workspace === null || workspaces.some((w) => w.id === workspace)) return;
+    const gone = workspace;
+    if (wsCheckRef.current === gone) return; // already checking
+    wsCheckRef.current = gone;
+    const me = userIdRef.current;
+    const check = store.configured
+      ? store.listWorkspaceMembers().then((ms) => !ms.some((m) => (m.workspaceId ?? null) === gone && m.userId === me && m.status === "active"))
+      : Promise.resolve(true);
+    check.then((isGone) => {
+      if (!isGone || workspaceRef.current !== gone || workspacesRef.current.some((w) => w.id === gone)) return;
+      const name = wsNamesRef.current.get(gone);
+      skipWsPersistRef.current = true;
       setWorkspace(null); setRoute({ view: "home" });
       toastInfo(name ? `You're no longer in ${name}` : "You're no longer in that workspace");
-    }
-    workspaces.forEach((w) => wsNamesRef.current.set(w.id, w.name));
+    }, (e) => reportError(e, { op: "confirmWorkspaceGone" })) // couldn't check: stay put, the next reload looks again
+      .finally(() => { if (wsCheckRef.current === gone) wsCheckRef.current = null; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaces, workspace, tasks === null]);
-  // the open project was deleted, archived or belongs to another workspace: go home
+  // the open project was deleted, archived or moved to another workspace: go home.
+  // "Missing" must show up in two reloads in a row before it counts (one can come back short).
+  const projMissRef = useRef<{ id: string; seq: number } | null>(null);
+  const routeWsRef = useRef<string | null>(null);
   useEffect(() => {
-    if (tasks === null || route.view !== "project" || !route.projectId || route.projectId.startsWith("tmp-")) return;
-    const p = projects.find((x) => x.id === route.projectId);
-    if (!p) { setRoute({ view: "home" }); toastInfo("That project was deleted, or you no longer have access to it."); }
-    else if (p.archivedAt) { setRoute({ view: "home" }); toastInfo(`“${p.name}” was archived — restore it from the sidebar.`); }
-    else if ((p.workspaceId ?? null) !== workspace) setRoute({ view: "home" }); // you switched workspace
+    const switched = routeWsRef.current !== workspace; routeWsRef.current = workspace;
+    if (tasks === null || route.view !== "project" || !route.projectId || route.projectId.startsWith("tmp-")) { projMissRef.current = null; return; }
+    const pid = route.projectId;
+    const p = projects.find((x) => x.id === pid);
+    if (!p) {
+      const miss = projMissRef.current;
+      if (requestReloadRef.current && (!miss || miss.id !== pid)) { projMissRef.current = { id: pid, seq: appliedSeqRef.current }; requestReloadRef.current(); return; }
+      if (requestReloadRef.current && miss && appliedSeqRef.current <= miss.seq) return; // wait for the confirming reload
+      projMissRef.current = null;
+      setRoute({ view: "home" }); toastInfo("That project was deleted, or you no longer have access to it.");
+      return;
+    }
+    projMissRef.current = null;
+    if (p.archivedAt) { setRoute({ view: "home" }); toastInfo(`“${p.name}” was archived — restore it from the sidebar.`); }
+    else if ((p.workspaceId ?? null) !== workspace) {
+      setRoute({ view: "home" });
+      // you switched workspace: nothing to explain. Otherwise (it was moved): say where it is.
+      if (!switched) toastInfo(`“${p.name}” is now in ${workspaces.find((w) => w.id === (p.workspaceId ?? null))?.name || "Personal"} — switch workspace to open it.`);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, projects, workspace, tasks === null]);
 
@@ -1437,11 +1532,23 @@ export default function App() {
     // a sub-task waits for its parent's insert (tasks.parent_id is a real foreign key)
     const parentWait = t.parentId ? createsRef.current.get(t.parentId) : undefined;
     cancelledRef.current.delete(t.id);
+    const slot = opts.slot; // big batches (import, duplicate project) take turns — a few inserts at a time
     const run: Promise<string> = (parentWait ? parentWait.then((pid) => ({ ...t, parentId: pid })) : Promise.resolve(t))
       .then((row) => withRealSections(row))
-      .then((row) => {
-        if (cancelledRef.current.has(t.id)) throw new Error("cancelled"); // deleted while waiting for its parent
-        return store.createTask(row, userIdRef.current);
+      .then(async (row) => {
+        if (slot) await slot.acquire();
+        try {
+          if (cancelledRef.current.has(t.id)) throw new Error("cancelled"); // deleted while waiting for its parent
+          const saved = await store.createTask(row, userIdRef.current);
+          // the insert doesn't carry completion/archive stamps: write them straight
+          // after (and before any edit that was waiting for this insert), so a task
+          // created straight into Done keeps its completion date after a reload
+          const stamps: Partial<Task> = {};
+          if (row.completedAt) stamps.completedAt = row.completedAt;
+          if (row.archivedAt) stamps.archivedAt = row.archivedAt;
+          if (Object.keys(stamps).length) await store.updateTask(saved.id, stamps).catch(saveFailed("createTask-stamps", `“${t.title}” was saved, but not when it was completed.`));
+          return saved;
+        } finally { slot?.release(); }
       })
       .then((saved) => {
         settleCreate(t.id, saved.id);
@@ -1460,7 +1567,7 @@ export default function App() {
       markUnsaved([t], e);
       return null;
     });
-  }, [withRealSections, settleCreate, log, markUnsaved]);
+  }, [withRealSections, settleCreate, log, markUnsaved, saveFailed]);
 
   /** Show a new task at once and save it. Resolves to its saved id (null if the save failed). */
   const persistTask = useCallback((raw: Task, opts: CreateOpts = {}): Promise<string | null> => {
@@ -1477,6 +1584,9 @@ export default function App() {
       completedAt: raw.status === "done" ? raw.completedAt ?? toLocalISO(new Date()) : raw.completedAt,
     };
     setTasks((ts) => (ts ? [t, ...ts] : [t]));
+    // visible to callbacks straight away (the next render sets the same list), so a
+    // follow-up in this same tick — e.g. taking back a just-spawned recurrence — finds it
+    tasksRef.current = [t, ...(tasksRef.current ?? [])];
     pendingTasksRef.current = [{ id: t.id, task: t, until: null }, ...pendingTasksRef.current.filter((p) => p.id !== t.id)];
     return startCreate(t, opts);
   }, [startCreate]);
@@ -1501,12 +1611,13 @@ export default function App() {
     dropPending(ids);
   }, [dropPending]);
 
-  /** Copy a legacy checklist onto a task once it exists on the server. */
+  /** Copy a legacy checklist onto a task once it exists on the server (ticked items stay ticked). */
   const copyChecklist = useCallback((created: Promise<string | null>, items: Subtask[]) => {
     if (!items.length) return;
     created.then((sid) => {
       if (!sid) return;
-      return Promise.all(items.map((s, i) => store.addSubtask(sid, s.title, i)))
+      return Promise.all(items.map((s, i) => store.addSubtask(sid, s.title, i)
+        .then((sub) => (s.done ? store.setSubtaskDone(sub.id, true).then(() => ({ ...sub, done: true })) : sub))))
         .then((subs) => setTasks((ts) => ts && ts.map((x) => (x.id === sid ? { ...x, subtasks: subs } : x))));
     }).catch(saveFailed("copyChecklist", "Couldn't copy the checklist."));
   }, [saveFailed]);
@@ -1528,7 +1639,8 @@ export default function App() {
   }, []);
 
   /** Remove tasks (and all their sub-tasks) now, send the delete after the Undo window —
-   *  or straight away if the tab is hidden or closed, so it can't be lost. */
+   *  or straight away if the page is closed (or, on a phone, put in the background),
+   *  so it can't be lost. */
   const removeTasks = useCallback((roots: Task[], label: string) => {
     const all = tasksRef.current ?? [];
     const rootIds = new Set(roots.map((r) => r.id));
@@ -1576,23 +1688,53 @@ export default function App() {
       state = "undone"; clearTimeout(timer); pendingDeletesRef.current.delete(key);
       putBack(rows);
       if (!alreadySent) return;
-      // the delete already went out (the tab was hidden) — put the rows back on the server
-      sent.then(() => {
-        rows.forEach((r) => { pendingTasksRef.current = [{ id: r.id, task: r, until: null }, ...pendingTasksRef.current.filter((p) => p.id !== r.id)]; });
-        for (const level of parentsFirst(rows)) for (const r of level) startCreate(r, { log: false, notify: false });
+      // The delete already went out (the page was closed or backgrounded). Rows whose
+      // delete failed are still on the server — they're simply back. The rest are
+      // saved again as copies, with their checklist and blocked-by links.
+      sent.then((failed) => {
+        const kept = new Set([...failed, ...descendantsOf(failed, rows).map((d) => d.id)]);
+        const gone = rows.filter((r) => !kept.has(r.id)).map((r) => ({ ...r, comments: 0 }));
+        if (!gone.length) return;
+        const goneIds = new Set(gone.map((r) => r.id));
+        setTasks((ts) => ts && ts.map((x) => (goneIds.has(x.id) ? { ...x, comments: 0 } : x))); // their comments didn't come back
+        gone.forEach((r) => { pendingTasksRef.current = [{ id: r.id, task: r, until: null }, ...pendingTasksRef.current.filter((p) => p.id !== r.id)]; });
+        const created = new Map<string, Promise<string | null>>();
+        for (const level of parentsFirst(gone)) for (const r of level) {
+          const p = startCreate(r, { log: false, notify: false });
+          created.set(r.id, p);
+          copyChecklist(p, r.subtasks);
+        }
+        // blocked-by links in both directions — the delete removed them on the server
+        const onScreen = new Set((tasksRef.current ?? []).map((x) => x.id));
+        const links: [string, string][] = [];
+        gone.forEach((r) => (r.dependencies ?? []).forEach((d) => { if (onScreen.has(d) || goneIds.has(d)) links.push([r.id, d]); }));
+        (tasksRef.current ?? []).forEach((x) => { if (!goneIds.has(x.id)) (x.dependencies ?? []).forEach((d) => { if (goneIds.has(d)) links.push([x.id, d]); }); });
+        const sidOf = (id: string): Promise<string | null> => created.get(id) ?? createsRef.current.get(id) ?? Promise.resolve(id);
+        runLimited(links, 4, ([a, b]) => Promise.all([sidOf(a), sidOf(b)]).then(([sa, sb]) => {
+          if (!sa || !sb) throw new Error("restore: a task in the link wasn't saved");
+          return store.addDependency(sa, sb);
+        })).then((oks) => { const n = oks.filter((ok) => !ok).length; if (n) toastError(`${plural(n, "dependency link")} couldn't be restored.`); });
+        toastInfo(gone.length === 1
+          ? `Restored “${gone[0].title}” as a copy — it has a new link, and its comments, attachments and history couldn't be recovered.`
+          : `Restored ${plural(gone.length, "task")} as copies — they have new links, and their comments, attachments and history couldn't be recovered.`);
       });
-      if (rows.some((r) => r.comments > 0)) toastInfo("Restored — comments and attachments on deleted tasks can't be recovered.");
     }, UNDO_MS);
-  }, [noteDelete, dropPending, clearWrite, serverDelete, log, toastAction, toastInfo, startCreate]);
+  }, [noteDelete, dropPending, clearWrite, serverDelete, log, toastAction, toastInfo, toastError, startCreate, copyChecklist]);
   removeTasksRef.current = removeTasks;
 
-  // a pending delete must not be lost when the tab is hidden, closed or reloaded
+  // A pending delete must not be lost when the page is closed, reloaded or frozen.
+  // A phone may discard a backgrounded tab without warning, so there a hidden tab
+  // sends at once. On a computer a background tab keeps running (its Undo timer
+  // still fires), so a quick switch to another tab keeps Undo lossless.
   useEffect(() => {
     const flush = () => { [...pendingDeletesRef.current.values()].forEach((send) => send()); };
-    const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+    let touch = false;
+    try { touch = window.matchMedia("(hover: none) and (pointer: coarse)").matches; } catch { /* old browser: treat as a computer */ }
+    const onVis = () => { if (touch && document.visibilityState === "hidden") flush(); };
     window.addEventListener("pagehide", flush);
+    document.addEventListener("freeze", flush);
     document.addEventListener("visibilitychange", onVis);
-    return () => { window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", onVis); };
+    return () => { window.removeEventListener("pagehide", flush); document.removeEventListener("freeze", flush); document.removeEventListener("visibilitychange", onVis); };
   }, []);
 
   /* ---- status side effects (one path for checkbox, menu, board and bulk) ---- */
@@ -1624,24 +1766,27 @@ export default function App() {
       if (i === 0) copyChecklist(created, t.subtasks.map((s) => ({ ...s, done: false })));
     });
   }, [persistTask, copyChecklist]);
-  const unspawnRecurrence = useCallback((id: string) => {
-    const nextId = spawnedRef.current.get(id); if (!nextId) return;
+  /** Take back the occurrence spawned when `id` was completed here. True when it was removed. */
+  const unspawnRecurrence = useCallback((id: string): boolean => {
+    const nextId = spawnedRef.current.get(id); if (!nextId) return false;
     spawnedRef.current.delete(id);
     const all = tasksRef.current ?? [];
     const next = all.find((x) => x.id === nextId);
-    if (!next || next.status !== "todo" || next.comments > 0) return; // someone already started on it — keep it
+    if (!next || next.status !== "todo" || next.comments > 0) return false; // someone already started on it — keep it
     const rows = [next, ...descendantsOf([nextId], all)];
     const ids = new Set(rows.map((r) => r.id));
     setTasks((ts) => ts && ts.filter((x) => !ids.has(x.id)));
     noteDelete([...ids]); dropPending(ids);
     serverDelete(rows).then((failed) => { if (failed.length) reportError(new Error("unspawn recurrence failed"), { op: "unspawnRecurrence" }); });
+    return true;
   }, [noteDelete, dropPending, serverDelete]);
 
   /** Everything a real status change does, from every entry point: stamps or
    *  clears completedAt (only on a real transition), runs "status changed" and
-   *  "task completed" automations, logs it, and spawns/unspawns recurrences.
+   *  "task completed" automations, and spawns/unspawns recurrences. The activity
+   *  row waits in `fx` until the save lands (see updateWithStatus).
    *  Returns the extra fields to save alongside the status. */
-  const onStatusChange = useCallback((prev: Task, next: Task): Partial<Task> => {
+  const onStatusChange = useCallback((prev: Task, next: Task, fx: StatusFx): Partial<Task> => {
     const { completing, reopening, patch: extra } = statusTransition(prev, next.status);
     const base: Task = { ...next, ...extra };
     let auto = applyRules(base, "status_changed");
@@ -1650,9 +1795,13 @@ export default function App() {
     if (auto.assigneeId !== base.assigneeId) extra.assigneeId = auto.assigneeId;
     if (auto.sectionId !== base.sectionId) extra.sectionId = auto.sectionId;
     if ((auto.tags ?? []).join() !== (base.tags ?? []).join()) extra.tags = auto.tags;
-    if (completing) { log("completed", prev, "Marked complete"); spawnRecurrence(prev); }
-    else if (reopening) { log("reopened", prev, "Reopened"); unspawnRecurrence(prev.id); }
-    else log("status", prev, `Moved to ${STATUS_META[next.status].label}`);
+    if (completing) {
+      fx.logs.set(prev.id, () => log("completed", prev, "Marked complete"));
+      fx.completing.add(prev.id); spawnRecurrence(prev);
+    } else if (reopening) {
+      fx.logs.set(prev.id, () => log("reopened", prev, "Reopened"));
+      if (unspawnRecurrence(prev.id)) fx.unspawned.set(prev.id, prev);
+    } else fx.logs.set(prev.id, () => log("status", prev, `Moved to ${STATUS_META[next.status].label}`));
     return extra;
   }, [applyRules, log, spawnRecurrence, unspawnRecurrence]);
 
@@ -1711,15 +1860,34 @@ export default function App() {
     }
   }, [retarget]);
 
+  /** Save patches that include status changes: the activity rows are logged once
+   *  their save lands, and a save that fails takes its recurrence back (or puts
+   *  back the occurrence a failed reopen removed) along with the rollback. */
+  const updateWithStatus = useCallback((patches: Map<string, Partial<Task>>, fx: StatusFx, opts: CommitOpts = {}): Promise<boolean> => {
+    const failed = new Set<string>();
+    return updateTasks(patches, {
+      ...opts,
+      onFailed: (ids) => {
+        ids.forEach((id) => {
+          failed.add(id);
+          if (fx.completing.has(id)) unspawnRecurrence(id);
+          const reopened = fx.unspawned.get(id); if (reopened) spawnRecurrence(reopened);
+        });
+        opts.onFailed?.(ids);
+      },
+    }).then((ok) => { fx.logs.forEach((write, id) => { if (!failed.has(id)) write(); }); return ok; });
+  }, [updateTasks, unspawnRecurrence, spawnRecurrence]);
+
   const toggleTask = useCallback((id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
     if (denyGuest([t.workspaceId])) return;
     const completing = t.status !== "done";
     if (completing && !confirmCompleteBlocked([t])) return;
     const status: Status = completing ? "done" : "todo";
-    const patch: Partial<Task> = { status, ...onStatusChange(t, { ...t, status }) };
-    updateTasks(new Map([[id, patch]]), {
-      onFailed: () => { if (completing) unspawnRecurrence(id); },
+    const fx = newStatusFx();
+    const patch: Partial<Task> = { status, ...onStatusChange(t, { ...t, status }, fx) };
+    updateWithStatus(new Map([[id, patch]]), fx, {
+      // run the whole toggle again, side effects included (the failed one was rolled back)
       retry: () => { const cur = tasksRef.current?.find((x) => x.id === id); if (cur && cur.status === t.status) toggleTask(id); },
     });
     if (completing) {
@@ -1729,8 +1897,10 @@ export default function App() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, confirmCompleteBlocked, onStatusChange, updateTasks, unspawnRecurrence, toastAction]);
+  }, [denyGuest, confirmCompleteBlocked, onStatusChange, updateWithStatus, updateTasks, unspawnRecurrence, toastAction]);
 
+  const patchTaskRef = useRef<(id: string, patch: Partial<Task>) => void>(() => {});
+  const bulkPatchRef = useRef<(ids: string[], patch: Partial<Task>) => void>(() => {});
   const patchTask = useCallback((id: string, patchIn: Partial<Task>) => {
     const all = tasksRef.current ?? [];
     const prev = all.find((t) => t.id === id); if (!prev) return;
@@ -1743,13 +1913,17 @@ export default function App() {
     if (patch.status === "done" && !confirmCompleteBlocked([prev])) return;
     const note = retarget(prev, patch);
     if ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null) && denyGuest([patch.workspaceId])) return;
-    if (patch.status) Object.assign(patch, onStatusChange(prev, { ...prev, ...patch }));
+    const fx = newStatusFx();
+    if (patch.status) Object.assign(patch, onStatusChange(prev, { ...prev, ...patch }, fx));
     if (!Object.keys(patch).length) return;
     const patches = new Map<string, Partial<Task>>([[id, patch]]);
     cascadeToDescendants(prev, patch, all, patches);
-    updateTasks(patches);
+    // a failed status change is retried as a whole, so its side effects run again too
+    if (fx.logs.size) updateWithStatus(patches, fx, { retry: () => patchTaskRef.current(id, patchIn) });
+    else updateTasks(patches);
     if (note) toastInfo(note);
-  }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateTasks, toastInfo]);
+  }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastInfo]);
+  patchTaskRef.current = patchTask;
 
   // follow/unfollow a task (followers get its activity in their inbox)
   const toggleFollow = useCallback((id: string) => {
@@ -1791,16 +1965,25 @@ export default function App() {
     const patches = new Map<string, Partial<Task>>();
     const notes = new Set<string>();
     const completed: string[] = [];
+    const fx = newStatusFx();
     for (const prev of rows) {
       const p: Partial<Task> = { ...patchIn };
       // per task: completedAt only moves for tasks whose status really changes
       if ("status" in p && (!p.status || p.status === prev.status)) { delete p.status; delete p.completedAt; }
       const note = retarget(prev, p); if (note) notes.add(note);
-      if (p.status) { if (p.status === "done") completed.push(prev.id); Object.assign(p, onStatusChange(prev, { ...prev, ...p })); }
+      if (p.status) { if (p.status === "done") completed.push(prev.id); Object.assign(p, onStatusChange(prev, { ...prev, ...p }, fx)); }
       if (Object.keys(p).length) { patches.set(prev.id, p); cascadeToDescendants(prev, p, all, patches); }
     }
     if (!patches.size) { toastInfo(`Nothing to change — ${rows.length === 1 ? "it's" : "they're"} already like that.`); return; }
-    updateTasks(patches);
+    if (fx.logs.size) {
+      // retry just the tasks whose save failed, as a fresh bulk change (side effects included)
+      const failedIds: string[] = [];
+      const picked = new Set(rows.map((r) => r.id));
+      updateWithStatus(patches, fx, {
+        onFailed: (fids) => failedIds.push(...fids.filter((x) => picked.has(x))),
+        retry: () => { if (failedIds.length) bulkPatchRef.current(failedIds, patchIn); },
+      });
+    } else updateTasks(patches);
     toastAction(`Updated ${plural(rows.length, "task")}`, "Undo", () => {
       completed.forEach(unspawnRecurrence);
       const present = new Set((tasksRef.current ?? []).map((t) => t.id));
@@ -1810,7 +1993,8 @@ export default function App() {
     }, UNDO_MS);
     if (notes.size === 1) toastInfo([...notes][0]);
     else if (notes.size > 1) toastInfo(`${plural(notes.size, "task")} ${notes.size === 1 ? "was" : "were"} reassigned to you — their assignees aren't in that workspace.`);
-  }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
+  }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
+  bulkPatchRef.current = bulkPatch;
 
   const deleteTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
@@ -2026,7 +2210,9 @@ export default function App() {
     noteElsewhere([projectId]);
   }, [denyGuest, persistTask, applyAutomation, noteElsewhere]);
 
-  // CSV / paste import: one batched insert, positions in file order, one summary
+  // CSV / paste import: positions in file order, one summary. Each row is saved on
+  // its own (a few at a time), so one bad row only flags that row — the rest save,
+  // and Retry never re-inserts a row that already made it.
   const importTasks = useCallback((rows: (Partial<Task> & { title: string })[]) => {
     if (!rows.length) return;
     const me = userIdRef.current, base = Date.now();
@@ -2039,27 +2225,18 @@ export default function App() {
     if (denyGuest(built.map((t) => t.workspaceId))) return;
     setTasks((ts) => (ts ? [...built, ...ts] : built));
     pendingTasksRef.current = [...built.map((t) => ({ id: t.id, task: t, until: null })), ...pendingTasksRef.current];
-    const run = store.createTasksBatch(built, me);
-    built.forEach((t, i) => {
-      const p = run.then((saved) => saved[i]?.id ?? t.id);
-      p.catch(() => { /* reported once below */ });
-      createsRef.current.set(t.id, p);
-    });
-    run.then((saved) => {
-      saved.forEach((s, i) => { if (built[i]) settleCreate(built[i].id, s.id); });
-      log("created", { id: saved[0]?.id ?? null, title: `Imported ${plural(saved.length, "task")}` }, `Imported ${plural(saved.length, "task")}`);
-      // assignment emails for what was imported for other people (bounded — the in-app notification covers every task)
-      built.map((t, i) => ({ t, id: saved[i]?.id ?? t.id })).filter(({ t }) => t.assigneeId && t.assigneeId !== me).slice(0, 20)
-        .forEach(({ t, id }) => store.notify({ kind: "assigned", taskId: id, taskTitle: t.title, recipientIds: [t.assigneeId] }));
-    }, (e) => {
-      built.forEach((t) => createsRef.current.delete(t.id));
-      reportError(e, { op: "importTasks" });
-      markUnsaved(built, e);
+    const slot = createLimiter(6);
+    // assignment emails for what was imported for other people (bounded — the in-app notification covers every task)
+    let emails = 0;
+    const runs = built.map((t) => startCreate(t, { log: false, notify: !!t.assigneeId && t.assigneeId !== me && emails++ < 20, slot }));
+    Promise.all(runs).then((ids) => {
+      const saved = ids.filter((x): x is string => !!x);
+      if (saved.length) log("created", { id: saved[0], title: `Imported ${plural(saved.length, "task")}` }, `Imported ${plural(saved.length, "task")}`);
     });
     const projs = [...new Set(built.map((t) => t.projectId))];
     toastSuccess(`Imported ${plural(built.length, "task")}${projs.length === 1 ? ` into “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
     noteElsewhere(projs);
-  }, [applyAutomation, buildNewTask, denyGuest, settleCreate, log, markUnsaved, toastSuccess, noteElsewhere]);
+  }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, noteElsewhere]);
 
   /* ---- optimistic tmp-* rows (projects, sections, goals, rules…) ----
      Edits or deletes made before the create returns its real id are queued and
@@ -2089,6 +2266,7 @@ export default function App() {
     store.createProject(input, userIdRef.current)
       .then((p) => {
         const op = settleTmp(tmpId, p.id, (id, patch: Parameters<typeof store.updateProject>[1]) => store.updateProject(id, patch), (id) => store.deleteProject(id));
+        if (!op.deleted) noteCreated(p.id); // a reload already under way doesn't know about it yet
         applyProjects(op.deleted ? projectsRef.current.filter((x) => x.id !== tmpId) : swapTmp(projectsRef.current, tmpId, { ...p, ...op.patch }));
         setRouteRaw((r) => (r.view === "project" && r.projectId === tmpId ? { ...r, projectId: p.id } : r));
       })
@@ -2097,7 +2275,7 @@ export default function App() {
         applyProjects(projectsRef.current.filter((x) => x.id !== tmpId));
         toastError("Couldn't save the project: " + (e?.message || e));
       });
-  }, [denyGuest, applyProjects, settleTmp, toastError]);
+  }, [denyGuest, applyProjects, settleTmp, noteCreated, toastError]);
 
   const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
@@ -2141,6 +2319,7 @@ export default function App() {
     const me = userIdRef.current;
     try {
       const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId }, me);
+      noteCreated(np.id); // a reload already under way doesn't know about it yet
       applyProjects([...projectsRef.current, np]);
       if (src.description || src.status || (src.contributorIds?.length ?? 0)) {
         store.updateProject(np.id, { description: src.description, status: src.status, contributorIds: src.contributorIds }).catch(reportError);
@@ -2170,46 +2349,36 @@ export default function App() {
       pendingTasksRef.current = [...clones.map((t) => ({ id: t.id, task: t, until: null })), ...pendingTasksRef.current];
       setWorkspace(wsId); setRoute({ view: "project", projectId: np.id });
       toastSuccess(`Duplicated “${src.name}”`);
+      // each task is saved on its own, a few at a time, parents first (a sub-task's
+      // insert waits for its parent's). A row that fails is flagged with Retry on its
+      // own; rows that saved are never sent again.
+      const slot = createLimiter(6);
+      const runs: [string, Promise<string | null>][] = [];
+      for (const level of parentsFirst(clones)) for (const t of level) runs.push([t.id, startCreate(t, { log: false, notify: false, slot })]);
       const saved = new Map<string, string>(); // clone id → server id
-      // edits made to the copy while it saves wait for each task's insert
-      const waits = new Map<string, { resolve: (id: string) => void; reject: (e: unknown) => void }>();
-      clones.forEach((t) => {
-        const p = new Promise<string>((resolve, reject) => waits.set(t.id, { resolve, reject }));
-        p.catch(() => { /* reported once below */ });
-        createsRef.current.set(t.id, p);
-      });
-      const levels = parentsFirst(clones);
-      for (let li = 0; li < levels.length; li++) {
-        const level = levels[li];
-        try {
-          const out = await store.createTasksBatch(level.map((t) => ({ ...t, parentId: t.parentId ? saved.get(t.parentId) ?? t.parentId : undefined })), me);
-          level.forEach((t, i) => {
-            const sid = out[i]?.id ?? t.id;
-            saved.set(t.id, sid);
-            waits.get(t.id)?.resolve(sid);
-            settleCreate(t.id, sid);
-          });
-        } catch (e) {
-          reportError(e, { op: "duplicateProject-tasks" });
-          const rest = levels.slice(li).flat();
-          rest.forEach((t) => { createsRef.current.delete(t.id); waits.get(t.id)?.reject(e); });
-          markUnsaved(rest, e);
-          break;
-        }
-      }
-      const deps = clones.flatMap((c) => c.dependencies.map((d) => [c.id, d] as [string, string])).filter(([a, b]) => saved.has(a) && saved.has(b));
-      const depOk = await runLimited(deps, 4, ([a, b]) => store.addDependency(saved.get(a)!, saved.get(b)!));
+      await Promise.all(runs.map(([cid, p]) => p.then((sid) => { if (sid) saved.set(cid, sid); })));
+      const deps = clones.flatMap((c) => c.dependencies.map((d) => [c.id, d] as [string, string]));
+      const ready = deps.filter(([a, b]) => saved.has(a) && saved.has(b));
+      const depOk = await runLimited(ready, 4, ([a, b]) => store.addDependency(saved.get(a)!, saved.get(b)!));
       const lists = srcTasks.filter((t) => t.subtasks.length && saved.has(idMap.get(t.id)!));
       await runLimited(lists, 4, (t) => {
         const sid = saved.get(idMap.get(t.id)!)!;
         return Promise.all(t.subtasks.map((s, i) => store.addSubtask(sid, s.title, i)))
           .then((subs) => setTasks((ts) => ts && ts.map((x) => (x.id === sid ? { ...x, subtasks: subs } : x))));
       });
-      const depFail = depOk.filter((ok) => !ok).length;
-      if (depFail) toastError(`${plural(depFail, "dependency link")} couldn't be copied.`);
+      // links that didn't make it (a failed link, or an end that didn't save) come off the
+      // screen too, so the copy never shows a dependency the server doesn't have
+      const lost = [...deps.filter(([a, b]) => !(saved.has(a) && saved.has(b))), ...ready.filter((_, i) => !depOk[i])];
+      if (lost.length) {
+        const cur = (id: string) => saved.get(id) ?? id; // ids may have moved to the server's
+        const drop = new Map<string, Set<string>>();
+        lost.forEach(([a, b]) => { const k = cur(a); const set = drop.get(k) ?? new Set<string>(); set.add(cur(b)); drop.set(k, set); });
+        setTasks((ts) => ts && ts.map((x) => { const d = drop.get(x.id); return d ? { ...x, dependencies: (x.dependencies ?? []).filter((y) => !d.has(y)) } : x; }));
+        toastError(`${plural(lost.length, "dependency link")} couldn't be copied.`);
+      }
     } catch (e) { reportError(e, { op: "duplicateProject" }); toastError("Couldn't duplicate the project: " + ((e as Error)?.message || e)); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, applyProjects, settleCreate, markUnsaved, toastSuccess, toastError, toastInfo]);
+  }, [denyGuest, applyProjects, startCreate, noteCreated, toastSuccess, toastError, toastInfo]);
 
   /** Mirrors the server rule (0041): a team project can be deleted by its creator/owner or a workspace owner/admin. */
   const canDeleteProject = useCallback((p: Project): boolean => {
@@ -2532,6 +2701,7 @@ export default function App() {
     const me = getMember(userIdRef.current);
     store.createWorkspace(name, { id: userIdRef.current, email: me?.email || "", name: me?.name || "You" })
       .then((w) => {
+        if (w.id) noteCreated(w.id); // a reload already under way doesn't know about it yet
         setWorkspaces((ws) => [...ws, w]);
         setWsMembers((m) => [...m, { id: "owner-" + w.id, workspaceId: w.id!, userId: userIdRef.current, email: me?.email || "", name: me?.name || "You", role: "owner", status: "active" }]);
         setReferenceData({ workspaces: [...workspacesRef.current, w] });
@@ -2722,8 +2892,8 @@ export default function App() {
   // scope everything to the active workspace
   const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
   const allTasks = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
-  // "mine": assigned to me or I'm a collaborator. Planning, Home, Focus and My
-  // week are personal — they never show (or schedule) teammates' work.
+  // "mine": assigned to me or I'm a collaborator. Planning, Focus and My week are
+  // personal — they never show (or schedule) teammates' work.
   const isMine = (t: Task) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId);
   const myTasks = allTasks.filter(isMine);
   // "Show archived" follows the page: this project's archived tasks, or mine in My tasks
@@ -2790,7 +2960,9 @@ export default function App() {
     switch (route.view) {
       case "plan": return <PlanView tasks={myTasks} onUpdate={patchTask} onCreate={createFromPlan} onOpen={setDetailId} externalEvents={calEvents} calendarConnected={calConnections.length > 0} />;
       case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={patchTask} />;
-      case "home": return <HomeView tasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={openFocus} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
+      // Home keeps the workspace's tasks: its project cards and "is this workspace empty?" are
+      // about the team's work (a new member with nothing assigned yet isn't on a clean slate)
+      case "home": return <HomeView tasks={allTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} />;
       case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} />;
       case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} />;
       case "search": return <SearchView tasks={tasks} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch} onDeleteSavedSearch={removeSavedSearch} preset={searchPreset} presetKey={route.list} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} />;
@@ -2819,7 +2991,7 @@ export default function App() {
           sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
-          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={activeReadOnly ? undefined : postStatusUpdate} members={assignees} onDuplicate={activeReadOnly ? undefined : duplicateProject} onArchive={canManageProject(newProj) ? (id) => setProjectArchived(id, true) : undefined} canManagePeople={canManageProject(newProj)} /> : undefined} />;
+          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={activeReadOnly ? undefined : postStatusUpdate} members={assignees} onDuplicate={activeReadOnly ? undefined : duplicateProject} onArchive={activeReadOnly ? undefined : (id) => setProjectArchived(id, true)} canManagePeople={canManageProject(newProj)} /> : undefined} />;
       default: return null;
     }
   };
@@ -2970,7 +3142,8 @@ export default function App() {
           <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }} />
         </ErrorBoundary>
       )}
-      {focusOpen && <FocusMode focus={focus} tasks={myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
+      {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
+      {focusOpen && <FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...tasks.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}

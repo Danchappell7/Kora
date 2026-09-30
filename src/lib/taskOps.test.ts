@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, swapTmp, keepTmp, pickFields, statusTransition,
+  newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, pickFields, statusTransition,
   buildRecurrence, cloneTaskTree, topLevelProgress, pickStartWorkspace, readFilters, validFilters, filtersKey, EMPTY_FILTERS,
+  unseenCreates, reloadProjects, reloadWorkspaces,
 } from "./taskOps";
-import type { Task, Workspace } from "../data/types";
+import type { Task, Workspace, WorkspaceMember } from "../data/types";
 
 const task = (over: Partial<Task> & { id: string }): Task => ({
   title: "Task", description: "", status: "todo", priority: "medium", projectId: "p1", assigneeId: "me",
@@ -123,6 +124,19 @@ describe("small helpers", () => {
     expect(peak).toBeLessThanOrEqual(3);
     expect(res).toEqual([true, true, true, false, true, true, true]);
   });
+  it("createLimiter queues callers beyond the limit and lets them in first-come, first-served", async () => {
+    const gate = createLimiter(2);
+    let live = 0, peak = 0;
+    const order: number[] = [];
+    await Promise.all([1, 2, 3, 4, 5].map(async (n) => {
+      await gate.acquire();
+      live++; peak = Math.max(peak, live); order.push(n);
+      await new Promise((r) => setTimeout(r, 2));
+      live--; gate.release();
+    }));
+    expect(peak).toBe(2);
+    expect(order).toEqual([1, 2, 3, 4, 5]);
+  });
 });
 
 describe("pickStartWorkspace", () => {
@@ -155,5 +169,57 @@ describe("per-route filters", () => {
     const ok = validFilters({ ...EMPTY_FILTERS, assignee: "me", tag: "t1" }, { memberIds: new Set(["me"]), fieldIds: new Set(), tagIds: new Set(["t1"]) });
     expect(ok.assignee).toBe("me");
     expect(ok.tag).toBe("t1");
+  });
+});
+
+describe("reload snapshots", () => {
+  const P = (id: string) => ({ id });
+  const W = (id: string | null, name = String(id)): Workspace => ({ id, name, kind: id ? "team" : "personal" });
+  const M = (id: string, workspaceId: string, userId: string, status: "active" | "invited" = "active"): WorkspaceMember =>
+    ({ id, workspaceId, userId, email: userId + "@x", name: userId, role: "member", status });
+
+  it("unseenCreates keeps creates a reload started too early to see, and forgets them once a later reload could", () => {
+    const recent = new Map([["new", { seq: 5, until: 10_000 }], ["old", { seq: 1, until: 10_000 }], ["stale", { seq: 9, until: 10 }]]);
+    expect([...unseenCreates(recent, 4, 100)]).toEqual(["new"]); // started before "new" existed
+    expect(recent.has("old")).toBe(false); // reload 4 began after it — it can speak for it now
+    expect(recent.has("stale")).toBe(false); // expired
+    expect([...unseenCreates(recent, 6, 100)]).toEqual([]);
+    expect(recent.size).toBe(0);
+  });
+
+  it("reloadProjects keeps a project created after the reload began, and tmp rows still saving", () => {
+    const prev = [P("p-personal"), P("a"), P("dup"), P("tmp-proj-1")];
+    expect(reloadProjects([P("p-personal"), P("a")], prev, [], new Set(["dup"])).map((p) => p.id)).toEqual(["p-personal", "a", "tmp-proj-1", "dup"]);
+  });
+
+  it("reloadProjects follows the server when a project really went", () => {
+    const prev = [P("p-personal"), P("a"), P("gone")];
+    expect(reloadProjects([P("p-personal"), P("a")], prev, [{ projectId: "a" }], new Set()).map((p) => p.id)).toEqual(["p-personal", "a"]);
+  });
+
+  it("reloadProjects keeps the list when the projects query came back empty but tasks still point at them", () => {
+    const prev = [P("p-personal"), P("a"), P("b")];
+    expect(reloadProjects([P("p-personal")], prev, [{ projectId: "a" }], new Set()).map((p) => p.id)).toEqual(["p-personal", "a", "b"]);
+    // every project genuinely deleted (no task points at one): follow the server
+    expect(reloadProjects([P("p-personal")], prev, [{ projectId: "p-personal" }], new Set()).map((p) => p.id)).toEqual(["p-personal"]);
+  });
+
+  it("reloadWorkspaces keeps a workspace my membership still vouches for (the workspaces query failed)", () => {
+    const prev = [W(null, "Personal"), W("ws1"), W("ws2")];
+    const r = reloadWorkspaces([W(null, "Personal")], prev, [M("m1", "ws1", "me")], [], "me", new Set());
+    expect(r.workspaces.map((w) => w.id)).toEqual([null, "ws1"]); // ws2: no membership — really gone
+  });
+
+  it("reloadWorkspaces keeps a workspace created here (and its owner row) through a reload that began before it", () => {
+    const prev = [W(null, "Personal"), W("fresh")];
+    const r = reloadWorkspaces([W(null, "Personal")], prev, [], [M("owner-fresh", "fresh", "me")], "me", new Set(["fresh"]));
+    expect(r.workspaces.map((w) => w.id)).toEqual([null, "fresh"]);
+    expect(r.members.map((m) => m.id)).toEqual(["owner-fresh"]);
+  });
+
+  it("reloadWorkspaces drops a workspace I was removed from", () => {
+    const prev = [W(null, "Personal"), W("ws1")];
+    const r = reloadWorkspaces([W(null, "Personal")], prev, [M("m1", "ws1", "me", "invited")], [], "me", new Set());
+    expect(r.workspaces.map((w) => w.id)).toEqual([null]);
   });
 });
