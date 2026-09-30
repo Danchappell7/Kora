@@ -86,8 +86,21 @@ describe("withOverlay", () => {
     expect(theirs.planToday).toBe(true);
   });
 
-  it("returns the same array when there is nothing to lay over", () => {
-    const list = [task({ id: "a" })];
+  it("never shows the assignee's plan as yours: without your own, a teammate's task is unplanned", () => {
+    const theirs = task({ id: "b", planToday: true, scheduled: 480, mySectionId: "their-sec", aiScore: 40 });
+    const [b] = withOverlay([theirs], "me", "2026-09-30");
+    expect(b).toMatchObject({ planToday: false, scheduled: null, mySectionId: undefined, aiScore: 40 });
+    // only today's plan counts: yesterday's overlay doesn't carry over
+    writePlanOverlay("me", "2026-09-29", "b", { planToday: true, scheduled: 600 });
+    expect(withOverlay([theirs], "me", "2026-09-30")[0]).toMatchObject({ planToday: false, scheduled: null });
+  });
+
+  it("returns the same array (and tasks) when nothing changes", () => {
+    const list = [task({ id: "a" }), task({ id: "b", assigneeId: "me", planToday: true })];
     expect(withOverlay(list, "me", "2026-09-30")).toBe(list);
+    writePlanOverlay("me", "2026-09-30", "a", { planToday: true });
+    const seen = withOverlay(list, "me", "2026-09-30");
+    expect(seen).not.toBe(list);
+    expect(seen[1]).toBe(list[1]);
   });
 });

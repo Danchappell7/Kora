@@ -7,6 +7,8 @@ import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { isTaskId } from "./lib/taskOps";
+import { pushUndo, clearUndo } from "./lib/undoStack";
+import { toLocalISO, KANBO_TODAY } from "./data/data";
 
 const renderApp = () => render(
   <ToastProvider>
@@ -31,21 +33,32 @@ const projectButton = (name: string) => {
 const spies: { mockRestore: () => void }[] = [];
 const track = <T extends { mockRestore: () => void }>(s: T): T => { spies.push(s); return s; };
 afterEach(() => {
+  vi.useRealTimers();
   spies.splice(0).forEach((s) => s.mockRestore());
   localStorage.clear();
+  clearUndo();
+  window.history.replaceState(null, "", "/"); // every test opens the app at the root address
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
 });
+/** Open the app at an address (before rendering). */
+const at = (url: string) => window.history.replaceState(null, "", url);
+const address = () => window.location.pathname + window.location.search;
 
 describe("App (demo mode)", () => {
-  it("boots and renders the workspace shell", async () => {
+  it("boots on Today, at its own address, with the places in the sidebar", async () => {
     await boot();
-    expect(screen.getByText("My tasks")).toBeInTheDocument();
-    expect(screen.getByText("Analytics")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(within(nav).getByText("My tasks")).toBeInTheDocument();
+    expect(within(nav).getByText("Inbox")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/today"));
+    expect(document.title).toMatch(/^(\(\d+\) )?Today · Kanbo$/);
   });
 
   it("quick capture saves a task with a stable id, the parsed estimate, and keeps it out of today's plan", async () => {
     const create = track(vi.spyOn(store, "createTask"));
     await boot();
+    key("g"); key("t"); // (on Today, q goes to Today's own capture field)
     key("q");
     const input = await screen.findByLabelText("Quick capture a task");
     fireEvent.change(input, { target: { value: "Write board memo 90m" } });
@@ -60,6 +73,7 @@ describe("App (demo mode)", () => {
   it("emails the assignee when a task is created for someone else", async () => {
     const notify = track(vi.spyOn(store, "notify"));
     await boot();
+    key("g"); key("t");
     key("q");
     const input = await screen.findByLabelText("Quick capture a task");
     fireEvent.change(input, { target: { value: "Call supplier @maya" } });
@@ -67,14 +81,14 @@ describe("App (demo mode)", () => {
     await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: "assigned", recipientIds: ["m-1"] })));
   });
 
-  it("pauses single-key shortcuts while a dialog is open", async () => {
+  it("pauses single-key shortcuts while a dialog is open (? opens Settings, at Shortcuts)", async () => {
     await boot();
     key("?");
-    expect(await screen.findByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+    const settings = await screen.findByRole("dialog", { name: /settings/i });
     key("c");
     expect(screen.queryByRole("dialog", { name: "New task" })).not.toBeInTheDocument();
-    key("Escape");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument());
+    fireEvent.keyDown(settings, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /settings/i })).not.toBeInTheDocument());
     key("c");
     expect(await screen.findByRole("dialog", { name: "New task" })).toBeInTheDocument();
   });
@@ -150,7 +164,7 @@ describe("App (demo mode)", () => {
     hideTab();
     await waitFor(() => expect(del).toHaveBeenCalledWith("t-1"));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    expect(await screen.findByText(/Restored “Finalise Q3 launch narrative deck” as a copy — it has a new link/)).toBeInTheDocument();
+    expect(await screen.findByText(`Restored “${DECK}” as a copy — it has a new link, and its comments, attachments and history couldn't be recovered.`)).toBeInTheDocument();
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ title: DECK, comments: 0 }), expect.anything()));
     await waitFor(() => expect(addSub).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(tick).toHaveBeenCalledTimes(2)); // the two ticked checklist items stay ticked
@@ -195,12 +209,15 @@ describe("App (demo mode)", () => {
       return { ...b, tasks: b.tasks.map((t) => ({ ...t, assigneeId: t.assigneeId === "m-self" ? "m-1" : t.assigneeId, collaborators: [] })) };
     }));
     await boot();
+    key("g"); key("h"); // Today › Overview (the classic Home)
     expect(await screen.findByText("Active projects")).toBeInTheDocument();
     expect(screen.queryByText(/Your workspace is a clean slate/)).not.toBeInTheDocument();
+    expect(address()).toBe("/today/overview");
   });
 
-  it("Home's “Start focus block” starts the timer", async () => {
+  it("Overview's “Start focus block” starts the timer", async () => {
     await boot();
+    key("g"); key("h");
     fireEvent.click((await screen.findByText("Start focus block")).closest("button")!);
     expect(await screen.findByText(/Deep Work · Focus mode/)).toBeInTheDocument();
     expect(screen.getByText(/In flow/)).toBeInTheDocument();
@@ -267,7 +284,7 @@ describe("App (demo mode)", () => {
     expect(logged.mock.calls.some((c) => c[0].kind === "completed")).toBe(false);
   });
 
-  it("members can archive a team project; guests can read its status updates but not post or archive", async () => {
+  it("members can archive a team project and post updates; guests can do neither", async () => {
     const real = store.bootstrap.bind(store);
     let role: "member" | "guest" = "member";
     track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
@@ -283,15 +300,16 @@ describe("App (demo mode)", () => {
     const { unmount } = renderApp();
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
     fireEvent.click(projectButton("Brand Refresh"));
-    expect(await screen.findByTitle("Archive this project")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Brand Refresh" })).toBeInTheDocument();
+    expect(within(projectButton("Brand Refresh").parentElement!).getByRole("button", { name: "Archive project Brand Refresh" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Post update" })).toBeInTheDocument();
     unmount();
     role = "guest";
     await boot();
     fireEvent.click(projectButton("Brand Refresh"));
-    expect(await screen.findByText("Logo round two is with the client")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Brand Refresh" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Post update" })).not.toBeInTheDocument();
-    expect(screen.queryByTitle("Archive this project")).not.toBeInTheDocument();
+    expect(within(projectButton("Brand Refresh").parentElement!).queryByRole("button", { name: "Archive project Brand Refresh" })).not.toBeInTheDocument();
   });
 
   it("keeps filters per page: a filter set in My tasks doesn't hide a project's tasks", async () => {
@@ -319,7 +337,7 @@ describe("App (demo mode)", () => {
     fireEvent.click(lastOf(screen.getAllByRole("button", { name: "Post update" })));
     await waitFor(() => expect(screen.queryByPlaceholderText(/What's the latest/)).not.toBeInTheDocument());
     expect(post).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("Logo round two is with the client")).toBeInTheDocument();
+    expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ summary: "Logo round two is with the client" }), expect.anything());
   });
 
   it("deletes a project first and only then its tasks — a refused delete changes nothing", async () => {
@@ -521,12 +539,17 @@ describe("App (demo mode)", () => {
     expect(discard).toHaveBeenCalled();
   });
 
-  it("the top bar's theme button flips light and dark every time (also under StrictMode)", async () => {
+  it("the quick theme toggle flips light and dark every time (also under StrictMode)", async () => {
     render(<StrictMode><ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider></StrictMode>);
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
+    const toggle = async () => {
+      key("k", { ctrlKey: true });
+      fireEvent.change(await screen.findByRole("combobox"), { target: { value: "theme" } });
+      fireEvent.click(screen.getByRole("option", { name: /Toggle .*theme/i }));
+    };
+    await toggle();
     await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("light"));
-    fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
+    await toggle();
     await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("dark"));
     expect(localStorage.getItem("kanbo-theme")).toBe("dark");
   });
@@ -571,5 +594,201 @@ describe("App (demo mode)", () => {
     expect(Math.max(...upd.mock.invocationCallOrder)).toBeLessThan(delProject.mock.invocationCallOrder[0]);
     await waitFor(() => expect(screen.queryByText("Platform Infra", { selector: ".kproj *" })).not.toBeInTheDocument());
     expect(await screen.findByText(/^Deleted “Platform Infra” — \d+ tasks? moved to “Q3 Product Launch”$/)).toBeInTheDocument();
+  });
+
+  /* ---- addresses, history and the plan-state guard ---- */
+
+  it("an address opens its page: /p/p-launch/board is the project, on Board", async () => {
+    at("/p/p-launch/board");
+    await boot();
+    expect(await screen.findByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "To do column" })).toBeInTheDocument();
+    expect(address()).toBe("/p/p-launch/board");
+    expect(document.title).toMatch(/Q3 Product Launch · Kanbo$/);
+  });
+
+  it("Back and Forward follow the address: Today, then My tasks, then Back is Today again", async () => {
+    await boot();
+    await waitFor(() => expect(address()).toBe("/today"));
+    key("g"); key("t");
+    expect(await screen.findByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+    expect(address()).toBe("/tasks");
+    act(() => { window.history.back(); });
+    expect(await screen.findByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    expect(address()).toBe("/today");
+    act(() => { window.history.forward(); });
+    expect(await screen.findByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+  });
+
+  it("an old address is rewritten to its new one: /home is /today, /calendar is /today/month", async () => {
+    at("/home");
+    const first = renderApp();
+    await waitFor(() => expect(address()).toBe("/today"));
+    expect(screen.getByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    first.unmount();
+    at("/calendar?billing=cancelled");
+    renderApp();
+    await waitFor(() => expect(window.location.pathname).toBe("/today/month"));
+  });
+
+  it("?task= opens that task's panel on its page, and closing the panel takes it off the address", async () => {
+    at("/tasks?task=t-1");
+    await boot();
+    expect(await screen.findByRole("dialog", { name: `Task: ${DECK}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/tasks?task=t-1"));
+    key("Escape");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: `Task: ${DECK}` })).not.toBeInTheDocument());
+    await waitFor(() => expect(address()).toBe("/tasks"));
+  });
+
+  it("Search keeps the text it was handed in the address", async () => {
+    at("/search?q=narrative");
+    await boot();
+    expect(await screen.findByDisplayValue("narrative")).toBeInTheDocument();
+    expect(address()).toBe("/search?q=narrative");
+  });
+
+  it("opening a project's address in another workspace switches to that workspace", async () => {
+    at("/p/p-growth");
+    await boot();
+    expect(await screen.findByRole("heading", { level: 1, name: "Growth Experiments" })).toBeInTheDocument();
+    expect(await screen.findByText("Growth Experiments", { selector: ".kproj *" })).toBeInTheDocument();
+    expect(address()).toBe("/p/p-growth");
+  });
+
+  it("a project address that leads nowhere says so and lands on Today", async () => {
+    at("/p/p-nope/board");
+    await boot();
+    expect(await screen.findByText(/That project was deleted, or you no longer have access to it/)).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/today"));
+  });
+
+  it("switching workspace keeps your place when it makes sense there", async () => {
+    await boot();
+    key("g"); key("t");
+    expect(await screen.findByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    fireEvent.click(screen.getAllByText("Reco HQ").map((el) => el.closest("button")).find(Boolean)!);
+    expect(await screen.findByText("Growth Experiments", { selector: ".kproj *" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+    expect(address()).toBe("/tasks");
+  });
+
+  it("planning a teammate's task from Today keeps it in your own plan, never on their row", async () => {
+    const real = store.bootstrap.bind(store);
+    track(vi.spyOn(store, "bootstrap").mockImplementation(async (u) => {
+      const b = await real(u);
+      // t-2 is Maya's; you collaborate on it
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-2" ? { ...t, assigneeId: "m-1", collaborators: ["m-self"], status: "todo" as const, dependencies: [], scheduled: null, planToday: false } : t)) };
+    }));
+    const today = toLocalISO(KANBO_TODAY);
+    // Plan my day fills what's left of the working day: plan in the morning, whatever the real clock says
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(KANBO_TODAY.getTime() + 9 * 3600e3) });
+    // you've put it on your day (in your own plan)
+    localStorage.setItem("kanbo-plan-overlay:m-self", JSON.stringify({ [today]: { "t-2": { planToday: true } } }));
+    const update = track(vi.spyOn(store, "updateTask"));
+    await boot();
+    fireEvent.click(within(screen.getByRole("main")).getAllByRole("button", { name: /plan my day/i })[0]);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kanbo-plan-overlay:m-self") || "{}")[today]?.["t-2"]?.scheduled).toEqual(expect.any(Number)), { timeout: 4000 });
+    expect(update.mock.calls.some(([id, patch]) => id === "t-2" && ("scheduled" in patch || "planToday" in patch))).toBe(false);
+  });
+
+  it("⌘Z takes back the newest undoable change, once, and says so", async () => {
+    await boot();
+    const undo = vi.fn();
+    pushUndo("Moved 3 tasks to Monday", undo);
+    key("z", { metaKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Undone: Moved 3 tasks to Monday")).toBeInTheDocument();
+    key("z", { ctrlKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Nothing to undo")).toBeInTheDocument();
+  });
+
+  it("the new keys: g o is Projects, g e is Team, ⌘, is Settings", async () => {
+    await boot();
+    key("g"); key("o");
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+    expect(address()).toBe("/projects");
+    key("g"); key("e");
+    expect(await screen.findByRole("heading", { level: 1, name: "Team" })).toBeInTheDocument();
+    expect(address()).toBe("/team");
+    key(",", { metaKey: true });
+    expect(await screen.findByRole("dialog", { name: /settings/i })).toBeInTheDocument();
+    // with a dialog up, ⌘, still never reaches the browser (its own settings page)
+    expect(fireEvent.keyDown(document.body, { key: ",", metaKey: true })).toBe(false);
+  });
+
+  it("⌘Z also works while the task panel is open (only a text field keeps ⌘Z for itself)", async () => {
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    const undo = vi.fn();
+    pushUndo("Completed “Finalise the deck”", undo);
+    key("z", { metaKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Undone: Completed “Finalise the deck”")).toBeInTheDocument();
+    // typing in the panel: the field's own undo, not the app's
+    pushUndo("Moved 3 tasks to Monday", undo);
+    const field = within(panel).getAllByRole("textbox")[0];
+    fireEvent.keyDown(field, { key: "z", metaKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("in Personal, Team is Insights: g e and an old /team address land on /team/insights", async () => {
+    await boot();
+    fireEvent.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    fireEvent.click(screen.getAllByText("Personal").map((el) => el.closest("button")).find(Boolean)!);
+    await waitFor(() => expect(screen.queryByText("Brand Refresh", { selector: ".kproj *" })).not.toBeInTheDocument());
+    key("g"); key("e");
+    expect(await screen.findByRole("heading", { level: 1, name: "Insights" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/team/insights"));
+    expect(document.title).toMatch(/Insights · Kanbo$/);
+    // Back to the Today you came from, then Forward: still Insights, never Pulse
+    act(() => { window.history.back(); });
+    expect(await screen.findByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    act(() => { window.history.forward(); });
+    expect(await screen.findByRole("heading", { level: 1, name: "Insights" })).toBeInTheDocument();
+    expect(address()).toBe("/team/insights");
+  });
+
+  it("a guest who opens Rules by address lands on Projects, and a project's Rules on the project", async () => {
+    asGuest();
+    at("/projects/rules");
+    const first = renderApp();
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/projects"));
+    first.unmount();
+    at("/p/p-launch/rules");
+    renderApp();
+    expect(await screen.findByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/p/p-launch"));
+  });
+
+  it("Today › Week offers the weekly review (not to guests)", async () => {
+    at("/today/week");
+    const first = renderApp();
+    expect(await screen.findByRole("button", { name: "Weekly review" })).toBeInTheDocument();
+    first.unmount();
+    asGuest();
+    at("/today/week");
+    await boot();
+    expect(screen.getByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Weekly review" })).not.toBeInTheDocument();
+  });
+
+  it("a screen reader hears the new page's name: a new place, or another project", async () => {
+    await boot();
+    const live = document.querySelector<HTMLElement>('.sr-only[aria-live="polite"]')!;
+    expect(live.textContent).toBe(""); // the first page isn't news
+    key("g"); key("t");
+    await waitFor(() => expect(live).toHaveTextContent("My tasks"));
+    key("g"); key("o");
+    await waitFor(() => expect(live).toHaveTextContent("Projects"));
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "Q3 Product" } });
+    fireEvent.click(within(await screen.findByRole("group", { name: "Projects" })).getAllByRole("option")[0]);
+    await waitFor(() => expect(live).toHaveTextContent("Q3 Product Launch"));
   });
 });

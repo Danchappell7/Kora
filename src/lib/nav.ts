@@ -70,7 +70,7 @@ export const PLACES: Place[] = [
     ],
   },
   {
-    id: "projects", label: "Projects", icon: "folder", group: "team", gKey: "o", route: { view: "projects" },
+    id: "projects", label: "Projects", icon: "kanbo", group: "team", gKey: "o", route: { view: "projects" },
     tabs: [
       { id: "projects", label: "All", route: { view: "projects" } },
       { id: "portfolios", label: "Portfolios", route: { view: "portfolios" } },
@@ -275,7 +275,7 @@ export const GO_TARGETS: GoTarget[] = [
   { id: "due-week", label: "Due this week", keywords: "due this week next 7 days smart list", icon: "calendar", route: { view: "tasks", list: "week" } },
   { id: "assigned-all", label: "Assigned to me (all workspaces)", keywords: "assigned to me mine all workspaces smart lists", icon: "user", route: { view: "search", list: "mine" } },
   { id: "search", label: "Search", keywords: "search find advanced search smart lists saved searches", icon: "search", route: { view: "search" }, hint: "G S" },
-  { id: "projects", label: "Projects", keywords: "projects all projects directory", icon: "folder", route: { view: "projects" }, hint: "G O" },
+  { id: "projects", label: "Projects", keywords: "projects all projects directory", icon: "kanbo", route: { view: "projects" }, hint: "G O" },
   { id: "portfolios", label: "Portfolios", keywords: "portfolios projects rolled up exec", icon: "briefcase", route: { view: "portfolios" } },
   { id: "goals", label: "Goals", keywords: "goals okrs objectives key results", icon: "target", route: { view: "goals" } },
   { id: "rules", label: "Rules", keywords: "rules automations automation", icon: "zap", route: { view: "automations" } },
@@ -339,13 +339,17 @@ export const SHORTCUTS: Shortcut[] = [
 ];
 
 /** The page's name, for the header and the tab title. A project's page is
- *  titled by the project's name, which only the caller knows. */
+ *  titled by the project's name, which only the caller knows. Personal has no
+ *  team, so its Team place is Insights; People and Workload keep their own
+ *  names there when an address still leads to them. */
 export function titleOf(route: Route, ctx?: Pick<NavCtx, "personal">): string {
   switch (placeOf(route)) {
     case "today": return "Today";
     case "inbox": return "Inbox";
     case "tasks": return route.view === "search" ? "Search" : "My tasks";
     case "projects": return "Projects";
-    case "team": return ctx?.personal ? "Insights" : "Team";
+    case "team":
+      if (!ctx?.personal) return "Team";
+      return route.view === "team" ? "People" : route.view === "workload" ? "Workload" : "Insights";
   }
 }

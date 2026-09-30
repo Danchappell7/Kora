@@ -30,6 +30,7 @@ afterEach(() => {
   spies.splice(0).forEach((s) => s.mockRestore());
   (store as { configured: boolean }).configured = wasConfigured;
   localStorage.clear();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("App: the schema-behind notice", () => {

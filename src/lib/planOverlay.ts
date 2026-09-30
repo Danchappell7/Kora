@@ -122,17 +122,26 @@ export function splitPersonal(patch: Partial<Task>): { personal: Partial<Pick<Ta
   return { personal, shared };
 }
 
-/** Tasks as this person sees them: on tasks assigned to someone else, their
- *  own plan, section and score (where they have one) replace the row's. */
+/** Tasks as this person sees them. A task's plan fields (its slot, "on today"
+ *  and My-tasks section) are its assignee's: on a task assigned to anyone else
+ *  they come from this person's own overlay instead (their plan there, or none),
+ *  so nobody's day shows a teammate's plan. A score of their own replaces the
+ *  row's; without one the row's stays (a ranking hint, not a plan). Tasks that
+ *  don't change keep their identity, and so does the list when none do. */
 export function withOverlay(tasks: Task[], userId: string, day: string = todayISO()): Task[] {
   const plan = readPlanOverlay(userId, day);
   const sections = readSectionOverlay(userId);
   const scores = readScoreOverlay(userId);
-  if (!Object.keys(plan).length && !Object.keys(sections).length && !Object.keys(scores).length) return tasks;
-  return tasks.map((t) => {
+  let changed = false;
+  const out = tasks.map((t) => {
     if (t.assigneeId === userId) return t;
-    const p = plan[t.id], s = sections[t.id], sc = scores[t.id];
-    if (!p && !s && !sc) return t;
-    return { ...t, ...p, ...(s ? { mySectionId: s } : {}), ...sc };
+    const p = plan[t.id], sc = scores[t.id];
+    const scheduled = p?.scheduled ?? null;
+    const planToday = p?.planToday ?? false;
+    const mySectionId = sections[t.id];
+    if ((t.scheduled ?? null) === scheduled && !!t.planToday === planToday && t.mySectionId === mySectionId && !sc) return t;
+    changed = true;
+    return { ...t, scheduled, planToday, mySectionId, ...sc };
   });
+  return changed ? out : tasks;
 }

@@ -196,5 +196,9 @@ describe("keys, Go to and titles", () => {
     expect(titleOf({ view: "goals" })).toBe("Projects");
     expect(titleOf({ view: "workload" })).toBe("Team");
     expect(titleOf({ view: "analytics" }, { personal: true })).toBe("Insights");
+    expect(titleOf({ view: "reports" }, { personal: true })).toBe("Insights");
+    // Personal has no team: an old address to People or Workload names the page it opens
+    expect(titleOf({ view: "team" }, { personal: true })).toBe("People");
+    expect(titleOf({ view: "workload" }, { personal: true })).toBe("Workload");
   });
 });

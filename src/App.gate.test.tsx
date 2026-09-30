@@ -18,7 +18,7 @@ import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
 
 const spies: { mockRestore: () => void }[] = [];
-afterEach(() => { spies.splice(0).forEach((s) => s.mockRestore()); localStorage.clear(); });
+afterEach(() => { spies.splice(0).forEach((s) => s.mockRestore()); localStorage.clear(); window.history.replaceState(null, "", "/"); });
 
 const withProfile = (p: Partial<Profile>) => {
   const real = store.bootstrap.bind(store);
@@ -31,12 +31,14 @@ const isAdmin = (v: boolean) => { const s = vi.spyOn(store, "amIAdmin").mockReso
 const renderApp = () => render(<ToastProvider><App /></ToastProvider>);
 
 describe("early-access gate", () => {
-  it("keeps an unapproved account in the waiting room", async () => {
+  it("keeps an unapproved account in the waiting room (which leaves the address alone)", async () => {
     withProfile({ approved: false });
     isAdmin(false);
+    window.history.replaceState(null, "", "/home?ref=invite");
     renderApp();
     expect(await screen.findByText("You’re on the early-access list")).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
+    expect(window.location.pathname + window.location.search).toBe("/home?ref=invite");
   });
 
   it("lets a platform admin in by the server's is_admin() (no hard-coded address)", async () => {
