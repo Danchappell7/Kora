@@ -196,6 +196,7 @@ type FakeResult = { data?: unknown; error?: { message: string; code?: string } |
 function makeFake(uid = "user-a") {
   const calls: FakeCall[] = [];
   const invokes: { name: string; body: unknown }[] = [];
+  const invokeTimeouts: { name: string; timeout?: number }[] = [];
   const signCalls: string[][] = [];
   const uploads: { path: string; contentType?: string }[] = [];
   const channels: { topic: string; opts?: unknown; bindings: { type: string; filter: Record<string, unknown>; cb: (p: unknown) => void }[]; status?: (s: string) => void }[] = [];
@@ -220,6 +221,7 @@ function makeFake(uid = "user-a") {
       delete() { c.op = "delete"; started = true; return b; },
       eq(col: string, v: unknown) { c.filters.push(["eq", col, v]); return b; },
       gt(col: string, v: unknown) { c.filters.push(["gt", col, v]); return b; },
+      gte(col: string, v: unknown) { c.filters.push(["gte", col, v]); return b; },
       is(col: string, v: unknown) { c.filters.push(["is", col, v]); return b; },
       in(col: string, v: unknown) { c.filters.push(["in", col, v]); return b; },
       order(col: string) { c.order = col; (c.orders ??= []).push(col); return b; },
@@ -238,7 +240,7 @@ function makeFake(uid = "user-a") {
       getSession: async () => ({ data: { session }, error: null }),
       onAuthStateChange(cb: (event: string, session: unknown) => void) { authCb = cb; return { data: { subscription: { unsubscribe() {} } } }; },
     },
-    functions: { invoke: async (name: string, o: { body: unknown }) => { invokes.push({ name, body: o?.body }); const r = invokeResult(name, o?.body); return { data: r.data ?? null, error: r.error ?? null }; } },
+    functions: { invoke: async (name: string, o: { body: unknown; timeout?: number }) => { invokes.push({ name, body: o?.body }); invokeTimeouts.push({ name, timeout: o?.timeout }); const r = invokeResult(name, o?.body); return { data: r.data ?? null, error: r.error ?? null }; } },
     storage: {
       from: () => ({
         createSignedUrls: async (paths: string[]) => { signCalls.push(paths); return { data: paths.map((p) => ({ path: p, signedUrl: "https://signed/" + p, error: null })), error: null }; },
@@ -270,7 +272,7 @@ function makeFake(uid = "user-a") {
     },
   };
   return {
-    client, calls, invokes, signCalls, uploads, channels, live, reportError: vi.fn(),
+    client, calls, invokes, invokeTimeouts, signCalls, uploads, channels, live, reportError: vi.fn(),
     setHandler(h: (c: FakeCall) => FakeResult | undefined) { handler = h; },
     setInvoke(f: (name: string, body: unknown) => { data?: unknown; error?: unknown }) { invokeResult = f; },
     /** hold every removeChannel until the returned release() is called */
@@ -1194,5 +1196,385 @@ describe("store (demo mode) — wiring", () => {
     const m = await store.inviteMember("ws-x", "pat@acme.com");
     expect(m.inviteEmail).toBeUndefined();
     expect(await store.sendInviteEmail(m.id)).toEqual({ sent: false, reason: "email_not_configured" });
+  });
+});
+
+/* ------------------------------------------------------------------
+   The redesign's data: who created a task, the workspace's change
+   history (Pulse, Radar) and the AI modes (Ask, notes, standup, status)
+   ------------------------------------------------------------------ */
+describe("store (supabase) — creator, workspace history and AI modes", () => {
+  let onLine: ReturnType<typeof vi.spyOn> | null = null;
+  const goOffline = () => { onLine = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false); };
+  beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); });
+  afterEach(() => { onLine?.mockRestore(); onLine = null; vi.useRealTimers(); vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
+
+  const ctx = {
+    today: "2026-09-30", me: "user-a",
+    members: [{ id: "user-a", name: "Daniel Okai" }, { id: "user-m", name: "Maya Chen" }, { id: "user-t", name: "Theo Park" }],
+    projects: [{ id: "p-launch", name: "Q3 Product Launch" }, { id: "p-infra", name: "Platform Infra" }],
+  };
+  const invokesOf = (fake: ReturnType<typeof makeFake>) => fake.invokes.filter((i) => i.name === "ai-assist").map((i) => i.body as Record<string, unknown>);
+  const timeoutsOf = (fake: ReturnType<typeof makeFake>) => fake.invokeTimeouts.filter((i) => i.name === "ai-assist").map((i) => i.timeout);
+  const refusal = (status: number, body: Record<string, unknown>) => ({ context: { status, json: async () => body } });
+
+  it("reads the creator from tasks.user_id", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "tasks" && c.op === "select" ? { data: [{ ...taskRow(uuidN(1)), user_id: "user-m" }, taskRow(uuidN(2))] } : undefined));
+    const { store: s } = await loadStore(fake);
+    const b = await s.bootstrap({ id: "user-a" });
+    expect(b.tasks.find((t) => t.id === uuidN(1))?.createdBy).toBe("user-m");
+    expect(b.tasks.find((t) => t.id === uuidN(2))?.createdBy).toBeUndefined();
+  });
+
+  it("a new task is created by whoever saves it, even a copy of someone else's", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "tasks" && c.op === "upsert" ? { data: [{ id: uuidN(3) }] } : undefined));
+    const { store: s, queue } = await loadStore(fake);
+    const saved = await s.createTask(mkTask(uuidN(3), { createdBy: "user-m" }), "m-self");
+    expect(saved.createdBy).toBe("user-a");                    // the session's user, not the stale placeholder
+    const row = fake.calls.find((c) => c.table === "tasks" && c.op === "upsert")!.payload as Record<string, unknown>;
+    expect(row.user_id).toBe("user-a");
+    expect("createdBy" in row || "created_by" in row).toBe(false);
+    const batch = await s.createTasksBatch([mkTask(uuidN(4)), mkTask(uuidN(5), { createdBy: "user-t" })], "user-a");
+    expect(batch.map((t) => t.createdBy)).toEqual(["user-a", "user-a"]);
+    // queued offline: the queued copy (what a reload shows) carries it too
+    queue.setUser("user-a");
+    goOffline();
+    const offline = await s.createTask(mkTask(uuidN(6)), "user-a");
+    expect(offline.createdBy).toBe("user-a");
+    expect(queue.all().find((m) => m.kind === "create")).toMatchObject({ task: { id: uuidN(6), createdBy: "user-a" } });
+  });
+
+  it("never writes the creator from an edit", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    await s.updateTask(uuidN(7), { createdBy: "user-m" });
+    await s.updateTask(uuidN(7), { createdBy: "user-m", title: "Renamed" });
+    const updates = fake.calls.filter((c) => c.table === "tasks" && c.op === "update").map((c) => c.payload);
+    expect(updates).toEqual([{ title: "Renamed" }]);
+  });
+
+  it("lists a workspace's history since a moment, newest first", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "task_events" ? { data: [
+      { id: "e1", task_id: uuidN(1), actor_id: "user-m", actor_name: "Maya Chen", field: "status", old_value: "progress", new_value: "done", created_at: "2026-09-30T08:00:00Z", tasks: { workspace_id: "ws-1" } },
+      { id: "e2", task_id: uuidN(2), actor_id: null, actor_name: null, field: "due", old_value: "2026-09-29", new_value: "2026-10-02", created_at: "2026-09-29T17:00:00Z", tasks: { workspace_id: "ws-1" } },
+    ] } : undefined));
+    const { store: s } = await loadStore(fake);
+    const events = await s.listWorkspaceEventsSince("ws-1", "2026-09-29T00:00:00.000Z");
+    expect(events).toEqual([
+      { id: "e1", taskId: uuidN(1), actorId: "user-m", actorName: "Maya Chen", field: "status", oldValue: "progress", newValue: "done", createdAt: "2026-09-30T08:00:00Z" },
+      { id: "e2", taskId: uuidN(2), actorId: null, actorName: "Someone", field: "due", oldValue: "2026-09-29", newValue: "2026-10-02", createdAt: "2026-09-29T17:00:00Z" },
+    ]);
+    const q = fake.calls.find((c) => c.table === "task_events")!;
+    expect(q.select).toContain("tasks!inner(workspace_id");
+    expect(q.filters).toEqual([["eq", "tasks.workspace_id", "ws-1"], ["gte", "created_at", "2026-09-29T00:00:00.000Z"]]);
+    expect(q.order).toBe("created_at");
+    expect(q.limit).toBe(500);
+  });
+
+  it("Personal history is just your own tasks outside any workspace; errors reject", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    await s.listWorkspaceEventsSince(null, "2026-09-29T00:00:00.000Z", 50);
+    const q = fake.calls.find((c) => c.table === "task_events")!;
+    expect(q.filters).toEqual([["is", "tasks.workspace_id", null], ["eq", "tasks.user_id", "user-a"], ["gte", "created_at", "2026-09-29T00:00:00.000Z"]]);
+    expect(q.limit).toBe(50);
+    fake.setHandler((c) => (c.table === "task_events" ? { error: { message: "relation \"task_events\" does not exist", code: "42P01" } } : undefined));
+    await expect(s.listWorkspaceEventsSince("ws-1", "2026-09-29T00:00:00.000Z")).rejects.toBeTruthy();
+  });
+
+  it("Ask sends up to 300 tasks, most relevant first, with people and projects by name", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: { answer: "Nothing's overdue.", actions: [], cites: [] } }));
+    const { store: s } = await loadStore(fake);
+    const theirsLater = mkTask("t-later", { assigneeId: "user-m", projectId: "p-infra", dueDate: "2026-11-20" });
+    const mineSoon = mkTask("t-mine", {
+      assigneeId: "user-a", projectId: "p-launch", dueDate: "2026-10-01", dueTime: "15:00", startDate: "2026-09-28",
+      collaborators: ["user-t"], createdBy: "user-m", description: "  Tighten the story arc,\n\nland the 'why now'. " + "x".repeat(400), dependencies: ["t-later"],
+    });
+    const theirsSoon = mkTask("t-theirs", { assigneeId: "user-m", projectId: "p-launch", dueDate: "2026-10-02" });
+    const unassigned = mkTask("t-nobody", { assigneeId: "", projectId: "p-launch", dueDate: "2026-12-01" });
+    const doneRecently = mkTask("t-done", { status: "done", completedAt: "2026-09-28" });
+    const doneLongAgo = mkTask("t-old", { status: "done", completedAt: "2026-06-01" });
+    const archived = mkTask("t-archived", { archivedAt: "2026-09-01T00:00:00Z" });
+    const filler = Array.from({ length: 400 }, (_, i) => mkTask(`t-f${i}`, { assigneeId: "user-t", dueDate: "2027-01-01" }));
+    const res = await s.aiCommand("  what's overdue?  ", [doneRecently, theirsLater, unassigned, archived, doneLongAgo, theirsSoon, mineSoon, ...filler], ctx);
+    expect(res).toEqual({ data: { answer: "Nothing's overdue.", actions: [], cites: [], source: "ai" }, source: "ai" });
+    const [body] = invokesOf(fake);
+    expect(body).toMatchObject({ mode: "command", question: "what's overdue?", today: "2026-09-30", me: "Daniel Okai", meId: "user-a", members: ctx.members, projects: ctx.projects });
+    const sent = body.tasks as Record<string, unknown>[];
+    expect(sent).toHaveLength(300);
+    expect(sent.slice(0, 2).map((t) => t.id)).toEqual(["t-mine", "t-theirs"]);
+    expect(sent.some((t) => t.id === "t-archived" || t.id === "t-old")).toBe(false);
+    expect(sent[0]).toEqual({
+      id: "t-mine", title: "Task t-mine", status: "todo", priority: "medium", dueDate: "2026-10-01", dueTime: "15:00", startDate: "2026-09-28",
+      assignee: "Daniel Okai", projectName: "Q3 Product Launch", collaborators: ["Theo Park"], createdBy: "Maya Chen",
+      description: ("Tighten the story arc, land the 'why now'. " + "x".repeat(400)).slice(0, 200), blockedBy: ["t-later"],
+    });
+    expect(sent.find((t) => t.id === "t-nobody")).toHaveProperty("assignee", null); // unassigned says so
+    // recent work still goes, however much is open, so "what got done?" has an answer
+    expect(sent[sent.length - 1]).toMatchObject({ id: "t-done", status: "done", completedAt: "2026-09-28" });
+    expect(timeoutsOf(fake)).toEqual([60_000]);
+  });
+
+  it("Ask keeps up to 40 places for what was finished in the last fortnight, newest first", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: { answer: "Maya finished three things.", actions: [], cites: [] } }));
+    const { store: s } = await loadStore(fake);
+    const open = Array.from({ length: 400 }, (_, i) => mkTask(`t-o${i}`, { assigneeId: "user-a", dueDate: "2026-10-01" }));
+    const done = Array.from({ length: 60 }, (_, i) => mkTask(`t-d${i}`, { status: "done", assigneeId: "user-m", completedAt: `2026-09-${String(16 + (i % 14)).padStart(2, "0")}T${String(i % 24).padStart(2, "0")}:00:00Z` }));
+    await s.aiCommand("what did Maya finish this week?", [...done, ...open], ctx);
+    const sent = invokesOf(fake)[0].tasks as { id: string; status: string; completedAt?: string }[];
+    expect(sent).toHaveLength(300);
+    expect(sent.slice(0, 260).every((t) => t.status !== "done")).toBe(true);
+    const sentDone = sent.slice(260);
+    expect(sentDone).toHaveLength(40);
+    expect(sentDone.every((t) => t.status === "done")).toBe(true);
+    expect(sentDone.map((t) => t.completedAt)).toEqual([...sentDone.map((t) => t.completedAt)].sort().reverse());
+    // a small workspace sends everything: open work, then all the recent done
+    fake.invokes.length = 0; fake.invokeTimeouts.length = 0;
+    await s.aiCommand("what did Maya finish this week?", [...done, ...open.slice(0, 10)], ctx);
+    expect((invokesOf(fake)[0].tasks as unknown[]).length).toBe(70);
+  });
+
+  it("Ask hands on every proposed change, kept then left out, for validateActions to check and explain", async () => {
+    const fake = makeFake();
+    const leftDelete = { op: "delete", id: "t-1" };
+    const leftStray = { op: "update", id: "t-2", patch: { dueDate: "2026-10-05", description: "nope" } };
+    const leftUnsent = { op: "update", id: "t-unsent", patch: { dueDate: "2026-10-05" } };
+    fake.setInvoke(() => ({ data: {
+      answer: "Moves your unstarted tasks to Monday 5 Oct.",
+      actions: [
+        { op: "update", id: "t-1", patch: { dueDate: "2026-10-05" } },
+        { op: "update", id: "t-old", patch: { status: "todo" } },     // a task Ask has but the model was never shown
+        { op: "open", taskId: "t-1" },                                // not a change, not in the contract
+        { op: "create", task: { title: "Write press release", priority: "high" } },
+      ],
+      left_out: [
+        { action: leftDelete, reason: "Kanbo never deletes" },
+        { action: leftStray, reason: "\"description\" isn't a field Ask may change" },
+        { action: leftUnsent, reason: "not a task it was given" },
+        "junk",
+      ],
+      cites: ["t-1", "t-unsent", "t-1", "t-old"],
+      usage: { used: 12, limit: 200 },
+    } }));
+    const { store: s } = await loadStore(fake);
+    const doneLongAgo = mkTask("t-old", { status: "done", completedAt: "2026-06-01" });
+    const res = await s.aiCommand("move my unstarted tasks this week to monday", [mkTask("t-1", { assigneeId: "user-a" }), mkTask("t-2", { assigneeId: "user-a" }), doneLongAgo], ctx);
+    expect((invokesOf(fake)[0].tasks as { id: string }[]).map((t) => t.id)).toEqual(["t-1", "t-2"]);
+    expect(res.source).toBe("ai");
+    if (res.source !== "ai") return;
+    expect(res.usage).toEqual({ used: 12, limit: 200 });
+    expect(res.data.usage).toEqual({ used: 12, limit: 200 });
+    expect(res.data.cites).toEqual(["t-1"]);
+    expect(res.data.actions).toEqual([
+      { op: "update", id: "t-1", patch: { dueDate: "2026-10-05" } },
+      { op: "update", id: "", patch: { status: "todo" } },            // blanked: turned away as a task Kanbo wasn't asked about
+      { op: "create", task: { title: "Write press release", priority: "high" } },
+      leftDelete,                                                     // as written, so the reason shown is Ask's own
+      leftStray,                                                      // whole, never trimmed to its valid dueDate
+      { ...leftUnsent, id: "" },
+      {},
+    ]);
+  });
+
+  it("Ask's hand-on is bounded, and a reply without left_out (or any actions) is fine", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: {
+      answer: "ok",
+      actions: Array.from({ length: 50 }, () => ({ op: "update", id: "t-1", patch: { priority: "high" } })),
+      left_out: Array.from({ length: 50 }, () => ({ action: { op: "delete", id: "t-1" }, reason: "Kanbo never deletes" })),
+      cites: Array.from({ length: 30 }, () => "t-1"),
+    } }));
+    const { store: s } = await loadStore(fake);
+    const res = await s.aiCommand("prioritise everything", [mkTask("t-1")], ctx);
+    expect(res.source === "ai" && res.data.actions.length).toBe(60);
+    fake.setInvoke(() => ({ data: { answer: "Nothing's overdue.", actions: "none" } }));
+    expect(await s.aiCommand("what's overdue?", [mkTask("t-1")], ctx)).toEqual({ data: { answer: "Nothing's overdue.", actions: [], cites: [], source: "ai" }, source: "ai" });
+  });
+
+  it("the daily limit comes back as 'limit' with the server's words; other failures as 'unavailable'", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ error: refusal(429, { error: "daily_limit", detail: "You've used today's 200 AI requests. They reset at midnight (UK time)." }) }));
+    const { store: s } = await loadStore(fake);
+    expect(await s.aiStandup({ done: [] })).toEqual({ data: null, source: "limit", detail: "You've used today's 200 AI requests. They reset at midnight (UK time)." });
+    expect(s.aiNotice()).toMatch(/200 AI requests/);
+    fake.setInvoke(() => ({ error: refusal(403, { error: "not_allowed" }) }));
+    expect(await s.aiStatus({ project: "x" })).toEqual({ data: null, source: "unavailable", detail: "Your account is still awaiting approval, so AI isn't available yet." });
+    fake.setInvoke(() => ({ error: refusal(502, { error: "bad_output" }) }));
+    expect(await s.aiExtract("Maya to send the brief", { ...ctx, hint: "Launch sync" })).toEqual({ data: null, source: "unavailable" });
+    expect(s.aiNotice()).toBeNull();
+    fake.setInvoke(() => { throw new Error("boom"); });
+    expect(await s.aiCommand("hi", [], ctx)).toEqual({ data: null, source: "unavailable" });
+    // an unusable reply is unavailable too
+    fake.setInvoke(() => ({ data: { answer: "   " } }));
+    expect(await s.aiCommand("hi", [], ctx)).toEqual({ data: null, source: "unavailable" });
+  });
+
+  it("offline, or with nothing to ask, it doesn't call at all", async () => {
+    const fake = makeFake();
+    const { store: s } = await loadStore(fake);
+    expect(await s.aiCommand("   ", [], ctx)).toEqual({ data: null, source: "unavailable" });
+    expect(await s.aiExtract("", ctx)).toEqual({ data: null, source: "unavailable" });
+    goOffline();
+    expect(await s.aiCommand("what's overdue?", [], ctx)).toEqual({ data: null, source: "unavailable" });
+    expect(await s.aiStandup({ done: [] })).toEqual({ data: null, source: "unavailable" });
+    expect(invokesOf(fake)).toHaveLength(0);
+  });
+
+  it("before ai-assist is redeployed (it answers as 'prioritise'), stops asking for the session", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: { items: [], summary: "Nothing open to prioritize." } }));
+    const { store: s } = await loadStore(fake);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    expect(await s.aiStatus({ project: "Launch" })).toEqual({ data: null, source: "unavailable" });
+    expect(await s.aiCommand("what's overdue?", [mkTask("t-1")], ctx)).toEqual({ data: null, source: "unavailable" });
+    expect(invokesOf(fake)).toHaveLength(1);
+    expect(info).toHaveBeenCalledTimes(1);
+    info.mockRestore();
+    // the original modes are untouched by it
+    await s.aiBreakdown("Plan the offsite", "");
+    expect(invokesOf(fake)).toHaveLength(2);
+  });
+
+  it("notes → tasks: people matched to members, anyone else kept as a name to flag", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: { tasks: [
+      { title: "Send the interview brief", assigneeName: "maya", dueDate: "2026-10-02", dueTime: "15:00", priority: "high" },
+      { title: "Book the venue", assigneeName: "Priya", note: "Mentions Priya, who isn't in this workspace." },
+      { title: "  ", assigneeName: "Theo Park" },
+      { title: "Draft FAQ", dueDate: "2026-02-30", dueTime: "3pm", priority: "asap" },
+    ], usage: { used: 3, limit: 200 } } }));
+    const { store: s } = await loadStore(fake);
+    const res = await s.aiExtract("  Maya to send the brief by Fri 3pm. Priya books the venue. Draft FAQ.  ", { ...ctx, hint: "Launch sync" });
+    expect(res).toEqual({ source: "ai", usage: { used: 3, limit: 200 }, data: [
+      { title: "Send the interview brief", assigneeId: "user-m", assigneeName: "Maya Chen", dueDate: "2026-10-02", dueTime: "15:00", priority: "high" },
+      { title: "Book the venue", assigneeName: "Priya", note: "Mentions Priya, who isn't in this workspace." },
+      { title: "Draft FAQ" },
+    ] });
+    expect(invokesOf(fake)[0]).toMatchObject({ mode: "extract", text: "Maya to send the brief by Fri 3pm. Priya books the venue. Draft FAQ.", hint: "Launch sync", today: "2026-09-30", members: ctx.members, projects: ctx.projects });
+    await s.aiExtract("y".repeat(30_000), ctx);
+    expect((invokesOf(fake)[1].text as string).length).toBe(20_000);
+    expect(timeoutsOf(fake)).toEqual([120_000, 120_000]);   // 50 action items take over a minute to write
+  });
+
+  it("standup and status drafts", async () => {
+    const fake = makeFake();
+    fake.setInvoke((_n, body) => ({ data: (body as { mode: string }).mode === "standup"
+      ? { text: " Done: tokens shipped.\nIn progress: the deck. ", usage: { used: 4, limit: 200 } }
+      : { summary: " The deck is the critical path. ", status: "at_risk" } }));
+    const { store: s } = await loadStore(fake);
+    expect(await s.aiStandup({ done: [{ who: "Maya", title: "Tokens" }] })).toEqual({ data: "Done: tokens shipped.\nIn progress: the deck.", source: "ai", usage: { used: 4, limit: 200 } });
+    expect(await s.aiStatus({ project: "Launch" })).toEqual({ data: { summary: "The deck is the critical path.", status: "at_risk" }, source: "ai" });
+    expect(invokesOf(fake)[0]).toMatchObject({ mode: "standup", facts: { done: [{ who: "Maya", title: "Tokens" }] } });
+    expect(timeoutsOf(fake)).toEqual([45_000, 45_000]);
+    expect(invokesOf(fake)[0].today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    fake.setInvoke(() => ({ data: { summary: "Fine.", status: "great" } }));
+    expect(await s.aiStatus({ project: "Launch" })).toEqual({ data: null, source: "unavailable" });
+  });
+
+  it("the AI calls work handed around as plain functions (no `this`)", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: { text: "Done." } }));
+    const { store: s } = await loadStore(fake);
+    const { aiStandup, aiCommand, listWorkspaceEventsSince } = s;
+    expect(await aiStandup({ done: [] })).toMatchObject({ source: "ai", data: "Done." });
+    await expect(aiCommand("hi", [], ctx)).resolves.toBeTruthy();
+    await expect(listWorkspaceEventsSince("ws-1", "2026-09-29T00:00:00Z")).resolves.toEqual([]);
+  });
+});
+
+describe("store (demo mode) — the redesign's seed and AI", () => {
+  const ctx = { today: "2026-09-30", me: "m-self", members: [{ id: "m-self", name: "Daniel Okai" }], projects: [{ id: "p-launch", name: "Q3 Product Launch" }] };
+  afterEach(() => { vi.doUnmock("./data"); });
+
+  /** A demo-mode store over a data module whose redesign seeds are replaced. */
+  async function demoStoreWith(seed: Record<string, unknown>) {
+    vi.resetModules();
+    vi.doMock("./data", async (importOriginal) => ({ ...(await importOriginal<typeof import("./data")>()), ...seed }));
+    return (await import("./store")).store;
+  }
+  const ago = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+
+  it("bootstrap returns the seeded goals, portfolios, updates, rules and forms — as copies", async () => {
+    const data = await import("./data");
+    const b = await store.bootstrap({ id: "m-self" });
+    expect(b.goals).toEqual(data.DEMO_GOALS);
+    expect(b.portfolios).toEqual(data.DEMO_PORTFOLIOS);
+    expect(b.statusUpdates).toEqual(data.DEMO_STATUS_UPDATES);
+    expect(b.automationRules).toEqual(data.DEMO_RULES);
+    expect(b.forms).toEqual(data.DEMO_FORMS);
+    expect(b.goals).not.toBe(data.DEMO_GOALS);
+
+    const goal = { id: "g-1", workspaceId: "ws-foundrise", name: "Launch Q3 on 12 Oct", status: "on_track" };
+    const portfolio = { id: "pf-1", workspaceId: "ws-foundrise", name: "Q3 launch", projectIds: ["p-launch", "p-brand"] };
+    const rule = { id: "r-1", workspaceId: "ws-foundrise", projectId: "p-launch", name: "Tag bugs for engineering", trigger: "task_created", actions: [{ type: "add_tag", value: "eng" }], enabled: true };
+    const s = await demoStoreWith({
+      DEMO_GOALS: [goal], DEMO_PORTFOLIOS: [portfolio], DEMO_RULES: [rule],
+      DEMO_STATUS_UPDATES: [{ id: "su-1", workspaceId: "ws-foundrise", projectId: "p-launch", summary: "Deck is the critical path.", status: "at_risk", createdAt: ago(9 * 24) }],
+      DEMO_FORMS: [{ id: "f-1", workspaceId: "ws-foundrise", projectId: "p-launch", name: "Launch requests", fields: ["description", "priority", "dueDate"] }],
+    });
+    const first = await s.bootstrap({ id: "m-self" });
+    expect(first.goals).toEqual([goal]);
+    expect(first.portfolios).toEqual([portfolio]);
+    expect(first.automationRules).toEqual([rule]);
+    expect(first.statusUpdates.map((u) => u.id)).toEqual(["su-1"]);
+    expect(first.forms[0].fields).toEqual(["description", "priority", "dueDate"]);
+    // the app changing its copy never reaches the seed or the next load
+    first.portfolios[0].projectIds.push("p-infra");
+    first.automationRules[0].actions.length = 0;
+    const second = await s.bootstrap({ id: "m-self" });
+    expect(second.portfolios[0].projectIds).toEqual(["p-launch", "p-brand"]);
+    expect(second.automationRules[0].actions).toHaveLength(1);
+    expect(portfolio.projectIds).toEqual(["p-launch", "p-brand"]);
+  });
+
+  it("the inbox is seeded once, newest first, and what you clear stays cleared", async () => {
+    const act = (id: string, h: number, read = false) => ({ id, taskId: "t-1", taskTitle: "Finalise Q3 launch narrative deck", kind: "comment", detail: "Theo Vance", createdAt: ago(h), ...(read ? { readAt: ago(h) } : {}) });
+    const seed = [act("a-old", 30, true), act("a-new", 1), act("a-mid", 5)];
+    const s = await demoStoreWith({ DEMO_ACTIVITY: seed });
+    await s.logActivity({ taskId: "t-2", taskTitle: "Ship onboarding", kind: "created", detail: "Task created" }, "m-self");
+    await s.bootstrap({ id: "m-self" });
+    let feed = await s.listActivity();
+    expect(feed.map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
+    expect(feed[0].kind).toBe("created");                  // logged just now, kept
+    await s.clearInbox(["a-new"]);
+    await s.bootstrap({ id: "m-self" });                   // a reload doesn't bring it back
+    feed = await s.listActivity();
+    expect(feed.some((a) => a.id === "a-new")).toBe(false);
+    expect(feed.filter((a) => a.id === "a-mid")).toHaveLength(1);
+    expect(seed[1]).not.toHaveProperty("archivedAt");       // the seed itself is untouched
+  });
+
+  it("the workspace history filters by time and by the task's workspace", async () => {
+    const ev = (id: string, taskId: string, h: number) => ({ id, taskId, actorId: "m-1", actorName: "Maya Lin", field: "status", oldValue: "progress", newValue: "done", createdAt: ago(h) });
+    // t-1 is in Q3 Product Launch (Foundrise), t-3 in Growth Experiments (Reco HQ), t-5 in Personal
+    const s = await demoStoreWith({ DEMO_TASK_EVENTS: [ev("e-old", "t-1", 72), ev("e-1", "t-1", 20), ev("e-2", "t-1", 2), ev("e-reco", "t-3", 3), ev("e-me", "t-5", 4), ev("e-ghost", "t-nope", 1)] });
+    const since = ago(48);
+    expect((await s.listWorkspaceEventsSince("ws-foundrise", since)).map((e) => e.id)).toEqual(["e-2", "e-1"]);
+    expect((await s.listWorkspaceEventsSince("ws-reco", since)).map((e) => e.id)).toEqual(["e-reco"]);
+    expect((await s.listWorkspaceEventsSince(null, since)).map((e) => e.id)).toEqual(["e-me"]);
+    expect((await s.listWorkspaceEventsSince("ws-foundrise", since, 1)).map((e) => e.id)).toEqual(["e-2"]);
+    expect((await s.listWorkspaceEventsSince("ws-foundrise", ago(96))).map((e) => e.id)).toEqual(["e-2", "e-1", "e-old"]);
+    // a task's own history (the task panel's "Moved 2×") comes from the same seed
+    const slips = await s.listTaskEvents("t-1");
+    expect(slips.map((e) => e.id)).toEqual(["e-2", "e-1", "e-old"]);
+    expect(slips[0]).toEqual({ id: "e-2", actorName: "Maya Lin", field: "status", oldValue: "progress", newValue: "done", createdAt: expect.any(String) });
+  });
+
+  it("the AI modes are unavailable, so every caller uses its on-device rules", async () => {
+    expect(await store.aiCommand("what's overdue?", [], ctx)).toEqual({ data: null, source: "unavailable" });
+    expect(await store.aiExtract("Maya to send the brief by Fri", ctx)).toEqual({ data: null, source: "unavailable" });
+    expect(await store.aiStandup({ done: [] })).toEqual({ data: null, source: "unavailable" });
+    expect(await store.aiStatus({ project: "Launch" })).toEqual({ data: null, source: "unavailable" });
+  });
+
+  it("a task made in the demo is created by you", async () => {
+    const t = await store.createTask(mkTask("t-demo-new", { createdBy: "m-2" }), "m-self");
+    expect(t.createdBy).toBe("m-self");
+    expect((await store.createTasksBatch([mkTask("t-demo-a")], "m-self"))[0].createdBy).toBe("m-self");
   });
 });

@@ -1,17 +1,24 @@
 // ============================================================
 // KANBO — AI assist Edge Function (Deno / Supabase)
-// Calls Claude to prioritize the user's tasks and write a short
-// rationale. The client sends its (RLS-filtered) tasks; we never read
-// task data from the DB here (only the caller's profile and usage count).
-// Falls back to a 400 if no key is configured, and the client then uses
-// its local heuristic.
+// Calls Claude for the app's AI features. The client sends its
+// (RLS-filtered) tasks; we never read task data from the DB here (only the
+// caller's profile and usage count). Falls back to a 400 if no key is
+// configured, and the client then uses its on-device rules.
+//
+// Modes: prioritize (default), breakdown, summary, ask — and, for the
+// redesign, command (Ask Kanbo), extract (notes → tasks), standup (Team
+// Pulse) and status (a project's drafted update), whose prompts and reply
+// checks live in prompts.ts. Every reply must be one strict JSON object
+// (else 502 { error: "bad_output" }), and every 200 carries
+// usage: { used, limit } once the daily count is being kept.
 //
 // Guard rails (every call is billed to our Anthropic key):
 //   • signed-in, approved, not-suspended accounts only (401 / 403)
 //   • request body ≤ 4 MB (413 only for payloads no real workspace sends —
 //     the app posts every task in view, ~250 bytes each); question/title/
 //     description capped at 4,000 characters, every task field trimmed, and
-//     only the 120 most relevant tasks reach the prompt (see tasks.ts)
+//     only the 120 most relevant tasks (300 for command) reach the prompt
+//     (see tasks.ts)
 //   • AI_DAILY_LIMIT calls per person per UK day (default 200) → 429
 //     { error: "daily_limit" }. Counted in ai_usage (migration 0042); until
 //     that table exists the limit is skipped with a warning (fails open).
@@ -19,10 +26,12 @@
 // Deploy:  supabase functions deploy ai-assist        (Verify JWT: ON)
 // Secret:  supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
 //          optional: AI_DAILY_LIMIT (default 200)
+//          optional: AI_MODEL (default DEFAULT_MODEL below)
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { countAiCall, dayIn } from "../_shared/limits.ts";
 import { cleanTasks, str } from "./tasks.ts";
+import { firstJsonObject, modeRequest } from "./prompts.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -31,7 +40,8 @@ const CORS = {
 };
 
 const MAX_BODY = 4_000_000; // bytes of JSON we'll read at all
-const MAX_TEXT = 4_000;     // question / title / description
+const MAX_TEXT = 4_000;     // question / title / description (extract's notes: MAX_TEXT_EXTRACT)
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
@@ -63,6 +73,9 @@ Deno.serve(async (req: Request) => {
     if (raw.length > MAX_BODY) return json({ error: "payload_too_large" }, 413);
     const b = (JSON.parse(raw || "{}") ?? {}) as Record<string, unknown>;
     const mode = str(b.mode, 20) || "prioritize";
+    // the redesign's modes: prompt + reply check from prompts.ts
+    const planned = modeRequest(mode, b);
+    if (planned && "error" in planned) return json(planned, 400);
     const body = {
       mode,
       tasks: cleanTasks(b.tasks, mode),
@@ -72,10 +85,14 @@ Deno.serve(async (req: Request) => {
       question: str(b.question, MAX_TEXT),
     };
 
-    // build a prompt + max_tokens per mode
+    // build a prompt + max_tokens per mode, and how the reply is checked
     let prompt = "";
+    let system: string | undefined;
     let maxTokens = 1500;
-    if (mode === "breakdown") {
+    let finish: (parsed: Record<string, unknown>) => object | null = (parsed) => parsed;
+    if (planned) {
+      ({ system, user: prompt, maxTokens, finish } = planned);
+    } else if (mode === "breakdown") {
       // split a task into concrete subtasks
       prompt =
         `You are Kanbo, a productivity assistant. Break the following task into 3–7 concrete, actionable subtasks. ` +
@@ -120,10 +137,11 @@ Deno.serve(async (req: Request) => {
       return json({ error: "daily_limit", limit, detail: `You've used today's ${limit} AI requests. They reset at midnight (UK time).` }, 429);
     }
 
+    const model = Deno.env.get("AI_MODEL") || DEFAULT_MODEL;
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
+      body: JSON.stringify({ model, max_tokens: maxTokens, ...(system ? { system } : {}), messages: [{ role: "user", content: prompt }] }),
     });
 
     if (!resp.ok) {
@@ -132,11 +150,23 @@ Deno.serve(async (req: Request) => {
       return json({ error: "anthropic_error", status: resp.status, detail: detail.slice(0, 300) }, 502);
     }
 
+    // the first text block (a model that thinks puts its thinking first), then
+    // its first JSON object, checked for this mode — never a best guess
     const data = await resp.json();
-    const text: string = data?.content?.[0]?.text ?? "{}";
-    const jsonStr = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
-    const parsed = JSON.parse(jsonStr);
-    return json(parsed);
+    const blocks: { type?: string; text?: string }[] = Array.isArray(data?.content) ? data.content : [];
+    const text = blocks.find((c) => c?.type === "text")?.text ?? "";
+    const parsed = firstJsonObject(text);
+    const out = parsed && finish(parsed);
+    if (!out) {
+      // shape only: the reply may quote people's tasks, which never go in logs.
+      // A reply cut off at max_tokens is logged apart from a malformed one, so
+      // a ceiling that's too low shows up as itself.
+      const cutOff = data?.stop_reason === "max_tokens";
+      console.error(cutOff ? "ai-assist cut_off" : "ai-assist bad_output", mode, model, data?.stop_reason, text.length, data?.usage?.output_tokens ?? null, maxTokens);
+      return json({ error: "bad_output", ...(cutOff ? { detail: "cut_off" } : {}) }, 502);
+    }
+    // until migration 0042's ai_usage exists nothing is counted (used 0): say nothing then
+    return json(usage.used > 0 ? { ...out, usage: { used: usage.used, limit: usage.limit } } : out);
   } catch (e) {
     return json({ error: "bad_request", detail: String(e).slice(0, 300) }, 400);
   }
