@@ -258,6 +258,16 @@ describe("NewTaskModal", () => {
     expect(t.dueDate).toBeUndefined();
   });
 
+  it("the title wraps rather than scrolling, but stays one line: a pasted line break is a space and ⏎ creates", () => {
+    const onCreate = vi.fn();
+    render(<Harness onCreate={onCreate} />);
+    expect(title().tagName).toBe("TEXTAREA");
+    typeTitle("Book the venue\n  for the launch party");
+    expect(title().value).toBe("Book the venue for the launch party");
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate.mock.calls[0][0].title).toBe("Book the venue for the launch party");
+  });
+
   it("un-picking a tag typed in the title takes it out of the title", () => {
     render(<Harness />);
     typeTitle("Moodboard +design for the pitch");

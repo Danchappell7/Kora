@@ -75,7 +75,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [descOpen, setDescOpen] = useState(false);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const projectRef = useRef<HTMLSelectElement>(null);
   const focusDescOnMount = useRef(false);
   const wasOpen = useRef(false);
@@ -347,7 +347,10 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
         )}
 
         <div className="knt-title">
-          <TokenField ref={inputRef as React.Ref<HTMLInputElement | HTMLTextAreaElement>} value={title} onValueChange={setTitle}
+          {/* wraps rather than scrolling sideways, so every token stays in view (a phone
+              shows the whole sentence); it's still one line of text: ⏎ creates, and a
+              pasted line break becomes a space */}
+          <TokenField ref={inputRef} multiline maxHeight={112} value={title} onValueChange={(v) => setTitle(v.replace(/[ \t]*[\r\n]+[ \t]*/g, " "))}
             spans={parsed.spans} label="Task title" focusRing="none" onKeyDown={onTitleKey}
             placeholder="Task title — try “Email Sana fri 3pm #launch !high”" />
         </div>
@@ -472,13 +475,13 @@ const NEW_TASK_CSS = `
 .knt-template .knt-select { height: 28px; font-size: 12px; color: var(--ink-2); }
 
 /* the title: an 18px field that reads tokens as you type */
-.knt-title { display: flex; align-items: center; min-height: 48px; padding: 0 12px; box-sizing: border-box;
+.knt-title { display: flex; align-items: stretch; min-height: 48px; padding: 9px 12px; box-sizing: border-box;
   border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface));
   transition: border-color var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease); }
 .knt-title:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }
 .knt-title:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .knt-title .ktok { flex: 1; font: 500 18px/28px var(--font-ui, var(--font-display)); letter-spacing: -0.005em; color: var(--ink); }
-.knt-title .ktok-field { height: 28px; }
+.knt-title .ktok-field { min-height: 28px; }
 .knt .kcap-facts { margin-top: 8px; }
 
 .knt-desc { margin-top: 12px; }

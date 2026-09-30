@@ -381,9 +381,11 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
               {rows.slice(0, 8).map((r, i) => {
                 const depth = depthOf(rows, i);
                 return (
-                  <li key={i} style={{ paddingLeft: depth * 20 }}>
+                  <li key={i} style={depth ? { paddingLeft: depth * 20 } : undefined}>
+                    {depth > 0 && <span className="kcap-elbow" aria-hidden="true" />}
                     <span className="kcap-ring" aria-hidden="true" />
                     <span className="kcap-row-title">{r.title}</span>
+                    {r.priority && r.priority !== "medium" && <PriorityGlyph priority={r.priority} />}
                     {r.dueDate && <span className="mono kcap-row-meta">{dayLabel(r.dueDate)}{r.dueTime ? ` ${r.dueTime}` : ""}</span>}
                     {r.assigneeId && members.find((m) => m.id === r.assigneeId) && <span className="kcap-row-meta">{members.find((m) => m.id === r.assigneeId)!.name.split(" ")[0]}</span>}
                   </li>
@@ -516,6 +518,10 @@ button.kcap-chip[aria-expanded="true"] { background: var(--fill-2); border-color
 .kcap-rows { display: grid; gap: 2px; max-height: 208px; overflow-y: auto; margin: 0; padding: 8px; list-style: none;
   border-radius: var(--r-md, 8px); background: var(--fill-1); }
 .kcap-rows li { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+/* a sub-task hangs off the line above (the same elbow as the import preview) */
+.kcap-elbow { flex-shrink: 0; width: 8px; height: 9px; margin: -9px -2px 0 -12px; box-sizing: border-box;
+  border-left: 1.5px solid var(--hairline-strong); border-bottom: 1.5px solid var(--hairline-strong); border-bottom-left-radius: 4px; }
+.kcap-rows .kprio { flex-shrink: 0; }
 .kcap-ring { width: 12px; height: 12px; flex-shrink: 0; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--st-todo-fill, var(--st-todo)); }
 .kcap-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kcap-row-meta { flex-shrink: 0; font-size: 11px; color: var(--ink-3); }
