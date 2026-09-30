@@ -1,133 +1,213 @@
 /* ============================================================
-   KANBO — Topbar, and PageHeader (the redesign's page header;
-   for now it draws itself with the Topbar)
+   KANBO — PageHeader: one 56px row per page (title and meta on
+   the left; page actions, "Search or ask Kanbo" and the New task
+   split button on the right), an optional 2px momentum line and
+   an optional 44px tabs row. There is no separate top bar.
+   Phones get a 52px row (44px once the page scrolls) with search
+   and the account button; the switcher and tabs scroll sideways
+   in a 40px row underneath.
+   `Topbar` stays exported as a thin alias for the old call sites.
    ============================================================ */
-import { useState, useRef, useEffect, Fragment } from "react";
-import type { ReactNode, CSSProperties } from "react";
-import { Icon, Segmented, type TabItem } from "./primitives";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
+import { Icon, Avatar, KanboLogo, Segmented, Button, IconButton, Kbd, Tabs, type TabItem } from "./primitives";
+import { Popover } from "./primitives/Popover";
+import { getMember } from "../data/data";
+import type { IconName } from "../data/types";
 
-const createMenuItem: CSSProperties = {
-  display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 9,
-  border: "none", cursor: "pointer", textAlign: "left", background: "transparent",
-  color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5,
+/** Under `query`, rows matching `row` show the search as its icon. */
+const foldSearch = (query: string, row: string) =>
+  `${query} { ${row} .kph-search { display: none; } ${row} .kph-search-ico { display: inline-grid; } }`;
+
+/** Under `query`, rows matching `row` draw New task as a square + (its name
+ *  stays in aria-label, and the tooltip says it). */
+const compactCreate = (query: string, row: string) => `${query} {
+  ${row} .kph-create-main { width: var(--h-md, 32px); padding: 0; justify-content: center; }
+  ${row} .kph-create-main .kbtn-label { display: none; }
+  ${row} .kph-create-main::after { content: attr(data-tip); }
+}`;
+
+/* The header's layout lives beside it (like the Sidebar's). Tokens that are
+   new in Paper & Navy are read with a fallback, so it renders correctly
+   before and after the token pass. */
+const HEADER_CSS = `
+.kph { position: sticky; top: 0; z-index: var(--z-header, 10); flex-shrink: 0; min-width: 0; }
+/* desktop: always on the page colour, so nothing ever shows through the row,
+   with Navy's halo pinned to the window just where the backdrop draws it (the
+   row starts past the sidebar, hence "fixed"), so the row shows no seam */
+.kph:not([data-mobile]) { container: kph / inline-size; background: var(--halo, none) fixed, var(--bg); }
+.kph-row { display: flex; align-items: center; gap: 12px; min-width: 0; height: var(--header-h, 56px); padding: 0 var(--gutter, 32px); }
+.kph:not([data-mobile]):not([data-tabs]):not([data-momentum]) > .kph-row { box-shadow: inset 0 -1px 0 var(--hairline); }
+/* the title block (leading, h1, meta) and, on a project, its add-on */
+.kph-heading { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
+.kph-lead { display: flex; align-items: center; gap: 12px; flex: 1 1 auto; min-width: 0; }
+.kph-leading { display: inline-flex; align-items: center; flex-shrink: 0; }
+.kph .kph-title {
+  flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-wrap: nowrap;
+  font: 600 20px/28px var(--font-head); letter-spacing: -0.012em; color: var(--ink);
+}
+/* the title keeps its room and a long meta gives way (it starts from zero and
+   takes what's left) */
+.kph-meta { flex: 1 1 0%; min-width: 0; padding-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+/* The page's h1 outranks its add-on (status, progress, people). Beside one,
+   the title block keeps its natural width, capped at the whole heading, and
+   the add-on has what's left: so when the row runs short the add-on gives up
+   its room first, and the title only starts to truncate once that's gone. An
+   add-on that no longer fits whole isn't drawn cut: it hides (visibility, so
+   the layout never changes under it, and its pill can't take focus unseen). */
+.kph[data-addon] .kph-lead { flex: 0 0 auto; max-width: 100%; }
+.kph[data-addon] .kph-meta { flex: 0 1 auto; }
+.kph-addon { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; padding: 6px 0 6px 12px; overflow: hidden; }
+.kph-addon[data-clipped] { visibility: hidden; }
+/* page controls, then search and New task, on the right */
+.kph-aux, .kph-end, .kph-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.kph-aux, .kph-end { margin-left: auto; }
+.kph-aux + .kph-end { margin-left: 0; }
+.kph-sep { flex-shrink: 0; width: 1px; height: 16px; margin-left: 4px; background: var(--hairline-strong); }
+
+/* Search or ask Kanbo: a quiet 240px field that opens the palette */
+.kph-search {
+  display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; width: 240px; height: var(--h-md, 32px); padding: 0 6px 0 10px;
+  border: 0; border-radius: var(--r-sm, 6px); background: var(--fill-1); color: var(--ink-4); cursor: pointer; text-align: left;
+  font: 500 13px/20px var(--font-ui, var(--font-display));
+  transition: background-color var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
+}
+.kph-search:hover { background: var(--fill-2); color: var(--ink-3); }
+.kph-search > svg { color: var(--icon-quiet, var(--ink-4)); }
+.kph-search-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kph .kph-search-ico { display: none; }
+
+/* New task: a primary split button */
+.kph-create { display: inline-flex; align-items: stretch; flex-shrink: 0; }
+.kph .kph-create-main { position: relative; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+/* (its tooltip only appears once its words have gone) */
+.kph .kph-create-main::after { content: none; }
+.kph .kph-create-more {
+  width: 28px; padding: 0; border-top-left-radius: 0; border-bottom-left-radius: 0;
+  box-shadow: inset 1px 0 0 color-mix(in oklch, var(--on-accent) 26%, transparent);
+}
+.kph .kph-create-more svg { transition: transform var(--d-2, 160ms) var(--ease); }
+.kph .kph-create-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+/* A narrow header gives way by its own width, not the window's: from 1280px
+   the task panel docks and takes 480px of the column, so a 1280px window
+   with a task open leaves the header about 570px wide. In order (widths
+   measured on Today, a project and Projects, with room to spare):
+   1. "Search or ask Kanbo" folds into its icon: under 1180px beside a title
+      add-on, 920px with a switcher or page actions, 720px on any page;
+   2. the title add-on goes, under 960px (the project's About has it all);
+   3. the meta goes rather than end as a stub: under 700px with a switcher and
+      actions, 590px with either;
+   4. New task keeps its + and its name but loses its words: under 780px
+      beside an add-on (the project's name comes first), 610px with a
+      switcher and actions, 500px with either, 480px on any page;
+   5. under 600px beside an add-on, the separator and leading glyph go.
+   The title, page controls, search and New task always share one 56px row. */
+${foldSearch("@container kph (max-width: 1179px)", ".kph[data-addon]")}
+${foldSearch("@container kph (max-width: 919px)", ".kph[data-busy]")}
+${foldSearch("@container kph (max-width: 719px)", ".kph")}
+@container kph (max-width: 959px) { .kph .kph-addon { display: none; } }
+@container kph (max-width: 699px) { .kph[data-crowded] .kph-meta { display: none; } }
+@container kph (max-width: 589px) { .kph[data-busy] .kph-meta { display: none; } }
+${compactCreate("@container kph (max-width: 779px)", ".kph[data-addon]")}
+${compactCreate("@container kph (max-width: 609px)", ".kph[data-crowded]")}
+${compactCreate("@container kph (max-width: 499px)", ".kph[data-busy]")}
+${compactCreate("@container kph (max-width: 479px)", ".kph")}
+@container kph (max-width: 599px) { .kph[data-addon] .kph-sep, .kph[data-addon] .kph-leading { display: none; } }
+/* (a browser without container queries folds the search by the window's width) */
+@supports not (container-type: inline-size) {
+  ${foldSearch("@media (max-width: 1279px)", ".kph[data-busy]")}
+  ${foldSearch("@media (max-width: 1023px)", ".kph")}
+}
+
+/* momentum: 2px, the day's done share in the brand gradient */
+.kph-momentum { position: relative; height: 2px; overflow: hidden; background: var(--fill-1); }
+.kph-momentum-fill {
+  position: absolute; inset: 0 auto 0 0; max-width: 100%; border-radius: 0 2px 2px 0;
+  background: var(--grad, linear-gradient(90deg, #5B7CFA 0%, #8B5CF6 52%, #C24BE0 100%));
+  transition: width var(--d-3, 240ms) var(--ease);
+}
+.kph-tabs > .ktabs { padding: 0 var(--gutter, 32px); }
+
+/* tooltips hang below the header's icon buttons (above, they'd leave the window) */
+.kph [data-tip]::after { top: calc(100% + 8px); bottom: auto; }
+
+/* ---- phone ---- */
+.kph-sentinel { flex-shrink: 0; height: 8px; margin-bottom: -8px; pointer-events: none; }
+/* At rest the halo shows through. From the first pixel of scroll the header
+   sits at the top of the window and turns opaque at once (no fade, so content
+   never shows through it), drawing the halo sized and placed as the window's
+   backdrop draws it, so the switch is invisible. */
+.kph[data-mobile][data-scrolled] { background: var(--halo, none) 0 0 / 100vw 100vh no-repeat, var(--bg); }
+/* After 8px it tightens from 52 to 44px. The 8px it gives up moves into its
+   bottom margin, so the page below never moves and its scroll height never
+   changes: a page only just taller than the window can't bounce the header
+   between its two heights. */
+.kph[data-mobile] { transition: margin-bottom var(--d-2, 160ms) var(--ease); }
+.kph[data-mobile][data-stuck="true"] { margin-bottom: 8px; }
+.kph[data-mobile] > .kph-row { height: 52px; gap: 10px; padding: 0 16px; transition: height var(--d-2, 160ms) var(--ease); }
+.kph[data-mobile] .kph-lead { gap: 10px; }
+.kph[data-mobile] .kph-title { font-size: 18px; line-height: 24px; letter-spacing: -0.01em; transition: font-size var(--d-2, 160ms) var(--ease); }
+.kph[data-mobile] .kph-meta { padding-top: 1px; font-size: 11px; }
+.kph[data-mobile][data-stuck="true"] > .kph-row { height: 44px; }
+.kph[data-mobile][data-stuck="true"] .kph-title { font-size: 16px; }
+.kph[data-mobile] .kph-end { gap: 4px; margin-right: -6px; }
+.kph-glyph { display: inline-flex; flex-shrink: 0; }
+.kph-me {
+  position: relative; display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: var(--ink-3); cursor: pointer;
+}
+.kph-me-fallback { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--fill-2); }
+.kph[data-mobile] :is(.kibtn, .kph-me)::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; translate: -50% -50%;
+}
+.kph-sub {
+  display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+}
+.kph-sub::-webkit-scrollbar { display: none; }
+.kph-sub > * { flex-shrink: 0; }
+.kph[data-mobile] .kph-tabs > .ktabs { height: 40px; padding: 0 16px; }
+.kph[data-mobile]:not([data-tabs]) > :last-child { box-shadow: inset 0 -1px 0 var(--hairline); }
+.kph[data-mobile][data-momentum]:not([data-tabs]) > .kph-momentum:last-child { box-shadow: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kph, .kph-row, .kph-title, .kph-momentum-fill, .kph .kph-create-more svg { transition: none !important; }
+}
+`;
+
+/* ---------------- menu item (shared with the Sidebar's account menu) ---------------- */
+
+const MENU_ITEM: CSSProperties = {
+  display: "flex", alignItems: "center", gap: 10, width: "100%", height: 32, padding: "0 8px",
+  border: 0, borderRadius: "var(--r-sm, 6px)", background: "transparent", cursor: "pointer", textAlign: "left",
+  color: "var(--ink)", font: "500 13px/20px var(--font-ui, var(--font-display))", whiteSpace: "nowrap",
 };
-// a white-on-white hover is invisible in the light theme — tint with ink instead
-const MENU_HOVER = "var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent))";
 
-export function Topbar({ title, subtitle, breadcrumb, children, onNewTask, onNewProject, onCommand, onBell, onMenu, theme, toggleTheme, hasUnread, unreadCount, canCreateProject = true }: {
-  title?: string;
-  subtitle?: string;
-  breadcrumb?: string;
-  children?: ReactNode;
-  /** without it there's no Create menu (guests) */
-  onNewTask?: () => void;
-  onNewProject?: () => void;
-  onCommand: () => void;
-  /** without it there's no bell */
-  onBell?: () => void;
-  onMenu?: () => void;
-  /** without these there's no theme button */
-  theme?: "light" | "dark";
-  toggleTheme?: () => void;
-  hasUnread?: boolean;
-  /** unread inbox items — spoken in the bell's label */
-  unreadCount?: number;
-  /** false hides "New project" (guests can view and comment, not create) */
-  canCreateProject?: boolean;
+/** One row of a chrome menu (inside a Popover): a 16px quiet icon, the label
+ *  and an optional shortcut. Popover supplies the hover and focus styles. */
+export function MenuItem({ icon, label, kbd, onClick }: {
+  icon?: IconName;
+  label: string;
+  /** a shortcut hint, shown on the right (visual only) */
+  kbd?: string;
+  onClick: () => void;
 }) {
-  const [createOpen, setCreateOpen] = useState(false);
-  const createBtnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const unread = unreadCount ?? 0;
-  const showDot = unread > 0 || !!hasUnread;
-  const bellLabel = unread > 0 ? `Notifications, ${unread} unread` : hasUnread ? "Notifications, new activity" : "Notifications";
-
-  // menu-button pattern: focus the first item on open; arrows move, Escape closes
-  useEffect(() => {
-    if (createOpen) menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, [createOpen]);
-  const closeMenu = (refocus: boolean) => { setCreateOpen(false); if (refocus) createBtnRef.current?.focus(); };
-  const onMenuKey = (e: React.KeyboardEvent) => {
-    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
-    const i = items.indexOf(document.activeElement as HTMLElement);
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMenu(true); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
-    else if (e.key === "Home") { e.preventDefault(); items[0]?.focus(); }
-    else if (e.key === "End") { e.preventDefault(); items[items.length - 1]?.focus(); }
-    else if (e.key === "Tab") closeMenu(false);
-  };
-  const hoverOn = (e: React.SyntheticEvent<HTMLElement>) => { e.currentTarget.style.background = MENU_HOVER; };
-  const hoverOff = (e: React.SyntheticEvent<HTMLElement>) => { e.currentTarget.style.background = "transparent"; };
-
   return (
-    <header className="topbar" style={{
-      display: "flex", alignItems: "center", gap: 16, padding: "16px 24px 14px",
-      borderBottom: "1px solid var(--hairline)", flexShrink: 0, position: "relative", zIndex: 4,
-    }}>
-      {onMenu && (
-        <button className="btn-icon" onClick={onMenu} aria-label="Open menu" style={{ flexShrink: 0 }}>
-          <Icon name="menu" size={18} />
-        </button>
-      )}
-      <div style={{ minWidth: 0 }}>
-        {breadcrumb && <div className="kicker" style={{ marginBottom: 5 }}>{breadcrumb}</div>}
-        <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.025em", lineHeight: 1.1 }}>{title}</h1>
-        {subtitle && <p style={{ margin: "3px 0 0", fontSize: 13, color: "var(--ink-3)" }}>{subtitle}</p>}
-      </div>
-      <div style={{ flex: 1 }} />
-      <button onClick={onCommand} className="topbar-search" aria-label="Search or open command palette" aria-keyshortcuts="Meta+K Control+K" style={{
-        display: "flex", alignItems: "center", gap: 9, height: 38, padding: "0 12px 0 13px", minWidth: 210,
-        borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer",
-        color: "var(--ink-4)", fontFamily: "var(--font-display)", fontSize: 13.5, transition: "all .16s",
-      }}
-        onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--hairline-strong)")}
-        onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--hairline)")}>
-        <Icon name="search" size={16} />
-        <span style={{ flex: 1, textAlign: "left" }}>Search or ask Kanbo…</span>
-        <kbd className="mono" style={{ fontSize: 11, padding: "2px 6px", borderRadius: 6, background: "var(--fill-1, var(--surface-2))", border: "1px solid var(--hairline)", color: "var(--ink-4)" }}>⌘K</kbd>
-      </button>
-      {children}
-      {toggleTheme && theme && (
-        <button className="btn-icon" onClick={toggleTheme} title="Toggle theme" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
-          <Icon name={theme === "dark" ? "sun" : "moon"} size={17} />
-        </button>
-      )}
-      {onBell && (
-        <button className="btn-icon" onClick={onBell} title={bellLabel} aria-label={bellLabel} style={{ position: "relative" }}>
-          <Icon name="bell" size={17} />
-          {showDot && <span aria-hidden="true" style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 99, background: "var(--accent)", boxShadow: "0 0 calc(var(--glow-r, 8px) * 0.75) var(--accent)" }} />}
-        </button>
-      )}
-      {onNewTask && <div style={{ position: "relative" }}>
-        <button ref={createBtnRef} className="btn btn-accent topbar-create" onClick={() => setCreateOpen((v) => !v)}
-          aria-label="Create" aria-haspopup="menu" aria-expanded={createOpen} aria-controls={createOpen ? "ktop-create-menu" : undefined}>
-          <Icon name="plus" size={16} /> <span className="topbar-create-label" aria-hidden="true">Create <Icon name="chevronDown" size={14} style={{ marginLeft: -2, opacity: 0.8 }} /></span>
-        </button>
-        {createOpen && (
-          <>
-            <div onClick={() => closeMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
-            <div id="ktop-create-menu" ref={menuRef} role="menu" aria-label="Create" onKeyDown={onMenuKey}
-              className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 41, width: 184, padding: 6, borderRadius: 12, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
-              <button role="menuitem" tabIndex={-1} style={createMenuItem} onClick={() => { setCreateOpen(false); onNewTask(); }}
-                onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
-                <Icon name="tasks" size={16} style={{ color: "var(--accent)" }} /> New task
-              </button>
-              {canCreateProject && onNewProject && (
-                <button role="menuitem" tabIndex={-1} style={createMenuItem} onClick={() => { setCreateOpen(false); onNewProject(); }}
-                  onMouseEnter={hoverOn} onMouseLeave={hoverOff} onFocus={hoverOn} onBlur={hoverOff}>
-                  <Icon name="folder" size={16} style={{ color: "var(--accent)" }} /> New project
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </div>}
-    </header>
+    <button type="button" role="menuitem" style={MENU_ITEM} onClick={onClick}>
+      {icon && <Icon name={icon} size={16} sw={1.75} style={{ color: "var(--icon-quiet, var(--ink-4))" }} />}
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+      {kbd && <span aria-hidden="true" style={{ display: "inline-flex" }}><Kbd>{kbd}</Kbd></span>}
+    </button>
   );
 }
 
-/* ---------------- PageHeader (W0 stub; P03 builds the real one) ---------------- */
+/** A hairline between groups of menu items. */
+export function MenuSeparator() {
+  return <div role="separator" style={{ height: 1, margin: "4px 0", background: "var(--hairline)" }} />;
+}
+
+/* ---------------- PageHeader ---------------- */
 
 export interface PageHeaderProps {
   title: string;
@@ -143,45 +223,225 @@ export interface PageHeaderProps {
   tabsTrailing?: ReactNode;
   /** 0..1: the 2px progress line under the header (Today) */
   momentum?: number | null;
+  /** the momentum line's accessible name, e.g. "Today's work done, 2 of 7" */
+  momentumLabel?: string;
   onSearch: () => void;
-  /** null hides New task (guests) */
-  create: { onNewTask: () => void; onQuickCapture: () => void; onPasteNotes: () => void; onImport?: () => void; onNewProject?: () => void } | null;
+  /** null hides New task (guests). Menu items without a handler are left out. */
+  create: { onNewTask: () => void; onQuickCapture?: () => void; onPasteNotes?: () => void; onImport?: () => void; onNewProject?: () => void } | null;
   isMobile?: boolean;
   onOpenSettings?: () => void;
   userId?: string;
+  /** phone: a menu button before the title (the old drawer trigger; the bottom bar's More replaces it) */
+  onMenu?: () => void;
 }
 
-/** One header row per page (title, meta, actions, search, New task) and an
- *  optional tabs row. For now it's drawn with the Topbar. */
-export function PageHeader({ title, meta, leading, titleAddon, switcher, actions, tabs, tabValue, onTab, tabsLabel, tabsTrailing, onSearch, create, isMobile }: PageHeaderProps) {
+/** How far the page has scrolled past the header, read from an 8px sentinel
+ *  placed just above the sticky header (an IntersectionObserver, no scroll
+ *  listener): `scrolled` from the first pixel (the sentinel is partly hidden;
+ *  the header now sits at the top with content under it), `stuck` from the
+ *  eighth (the sentinel has gone). */
+function useScrollState(sentinel: RefObject<HTMLElement>): { scrolled: boolean; stuck: boolean } {
+  const [state, setState] = useState({ scrolled: false, stuck: false });
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || typeof IntersectionObserver !== "function") return;
+    // (0.9, not 1: a sentinel on a fractional pixel may never report exactly 1)
+    const io = new IntersectionObserver(([entry]) => {
+      const stuck = !entry.isIntersecting;
+      const scrolled = stuck || entry.intersectionRatio < 0.9;
+      setState((s) => (s.stuck === stuck && s.scrolled === scrolled ? s : { scrolled, stuck }));
+    }, { threshold: [0, 0.9, 1] });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [sentinel]);
+  return state;
+}
+
+/** Marks the title add-on data-clipped while its content is wider than the
+ *  room it has, which hides it rather than drawing it cut. (Visibility only:
+ *  no layout changes, so this can't feed back into the sizes it watches.) */
+function useClipMark(ref: RefObject<HTMLElement>) {
+  // (re-attached after each render, in case the add-on's content was
+  // replaced; observing reports at once, after layout, so that's the check)
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver !== "function") return;
+    const ro = new ResizeObserver(() => el.toggleAttribute("data-clipped", el.scrollWidth > el.clientWidth + 1));
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+  });
+}
+
+function Momentum({ value, label }: { value: number; label?: string }) {
+  const pct = Math.round(Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0)) * 100);
+  return (
+    <div className="kph-momentum" role="progressbar" aria-label={label ?? "Today's work done"}
+      aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+      <span className="kph-momentum-fill" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/** "+ New task" with a chevron that opens every other way to create. */
+function CreateSplit({ create }: { create: NonNullable<PageHeaderProps["create"]> }) {
+  const [open, setOpen] = useState(false);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  // (closing hands focus back to the chevron before a dialog the item opens
+  // takes it, so that dialog returns focus there when it closes)
+  const pick = (run?: () => void) => () => { setOpen(false); run?.(); };
+  return (
+    <div className="kph-create" role="group" aria-label="Create">
+      {/* (named even when a narrow header hides its words) */}
+      <Button variant="primary" icon="plus" className="kph-create-main" aria-label="New task" data-tip="New task" aria-keyshortcuts="C"
+        onClick={create.onNewTask}>New task</Button>
+      <Button ref={moreRef} variant="primary" icon="chevronDown" className="kph-create-more"
+        aria-label="More ways to create" aria-haspopup="menu" aria-expanded={open}
+        onClick={() => setOpen((v) => !v)} />
+      <Popover open={open} anchorRef={moreRef} onClose={() => setOpen(false)} align="end" label="Create" minWidth={232} style={{ padding: 4 }}>
+        <MenuItem icon="plus" label="New task" kbd="C" onClick={pick(create.onNewTask)} />
+        {create.onQuickCapture && <MenuItem icon="zap" label="Quick capture" kbd="Q" onClick={pick(create.onQuickCapture)} />}
+        {create.onPasteNotes && <MenuItem icon="notes" label="Paste notes → tasks" onClick={pick(create.onPasteNotes)} />}
+        {create.onImport && <MenuItem icon="layers" label="Import tasks…" onClick={pick(create.onImport)} />}
+        {create.onNewProject && (
+          <>
+            <MenuSeparator />
+            <MenuItem icon="kanbo" label="New project" onClick={pick(create.onNewProject)} />
+          </>
+        )}
+      </Popover>
+    </div>
+  );
+}
+
+export function PageHeader({ title, meta, leading, titleAddon, switcher, actions, tabs, tabValue, onTab, tabsLabel, tabsTrailing, momentum, momentumLabel, onSearch, create, isMobile, onOpenSettings, userId, onMenu }: PageHeaderProps) {
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const addonRef = useRef<HTMLDivElement>(null);
+  const { scrolled, stuck } = useScrollState(sentinelRef);
+  useClipMark(addonRef);
+  const hasTabs = !!tabs && tabs.length > 0;
+  const hasMomentum = momentum != null;
+  const segmented = switcher && (
+    <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} />
+  );
+  const tabsRow = (trailing: ReactNode) => hasTabs && (
+    <div className="kph-tabs">
+      <Tabs items={tabs!} value={tabValue ?? ""} onChange={onTab ?? (() => {})} label={tabsLabel ?? title} mode="nav" trailing={trailing} />
+    </div>
+  );
+  const searchLabel = "Search or ask Kanbo";
+
+  if (isMobile) {
+    const sub = segmented || titleAddon || (actions && !hasTabs);
+    return (
+      <>
+        <div ref={sentinelRef} className="kph-sentinel" aria-hidden="true" />
+        <header className="kph" data-mobile="" data-scrolled={scrolled || undefined} data-stuck={stuck || undefined} data-tabs={hasTabs || undefined} data-momentum={hasMomentum || undefined}>
+          <div className="kph-row">
+            {onMenu && <IconButton icon="menu" label="Open menu" onClick={onMenu} style={{ marginLeft: -6 }} />}
+            <div className="kph-lead">
+              {leading ? <span className="kph-leading">{leading}</span> : <span className="kph-glyph" aria-hidden="true"><KanboLogo size={20} /></span>}
+              <h1 className="kph-title">{title}</h1>
+              {meta && <span className="kph-meta">{meta}</span>}
+            </div>
+            <div className="kph-end">
+              <IconButton icon="search" label={searchLabel} onClick={onSearch} />
+              {onOpenSettings && (
+                <button type="button" className="kph-me" aria-label="Settings" onClick={onOpenSettings}>
+                  {userId && getMember(userId)
+                    ? <Avatar id={userId} size={28} />
+                    : <span className="kph-me-fallback"><Icon name="user" size={16} sw={1.75} /></span>}
+                </button>
+              )}
+            </div>
+          </div>
+          {hasMomentum && <Momentum value={momentum!} label={momentumLabel} />}
+          {sub && (
+            <div className="kph-sub">
+              {segmented}
+              {titleAddon}
+              {!hasTabs && actions}
+            </div>
+          )}
+          {tabsRow(hasTabs && (tabsTrailing || actions) ? <>{tabsTrailing}{actions}</> : null)}
+        </header>
+        <style>{HEADER_CSS}</style>
+      </>
+    );
+  }
+
+  // how much the row carries decides how early it gives way (HEADER_CSS)
+  const aux = !!(segmented || actions);
   return (
     <>
-      <Topbar title={title} subtitle={meta} onCommand={onSearch}
-        onNewTask={create?.onNewTask} onNewProject={create?.onNewProject} canCreateProject={!!create?.onNewProject}>
-        {leading}
-        {titleAddon}
-        {switcher && <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} />}
-        {actions}
-      </Topbar>
-      {tabs && tabs.length > 0 && onTab && (
-        <nav aria-label={tabsLabel ?? title} style={{ display: "flex", alignItems: "center", gap: 2, minHeight: 44, padding: isMobile ? "0 14px" : "0 24px", borderBottom: "1px solid var(--hairline)", flexShrink: 0, overflowX: "auto" }}>
-          {tabs.map((t, i) => {
-            const on = t.id === tabValue;
-            return (
-              <Fragment key={t.id}>
-                {t.secondary && i > 0 && !tabs[i - 1].secondary && <span aria-hidden="true" style={{ width: 1, height: 18, margin: "0 8px", background: "var(--hairline)", flexShrink: 0 }} />}
-                <button type="button" onClick={() => onTab(t.id)} disabled={t.disabled} aria-current={on ? "page" : undefined}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 32, padding: "0 10px", borderRadius: 8, border: "none", cursor: t.disabled ? "default" : "pointer", whiteSpace: "nowrap", fontFamily: "var(--font-display)", fontSize: 13, fontWeight: on ? 600 : 500, color: on ? "var(--ink)" : "var(--ink-3)", background: on ? MENU_HOVER : "transparent", opacity: t.disabled ? 0.5 : 1 }}>
-                  {t.icon && <Icon name={t.icon} size={14} />}
-                  {t.label}
-                  {t.count != null && <span className="mono" style={{ fontSize: 11, color: t.tone === "signal" ? "var(--st-blocked)" : "var(--ink-4)" }}>{t.count}</span>}
-                </button>
-              </Fragment>
-            );
-          })}
-          {tabsTrailing && <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>{tabsTrailing}</div>}
-        </nav>
-      )}
+      <div ref={sentinelRef} className="kph-sentinel" aria-hidden="true" />
+      <header className="kph" data-busy={aux || titleAddon ? "" : undefined} data-addon={titleAddon ? "" : undefined}
+        data-crowded={segmented && actions ? "" : undefined} data-tabs={hasTabs || undefined} data-momentum={hasMomentum || undefined}>
+        <div className="kph-row">
+          <div className="kph-heading">
+            <div className="kph-lead">
+              {leading && <span className="kph-leading">{leading}</span>}
+              <h1 className="kph-title" title={title}>{title}</h1>
+              {meta && <span className="kph-meta">{meta}</span>}
+            </div>
+            {titleAddon && <div ref={addonRef} className="kph-addon">{titleAddon}</div>}
+          </div>
+          {aux && (
+            <div className="kph-aux">
+              {segmented}
+              {actions && <div className="kph-actions">{actions}</div>}
+              <span className="kph-sep" aria-hidden="true" />
+            </div>
+          )}
+          <div className="kph-end">
+            <button type="button" className="kph-search" aria-label={searchLabel} aria-keyshortcuts="Meta+K Control+K" onClick={onSearch}>
+              <Icon name="search" size={14} sw={1.75} />
+              <span className="kph-search-text">{searchLabel}</span>
+              <span aria-hidden="true" style={{ display: "inline-flex" }}><Kbd>⌘K</Kbd></span>
+            </button>
+            <IconButton icon="search" label={searchLabel} className="kph-search-ico" aria-keyshortcuts="Meta+K Control+K" onClick={onSearch} />
+            {create && <CreateSplit create={create} />}
+          </div>
+        </div>
+        {hasMomentum && <Momentum value={momentum!} label={momentumLabel} />}
+        {tabsRow(tabsTrailing)}
+      </header>
+      <style>{HEADER_CSS}</style>
     </>
+  );
+}
+
+/* ---------------- Topbar (legacy alias) ---------------- */
+
+/** The old top bar's props, drawn by PageHeader. The bell (now the Inbox
+ *  badge), the theme button (now in the sidebar footer) and the breadcrumb
+ *  kicker are gone: those props are still accepted and ignored. A caller
+ *  that passes `onMenu` is on a phone. */
+export function Topbar({ title, subtitle, children, onNewTask, onNewProject, onCommand, onMenu, canCreateProject = true }: {
+  title?: string;
+  subtitle?: string;
+  /** (ignored) */
+  breadcrumb?: string;
+  /** drawn with the page actions */
+  children?: ReactNode;
+  /** without it there's no New task (guests) */
+  onNewTask?: () => void;
+  onNewProject?: () => void;
+  onCommand: () => void;
+  /** (ignored: the Inbox badge replaced the bell) */
+  onBell?: () => void;
+  onMenu?: () => void;
+  /** (ignored: the theme button lives in the sidebar footer) */
+  theme?: "light" | "dark";
+  toggleTheme?: () => void;
+  hasUnread?: boolean;
+  unreadCount?: number;
+  /** false hides "New project" (guests can view and comment, not create) */
+  canCreateProject?: boolean;
+}) {
+  return (
+    <PageHeader title={title ?? ""} meta={subtitle} actions={children} onSearch={onCommand}
+      create={onNewTask ? { onNewTask, onNewProject: canCreateProject ? onNewProject : undefined } : null}
+      isMobile={!!onMenu} onMenu={onMenu} />
   );
 }

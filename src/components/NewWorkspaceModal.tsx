@@ -1,9 +1,20 @@
 /* ============================================================
-   KANBO — create-workspace modal
+   KANBO — create-workspace dialog (the kit's Sheet: scrim with no
+   blur, 56px header, 64px footer; a bottom sheet on phones)
    ============================================================ */
-import { useState, useEffect, useRef } from "react";
-import { Icon } from "./primitives";
-import { useFocusTrap } from "../hooks/useFocusTrap";
+import { useState, useEffect, useRef, useId } from "react";
+import { Button, Sheet } from "./primitives";
+
+const FIELD_CSS = `
+.knws-field {
+  width: 100%; height: var(--h-lg, 40px); padding: 0 12px; border-radius: var(--r-md, 8px);
+  border: 1px solid var(--field-border); background: var(--field-bg); color: var(--ink);
+  font: 500 14px/20px var(--font-ui, var(--font-display));
+  transition: border-color var(--d-1, 90ms) var(--ease);
+}
+.knws-field::placeholder { color: var(--ink-4); }
+.knws-field:hover { border-color: var(--field-border-hover); }
+`;
 
 export function NewWorkspaceModal({ open, onClose, onCreate }: {
   open: boolean;
@@ -12,42 +23,35 @@ export function NewWorkspaceModal({ open, onClose, onCreate }: {
 }) {
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
+  const id = useId();
 
-  useEffect(() => {
-    if (open) { setName(""); setTimeout(() => inputRef.current?.focus(), 30); }
-  }, [open]);
+  useEffect(() => { if (open) setName(""); }, [open]);
 
-  if (!open) return null;
-
+  const v = name.trim();
   const submit = () => {
-    const v = name.trim();
     if (!v) return;
     onCreate(v);
     onClose();
   };
 
   return (
-    <div onClick={onClose} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 110, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "16vh" }}>
-      <div ref={trapRef} role="dialog" aria-modal="true" aria-label="New workspace" onClick={(e) => e.stopPropagation()} className="glass anim-scalein" style={{ width: 420, maxWidth: "92vw", borderRadius: 18, overflow: "hidden", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "16px 18px", borderBottom: "1px solid var(--hairline)" }}>
-          <Icon name="briefcase" size={18} style={{ color: "var(--accent)" }} />
-          <span style={{ fontSize: 15, fontWeight: 600 }}>New workspace</span>
-          <button className="btn-icon" onClick={onClose} aria-label="Close" style={{ marginLeft: "auto", border: "none", width: 30, height: 30 }}><Icon name="x" size={17} /></button>
-        </div>
-        <div style={{ padding: 18 }}>
-          <input ref={inputRef} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-            placeholder="Workspace name — e.g. Acme Inc"
-            style={{ width: "100%", height: 44, padding: "0 14px", borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 500, outline: "none" }} />
-          <p style={{ margin: "12px 0 0", fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-4)" }}>
-            A workspace is a shared space for a team — invite people from the Team page and everyone sees its projects and tasks.
-          </p>
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 18px", borderTop: "1px solid var(--hairline)" }}>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-accent" onClick={submit} disabled={!name.trim()} style={{ opacity: name.trim() ? 1 : 0.5 }}><Icon name="plus" size={15} /> Create workspace</button>
-        </div>
-      </div>
-    </div>
+    <Sheet open={open} onClose={onClose} label="New workspace" title="New workspace" initialFocus={inputRef}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" icon="plus" onClick={submit} disabled={!v}>Create workspace</Button>
+        </>
+      }>
+      <style>{FIELD_CSS}</style>
+      <label htmlFor={`${id}-name`} style={{ display: "block", marginBottom: 8, font: "600 13px/20px var(--font-ui, var(--font-display))", color: "var(--ink)" }}>
+        Workspace name
+      </label>
+      <input ref={inputRef} id={`${id}-name`} className="knws-field" value={name} onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+        placeholder="e.g. Acme Inc" autoComplete="off" aria-describedby={`${id}-help`} />
+      <p id={`${id}-help`} style={{ margin: "12px 0 0", font: "400 13px/20px var(--font-ui, var(--font-display))", color: "var(--ink-3)" }}>
+        A shared space for a team. Invite people from Team › People, and everyone in it sees its projects and tasks.
+      </p>
+    </Sheet>
   );
 }
