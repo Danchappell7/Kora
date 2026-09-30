@@ -62,20 +62,26 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam, canCreateProject = true }: {
-  tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
+export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam, canCreateProject = true }: {
+  /** everything in the workspace — project cards, the clean-slate check and the "first task" step */
+  tasks: Task[];
+  /** the viewer's own work (assigned to them or collaborating) — the brief, stat tiles, focus queue and weekly chart.
+      Defaults to `tasks`, so a caller that doesn't split them sees the old behaviour. */
+  myTasks?: Task[];
+  projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
   /** false for a guest in this workspace — they can't create projects, so no "New project" / "Create a project" CTA */
   canCreateProject?: boolean;
 }) {
   // phones and tablets have no q key to press — point them at a button instead
   const touchOnly = useMediaQuery("(hover: none)");
-  const open = tasks.filter((t) => t.status !== "done");
+  // the brief and its widgets are personal: in a team workspace they count only the viewer's work, never every teammate's
+  const open = myTasks.filter((t) => t.status !== "done");
   const counts = {
-    todo: tasks.filter((t) => t.status === "todo").length,
-    progress: tasks.filter((t) => t.status === "progress").length,
-    review: tasks.filter((t) => t.status === "review").length,
-    blocked: tasks.filter((t) => t.status === "blocked").length,
-    done: tasks.filter((t) => t.status === "done").length,
+    todo: myTasks.filter((t) => t.status === "todo").length,
+    progress: myTasks.filter((t) => t.status === "progress").length,
+    review: myTasks.filter((t) => t.status === "review").length,
+    blocked: myTasks.filter((t) => t.status === "blocked").length,
+    done: myTasks.filter((t) => t.status === "done").length,
   };
   // "due today" means due today; anything past due is counted (and labelled) separately
   const dueToday = open.filter((t) => dueState(t.dueDate, t.status) === "today");
@@ -88,10 +94,10 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
   // real "this week" metrics from completedAt
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate());
   const last7 = Array.from({ length: 7 }, (_, i) => { const d = new Date(todayMid); d.setDate(d.getDate() - (6 - i)); return d; });
-  const weekData = last7.map((d) => { const iso = toLocalISO(d); return tasks.filter((t) => t.completedAt === iso).length; });
+  const weekData = last7.map((d) => { const iso = toLocalISO(d); return myTasks.filter((t) => t.completedAt === iso).length; });
   const doneThisWeek = weekData.reduce((a, b) => a + b, 0);
-  const completionRate = tasks.length ? Math.round((counts.done / tasks.length) * 100) : 0;
-  const inProgressProjects = new Set(tasks.filter((t) => t.status === "progress").map((t) => t.projectId)).size;
+  const completionRate = myTasks.length ? Math.round((counts.done / myTasks.length) * 100) : 0;
+  const inProgressProjects = new Set(myTasks.filter((t) => t.status === "progress").map((t) => t.projectId)).size;
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -142,7 +148,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
 
   const gsSteps = [
     { label: "Add your first task", done: tasks.length > 0, action: onNewTask, cta: "Capture one" },
-    { label: "Plan your day", done: tasks.some((t) => t.scheduled != null || t.planToday), action: () => setRoute({ view: "plan" }), cta: "Open Plan my day" },
+    { label: "Plan your day", done: myTasks.some((t) => t.scheduled != null || t.planToday), action: () => setRoute({ view: "plan" }), cta: "Open Plan my day" },
     { label: "Connect your calendar", done: !!calendarConnected, action: () => setRoute({ view: "calendar" }), cta: "Connect Google" },
     { label: "Invite your team", done: !!hasTeam, action: () => setRoute({ view: "team" }), cta: "Create a workspace" },
   ];

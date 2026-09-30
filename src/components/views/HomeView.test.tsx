@@ -80,3 +80,44 @@ describe("HomeView for a guest", () => {
     expect(screen.getByRole("button", { name: /Create a project/ })).toBeInTheDocument();
   });
 });
+
+describe("HomeView in a team workspace", () => {
+  const mine = [
+    task({ id: "a", title: "My due A", dueDate: dayOffset(0) }),
+    task({ id: "d", title: "My done D", status: "done", completedAt: dayOffset(0) }),
+  ];
+  const theirs = [
+    task({ id: "b", title: "Maya's due B", assigneeId: "m-maya", dueDate: dayOffset(0) }),
+    task({ id: "c", title: "Maya's late C", assigneeId: "m-maya", dueDate: dayOffset(-1), status: "blocked" }),
+    task({ id: "e", title: "Maya's done E", assigneeId: "m-maya", status: "done", completedAt: dayOffset(0) }),
+  ];
+  const renderTeam = () => render(
+    <HomeView tasks={[...mine, ...theirs]} myTasks={mine} projects={[{ id: "p-personal", name: "Launch", emoji: "🚀", color: "#888", workspaceId: null } as never]}
+      userName="Dan Chappell" onOpen={vi.fn()} setRoute={vi.fn()} openFocus={vi.fn()}
+      onNewProject={vi.fn()} onNewTask={vi.fn()} onAutoPrioritize={vi.fn()} />,
+  );
+
+  it("builds the brief, focus queue and weekly count from the viewer's own tasks", () => {
+    renderTeam();
+    const brief = screen.getByText(/Dan\./).closest("p")!;
+    expect(brief.textContent).toContain("You have 1 task due today.");
+    expect(brief.textContent).not.toMatch(/overdue|blocked/);
+    expect(screen.getByRole("button", { name: /My due A/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Maya's/ })).toBeNull();
+    expect(screen.getByText("task done").previousSibling?.textContent).toBe("1");
+  });
+
+  it("still counts the whole workspace on the project cards", () => {
+    renderTeam();
+    expect(screen.getByRole("button", { name: /Launch/ }).textContent).toContain("5 tasks");
+  });
+
+  it("shows the dashboard, not the clean slate, to a member with nothing assigned yet", () => {
+    render(
+      <HomeView tasks={theirs} myTasks={[]} projects={[]} userName="Dan Chappell" onOpen={vi.fn()} setRoute={vi.fn()} openFocus={vi.fn()}
+        onNewProject={vi.fn()} onNewTask={vi.fn()} onAutoPrioritize={vi.fn()} />,
+    );
+    expect(screen.queryByText(/Welcome to Kanbo/)).toBeNull();
+    expect(screen.getByText(/Dan\./).closest("p")!.textContent).toContain("Nothing's due today.");
+  });
+});
