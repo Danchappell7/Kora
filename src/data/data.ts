@@ -181,11 +181,15 @@ export function nextOccurrenceChildren(children: Task[], prev: Task, next: Task,
     }));
 }
 
+/** The signed-in person's avatar colour: light enough for dark initials to
+ *  pass contrast (the old violet, oklch(0.585 0.196 264), managed 3.98:1). */
+export const SELF_COLOR = "oklch(0.72 0.14 264)";
+
 /* `let` (not `const`) so the authenticated user can replace the demo "self"
    member at runtime via setSelfMember — ES-module live bindings mean every
    importer sees the update. Teammates stay as seeded reference data. */
 export let MEMBERS: Member[] = [
-  { id: "m-self", name: "Daniel Okai", email: "daniel@kanbo.app", type: "self", color: "oklch(0.585 0.196 264)" },
+  { id: "m-self", name: "Daniel Okai", email: "daniel@kanbo.app", type: "self", color: SELF_COLOR },
   { id: "m-1", name: "Maya Lin", email: "maya@kanbo.app", type: "team", color: "oklch(0.74 0.14 230)" },
   { id: "m-2", name: "Theo Vance", email: "theo@kanbo.app", type: "team", color: "oklch(0.78 0.15 70)" },
   { id: "m-3", name: "Sana Rao", email: "sana@kanbo.app", type: "team", color: "oklch(0.74 0.16 305)" },
