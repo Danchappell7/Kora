@@ -1,17 +1,18 @@
 /* ============================================================
-   KANBO — bulk task import. Paste a list (one task per line),
-   rows copied from Excel / Google Sheets, or drop a CSV exported
-   from Asana, Trello, Jira, Planner or Kanbo (or a Trello board's
-   JSON export). Columns are matched
-   automatically (see lib/importTasks) and everything is shown in a
-   live preview — mapping, warnings and the tasks themselves —
-   before anything is created.
+   KANBO — bulk task import. Paste a list (one task per line;
+   indented lines become sub-tasks), rows copied from Excel /
+   Google Sheets, or drop a CSV exported from Asana, Trello, Jira,
+   Planner or Kanbo (or a Trello board's JSON export). Columns are
+   matched automatically (see lib/importTasks) and everything is
+   shown in a live preview — mapping, warnings and the tasks
+   themselves, nested as they'll be created — before anything is
+   created. It's the kit's Sheet (a bottom sheet on phones).
    ============================================================ */
 import { useState, useRef, useMemo, useEffect, useId, useDeferredValue } from "react";
-import type { CSSProperties, DragEvent } from "react";
-import { Icon } from "./primitives";
-import { useFocusTrap } from "../hooks/useFocusTrap";
-import { PRIORITY_META, STATUS_META, TAGS } from "../data/data";
+import type { DragEvent } from "react";
+import { Button, Icon, PriorityGlyph, Sheet, StatusGlyph } from "./primitives";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { TAGS } from "../data/data";
 import {
   analyseImport, decodeImportBytes, trelloJsonToCsv, FIELD_LABELS, IMPORT_LIMIT,
   type DateOrder, type ImportAnalysis, type ImportField, type ImportMember, type ImportProject, type ImportRow, type ImportSection,
@@ -61,13 +62,12 @@ const shortDate = (iso: string) => {
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
 };
-
-const chip: CSSProperties = {
-  display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, fontSize: 11, lineHeight: "17px", padding: "0 7px", borderRadius: 6,
-  color: "var(--ink-3)", background: "var(--fill-1, var(--surface-2))", border: "1px solid var(--hairline)", whiteSpace: "nowrap",
+/** how deep row i nests (the length of its parent chain), for the preview's indent */
+const depthOf = (rows: ImportRow[], i: number): number => {
+  let d = 0;
+  for (let p = rows[i].parentIndex, hops = 0; p !== undefined && hops < rows.length; p = rows[p].parentIndex, hops++) d++;
+  return d;
 };
-const checkboxRow: CSSProperties = { display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, color: "var(--ink-2)", cursor: "pointer", lineHeight: 1.45 };
-const linkBtn: CSSProperties = { border: "none", background: "none", padding: 0, color: "var(--accent)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 };
 
 export function ImportTasksModal({
   open, onClose, onImport, projects = [], members = [], sections, defaultProjectId, defaultProjectName, supports = {},
@@ -97,9 +97,11 @@ export function ImportTasksModal({
   const [keepFileProjects, setKeepFileProjects] = useState(false);
   const [target, setTarget] = useState(defaultProjectId ?? "");
   const fileRef = useRef<HTMLInputElement>(null);
-  const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const descRef = useRef<HTMLParagraphElement>(null);
+  const isPhone = useMediaQuery("(max-width: 859px)");
   const uid = useId();
-  const titleId = `${uid}-title`, descId = `${uid}-desc`, textId = `${uid}-text`, targetId = `${uid}-target`, orderId = `${uid}-order`, hintId = `${uid}-hint`;
+  const descId = `${uid}-desc`, textId = `${uid}-text`, targetId = `${uid}-target`, orderId = `${uid}-order`, hintId = `${uid}-hint`;
 
   // where rows without their own project go: the project you're in, or the only one there is
   const defaultTarget = projects.length === 0
@@ -125,9 +127,18 @@ export function ImportTasksModal({
     mode: forceLines ? "lines" : "auto", csv: isCsv, extrasToDescription: extras,
   });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const analysis = useMemo(() => (open ? analyse(deferredText) : EMPTY), [open, deferredText, stableProjects, stableMembers, stableSections, target, keepFileProjects, dateOrder, smartText, forceLines, isCsv, extras]);
+  const live = useMemo(() => (open ? analyse(deferredText) : null), [open, deferredText, stableProjects, stableMembers, stableSections, target, keepFileProjects, dateOrder, smartText, forceLines, isCsv, extras]);
+  // while the sheet fades out it keeps showing what it showed, rather than collapsing to empty
+  const shown = useRef<ImportAnalysis>(EMPTY);
+  if (live) shown.current = live;
+  const analysis = live ?? shown.current;
 
-  if (!open) return null;
+  // the lede describes the dialog (the Sheet names it; this adds the how-to)
+  useEffect(() => {
+    if (!open) return;
+    const dialog = descRef.current?.closest('[role="dialog"]');
+    dialog?.setAttribute("aria-describedby", descId);
+  }, [open, descId]);
 
   const rows = analysis.rows;
   const w = analysis.warnings;
@@ -271,72 +282,79 @@ export function ImportTasksModal({
   const memberName = (id?: string) => (id ? members.find((m) => m.id === id)?.name : undefined);
   const sectionLabel = (r: ImportRow) => (r.sectionId ? sections?.find((s) => s.id === r.sectionId)?.name : undefined) ?? r.sectionName;
 
+  const size = isPhone ? "lg" : "md";
+  const footer = (
+    <div className="kimp-foot">
+      {needsTarget && <span id={hintId} className="kimp-hint">Choose a project to import into.</span>}
+      <Button variant="ghost" size={size} onClick={onClose}>Cancel</Button>
+      <Button variant="primary" size={size} onClick={doImport} disabled={!canImport} aria-describedby={needsTarget ? hintId : undefined}
+        aria-keyshortcuts="Meta+Enter Control+Enter" title={canImport ? "Import (⌘/Ctrl + Enter)" : undefined} kbd={isPhone ? undefined : "⌘↵"}>
+        {rows.length ? `Import ${plural(rows.length, "task")}` : "Import"}
+      </Button>
+    </div>
+  );
+
   return (
-    <>
-      <div onClick={onClose} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 90, background: "color-mix(in oklch, var(--bg-deep) 55%, transparent)", backdropFilter: "blur(3px)" }} />
-      <div ref={trapRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId} className="glass anim-scalein"
-        onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doImport(); } }}
-        onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
-        style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 91, width: 620, maxWidth: "calc(100vw - 32px)", maxHeight: "min(90vh, 860px)", borderRadius: 20, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 22px 12px" }}>
-          <span aria-hidden="true" style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 10, background: "var(--accent-dim)", color: "var(--accent)", flexShrink: 0 }}><Icon name="layers" size={17} /></span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <h2 id={titleId} style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Import tasks</h2>
-            <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{subtitle}</div>
-          </div>
-          <button type="button" className="btn-icon" onClick={onClose} aria-label="Close import" style={{ border: "none" }}><Icon name="x" size={18} /></button>
-        </div>
-
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 22px 4px", display: "flex", flexDirection: "column", gap: 12 }}>
-          <p id={descId} style={{ margin: 0, fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.55 }}>
-            One task per line, or columns copied straight from Excel or Google Sheets. CSV exports from Asana, Trello, Jira, Planner and Kanbo work too, as does a Trello board's JSON export — columns such as <strong>Task name</strong>, <strong>Due date</strong>, <strong>Notes</strong>, <strong>Assignee</strong>, <strong>Status</strong> and <strong>Tags</strong> are matched automatically. In a plain list you can add <span className="mono" style={{ color: "var(--ink-2)" }}>!high</span>, <span className="mono" style={{ color: "var(--ink-2)" }}>#project</span>, <span className="mono" style={{ color: "var(--ink-2)" }}>@person</span> or <span className="mono" style={{ color: "var(--ink-2)" }}>tomorrow</span>.
+    // a file can be dropped anywhere on the sheet or the scrim around it (React
+    // carries the portal's drag events up to here) — never let the browser open it instead
+    <div className="kimp-drop" style={{ display: "contents" }} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      <Sheet open={open} onClose={onClose} label="Import tasks" title="Import tasks" width={640} footer={footer} initialFocus={textRef as React.RefObject<HTMLElement>}>
+        <style>{IMPORT_CSS}</style>
+        <div className="kimp" onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doImport(); } }}>
+          <p className="kimp-where truncate" title={subtitle}>{subtitle}</p>
+          <p id={descId} ref={descRef} className="kimp-lede">
+            {isPhone ? (
+              // the phone gets the short version, so the paste box stays in view
+              <>One task per line (indent a line to make it a sub-task), rows from a spreadsheet, or a CSV from Asana, Trello, Jira or Planner. Add <code>!high</code>, <code>#project</code>, <code>@person</code> or <code>tomorrow</code> to a line.</>
+            ) : (
+              <>One task per line (indent a line to make it a sub-task), or columns copied straight from Excel or Google Sheets. CSV exports from Asana, Trello, Jira, Planner and Kanbo work too, as does a Trello board's JSON export: columns such as <b>Task name</b>, <b>Due date</b>, <b>Notes</b>, <b>Assignee</b>, <b>Status</b> and <b>Tags</b> are matched automatically. In a plain list you can add <code>!high</code>, <code>#project</code>, <code>@person</code> or <code>tomorrow</code>.</>
+            )}
           </p>
 
-          <div style={{ position: "relative" }}>
+          <div className="kimp-paste" data-drag={dragOver || undefined}>
             <label htmlFor={textId} className="sr-only">Tasks to import</label>
-            <textarea id={textId} value={text} onChange={(e) => { setText(e.target.value); setError(null); if (!e.target.value) { setFileName(""); setIsCsv(false); } }} autoFocus spellCheck={false} wrap="off"
-              placeholder={"Draft Q3 deck !high tomorrow\nEmail the supplier\nReview budget #finance\n…"}
-              style={{ width: "100%", minHeight: 150, maxHeight: 320, resize: "vertical", padding: "12px 14px", borderRadius: 12, border: `1px solid ${dragOver ? "var(--accent)" : "var(--hairline)"}`, background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.6, boxSizing: "border-box" }} />
+            <textarea id={textId} ref={textRef} className="kimp-text" value={text} spellCheck={false} wrap="off"
+              onChange={(e) => { setText(e.target.value); setError(null); if (!e.target.value) { setFileName(""); setIsCsv(false); } }}
+              placeholder={"Draft Q3 deck !high tomorrow\n  Check the numbers\nEmail the supplier\nReview budget #finance\n…"} />
             {dragOver && (
-              <div aria-hidden="true" style={{ position: "absolute", inset: 0, borderRadius: 12, border: "2px dashed var(--accent)", background: "color-mix(in oklch, var(--accent) 8%, var(--surface-raised))", display: "grid", placeItems: "center", color: "var(--accent)", fontSize: 13, fontWeight: 600, pointerEvents: "none" }}>
-                Drop a .csv, .tsv, .txt or Trello .json file
+              <div aria-hidden="true" className="kimp-dropzone">
+                <Icon name="folder" size={16} sw={1.75} />Drop a .csv, .tsv, .txt or Trello .json file
               </div>
             )}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="kimp-bar">
             <input ref={fileRef} type="file" tabIndex={-1} aria-hidden="true" accept=".csv,.tsv,.txt,.md,.json,text/csv,text/plain,text/tab-separated-values,application/json" style={{ display: "none" }}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); if (fileRef.current) fileRef.current.value = ""; }} />
-            <button type="button" className="btn btn-ghost" onClick={() => fileRef.current?.click()} style={{ fontSize: 12.5 }}><Icon name="folder" size={14} /> Upload a CSV, text or Trello file</button>
-            {fileName && <span className="truncate" style={{ ...chip, maxWidth: 200 }} title={fileName}>{fileName}</span>}
-            {text && <button type="button" onClick={resetInput} style={{ ...linkBtn, color: "var(--ink-3)", fontWeight: 500 }}>Clear</button>}
-            <span role="status" aria-live="polite" style={{ marginLeft: "auto", fontSize: 12.5, color: rows.length ? "var(--accent)" : "var(--ink-4)", fontWeight: 600 }}>
-              {rows.length ? `${plural(rows.length, "task")} ready` : text.trim() ? "No tasks found" : ""}
+            <Button variant="secondary" size="sm" icon="folder" onClick={() => fileRef.current?.click()}>Upload a CSV, text or Trello file</Button>
+            {fileName && <span className="kimp-file truncate mono" title={fileName}>{fileName}</span>}
+            {text && <Button variant="ghost" size="sm" onClick={resetInput}>Clear</Button>}
+            <span role="status" aria-live="polite" className="kimp-ready" data-found={rows.length ? "true" : undefined}>
+              {rows.length ? <><Icon name="check" size={14} sw={2} />{plural(rows.length, "task")} ready</> : text.trim() ? "No tasks found" : ""}
             </span>
           </div>
 
-          {error && <div role="alert" style={{ fontSize: 12.5, color: "var(--ink-2)", background: "color-mix(in oklch, var(--st-blocked) 10%, transparent)", border: "1px solid color-mix(in oklch, var(--st-blocked) 28%, transparent)", borderRadius: 10, padding: "10px 12px", lineHeight: 1.5 }}>{error}</div>}
+          {error && <div role="alert" className="kimp-error">{error}</div>}
 
           {analysis.mode !== "empty" && (
-            <section aria-label="How your text is read" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "11px 12px", borderRadius: 12, border: "1px solid var(--hairline)", background: "var(--fill-1, var(--surface))" }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", fontSize: 12.5, color: "var(--ink-2)" }}>
-                <strong style={{ fontWeight: 600 }}>{analysis.mode === "lines" ? "One task per line" : analysis.hasHeader ? `${plural(analysis.columns.length, "column")} with headings` : `${plural(analysis.columns.length, "column")} without headings`}</strong>
+            <section aria-label="How your text is read" className="kimp-read">
+              <div className="kimp-read-head">
+                <strong>{analysis.mode === "lines" ? "One task per line" : analysis.hasHeader ? `${plural(analysis.columns.length, "column")} with headings` : `${plural(analysis.columns.length, "column")} without headings`}</strong>
                 {analysis.mode === "columns"
-                  ? <button type="button" style={linkBtn} onClick={() => setForceLines(true)}>Treat each line as one task instead</button>
-                  : forceLines && <button type="button" style={linkBtn} onClick={() => setForceLines(false)}>Detect columns</button>}
+                  ? <button type="button" className="kimp-link" onClick={() => setForceLines(true)}>Treat each line as one task instead</button>
+                  : forceLines && <button type="button" className="kimp-link" onClick={() => setForceLines(false)}>Detect columns</button>}
               </div>
               {mapped.length > 0 && (
-                <ul aria-label="Column mapping" style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <ul aria-label="Column mapping" className="kimp-map">
                   {mapped.map((c) => {
                     // read from the file, but not kept by this import (see the warning below)
                     const dropped = !supports.details && DETAIL_FIELDS.has(c.field!);
                     return (
-                      <li key={c.index} style={{ ...chip, color: dropped ? "var(--ink-4)" : "var(--ink-2)" }} title={dropped ? "Left off in this import" : undefined}>
-                        <span className="truncate" style={{ maxWidth: 140 }}>{c.header}</span>
-                        <span aria-hidden="true" style={{ color: "var(--ink-4)" }}>→</span>
+                      <li key={c.index} data-dropped={dropped || undefined} title={dropped ? "Left off in this import" : undefined}>
+                        <span className="kimp-map-from truncate">{c.header}</span>
+                        <span aria-hidden="true" className="kimp-map-arrow">→</span>
                         <span className="sr-only">{dropped ? "read as" : "imported as"}</span>
-                        <span style={{ fontWeight: 600, textDecoration: dropped ? "line-through" : "none" }}>{FIELD_LABELS[c.field!]}</span>
+                        <span className="kimp-map-to">{FIELD_LABELS[c.field!]}</span>
                         {dropped && <span className="sr-only">, left off in this import</span>}
                       </li>
                     );
@@ -344,31 +362,30 @@ export function ImportTasksModal({
                 </ul>
               )}
               {analysis.ignoredColumns.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div style={{ fontSize: 12, color: "var(--ink-3)", lineHeight: 1.5 }}>Not imported: {analysis.ignoredColumns.join(", ")}</div>
-                  <label style={checkboxRow}>
-                    <input type="checkbox" checked={extras} onChange={(e) => setExtras(e.target.checked)} style={{ marginTop: 2 }} />
-                    Add {analysis.ignoredColumns.length === 1 ? "this column" : "these columns"} to each task's description
+                <>
+                  <p className="kimp-ignored">Not imported: {analysis.ignoredColumns.join(", ")}</p>
+                  <label className="kimp-check">
+                    <input type="checkbox" checked={extras} onChange={(e) => setExtras(e.target.checked)} />
+                    <span>Add {analysis.ignoredColumns.length === 1 ? "this column" : "these columns"} to each task's description</span>
                   </label>
-                </div>
+                </>
               )}
               {showSmartToggle && (
-                <label style={checkboxRow}>
-                  <input type="checkbox" checked={smartText} onChange={(e) => setSmartText(e.target.checked)} style={{ marginTop: 2 }} />
-                  Pick up !priority, #project, @person, dates and durations like “30m” from the text
+                <label className="kimp-check">
+                  <input type="checkbox" checked={smartText} onChange={(e) => setSmartText(e.target.checked)} />
+                  <span>Pick up !priority, #project, @person, dates and durations like “30m” from the text</span>
                 </label>
               )}
               {analysis.projectColumn && w.otherProjects.count > 0 && (
-                <label style={checkboxRow}>
-                  <input type="checkbox" checked={keepFileProjects} onChange={(e) => setKeepFileProjects(e.target.checked)} style={{ marginTop: 2 }} />
+                <label className="kimp-check">
+                  <input type="checkbox" checked={keepFileProjects} onChange={(e) => setKeepFileProjects(e.target.checked)} />
                   <span>Put tasks into the projects named in the “{analysis.projectColumn}” column ({quoteList(w.otherProjects.names)}){targetName ? ` instead of “${targetName}”` : ""}</span>
                 </label>
               )}
               {analysis.ambiguousDates && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12.5, color: "var(--ink-2)" }}>
+                <div className="kimp-order">
                   <label htmlFor={orderId}>Dates like 03/04/2026 are</label>
-                  <select id={orderId} value={dateOrder === "auto" ? analysis.dateOrder : dateOrder} onChange={(e) => setDateOrder(e.target.value as DateOrder)}
-                    style={{ height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface-raised)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 12.5 }}>
+                  <select id={orderId} className="kimp-select" value={dateOrder === "auto" ? analysis.dateOrder : dateOrder} onChange={(e) => setDateOrder(e.target.value as DateOrder)}>
                     <option value="dmy">day first (3 April — UK)</option>
                     <option value="mdy">month first (4 March — US)</option>
                   </select>
@@ -378,44 +395,38 @@ export function ImportTasksModal({
           )}
 
           {projects.length > 0 && rows.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <label htmlFor={targetId} style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>Import into</label>
-              <select id={targetId} value={target} onChange={(e) => setTarget(e.target.value)} aria-describedby={needsTarget ? hintId : undefined}
-                style={{ flex: "1 1 220px", minWidth: 0, height: 34, padding: "0 10px", borderRadius: 9, border: `1px solid ${needsTarget ? "var(--accent)" : "var(--hairline)"}`, background: "var(--surface-raised)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13 }}>
+            <div className="kimp-target">
+              <label htmlFor={targetId}>Import into</label>
+              <select id={targetId} className="kimp-select" value={target} onChange={(e) => setTarget(e.target.value)}
+                aria-describedby={needsTarget ? hintId : undefined} aria-invalid={needsTarget || undefined}>
                 {!target && <option value="" disabled>Choose a project…</option>}
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
           )}
 
-          {(warnings.length > 0 || notes.length > 0) && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {warnings.length > 0 && (
-                <ul aria-label="Check before importing" style={{ margin: 0, padding: "10px 12px", listStyle: "none", display: "flex", flexDirection: "column", gap: 6, borderRadius: 10, background: "color-mix(in oklch, var(--st-review) 11%, transparent)", border: "1px solid color-mix(in oklch, var(--st-review) 30%, transparent)" }}>
-                  {warnings.map((m, i) => (
-                    <li key={i} style={{ display: "flex", gap: 8, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-2)" }}>
-                      <span aria-hidden="true" style={{ color: "var(--st-review)", fontWeight: 700, flexShrink: 0 }}>!</span>{m}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {notes.length > 0 && (
-                <ul aria-label="Notes" style={{ margin: 0, padding: "0 2px", listStyle: "none", display: "flex", flexDirection: "column", gap: 3 }}>
-                  {notes.map((m, i) => <li key={i} style={{ fontSize: 12, lineHeight: 1.5, color: "var(--ink-3)" }}>{m}</li>)}
-                </ul>
-              )}
-            </div>
+          {warnings.length > 0 && (
+            <ul aria-label="Check before importing" className="kimp-warn">
+              {warnings.map((m, i) => (
+                <li key={i}><span aria-hidden="true" className="kimp-warn-mark">!</span>{m}</li>
+              ))}
+            </ul>
+          )}
+          {notes.length > 0 && (
+            <ul aria-label="Notes" className="kimp-notes">
+              {notes.map((m, i) => <li key={i}>{m}</li>)}
+            </ul>
           )}
 
           {rows.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", fontSize: 11.5, color: "var(--ink-3)" }}>
+            <div className="kimp-preview">
+              <p className="kimp-preview-head">
                 <span>Preview</span>
                 {dueCount > 0 && <span>· {plural(dueCount, "due date")}</span>}
                 {assignedCount > 0 && <span>· {assignedCount.toLocaleString("en-GB")} assigned</span>}
                 {doneCount > 0 && <span>· {doneCount.toLocaleString("en-GB")} already done</span>}
-              </div>
-              <ol aria-label="Preview of the tasks" style={{ margin: 0, padding: 6, listStyle: "none", maxHeight: 230, overflowY: "auto", border: "1px solid var(--hairline)", borderRadius: 12 }}>
+              </p>
+              <ol aria-label="Preview of the tasks" className="kimp-rows">
                 {rows.slice(0, PREVIEW_ROWS).map((r, i) => {
                   const status = r.status || "todo";
                   const who = memberName(r.assigneeId);
@@ -424,41 +435,151 @@ export function ImportTasksModal({
                   const section = details && (r.sectionId || supports.newSections) ? sectionLabel(r) : undefined;
                   const tagLabels = details ? [...(r.tags || []).map((k) => TAGS[k]?.label ?? k), ...(supports.newTags ? r.newTags || [] : [])] : [];
                   const elsewhere = r.projectId && r.projectId !== target ? projectName(r.projectId) : undefined;
+                  // nested as it'll be created: under its parent when the handler keeps sub-tasks
+                  const depth = supports.subtasks ? depthOf(rows, i) : 0;
                   const isSub = r.parentIndex !== undefined || !!r.parentTitle;
                   return (
-                    <li key={i} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 8, rowGap: 3, padding: "5px 8px", fontSize: 12.5, minWidth: 0 }}>
-                      <span title={STATUS_META[status].label} style={{ width: 8, height: 8, borderRadius: 99, flexShrink: 0, marginLeft: isSub ? 14 : 0, background: status === "todo" ? "transparent" : STATUS_META[status].color, border: status === "todo" ? `1.5px solid ${STATUS_META[status].color}` : "none" }} />
-                      <span className="sr-only">{STATUS_META[status].label}{isSub ? `, sub-task of ${r.parentTitle}` : ""}:</span>
-                      <span className="truncate" title={r.title} style={{ flex: "1 1 150px", minWidth: 0, color: status === "done" ? "var(--ink-3)" : "var(--ink-2)", textDecoration: status === "done" ? "line-through" : "none" }}>{r.title}</span>
-                      {r.priority && r.priority !== "medium" && <span style={{ ...chip, color: PRIORITY_META[r.priority].color }}>{PRIORITY_META[r.priority].label}</span>}
-                      {r.dueDate && <span style={chip}>Due {shortDate(r.dueDate)}</span>}
-                      {details && r.focusMin ? <span style={chip}>{r.focusMin}m</span> : null}
-                      {who && <span className="truncate" style={{ ...chip, maxWidth: 110 }}>{who}</span>}
-                      {elsewhere && <span className="truncate" style={{ ...chip, maxWidth: 140, color: "var(--ink-2)" }} title={`Goes into ${elsewhere}`}><span className="sr-only">Goes into </span>{elsewhere}</span>}
-                      {section && <span className="truncate" style={{ ...chip, maxWidth: 110 }}>{section}</span>}
-                      {tagLabels.length > 0 && <span className="truncate" style={{ ...chip, maxWidth: 120 }} title={tagLabels.join(", ")}>{tagLabels.length === 1 ? tagLabels[0] : `${tagLabels.length} tags`}</span>}
-                      {details && r.description && <span title="Has a description" style={{ ...chip, padding: "0 5px" }}><Icon name="message" size={11} /><span className="sr-only">Has a description</span></span>}
+                    <li key={i} className="kimp-row" data-done={status === "done" || undefined} style={depth ? { paddingLeft: 8 + depth * 20 } : undefined}>
+                      {depth > 0 && <span aria-hidden="true" className="kimp-elbow" />}
+                      <StatusGlyph status={status} size={14} />
+                      {isSub && <span className="sr-only">Sub-task of {r.parentTitle}:</span>}
+                      <span className="kimp-row-title truncate" title={r.title}>{r.title}</span>
+                      <span className="kimp-row-meta">
+                        {r.priority && r.priority !== "medium" && <PriorityGlyph priority={r.priority} />}
+                        {r.dueDate && <span className="mono">Due {shortDate(r.dueDate)}</span>}
+                        {details && r.focusMin ? <span className="mono">{r.focusMin}m</span> : null}
+                        {who && <span className="truncate kimp-person">{who}</span>}
+                        {elsewhere && <span className="truncate kimp-elsewhere" title={`Goes into ${elsewhere}`}><span className="sr-only">Goes into </span>{elsewhere}</span>}
+                        {section && <span className="truncate kimp-section">{section}</span>}
+                        {tagLabels.length > 0 && <span className="truncate kimp-tags" title={tagLabels.join(", ")}>{tagLabels.length === 1 ? tagLabels[0] : `${tagLabels.length} tags`}</span>}
+                        {details && r.description && <span title="Has a description" className="kimp-desc"><Icon name="message" size={12} sw={1.75} /><span className="sr-only">Has a description</span></span>}
+                      </span>
                     </li>
                   );
                 })}
-                {rows.length > PREVIEW_ROWS && <li style={{ padding: "5px 8px", fontSize: 11.5, color: "var(--ink-4)" }}>+ {plural(rows.length - PREVIEW_ROWS, "more task")}</li>}
+                {rows.length > PREVIEW_ROWS && <li className="kimp-more">+ {plural(rows.length - PREVIEW_ROWS, "more task")}</li>}
               </ol>
             </div>
           )}
         </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "12px 22px 18px", borderTop: "1px solid var(--hairline)", flexWrap: "wrap" }}>
-          {needsTarget && <span id={hintId} style={{ flex: "1 1 180px", fontSize: 12, color: "var(--ink-3)" }}>Choose a project to import into.</span>}
-          <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
-          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-accent" onClick={doImport} disabled={!canImport} aria-describedby={needsTarget ? hintId : undefined}
-            aria-keyshortcuts="Meta+Enter Control+Enter" title={canImport ? "Import (⌘/Ctrl + Enter)" : undefined}
-            style={canImport ? undefined : { opacity: 0.5, cursor: "not-allowed", transform: "none", boxShadow: "none" }}>
-            {rows.length ? `Import ${plural(rows.length, "task")}` : "Import"}
-          </button>
-          </div>
-        </div>
-      </div>
-    </>
+      </Sheet>
+    </div>
   );
 }
+
+/* Kept beside the component (as the capture sheets are), with fallbacks to
+   today's tokens so it reads right before and after the token pass. */
+const TICK = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.2 8.4l2.5 2.5 5.1-5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")";
+const IMPORT_CSS = `
+.kimp { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.kimp-where { margin: -4px 0 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kimp-lede { margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kimp-lede b { font-weight: 600; color: var(--ink-2); }
+.kimp-lede code { font: 500 11px/16px var(--font-mono); padding: 1px 4px; border-radius: var(--r-xs, 4px); background: var(--fill-1); color: var(--ink-2); }
+
+.kimp-paste { position: relative; }
+.kimp-text {
+  display: block; width: 100%; min-height: 152px; max-height: 320px; box-sizing: border-box; resize: vertical;
+  padding: 12px 14px; border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong));
+  background: var(--field-bg, var(--surface)); color: var(--ink);
+  font: 400 12px/20px var(--font-mono); tab-size: 2; white-space: pre; overflow-wrap: normal;
+  transition: border-color var(--d-1, 90ms) var(--ease);
+}
+.kimp-text:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.kimp-text::placeholder { color: var(--ink-4); opacity: 1; }
+.kimp-paste[data-drag] .kimp-text { border-color: var(--accent); }
+.kimp-dropzone {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; pointer-events: none;
+  border-radius: var(--r-md, 8px); border: 2px dashed var(--accent-line, var(--accent));
+  background: color-mix(in oklch, var(--accent) 8%, var(--surface-raised));
+  font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent));
+}
+
+.kimp-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 28px; }
+.kimp-file { max-width: 200px; height: 24px; padding: 0 8px; border-radius: var(--r-sm, 6px); background: var(--fill-1);
+  font-size: 11px; line-height: 24px; color: var(--ink-2); }
+.kimp-ready { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kimp-ready[data-found] { color: var(--accent-text, var(--accent)); }
+
+.kimp-error { padding: 10px 12px; border-radius: var(--r-md, 8px); font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
+  background: var(--signal-tint, color-mix(in oklch, var(--st-blocked) 10%, transparent));
+  box-shadow: inset 3px 0 0 var(--signal, var(--st-blocked)); }
+
+.kimp-read { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; border-radius: var(--r-lg, 12px); background: var(--fill-1); }
+.kimp-read-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kimp-read-head strong { font-weight: 600; color: var(--ink); }
+.kimp-link { padding: 0; border: 0; background: none; cursor: pointer; font: 600 12px/16px var(--font-ui, var(--font-display));
+  color: var(--accent-text, var(--accent)); text-decoration: underline; text-decoration-color: color-mix(in oklch, currentColor 40%, transparent); text-underline-offset: 3px; }
+.kimp-link:hover { text-decoration-color: currentColor; }
+.kimp-map { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.kimp-map li { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 24px; padding: 0 8px; box-sizing: border-box;
+  border-radius: var(--r-sm, 6px); background: var(--surface-raised); box-shadow: 0 0 0 1px var(--hairline);
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); white-space: nowrap; }
+.kimp-map-from { max-width: 160px; }
+.kimp-map-arrow { color: var(--icon-quiet, var(--ink-4)); }
+.kimp-map-to { font-weight: 600; color: var(--ink); }
+.kimp-map li[data-dropped] { color: var(--ink-4); }
+.kimp-map li[data-dropped] .kimp-map-to { color: var(--ink-4); text-decoration: line-through; }
+.kimp-ignored { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kimp-check { display: flex; align-items: flex-start; gap: 8px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); cursor: pointer; }
+.kimp-check input {
+  -webkit-appearance: none; appearance: none; flex-shrink: 0; width: 16px; height: 16px; margin: 2px 0 0; cursor: pointer;
+  border-radius: var(--r-xs, 4px); border: 1.5px solid var(--control-border, var(--hairline-strong)); background: var(--field-bg, var(--surface));
+  background-position: center; background-repeat: no-repeat; background-size: 14px 14px;
+  transition: background-color var(--d-1, 90ms) var(--ease), border-color var(--d-1, 90ms) var(--ease);
+}
+.kimp-check input:hover { border-color: var(--ink-3); }
+.kimp-check input:checked { border-color: transparent; background-color: var(--accent-fill, var(--accent)); background-image: ${TICK}; }
+.kimp-order { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+
+.kimp-select {
+  min-width: 0; height: var(--h-md, 32px); padding: 0 28px 0 10px; box-sizing: border-box;
+  border-radius: var(--r-sm, 6px); border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); text-overflow: ellipsis;
+}
+.kimp-select:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.kimp-select[aria-invalid="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.kimp-target { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.kimp-target label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kimp-target .kimp-select { flex: 1 1 220px; }
+
+.kimp-warn { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px 14px; list-style: none; border-radius: var(--r-md, 8px);
+  background: color-mix(in oklch, var(--warn, var(--st-review)) 9%, transparent); }
+.kimp-warn li { display: flex; align-items: flex-start; gap: 10px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kimp-warn-mark { display: inline-grid; place-items: center; flex-shrink: 0; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%;
+  background: var(--warn, var(--st-review)); color: var(--surface-raised); font: 700 11px/1 var(--font-ui, var(--font-display)); }
+.kimp-notes { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 2px; list-style: none; }
+.kimp-notes li { font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+.kimp-preview { display: flex; flex-direction: column; gap: 6px; }
+.kimp-preview-head { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kimp-preview-head span + span { font-weight: 500; }
+/* one scroll (the sheet's): the preview grows with the list rather than scrolling inside it */
+.kimp-rows { margin: 0; padding: 4px; list-style: none; border-radius: var(--r-lg, 12px); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kimp-row { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 30px; padding: 0 8px; border-radius: var(--r-sm, 6px);
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kimp-row .kglyph { flex-shrink: 0; }
+/* a sub-task hangs off the row above: a small elbow in its indent */
+.kimp-elbow { flex-shrink: 0; width: 8px; height: 9px; margin: -9px -2px 0 -12px; box-sizing: border-box;
+  border-left: 1.5px solid var(--hairline-strong); border-bottom: 1.5px solid var(--hairline-strong); border-bottom-left-radius: 4px; }
+.kimp-row-title { flex: 1 1 140px; min-width: 0; }
+.kimp-row[data-done] .kimp-row-title { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
+.kimp-row-meta { display: inline-flex; align-items: center; gap: 10px; flex-shrink: 1; min-width: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kimp-row-meta .mono { font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kimp-person, .kimp-section, .kimp-tags { max-width: 120px; }
+.kimp-elsewhere { max-width: 140px; color: var(--ink-2); }
+.kimp-desc { display: inline-flex; color: var(--icon-quiet, var(--ink-4)); }
+.kimp-more { padding: 6px 8px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+.kimp-foot { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; width: 100%; min-width: 0; }
+.kimp-hint { flex: 1 1 180px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+@media (max-width: 859px) {
+  .kimp-text { min-height: 128px; font-size: 13px; }
+  .kimp-row { min-height: 40px; flex-wrap: wrap; row-gap: 0; padding-top: 4px; padding-bottom: 4px; }
+  .kimp-row-meta { flex-basis: 100%; padding-left: 22px; flex-wrap: wrap; row-gap: 2px; }
+  .kimp-foot { flex-direction: column-reverse; align-items: stretch; gap: 4px; }
+  .kimp-foot .kbtn { width: 100%; height: var(--h-touch, 44px); justify-content: center; }
+  .kimp-hint { flex: none; text-align: center; padding-top: 4px; }
+}
+`;
