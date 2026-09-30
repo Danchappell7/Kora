@@ -4,11 +4,13 @@
    URLs are stable for Google OAuth verification and footer links.
    ============================================================ */
 import { KanboLogo, AppBg } from "./primitives";
+import { FULL_HEIGHT } from "../lib/viewport";
 
 const UPDATED = "20 June 2026";
 const CONTACT = "hello@kanbo.co.uk";
 
-const wrap: React.CSSProperties = { position: "relative", minHeight: "100vh", overflowX: "hidden" };
+// its own scroll container: body is overflow:hidden for the app shell
+const wrap: React.CSSProperties = { position: "relative", height: FULL_HEIGHT, overflowY: "auto", overflowX: "hidden" };
 const inner: React.CSSProperties = { position: "relative", zIndex: 1, maxWidth: 760, margin: "0 auto", padding: "0 24px 80px" };
 
 function H({ children }: { children: React.ReactNode }) {
