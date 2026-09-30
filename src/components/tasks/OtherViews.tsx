@@ -16,10 +16,10 @@ import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, 
 import { store } from "../../data/store";
 import { reportError } from "../../lib/monitoring";
 import {
-  addDaysISO, daysBetweenISO, mondayOf, weekOffsetForMonth, monthOffsetForWeek,
+  addDaysISO, daysBetweenISO, mondayOf, switchCalendarPeriod, type CalendarPeriod,
   hideNestedSubtasks, assigneeColumnKey, UNASSIGNED_COL, FORMER_COL, NO_PROJECT_COL,
   planReorder, barSpan, clipSpan, effectiveStartISO, timelineMovePatch, timelineStartPatch,
-  wipStorageKey, readWipLimits, parseWipLimit, chunk, type BarSpan,
+  wipKeyFor, loadWipLimits, parseWipLimit, chunk, type BarSpan,
 } from "./otherViewsLogic";
 
 type BoardGroup = "status" | "priority" | "project" | "assignee";
@@ -33,6 +33,8 @@ const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
 const FILL_HOT = "var(--fill-1, color-mix(in oklch, var(--ink) 7%, transparent))";
 const dayLabel = (iso: string, opts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }) =>
   new Date(iso + "T00:00:00").toLocaleDateString(undefined, opts);
+/** Keyboard (not mouse) focus — browsers without :focus-visible just treat all focus as visible. */
+const isFocusVisible = (el: Element) => { try { return el.matches(":focus-visible"); } catch { return true; } };
 
 /* ---------------- anchored popover ----------------
    Menus render into <body> with fixed positioning taken from the trigger's
@@ -186,15 +188,15 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
   const label = [task.title, STATUS_META[task.status].label, `${PRIORITY_META[task.priority].label} priority`,
     dueText ? `due ${dueText}` : null, assignee ? `assigned to ${assignee.name}` : null, p.blocked ? "blocked" : null].filter(Boolean).join(", ");
   const triggerStyle: React.CSSProperties = { border: "none", background: "transparent", padding: 3, margin: -3, borderRadius: 6, cursor: "pointer", display: "inline-flex" };
+  // keyboard focus on the card's open button rings the whole card
+  const [ring, setRing] = useState(false);
 
   return (
-    <div data-card-id={task.id} role="button" tabIndex={0} aria-label={label} aria-describedby={p.hintId}
+    // a labelled group, not a button: it holds its own buttons and a date input, which a
+    // role="button" would flatten for screen readers. Mouse clicks anywhere open the task;
+    // keyboard and screen-reader users get the real button below.
+    <div data-card-id={task.id} role="group" aria-label={task.title}
       onClick={() => p.onOpen(task.id)}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return; // keys inside the card's own controls
-        if (!e.altKey && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); p.onOpen(task.id); return; }
-        if (e.altKey && p.onKeyMove && e.key.startsWith("Arrow")) { e.preventDefault(); p.onKeyMove(task.id, e.key); }
-      }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       className={"glass clickable lift" + (landed ? " kland" : "")} draggable={p.canDrag}
       onDragStart={p.canDrag ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; p.onPickup(task.id); } : undefined}
@@ -204,8 +206,15 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
       style={{ padding: 13, borderRadius: 12, cursor: p.canDrag ? "grab" : "pointer", opacity: p.dragging ? 0.4 : 1, position: "relative",
         // cards sit on a flat lane, so a per-card backdrop blur buys nothing and costs a compositing layer each
         backdropFilter: "none", WebkitBackdropFilter: "none",
-        outline: p.selected ? "1.5px solid var(--accent)" : undefined, background: p.selected ? "var(--accent-dim)" : undefined,
+        outline: ring ? "2px solid var(--accent)" : p.selected ? "1.5px solid var(--accent)" : undefined, outlineOffset: ring ? 2 : undefined,
+        background: p.selected ? "var(--accent-dim)" : undefined,
         boxShadow: p.dropHint === "top" ? "inset 0 3px 0 -1px var(--accent)" : p.dropHint === "bottom" ? "inset 0 -3px 0 -1px var(--accent)" : undefined }}>
+      {/* first in the tab order: Enter / Space opens, Alt+arrows move. Visually hidden (so it
+          never gets in the way of dragging the card) — the card shows its focus ring instead. */}
+      <button type="button" data-card-open className="sr-only" aria-label={label} aria-describedby={p.hintId}
+        onClick={(e) => { e.stopPropagation(); p.onOpen(task.id); }}
+        onKeyDown={(e) => { if (e.altKey && p.onKeyMove && e.key.startsWith("Arrow")) { e.preventDefault(); e.stopPropagation(); p.onKeyMove(task.id, e.key); } }}
+        onFocus={(e) => setRing(isFocusVisible(e.currentTarget))} onBlur={() => setRing(false)} />
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         {p.onSelect && (
           <button onClick={(e) => { e.stopPropagation(); p.onSelect?.(task.id); }} aria-label={p.selected ? `Deselect ${task.title}` : `Select ${task.title}`}
@@ -310,7 +319,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
 });
 
 /** Small dialog for a column's work-in-progress limit (replaces window.prompt). */
-function WipLimitEditor({ column, current, onSave, onClose }: { column: string; current?: number; onSave: (n: number | null) => void; onClose: () => void }) {
+function WipLimitEditor({ column, current, perBoard, onSave, onClose }: { column: string; current?: number; perBoard: boolean; onSave: (n: number | null) => void; onClose: () => void }) {
   const [draft, setDraft] = useState(current != null ? String(current) : "");
   const [error, setError] = useState("");
   const inputId = useId();
@@ -326,7 +335,7 @@ function WipLimitEditor({ column, current, onSave, onClose }: { column: string; 
         onChange={(e) => { setDraft(e.target.value); setError(""); }} placeholder="No limit" aria-invalid={!!error} aria-describedby={`${inputId}-help`}
         style={{ height: 34, padding: "0 10px", borderRadius: 9, border: `1px solid ${error ? "var(--prio-urgent)" : "var(--hairline-strong)"}`, background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-mono)", fontSize: 13.5 }} />
       <p id={`${inputId}-help`} role={error ? "alert" : undefined} style={{ margin: 0, fontSize: 11.5, lineHeight: 1.45, color: error ? "var(--prio-urgent)" : "var(--ink-4)" }}>
-        {error || "The count turns red when the column holds more than this. Saved for this board on this device."}
+        {error || `The count turns red when the column holds more than this. Saved ${perBoard ? "for this board " : ""}on this device.`}
       </p>
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
         {current != null && <button type="button" className="btn btn-ghost" onClick={() => { onSave(null); onClose(); }} style={{ padding: "6px 10px", fontSize: 12.5, marginRight: "auto" }}>Remove</button>}
@@ -385,21 +394,23 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   useEffect(() => { try { localStorage.setItem("kanbo-board-group", group); } catch { /* ignore */ } }, [group]);
   useEffect(() => { try { localStorage.setItem("kanbo-board-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ } }, [collapsed]);
 
-  // per-column WIP limits, saved per board (route / project) so one board's limit never shows on another
-  const derivedScope = (() => { const pids = new Set(tasks.map((t) => t.projectId)); return pids.size === 1 ? `project:${[...pids][0]}` : "all"; })();
-  const wipScope = scopeKey ?? derivedScope;
+  // per-column WIP limits, saved per board when the page says which board this is (scopeKey);
+  // never guessed from the visible tasks, so a filter can't swap one board's limits for another's.
+  // Without a scopeKey the board keeps the device-wide limits it always had.
+  const wipStore = wipKeyFor(scopeKey);
   const [wipCache, setWipCache] = useState<Record<string, Record<string, number>>>({});
-  const wip = useMemo(() => wipCache[wipScope] ?? (() => { try { return readWipLimits(localStorage.getItem(wipStorageKey(wipScope))); } catch { return {}; } })(), [wipCache, wipScope]);
+  const wip = useMemo(() => wipCache[wipStore] ?? (() => { try { return loadWipLimits((k) => localStorage.getItem(k), scopeKey); } catch { return {}; } })(), [wipCache, wipStore, scopeKey]);
   const wipKey = (k: string) => `${group}:${k}`;
   const saveLimit = (k: string, n: number | null) => {
     const next = { ...wip };
     if (n == null) delete next[wipKey(k)]; else next[wipKey(k)] = n;
-    setWipCache((c) => ({ ...c, [wipScope]: next }));
-    try { localStorage.setItem(wipStorageKey(wipScope), JSON.stringify(next)); } catch { /* ignore */ }
+    setWipCache((c) => ({ ...c, [wipStore]: next }));
+    try { localStorage.setItem(wipStore, JSON.stringify(next)); } catch { /* ignore */ }
   };
 
-  // one pass over allTasks for sub-task counts and blockers (not one scan per card)
-  const byId = useMemo(() => new Map(allTasks.map((t) => [t.id, t])), [allTasks]);
+  // one pass over allTasks for sub-task counts and blockers (not one scan per card); the board's
+  // own tasks are added because allTasks leaves out archived ones ("Show archived")
+  const byId = useMemo(() => new Map([...allTasks, ...tasks].map((t) => [t.id, t])), [allTasks, tasks]);
   const kidCounts = useMemo(() => {
     const m = new Map<string, { done: number; total: number }>();
     for (const c of allTasks) {
@@ -452,14 +463,15 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     setDragOver(null);
     setHover((h) => (h && h.id === id && h.half === half ? h : { id, half }));
   }, []);
-  const moveTo = useCallback((draggedId: string, colKey: string, index: number) => {
+  /** Applies a move; false when nothing could be moved (so callers don't announce one). */
+  const moveTo = useCallback((draggedId: string, colKey: string, index: number): boolean => {
     const L = live.current;
     const col = L.columns.find((c) => c.key === colKey);
     const task = L.byId.get(draggedId);
-    if (!col || !col.accepts || !task) return;
+    if (!col || !col.accepts || !task) return false;
     const plan = planReorder(L.colItems[colKey] ?? [], draggedId, index);
     const mine = plan.find((x) => x.id === draggedId);
-    if (!mine) return;
+    if (!mine) return false;
     const sameCol = L.colOf.get(draggedId) === colKey;
     markJustLanded(draggedId);
     for (const x of plan) if (x.id !== draggedId) L.patch?.(x.id, { position: x.position });
@@ -474,6 +486,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     // keep the moved card inside the rendered part of a long column
     const cap = L.shown[colKey] ?? CARD_CAP;
     if (index >= cap) setShown((s) => ({ ...s, [colKey]: index + 1 }));
+    return true;
   }, []);
   const onCardDrop = useCallback((draggedId: string, targetId: string, half: Half) => {
     endHover();
@@ -507,7 +520,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
       if (!col.accepts) { setAnnounce(`${col.label} can't be reordered. Move the card to another column first.`); return; }
       const to = up ? i - 1 : i + 1;
       if (to < 0 || to >= list.length) { setAnnounce(`${title} is already at the ${up ? "top" : "bottom"} of ${col.label}`); return; }
-      moveTo(id, colKey, to);
+      if (!moveTo(id, colKey, to)) return;
       setAnnounce(`${title} moved ${up ? "up" : "down"}, ${to + 1} of ${list.length} in ${col.label}`);
     } else if (key === "ArrowLeft" || key === "ArrowRight") {
       const dir = key === "ArrowLeft" ? -1 : 1;
@@ -515,7 +528,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
       while (j >= 0 && j < L.columns.length && (!L.columns[j].accepts || L.collapsed.has(L.columns[j].key))) j += dir;
       if (j < 0 || j >= L.columns.length) { setAnnounce(`There's no column to the ${dir < 0 ? "left" : "right"} of ${col.label}`); return; }
       const dest = L.columns[j];
-      moveTo(id, dest.key, Math.min((L.colItems[dest.key] ?? []).length, L.shown[dest.key] ?? CARD_CAP));
+      if (!moveTo(id, dest.key, Math.min((L.colItems[dest.key] ?? []).length, L.shown[dest.key] ?? CARD_CAP))) return;
       setAnnounce(`${title} moved to ${dest.label}`);
     } else return;
     focusReq.current = { id, force: true };
@@ -526,7 +539,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     const req = focusReq.current;
     if (!req) return;
     focusReq.current = null;
-    const el = Array.from(rootRef.current?.querySelectorAll<HTMLElement>("[data-card-id]") ?? []).find((n) => n.dataset.cardId === req.id);
+    const card = Array.from(rootRef.current?.querySelectorAll<HTMLElement>("[data-card-id]") ?? []).find((n) => n.dataset.cardId === req.id);
+    const el = card?.querySelector<HTMLElement>("[data-card-open]");
     const ae = document.activeElement;
     // keyboard moves follow the card (scrolling to it); after a menu pick we only rescue lost focus
     if (el && (req.force || !ae || ae === document.body)) el.focus({ preventScroll: !req.force });
@@ -627,7 +641,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
 
       {wipEdit && (
         <Popover anchor={wipEdit.anchor} role="dialog" label={`WIP limit for ${wipEdit.label}`} onClose={() => setWipEdit(null)} minWidth={0}>
-          <WipLimitEditor column={wipEdit.label} current={wip[wipKey(wipEdit.key)]} onSave={(n) => saveLimit(wipEdit.key, n)} onClose={() => setWipEdit(null)} />
+          <WipLimitEditor column={wipEdit.label} current={wip[wipKey(wipEdit.key)]} perBoard={!!scopeKey} onSave={(n) => saveLimit(wipEdit.key, n)} onClose={() => setWipEdit(null)} />
         </Popover>
       )}
 
@@ -834,7 +848,9 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
 
   const axisBg = "color-mix(in oklch, var(--bg) 88%, transparent)";
   const stickyBg = "color-mix(in oklch, var(--bg) 94%, transparent)";
-  const edgeChip: React.CSSProperties = { position: "absolute", top: rowH / 2 - 11, height: 22, display: "inline-flex", alignItems: "center", gap: 2, borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface-solid)", color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: 10.5, cursor: "pointer", boxShadow: "var(--shadow)", whiteSpace: "nowrap", zIndex: 1 };
+  // edge markers are sticky flex items of the track, so they sit at the visible edge of the
+  // chart (just right of the task labels, or at the right-hand edge) whatever the scroll or width
+  const edgeChip: React.CSSProperties = { position: "sticky", flexShrink: 0, height: 22, display: "inline-flex", alignItems: "center", gap: 2, borderRadius: 99, border: "1px solid var(--hairline)", background: "var(--surface-solid)", color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: 10.5, cursor: "pointer", boxShadow: "var(--shadow)", whiteSpace: "nowrap", zIndex: 1 };
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -917,7 +933,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
                         border: "none", background: stickyBg, cursor: "pointer", textAlign: "left", fontFamily: "var(--font-display)", position: "sticky", left: 0, zIndex: 2, outlineOffset: -2 }}>
                         <StatusDot status={t.status} size={7} /><span className="truncate">{t.title}</span>
                       </button>
-                      <div style={{ position: "absolute", left: labelW, top: 0, bottom: 0, width: trackW }}
+                      <div style={{ position: "absolute", left: labelW, top: 0, bottom: 0, width: trackW, display: "flex", alignItems: "center" }}
                         onDragOver={canEdit ? onTrackDragOver : undefined} onDrop={canEdit ? onTrackDrop : undefined}>
                         {v && sp && t.dueDate && (
                           <div role={canEdit ? "button" : undefined} tabIndex={canEdit ? 0 : undefined}
@@ -956,12 +972,12 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
                         )}
                         {/* bars outside the window: an edge marker that jumps to them */}
                         {c === "before" && sp && t.dueDate && (
-                          <button onClick={() => goTo((o) => o + sp.s - 2)} title={`Due ${dayLabel(t.dueDate)} — show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, before these dates. Show it`} style={{ ...edgeChip, left: 4, padding: "0 8px 0 3px" }}>
+                          <button onClick={() => goTo((o) => o + sp.s - 2)} title={`Due ${dayLabel(t.dueDate)} — show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, before these dates. Show it`} style={{ ...edgeChip, left: labelW + 6, marginLeft: 6, padding: "0 8px 0 3px" }}>
                             <Icon name="chevronLeft" size={12} />{shortDate(t.dueDate)}
                           </button>
                         )}
                         {c === "after" && sp && t.dueDate && (
-                          <button onClick={() => goTo((o) => o + sp.s - 2)} title={`Due ${dayLabel(t.dueDate)} — show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, after these dates. Show it`} style={{ ...edgeChip, right: 4, padding: "0 3px 0 8px" }}>
+                          <button onClick={() => goTo((o) => o + sp.s - 2)} title={`Due ${dayLabel(t.dueDate)} — show it`} aria-label={`${t.title} is due ${dayLabel(t.dueDate)}, after these dates. Show it`} style={{ ...edgeChip, right: 10, marginLeft: "auto", marginRight: 6, padding: "0 3px 0 8px" }}>
                             {shortDate(t.dueDate)}<Icon name="chevronRight" size={12} />
                           </button>
                         )}
@@ -1077,6 +1093,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
   // month / week navigation (0 = the current one)
   const [monthOffset, setMonthOffset] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
+  const periodAtSwitch = useRef<CalendarPeriod | null>(null); // where the last month ↔ week switch left each view
   const [dayPop, setDayPop] = useState<{ iso: string; anchor: HTMLElement } | null>(null);
   const [dropDay, setDropDay] = useState<string | null>(null);
   const viewMonth = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth() + monthOffset, 1);
@@ -1088,11 +1105,13 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
   const todayD = monthOffset === 0 ? KANBO_TODAY.getDate() : -1;
   const iso = (d: number) => toLocalISO(new Date(year, month, d));
   const monthLabel = viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  // switching month ↔ week keeps you looking at the same stretch of time
+  // switching month ↔ week keeps you looking at the same stretch of time, and switching
+  // straight back returns to exactly where you were
   const switchMode = (m: "month" | "week") => {
     if (m === mode) return;
-    if (m === "week") setWeekOffset(weekOffsetForMonth(KANBO_TODAY, monthOffset));
-    else setMonthOffset(monthOffsetForWeek(KANBO_TODAY, weekOffset));
+    const next = switchCalendarPeriod(KANBO_TODAY, m, { month: monthOffset, week: weekOffset }, periodAtSwitch.current);
+    periodAtSwitch.current = next;
+    setMonthOffset(next.month); setWeekOffset(next.week);
     setMode(m);
   };
   // a rendered element (not an inline component) so focus stays on ‹ › between clicks
@@ -1399,14 +1418,17 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const reqRef = useRef(0);
   const loadedAt = useRef(0);
-  const ids = tasks.map((t) => t.id).join(",");
-  const taskById = new Map(tasks.map((t) => [t.id, t]));
+  const loadedIds = useRef<Set<string> | null>(null); // the task ids `files` was fetched for (null until a load succeeds)
+  // order-insensitive, so re-sorting the tasks in view doesn't refetch
+  const idKey = useMemo(() => [...new Set(tasks.map((t) => t.id))].sort().join(","), [tasks]);
+  const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
+  /** quiet: keep the list on screen (re-signing links, a task added); otherwise show loading, then the list or an error */
   const load = useCallback(async (quiet: boolean) => {
     const req = ++reqRef.current;
-    if (!quiet) setStatus("loading");
+    const idList = idKey ? idKey.split(",") : [];
+    if (!quiet) { setStatus("loading"); setRefreshFailed(false); loadedIds.current = null; loadedAt.current = 0; }
     try {
-      const idList = ids ? ids.split(",") : [];
       // query in chunks — one huge IN (...) list fails on big projects
       const parts = await Promise.all(chunk(idList, FILE_ID_CHUNK).map((c) => store.listProjectAttachments(c)));
       if (req !== reqRef.current) return;
@@ -1415,29 +1437,42 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
       for (const a of parts.flat()) if (!seen.has(a.id)) { seen.add(a.id); merged.push(a); }
       merged.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
       setFiles(merged); setBroken(new Set()); setRefreshFailed(false);
+      loadedIds.current = new Set(idList);
       loadedAt.current = Date.now();
       setStatus("ready");
     } catch (err) {
       if (req !== reqRef.current) return;
       reportError(err);
-      // a failed background refresh keeps the list on screen; a failed first load says so
-      if (quiet && loadedAt.current) setRefreshFailed(true);
+      // a failed background refresh keeps the (still correct) list on screen; a failed load says so
+      if (quiet && loadedIds.current) setRefreshFailed(true);
       else setStatus("error");
     }
-  }, [ids]);
+  }, [idKey]);
 
-  useEffect(() => { load(loadedAt.current > 0); }, [load]);
+  // when the tasks in view change: fewer tasks just narrow the list below; a task added
+  // alongside ones already loaded refreshes quietly; a different set of tasks (another
+  // project or workspace — this view isn't remounted between them) loads afresh, so the
+  // previous project's files are never shown while or after it loads
+  useEffect(() => {
+    const prev = loadedIds.current;
+    const next = idKey ? idKey.split(",") : [];
+    if (!prev) { load(false); return; }
+    if (next.every((id) => prev.has(id))) return;
+    load(next.some((id) => prev.has(id)));
+  }, [idKey, load]);
   useEffect(() => () => { reqRef.current++; }, []); // ignore responses after unmount
   // re-sign links before they expire (checked each minute and when the tab comes back)
   useEffect(() => {
     const tick = () => {
-      if (loadedAt.current && document.visibilityState === "visible" && Date.now() - loadedAt.current > FILE_REFRESH_MS) load(true);
+      if (loadedIds.current && loadedAt.current && document.visibilityState === "visible" && Date.now() - loadedAt.current > FILE_REFRESH_MS) load(true);
     };
     const iv = window.setInterval(tick, 60 * 1000);
     document.addEventListener("visibilitychange", tick);
     return () => { window.clearInterval(iv); document.removeEventListener("visibilitychange", tick); };
   }, [load]);
 
+  // only files of tasks in view — belt and braces against a list fetched for another set of tasks
+  const shown = files.filter((a) => taskById.has(a.taskId));
   const emptyWrap: React.CSSProperties = { textAlign: "center", padding: "70px 24px", color: "var(--ink-4)" };
   const emptyTitle: React.CSSProperties = { fontSize: 16, color: "var(--ink)", margin: 0, fontWeight: 600, fontFamily: "var(--font-head)", letterSpacing: "-0.01em" };
 
@@ -1452,7 +1487,7 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
           <p style={{ fontSize: 13, margin: "5px 0 14px", lineHeight: 1.5 }}>Something went wrong fetching attachments. Your files are safe — check your connection and try again.</p>
           <button className="btn btn-ghost" onClick={() => load(false)} style={{ fontSize: 13 }}><Icon name="refresh" size={14} /> Retry</button>
         </div>
-      ) : files.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div style={emptyWrap}>
           <div style={{ marginBottom: 14 }}><EmptyArt kind="folder" /></div>
           <p style={emptyTitle}>No files yet</p>
@@ -1462,12 +1497,12 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
         <>
           {refreshFailed && (
             <div role="alert" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", marginBottom: 12, borderRadius: 11, border: "1px solid var(--hairline)", background: "var(--surface)", fontSize: 12.5, color: "var(--ink-3)" }}>
-              <span style={{ flex: 1 }}>Couldn't refresh file links, so some may have expired.</span>
+              <span style={{ flex: 1 }}>Couldn't refresh files, so some links may have expired or new files may be missing.</span>
               <button className="btn btn-ghost" onClick={() => load(true)} style={{ fontSize: 12.5, padding: "5px 10px" }}><Icon name="refresh" size={13} /> Retry</button>
             </div>
           )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-            {files.map((att) => {
+            {shown.map((att) => {
               const task = taskById.get(att.taskId);
               const img = att.mime?.startsWith("image/") && att.url && !broken.has(att.id);
               return (

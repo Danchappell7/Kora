@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  addDaysISO, daysBetweenISO, mondayOf, weekOffsetForMonth, monthOffsetForWeek,
+  addDaysISO, daysBetweenISO, mondayOf, weekOffsetForMonth, monthOffsetForWeek, switchCalendarPeriod,
   hideNestedSubtasks, assigneeColumnKey, UNASSIGNED_COL, FORMER_COL,
   between, planReorder, leadInDays, effectiveStartISO, barSpan, clipSpan,
-  timelineMovePatch, timelineStartPatch, wipStorageKey, readWipLimits, parseWipLimit, chunk,
+  timelineMovePatch, timelineStartPatch, wipStorageKey, wipKeyFor, loadWipLimits, LEGACY_WIP_KEY, readWipLimits, parseWipLimit, chunk,
 } from "./otherViewsLogic";
 
 describe("calendar maths", () => {
@@ -20,12 +20,39 @@ describe("calendar maths", () => {
     const wed = new Date(2026, 8, 30); // Wed 30 Sep 2026
     expect(mondayOf(wed).getDate()).toBe(28);
     expect(weekOffsetForMonth(wed, 0)).toBe(0);
-    // 1 Oct 2026 is a Thursday in the same week → still this week
+    // October's first week is this one (Thu 1 Oct)
     expect(weekOffsetForMonth(wed, 1)).toBe(0);
-    // 1 Nov 2026 is a Sunday → the week of Mon 26 Oct, four weeks on
-    expect(weekOffsetForMonth(wed, 2)).toBe(4);
-    expect(monthOffsetForWeek(wed, 0)).toBe(1); // this week's Thursday is 1 Oct
+    // 1 Nov 2026 is a Sunday, so November's first week is Mon 2 Nov, five weeks on
+    expect(weekOffsetForMonth(wed, 2)).toBe(5);
+    // this week belongs to today's month, even though its Thursday is 1 Oct
+    expect(monthOffsetForWeek(wed, 0)).toBe(0);
     expect(monthOffsetForWeek(wed, -1)).toBe(0);
+    expect(monthOffsetForWeek(wed, 1)).toBe(1);
+  });
+
+  it("month → week → month lands back on the same month (today = Wed 30 Sep 2026)", () => {
+    const wed = new Date(2026, 8, 30);
+    for (let m = -1; m <= 5; m++) {
+      const inWeek = switchCalendarPeriod(wed, "week", { month: m, week: 0 }, null);
+      const back = switchCalendarPeriod(wed, "month", inWeek, inWeek);
+      expect(back.month).toBe(m);
+      // and the week shown is the month's own first week (or this week for the current month)
+      expect(inWeek.week).toBe(weekOffsetForMonth(wed, m));
+    }
+    // the plain helpers are inverses too, except where a month's first week is this week
+    for (const m of [-1, 0, 2, 3, 4, 5]) expect(monthOffsetForWeek(wed, weekOffsetForMonth(wed, m))).toBe(m);
+  });
+
+  it("week → month → week lands back on the same week, and moving on follows the new period", () => {
+    const wed = new Date(2026, 8, 30);
+    const inMonth = switchCalendarPeriod(wed, "month", { month: 0, week: 3 }, null);
+    expect(inMonth.month).toBe(1); // Thu 22 Oct
+    expect(switchCalendarPeriod(wed, "week", inMonth, inMonth).week).toBe(3);
+    // after paging to December, week view opens on December's first week (Mon 30 Nov)
+    const moved = switchCalendarPeriod(wed, "week", { month: 3, week: 3 }, inMonth);
+    expect(moved.week).toBe(9);
+    // and after paging weeks, month view follows the week
+    expect(switchCalendarPeriod(wed, "month", { month: 3, week: 14 }, moved).month).toBe(4); // Thu 7 Jan 2027
   });
 });
 
@@ -60,16 +87,43 @@ describe("planReorder", () => {
     expect(planReorder(col, "a", 2)).toEqual([{ id: "a", position: 31 }]);
     expect(planReorder(col, "x", 0)).toEqual([{ id: "x", position: 9 }]);
   });
-  it("renumbers when neighbours share a position, so the move is visible", () => {
+  // apply a plan and read the column back the way the views sort it (position, then id)
+  const applyPlan = (list: { id: string; position?: number | null }[], plan: { id: string; position: number }[]) => {
+    const pos = new Map(plan.map((p) => [p.id, p.position]));
+    return list.map((t) => ({ id: t.id, p: pos.get(t.id) ?? t.position ?? 0 }))
+      .sort((x, y) => (x.p - y.p) || x.id.localeCompare(y.id)).map((x) => x.id);
+  };
+  it("moves a card between neighbours that share a position", () => {
     const tied = [{ id: "a", position: 5 }, { id: "b", position: 5 }, { id: "c", position: 5 }];
     const plan = planReorder(tied, "c", 1);
-    const pos = new Map(plan.map((p) => [p.id, p.position]));
-    const order = ["a", "b", "c"].map((id) => ({ id, p: pos.get(id) ?? 5 })).sort((x, y) => x.p - y.p).map((x) => x.id);
-    expect(order).toEqual(["a", "c", "b"]);
+    expect(applyPlan(tied, plan)).toEqual(["a", "c", "b"]);
+    expect(plan).toHaveLength(2); // one neighbour shifted, plus the moved card
   });
-  it("renumbers when a neighbour has no position", () => {
+  it("treats a missing position as 0, as every view sorts it", () => {
     const plan = planReorder([{ id: "a" }, { id: "b" }], "b", 0);
-    expect(plan.find((p) => p.id === "b")!.position).toBeLessThan(plan.find((p) => p.id === "a")!.position);
+    expect(plan).toEqual([{ id: "b", position: -1 }]);
+    expect(applyPlan([{ id: "a" }, { id: "b" }], plan)).toEqual(["b", "a"]);
+  });
+  it("only rewrites the shorter tied run, not the whole column (bulk imports share a position)", () => {
+    const col = Array.from({ length: 100 }, (_, k) => ({ id: `t${String(k).padStart(3, "0")}`, position: 1700000000000 }));
+    const ids = col.map((t) => t.id);
+    for (const [from, to] of [[99, 3], [0, 96], [50, 49], [10, 0], [10, 99]]) {
+      const moving = ids[from];
+      const plan = planReorder(col, moving, to);
+      const expected = ids.filter((id) => id !== moving);
+      expected.splice(to, 0, moving);
+      expect(applyPlan(col, plan)).toEqual(expected);
+      const others = ids.length - 1;
+      expect(plan.length).toBeLessThanOrEqual(Math.min(to, others - to) + 1);
+    }
+    // moving within a tied run next to distinct neighbours stays small
+    const mixed = [{ id: "a", position: 1 }, { id: "b", position: 5 }, { id: "c", position: 5 }, { id: "d", position: 5 }, { id: "e", position: 9 }];
+    const plan = planReorder(mixed, "e", 1);
+    expect(applyPlan(mixed, plan)).toEqual(["a", "e", "b", "c", "d"]);
+    expect(plan).toEqual([{ id: "e", position: 3 }]);
+    const plan2 = planReorder(mixed, "a", 2);
+    expect(applyPlan(mixed, plan2)).toEqual(["b", "c", "a", "d", "e"]);
+    expect(plan2.length).toBeLessThanOrEqual(2);
   });
   it("between() falls back to the ends of the list", () => {
     expect(between(undefined, 4)).toBe(3);
@@ -126,6 +180,18 @@ describe("WIP limits", () => {
   it("are stored per board", () => {
     expect(wipStorageKey("project:p1")).not.toBe(wipStorageKey("project:p2"));
     expect(wipStorageKey("")).toBe("kanbo-board-wip:all");
+    expect(wipKeyFor("project:p1")).toBe("kanbo-board-wip:project:p1");
+    expect(wipKeyFor(undefined)).toBe(LEGACY_WIP_KEY);
+  });
+  it("carry over limits saved before they were per board", () => {
+    const store: Record<string, string> = { [LEGACY_WIP_KEY]: '{"status:progress":3}' };
+    const get = (k: string) => store[k] ?? null;
+    expect(loadWipLimits(get, undefined)).toEqual({ "status:progress": 3 });
+    expect(loadWipLimits(get, "project:p1")).toEqual({ "status:progress": 3 });
+    // once a board saves its own (even "no limits"), that wins
+    store[wipStorageKey("project:p1")] = "{}";
+    expect(loadWipLimits(get, "project:p1")).toEqual({});
+    expect(loadWipLimits(get, "project:p2")).toEqual({ "status:progress": 3 });
   });
   it("parse input and ignore junk in storage", () => {
     expect(parseWipLimit("")).toBeNull();

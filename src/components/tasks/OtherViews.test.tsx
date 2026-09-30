@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, within, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, within, waitFor, cleanup, act } from "@testing-library/react";
 import { BoardView, TimelineView, CalendarView, MatrixView, FilesView } from "./OtherViews";
 import { store } from "../../data/store";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
@@ -51,11 +51,20 @@ describe("BoardView", () => {
     expect(cardIds()).toHaveLength(60);
   });
 
-  it("opens cards from the keyboard", () => {
+  it("opens cards from a real button, and the card isn't a button wrapping other controls", () => {
     const p = board([mk({ id: "a", title: "Write brief" })]);
-    const card = screen.getByRole("button", { name: /^Write brief, To do/ });
-    fireEvent.keyDown(card, { key: "Enter" });
-    fireEvent.keyDown(card, { key: " " });
+    const open = screen.getByRole("button", { name: /^Write brief, To do/ });
+    expect(open.tagName).toBe("BUTTON"); // native Enter / Space
+    fireEvent.click(open);
+    expect(p.onOpen).toHaveBeenCalledTimes(1);
+    const card = document.querySelector<HTMLElement>('[data-card-id="a"]')!;
+    expect(card).toHaveAttribute("role", "group");
+    expect(card).toHaveAccessibleName("Write brief");
+    expect(card.querySelector('[role="button"]')).toBeNull();
+    expect(open.closest('[role="button"]')).toBeNull();
+    // the open button comes first in the card's tab order
+    expect(card.querySelector("button")).toBe(open);
+    fireEvent.click(card); // mouse clicks anywhere on the card still open it
     expect(p.onOpen).toHaveBeenCalledTimes(2);
   });
 
@@ -93,6 +102,14 @@ describe("BoardView", () => {
     expect(p.onOpen).toHaveBeenCalledWith("a");
   });
 
+  it("moves archived cards too (they aren't in allTasks), and never announces a move that didn't happen", () => {
+    const archived = [mk({ id: "a", title: "Old brief", archivedAt: "2026-09-01" })];
+    const p = board(archived, { allTasks: [] });
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Old brief, To do/ }), { key: "ArrowRight", altKey: true });
+    expect(p.onMove).toHaveBeenCalledWith("a", "progress", expect.any(Number));
+    expect(document.querySelector('[role="status"]')!.textContent).toBe("Old brief moved to In progress");
+  });
+
   it("keeps WIP limits per board", () => {
     localStorage.setItem("kanbo-board-wip:project:p-launch", JSON.stringify({ "status:todo": 1 }));
     const tasks = [mk({ id: "a" }), mk({ id: "b" })];
@@ -101,6 +118,22 @@ describe("BoardView", () => {
     cleanup();
     board(tasks, { scopeKey: "__my" });
     expect(screen.getByRole("button", { name: /^2 tasks in To do\. Set WIP limit/ })).toHaveTextContent(/^2$/);
+  });
+
+  it("never guesses the board from the visible tasks, and keeps limits set before they were per board", () => {
+    // a My tasks board (no scopeKey passed) whose tasks all sit in one project doesn't pick up that project's limits
+    localStorage.setItem("kanbo-board-wip:project:p-launch", JSON.stringify({ "status:todo": 1 }));
+    board([mk({ id: "a" }), mk({ id: "b" })]);
+    expect(screen.queryByRole("button", { name: /WIP limit \d/ })).toBeNull();
+    cleanup();
+    // limits saved under the old device-wide key still show, with or without a scopeKey
+    localStorage.clear();
+    localStorage.setItem("kanbo-board-wip", JSON.stringify({ "status:todo": 1 }));
+    board([mk({ id: "a" }), mk({ id: "b" })]);
+    expect(screen.getByRole("button", { name: /WIP limit 1, over the limit/ })).toBeInTheDocument();
+    cleanup();
+    board([mk({ id: "a" }), mk({ id: "b" })], { scopeKey: "project:p-launch" });
+    expect(screen.getByRole("button", { name: /WIP limit 1, over the limit/ })).toBeInTheDocument();
   });
 
   it("sets a WIP limit from the dialog and rejects nonsense", () => {
@@ -147,6 +180,19 @@ describe("TimelineView", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/can't be after the due date/);
   });
 
+  it("pins the marker for a bar after the window to the visible edge, not the far end of the track", () => {
+    render(<TimelineView tasks={[mk({ id: "far", title: "Launch", dueDate: addDaysISO(today, 30) }), mk({ id: "old", title: "Audit", dueDate: addDaysISO(today, -30) })]} onOpen={noop} onPatch={vi.fn()} />);
+    const after = screen.getByRole("button", { name: /Launch is due .* after these dates/ });
+    const before = screen.getByRole("button", { name: /Audit is due .* before these dates/ });
+    for (const chip of [after, before]) {
+      expect(chip.style.position).toBe("sticky");
+      expect(getComputedStyle(chip.parentElement!).display).toBe("flex");
+    }
+    expect(after.style.right).not.toBe("");
+    expect(after.style.marginLeft).toBe("auto");
+    expect(before.style.left).not.toBe("");
+  });
+
   it("read-only bars aren't draggable or focusable", () => {
     render(<TimelineView tasks={[mk({ id: "a", title: "Brief", dueDate: today })]} onOpen={noop} onPatch={vi.fn()} readOnly />);
     expect(screen.queryByRole("button", { name: /^Brief: / })).toBeNull();
@@ -166,6 +212,18 @@ describe("CalendarView", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /Due thing 4/ }));
     expect(onOpen).toHaveBeenCalledWith("c4");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("month → week → month comes back to the same month", () => {
+    render(<CalendarView tasks={[]} onOpen={noop} />);
+    const label = () => screen.getByText(/^[A-Z][a-z]+ \d{4}$/).textContent;
+    for (let step = 0; step < 4; step++) {
+      const before = label();
+      fireEvent.click(screen.getByRole("button", { name: "week" }));
+      fireEvent.click(screen.getByRole("button", { name: "month" }));
+      expect(label()).toBe(before);
+      fireEvent.click(screen.getByRole("button", { name: "Next month" }));
+    }
   });
 
   it("week view moves between weeks", () => {
@@ -200,6 +258,42 @@ describe("FilesView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
     expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("switching to another project never shows the previous project's files", async () => {
+    spies.push(vi.spyOn(console, "error").mockImplementation(noop));
+    const attA: Attachment = { ...att, id: "fa", taskId: "a1", name: "A-secret-plan.pdf" };
+    let rejectB!: (e: unknown) => void;
+    const list = vi.spyOn(store, "listProjectAttachments");
+    spies.push(list);
+    list.mockResolvedValueOnce([attA]).mockImplementationOnce(() => new Promise((_, rej) => { rejectB = rej; }));
+    const { rerender } = render(<FilesView tasks={[mk({ id: "a1", title: "A task", projectId: "pA" })]} onOpen={noop} />);
+    expect(await screen.findByText("A-secret-plan.pdf")).toBeInTheDocument();
+    // same FilesView instance (App doesn't remount TasksPage between projects), different tasks
+    rerender(<FilesView tasks={[mk({ id: "b1", title: "B task", projectId: "pB" })]} onOpen={noop} />);
+    expect(screen.getByText("Loading files…")).toBeInTheDocument();
+    expect(screen.queryByText("A-secret-plan.pdf")).toBeNull();
+    await act(async () => { rejectB(new Error("network")); });
+    expect(screen.getByText("Couldn't load files")).toBeInTheDocument();
+    expect(screen.queryByText("A-secret-plan.pdf")).toBeNull();
+  });
+
+  it("keeps the list up while a task is added, and doesn't refetch for fewer or re-sorted tasks", async () => {
+    const list = vi.spyOn(store, "listProjectAttachments").mockResolvedValue([att]);
+    spies.push(list);
+    const a = mk({ id: "a", title: "Brief" }), b = mk({ id: "b", title: "Plan" });
+    const { rerender } = render(<FilesView tasks={[a, b]} onOpen={noop} />);
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    rerender(<FilesView tasks={[b, a]} onOpen={noop} />); // AI sort / reorder
+    rerender(<FilesView tasks={[a]} onOpen={noop} />);    // a filter narrows the view
+    expect(list).toHaveBeenCalledTimes(1);
+    rerender(<FilesView tasks={[b]} onOpen={noop} />);    // the file's task is filtered out
+    expect(screen.queryByText("brief.pdf")).toBeNull();
+    expect(screen.getByText("No files yet")).toBeInTheDocument();
+    rerender(<FilesView tasks={[a, b, mk({ id: "c", title: "New" })]} onOpen={noop} />); // a task added
+    expect(screen.queryByText("Loading files…")).toBeNull();
+    expect(screen.getByText("brief.pdf")).toBeInTheDocument();
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
   });
 
   it("queries attachments in chunks rather than one huge list", async () => {

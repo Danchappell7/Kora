@@ -30,18 +30,36 @@ export function mondayOf(d: Date): Date {
   return m;
 }
 
-/** Week offset (from today's week) of the week holding the 1st of the month `monthOffset` months away. */
+/**
+ * Week to show when a month view switches to week view: this week for the
+ * current month, otherwise the month's first week (the one holding the 4th,
+ * i.e. the first week whose Thursday falls in that month).
+ */
 export function weekOffsetForMonth(today: Date, monthOffset: number): number {
   if (monthOffset === 0) return 0;
-  const first = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
-  return Math.round((mondayOf(first).getTime() - mondayOf(today).getTime()) / (7 * DAY_MS));
+  const fourth = new Date(today.getFullYear(), today.getMonth() + monthOffset, 4);
+  return Math.round((mondayOf(fourth).getTime() - mondayOf(today).getTime()) / (7 * DAY_MS));
 }
 
-/** Month offset (from today's month) that a week `weekOffset` weeks away mostly falls in (its Thursday). */
+/** Month for a week: today's month for this week, otherwise the month its Thursday falls in. */
 export function monthOffsetForWeek(today: Date, weekOffset: number): number {
+  if (weekOffset === 0) return 0;
   const thu = mondayOf(today);
   thu.setDate(thu.getDate() + weekOffset * 7 + 3);
   return (thu.getFullYear() - today.getFullYear()) * 12 + (thu.getMonth() - today.getMonth());
+}
+
+export type CalendarPeriod = { month: number; week: number };
+/**
+ * Switching month ↔ week. `from` is the period pair recorded at the last
+ * switch: if the user hasn't moved since, they go straight back to where they
+ * came from (so month → week → month never lands on a different month);
+ * otherwise the new view shows the same stretch of time. The result is the
+ * pair to record for the next switch.
+ */
+export function switchCalendarPeriod(today: Date, to: "month" | "week", cur: CalendarPeriod, from: CalendarPeriod | null): CalendarPeriod {
+  if (to === "week") return { month: cur.month, week: from && from.month === cur.month ? from.week : weekOffsetForMonth(today, cur.month) };
+  return { week: cur.week, month: from && from.week === cur.week ? from.month : monthOffsetForWeek(today, cur.week) };
 }
 
 /* ---------------- sub-tasks ---------------- */
@@ -77,25 +95,52 @@ export function between(before?: number | null, after?: number | null): number {
   return (before + after) / 2;
 }
 
+/** The position every view sorts by — a missing one counts as 0 (store.ts reads NULL as 0 too). */
+const sortPos = (t: Positioned): number => (t.position != null && Number.isFinite(t.position) ? t.position : 0);
+
 /**
- * Plans the position writes that put `movingId` at `index` of `list` once it
- * has been taken out (so `index` counts the other items). Normally that is a
- * single write for the moved task; when its neighbours share a position (bulk
- * imports) or lack one, the column is renumbered so the move actually shows.
+ * Plans the position writes that put `movingId` at `index` of `list` (sorted
+ * by position, then id) once it has been taken out, so `index` counts the
+ * other items. Normally that is one write for the moved task.
+ *
+ * When the neighbours share a position (bulk imports, older tasks without
+ * one) there's no number between them, so the shorter run of tied cards on
+ * one side of the gap moves together to a single new value — ties sort by
+ * id, so the run keeps its own order — and the moved card slots in next to
+ * it. That's a handful of writes, not the whole column.
  */
 export function planReorder(list: Positioned[], movingId: string, index: number): { id: string; position: number }[] {
   const rest = list.filter((t) => t.id !== movingId);
-  const i = Math.max(0, Math.min(rest.length, index));
-  const before = rest[i - 1], after = rest[i];
-  const bp = before?.position, ap = after?.position;
-  const neighboursKnown = (!before || bp != null) && (!after || ap != null);
-  const pos = between(bp, ap);
-  if (neighboursKnown && Number.isFinite(pos) && (bp == null || pos > bp) && (ap == null || pos < ap)) {
-    return [{ id: movingId, position: pos }];
+  const n = rest.length;
+  const i = Math.max(0, Math.min(n, index));
+  const lo = i > 0 ? sortPos(rest[i - 1]) : null;
+  const hi = i < n ? sortPos(rest[i]) : null;
+  const strictly = (a: number | null, x: number, b: number | null) => Number.isFinite(x) && (a == null || x > a) && (b == null || x < b);
+  const pos = between(lo, hi);
+  if (strictly(lo, pos, hi)) return [{ id: movingId, position: pos }];
+
+  const plans: { id: string; position: number }[][] = [];
+  // shift the tied run just before the gap down, below the moved card
+  if (lo != null) {
+    let a = i - 1;
+    while (a > 0 && sortPos(rest[a - 1]) === lo) a--;
+    const floor = a > 0 ? sortPos(rest[a - 1]) : null;
+    const x = between(floor, hi), y = between(x, hi);
+    if (strictly(floor, x, hi) && strictly(x, y, hi)) plans.push([...rest.slice(a, i).map((t) => ({ id: t.id, position: x })), { id: movingId, position: y }]);
   }
+  // or shift the tied run just after the gap up, above the moved card
+  if (hi != null) {
+    let b = i + 1;
+    while (b < n && sortPos(rest[b]) === hi) b++;
+    const ceil = b < n ? sortPos(rest[b]) : null;
+    const x = between(lo, ceil), y = between(lo, x);
+    if (strictly(lo, x, ceil) && strictly(lo, y, x)) plans.push([...rest.slice(i, b).map((t) => ({ id: t.id, position: x })), { id: movingId, position: y }]);
+  }
+  if (plans.length) return plans.reduce((best, p) => (p.length < best.length ? p : best));
+
+  // no room left between floating-point neighbours: renumber the column
   const order = [...rest.slice(0, i).map((t) => t.id), movingId, ...rest.slice(i).map((t) => t.id)];
-  const known = list.map((t) => t.position).filter((p): p is number => p != null && Number.isFinite(p));
-  const base = known.length ? Math.floor(Math.min(...known)) : 0;
+  const base = n ? Math.floor(Math.min(...rest.map(sortPos))) : 0;
   const was = new Map(list.map((t) => [t.id, t.position]));
   return order
     .map((id, k) => ({ id, position: base + k }))
@@ -159,9 +204,30 @@ export function timelineStartPatch(task: Pick<Task, "dueDate" | "startDate">, dr
 }
 
 /* ---------------- board WIP limits ---------------- */
+/** Where limits lived before they were saved per board (one set for every board on the device). */
+export const LEGACY_WIP_KEY = "kanbo-board-wip";
+
 /** WIP limits are stored per board (route / project), then per grouping + column. */
 export function wipStorageKey(scope: string): string {
   return `kanbo-board-wip:${scope || "all"}`;
+}
+
+/** The storage key a board saves to: its own when it knows which board it is, else the device-wide one. */
+export function wipKeyFor(scope: string | null | undefined): string {
+  return scope ? wipStorageKey(scope) : LEGACY_WIP_KEY;
+}
+
+/**
+ * A board's limits. A board that hasn't saved its own yet inherits the
+ * device-wide limits people set before limits were per board, so an upgrade
+ * never silently drops them; the first save gives the board its own copy.
+ */
+export function loadWipLimits(get: (key: string) => string | null, scope: string | null | undefined): Record<string, number> {
+  if (scope) {
+    const own = get(wipStorageKey(scope));
+    if (own != null) return readWipLimits(own);
+  }
+  return readWipLimits(get(LEGACY_WIP_KEY));
 }
 
 export function readWipLimits(raw: string | null): Record<string, number> {
