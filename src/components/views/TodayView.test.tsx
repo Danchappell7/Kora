@@ -163,6 +163,10 @@ describe("TodayView: the suggested plan", () => {
     expect(ghostButtons()).toHaveLength(0);
     expect(screen.getByText("Plan my day places tasks in your free time")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Plan my day/ })).toBeEnabled();
+    // H can't bring back what Settings switched off: it says where the switch is
+    fireEvent.keyDown(window, { key: "h" });
+    expect(ghostButtons()).toHaveLength(0);
+    expect(screen.getAllByText("Suggestions are switched off in Settings › Appearance.").length).toBeGreaterThan(0);
   });
 
   it("when nothing fits, Plan my day says so and writes nothing", async () => {

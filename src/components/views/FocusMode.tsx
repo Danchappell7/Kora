@@ -47,10 +47,10 @@ const FOCUS_CSS = `
 .kfocus-lengths button:hover { color: var(--ink); }
 .kfocus-lengths button[aria-pressed="true"] { background: var(--surface-raised); color: var(--ink); box-shadow: var(--e1, var(--shadow)); }
 .kfocus-play.kbtn { min-width: 132px; }
-.kfocus-picker { width: 100%; max-width: 720px; margin: 0 auto; padding: 0 var(--gutter, 32px) 28px; }
-/* centred under the timer; when they overflow they scroll from the first one ("safe") */
+.kfocus-picker { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 var(--gutter, 32px) 28px; }
+/* centred under the timer, wrapping onto a second row rather than running off the edge */
 .kfocus-picker .ksection { justify-content: center; }
-.kfocus-chips { display: flex; justify-content: safe center; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; }
+.kfocus-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 2px; }
 .kfocus-chip { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; max-width: 280px; height: 40px; padding: 0 12px;
   border: 0; border-radius: var(--r-md, 8px); background: var(--surface-raised); box-shadow: var(--e1, var(--shadow)); cursor: pointer; color: var(--ink); }
 .kfocus-chip:hover { box-shadow: var(--e2, var(--shadow-lg)); }
@@ -63,6 +63,8 @@ const FOCUS_CSS = `
   .kfocus { background: var(--bg); }
   .kfocus-top { padding: 8px 16px; }
   .kfocus-picker { padding: 0 16px 20px; }
+  /* a phone swipes through them in one row instead */
+  .kfocus-chips { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; padding-bottom: 4px; }
   /* reset · play · Pomodoro on one row, the lengths centred under them */
   .kfocus-lengths { order: 1; }
 }

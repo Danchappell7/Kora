@@ -207,9 +207,10 @@ const PLAN_CSS = `
 .kday-event[data-tall="true"] { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding-top: 6px; }
 .kday-event[data-past="true"] { opacity: 0.55; }
 .kday-event[data-kind="meeting"][data-now="true"] { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--kp-accent-line); }
-.kday-event-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/16px var(--kp-ui); color: var(--ink-2); }
+/* short of room, the time and people give way before the meeting's name does */
+.kday-event-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/16px var(--kp-ui); color: var(--ink-2); }
 .kday-event[data-kind="break"] .kday-event-title { font-weight: 500; color: var(--ink-3); }
-.kday-event-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kday-event-meta { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kday-event-act { margin-left: auto; opacity: 0; transition: opacity var(--kp-d1) var(--ease); }
 .kday-event[data-tall="true"] .kday-event-act { position: absolute; top: 4px; right: 4px; }
 .kday-event:hover .kday-event-act, .kday-event:focus-within .kday-event-act { opacity: 1; }

@@ -280,12 +280,19 @@ function TodayDay({
   }, [readOnly, onRank, onUpdate, toast, say]);
 
   const toggleSuggestions = useCallback(() => {
+    if (!showSuggestions) {
+      // switched off for good in Settings: H can't bring them back, so say where they live
+      const msg = "Suggestions are switched off in Settings › Appearance.";
+      if (toast) toast.toast(msg);
+      say(msg);
+      return;
+    }
     const p = prefsRef.current;
     setPrefs({ ...p, hidden: !p.hidden });
     const msg = p.hidden ? "Suggestions are back." : "Suggestions hidden for today. Press H to bring them back.";
     if (toast) toast.toast(msg);
     say(msg);
-  }, [setPrefs, toast, say]);
+  }, [showSuggestions, setPrefs, toast, say]);
 
   // P plans the day; H hides (or brings back) the suggestions. Never while typing,
   // with a modifier held, over a dialog, or when something else took the key ("g p").
