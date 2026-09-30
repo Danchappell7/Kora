@@ -695,6 +695,8 @@ create policy "dependencies delete: task editors" on public.task_dependencies
 -- whose direct task updates 0041 rejects. One locked update, so two people
 -- following at once never overwrite each other. p_follow: true = follow,
 -- false = unfollow, null = toggle. Returns the task's followers afterwards.
+-- The app always passes true or false (store.setTaskFollow), so a screen that
+-- is out of date can't flip the person's choice; null is for the SQL editor.
 create or replace function public.toggle_task_follow(p_task uuid, p_follow boolean default null)
 returns text[] language plpgsql security definer set search_path = public as $$
 declare
