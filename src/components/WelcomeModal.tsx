@@ -106,7 +106,7 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
                 <div>
                   <label htmlFor="kanbo-onb-first" style={labelStyle}>First name</label>
                   {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                  <TextField ref={firstRef} id="kanbo-onb-first" autoFocus value={firstName} onChange={(e) => { edited.current = true; setFirstName(e.target.value); if (error) setError(null); }} placeholder="Daniel" autoComplete="given-name" invalid={!!error && !firstName.trim()} aria-describedby={error ? "kanbo-onb-error" : undefined} />
+                  <TextField ref={firstRef} id="kanbo-onb-first" autoFocus data-autofocus value={firstName} onChange={(e) => { edited.current = true; setFirstName(e.target.value); if (error) setError(null); }} placeholder="Daniel" autoComplete="given-name" invalid={!!error && !firstName.trim()} aria-describedby={error ? "kanbo-onb-error" : undefined} />
                 </div>
                 <div>
                   <label htmlFor="kanbo-onb-last" style={labelStyle}>Surname</label>

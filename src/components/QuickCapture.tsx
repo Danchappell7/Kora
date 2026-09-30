@@ -6,7 +6,7 @@
    ============================================================ */
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Icon, StatusDot, PriorityFlag, Avatar } from "./primitives";
-import { parseTaskTokens, getProject, getMember, fmtDue } from "../data/data";
+import { parseTaskTokens, getProject, getMember, fmtDue, todayISO } from "../data/data";
 import type { Task, Status } from "../data/types";
 
 export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate }: {
@@ -22,7 +22,10 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
 
   useEffect(() => { if (open) { setText(""); setTimeout(() => inputRef.current?.focus(), 20); } }, [open]);
 
-  const parsed = useMemo(() => parseTaskTokens(text, projects, members), [text, projects, members]);
+  // `today` keeps "today"/"tomorrow" right in a bar left open past midnight
+  const today = todayISO();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const parsed = useMemo(() => parseTaskTokens(text, projects, members), [text, projects, members, today]);
   const projectId = parsed.projectId ?? defaultProjectId;
 
   if (!open) return null;
@@ -54,7 +57,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
       <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Quick capture" className="glass anim-scalein" style={{ width: 560, maxWidth: "94vw", borderRadius: 16, padding: 16, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
           <Icon name="zap" size={18} style={{ color: "var(--accent)", flexShrink: 0 }} />
-          <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)} aria-label="Quick capture a task"
+          <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)} aria-label="Quick capture a task" data-focus-ring="none"
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } else if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
             placeholder="Add a task…  e.g. Pay invoice tomorrow #finance @maya !high"
             style={{ flex: 1, height: 30, border: "none", background: "transparent", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 17, outline: "none" }} />

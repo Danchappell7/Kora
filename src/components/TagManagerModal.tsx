@@ -35,20 +35,25 @@ export function TagManagerModal({ open, onClose, tags, taskCounts, onUpdate, onD
   const [newError, setNewError] = useState("");
   const closeRef = useRef<HTMLButtonElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
+  const newRef = useRef<HTMLInputElement>(null);
   const mergeBtns = useRef<Record<string, HTMLButtonElement | null>>({});
   // the dialog's resting focus: the filter box when there is one, else Close
   const focusHome = () => window.setTimeout(() => (filterRef.current ?? closeRef.current)?.focus(), 0);
   const revert = (id: string) => setDrafts((d) => { const n = { ...d }; delete n[id]; return n; });
 
-  // Escape backs out one level at a time: merge picker → unsaved rename →
-  // typed filter (while you're in the box) → dialog
+  // Escape backs out one level at a time: merge picker → unsaved rename
+  // (reverted, never saved) → typed filter or new tag name (while you're in
+  // that box) → dialog. The trap hands us Escape even from a field
+  // (fieldEscape: "dialog") and leaves focus where it is, so no blur can
+  // commit a half-typed rename on the way out.
   const onEscape = () => {
     if (mergeFrom) { const id = mergeFrom; setMergeFrom(null); window.setTimeout(() => mergeBtns.current[id]?.focus(), 0); return; }
     if (editing && drafts[editing] !== undefined) { revert(editing); return; }
     if (filter && document.activeElement === filterRef.current) { setFilter(""); return; }
+    if (newLabel && document.activeElement === newRef.current) { setNewLabel(""); setNewError(""); return; }
     onClose();
   };
-  const trapRef = useFocusTrap<HTMLDivElement>(open, onEscape);
+  const trapRef = useFocusTrap<HTMLDivElement>(open, onEscape, { fieldEscape: "dialog" });
 
   useEffect(() => {
     if (!open) return;
@@ -177,7 +182,7 @@ export function TagManagerModal({ open, onClose, tags, taskCounts, onUpdate, onD
         {onCreate && (
           <form onSubmit={(e) => { e.preventDefault(); create(); }} style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 12, borderTop: "1px solid var(--hairline)" }}>
             <div style={{ display: "flex", gap: 8 }}>
-              <input value={newLabel} maxLength={TAG_MAX} onChange={(e) => { setNewLabel(e.target.value); if (newError) setNewError(""); }}
+              <input ref={newRef} value={newLabel} maxLength={TAG_MAX} onChange={(e) => { setNewLabel(e.target.value); if (newError) setNewError(""); }}
                 placeholder="New tag name…" aria-label="New tag name" aria-invalid={!!newError} aria-describedby={newError ? "kanbo-tagmgr-err" : undefined}
                 style={{ flex: 1, minWidth: 0, height: 34, padding: "0 11px", borderRadius: 9, border: `1px solid ${newError ? "var(--prio-urgent)" : "var(--hairline)"}`, background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13.5 }} />
               <button type="submit" className="btn btn-accent" disabled={!newLabel.trim()} style={{ padding: "6px 13px", fontSize: 12.5, opacity: newLabel.trim() ? 1 : 0.5 }}>

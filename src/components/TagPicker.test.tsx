@@ -36,6 +36,17 @@ describe("TagPicker", () => {
     expect(p.onToggle).not.toHaveBeenCalled();
   });
 
+  it("names how many tasks lose the tag when the parent can count them", () => {
+    const usage = vi.fn((id: string) => (id === "tag-design" ? 1 : 4));
+    const p = setup({ usage });
+    const confirm = mockConfirm(false);
+    fireEvent.click(screen.getByRole("button", { name: "Delete tag Design" }));
+    expect(confirm).toHaveBeenLastCalledWith("Delete the tag “Design”? It will be removed from the 1 task that uses it. This can't be undone.");
+    fireEvent.click(screen.getByRole("button", { name: "Delete tag Ops" }));
+    expect(confirm).toHaveBeenLastCalledWith("Delete the tag “Ops”? It will be removed from all 4 tasks that use it. This can't be undone.");
+    expect(p.onDelete).not.toHaveBeenCalled();
+  });
+
   it("exposes tag state as toggle buttons", () => {
     setup({ selected: ["tag-ops"] });
     expect(screen.getByRole("button", { name: "Ops" })).toHaveAttribute("aria-pressed", "true");

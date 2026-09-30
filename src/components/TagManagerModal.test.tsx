@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { TagManagerModal } from "./TagManagerModal";
 import type { TagDef } from "../data/types";
 
@@ -77,16 +77,33 @@ describe("TagManagerModal", () => {
     expect(p.onMerge).toHaveBeenCalledWith("tag-ops", "tag-design");
   });
 
-  it("Escape reverts an unsaved rename instead of closing", () => {
+  it("Escape reverts an unsaved rename instead of closing — and never saves it on the way out", () => {
     const p = setup();
     const input = screen.getByRole("textbox", { name: "Rename tag Ops" }) as HTMLInputElement;
-    fireEvent.focus(input);
+    act(() => input.focus());
     fireEvent.change(input, { target: { value: "Oops" } });
     fireEvent.keyDown(input, { key: "Escape" });
     expect(p.onClose).not.toHaveBeenCalled();
     expect(input.value).toBe("Ops");
+    expect(input).toHaveFocus();          // focus didn't move, so no blur committed "Oops"
+    expect(p.onUpdate).not.toHaveBeenCalled();
+    // the next Escape closes the dialog, still without saving anything
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
     fireEvent.blur(input);
     expect(p.onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("Escape in the new-tag box clears the typed name before closing the dialog", () => {
+    const p = setup({ onCreate: vi.fn() });
+    const input = screen.getByRole("textbox", { name: "New tag name" });
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: "Leg" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(p.onClose).not.toHaveBeenCalled();
+    expect(input).toHaveValue("");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(p.onClose).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the filter box while a filter is typed, even when a delete takes the list under the threshold", () => {

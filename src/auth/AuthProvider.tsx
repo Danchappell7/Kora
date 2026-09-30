@@ -18,6 +18,7 @@ import {
 } from "./authLinks";
 import { claimLocalData, parkLocalData, clearLocalUserData, forgetStoredSession, isAuthStorageKey, pageNav } from "./localData";
 import { UnsyncedSignOutDialog } from "./UnsyncedSignOutDialog";
+import { clearTaskDrafts } from "../components/taskDetailHelpers";
 
 type PasswordReason = "invite" | "recovery";
 /** (a click event is accepted too, so `onClick={auth.signOut}` keeps working) */
@@ -177,7 +178,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (supabase) {
       let failed = false;
       try {
-        const res = await Promise.race([supabase.auth.signOut(), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        // this device only: supabase-js defaults to "global", which would also
+        // sign you out on your phone when you leave a shared office PC ("Sign
+        // out of all devices" in Settings is the global one)
+        const res = await Promise.race([supabase.auth.signOut({ scope: "local" }), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
         failed = !res || !!res.error;
       } catch { failed = true; }
       // Offline, on an Auth 5xx or a hung request, supabase-js keeps the
@@ -190,6 +194,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
     clearLocalUserData();
+    // unsent comments and unsaved task text live in sessionStorage, which the
+    // reload below keeps — don't leave them for the next person at this desk
+    clearTaskDrafts();
     setPasswordReason(null);
     setPendingLink(null);
     reloading.current = true;
@@ -276,7 +283,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // built-in reset if it isn't deployed.
       try {
         const { data, error } = await supabase.functions.invoke("reset-password", { body: { email } });
-        if (!error && !(data as { fallback?: boolean } | null)?.fallback) return {};
+        const res = data as { fallback?: boolean; retryAfter?: number } | null;
+        // (a throttled request is fine: the link sent under a minute ago still works)
+        if (!error && !res?.fallback) return {};
+        // Resend refused just after the function generated a link, so Supabase's
+        // own reset would refuse for about a minute too — say so, don't fail twice
+        if (!error && res?.retryAfter) return { error: "We couldn't send that just now. Try again in a minute." };
       } catch { /* not deployed — fall back below */ }
       const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
       return { error: error?.message };

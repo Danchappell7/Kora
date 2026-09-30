@@ -31,6 +31,15 @@ describe("CommandPalette", () => {
     expect(input).toHaveAttribute("aria-activedescendant", second.id);
   });
 
+  it("closes on one Escape from the search box, and marks it handled so nothing underneath closes too", () => {
+    const onClose = vi.fn();
+    open({ onClose });
+    const input = screen.getByRole("combobox", { name: "Search or run a command" });
+    fireEvent.change(input, { target: { value: "rep" } });
+    expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("jumps to a project (never an archived one) when onOpenProject is given", () => {
     const onOpenProject = vi.fn(); const onClose = vi.fn();
     open({ projects, onOpenProject, onClose });

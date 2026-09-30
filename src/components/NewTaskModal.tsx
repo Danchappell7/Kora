@@ -6,7 +6,7 @@ import { Icon, Collapse } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
-import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate, parseTaskTokens, nextDueDate } from "../data/data";
+import { PRIORITY_META, energyOf, DUE_PRESETS, presetDate, parseTaskTokens, nextDueDate, seriesAnchorDay, todayISO } from "../data/data";
 import { fmtDue } from "../data/data";
 import { getTemplates, isBuiltinTemplateId, type TaskTemplate } from "../lib/templates";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
@@ -23,7 +23,7 @@ const RECUR_OPTS: { v: Recurrence; label: string }[] = [
   { v: "none", label: "Doesn't repeat" }, { v: "daily", label: "Daily" }, { v: "weekdays", label: "Every weekday" }, { v: "weekly", label: "Weekly" }, { v: "biweekly", label: "Every 2 weeks" }, { v: "monthly", label: "Monthly" },
 ];
 
-export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId }: {
+export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId, tagUsage }: {
   open: boolean;
   onClose: () => void;
   onCreate: (t: Task) => void;
@@ -35,6 +35,8 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   currentUserId: string;
   defaultStatus?: Status;
   defaultProjectId?: string;
+  /** how many tasks carry a tag, so deleting one from here says how many lose it */
+  tagUsage?: (id: string) => number;
 }) {
   // Default to the project you're in (defaultProjectId); otherwise the neutral
   // "Personal" bucket rather than auto-picking a real project.
@@ -78,8 +80,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     return active.length > 0 ? active.map((m) => ({ id: m.userId!, name: m.name || m.email })) : [{ id: currentUserId, name: "You" }];
   };
   const people = peopleIn(projectId);
-  // natural-language tokens in the title (e.g. "… tomorrow 90m #Foundrise !high @dan")
-  const parsed = useMemo(() => parseTaskTokens(title, projects, people), [title, projects, people]);
+  // natural-language tokens in the title (e.g. "… tomorrow 90m #Foundrise !high @dan");
+  // `today` keeps "today"/"tomorrow" right in a modal left open past midnight
+  const today = todayISO();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const parsed = useMemo(() => parseTaskTokens(title, projects, people), [title, projects, people, today]);
   const tokenChips = [
     parsed.dueDate ? { k: "due", label: fmtDue(parsed.dueDate) } : null,
     parsed.priority ? { k: "prio", label: PRIORITY_META[parsed.priority].label } : null,
@@ -316,7 +321,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
               </select>
               {recurrence !== "none" && (
                 <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 400, textTransform: "none", letterSpacing: 0, marginTop: 4 }}>
-                  Next: {[1, 2, 3].reduce<string[]>((acc) => { const last = acc[acc.length - 1] || (dueDate || undefined); acc.push(nextDueDate(last, recurrence)); return acc; }, []).map((d) => { try { return new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }); } catch { return d; } }).join(" · ")}
+                  Next: {[1, 2, 3].reduce<string[]>((acc) => { const last = acc[acc.length - 1] || (dueDate || undefined); acc.push(nextDueDate(last, recurrence, seriesAnchorDay({ dueDate: dueDate || undefined }))); return acc; }, []).map((d) => { try { return new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }); } catch { return d; } }).join(" · ")}
                 </span>
               )}
             </label>
@@ -344,7 +349,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
 
           <div>
             <div style={{ ...fieldLabel, marginBottom: 8 }}>Tags</div>
-            <TagPicker tags={allTags} selected={tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={deleteTag} ownerKey="new-task" />
+            <TagPicker tags={allTags} selected={tags} onToggle={toggleTag} onCreate={onCreateTag} onDelete={deleteTag} usage={tagUsage} ownerKey="new-task" />
           </div>
         </div>
 

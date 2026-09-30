@@ -2,8 +2,9 @@
    KANBO — profile settings: name, pronouns, avatar, password & sign-in
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
-import { Icon, Collapse } from "./primitives";
+import { Icon, Collapse, avatarPaint } from "./primitives";
 import { memberInitials } from "../data/data";
+import type { IconName } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
@@ -32,6 +33,10 @@ const rowSub: React.CSSProperties = { display: "block", fontSize: 12, color: "va
 const securityRow: React.CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px 12px" };
 const securityText: React.CSSProperties = { flex: "1 1 200px", minWidth: 0 };
 const dangerPanel: React.CSSProperties = { padding: 14, borderRadius: 12, border: "1px solid color-mix(in oklch, var(--prio-urgent) 40%, transparent)", background: "color-mix(in oklch, var(--prio-urgent) 8%, transparent)" };
+export type ThemeChoice = "light" | "dark" | "system";
+const THEMES: { id: ThemeChoice; label: string; icon: IconName }[] = [
+  { id: "light", label: "Light", icon: "sun" }, { id: "dark", label: "Dark", icon: "moon" }, { id: "system", label: "System", icon: "settings" },
+];
 const dangerButton: React.CSSProperties = { background: "var(--danger-fill, var(--prio-urgent))", color: "#fff", border: "none" };
 
 const NOTIF_ROWS: { key: string; label: string }[] = [
@@ -46,7 +51,7 @@ const DELETE_WORD = "DELETE";
 // doesn't add "email" to app_metadata.providers when it does.
 const PASSWORD_SET_FLAG = "kanbo_password_set";
 
-export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance }: {
+export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance, theme, onChangeTheme }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -60,6 +65,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onSaveNotifyPrefs?: (prefs: Record<string, boolean>) => void;
   appearance?: Appearance;
   onChangeAppearance?: (a: Appearance) => void;
+  /** light, dark, or follow the device ("system"); the choice shows only when both are given */
+  theme?: ThemeChoice;
+  onChangeTheme?: (t: ThemeChoice) => void;
 }) {
   const auth = useAuth();
   const uid = auth.user?.id ?? null;
@@ -93,6 +101,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pwButtonRef = useRef<HTMLButtonElement>(null);
+  const focusTimer = useRef(0);   // see focusLater
   const pwInputRef = useRef<HTMLInputElement>(null);
   const pw2InputRef = useRef<HTMLInputElement>(null);
   const signOutButtonRef = useRef<HTMLButtonElement>(null);
@@ -216,13 +225,17 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   // submitted with the confirmation left empty
   const confirmMissing = pwTried && longEnough && pw2.length === 0;
   const confirmHint = mismatch ? "The two passwords don't match." : confirmMissing ? "Type your new password again to confirm it." : null;
+  // Deferred focus moves: the latest request wins, so a panel's opening focus
+  // (30 ms) can't land after — and undo — one asked for since (e.g. "confirm
+  // your password" straight after opening the password panel).
+  const focusLater = (fn: () => void, ms: number) => { window.clearTimeout(focusTimer.current); focusTimer.current = window.setTimeout(fn, ms); };
   // after a panel swaps back to its trigger button, put focus on that button
-  const focusSoon = (el: React.RefObject<HTMLElement>) => { window.setTimeout(() => el.current?.focus(), 0); };
+  const focusSoon = (el: React.RefObject<HTMLElement>) => focusLater(() => el.current?.focus(), 0);
   // Focus a control inside a Collapse once it has mounted. preventScroll stops
   // the browser scrolling the still-clipped panel (which made its content
   // jump while opening); once it's open, bring the panel into view.
   const focusInPanel = (el: React.RefObject<HTMLElement>, panel: React.RefObject<HTMLElement>) => {
-    window.setTimeout(() => el.current?.focus({ preventScroll: true }), 30);
+    focusLater(() => el.current?.focus({ preventScroll: true }), 30);
     window.setTimeout(() => panel.current?.scrollIntoView?.({ block: "nearest" }), 330);
   };
 
@@ -331,7 +344,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
             {avatarUrl ? (
               <img src={avatarUrl} alt="" style={{ width: 72, height: 72, borderRadius: 99, objectFit: "cover", boxShadow: "0 0 0 1.5px var(--bg)", flexShrink: 0 }} />
             ) : (
-              <span aria-hidden="true" style={{ width: 72, height: 72, borderRadius: 99, display: "grid", placeItems: "center", flexShrink: 0, background: color, color: "var(--avatar-ink, currentColor)", fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 26 }}>
+              <span aria-hidden="true" style={{ width: 72, height: 72, borderRadius: 99, display: "grid", placeItems: "center", flexShrink: 0, background: avatarPaint(color).fill, color: avatarPaint(color).ink, fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 26 }}>
                 {memberInitials(previewName)}
               </span>
             )}
@@ -477,6 +490,23 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
             <>
               <div className="divider" style={{ margin: "22px 0 16px" }} />
               <label style={labelStyle}>Appearance</label>
+              {theme && onChangeTheme && (
+                <div role="group" aria-labelledby="kanbo-theme-label" style={{ marginBottom: 14 }}>
+                  <span id="kanbo-theme-label" style={{ fontSize: 12, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>Theme</span>
+                  <div style={{ display: "inline-flex", borderRadius: 10, border: "1px solid var(--hairline)", overflow: "hidden" }}>
+                    {THEMES.map((t) => {
+                      const active = theme === t.id;
+                      return (
+                        <button key={t.id} onClick={() => onChangeTheme(t.id)} aria-pressed={active}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "none", background: active ? "var(--accent)" : "transparent", color: active ? "var(--on-accent)" : "var(--ink-2)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13.5, fontWeight: 500 }}>
+                          <Icon name={t.icon} size={14} /> {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span style={{ ...hintStyle, display: "block" }}>System follows your device's light or dark setting.</span>
+                </div>
+              )}
               <div style={{ marginBottom: 14 }}>
                 <span style={{ fontSize: 12, color: "var(--ink-4)", display: "block", marginBottom: 8 }}>Accent colour</span>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -497,7 +527,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                   {(["small", "normal", "large"] as TextSize[]).map((s) => {
                     const active = appearance.textSize === s;
                     return (
-                      <button key={s} onClick={() => onChangeAppearance({ ...appearance, textSize: s })}
+                      <button key={s} onClick={() => onChangeAppearance({ ...appearance, textSize: s })} aria-pressed={active}
                         style={{ padding: "7px 16px", border: "none", background: active ? "var(--accent)" : "transparent", color: active ? "var(--on-accent)" : "var(--ink-2)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: s === "small" ? 12 : s === "large" ? 15 : 13.5, fontWeight: 500, textTransform: "capitalize" }}>
                         {s}
                       </button>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { SettingsModal } from "./SettingsModal";
 import { AuthProvider } from "../auth/AuthProvider";
 
@@ -53,6 +53,9 @@ describe("Settings → Password & sign-in", () => {
     expect(screen.getByText("Type your new password again to confirm it.")).toBeInTheDocument();
     expect(confirm).toHaveAttribute("aria-invalid", "true");
     await waitFor(() => expect(confirm).toHaveFocus());
+    // …and stays there: the panel's own opening focus (30 ms) mustn't land afterwards
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
+    expect(confirm).toHaveFocus();
     expect(screen.queryByText(/password updated/i)).not.toBeInTheDocument();
   });
 
@@ -106,5 +109,24 @@ describe("Settings → profile photo", () => {
     const sent = (props.onUpload as ReturnType<typeof vi.fn>).mock.calls[0][0] as File;
     expect(sent.name).toBe("avatar.gif");
     expect(sent.type).toBe("image/gif");
+  });
+});
+
+describe("Settings → Appearance", () => {
+  const appearance = { accent: "violet", textSize: "normal", ambient: true } as unknown as NonNullable<Parameters<typeof SettingsModal>[0]["appearance"]>;
+
+  it("offers Light, Dark and System when the app can follow the device", () => {
+    const onChangeTheme = vi.fn();
+    renderSettings({ appearance, onChangeAppearance: vi.fn(), theme: "dark", onChangeTheme });
+    const group = screen.getByRole("group", { name: "Theme" });
+    expect(screen.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "true");
+    expect(group).toHaveTextContent("System follows your device's light or dark setting.");
+    fireEvent.click(screen.getByRole("button", { name: "System" }));
+    expect(onChangeTheme).toHaveBeenCalledWith("system");
+  });
+
+  it("leaves the theme choice out until the app passes it", () => {
+    renderSettings({ appearance, onChangeAppearance: vi.fn() });
+    expect(screen.queryByRole("group", { name: "Theme" })).toBeNull();
   });
 });

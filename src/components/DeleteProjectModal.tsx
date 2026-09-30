@@ -173,7 +173,7 @@ export function DeleteProjectModal({ project, taskCount, archivedCount = 0, proj
           {!ready && <span id={hintId} style={{ marginRight: "auto", fontSize: 12.5, color: "var(--ink-3)" }}>{choice === "reassign" ? "Choose a project to move the tasks to." : "Choose what happens to the tasks first."}</span>}
           <button className="btn btn-ghost" onClick={onClose} data-autofocus>Cancel</button>
           <button className={danger ? "btn" : "btn btn-accent"} onClick={confirm} disabled={!ready} aria-describedby={!ready ? hintId : undefined}
-            style={danger ? { background: "var(--st-blocked)", color: "oklch(0.99 0.01 20)", fontWeight: 650, opacity: ready ? 1 : 0.5, cursor: ready ? "pointer" : "not-allowed" } : undefined}>
+            style={danger ? { background: "var(--danger-fill, var(--st-blocked))", color: "oklch(0.99 0.01 20)", fontWeight: 650, opacity: ready ? 1 : 0.5, cursor: ready ? "pointer" : "not-allowed" } : undefined}>
             <Icon name={choice === "archive" ? "archive" : "trash"} size={15} /> {cta}
           </button>
         </div>

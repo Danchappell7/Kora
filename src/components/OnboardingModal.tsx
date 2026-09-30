@@ -57,37 +57,11 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
     if (pickerOpen) { setPickerOpen(false); return; }
     onFinish();
   };
-  const escRef = useRef(onEscape);
-  escRef.current = onEscape;
+  // For a brand-new account the welcome modal can open on top of this one. The
+  // trap stacks them, leaves focus to the welcome modal while it's open, hands
+  // it back here when it closes, and still takes Escape if focus ever drops
+  // onto the page behind.
   const trapRef = useFocusTrap<HTMLDivElement>(open, onEscape);
-
-  // For a brand-new account the welcome modal can open on top of this one.
-  // When it closes, its focus trap hands focus back to an element that no
-  // longer exists and focus drops to <body> — outside this dialog, where Tab
-  // and Escape do nothing. While this is the only modal, pull focus back in.
-  const orphaned = () => {
-    const el = trapRef.current, a = document.activeElement;
-    if (!el || (a && a !== document.body && a.isConnected)) return null;
-    return Array.from(document.querySelectorAll('[aria-modal="true"]')).every((d) => d === el) ? el : null;
-  };
-  useEffect(() => {
-    if (!open) return;
-    orphaned()?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
-  });
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Tab" && e.key !== "Escape") return;
-      const el = orphaned();
-      if (!el) return;
-      e.preventDefault();
-      if (e.key === "Escape") escRef.current();
-      else el.querySelector<HTMLElement>("[data-autofocus]")?.focus();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   if (!open) return null;
 

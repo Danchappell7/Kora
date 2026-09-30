@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { TaskDetail, type TaskDetailProps } from "./TaskDetail";
 import { ToastProvider } from "./Toast";
-import type { Task, WorkspaceMember, Activity } from "../data/types";
+import { store } from "../data/store";
+import type { Task, WorkspaceMember, Activity, Comment } from "../data/types";
 
 const mk = (over: Partial<Task> = {}): Task => ({
   id: "t1", title: "Write brief", description: "Old text", status: "todo", priority: "medium", projectId: "p1", assigneeId: "u1",
@@ -323,11 +324,13 @@ describe("TaskDetail — actions", () => {
     await setup({ tags, onDeleteTag, tasks: [mk({ tags: ["g1"] }), mk({ id: "t2", tags: ["g1"] })] });
     fireEvent.click(screen.getByRole("button", { name: "More options" }));
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    fireEvent.click(screen.getByTitle("Delete tag"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete tag Urgent" }));
+    expect(confirm).toHaveBeenCalledTimes(1);   // asked once, not by both the panel and the picker
     expect(confirm.mock.calls[0][0]).toContain("Delete the tag “Urgent”? It will be removed from all 2 tasks that use it.");
     expect(onDeleteTag).not.toHaveBeenCalled();
     confirm.mockReturnValue(true);
-    fireEvent.click(screen.getByTitle("Delete tag"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete tag Urgent" }));
+    expect(confirm).toHaveBeenCalledTimes(2);
     expect(onDeleteTag).toHaveBeenCalledWith("g1");
   });
 });
@@ -346,5 +349,56 @@ describe("TaskDetail — read-only (guests)", () => {
     expect(screen.queryByLabelText("Add a subtask")).toBeNull();
     expect(screen.getByLabelText("Add a comment")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Follow task" })).toBeInTheDocument();
+  });
+});
+
+describe("TaskDetail — dates, repeats and live comments", () => {
+  const short = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" });
+
+  it("sets a start date, but never one after the due date", async () => {
+    const { props } = await setup({ tasks: [mk({ dueDate: "2027-03-10" })] });
+    const start = screen.getByLabelText("Start");
+    fireEvent.change(start, { target: { value: "2027-03-12" } });
+    expect(props.onPatch).not.toHaveBeenCalled();
+    expect(screen.getByText("The start date can't be after the due date.")).toBeInTheDocument();
+    expect(start).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(start, { target: { value: "2027-03-01" } });
+    expect(props.onPatch).toHaveBeenCalledWith("t1", { startDate: "2027-03-01" });
+    expect(screen.queryByText("The start date can't be after the due date.")).toBeNull();
+  });
+
+  it("previews and skips a monthly series without drifting off month-end", async () => {
+    const { props } = await setup({ tasks: [mk({ dueDate: "2027-01-31", startDate: "2027-01-29", recurrence: "monthly" })] });
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    expect(screen.getByText(/^Next:/)).toHaveTextContent(`Next: ${["2027-02-28", "2027-03-31", "2027-04-30"].map(short).join(" · ")}`);
+    fireEvent.click(screen.getByRole("button", { name: /^Skip/ }));
+    // the start date moves with it, and the series remembers it's a 31st
+    expect(props.onPatch).toHaveBeenCalledWith("t1", { dueDate: "2027-02-28", startDate: "2027-02-26", originalDueDate: "2027-01-31" });
+  });
+
+  it("names the task on its completion checkbox", async () => {
+    await setup();
+    expect(screen.getByRole("checkbox", { name: "Done: Write brief" })).toBeInTheDocument();
+  });
+
+  it("shows comments as they arrive — your own from another device too — and takes edits live", async () => {
+    let onInsert: (c: Comment) => void = () => {};
+    let onUpdate: ((c: Comment) => void) | undefined;
+    const spy = vi.spyOn(store, "subscribeToTaskComments").mockImplementation((_id, ins, upd) => { onInsert = ins; onUpdate = upd; return () => {}; });
+    try {
+      await setup();
+      const c: Comment = { id: "c-9", taskId: "t1", authorId: "u1", authorName: "Me", body: "Posted from my phone", createdAt: new Date().toISOString() };
+      act(() => onInsert(c));
+      expect(screen.getByText("Posted from my phone")).toBeInTheDocument();
+      act(() => onInsert(c));   // delivered twice (or already added by sending it here)
+      expect(screen.getAllByText("Posted from my phone")).toHaveLength(1);
+      act(() => onUpdate?.({ ...c, body: "Posted from my phone, then fixed a typo" }));
+      expect(screen.getByText("Posted from my phone, then fixed a typo")).toBeInTheDocument();
+      // another task's comment never lands in this thread
+      act(() => onInsert({ ...c, id: "c-10", taskId: "t2", body: "Wrong thread" }));
+      expect(screen.queryByText("Wrong thread")).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
