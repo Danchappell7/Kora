@@ -426,7 +426,7 @@ const PLAN_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .kday-block[data-landing="true"] { animation: kdayFade 120ms linear backwards; }
   .kday-openpulse { animation: none; }
-  .kday-free, .kday-block, .kday-ghost, .krail-item, .krail-later svg, .krail-menu-item, .kbeam-track { transition: none; }
+  .kday-free, .kday-block, .kday-ghost, .krail-item, .krail-later svg, .krail-menu-item { transition: none; }
 }
 `;
 

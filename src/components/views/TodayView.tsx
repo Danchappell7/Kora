@@ -64,6 +64,7 @@ const isEditable = (el: EventTarget | null) => {
 };
 
 const SETUP_HIDDEN_KEY = "kanbo-setup-hidden";
+type RankSource = Awaited<ReturnType<TodayViewProps["onRank"]>>;
 
 const TODAY_CSS = `
 .ktoday-lede { flex: none; padding: 24px var(--kp-gutter, 32px) 0; }
@@ -241,12 +242,20 @@ function TodayDay({
   const landTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(landTimer.current), []);
 
+  // P (or the button) asks Kanbo to order the work first. The plan is laid once React
+  // has rendered what the ranking changed: its updates were queued ahead of this
+  // request, so the render that carries the request carries the new scores too.
+  const [commitReq, setCommitReq] = useState<{ source: RankSource } | null>(null);
   const planMyDay = useCallback(async () => {
     if (readOnly || busyRef.current || live.current.mode === "none") return;
     busyRef.current = true; setOrdering(true);
-    let source: "ai" | "heuristic" | "none" = "none";
+    let source: RankSource = "none";
     try { source = await onRank(); } catch { /* ordering is a nicety: plan with the scores we have */ }
-    // ranking re-rendered the app: plan from the latest tasks and the clock as it is now
+    setCommitReq({ source });
+  }, [readOnly, onRank]);
+
+  const commitPlan = (source: RankSource) => {
+    // plan from the latest tasks and the clock as it is now
     const { tasks: cur, dayEvents: evs, day: today, me: who, mode: m, replannable: again } = live.current;
     const d = new Date(), now = d.getHours() * 60 + d.getMinutes();
     const lift = new Set(m === "replan" ? again.map((t) => t.id) : []);
@@ -277,7 +286,13 @@ function TodayDay({
       if (toast) toast.toast(msg);
       say(msg);
     }
-  }, [readOnly, onRank, onUpdate, toast, say]);
+  };
+  const commitRef = useRef(commitPlan); commitRef.current = commitPlan;
+  useEffect(() => {
+    if (!commitReq) return;
+    setCommitReq(null);
+    commitRef.current(commitReq.source);
+  }, [commitReq]);
 
   const toggleSuggestions = useCallback(() => {
     if (!showSuggestions) {

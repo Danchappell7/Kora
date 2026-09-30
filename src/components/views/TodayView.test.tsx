@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, act, within, waitFor } from "@testing-library/react";
 import { TodayView, type TodayViewProps } from "./TodayView";
 import { ToastProvider } from "../Toast";
@@ -111,6 +112,34 @@ describe("TodayView: the suggested plan", () => {
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(props.onUpdate).toHaveBeenCalledWith("a", { scheduled: null, planToday: false });
     expect(props.onUpdate).toHaveBeenCalledWith("b", { scheduled: null, planToday: true });
+  });
+
+  it("plans in the order Kanbo has just given, not the scores from before it ranked", async () => {
+    const onUpdate = vi.fn();
+    function Host() {
+      const [ts, setTs] = useState(() => [
+        task({ id: "x", title: "First by the old scores", dueDate: today(), aiScore: 80 }),
+        task({ id: "y", title: "First by the new scores", dueDate: today(), aiScore: 20 }),
+      ]);
+      // like the real ranking: the new scores land after a round trip, not inside the click
+      const onRank = async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        setTs((p) => p.map((t) => ({ ...t, aiScore: t.id === "y" ? 90 : 10 })));
+        return "ai" as const;
+      };
+      return (
+        <ToastProvider>
+          <TodayView tasks={ts} allTasks={ts} events={[]} calendarConnected currentUserId="me" captureDefaults={{ projectId: "p-personal", assigneeId: "me" }}
+            onUpdate={onUpdate} onCreate={vi.fn()} onOpen={vi.fn()} onRank={onRank} ranking={false}
+            onStartFocus={vi.fn()} onShutdown={vi.fn()} setup={[]} showSuggestions />
+        </ToastProvider>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(screen.getByRole("button", { name: /Plan my day/ }));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    const at = (id: string) => onUpdate.mock.calls.find(([i]) => i === id)![1].scheduled as number;
+    expect(at("y")).toBeLessThan(at("x"));
   });
 
   it("says when the ordering was done on-device", async () => {

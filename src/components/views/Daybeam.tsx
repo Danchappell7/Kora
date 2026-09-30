@@ -50,6 +50,7 @@ const BEAM_CSS = `
   .kbeam-row { flex-wrap: wrap; row-gap: 6px; justify-content: space-between; }
   .kbeam-bar { order: -1; flex: 1 1 100%; }
 }
+@media (prefers-reduced-motion: reduce) { .kbeam-track { transition: none; } }
 `;
 
 /** One summary sentence for assistive tech. */
