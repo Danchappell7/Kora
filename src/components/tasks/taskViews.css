@@ -504,6 +504,7 @@
   background: transparent; color: var(--ink); cursor: pointer; text-align: left; font: 500 15px/22px var(--tv-ui);
 }
 .ktv-act > svg { flex-shrink: 0; color: var(--ink-3); }
+.ktv-act > small { margin-left: auto; font: 500 12px/16px var(--tv-ui); color: var(--ink-3); }
 .ktv-act:hover, .ktv-act:active { background: var(--tv-hover); }
 .ktv-acts > .ktv-act { margin: 0 -8px; width: calc(100% + 16px); }
 

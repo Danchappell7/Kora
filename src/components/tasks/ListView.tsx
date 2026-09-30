@@ -701,7 +701,7 @@ function RowActionSheet({ task, canSelect, onOpen, onStatus, onDue, onPickDue, o
         </button>
         {canSelect && (
           <button type="button" className="ktv-act" onClick={() => onSelect(task.id)}>
-            <Icon name="check" size={18} sw={1.75} /><span>Select, to change several at once</span>
+            <Icon name="check" size={18} sw={1.75} /><span>Select</span><small>to change several at once</small>
           </button>
         )}
       </div>
