@@ -1224,7 +1224,8 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
         {nav}
         <div className="ktv-cal-end">
           {connectMenu}
-          <Segmented ariaLabel="Calendar range" value={mode} onChange={switchMode} options={[{ value: "month", label: "Month" }, { value: "week", label: "Week" }]} />
+          {/* Today › Month already sits under a Day · Week · Month switcher: a second "Week" there would mean something else */}
+          {!scopeSwitch && <Segmented ariaLabel="Calendar range" value={mode} onChange={switchMode} options={[{ value: "month", label: "Month" }, { value: "week", label: "Week" }]} />}
           {scopeSwitch}
         </div>
       </div>

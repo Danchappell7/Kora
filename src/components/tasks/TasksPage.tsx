@@ -7,7 +7,7 @@
    (export, import, advanced search). Active filters show as pills on
    one quiet line underneath.
    ============================================================ */
-import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import { Icon, Avatar, Segmented, Tabs, Button, IconButton, StatusGlyph, ProjectDot, projectPaint, EmptyState, Toggle, type TabItem } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { ListView, type ListGroup } from "./ListView";
@@ -257,16 +257,45 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const waitingCount = waiting ? waiting.groups.reduce((n, g) => n + g.items.length, 0) : 0;
 
   /* ---------------- the toolbar row ---------------- */
+  // The row folds its tools (the title field moves into Filter, labels become icons)
+  // only when the tabs and the full set of tools can't share it — a project's nine
+  // tabs at 1280, a tablet with the task panel open, phones — so no tab is ever pushed
+  // out of sight behind the tools.
   const barRef = useRef<HTMLDivElement>(null);
-  const [narrow, setNarrow] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  const saveRef = useRef<HTMLDivElement>(null);
+  const fullToolsW = useRef(0);
+  // 0: everything · 1: the title field folds into Filter · 2: and the tools become icons
+  const [fold, setFold] = useState<0 | 1 | 2>(0);
+  const foldRef = useRef(fold);
+  foldRef.current = fold;
+  const fit = useCallback(() => {
+    const bar = barRef.current;
+    if (!bar || !bar.clientWidth) return; // not laid out (tests, hidden)
+    const tools = toolsRef.current;
+    if (foldRef.current === 0 && tools) fullToolsW.current = tools.offsetWidth + (saveRef.current?.offsetWidth ?? 0);
+    const list = bar.querySelector<HTMLElement>(".ktabs-list");
+    const cs = window.getComputedStyle(bar);
+    const room = bar.clientWidth - parseFloat(cs.paddingLeft || "0") - parseFloat(cs.paddingRight || "0");
+    const tabsW = (list?.scrollWidth ?? 0) + 24;
+    const full = fullToolsW.current || (isMy ? 580 : 460);
+    const without = full - 208; // the 200px title field and its gap
+    // a little slack on the way back, so the row doesn't flicker at a boundary
+    const slack = (level: 0 | 1 | 2) => (foldRef.current > level ? 16 : 0);
+    const next: 0 | 1 | 2 = tabsW + full + slack(0) <= room ? 0 : tabsW + without + slack(1) <= room ? 1 : 2;
+    if (next !== foldRef.current) setFold(next);
+  }, [isMy]);
   useEffect(() => {
     const el = barRef.current;
     if (!el || typeof ResizeObserver !== "function") return;
-    const ro = new ResizeObserver(([e]) => { const w = e.contentRect.width; setNarrow(w > 0 && w < 760); });
+    const ro = new ResizeObserver(() => fit());
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
-  const compactBar = narrow || isMobile;
+  }, [fit]);
+  /** the title field lives in the Filter popover */
+  const compactBar = fold >= 1 || isMobile;
+  /** Filter and Display are icon buttons */
+  const iconTools = fold >= 2 || isMobile;
 
   const [menu, setMenu] = useState<null | "view" | "more" | "filter" | "display" | "actions">(null);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -294,6 +323,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         ...(extraTabs ?? []).map((t) => ({ ...t, secondary: true })),
       ];
   const tabValue = isMy ? myTab : extraActive ? rawTab : MORE_VIEWS.includes(shownView) ? "more" : shownView;
+  const rowKey = tabItems.map((t) => `${t.id}:${t.label}:${t.count ?? ""}`).join("|");
   const onTabChange = (id: string) => {
     if (id === "more") return; // its menu opens on click (below), never on arrow-key focus
     if (id.startsWith("view:")) { onOpenSavedView?.(id.slice(5)); return; }
@@ -320,7 +350,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   };
 
   const saveControl = isMy && onSaveView && !readOnly && (narrowed || saving !== null) ? (
-    <div className="ktv-save">
+    <div ref={saveRef} className="ktv-save">
       {saving === null ? (
         <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")}>Save view</Button>
       ) : (
@@ -331,6 +361,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
       )}
     </div>
   ) : null;
+
+  useLayoutEffect(() => { fit(); }, [fit, rowKey, extraActive, saving, isMobile]);
 
   const findField = (wide: boolean) => (
     <div className="ktv-find" data-wide={wide || undefined}>
@@ -345,12 +377,12 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const exportList = shownTasks;
 
   const tools = !extraActive && (
-    <div className="ktv-tools">
-      {isMy && (compactBar
+    <div ref={toolsRef} className="ktv-tools">
+      {isMy && (iconTools
         ? <IconButton ref={viewBtn} icon={currentView.icon} size="sm" label={`View: ${currentView.label}`} onClick={() => setMenu((m) => (m === "view" ? null : "view"))} aria-haspopup="menu" aria-expanded={menu === "view"} />
         : <Button ref={viewBtn} variant="secondary" size="sm" icon={currentView.icon} iconRight="chevronDown" onClick={() => setMenu((m) => (m === "view" ? null : "view"))} aria-haspopup="menu" aria-expanded={menu === "view"} aria-label={`View: ${currentView.label}`}>{currentView.label}</Button>)}
       {!compactBar && findField(false)}
-      {compactBar
+      {iconTools
         ? <IconButton ref={filterBtn} icon="filter" size="sm" label={filterLabel} badge={filterActive ? activeCount || true : undefined} pressed={filterActive || undefined} onClick={() => setMenu((m) => (m === "filter" ? null : "filter"))} aria-haspopup="dialog" aria-expanded={menu === "filter"} />
         : (
           <Button ref={filterBtn} variant="ghost" size="sm" icon="filter" data-on={filterActive || undefined} aria-label={filterLabel}
@@ -358,7 +390,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
             Filter{filterActive && <span className="ktv-count" aria-hidden="true">{activeCount || 1}</span>}
           </Button>
         )}
-      {compactBar
+      {iconTools
         ? <IconButton ref={displayBtn} icon="sliders" size="sm" label="Display" onClick={() => setMenu((m) => (m === "display" ? null : "display"))} aria-haspopup="dialog" aria-expanded={menu === "display"} />
         : <Button ref={displayBtn} variant="ghost" size="sm" icon="sliders" onClick={() => setMenu((m) => (m === "display" ? null : "display"))} aria-haspopup="dialog" aria-expanded={menu === "display"}>Display</Button>}
       <IconButton ref={actionsBtn} icon="more" size="sm" label="More actions" onClick={() => setMenu((m) => (m === "actions" ? null : "actions"))} aria-haspopup="menu" aria-expanded={menu === "actions"} />
@@ -576,7 +608,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         groupBy={group} smart={smart} sort={sort} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete} onPatch={onPatch} onQuickAdd={onQuickAdd} onOpenImport={onOpenImport}
         members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields}
         sectionField={sectionField} sectionProjectId={sectionProjectId} filtered={narrowed || !!showArchived} onClearFilters={clearFilters} readOnly={readOnly}
-        groups={listGroups} showProject={isMy} quietAssigneeFor={isMy && myTab === "open" ? currentUserId : undefined}
+        groups={listGroups} showProject={isMy} quietAssigneeFor={isMy && myTab !== "waiting" ? currentUserId : undefined}
         renderMeta={isMy && myTab === "waiting" ? waitingMeta : undefined} renderAction={isMy && myTab === "waiting" ? waitingAction : undefined}
         focusGroup={isMy && myTab === "open" && group === "due" ? dueFocusGroup(dueFocus) : undefined} focusKey={dueFocus}
         emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} />
@@ -625,7 +657,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
           {compactBar && saveControl}
         </div>
       )}
-      {notice && <div className="ktv-notice">{notice}</div>}
+      {notice && !extraActive && <div className="ktv-notice">{notice}</div>}
       {body}
 
       {menu === "view" && (
