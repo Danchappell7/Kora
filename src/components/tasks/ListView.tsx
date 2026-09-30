@@ -253,7 +253,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   useEffect(() => { if (wasJustLanded(task.id)) setLanded(true); }, [task.id, task.position]);
   useEffect(() => { if (!landed) return; const t = window.setTimeout(() => setLanded(false), 1000); return () => window.clearTimeout(t); }, [landed]);
   const ds = dueState(task.dueDate, task.status);
-  const dueColor = ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-3)";
+  const dueColor = ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent-text, var(--accent))" : "var(--ink-3)";
   // sub-tasks are full tasks with parentId; legacy checklist items live on task.subtasks
   const subDone = childDone + (task.subtasks ?? []).filter((s) => s.done).length;
   const subTotal = childTasks.length + (task.subtasks?.length ?? 0);
@@ -280,7 +280,8 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
         style={{
         display: "flex", alignItems: "center", gap: 12, padding: "var(--kanbo-rowpad,10px) 18px var(--kanbo-rowpad,10px) " + (18 + depth * 22) + "px",
         cursor: draggable ? "grab" : "pointer", position: "relative",
-        opacity: dragging ? 0.4 : (done ? 0.55 : 1),
+        // done rows read as done from the strike-through + --ink-3 title; dimming the whole row took completed titles to ~2:1
+        opacity: dragging ? 0.4 : 1,
         background: selected ? "var(--accent-dim)" : undefined,
         boxShadow: dropHint === "top" ? "inset 0 3px 0 -1px var(--accent)" : dropHint === "bottom" ? "inset 0 -3px 0 -1px var(--accent)" : undefined,
       }}>
@@ -290,7 +291,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           opacity: task.priority === "urgent" || task.priority === "high" ? 0.9 : 0.3 }} />
 
         {onSelect && (
-          <button type="button" role="checkbox" aria-checked={selected} aria-label={`Select ${q}`}
+          <button type="button" role="checkbox" aria-checked={selected} aria-label={`Select ${q}`} className="ksel"
             onClick={(e) => { e.stopPropagation(); onSelect(task.id, e.shiftKey); }}
             onFocus={() => setSelFocus(true)} onBlur={() => setSelFocus(false)}
             style={{ ...selectBoxStyle(selected), opacity: selected || selectionActive || hovered || selFocus ? 1 : 0 }}>
@@ -300,7 +301,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
 
         {readOnly ? <DoneMark done={done} /> : (
           <span data-row-check={task.id} onClickCapture={(e) => { checkByKey.current = e.detail === 0; }} style={{ display: "inline-flex", flexShrink: 0 }}>
-            <Check done={done} celebrateKey={task.id} onToggle={() => { onRefocus?.(task.id, "check", checkByKey.current); onToggle(task.id); }} />
+            <Check done={done} celebrateKey={task.id} label={task.title} onToggle={() => { onRefocus?.(task.id, "check", checkByKey.current); onToggle(task.id); }} />
           </span>
         )}
 
@@ -343,7 +344,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
                 onClick={(e) => { e.stopPropagation(); onOpen(task.id); }}
                 onDoubleClick={edit ? (e) => { e.stopPropagation(); startRename(); } : undefined}
                 onKeyDown={onTitleKey}
-                style={{ ...titleBtnStyle, fontSize: 14.5, fontWeight: 450, color: done ? "var(--ink-4)" : "var(--ink)", textDecoration: done ? "line-through" : "none" }}>{task.title}</button>
+                style={{ ...titleBtnStyle, fontSize: 14.5, fontWeight: 450, color: done ? "var(--ink-3)" : "var(--ink)", textDecoration: done ? "line-through" : "none" }}>{task.title}</button>
             )}
             {blocked.length > 0 && (
               <span data-tip={"Blocked by " + blocked.map((b) => b.title).join(", ")} role="img" aria-label={"Blocked by " + blocked.map((b) => b.title).join(", ")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--st-blocked)", flexShrink: 0, position: "relative" }}>
@@ -443,18 +444,18 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
             const cds = dueState(c.dueDate, c.status);
             return (
               <div key={c.id} onClick={() => onOpen(c.id)} className="lift-row" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px 8px " + (52 + depth * 22) + "px", borderTop: "1px solid var(--hairline)", cursor: "pointer" }}>
-                {readOnly ? <DoneMark done={cdone} size={16} /> : <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={16} celebrateKey={c.id} onToggle={() => onToggle(c.id)} /></span>}
+                {readOnly ? <DoneMark done={cdone} size={16} /> : <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex" }}><Check done={cdone} size={16} celebrateKey={c.id} label={c.title} onToggle={() => onToggle(c.id)} /></span>}
                 <button type="button" className="truncate" onClick={(e) => { e.stopPropagation(); onOpen(c.id); }}
                   style={{ ...titleBtnStyle, flex: 1, fontSize: 13.5, color: cdone ? "var(--ink-4)" : "var(--ink-2)", textDecoration: cdone ? "line-through" : "none" }}>{c.title}</button>
                 {c.priority !== "medium" && <PriorityFlag priority={c.priority} size={12} />}
-                {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent)" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}
+                {c.dueDate && <span className="mono" style={{ fontSize: 11, color: cds === "overdue" ? "var(--prio-urgent)" : cds === "today" ? "var(--accent-text, var(--accent))" : "var(--ink-4)" }}>{fmtDue(c.dueDate)}</span>}
                 <Avatar id={c.assigneeId} size={18} />
               </div>
             );
           })}
           {(task.subtasks ?? []).map((s) => (
             <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 18px 8px " + (52 + depth * 22) + "px", borderTop: "1px solid var(--hairline)" }}>
-              {readOnly ? <DoneMark done={s.done} size={16} /> : <Check done={s.done} size={16} onToggle={() => onToggleSubtask(task.id, s.id)} />}
+              {readOnly ? <DoneMark done={s.done} size={16} /> : <Check done={s.done} size={16} label={s.title} onToggle={() => onToggleSubtask(task.id, s.id)} />}
               <span style={{ fontSize: 13.5, color: s.done ? "var(--ink-4)" : "var(--ink-2)", textDecoration: s.done ? "line-through" : "none", flex: 1 }}>{s.title}</span>
             </div>
           ))}
@@ -486,7 +487,7 @@ function GroupHeader({ label, color, count, icon, onRename, onDelete, selectStat
           {selectState === "some" && <span style={{ width: 8, height: 2, borderRadius: 2, background: "var(--on-accent)" }} />}
         </button>
       )}
-      {icon ? <Icon name={icon} size={14} style={{ color }} /> : <span style={{ width: 9, height: 9, borderRadius: 99, background: color, boxShadow: `0 0 8px color-mix(in oklch, ${color} 70%, transparent)` }} />}
+      {icon ? <Icon name={icon} size={14} style={{ color }} /> : <span style={{ width: 9, height: 9, borderRadius: 99, background: color, boxShadow: `0 0 var(--glow-r, 8px) color-mix(in oklch, ${color} 70%, transparent)` }} />}
       <span role="heading" aria-level={2} style={{ fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em", cursor: onRename ? "text" : "default" }} onDoubleClick={onRename}>{label}<span className="sr-only">, {count} task{count === 1 ? "" : "s"}</span></span>
       <span className="mono tnum" aria-hidden="true" style={{ fontSize: 11.5, color: "var(--ink-4)", background: "var(--surface)", borderRadius: 6, padding: "1px 7px" }}>{count}</span>
       {onRename && <button type="button" onClick={onRename} title="Rename section" aria-label={`Rename section “${label}”`} style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 2, display: "inline-flex" }}><Icon name="settings" size={13} /></button>}

@@ -44,7 +44,7 @@ describe("InboxView — who did what", () => {
 
   // rows from before the release that stops self-logged comment rows are a mix;
   // from it on, every comment row is a teammate's
-  const OLD = "2026-09-20T10:00:00.000Z", NEW = "2026-10-02T10:00:00.000Z";
+  const OLD = "2026-09-20T10:00:00.000Z", NEW = "2026-10-13T10:00:00.000Z";
 
   it("older rows: a single-word name is the commenter, a stock reply in Title Case is your own comment", () => {
     inbox([
@@ -368,6 +368,32 @@ describe("TeamView", () => {
     team([]);
     fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "guest" } });
     expect(screen.getByText("Can view and comment — sees every project in this workspace", { exact: false })).toBeInTheDocument();
+  });
+
+  it("warns that removing someone also takes them off tasks they follow or collaborate on", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { props } = team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" })]);
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
+    expect(confirm).toHaveBeenCalledWith("Remove Maya Lin from this workspace? They'll also be taken off tasks they collaborate on or follow.");
+    expect(props.onRemoveMember).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("the logo picker only offers types the avatars bucket takes, and refuses an SVG with a clear message", () => {
+    const onUploadLogo = vi.fn();
+    team([], { onUploadLogo });
+    const input = screen.getByLabelText("Workspace logo image");
+    expect(input).toHaveAttribute("accept", "image/png,image/jpeg,image/gif,image/webp");
+    const svg = new File(["<svg/>"], "logo.svg", { type: "image/svg+xml" });
+    fireEvent.change(input, { target: { files: [svg] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a PNG, JPG, GIF or WebP image for the logo.");
+    expect(screen.queryByRole("dialog", { name: "Adjust logo" })).toBeNull();
+    // a PNG goes on to the cropper and clears the message
+    fireEvent.change(input, { target: { files: [new File(["x"], "logo.png", { type: "image/png" })] } });
+    expect(screen.getByRole("dialog", { name: "Adjust logo" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onUploadLogo).not.toHaveBeenCalled();
   });
 
   it("opens the profile drawer, and Escape closes it", () => {

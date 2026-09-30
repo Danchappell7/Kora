@@ -28,7 +28,9 @@ function GettingStarted({ steps }: { steps: { label: string; done: boolean; acti
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
         {steps.map((s) => (
           <button key={s.label} onClick={s.done ? undefined : s.action} disabled={s.done} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, border: "1px solid var(--hairline)", background: s.done ? "var(--surface-2)" : "var(--surface)", cursor: s.done ? "default" : "pointer", textAlign: "left" }}>
-            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)", color: s.done ? "var(--avatar-ink, var(--bg-deep))" : "var(--accent)" }}>
+            <span style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", background: s.done ? "var(--st-done)" : "var(--accent-dim)",
+              // the tick is cut out of the green in the page colour: ≥ 5:1 in both themes (dark ink was 2.8:1 on light's deeper green)
+              color: s.done ? "var(--bg)" : "var(--accent)" }}>
               {s.done ? <Icon name="check" size={13} sw={3} /> : <Icon name="arrowRight" size={13} />}
             </span>
             <span style={{ flex: 1, minWidth: 0 }}>
@@ -60,8 +62,10 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam }: {
+export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam, canCreateProject = true }: {
   tasks: Task[]; projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
+  /** false for a guest in this workspace — they can't create projects, so no "New project" / "Create a project" CTA */
+  canCreateProject?: boolean;
 }) {
   // phones and tablets have no q key to press — point them at a button instead
   const touchOnly = useMediaQuery("(hover: none)");
@@ -98,7 +102,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
     const starters: { icon: IconName; title: string; body: string; onClick: () => void; primary?: boolean }[] = [
       { icon: "plus", title: "Add your first task", body: "Capture something on your plate — Kanbo sorts out the rest.", onClick: onNewTask, primary: true },
       { icon: "calendarPlus", title: "Plan your day", body: "Auto-plan lays your tasks around your meetings.", onClick: () => setRoute({ view: "plan" }) },
-      { icon: "layers", title: "Create a project", body: "Group related work and track progress in one place.", onClick: onNewProject },
+      ...(canCreateProject ? [{ icon: "layers" as IconName, title: "Create a project", body: "Group related work and track progress in one place.", onClick: onNewProject }] : []),
       { icon: "clock", title: "Start a focus block", body: "Put the timer on and do one thing properly.", onClick: openFocus },
     ];
     return (
@@ -240,7 +244,7 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
       {/* projects */}
       <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>Active projects</h2>
-        <button onClick={onNewProject} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "6px 11px", fontSize: 12.5 }}><Icon name="plus" size={14} /> New project</button>
+        {canCreateProject && <button onClick={onNewProject} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "6px 11px", fontSize: 12.5 }}><Icon name="plus" size={14} /> New project</button>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 14 }}>
         {projects.filter((p) => p.workspaceId !== null || p.id === "p-personal").slice(0, 6).map((p) => {
@@ -258,8 +262,8 @@ export function HomeView({ tasks, projects, userName, onOpen, setRoute, openFocu
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "var(--ink-4)", marginBottom: 7 }}>
                 <span className="kicker">Progress</span><span className="mono tnum" style={{ color: prog > 0 ? "var(--accent)" : "var(--ink-4)" }}>{prog}%</span>
               </div>
-              <div style={{ height: 6, borderRadius: 99, background: "var(--surface-2)", overflow: "hidden" }}>
-                <div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: p.color, boxShadow: prog > 0 ? `0 0 10px color-mix(in oklch, ${p.color} 70%, transparent)` : "none", transition: "width .9s var(--ease)" }} />
+              <div style={{ height: 6, borderRadius: 99, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
+                <div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: p.color, boxShadow: prog > 0 ? `0 0 calc(var(--glow-r, 8px) * 1.25) color-mix(in oklch, ${p.color} 70%, transparent)` : "none", transition: "width .9s var(--ease)" }} />
               </div>
             </button>
           );

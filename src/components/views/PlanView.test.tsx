@@ -50,6 +50,26 @@ beforeEach(() => { localStorage.clear(); });
 afterEach(() => { vi.useRealTimers(); spies.splice(0).forEach((s) => s.mockRestore()); });
 
 describe("PlanView", () => {
+  it("files a capture where it's told to (the active workspace's project, the signed-in user)", () => {
+    const onCreate = vi.fn();
+    renderPlan([], { onCreate, captureDefaults: { projectId: "p-launch", assigneeId: "u-42" } });
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "Draft Q3 deck 90m" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Draft Q3 deck", projectId: "p-launch", assigneeId: "u-42", planToday: true }));
+  });
+
+  it("the capture preview only shows a Due chip when the text names a date", () => {
+    renderPlan([]);
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "Call supplier 30m" } });
+    expect(screen.getByText("Kanbo understood")).toBeInTheDocument();
+    expect(screen.queryByText(/^Due /)).toBeNull();
+    fireEvent.change(input, { target: { value: "Call supplier tomorrow" } });
+    expect(screen.getByText(/^Due /)).toBeInTheDocument();
+  });
+
   it("doesn't crash on a quick-added task with no energy or duration", () => {
     renderPlan([task({ id: "q1", title: "Call supplier", planToday: true, scheduled: null, energy: undefined, dur: undefined })]);
     expect(screen.getByText("Call supplier")).toBeInTheDocument();
@@ -253,6 +273,21 @@ describe("PlanView drag and drop", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith("b1", { scheduled: 10 * 60 });
     expect(dragging()).toBe(false);
+  });
+
+  it("at Large text (the page is zoomed) an hour of drag is an hour, not more", () => {
+    // at zoom 1.25 the 9am block's top edge is on screen at 120 × 1.25 = 150px, and 75 screen px are 60 minutes
+    document.documentElement.style.setProperty("--zoom", "1.25");
+    try {
+      const { btn, onUpdate } = setup();
+      press(btn, 100, 160);
+      act(() => { on("pointermove", 100, 170); });
+      act(() => { on("pointermove", 100, 235); });
+      act(() => { on("pointerup", 100, 235); });
+      expect(onUpdate).toHaveBeenCalledWith("b1", { scheduled: 10 * 60 });
+    } finally {
+      document.documentElement.style.removeProperty("--zoom");
+    }
   });
 
   it("dropping it back in the same slot writes nothing", () => {

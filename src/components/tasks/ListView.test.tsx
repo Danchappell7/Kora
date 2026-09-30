@@ -154,7 +154,7 @@ describe("ListView read-only (guests)", () => {
     render(<ListView {...props} />);
     expect(screen.queryByRole("button", { name: /Add task/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Change status/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Mark as done/ })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /^Done/ })).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.queryByLabelText(/Due date for/)).toBeNull();
     expect(screen.getByRole("img", { name: "Status: To do" })).toBeInTheDocument();
@@ -292,8 +292,14 @@ describe("ListView keeps keyboard focus when a change moves the row to another g
     unmount();
 
     render(<Live initial={[mk({ id: "sd", title: "Send invoice" }), mk({ title: "Other" })]} />);
-    fireEvent.click(within(screen.getByRole("group", { name: "Send invoice" })).getByRole("button", { name: "Mark as done" }));
-    await waitFor(() => expect(document.activeElement).toBe(within(screen.getByRole("group", { name: "Send invoice" })).getByRole("button", { name: "Mark as not done" })));
+    // the completion box is a checkbox named after its task (it doesn't flip name with the state)
+    const box = within(screen.getByRole("group", { name: "Send invoice" })).getByRole("checkbox", { name: "Done: Send invoice" });
+    expect(box).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(box);
+    // the row re-mounted under "Done": focus is back on ITS box, now checked
+    await waitFor(() => expect(document.activeElement).toBe(within(screen.getByRole("group", { name: "Send invoice" })).getByRole("checkbox", { name: "Done: Send invoice" })));
+    expect(document.activeElement).not.toBe(box);
+    expect(document.activeElement).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("heading", { name: /^Done/ })).toBeInTheDocument();
   });
 });

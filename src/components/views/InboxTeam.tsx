@@ -11,6 +11,8 @@ import type { Task, WorkspaceMember, Role, Activity, ActivityKind, IconName } fr
 import { useEntrance } from "../../hooks/useEntrance";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { AVATAR_ACCEPT, AVATAR_MESSAGES, avatarExtension, avatarMime } from "../../lib/avatarUpload";
+import { uiZoom } from "../../lib/appearance";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; color: string; verb: string }> = {
   created:   { icon: "plus",    color: "var(--accent)",     verb: "created" },
@@ -39,9 +41,12 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
    comments, with detail = an excerpt of what you wrote. This release stops
    the self-logging, so a comment row created after SELF_LOGGED_COMMENTS_END is
    a teammate's whatever their name looks like ("priya", "dan smith"). Rows
-   from before it are a mix, told apart by how they read. If the release goes
-   out later than this date, move it to the deploy date. */
-const SELF_LOGGED_COMMENTS_END = Date.parse("2026-10-01T00:00:00Z");
+   from before it are a mix, told apart by how they read. Set it to the
+   release's deploy date: the team rollout is the week of 5 October 2026, so
+   it's the Monday after (erring late is the safe side — until then rows are
+   told apart by how they read, whereas a date before the deploy would show
+   your own short comments from the old build as "<comment> commented on…"). */
+const SELF_LOGGED_COMMENTS_END = Date.parse("2026-10-12T00:00:00Z");
 // sentence punctuation, or the "…" a long excerpt was cut with: never part of a profile name
 const SENTENCE_RE = /[!?;:,\n\r…]|\.{3}/;
 // words a whole comment is made of but a name isn't ("Sounds Good", "Great Work", "Will Do")
@@ -541,8 +546,19 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   );
 }
 
-/* ---------- workspace logo cropper — drag to reposition + zoom, outputs a square PNG ---------- */
-function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () => void; onConfirm: (f: File) => void }) {
+/* ---------- workspace logo cropper — drag to reposition + zoom, outputs a square PNG ----------
+   The crop is redrawn on a canvas and saved as a fresh 256px PNG, so what's
+   uploaded never carries the original's metadata (a phone photo's location)
+   and always fits the avatars bucket (PNG/JPEG/GIF/WebP, 5 MB). */
+const LOGO_TYPE_MSG = "Choose a PNG, JPG, GIF or WebP image for the logo.";
+/** Why a picked file can't be cropped into a logo, or null. HEIC goes through: Safari can read it (the crop is a PNG). */
+function logoFileProblem(file: { type?: string; name?: string; size: number }): string | null {
+  const mime = avatarMime(file);
+  if (!avatarExtension(mime) && mime !== "image/heic" && mime !== "image/heif") return LOGO_TYPE_MSG;
+  if (file.size <= 0) return AVATAR_MESSAGES.empty;
+  return null;
+}
+function LogoCropper({ file, onCancel, onConfirm, onError }: { file: File; onCancel: () => void; onConfirm: (f: File) => void; onError: (message: string) => void }) {
   const V = 280;            // viewport (square) in px
   const [url, setUrl] = useState("");
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
@@ -587,9 +603,10 @@ function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () =
     if (e.button != null && e.button !== 0) return;
     e.preventDefault();
     dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+    const z = uiZoom(); // pointer px → the dialog's px at Small/Large text
     const move = (ev: PointerEvent) => {
       const d = dragRef.current; if (!d || !nat) return;
-      setOffset(clamp({ x: d.ox + (ev.clientX - d.x), y: d.oy + (ev.clientY - d.y) }, nat.w * scale, nat.h * scale));
+      setOffset(clamp({ x: d.ox + (ev.clientX - d.x) / z, y: d.oy + (ev.clientY - d.y) / z }, nat.w * scale, nat.h * scale));
     };
     const up = () => { dragRef.current = null; window.removeEventListener("pointermove", move); };
     window.addEventListener("pointermove", move);
@@ -608,7 +625,7 @@ function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () =
     const sSize = V / scale;
     ctx.drawImage(img, -offset.x / scale, -offset.y / scale, sSize, sSize, 0, 0, S, S);
     canvas.toBlob((blob) => {
-      if (!blob) { setBusy(false); return; }
+      if (!blob) { setBusy(false); onError(AVATAR_MESSAGES.prepare); return; }
       onConfirm(new File([blob], "workspace-logo.png", { type: "image/png" }));
     }, "image/png", 0.92);
   };
@@ -622,7 +639,7 @@ function LogoCropper({ file, onCancel, onConfirm }: { file: File; onCancel: () =
           <button className="btn-icon" onClick={onCancel} aria-label="Cancel" style={{ border: "none" }}><Icon name="x" size={18} /></button>
         </div>
         <div onPointerDown={startDrag} style={{ alignSelf: "center", position: "relative", width: V, height: V, borderRadius: 16, overflow: "hidden", background: "var(--surface-2)", border: "1px solid var(--hairline)", cursor: "grab", touchAction: "none" }}>
-          {url && <img ref={imgRef} src={url} alt="" onLoad={onImgLoad} draggable={false} style={{ position: "absolute", left: offset.x, top: offset.y, width: dispW, height: dispH, maxWidth: "none", userSelect: "none", pointerEvents: "none" }} />}
+          {url && <img ref={imgRef} src={url} alt="" onLoad={onImgLoad} onError={() => onError(/hei[cf]$/.test(avatarMime(file)) ? AVATAR_MESSAGES.heic : AVATAR_MESSAGES.unreadable)} draggable={false} style={{ position: "absolute", left: offset.x, top: offset.y, width: dispW, height: dispH, maxWidth: "none", userSelect: "none", pointerEvents: "none" }} />}
           <div style={{ position: "absolute", inset: 0, pointerEvents: "none", borderRadius: 16, boxShadow: "inset 0 0 0 1px color-mix(in oklch, var(--ink) 10%, transparent)" }} />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
@@ -745,7 +762,7 @@ function MemberCard({ m, name, isSelf, openN, onSelect, invite }: {
               <span className="kicker">Workload</span>
               <span className="mono tnum" style={{ color: load > 60 ? "var(--prio-high)" : "var(--ink-3)" }}>{openN} open</span>
             </span>
-            <span style={{ display: "block", height: 6, borderRadius: 99, background: FILL_1, overflow: "hidden" }}>
+            <span style={{ display: "block", height: 6, borderRadius: 99, background: "var(--track, var(--surface-2))", overflow: "hidden" }}>
               <span style={{ display: "block", width: load + "%", height: "100%", borderRadius: 99, background: load > 60 ? "var(--prio-high)" : "var(--accent)", transition: "width .8s var(--ease)" }} />
             </span>
           </span>
@@ -833,7 +850,7 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
           {m.userId ? <Avatar id={m.userId} size={44} /> : <span style={{ width: 44, height: 44, borderRadius: 99, display: "grid", placeItems: "center", flexShrink: 0, background: FILL_1, border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={20} /></span>}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="truncate" style={{ fontSize: 16, fontWeight: 600 }}>{name}{isSelf && <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 400 }}> · you</span>}</div>
-            {m.title && <div className="truncate" style={{ fontSize: 12.5, color: "var(--accent)", fontWeight: 500 }}>{m.title}</div>}
+            {m.title && <div className="truncate" style={{ fontSize: 12.5, color: "var(--accent-text, var(--accent))", fontWeight: 500 }}>{m.title}</div>}
             {name !== m.email && <div className="truncate" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{m.email}</div>}
           </div>
           <button ref={closeRef} type="button" className="btn-icon" onClick={onClose} aria-label={`Close ${name} profile`} style={{ border: "none" }}><Icon name="x" size={18} /></button>
@@ -907,7 +924,11 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
             )}
             {((canManageMember(role, m.role) && !isSelf) || (isSelf && m.role !== "owner")) && (
               <button type="button" className="btn btn-ghost" onClick={() => {
-                const q = isSelf ? "Leave this workspace?" : pending ? `Cancel the invite to ${m.email}? They won't be able to join with it.` : `Remove ${name} from this workspace?`;
+                // leaving / removal also takes the person off this workspace's task followers and
+                // collaborators (0042 remove_member), and a re-invite doesn't put them back
+                const q = isSelf ? "Leave this workspace? You'll also be taken off tasks you collaborate on or follow."
+                  : pending ? `Cancel the invite to ${m.email}? They won't be able to join with it.`
+                  : `Remove ${name} from this workspace? They'll also be taken off tasks they collaborate on or follow.`;
                 if (window.confirm(q)) { onRemoveMember(m.id); onClose(); }
               }} style={{ justifyContent: "center", color: ERR_INK }}><Icon name="x" size={15} /> {isSelf ? "Leave workspace" : pending ? "Cancel invite" : "Remove from workspace"}</button>
             )}
@@ -952,12 +973,13 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   const [wsName, setWsName] = useState(ws?.name ?? "");
   const [savingWs, setSavingWs] = useState(false);
   const [cropFile, setCropFile] = useState<File | null>(null);
+  const [logoError, setLogoError] = useState<string | null>(null);
   const logoRef = useRef<HTMLInputElement>(null);
   const timers = useRef<number[]>([]);
   useEffect(() => () => { timers.current.forEach((t) => window.clearTimeout(t)); }, []);
   useEffect(() => { setWsName(ws?.name ?? ""); }, [workspace, ws?.name]);
   // feedback belongs to the workspace it was given in
-  useEffect(() => { setInviteMsg(null); setResend({}); setCopied(null); }, [workspace]);
+  useEffect(() => { setInviteMsg(null); setResend({}); setCopied(null); setLogoError(null); }, [workspace]);
   const later = (fn: () => void, ms: number) => { timers.current.push(window.setTimeout(fn, ms)); };
   // an invite just went out for this email: hold Resend off until the email function would send again
   const setResendFor = (email: string, state: "sent" | "fresh") => {
@@ -1061,13 +1083,19 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
                 <span style={{ width: 56, height: 56, borderRadius: 14, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)", fontSize: 20, fontWeight: 700 }}>{(ws.name || "?").charAt(0).toUpperCase()}</span>
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <input ref={logoRef} type="file" accept="image/*" style={{ display: "none" }}
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) setCropFile(f); if (logoRef.current) logoRef.current.value = ""; }} />
+                {/* the avatars bucket only takes PNG/JPEG/GIF/WebP: SVG and HEIC are left out of the picker (iPhones then hand over a JPEG) */}
+                <input ref={logoRef} type="file" accept={AVATAR_ACCEPT} aria-label="Workspace logo image" style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) { const problem = logoFileProblem(f); setLogoError(problem); if (!problem) setCropFile(f); }
+                    if (logoRef.current) logoRef.current.value = "";
+                  }} />
                 <div style={{ display: "flex", gap: 8 }}>
                   <button className="btn btn-ghost" onClick={() => logoRef.current?.click()} style={{ fontSize: 12.5 }}><Icon name="plus" size={14} /> {ws.logoUrl ? "Change logo" : "Upload logo"}</button>
                   {ws.logoUrl && <button className="btn btn-ghost" onClick={() => onUpdateWorkspace?.(workspace, ws.name, null)} style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Remove</button>}
                 </div>
-                <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>PNG or JPG, square works best.</span>
+                <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>PNG, JPG, GIF or WebP. Square works best.</span>
+                {logoError && <span role="alert" style={{ fontSize: 11.5, lineHeight: 1.4, fontWeight: 500, color: ERR_INK, maxWidth: 260 }}>{logoError}</span>}
               </div>
             </div>
             {/* name */}
@@ -1165,7 +1193,8 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
       )}
 
       {cropFile && workspace && (
-        <LogoCropper file={cropFile} onCancel={() => setCropFile(null)} onConfirm={(f) => { onUploadLogo?.(workspace, f); setCropFile(null); }} />
+        <LogoCropper file={cropFile} onCancel={() => setCropFile(null)} onConfirm={(f) => { onUploadLogo?.(workspace, f); setCropFile(null); }}
+          onError={(msg) => { setLogoError(msg); setCropFile(null); }} />
       )}
     </div>
   );

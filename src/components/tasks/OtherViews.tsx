@@ -184,7 +184,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
   const toggle = (m: Exclude<CardMenu, null>) => setMenu((cur) => (cur === m ? null : m));
   const assignee = getMember(task.assigneeId);
   const dueText = task.dueDate ? fmtDue(task.dueDate) : null;
-  const dueColor = task.dueDate ? (ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent)" : "var(--ink-4)") : "var(--ink-4)";
+  const dueColor = task.dueDate ? (ds === "overdue" ? "var(--prio-urgent)" : ds === "today" ? "var(--accent-text, var(--accent))" : "var(--ink-4)") : "var(--ink-4)";
   const label = [task.title, STATUS_META[task.status].label, `${PRIORITY_META[task.priority].label} priority`,
     dueText ? `due ${dueText}` : null, assignee ? `assigned to ${assignee.name}` : null, p.blocked ? "blocked" : null].filter(Boolean).join(", ");
   const triggerStyle: React.CSSProperties = { border: "none", background: "transparent", padding: 3, margin: -3, borderRadius: 6, cursor: "pointer", display: "inline-flex" };
@@ -217,7 +217,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
         onFocus={(e) => setRing(isFocusVisible(e.currentTarget))} onBlur={() => setRing(false)} />
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         {p.onSelect && (
-          <button onClick={(e) => { e.stopPropagation(); p.onSelect?.(task.id); }} aria-label={p.selected ? `Deselect ${task.title}` : `Select ${task.title}`}
+          <button onClick={(e) => { e.stopPropagation(); p.onSelect?.(task.id); }} aria-label={p.selected ? `Deselect ${task.title}` : `Select ${task.title}`} className="ksel"
             style={{ width: 17, height: 17, borderRadius: 5, flexShrink: 0, padding: 0, cursor: "pointer", display: "grid", placeItems: "center", marginTop: 1,
               border: `1.6px solid ${p.selected ? "var(--accent)" : "var(--hairline-strong)"}`, background: p.selected ? "var(--accent)" : "transparent",
               opacity: p.selected || p.selectionActive || hovered || selFocus ? 1 : 0, transition: "opacity .12s" }}
@@ -606,7 +606,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
                 {col.status && editable && <button onClick={() => onAdd(col.status!)} className="btn-icon" title="Add task" aria-label={`Add task to ${col.label}`} style={{ marginLeft: "auto", width: 24, height: 24, border: "none", color: "var(--ink-4)" }}><Icon name="plus" size={15} /></button>}
               </div>
               {col.hint && <p style={{ margin: "0 4px 10px 33px", fontSize: 11.5, lineHeight: 1.4, color: "var(--ink-4)" }}>{col.hint}</p>}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
+              <div className="klane" style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, padding: 4, borderRadius: 14, minHeight: 120, transition: "background .15s, box-shadow .15s",
                 background: dragOver === col.key ? "var(--accent-dim)" : colBg,
                 boxShadow: dragOver === col.key && !hover ? "inset 0 0 0 2px var(--accent)" : "none" }}>
                 {visible.map((t) => {
@@ -889,8 +889,8 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
               return (
                 <div key={dayIsos[i]} style={{ width: colW, flexShrink: 0, textAlign: "center", padding: "10px 0", background: weekend ? "color-mix(in oklch, var(--bg-deep) 22%, transparent)" : "transparent",
                   borderLeft: wide && (d.getDay() === 1 || d.getDate() === 1) ? "1px solid var(--hairline)" : undefined }}>
-                  <div className="kicker" style={{ color: isToday ? "var(--accent)" : monthMark ? "var(--ink-2)" : "var(--ink-4)", letterSpacing: wide ? "0.02em" : undefined, whiteSpace: "nowrap" }}>{top}</div>
-                  <div className="mono tnum" style={{ fontSize: wide ? 11.5 : 14, fontWeight: 600, marginTop: 2, color: isToday ? "var(--accent)" : "var(--ink-2)" }}>{d.getDate()}</div>
+                  <div className="kicker" style={{ color: isToday ? "var(--accent-text, var(--accent))" : monthMark ? "var(--ink-2)" : "var(--ink-4)", letterSpacing: wide ? "0.02em" : undefined, whiteSpace: "nowrap" }}>{top}</div>
+                  <div className="mono tnum" style={{ fontSize: wide ? 11.5 : 14, fontWeight: 600, marginTop: 2, color: isToday ? "var(--accent-text, var(--accent))" : "var(--ink-2)" }}>{d.getDate()}</div>
                 </div>
               );
             })}
@@ -901,7 +901,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
             {/* drop-day highlight while dragging */}
             {dropCol != null && <div aria-hidden style={{ position: "absolute", top: 0, bottom: 0, left: labelW + dropCol * colW, width: colW, background: "var(--accent-dim)", pointerEvents: "none" }} />}
             {/* today line */}
-            {todayIdx >= 0 && todayIdx < DAYS && <div aria-hidden style={{ position: "absolute", top: 0, bottom: 0, left: labelW + todayIdx * colW + colW / 2, width: 2, background: "var(--accent)", opacity: 0.4, zIndex: 1, boxShadow: "0 0 12px var(--accent)", pointerEvents: "none" }} />}
+            {todayIdx >= 0 && todayIdx < DAYS && <div aria-hidden style={{ position: "absolute", top: 0, bottom: 0, left: labelW + todayIdx * colW + colW / 2, width: 2, background: "var(--accent)", opacity: 0.4, zIndex: 1, boxShadow: "0 0 calc(var(--glow-r, 8px) * 1.5) var(--accent)", pointerEvents: "none" }} />}
             {/* dependency connectors */}
             {depLines.length > 0 && (
               <svg aria-hidden width={labelW + trackW} height={totalH} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 1, overflow: "visible" }}>
@@ -1039,7 +1039,7 @@ function ConnectCalendarMenu({ connections, onConnect, onDisconnect, syncing }: 
         const meta = PROVIDER_META[c.provider];
         return (
           <span key={c.provider} className="glass" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "5px 10px 5px 11px", borderRadius: 99, fontSize: 12.5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 99, background: meta.color, boxShadow: `0 0 8px ${meta.color}` }} />
+            <span style={{ width: 8, height: 8, borderRadius: 99, background: meta.color, boxShadow: `0 0 var(--glow-r, 8px) ${meta.color}` }} />
             <span style={{ color: "var(--ink-2)" }}>{c.accountEmail || meta.label}</span>
             <button className="btn-icon" title={`Disconnect ${meta.label}`} aria-label={`Disconnect ${meta.label}`} onClick={() => onDisconnect(c.provider)} style={{ border: "none", width: 22, height: 22, color: "var(--ink-4)" }}><Icon name="x" size={13} /></button>
           </span>
@@ -1179,7 +1179,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
             <div key={day.iso} style={{ marginBottom: 18 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                 <span className="mono tnum" style={{ display: "grid", placeItems: "center", minWidth: 30, height: 30, borderRadius: 9, fontSize: 13, fontWeight: 600, color: isToday ? "var(--on-accent)" : "var(--ink-2)", background: isToday ? "var(--accent)" : "var(--surface-2)", boxShadow: isToday ? "0 0 12px var(--accent-glow)" : "none" }}>{day.d}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: isToday ? "var(--accent)" : "var(--ink-3)" }}>{dt.toLocaleDateString(undefined, { weekday: "long" })}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: isToday ? "var(--accent-text, var(--accent))" : "var(--ink-3)" }}>{dt.toLocaleDateString(undefined, { weekday: "long" })}</span>
                 <span style={{ fontSize: 12.5, color: "var(--ink-4)" }}>{dt.toLocaleDateString(undefined, { month: "short" })}</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -1519,7 +1519,7 @@ export function FilesView({ tasks, onOpen }: { tasks: Task[]; allTasks?: Task[];
                   </button>
                   <div style={{ padding: "6px 12px 10px" }}>
                     {att.url
-                      ? <a href={att.url} target="_blank" rel="noreferrer" aria-label={`Open ${att.name} in a new tab`} style={{ fontSize: 11.5, color: "var(--accent)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}><Icon name="arrowUpRight" size={12} /> Open</a>
+                      ? <a href={att.url} target="_blank" rel="noreferrer" aria-label={`Open ${att.name} in a new tab`} style={{ fontSize: 11.5, color: "var(--accent-text, var(--accent))", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}><Icon name="arrowUpRight" size={12} /> Open</a>
                       : <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Link unavailable</span>}
                   </div>
                 </div>

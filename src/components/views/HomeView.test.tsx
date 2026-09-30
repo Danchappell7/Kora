@@ -54,3 +54,29 @@ describe("HomeView daily brief", () => {
     }
   });
 });
+
+describe("HomeView for a guest", () => {
+  const renderAs = (tasks: Task[], canCreateProject: boolean) => render(
+    <HomeView tasks={tasks} projects={[]} userName="Dan Chappell" onOpen={vi.fn()} setRoute={vi.fn()} openFocus={vi.fn()}
+      onNewProject={vi.fn()} onNewTask={vi.fn()} onAutoPrioritize={vi.fn()} canCreateProject={canCreateProject} />,
+  );
+
+  it("offers no New project button to someone who can't create projects", () => {
+    renderAs([task({ id: "a", title: "Due A", dueDate: dayOffset(0) })], false);
+    expect(screen.queryByRole("button", { name: /New project/ })).toBeNull();
+  });
+
+  it("leaves 'Create a project' out of the first-run starters too", () => {
+    renderAs([], false);
+    expect(screen.queryByRole("button", { name: /Create a project/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Add your first task/ })).toBeInTheDocument();
+  });
+
+  it("members still get both", () => {
+    const { unmount } = renderAs([task({ id: "a", title: "Due A" })], true);
+    expect(screen.getByRole("button", { name: /New project/ })).toBeInTheDocument();
+    unmount();
+    renderAs([], true);
+    expect(screen.getByRole("button", { name: /Create a project/ })).toBeInTheDocument();
+  });
+});
