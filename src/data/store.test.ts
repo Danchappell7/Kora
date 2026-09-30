@@ -196,6 +196,7 @@ type FakeResult = { data?: unknown; error?: { message: string; code?: string } |
 function makeFake(uid = "user-a") {
   const calls: FakeCall[] = [];
   const invokes: { name: string; body: unknown }[] = [];
+  const invokeTimeouts: { name: string; timeout?: number }[] = [];
   const signCalls: string[][] = [];
   const uploads: { path: string; contentType?: string }[] = [];
   const channels: { topic: string; opts?: unknown; bindings: { type: string; filter: Record<string, unknown>; cb: (p: unknown) => void }[]; status?: (s: string) => void }[] = [];
@@ -239,7 +240,7 @@ function makeFake(uid = "user-a") {
       getSession: async () => ({ data: { session }, error: null }),
       onAuthStateChange(cb: (event: string, session: unknown) => void) { authCb = cb; return { data: { subscription: { unsubscribe() {} } } }; },
     },
-    functions: { invoke: async (name: string, o: { body: unknown }) => { invokes.push({ name, body: o?.body }); const r = invokeResult(name, o?.body); return { data: r.data ?? null, error: r.error ?? null }; } },
+    functions: { invoke: async (name: string, o: { body: unknown; timeout?: number }) => { invokes.push({ name, body: o?.body }); invokeTimeouts.push({ name, timeout: o?.timeout }); const r = invokeResult(name, o?.body); return { data: r.data ?? null, error: r.error ?? null }; } },
     storage: {
       from: () => ({
         createSignedUrls: async (paths: string[]) => { signCalls.push(paths); return { data: paths.map((p) => ({ path: p, signedUrl: "https://signed/" + p, error: null })), error: null }; },
@@ -271,7 +272,7 @@ function makeFake(uid = "user-a") {
     },
   };
   return {
-    client, calls, invokes, signCalls, uploads, channels, live, reportError: vi.fn(),
+    client, calls, invokes, invokeTimeouts, signCalls, uploads, channels, live, reportError: vi.fn(),
     setHandler(h: (c: FakeCall) => FakeResult | undefined) { handler = h; },
     setInvoke(f: (name: string, body: unknown) => { data?: unknown; error?: unknown }) { invokeResult = f; },
     /** hold every removeChannel until the returned release() is called */
@@ -1214,6 +1215,7 @@ describe("store (supabase) — creator, workspace history and AI modes", () => {
     projects: [{ id: "p-launch", name: "Q3 Product Launch" }, { id: "p-infra", name: "Platform Infra" }],
   };
   const invokesOf = (fake: ReturnType<typeof makeFake>) => fake.invokes.filter((i) => i.name === "ai-assist").map((i) => i.body as Record<string, unknown>);
+  const timeoutsOf = (fake: ReturnType<typeof makeFake>) => fake.invokeTimeouts.filter((i) => i.name === "ai-assist").map((i) => i.timeout);
   const refusal = (status: number, body: Record<string, unknown>) => ({ context: { status, json: async () => body } });
 
   it("reads the creator from tasks.user_id", async () => {
@@ -1312,25 +1314,57 @@ describe("store (supabase) — creator, workspace history and AI modes", () => {
       description: ("Tighten the story arc, land the 'why now'. " + "x".repeat(400)).slice(0, 200), blockedBy: ["t-later"],
     });
     expect(sent.find((t) => t.id === "t-nobody")).toHaveProperty("assignee", null); // unassigned says so
+    // recent work still goes, however much is open, so "what got done?" has an answer
+    expect(sent[sent.length - 1]).toMatchObject({ id: "t-done", status: "done", completedAt: "2026-09-28" });
+    expect(timeoutsOf(fake)).toEqual([60_000]);
   });
 
-  it("Ask's proposed changes are checked against what was sent", async () => {
+  it("Ask keeps up to 40 places for what was finished in the last fortnight, newest first", async () => {
     const fake = makeFake();
+    fake.setInvoke(() => ({ data: { answer: "Maya finished three things.", actions: [], cites: [] } }));
+    const { store: s } = await loadStore(fake);
+    const open = Array.from({ length: 400 }, (_, i) => mkTask(`t-o${i}`, { assigneeId: "user-a", dueDate: "2026-10-01" }));
+    const done = Array.from({ length: 60 }, (_, i) => mkTask(`t-d${i}`, { status: "done", assigneeId: "user-m", completedAt: `2026-09-${String(16 + (i % 14)).padStart(2, "0")}T${String(i % 24).padStart(2, "0")}:00:00Z` }));
+    await s.aiCommand("what did Maya finish this week?", [...done, ...open], ctx);
+    const sent = invokesOf(fake)[0].tasks as { id: string; status: string; completedAt?: string }[];
+    expect(sent).toHaveLength(300);
+    expect(sent.slice(0, 260).every((t) => t.status !== "done")).toBe(true);
+    const sentDone = sent.slice(260);
+    expect(sentDone).toHaveLength(40);
+    expect(sentDone.every((t) => t.status === "done")).toBe(true);
+    expect(sentDone.map((t) => t.completedAt)).toEqual([...sentDone.map((t) => t.completedAt)].sort().reverse());
+    // a small workspace sends everything: open work, then all the recent done
+    fake.invokes.length = 0; fake.invokeTimeouts.length = 0;
+    await s.aiCommand("what did Maya finish this week?", [...done, ...open.slice(0, 10)], ctx);
+    expect((invokesOf(fake)[0].tasks as unknown[]).length).toBe(70);
+  });
+
+  it("Ask hands on every proposed change, kept then left out, for validateActions to check and explain", async () => {
+    const fake = makeFake();
+    const leftDelete = { op: "delete", id: "t-1" };
+    const leftStray = { op: "update", id: "t-2", patch: { dueDate: "2026-10-05", description: "nope" } };
+    const leftUnsent = { op: "update", id: "t-unsent", patch: { dueDate: "2026-10-05" } };
     fake.setInvoke(() => ({ data: {
-      answer: "Moves 2 tasks to Monday 5 Oct.",
+      answer: "Moves your unstarted tasks to Monday 5 Oct.",
       actions: [
-        { op: "update", id: "t-1", patch: { dueDate: "2026-10-05", description: "nope", aiScore: 99 } },
-        { op: "update", id: "t-unsent", patch: { dueDate: "2026-10-05" } },
-        { op: "update", id: "t-2", patch: { dueDate: null, assigneeId: "user-m", projectId: "p-secret", status: "shipped" } },
-        { op: "delete", id: "t-1" },
-        { op: "create", task: { title: "Write press release", assigneeId: "stranger", priority: "high" } },
-        { op: "create", task: { priority: "high" } },
+        { op: "update", id: "t-1", patch: { dueDate: "2026-10-05" } },
+        { op: "update", id: "t-old", patch: { status: "todo" } },     // a task Ask has but the model was never shown
+        { op: "open", taskId: "t-1" },                                // not a change, not in the contract
+        { op: "create", task: { title: "Write press release", priority: "high" } },
       ],
-      cites: ["t-1", "t-unsent", "t-1"],
+      left_out: [
+        { action: leftDelete, reason: "Kanbo never deletes" },
+        { action: leftStray, reason: "\"description\" isn't a field Ask may change" },
+        { action: leftUnsent, reason: "not a task it was given" },
+        "junk",
+      ],
+      cites: ["t-1", "t-unsent", "t-1", "t-old"],
       usage: { used: 12, limit: 200 },
     } }));
     const { store: s } = await loadStore(fake);
-    const res = await s.aiCommand("move my unstarted tasks this week to monday", [mkTask("t-1", { assigneeId: "user-a" }), mkTask("t-2", { assigneeId: "user-a" })], ctx);
+    const doneLongAgo = mkTask("t-old", { status: "done", completedAt: "2026-06-01" });
+    const res = await s.aiCommand("move my unstarted tasks this week to monday", [mkTask("t-1", { assigneeId: "user-a" }), mkTask("t-2", { assigneeId: "user-a" }), doneLongAgo], ctx);
+    expect((invokesOf(fake)[0].tasks as { id: string }[]).map((t) => t.id)).toEqual(["t-1", "t-2"]);
     expect(res.source).toBe("ai");
     if (res.source !== "ai") return;
     expect(res.usage).toEqual({ used: 12, limit: 200 });
@@ -1338,11 +1372,28 @@ describe("store (supabase) — creator, workspace history and AI modes", () => {
     expect(res.data.cites).toEqual(["t-1"]);
     expect(res.data.actions).toEqual([
       { op: "update", id: "t-1", patch: { dueDate: "2026-10-05" } },
-      { op: "update", id: "t-2", patch: { dueDate: undefined, assigneeId: "user-m" } },
+      { op: "update", id: "", patch: { status: "todo" } },            // blanked: turned away as a task Kanbo wasn't asked about
       { op: "create", task: { title: "Write press release", priority: "high" } },
+      leftDelete,                                                     // as written, so the reason shown is Ask's own
+      leftStray,                                                      // whole, never trimmed to its valid dueDate
+      { ...leftUnsent, id: "" },
+      {},
     ]);
-    const clear = res.data.actions[1];
-    expect(clear.op === "update" && "dueDate" in clear.patch).toBe(true); // a clear, not a missing field
+  });
+
+  it("Ask's hand-on is bounded, and a reply without left_out (or any actions) is fine", async () => {
+    const fake = makeFake();
+    fake.setInvoke(() => ({ data: {
+      answer: "ok",
+      actions: Array.from({ length: 50 }, () => ({ op: "update", id: "t-1", patch: { priority: "high" } })),
+      left_out: Array.from({ length: 50 }, () => ({ action: { op: "delete", id: "t-1" }, reason: "Kanbo never deletes" })),
+      cites: Array.from({ length: 30 }, () => "t-1"),
+    } }));
+    const { store: s } = await loadStore(fake);
+    const res = await s.aiCommand("prioritise everything", [mkTask("t-1")], ctx);
+    expect(res.source === "ai" && res.data.actions.length).toBe(60);
+    fake.setInvoke(() => ({ data: { answer: "Nothing's overdue.", actions: "none" } }));
+    expect(await s.aiCommand("what's overdue?", [mkTask("t-1")], ctx)).toEqual({ data: { answer: "Nothing's overdue.", actions: [], cites: [], source: "ai" }, source: "ai" });
   });
 
   it("the daily limit comes back as 'limit' with the server's words; other failures as 'unavailable'", async () => {
@@ -1407,6 +1458,7 @@ describe("store (supabase) — creator, workspace history and AI modes", () => {
     expect(invokesOf(fake)[0]).toMatchObject({ mode: "extract", text: "Maya to send the brief by Fri 3pm. Priya books the venue. Draft FAQ.", hint: "Launch sync", today: "2026-09-30", members: ctx.members, projects: ctx.projects });
     await s.aiExtract("y".repeat(30_000), ctx);
     expect((invokesOf(fake)[1].text as string).length).toBe(20_000);
+    expect(timeoutsOf(fake)).toEqual([120_000, 120_000]);   // 50 action items take over a minute to write
   });
 
   it("standup and status drafts", async () => {
@@ -1418,6 +1470,7 @@ describe("store (supabase) — creator, workspace history and AI modes", () => {
     expect(await s.aiStandup({ done: [{ who: "Maya", title: "Tokens" }] })).toEqual({ data: "Done: tokens shipped.\nIn progress: the deck.", source: "ai", usage: { used: 4, limit: 200 } });
     expect(await s.aiStatus({ project: "Launch" })).toEqual({ data: { summary: "The deck is the critical path.", status: "at_risk" }, source: "ai" });
     expect(invokesOf(fake)[0]).toMatchObject({ mode: "standup", facts: { done: [{ who: "Maya", title: "Tokens" }] } });
+    expect(timeoutsOf(fake)).toEqual([45_000, 45_000]);
     expect(invokesOf(fake)[0].today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     fake.setInvoke(() => ({ data: { summary: "Fine.", status: "great" } }));
     expect(await s.aiStatus({ project: "Launch" })).toEqual({ data: null, source: "unavailable" });

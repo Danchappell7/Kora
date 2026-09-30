@@ -17,7 +17,8 @@
 //   • request body ≤ 4 MB (413 only for payloads no real workspace sends —
 //     the app posts every task in view, ~250 bytes each); question/title/
 //     description capped at 4,000 characters, every task field trimmed, and
-//     only the 120 most relevant tasks reach the prompt (see tasks.ts)
+//     only the 120 most relevant tasks (300 for command) reach the prompt
+//     (see tasks.ts)
 //   • AI_DAILY_LIMIT calls per person per UK day (default 200) → 429
 //     { error: "daily_limit" }. Counted in ai_usage (migration 0042); until
 //     that table exists the limit is skipped with a warning (fails open).
@@ -157,9 +158,12 @@ Deno.serve(async (req: Request) => {
     const parsed = firstJsonObject(text);
     const out = parsed && finish(parsed);
     if (!out) {
-      // shape only: the reply may quote people's tasks, which never go in logs
-      console.error("ai-assist bad_output", mode, data?.stop_reason, text.length);
-      return json({ error: "bad_output" }, 502);
+      // shape only: the reply may quote people's tasks, which never go in logs.
+      // A reply cut off at max_tokens is logged apart from a malformed one, so
+      // a ceiling that's too low shows up as itself.
+      const cutOff = data?.stop_reason === "max_tokens";
+      console.error(cutOff ? "ai-assist cut_off" : "ai-assist bad_output", mode, model, data?.stop_reason, text.length, data?.usage?.output_tokens ?? null, maxTokens);
+      return json({ error: "bad_output", ...(cutOff ? { detail: "cut_off" } : {}) }, 502);
     }
     // until migration 0042's ai_usage exists nothing is counted (used 0): say nothing then
     return json(usage.used > 0 ? { ...out, usage: { used: usage.used, limit: usage.limit } } : out);

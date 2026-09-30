@@ -72,7 +72,8 @@ function cleanTask(raw: unknown): TaskIn {
  * app's order. Larger ones: open tasks by due date (undated last), then the
  * most recently completed — with RECENT_DONE places kept for completed work
  * in "summary"/"ask" so a weekly summary can still say what got done.
- * "command" keeps the app's own relevance order and reads up to
+ * "command" keeps the app's own relevance order (open work first, with room
+ * kept for what was finished in the last fortnight) and reads up to
  * MAX_TASKS_COMMAND.
  */
 export function cleanTasks(v: unknown, mode = ""): TaskIn[] {

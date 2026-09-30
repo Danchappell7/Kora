@@ -15,7 +15,7 @@ import {
   DEMO_ACTIVITY, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
 } from "./data";
 import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent } from "./types";
-import type { AiOutcome, AskAction, AskContext, AskPatch, AskResult, ExtractedTask } from "../lib/askTypes";
+import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -777,13 +777,22 @@ function aiTaskContext(tasks: Task[], today: string) {
    Every call answers with an AiOutcome: the model's checked answer, or
    "unavailable" / "limit" so the caller falls back to its on-device rules.
    The server checks each reply (supabase/functions/ai-assist/prompts.ts);
-   the checks here repeat that against what this app actually sent, so a
-   stale or misbehaving function can never propose changes to tasks it
-   wasn't shown, or fields Ask may not touch. */
+   the checks here repeat the parts only this app can know — which tasks it
+   actually sent, which people it matched — so a stale or misbehaving
+   function can never reach a task the model wasn't shown. Ask's proposed
+   changes are then checked whole, with reasons, by validateActions
+   (lib/askActions.ts) before anything is shown or applied. */
 const AI_COMMAND_CAP = 300;   // tasks Ask sends at most
 const AI_TIMEOUT_MS = 45_000; // past this, the on-device answer is the better one
-const MAX_ASK_ACTIONS = 25;
-const ASK_STATUSES: ReadonlySet<string> = new Set<Status>(["todo", "progress", "review", "blocked", "done"]);
+// Longer waits where the biggest legitimate reply takes longer to write. Cut
+// off early, the person gets the on-device answer having already spent the
+// request; both surfaces show that Kanbo is reading (and Ask can be cancelled).
+// Ask: 300 tasks in, up to 25 changes out (~1,300–2,300 tokens), ~30s.
+// Notes → tasks: a transcript with 50 action items (~5,000 tokens), over a minute.
+const AI_ASK_TIMEOUT_MS = 60_000;
+const AI_EXTRACT_TIMEOUT_MS = 120_000;
+const ASK_CITES = 12;          // Ask's "How I got here" lists up to 12 tasks
+const ASK_HANDED_ON = 60;      // the server keeps ≤25 changes and reports ≤25 left out
 const ASK_PRIORITIES: ReadonlySet<string> = new Set<Priority>(["low", "medium", "high", "urgent"]);
 const STATUS_KINDS: ReadonlySet<string> = new Set<StatusKind>(["on_track", "at_risk", "off_track"]);
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -798,8 +807,11 @@ const oneLine = (v: unknown, max: number): string => (typeof v === "string" ? v.
 /** The tasks Ask sends with a question: at most AI_COMMAND_CAP, most relevant
  *  first — open work due within the week (or in flight, or blocked), mine
  *  before others', then the rest of what's open, then what was finished in
- *  the last 14 days. People and projects by name, so the model can answer
- *  "who's on the launch deck?"; ids stay so it can propose changes. */
+ *  the last 14 days, newest first. Up to AI_DONE_SLOTS places are kept for
+ *  that finished work however much is open, or "what did Maya finish this
+ *  week?" would be answered from nothing in a big team. People and projects
+ *  by name, so the model can answer "who's on the launch deck?"; ids stay so
+ *  it can propose changes. */
 function aiCommandContext(tasks: Task[], ctx: AskContext) {
   const base = new Date(`${(ctx.today || "").slice(0, 10)}T00:00:00`);
   const day0 = Number.isNaN(base.getTime()) ? new Date() : base;
@@ -813,13 +825,15 @@ function aiCommandContext(tasks: Task[], ctx: AskContext) {
     const due = t.dueDate?.slice(0, 10);
     return (!!due && due <= weekAhead) || t.status === "blocked" || t.status === "progress" || t.status === "review";
   };
-  const rank = (t: Task) => (t.status === "done" ? 4 : (pressing(t) ? 0 : 2) + (mine(t) ? 0 : 1));
-  const picked = tasks
-    .filter((t) => !t.archivedAt && (t.status !== "done" || (t.completedAt ?? "").slice(0, 10) >= since))
-    .sort((a, b) => rank(a) - rank(b)
-      || (a.status === "done" ? (b.completedAt ?? "").localeCompare(a.completedAt ?? "") : (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"))
-      || (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9))
-    .slice(0, AI_COMMAND_CAP);
+  const rank = (t: Task) => (pressing(t) ? 0 : 2) + (mine(t) ? 0 : 1);
+  const live = tasks.filter((t) => !t.archivedAt);
+  const open = live.filter((t) => t.status !== "done").sort((a, b) => rank(a) - rank(b)
+    || (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999")
+    || (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9));
+  const done = live.filter((t) => t.status === "done" && (t.completedAt ?? "").slice(0, 10) >= since)
+    .sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
+  const openTake = Math.min(open.length, AI_COMMAND_CAP - Math.min(done.length, AI_DONE_SLOTS));
+  const picked = [...open.slice(0, openTake), ...done.slice(0, AI_COMMAND_CAP - openTake)];
   return picked.map((t) => {
     const collaborators = (t.collaborators ?? []).map(nameOf).filter((n): n is string => !!n);
     const creator = nameOf(t.createdBy);
@@ -840,44 +854,30 @@ function aiCommandContext(tasks: Task[], ctx: AskContext) {
   });
 }
 
-/** An Ask patch holding only the fields Ask may change, with valid values;
- *  a null date or time clears it, and a null or empty assignee unassigns. */
-function askPatchFrom(raw: unknown, ctx: AskContext): AskPatch {
-  const p = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const out: AskPatch = {};
-  const memberIds = new Set([ctx.me, ...ctx.members.map((m) => m.id)]);
-  if (typeof p.status === "string" && ASK_STATUSES.has(p.status)) out.status = p.status as Status;
-  if (typeof p.priority === "string" && ASK_PRIORITIES.has(p.priority)) out.priority = p.priority as Priority;
-  if (p.dueDate === null) out.dueDate = undefined;
-  else if (isoDay(p.dueDate)) out.dueDate = p.dueDate;
-  if (p.dueTime === null) out.dueTime = undefined;
-  else if (typeof p.dueTime === "string" && HHMM_RE.test(p.dueTime)) out.dueTime = p.dueTime;
-  if (p.assigneeId === null || p.assigneeId === "") out.assigneeId = "";
-  else if (typeof p.assigneeId === "string" && memberIds.has(p.assigneeId)) out.assigneeId = p.assigneeId;
-  if (typeof p.planToday === "boolean") out.planToday = p.planToday;
-  if (typeof p.projectId === "string" && ctx.projects.some((x) => x.id === p.projectId)) out.projectId = p.projectId;
-  const title = oneLine(p.title, 300);
-  if (title) out.title = title;
-  return out;
-}
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** Ask's proposed changes, checked against what was sent: updates only to
- *  tasks it was shown, creates only with a title, nothing else (never a
- *  delete), at most MAX_ASK_ACTIONS. */
-function askActionsFrom(raw: unknown, sent: ReadonlySet<string>, ctx: AskContext): AskAction[] {
-  const out: AskAction[] = [];
-  for (const item of Array.isArray(raw) ? raw : []) {
-    if (out.length >= MAX_ASK_ACTIONS) break;
-    const a = (item ?? {}) as Record<string, unknown>;
-    if (a.op === "update" && typeof a.id === "string" && sent.has(a.id)) {
-      const patch = askPatchFrom(a.patch, ctx);
-      if (Object.keys(patch).length) out.push({ op: "update", id: a.id, patch });
-    } else if (a.op === "create") {
-      const { title, ...rest } = askPatchFrom(a.task, ctx);
-      if (title) out.push({ op: "create", task: { title, ...rest } });
-    }
+/** Ask's proposed changes as the server sent them: the ones it kept, then the
+ *  ones it left out (each with the model's action as written), so that
+ *  validateActions checks every one again and says why any is turned away
+ *  ("Kanbo left out 2 changes: …") — nothing is trimmed or dropped here
+ *  unannounced. Not safe to apply without validateActions.
+ *  What only the store knows is which tasks the model was shown: Ask may hand
+ *  it more than the 300 it sends, so an update naming any other task has its
+ *  id blanked, and is turned away as a task Kanbo wasn't asked about. An
+ *  `open` isn't a change and isn't in the server's contract, so it's ignored. */
+function askActionsFrom(kept: unknown, leftOut: unknown, sent: ReadonlySet<string>): AskAction[] {
+  const proposed = [
+    ...(Array.isArray(kept) ? kept : []),
+    ...(Array.isArray(leftOut) ? leftOut : []).map((l) => (isRecord(l) ? l.action : l)),
+  ].slice(0, ASK_HANDED_ON);
+  const out: unknown[] = [];
+  for (const a of proposed) {
+    if (!isRecord(a)) out.push({});                                   // "didn't understand that change"
+    else if (a.op === "open") continue;
+    else if (a.op === "update" && !(typeof a.id === "string" && sent.has(a.id))) out.push({ ...a, id: "" });
+    else out.push(a);
   }
-  return out;
+  return out as AskAction[];
 }
 
 /** The member a written name refers to: the full name, or a first name only
@@ -929,11 +929,11 @@ const AI_UNAVAILABLE = { data: null, source: "unavailable" } as const;
 
 /** One call to ai-assist in one of the redesign's modes. `pick` turns the
  *  reply into the caller's data, or null when it isn't usable. */
-async function callAiMode<T>(body: Record<string, unknown>, pick: (d: Record<string, unknown>) => T | null): Promise<AiOutcome<T>> {
+async function callAiMode<T>(body: Record<string, unknown>, pick: (d: Record<string, unknown>) => T | null, timeout = AI_TIMEOUT_MS): Promise<AiOutcome<T>> {
   aiNoticeText = null;
   if (!supabase || isOffline() || aiModesMissing) return AI_UNAVAILABLE;
   try {
-    const { data, error } = await supabase.functions.invoke("ai-assist", { body, timeout: AI_TIMEOUT_MS });
+    const { data, error } = await supabase.functions.invoke("ai-assist", { body, timeout });
     if (error) {
       const refused = await noteAiRefusal(error);
       if (refused === "limit") return { data: null, source: "limit", detail: aiNoticeText ?? undefined };
@@ -2472,7 +2472,9 @@ export const store = {
   },
 
   /** Ask Kanbo: answer a question about these tasks and propose changes
-   *  (never applied here). Sends up to 300 tasks, most relevant first. */
+   *  (never applied here). Sends up to 300 tasks, most relevant first. The
+   *  proposed changes include any the server left out, for validateActions
+   *  to turn away with a reason (see askActionsFrom). */
   async aiCommand(question: string, tasks: Task[], ctx: AskContext): Promise<AiOutcome<AskResult>> {
     const q = question.trim();
     if (!q) return AI_UNAVAILABLE;
@@ -2484,9 +2486,10 @@ export const store = {
       (d) => {
         const answer = typeof d.answer === "string" ? d.answer.trim() : "";
         if (!answer) return null;
-        const cites = [...new Set((Array.isArray(d.cites) ? d.cites : []).filter((c): c is string => typeof c === "string" && sent.has(c)))].slice(0, 25);
-        return { answer, actions: askActionsFrom(d.actions, sent, ctx), cites, source: "ai" };
+        const cites = [...new Set((Array.isArray(d.cites) ? d.cites : []).filter((c): c is string => typeof c === "string" && sent.has(c)))].slice(0, ASK_CITES);
+        return { answer, actions: askActionsFrom(d.actions, d.left_out, sent), cites, source: "ai" };
       },
+      AI_ASK_TIMEOUT_MS,
     );
     return out.source === "ai" && out.usage ? { ...out, data: { ...out.data, usage: out.usage } } : out;
   },
@@ -2499,6 +2502,7 @@ export const store = {
     return callAiMode(
       { mode: "extract", text: notes.slice(0, 20_000), today: ctx.today, members: ctx.members, projects: ctx.projects, hint: ctx.hint ?? "" },
       (d) => extractedFrom(d.tasks, ctx),
+      AI_EXTRACT_TIMEOUT_MS,
     );
   },
 
