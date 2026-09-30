@@ -32,16 +32,30 @@ const INBOX_FILTERS: { v: string; label: string; kinds?: ActivityKind[]; noun: [
 ];
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-// "Alice Smith", "Jean-Luc O'Neil" — 2–4 capitalised words, nothing sentence-like
-const PERSON_NAME_RE = /^\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*){1,3}$/u;
+
+/* Comment rows come from two sources. The notify_comment trigger (0037)
+   writes detail = the commenter's name (or email, or "Someone"). Until this
+   release the app ALSO self-logged a "comment" row for each of your own
+   comments, with detail = an excerpt of what you wrote. This release stops
+   the self-logging, so a comment row created after SELF_LOGGED_COMMENTS_END is
+   a teammate's whatever their name looks like ("priya", "dan smith"). Rows
+   from before it are a mix, told apart by how they read. If the release goes
+   out later than this date, move it to the deploy date. */
+const SELF_LOGGED_COMMENTS_END = Date.parse("2026-10-01T00:00:00Z");
+// sentence punctuation, or the "…" a long excerpt was cut with: never part of a profile name
+const SENTENCE_RE = /[!?;:,\n\r…]|\.{3}/;
+// words a whole comment is made of but a name isn't ("Sounds Good", "Great Work", "Will Do")
+const REPLY_WORDS = new Set([
+  "ok", "okay", "yes", "yep", "yeah", "nope", "thanks", "thank", "thx", "cheers", "done", "great", "good", "nice",
+  "cool", "perfect", "agreed", "agree", "sure", "noted", "lgtm", "approved", "fixed", "updated", "awesome",
+  "brilliant", "lovely", "sorted", "sounds", "looks", "ship", "it", "i", "we", "me", "you", "do", "see", "got",
+  "please", "the", "is", "are", "this", "that", "all", "work", "job", "well", "hi", "hey", "hello", "fyi", "asap",
+]);
 
 /* Who a notification row is from. Assignment and mention rows are written by
-   DB triggers with detail = the actor's name. Comment rows come from two
-   sources: the notify_comment trigger (0037) writes detail = the commenter's
-   name (or email, or "Someone"), while older rows were self-logged by the app
-   with detail = an excerpt of your OWN comment. Tell them apart so a
-   teammate's comment never reads "You commented on…" with their name quoted
-   as if it were the comment. Returns null for a self-logged row. */
+   DB triggers with detail = the actor's name. Returns null for a self-logged
+   comment row, so a teammate's comment never reads "You commented on…" with
+   their name quoted as if it were the comment. */
 function actorOf(a: Activity): string | null {
   if (a.kind === "assigned" || a.kind === "mention") return a.detail?.trim() || "Someone";
   if (a.kind !== "comment") return null;
@@ -49,8 +63,15 @@ function actorOf(a: Activity): string | null {
   if (!d || d === "Someone" || EMAIL_RE.test(d)) return d || "Someone";
   const k = d.toLowerCase();
   if (MEMBERS.some((m) => m.name?.trim().toLowerCase() === k || m.email?.toLowerCase() === k)) return d;
-  // a teammate who has since left the workspace isn't in MEMBERS any more
-  return PERSON_NAME_RE.test(d) ? d : null;
+  // reads as a sentence: your own comment (even from a tab still on the old build)
+  if (SENTENCE_RE.test(d)) return null;
+  if (Date.parse(a.createdAt) >= SELF_LOGGED_COMMENTS_END) return d;
+  // older rows: up to four capitalised words that aren't a stock reply read as a
+  // name, e.g. a teammate who has since left the workspace ("Priya", "Priya Natarajan")
+  const words = d.split(/\s+/);
+  if (words.length > 4 || /[\d"“”()[\]{}<>@#/\\]/.test(d)) return null;
+  if (words.some((w) => REPLY_WORDS.has(w.toLowerCase().replace(/[.'’]+$/, "")))) return null;
+  return words.every((w) => /^\p{Lu}/u.test(w)) ? d : null;
 }
 const ACTOR_VERB: Partial<Record<ActivityKind, string>> = {
   assigned: "assigned you",
@@ -63,12 +84,19 @@ const ACTOR_VERB: Partial<Record<ActivityKind, string>> = {
 const FILL_1 = "var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent))";
 const isFocusVisible = (el: Element) => { try { return el.matches(":focus-visible"); } catch { return false; } };
 
-/* ---------- snoozes (per device) ---------- */
+/* ---------- snoozes (per device) ----------
+   Storage holds id → wake time for every account and workspace used in this
+   browser, but the inbox only ever sees the current workspace's activity, so
+   everything here touches only ids that are in `activity`. A snooze that has
+   ended stays stored until its item turns up in an inbox (it may belong to
+   another workspace), and is then flagged "Back from snooze" once. Ones that
+   ended more than WAKE_WINDOW ago are stale: dropped, never flagged. */
 const SNOOZE_KEY = "kanbo-inbox-snooze";
 const MAX_TIMEOUT = 2 ** 31 - 1;
+const WAKE_WINDOW = 7 * 86400000;
 type SnoozeState = {
-  until: Record<string, number>;   // still snoozed: id → wake time (ms)
-  woke: Record<string, number>;    // came back during/just before this visit — flagged until acted on
+  until: Record<string, number>;   // persisted: id → wake time (ms), including ended snoozes not yet flagged
+  woke: Record<string, number>;    // this visit: came back during/just before it, flagged until acted on
 };
 function readSnoozes(): Record<string, number> {
   try {
@@ -79,11 +107,13 @@ function readSnoozes(): Record<string, number> {
     return out;
   } catch { return {}; }
 }
+function withoutStale(rec: Record<string, number>, now = Date.now()): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rec)) if (v > now - WAKE_WINDOW) out[k] = v;
+  return out;
+}
 function initialSnoozes(): SnoozeState {
-  const t = Date.now();
-  const until: Record<string, number> = {}, woke: Record<string, number> = {};
-  for (const [k, v] of Object.entries(readSnoozes())) (v > t ? until : woke)[k] = v;
-  return { until, woke };
+  return { until: withoutStale(readSnoozes()), woke: {} };
 }
 function omit<T>(rec: Record<string, T>, ids: string[]): Record<string, T> {
   if (!ids.some((id) => id in rec)) return rec;
@@ -111,9 +141,11 @@ function snoozeOptions(from: Date): { label: string; hint: string; until: number
   ];
 }
 
+// one formatter for every row (toLocaleString builds a new one per call)
+const FULL_DATE = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 function fullDate(iso: string): string | undefined {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? undefined : d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(d.getTime()) ? undefined : FULL_DATE.format(d);
 }
 
 /* Snooze menu — portalled to <body> with fixed positioning so no card, scroll
@@ -249,24 +281,35 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
     if (fresh.length) setUnread((s) => { const n = new Set(s); fresh.forEach((id) => n.add(id)); return n; });
   }, [activity]);
 
-  // persist still-pending snoozes (woken ones are dropped, so they're flagged once)
+  // persist snoozes (a woken one leaves storage once it's flagged here, so it's flagged once)
   useEffect(() => {
     try { localStorage.setItem(SNOOZE_KEY, JSON.stringify(snz.until)); } catch { /* private mode */ }
   }, [snz.until]);
 
-  // wake snoozed items on time, even while the inbox stays open
+  // wake snoozed items on time, even while the inbox stays open. Only items in
+  // THIS inbox are flagged; an ended snooze for another workspace's item stays
+  // stored for that inbox until it goes stale.
+  const activityIds = useMemo(() => new Set(activity.map((a) => a.id)), [activity]);
   useEffect(() => {
     const t = Date.now();
-    const due = Object.entries(snz.until).filter(([, v]) => v <= t);
-    if (due.length) {
-      setSnz((s) => ({ until: omit(s.until, due.map(([k]) => k)), woke: { ...s.woke, ...Object.fromEntries(due) } }));
+    const woken: [string, number][] = [], stale: string[] = [];
+    let next = Infinity;
+    for (const [k, v] of Object.entries(snz.until)) {
+      if (v > t) next = Math.min(next, v);
+      else if (activityIds.has(k)) woken.push([k, v]);
+      else if (v <= t - WAKE_WINDOW) stale.push(k);
+    }
+    if (woken.length || stale.length) {
+      setSnz((s) => ({
+        until: omit(s.until, [...woken.map(([k]) => k), ...stale]),
+        woke: woken.length ? { ...s.woke, ...Object.fromEntries(woken) } : s.woke,
+      }));
       return;
     }
-    const next = Math.min(...Object.values(snz.until));
     if (!Number.isFinite(next)) return;
     const id = window.setTimeout(() => setTick((x) => x + 1), Math.min(MAX_TIMEOUT, next - t + 50));
     return () => window.clearTimeout(id);
-  }, [snz.until, tick]);
+  }, [snz.until, activityIds, tick]);
 
   // keyboard continuity: after archiving/snoozing a row, focus its neighbour
   useEffect(() => {
@@ -289,9 +332,11 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
   const snoozedCount = activity.length - visible.length;
   const snoozedHere = activeFilter.kinds ? activity.filter((a) => (snz.until[a.id] ?? 0) > now && matches(activeFilter, a)).length : snoozedCount;
   // group by recency so the feed reads as "what just happened" vs "earlier";
-  // items back from a snooze lead, so the reminder actually reminds
-  const back = shown.filter((a) => snz.woke[a.id]).sort((x, y) => snz.woke[y.id] - snz.woke[x.id]);
-  const rest = shown.filter((a) => !snz.woke[a.id]);
+  // items back from a snooze lead, so the reminder actually reminds (an ended
+  // snooze counts before the wake effect has moved it, so nothing jumps)
+  const backAt = (id: string) => snz.woke[id] ?? (id in snz.until && snz.until[id] <= now ? snz.until[id] : 0);
+  const back = shown.filter((a) => backAt(a.id)).sort((x, y) => backAt(y.id) - backAt(x.id));
+  const rest = shown.filter((a) => !backAt(a.id));
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
   const weekAgo = now - 7 * 86400000;
   const today = rest.filter((a) => new Date(a.createdAt).getTime() >= startOfToday.getTime());
@@ -315,9 +360,14 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
     const i = ordered.findIndex((a) => a.id === id);
     return i < 0 ? null : (ordered[i + 1] ?? ordered[i - 1])?.id ?? null;
   };
+  // acted on (opened/archived): no longer new, no longer back from snooze.
+  // Only ever called with shown ids, so any stored snooze for them has ended.
   const forget = (ids: string[]) => {
     setUnread((s) => withoutIds(s, ids));
-    setSnz((s) => { const woke = omit(s.woke, ids); return woke === s.woke ? s : { ...s, woke }; });
+    setSnz((s) => {
+      const woke = omit(s.woke, ids), until = omit(s.until, ids);
+      return woke === s.woke && until === s.until ? s : { until, woke };
+    });
   };
   const openItem = (a: Activity) => {
     if (!a.taskId || !taskById.has(a.taskId)) return;
@@ -333,20 +383,21 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
     focusNextRef.current = neighbourOf(id);
     setMenu(null);
     setUnread((s) => withoutIds(s, [id]));
-    setSnz((s) => {
-      const t = Date.now();
-      const next: Record<string, number> = {};
-      for (const [k, v] of Object.entries(s.until)) if (v > t) next[k] = v;   // self-pruning
-      next[id] = until;
-      return { until: next, woke: omit(s.woke, [id]) };
-    });
+    // self-pruning drops only stale entries: ended snoozes for other inboxes wait their turn
+    setSnz((s) => ({ until: { ...withoutStale(s.until), [id]: until }, woke: omit(s.woke, [id]) }));
   };
   const closeMenu = (refocus: boolean) => {
     const m = menu;
     setMenu(null);
     if (refocus) m?.anchor.focus();
   };
-  const unsnoozeAll = () => setSnz((s) => ({ until: {}, woke: s.woke }));
+  // only the snoozes counted in "{n} snoozed" (this inbox), which come back at the top
+  const unsnoozeAll = () => setSnz((s) => {
+    const t = Date.now();
+    const ids = activity.filter((a) => (s.until[a.id] ?? 0) > t).map((a) => a.id);
+    if (!ids.length) return s;
+    return { until: omit(s.until, ids), woke: { ...s.woke, ...Object.fromEntries(ids.map((id) => [id, t])) } };
+  });
   const cancelArchiveAll = () => { restoreArchiveFocus.current = true; setConfirmArchive(false); };
   const archiveShown = () => {
     const ids = shown.map((a) => a.id);
@@ -419,7 +470,7 @@ export function InboxView({ activity, tasks, onOpen, onArchive, onClearAll }: {
           const task = a.taskId ? taskById.get(a.taskId) : undefined;
           const proj = task ? getProject(task.projectId) : undefined;
           const actor = actorOf(a);
-          const isUnread = unread.has(a.id) || !!snz.woke[a.id];
+          const isUnread = unread.has(a.id) || backAt(a.id) > 0;
           const title = a.taskTitle || "a task";
           const first = i === 0, last = i === bucket.items.length - 1;
           const rTop = first ? 15 : 0, rBottom = last ? 15 : 0;
@@ -609,17 +660,26 @@ const ERR_INK = "color-mix(in oklch, var(--prio-urgent) 80%, var(--ink))";
 
 const withArticle = (word: string) => (/^[aeiou]/i.test(word) ? "an " : "a ") + word;
 
-/** Turn an invite_member failure into something an owner can act on. */
+/** Turn an invite_member failure into something an owner can act on. Matches
+    both the raw RPC wording and the store's already-friendly rewrite of it. */
 function inviteErrorText(e: unknown, email: string): string {
   const raw = String((e as { message?: unknown } | null)?.message ?? e ?? "").replace(/^Error:\s*/i, "").trim();
   if (/already a member/i.test(raw)) return `${email} is already a member — open their card to change their role.`;
-  if (/only the owner can add admins/i.test(raw)) return "Only the workspace owner can invite admins.";
-  if (/not authori[sz]ed|permission denied|row-level security/i.test(raw)) return "Only owners and admins can invite people to this workspace.";
-  if (/invalid email/i.test(raw)) return "That email address doesn't look right — check it and try again.";
-  if (/invalid role/i.test(raw)) return "Choose a role for them first.";
+  if (/only the (workspace )?owner can (add|invite) admins/i.test(raw)) return "Only the workspace owner can invite admins.";
+  if (/not authori[sz]ed|permission denied|row-level security|only workspace owners and admins/i.test(raw)) return "Only owners and admins can invite people to this workspace.";
+  if (/invalid email|valid email address/i.test(raw)) return "That email address doesn't look right — check it and try again.";
+  if (/invalid role|choose a role/i.test(raw)) return "Choose a role for them first.";
   if (/failed to fetch|networkerror|network request failed|load failed|offline/i.test(raw)) return "You seem to be offline — check your connection and try again.";
+  if (/^couldn['’]?t\b/i.test(raw)) return raw;   // already a whole sentence
   return raw ? `Couldn't send the invite: ${raw}` : "Couldn't send the invite. Please try again.";
 }
+
+const isThenable = (x: unknown): x is PromiseLike<unknown> =>
+  !!x && (typeof x === "object" || typeof x === "function") && typeof (x as { then?: unknown }).then === "function";
+
+// the invite-member email function skips a send within a minute of the last
+// one for the same invite, so Resend waits that long
+const RESEND_COOLDOWN = 60_000;
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -642,7 +702,9 @@ function RoleBadge({ m }: { m: WorkspaceMember }) {
     : <span title={roleBlurb(m.role)} className="mono" style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, color: m.role === "owner" ? "var(--accent)" : "var(--ink-3)", background: FILL_1, flexShrink: 0 }}>{ROLE_META[m.role]?.label}</span>;
 }
 
-type ResendState = "sending" | "sent" | { error: string };
+/* Per pending email: "fresh" = invited from this page a moment ago, "sent" =
+   re-sent a moment ago (both hold Resend off for RESEND_COOLDOWN). */
+type ResendState = "sending" | "sent" | "fresh" | { error: string };
 
 /* Clean, clickable card — opens the profile drawer. Pending invites also get
    "Resend invite" and "Copy sign-up link" for owners/admins. Hoisted to module
@@ -659,6 +721,8 @@ function MemberCard({ m, name, isSelf, openN, onSelect, invite }: {
   const pending = m.status !== "active";
   const resend = invite?.resend;
   const resendError = resend && typeof resend === "object" ? resend.error : null;
+  const done = resend === "sent" || resend === "fresh";
+  const resendLabel = resend === "sending" ? "Sending…" : resend === "sent" ? "Invite refreshed" : resend === "fresh" ? "Just invited" : "Resend invite";
   return (
     <div className="glass lift" style={{ borderRadius: 16, display: "flex", flexDirection: "column", width: "100%" }}>
       <button type="button" onClick={onSelect} aria-haspopup="dialog" style={{ padding: invite ? "16px 16px 12px" : 16, borderRadius: 16, textAlign: "left", cursor: "pointer", border: "none", background: "transparent", display: "flex", flexDirection: "column", gap: 13, width: "100%", color: "var(--ink)", fontFamily: "var(--font-display)" }}>
@@ -693,11 +757,12 @@ function MemberCard({ m, name, isSelf, openN, onSelect, invite }: {
         <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "0 16px 14px" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {invite.canResend && (
-              <button type="button" className="btn btn-ghost" onClick={invite.onResend} disabled={resend === "sending"}
-                aria-label={`Resend invite to ${m.email}`}
-                style={{ fontSize: 12.5, padding: "6px 11px", borderRadius: 10, color: resend === "sent" ? OK_INK : undefined, opacity: resend === "sending" ? 0.7 : 1 }}>
-                <Icon name={resend === "sent" ? "check" : "refresh"} size={13} />
-                {resend === "sending" ? "Sending…" : resend === "sent" ? "Invite re-sent" : "Resend invite"}
+              <button type="button" className="btn btn-ghost" onClick={invite.onResend} disabled={resend === "sending" || done}
+                aria-label={resend === "sending" ? `Sending invite to ${m.email}` : done ? `${resendLabel} (${m.email}) — you can resend in a minute` : `Resend invite to ${m.email}`}
+                title={done ? "You can resend in a minute" : undefined}
+                style={{ fontSize: 12.5, padding: "6px 11px", borderRadius: 10, color: done ? OK_INK : undefined, opacity: resend === "sending" ? 0.7 : 1, cursor: done || resend === "sending" ? "default" : "pointer" }}>
+                <Icon name={done ? "check" : "refresh"} size={13} />
+                {resendLabel}
               </button>
             )}
             <button type="button" className="btn btn-ghost" onClick={invite.onCopy}
@@ -710,6 +775,7 @@ function MemberCard({ m, name, isSelf, openN, onSelect, invite }: {
           <div aria-live="polite" style={{ fontSize: 11.5, lineHeight: 1.45, color: resendError ? ERR_INK : "var(--ink-4)" }}>
             {resendError
               ? resendError
+              : resend === "sent" ? "If the email doesn't reach them, copy the sign-up link and send it yourself."
               : invite.copied === "ok" ? `Share it with them — they need to sign up with ${m.email} to join.`
               : invite.copied === "failed" ? `Couldn't copy automatically — the sign-up link is ${window.location.origin}/`
               : null}
@@ -860,7 +926,10 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   currentUserId: string;
   myRole?: Role;
   /** Invite (or re-invite) an email. Return a promise that rejects on failure
-      and the page shows the server's reason inline ("already a member"…). */
+      and the page confirms success or shows the server's reason inline
+      ("already a member"…). A handler that returns nothing can't report the
+      outcome, so the page then claims neither (it only clears the field, and
+      the handler must surface failures itself). */
   onInvite: (workspaceId: string, email: string, role: Role) => void | Promise<unknown>;
   onRemoveMember: (memberId: string) => void;
   onSetRole?: (memberId: string, role: Role) => void;
@@ -890,6 +959,12 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   // feedback belongs to the workspace it was given in
   useEffect(() => { setInviteMsg(null); setResend({}); setCopied(null); }, [workspace]);
   const later = (fn: () => void, ms: number) => { timers.current.push(window.setTimeout(fn, ms)); };
+  // an invite just went out for this email: hold Resend off until the email function would send again
+  const setResendFor = (email: string, state: "sent" | "fresh") => {
+    const key = email.toLowerCase();
+    setResend((s) => ({ ...s, [key]: state }));
+    later(() => setResend((s) => { if (s[key] !== state) return s; const n = { ...s }; delete n[key]; return n; }), RESEND_COOLDOWN);
+  };
   const wsMembers = members.filter((m) => m.workspaceId === workspace);
   const active = wsMembers.filter((m) => m.status === "active");
   const invited = wsMembers.filter((m) => m.status === "invited");
@@ -929,10 +1004,14 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
     setInviteBusy(true);
     setInviteMsg(null);
     try {
-      await onInvite(workspace, v, inviteRole);
+      const r = onInvite(workspace, v, inviteRole);
+      // no promise → no way to know how it went: claim nothing, just clear the field
+      if (!isThenable(r)) { setEmail(""); return; }
+      await r;
       setEmail("");
+      setResendFor(v, existing ? "sent" : "fresh");
       const as = withArticle(ROLE_META[inviteRole].label.toLowerCase());
-      setInviteMsg({ kind: "ok", text: existing ? `Invite re-sent to ${v} (as ${as}).` : `Invited ${v} as ${as}. They'll join when they sign up with that email.` });
+      setInviteMsg({ kind: "ok", text: existing ? `Refreshed the invite for ${v} (as ${as}).` : `Invited ${v} as ${as}. They'll join when they sign up or sign in with that email.` });
     } catch (e) {
       setInviteMsg({ kind: "error", text: inviteErrorText(e, v) });
     } finally {
@@ -941,14 +1020,17 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
   };
 
   const resendInvite = async (m: WorkspaceMember) => {
-    if (!workspace || resend[m.id] === "sending") return;
-    setResend((s) => ({ ...s, [m.id]: "sending" }));
+    const key = m.email.toLowerCase();
+    const cur = resend[key];
+    if (!workspace || cur === "sending" || cur === "sent" || cur === "fresh") return;
+    setResend((s) => ({ ...s, [key]: "sending" }));
     try {
-      await onInvite(workspace, m.email, m.role);
-      setResend((s) => ({ ...s, [m.id]: "sent" }));
-      later(() => setResend((s) => { if (s[m.id] !== "sent") return s; const n = { ...s }; delete n[m.id]; return n; }), 4000);
+      const r = onInvite(workspace, m.email, m.role);
+      if (!isThenable(r)) { setResend((s) => { const n = { ...s }; delete n[key]; return n; }); return; }
+      await r;
+      setResendFor(key, "sent");
     } catch (e) {
-      setResend((s) => ({ ...s, [m.id]: { error: inviteErrorText(e, m.email) } }));
+      setResend((s) => ({ ...s, [key]: { error: inviteErrorText(e, m.email) } }));
     }
   };
 
@@ -1065,7 +1147,7 @@ export function TeamView({ tasks, workspace, workspaces, members, currentUserId,
               <MemberCard key={m.id} m={m} name={memberName(m)} isSelf={false} openN={0} onSelect={() => setSelectedId(m.id)}
                 invite={canManage ? {
                   canResend: canManageMember(role, m.role),
-                  resend: resend[m.id],
+                  resend: resend[m.email.toLowerCase()],
                   copied: copied?.id === m.id ? copied.result : undefined,
                   onResend: () => { void resendInvite(m); },
                   onCopy: () => { void copySignUpLink(m); },

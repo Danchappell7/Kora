@@ -42,6 +42,32 @@ describe("InboxView — who did what", () => {
     expect(screen.getByText("“Looks great, ship it!”")).toBeInTheDocument();
   });
 
+  // rows from before the release that stops self-logged comment rows are a mix;
+  // from it on, every comment row is a teammate's
+  const OLD = "2026-09-20T10:00:00.000Z", NEW = "2026-10-02T10:00:00.000Z";
+
+  it("older rows: a single-word name is the commenter, a stock reply in Title Case is your own comment", () => {
+    inbox([
+      act_({ id: "a1", detail: "Priya", createdAt: OLD }),
+      act_({ id: "a2", detail: "Great Work", createdAt: OLD, taskTitle: "Brief" }),
+      act_({ id: "a3", detail: "Sounds Good.", createdAt: OLD, taskTitle: "Roadmap" }),
+    ]);
+    expect(screen.getByRole("button", { name: /Priya commented on Q3 budget/ })).toBeInTheDocument();
+    expect(screen.queryByText("“Priya”")).toBeNull();
+    expect(screen.getByRole("button", { name: /You commented on Brief/ })).toBeInTheDocument();
+    expect(screen.getByText("“Great Work”")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /You commented on Roadmap/ })).toBeInTheDocument();
+  });
+
+  it("newer rows: any name shape is the commenter, but a sentence still reads as your own", () => {
+    inbox([
+      act_({ id: "a1", detail: "priya", createdAt: NEW }),
+      act_({ id: "a2", detail: "Looks great, ship it!", createdAt: NEW, taskTitle: "Brief" }),
+    ]);
+    expect(screen.getByRole("button", { name: /priya commented on Q3 budget/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /You commented on Brief/ })).toBeInTheDocument();
+  });
+
   it("labels row actions with the item name", () => {
     inbox([act_({ id: "a1", kind: "assigned", detail: "Theo Vance" })]);
     expect(screen.getByRole("button", { name: "Archive “Q3 budget”" })).toBeInTheDocument();
@@ -143,6 +169,48 @@ describe("InboxView — snooze", () => {
     expect(JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}")).toEqual({});
   });
 
+  it("'Bring back now' only unsnoozes this inbox's items, and brings them back at the top", () => {
+    const later = Date.now() + 3_600_000;
+    localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ a1: later, otherWsItem: later }));
+    inbox([act_({ id: "a1", detail: "Maya Lin" }), act_({ id: "a2", kind: "assigned", detail: "Theo Vance", taskTitle: "Brief" })]);
+    expect(screen.getByText(/1 snoozed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Bring back now" }));
+    const back = screen.getByRole("region", { name: "Back from snooze" });
+    expect(within(back).getByRole("button", { name: /Maya Lin commented on Q3 budget/ })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}")).toEqual({ otherWsItem: later });
+  });
+
+  it("keeps an ended snooze for another workspace's item until that inbox shows it", () => {
+    const ended = Date.now() - 1000;
+    localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ x9: ended }));
+    const first = inbox([act_({ id: "a1", detail: "Maya Lin" })]);
+    expect(screen.queryByRole("region", { name: "Back from snooze" })).toBeNull();
+    first.unmount();
+    expect(JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}")).toEqual({ x9: ended });
+    inbox([act_({ id: "x9", kind: "assigned", detail: "Theo Vance", taskTitle: "Other" })]);
+    const back = screen.getByRole("region", { name: "Back from snooze" });
+    expect(within(back).getByRole("button", { name: /^Unread: Theo Vance assigned you Other/ })).toBeInTheDocument();
+  });
+
+  it("drops snoozes that ended long ago without flagging them", () => {
+    localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ a1: Date.now() - 20 * 86400000, gone: Date.now() - 20 * 86400000 }));
+    inbox([act_({ id: "a1", detail: "Maya Lin" })]);
+    expect(screen.queryByRole("region", { name: "Back from snooze" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Maya Lin commented on/ })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}")).toEqual({});
+  });
+
+  it("snoozing again keeps other inboxes' ended snoozes", () => {
+    const ended = Date.now() - 1000;
+    localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ x9: ended }));
+    inbox([act_({ id: "a1", detail: "Maya Lin" })]);
+    fireEvent.click(screen.getByRole("button", { name: "Snooze “Q3 budget”" }));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: /In 3 hours/ }));
+    const saved = JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}");
+    expect(saved.x9).toBe(ended);
+    expect(saved.a1).toBeGreaterThan(Date.now());
+  });
+
   it("wakes a snooze while the inbox stays open", () => {
     vi.useFakeTimers();
     localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ a1: Date.now() + 5000 }));
@@ -205,17 +273,89 @@ describe("TeamView", () => {
     expect(input).toHaveValue("");
   });
 
-  it("pending invites can be re-sent and their sign-up link copied", async () => {
+  it("says 'sign up or sign in' — invitees who already have an account join on their next sign-in", async () => {
+    const onInvite = vi.fn().mockResolvedValue({});
+    team([], { onInvite });
+    const input = screen.getByLabelText("Invite email");
+    fireEvent.change(input, { target: { value: "new@kanbo.app" } });
+    await act(async () => { fireEvent.submit(input.closest("form")!); });
+    expect(screen.getByRole("status")).toHaveTextContent("They'll join when they sign up or sign in with that email.");
+  });
+
+  it("shows the store's rewritten server messages as plain sentences", async () => {
+    const onInvite = vi.fn()
+      .mockRejectedValueOnce(new Error("Only the workspace owner can add admins."))
+      .mockRejectedValueOnce(new Error("Only workspace owners and admins can invite people."))
+      .mockRejectedValueOnce(new Error("Couldn't create the invite. Please try again."));
+    team([], { onInvite });
+    const input = screen.getByLabelText("Invite email");
+    const send = async () => {
+      fireEvent.change(input, { target: { value: "new@kanbo.app" } });
+      await act(async () => { fireEvent.submit(input.closest("form")!); });
+      return screen.getByRole("status").textContent;
+    };
+    expect(await send()).toBe("Only the workspace owner can invite admins.");
+    expect(await send()).toBe("Only owners and admins can invite people to this workspace.");
+    expect(await send()).toBe("Couldn't create the invite. Please try again.");
+  });
+
+  it("claims nothing when onInvite doesn't return a promise (the caller reports failures itself)", async () => {
+    const toastError = vi.fn();
+    // shaped like an App handler that catches its own error and returns nothing
+    const onInvite = vi.fn(() => { Promise.reject(new Error("not authorized")).catch((e: Error) => toastError(e.message)); });
+    team([member({ id: "p1", email: "guest@partner.io", role: "guest", status: "invited" })], { onInvite });
+    const input = screen.getByLabelText("Invite email");
+    fireEvent.change(input, { target: { value: "new@kanbo.app" } });
+    await act(async () => { fireEvent.submit(input.closest("form")!); });
+    expect(onInvite).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toHaveTextContent(/^$/);
+    expect(input).toHaveValue("");
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
+    expect(onInvite).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/Invite refreshed|Invite re-sent/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })).not.toBeDisabled();
+    expect(toastError).toHaveBeenCalled();
+  });
+
+  it("pending invites can be re-sent (then wait a minute) and their sign-up link copied", async () => {
     const onInvite = vi.fn().mockResolvedValue({});
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     team([member({ id: "p1", email: "guest@partner.io", role: "guest", status: "invited" })], { onInvite });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
     expect(onInvite).toHaveBeenCalledWith(WS, "guest@partner.io", "guest");
-    expect(screen.getByText("Invite re-sent")).toBeInTheDocument();
+    // no promise that an email went out: the send may be skipped or not set up
+    expect(screen.getByText("Invite refreshed")).toBeInTheDocument();
+    expect(screen.getByText(/If the email doesn't reach them, copy the sign-up link/)).toBeInTheDocument();
+    const cooling = screen.getByRole("button", { name: /Invite refreshed \(guest@partner\.io\) — you can resend in a minute/ });
+    expect(cooling).toBeDisabled();
+    fireEvent.click(cooling);
+    expect(onInvite).toHaveBeenCalledTimes(1);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Copy sign-up link for guest@partner.io" })); });
     expect(writeText).toHaveBeenCalledWith(window.location.origin + "/");
     expect(screen.getByText("Link copied")).toBeInTheDocument();
+  });
+
+  it("a failed resend shows the reason and can be retried", async () => {
+    const onInvite = vi.fn().mockRejectedValueOnce(new Error("Failed to fetch")).mockResolvedValueOnce({});
+    team([member({ id: "p1", email: "guest@partner.io", role: "guest", status: "invited" })], { onInvite });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
+    expect(screen.getByText(/You seem to be offline/)).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Resend invite to guest@partner.io" })); });
+    expect(screen.getByText("Invite refreshed")).toBeInTheDocument();
+  });
+
+  it("a fresh invite's card holds Resend off for a minute", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const onInvite = vi.fn().mockResolvedValue({});
+    const { props, rerender } = team([], { onInvite });
+    const input = screen.getByLabelText("Invite email");
+    fireEvent.change(input, { target: { value: "New@Kanbo.app" } });
+    await act(async () => { fireEvent.submit(input.closest("form")!); });
+    rerender(<TeamView {...props} members={[member({ id: "p1", email: "new@kanbo.app", status: "invited" })]} />);
+    expect(screen.getByRole("button", { name: /Just invited \(new@kanbo\.app\)/ })).toBeDisabled();
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(screen.getByRole("button", { name: "Resend invite to new@kanbo.app" })).not.toBeDisabled();
   });
 
   it("members who can't manage people don't get invite actions", () => {
