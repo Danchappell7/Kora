@@ -39,6 +39,23 @@ export interface Bootstrap {
 }
 export interface BootPartial { profile?: true; projects?: true; tags?: true; workspaces?: true; members?: true }
 
+/** For a reload while the lists are already on screen: each part this load
+ *  couldn't read (see `partial`) takes the on-screen copy, which is newer than
+ *  the device snapshot bootstrap filled it from — so a passing error can't
+ *  bring back a deleted project or undo a rename. Parts the caller doesn't pass
+ *  stay as loaded. Not for the first load, where the snapshot is the best copy. */
+export function keepOnScreen(b: Bootstrap, onScreen: Partial<Pick<Bootstrap, "profile" | "projects" | "tags" | "workspaces" | "members">>): Bootstrap {
+  const p = b.partial;
+  if (!p) return b;
+  const out = { ...b };
+  if (p.profile && onScreen.profile !== undefined) out.profile = onScreen.profile;
+  if (p.projects && onScreen.projects) out.projects = onScreen.projects;
+  if (p.tags && onScreen.tags) out.tags = onScreen.tags;
+  if (p.workspaces && onScreen.workspaces) out.workspaces = onScreen.workspaces;
+  if (p.members && onScreen.members) out.members = onScreen.members;
+  return out;
+}
+
 export interface AuthedUser {
   id: string;
   email?: string;
@@ -633,6 +650,29 @@ export interface InviteEmailResult { sent: boolean; reason?: InviteEmailReason; 
 export type InvitedMember = WorkspaceMember & { inviteEmail?: InviteEmailResult };
 const INVITE_EMAIL_TIMEOUT_MS = 15_000;
 
+/** What to tell the inviter about the invitation email: null when it went (or
+ *  there's no result, as in demo mode). "error" means they need to act — share
+ *  the sign-up link or resend later; "info" is worth knowing but needs nothing. */
+export function inviteEmailNotice(r: InviteEmailResult | undefined): { tone: "info" | "error"; text: string } | null {
+  if (!r || r.sent) return null;
+  switch (r.reason) {
+    case "throttled":
+      return { tone: "info", text: "An invite email went to them less than a minute ago. You can resend it in a minute." };
+    case "already_active":
+      return { tone: "info", text: "They've already joined this workspace, so there's no invite to email." };
+    case "email_not_configured":
+      return { tone: "error", text: "Invite saved, but invite emails aren't set up yet. Copy the sign-up link and send it to them yourself." };
+    case "inviter_limit": {
+      if (r.message) return { tone: "error", text: r.message };
+      const mins = r.retryAfter && r.retryAfter > 0 ? Math.ceil(r.retryAfter / 60) : 0;
+      const when = mins ? `in about ${mins} minute${mins === 1 ? "" : "s"}` : "later";
+      return { tone: "error", text: `Invite saved, but you've sent a lot of invites this hour, so the email is on hold. Resend it ${when} or share the sign-up link.` };
+    }
+    default:
+      return { tone: "error", text: "Invite saved, but the email couldn't be sent. Share the sign-up link or resend it later." };
+  }
+}
+
 /** The JSON body of a failed Edge Function call, if it has one. */
 async function fnErrorBody(error: unknown): Promise<{ status?: number; body: Record<string, unknown> }> {
   const ctx = (error as { context?: { status?: number; json?: () => Promise<unknown>; clone?: () => { json: () => Promise<unknown> } } })?.context;
@@ -1170,7 +1210,9 @@ export const store = {
     const member = rowToWsMember(data as MemberRow);
     // email the invitation. The invite already exists (it's claimed on the
     // invitee's next sign-in), so a failed email never fails the invite; the
-    // caller is told, so it can offer the sign-up link or a resend instead.
+    // caller is told (inviteEmailNotice words it), so it can offer the sign-up
+    // link or a resend instead. Awaited so the invite and its email are
+    // reported together: usually a second or two, capped by the timeout.
     return { ...member, inviteEmail: await store.sendInviteEmail(member.id) };
   },
 
@@ -2328,9 +2370,14 @@ export const store = {
   /** The provider's OAuth consent URL to redirect the browser to. With
    *  finishInApp, the provider's redirect comes back to the app as
    *  ?calendar=finish&calendar_state=…&calendar_code=…, and the app must then
-   *  call finishCalendarConnect — so only pass it where that's handled. */
+   *  call finishCalendarConnect — so only pass it where that's handled.
+   *  Opt-in on purpose: without that handler the connection never completes.
+   *  Switch it on in the same change that adds the handler, and only then
+   *  treat the app as ready for CALENDAR_APP_FINISH_ONLY (DEPLOYMENT.md). */
   async getCalendarAuthUrl(provider: CalProvider, opts: { finishInApp?: boolean } = {}): Promise<string> {
-    const b = await callCalendarFn(`?action=connect&provider=${provider}${opts.finishInApp ? "&finish=app" : ""}`);
+    const qs = new URLSearchParams({ action: "connect", provider });
+    if (opts.finishInApp) qs.set("finish", "app");
+    const b = await callCalendarFn(`?${qs}`);
     if (!b.url) throw new Error((b.error as string) || "Couldn't start the connection.");
     return b.url as string;
   },

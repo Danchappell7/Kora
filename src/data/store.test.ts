@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { store } from "./store";
+import { store, keepOnScreen, inviteEmailNotice } from "./store";
+import type { Bootstrap } from "./store";
 
 /* These run in demo mode (no Supabase env in tests), exercising the
    in-memory adapters that mirror the real API shape. */
@@ -953,6 +954,28 @@ describe("store (supabase) — integration wiring", () => {
     expect(snap.boot.partial).toBeUndefined();
   });
 
+  it("a reload keeps what's on screen for each part it couldn't read, and only those", () => {
+    const loaded = {
+      projects: [{ id: "p-personal" }, { id: "p-old-name" }], tags: { t1: { label: "Snapshot", color: "red" } },
+      workspaces: [{ id: "ws-deleted" }], members: [{ id: "wm-snap" }], profile: { id: "user-a", firstName: "Old" },
+      tasks: [], partial: { projects: true, profile: true },
+    } as unknown as Bootstrap;
+    const screen = {
+      projects: [{ id: "p-personal" }, { id: "p-renamed" }], tags: { t1: { label: "Now", color: "red" } },
+      workspaces: [{ id: "ws-now" }], members: [{ id: "wm-now" }], profile: null,
+    } as unknown as Pick<Bootstrap, "projects" | "tags" | "workspaces" | "members" | "profile">;
+    const kept = keepOnScreen(loaded, screen);
+    expect(kept.projects).toBe(screen.projects);
+    expect(kept.profile).toBeNull();                       // a null on screen is still "what's on screen"
+    expect(kept.tags).toBe(loaded.tags);                   // these loaded fine, so the server wins
+    expect(kept.workspaces).toBe(loaded.workspaces);
+    expect(kept.members).toBe(loaded.members);
+    // a part the caller doesn't pass stays as loaded; a complete load is untouched
+    expect(keepOnScreen({ ...loaded, partial: { tags: true } }, { projects: screen.projects }).tags).toBe(loaded.tags);
+    const complete = { ...loaded, partial: undefined };
+    expect(keepOnScreen(complete, screen)).toBe(complete);
+  });
+
   it("with no earlier copy, a failed query still boots — flagged, with just the built-ins", async () => {
     const fake = makeFake();
     fake.setHandler((c) => (c.table === "projects" && c.op === "select" ? { error: { message: "TypeError: Failed to fetch" } } : undefined));
@@ -1016,6 +1039,19 @@ describe("store (supabase) — integration wiring", () => {
       fake.setInvoke(() => ({ error: httpError(500, { error: "Something went wrong sending that invite." }) }));
       expect((await s.inviteMember("ws-1", "sam@acme.com")).inviteEmail).toMatchObject({ sent: false, reason: "not_sent" });
       expect(fake.reportError).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: "sendInviteEmail" }));
+    });
+
+    it("words the email result for the inviter: quiet when it went, a next step when it didn't", () => {
+      expect(inviteEmailNotice(undefined)).toBeNull();     // demo mode sends none, and says nothing
+      expect(inviteEmailNotice({ sent: true })).toBeNull();
+      expect(inviteEmailNotice({ sent: false, reason: "throttled", retryAfter: 40 })?.tone).toBe("info");
+      expect(inviteEmailNotice({ sent: false, reason: "already_active", message: "already a member" })).toEqual({ tone: "info", text: "They've already joined this workspace, so there's no invite to email." });
+      expect(inviteEmailNotice({ sent: false, reason: "email_not_configured" })).toMatchObject({ tone: "error", text: expect.stringMatching(/^Invite saved.*sign-up link/) });
+      // the server's own wording for the hourly cap, else a time from retryAfter
+      expect(inviteEmailNotice({ sent: false, reason: "inviter_limit", message: "You've sent a lot of invites this hour." })?.text).toBe("You've sent a lot of invites this hour.");
+      expect(inviteEmailNotice({ sent: false, reason: "inviter_limit", retryAfter: 1200 })?.text).toMatch(/in about 20 minutes/);
+      // a raw server error ("invite not found") is never shown as-is
+      expect(inviteEmailNotice({ sent: false, reason: "not_sent", message: "invite not found" })).toEqual({ tone: "error", text: "Invite saved, but the email couldn't be sent. Share the sign-up link or resend it later." });
     });
 
     it("a resend re-runs the same call and reports a throttle rather than failing", async () => {
