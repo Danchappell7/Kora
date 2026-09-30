@@ -24,4 +24,16 @@ describe("NewProjectModal", () => {
     expect(onCreate.mock.calls[0][0]).toMatchObject({ name: "Garden", workspaceId: null });
     expect(onCreate.mock.calls[0][0].templateId).toBeUndefined();
   });
+
+  it("names each colour and icon choice, and creates with the ones picked", () => {
+    const onCreate = vi.fn();
+    render(<NewProjectModal open onClose={vi.fn()} onCreate={onCreate} workspaceId={null} />);
+    const violet = screen.getByRole("button", { name: "Violet" });
+    fireEvent.click(violet);
+    expect(violet).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "🚀" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "Rocket" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Project name" }), { key: "Enter" });
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Rocket", emoji: "🚀", color: "oklch(0.74 0.16 305)" }));
+  });
 });
