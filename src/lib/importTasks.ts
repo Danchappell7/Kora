@@ -666,13 +666,16 @@ const isBlankRecord = (r: string[]) => r.every((c) => c.trim() === "");
 const isListHeading = (line: string) => { const h = normHeader(line); return LIST_HEADINGS.has(h) || ALIAS_TO_FIELD.get(h) === "title"; };
 
 function detect(clean: string, opts: ImportOptions, members: ImportMember[]): Detected {
+  // lines keep their indent (it nests sub-tasks); only trailing space goes
   const lines = () => {
-    const ls = clean.split(/\r\n|\n|\r/).map((l) => l.trim()).filter(Boolean);
-    const skip = ls.length > 1 && isListHeading(ls[0]) ? 1 : 0;
+    const ls = clean.split(/\r\n|\n|\r/).map((l) => l.replace(/\s+$/, "")).filter((l) => l.trim());
+    const skip = ls.length > 1 && isListHeading(ls[0].trim()) ? 1 : 0;
     return { mode: "lines" as const, lines: ls.slice(skip), skippedLeading: skip };
   };
   if (opts.mode === "lines") return lines();
-  const cands = (["\t", ",", ";"] as const).filter((d) => clean.includes(d));
+  // tabs only ever at the start of a line are an indented list, not columns
+  const indentTabsOnly = clean.includes("\t") && clean.split(/\r\n|\n|\r/).every((l) => !l.replace(/^[\t ]+/, "").includes("\t"));
+  const cands = (["\t", ",", ";"] as const).filter((d) => clean.includes(d) && !(d === "\t" && indentTabsOnly));
   if (opts.csv && !cands.length) cands.push(",");
   const parsed = cands.map((d) => ({ d, recs: parseDelimited(clean, d).filter((r) => !isBlankRecord(r)) }));
 
@@ -789,8 +792,15 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
 
   if (det.mode === "lines") {
     warnings.skippedLeading = det.skippedLeading;
-    const bulleted = det.lines.some((l) => BULLET.test(l) || CHECKBOX.test(l));
-    for (const line of det.lines) {
+    const bulleted = det.lines.some((l) => BULLET.test(l.trim()) || CHECKBOX.test(l.trim()));
+    // indentation nests: a tab or two spaces is one level, counted from the least-indented line
+    const indentOf = (l: string) => [...(l.match(/^[\t ]*/)?.[0] ?? "")].reduce((n, c) => n + (c === "\t" ? 2 : 1), 0);
+    // (a loop, not Math.min(...lines): a 5 MB paste would overflow the call stack)
+    const baseIndent = det.lines.reduce((min, l) => Math.min(min, indentOf(l)), Infinity);
+    const parents: { depth: number; index: number }[] = [];
+    for (const raw of det.lines) {
+      const depth = (indentOf(raw) - baseIndent) >> 1;
+      const line = raw.replace(/^[\t ]+/, "");
       // a line with tabs (a stray spreadsheet row): the first cell is the task, the rest its description
       const cells = line.includes("\t") ? line.split("\t").map((c) => c.trim()).filter(Boolean) : [line];
       let s = cells[0] ?? "";
@@ -810,6 +820,10 @@ export function analyseImport(raw: string, opts: ImportOptions = {}): ImportAnal
       if (!row.title.trim()) row.title = s;
       if (cells.length > 1) row.description = cells.slice(1).join("\n");
       capTitle(row);
+      while (parents.length && parents[parents.length - 1].depth >= depth) parents.pop();
+      const parent = parents[parents.length - 1];
+      if (parent) { row.parentIndex = parent.index; row.parentTitle = out[parent.index].title; warnings.subtasks++; }
+      parents.push({ depth, index: out.length });
       out.push(row); rowParents.push({ parents: [], ids: [] });
     }
     base.mode = "lines";
