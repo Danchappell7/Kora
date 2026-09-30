@@ -1,12 +1,13 @@
 /* ============================================================
-   KANBO — App shell: auth gate, store-backed state, routing,
-   timer
+   KANBO — App shell: auth gate, store-backed state, routing
+   (real addresses, Back/Forward), the page header, and the wiring
+   between every view and the store.
    ============================================================ */
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Icon, GlobalTipStyles, AppBg } from "./components/primitives";
+import { Icon, GlobalTipStyles, AppBg, Button, IconButton, ProjectDot, type TabItem } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
-import { Topbar } from "./components/Topbar";
+import { PageHeader, type PageHeaderProps } from "./components/Topbar";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
@@ -18,26 +19,29 @@ import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
 import { ImportTasksModal, type ImportRow } from "./components/ImportTasksModal";
 import { OnboardingModal } from "./components/OnboardingModal";
-import { TagManagerModal } from "./components/TagManagerModal";
 import { TAG_COLORS } from "./components/TagPicker";
 import { TasksPage } from "./components/tasks/TasksPage";
 import { CalendarView } from "./components/tasks/OtherViews";
-import { ProjectOverview } from "./components/project/ProjectHeader";
-import { PlanView } from "./components/views/PlanView";
+import { ProjectTitleAddon, ProjectActions, ProjectPanels, ProjectNotice } from "./components/project/ProjectHeader";
+import { TodayView } from "./components/views/TodayView";
 import { MyWeekView } from "./components/views/MyWeekView";
 import { HomeView } from "./components/views/HomeView";
 import { AnalyticsView } from "./components/views/AnalyticsView";
 import { ReportsView } from "./components/views/ReportsView";
 import { SearchView } from "./components/views/SearchView";
-import { WorkloadView } from "./components/views/WorkloadView";
+import { WorkloadView, readCapacities } from "./components/views/WorkloadView";
 import { GoalsView, PortfoliosView } from "./components/views/GoalsPortfolios";
 import { AutomationsView, FormsView, type FormValues } from "./components/views/RulesForms";
 import { InboxView } from "./components/views/InboxView";
-import { TeamView } from "./components/views/TeamView";
+import { TeamView, WorkspaceSettingsPanel } from "./components/views/TeamView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { TeamPulse } from "./components/views/TeamPulse";
 import { FocusMode } from "./components/views/FocusMode";
 import { TaskDetail } from "./components/TaskDetail";
+import { ExtractTasksSheet } from "./components/ExtractTasksSheet";
+import { ShutdownSheet } from "./components/rituals/ShutdownSheet";
+import { WeeklyReview } from "./components/rituals/WeeklyReview";
+import { WhatMoved, markWhatMovedSeen } from "./components/WhatMoved";
 import { PublicSite, UpdatePasswordScreen, PendingApproval } from "./auth/LoginScreen";
 import { useAuth } from "./auth/AuthProvider";
 import { useToast } from "./components/Toast";
@@ -46,24 +50,30 @@ import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { store, keepOnScreen, getStrippedColumns, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange } from "./data/store";
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
-import { DAY_CHANGE_EVENT } from "./lib/liveClock";
+import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { BUILTIN_PROJECT_TEMPLATES, projectTemplateTasks } from "./lib/templates";
+import { routeOf, pathOf, placeOf, tabsFor, titleOf, G_KEYS, type NavCtx, type PlaceTab } from "./lib/nav";
+import { splitPersonal, withOverlay, writePlanOverlay, writeSectionOverlay, writeScoreOverlay, prunePlanOverlay, type PersonalKey } from "./lib/planOverlay";
+import { undoLast } from "./lib/undoStack";
+import { computeRisks } from "./lib/radar";
+import { shutdownDone } from "./lib/rituals";
+import type { AskAction, AskContext } from "./lib/askTypes";
+import { BUILTIN_PROJECT_TEMPLATES, projectTemplateTasks, saveProjectTemplate } from "./lib/templates";
 import { resolveTagId } from "./components/views/reportingUtils";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { QuickCapture } from "./components/QuickCapture";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
 import { taskMatchesQuery, toQuery } from "./lib/searchQuery";
 import {
-  STATUS_META, getProject, getMember, setReferenceData, toLocalISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
+  STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey } from "./data/types";
-import type { Route, TaskView, GroupBy } from "./app-types";
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName } from "./data/types";
+import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
   unseenCreates, reloadProjects, reloadWorkspaces,
-  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, type Limiter,
+  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, readFilters, type Limiter,
 } from "./lib/taskOps";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -71,32 +81,40 @@ const GUEST_MSG = "Guests can view and comment — ask a workspace admin for mem
 // activity the signed-in user wrote about their own actions — history, not notifications
 const SELF_KINDS = new Set<ActivityKind>(["created", "status", "completed", "reopened", "deleted"]);
 
+/** The shell's own silhouette while the workspace loads: the sidebar, the
+ *  56px page header and a column of 36px rows, so nothing jumps when it lands. */
 function FullLoader() {
   const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
-  const bar = (w: number | string, h = 12, style: React.CSSProperties = {}) => <div className="skel" style={{ width: w, height: h, ...style }} />;
+  const bar = (w: number | string, h = 12, style: React.CSSProperties = {}) => <div className="skel" style={{ width: w, height: h, borderRadius: "var(--r-xs, 4px)", ...style }} />;
   return (
-    <div style={{ position: "relative", height: "100vh", overflow: "hidden", display: "flex" }}>
+    <div aria-busy="true" style={{ position: "relative", height: "100vh", overflow: "hidden", display: "flex", background: "var(--bg)" }}>
+      <span className="sr-only" role="status">Loading your workspace…</span>
       <AppBg />
-      {/* sidebar rail */}
       {!isMobile && (
-        <div style={{ position: "relative", zIndex: 1, width: 248, flexShrink: 0, borderRight: "1px solid var(--hairline)", padding: "18px 16px", display: "flex", flexDirection: "column", gap: 22 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>{bar(28, 28, { borderRadius: 9 })}{bar(96, 16)}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{Array.from({ length: 6 }, (_, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 11 }}>{bar(18, 18, { borderRadius: 6 })}{bar(`${60 + (i % 3) * 12}%`, 13)}</div>)}</div>
-          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 9 }}>{bar(70, 10)}{Array.from({ length: 4 }, (_, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 11 }}>{bar(14, 14, { borderRadius: 99 })}{bar(`${50 + (i % 3) * 15}%`, 12)}</div>)}</div>
+        <div aria-hidden="true" style={{ position: "relative", zIndex: 1, width: "var(--sidebar-w, 232px)", flexShrink: 0, background: "var(--bg-deep)", borderRight: "1px solid var(--hairline)", padding: "12px 10px", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, height: 44, padding: "0 8px" }}>{bar(24, 24, { borderRadius: "var(--r-sm, 6px)" })}{bar(96, 14)}</div>
+          <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
+            {[62, 48, 70].map((w, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, height: 32, padding: "0 8px" }}>{bar(16, 16)}{bar(w, 12)}</div>)}
+          </div>
+          <div style={{ padding: "16px 8px 6px" }}>{bar(40, 10)}</div>
+          {[64, 44].map((w, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, height: 32, padding: "0 8px" }}>{bar(16, 16)}{bar(w, 12)}</div>)}
+          <div style={{ padding: "16px 8px 6px" }}>{bar(52, 10)}</div>
+          {[112, 88, 96].map((w, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, height: 30, padding: "0 8px" }}>{bar(8, 8, { borderRadius: 2 })}{bar(w, 11)}</div>)}
         </div>
       )}
-      {/* main column */}
-      <div style={{ position: "relative", zIndex: 1, flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 24px", borderBottom: "1px solid var(--hairline)" }}>
-          {bar(200, 22)}<div style={{ flex: 1 }} />{bar(120, 34, { borderRadius: 11 })}{bar(36, 34, { borderRadius: 11 })}
+      <div aria-hidden="true" style={{ position: "relative", zIndex: 1, flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, height: isMobile ? 52 : "var(--header-h, 56px)", padding: "0 var(--gutter, 32px)", borderBottom: "1px solid var(--hairline)", flexShrink: 0 }}>
+          {bar(isMobile ? 96 : 120, 18)}{!isMobile && bar(72, 11)}<div style={{ flex: 1 }} />
+          {!isMobile && bar(240, 32, { borderRadius: "var(--r-sm, 6px)" })}{bar(isMobile ? 32 : 112, 32, { borderRadius: "var(--r-sm, 6px)" })}
         </div>
-        <div style={{ padding: "22px 24px", display: "flex", flexDirection: "column", gap: 14, maxWidth: 880, width: "100%" }}>
-          {bar(160, 14)}
-          {Array.from({ length: 7 }, (_, i) => (
-            <div key={i} className="glass" style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", borderRadius: 13, opacity: 1 - i * 0.1 }}>
-              {bar(20, 20, { borderRadius: 99 })}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>{bar(`${40 + (i * 7) % 45}%`, 13)}{bar(`${20 + (i * 5) % 20}%`, 10)}</div>
-              {bar(54, 20, { borderRadius: 7 })}
+        <div style={{ padding: "20px var(--gutter, 32px)", display: "flex", flexDirection: "column", width: "100%", maxWidth: "var(--list-max, 1120px)", boxSizing: "border-box" }}>
+          {bar(96, 12, { marginBottom: 12 })}
+          {Array.from({ length: 8 }, (_, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, height: "var(--row-h, 36px)", padding: "0 12px", opacity: 1 - i * 0.09 }}>
+              {bar(16, 16, { borderRadius: 99 })}
+              {bar(`${34 + (i * 11) % 38}%`, 12)}
+              <div style={{ flex: 1 }} />
+              {!isMobile && bar(64, 11)}{bar(44, 11)}
             </div>
           ))}
         </div>
@@ -123,10 +141,34 @@ type ArchivePart = { items: Activity[]; archived: Promise<void> };
 /** Lets an error boundary catch errors thrown while building a view's props, too. */
 function RenderView({ render }: { render: () => React.ReactNode }) { return <>{render()}</>; }
 
+/** Settings' sections (SettingsModal's `section` prop). */
+type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
+const TASK_VIEWS: readonly TaskView[] = ["list", "board", "timeline", "calendar", "files", "matrix"];
+const isTaskView = (v: string | undefined): v is TaskView => !!v && (TASK_VIEWS as readonly string[]).includes(v);
+type DueFocus = "today" | "overdue" | "week";
+const isDueFocus = (v: string | undefined): v is DueFocus => v === "today" || v === "overdue" || v === "week";
+
+/** Where the address bar should point: the route's canonical path and query,
+ *  the open task (?task=), the text handed to Search (?q=), and every other
+ *  parameter in `keep` (a billing or calendar return is cleared by its own effect). */
+function addressFor(route: Route, opts: { task?: string | null; q?: string | null }, keep = ""): string {
+  const [path, own = ""] = pathOf(route).split("?");
+  const params = new URLSearchParams(own);
+  new URLSearchParams(keep).forEach((v, k) => { if (k !== "due" && k !== "task" && k !== "q") params.append(k, v); });
+  if (opts.q && route.view === "search" && !route.list) params.set("q", opts.q);
+  if (opts.task) params.set("task", opts.task);
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.projectId ?? "") === (b.projectId ?? "") && (a.list ?? "") === (b.list ?? "") && (a.tab ?? "") === (b.tab ?? "");
+/** "Wed 30 Sep" */
+const dayMeta = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+
 export default function App() {
   const auth = useAuth();
   const { error: toastError, success: toastSuccess, action: toastAction, toast } = useToast();
   const toastInfo = useCallback((m: string) => toast(m, "info"), [toast]);
+  const toastInfoRef = useRef(toastInfo); toastInfoRef.current = toastInfo;
   // "system" follows the device (theme-init.js paints it before React mounts)
   const [theme, setTheme] = useState<ThemeChoice>(() => {
     try { const s = localStorage.getItem("kanbo-theme"); if (s === "light" || s === "dark" || s === "system") return s; } catch { /* private mode */ }
@@ -159,21 +201,30 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("profile");
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
   const [calSyncing, setCalSyncing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
-  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [unsavedIds, setUnsavedIds] = useState<string[]>([]); // creates that failed — kept on screen until retried
+  // "What moved" is for people who knew the old layout: this browser had used Kanbo
+  // before this load (read before any effect below writes these preferences)
+  const [knewOldLayout] = useState(() => { try { return ["kanbo-view", "kanbo-groupby", "kanbo-theme"].some((k) => localStorage.getItem(k) !== null); } catch { return false; } });
   const onboardCheckedRef = useRef(false);
   const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
   const [pendingSync, setPendingSync] = useState(0); // queued offline task writes awaiting replay
   const [syncing, setSyncing] = useState(false);
   const [banner, setBanner] = useState<AppBanner | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
-  const [route, setRouteRaw] = useState<Route>({ view: "home" });
+  // the address this page opened at, read once (the URL effects below rewrite it)
+  const bootUrlRef = useRef<{ route: Route; task: string | null; q: string | null } | null>(null);
+  if (!bootUrlRef.current) {
+    const params = new URLSearchParams(window.location.search);
+    bootUrlRef.current = { route: routeOf(window.location.pathname, window.location.search) ?? { view: "plan" }, task: params.get("task"), q: params.get("q") };
+  }
+  const [route, setRouteRaw] = useState<Route>(() => bootUrlRef.current!.route);
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
     try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar", "files", "matrix"].includes(s)) return s; } catch { /* private mode */ }
@@ -185,9 +236,13 @@ export default function App() {
   });
   const [smart, setSmart] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
-  // Search opened from the palette with its text already typed in (until you navigate)
-  const [searchPrefill, setSearchPrefill] = useState<{ text: string; key: string } | null>(null);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Search opened with its text already typed in (from the palette, or ?q= in the address) until you navigate
+  const [searchPrefill, setSearchPrefill] = useState<{ text: string; key: string } | null>(() => {
+    const b = bootUrlRef.current!;
+    return b.route.view === "search" && !b.route.list && b.q ? { text: b.q, key: "url" } : null;
+  });
+  // the palette opened on its Ask row (Insights' "Ask Kanbo")
+  const [paletteQuery, setPaletteQuery] = useState<string | undefined>(undefined);
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const gPrefixRef = useRef(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -201,9 +256,20 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const focus = useFocusTimer();
   const [aiBusy, setAiBusy] = useState(false);
+  // Paste notes → tasks: open, with any text it starts from and what the notes are from
+  const [extract, setExtract] = useState<{ open: boolean; text?: string; context?: string }>({ open: false });
+  const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [weeklyOpen, setWeeklyOpen] = useState(false);
+  // Month: your tasks, or the whole workspace's · Insights: yours, or the team's
+  const [calScope, setCalScope] = useState<"mine" | "team">("mine");
+  const [insightsScope, setInsightsScope] = useState<"me" | "team">("team");
+  // bumped when this person's plan overlay (their plan on others' tasks) changes, so it's re-read
+  const [overlayRev, setOverlayRev] = useState(0);
+  const docked = useMediaQuery("(min-width: 1280px)");
 
   /* ---- live views of state for stable callbacks ---- */
   const routeRef = useRef<Route>(route); routeRef.current = route;
+  const detailIdRef = useRef<string | null>(detailId); detailIdRef.current = detailId;
   const resolvedThemeRef = useRef(resolvedTheme); resolvedThemeRef.current = resolvedTheme;
   const tasksRef = useRef<Task[] | null>(null); tasksRef.current = tasks;
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
@@ -389,7 +455,8 @@ export default function App() {
     } catch { /* private mode */ }
     if (!done && projectsRef.current.filter((p) => p.id !== "p-personal").length === 0) setOnboardOpen(true);
   }, [tasks]);
-  const finishOnboarding = useCallback(() => { try { localStorage.setItem(`kanbo-onboarded:${userIdRef.current}`, "1"); } catch { /* ignore */ } setOnboardOpen(false); }, []);
+  // (the tour's last step is "Your five places", so "What moved" has nothing to add)
+  const finishOnboarding = useCallback(() => { try { localStorage.setItem(`kanbo-onboarded:${userIdRef.current}`, "1"); } catch { /* ignore */ } markWhatMovedSeen(); setOnboardOpen(false); }, []);
 
   useEffect(() => { try { localStorage.setItem("kanbo-view", view); } catch { /* private mode */ } }, [view]);
   useEffect(() => { try { localStorage.setItem("kanbo-groupby", groupBy); } catch { /* private mode */ } }, [groupBy]);
@@ -437,13 +504,6 @@ export default function App() {
     setActivity((xs) => xs.map((a) => (ids.has(a.id) && !a.readAt ? { ...a, readAt: stamp } : a)));
     store.markActivityRead(unread).catch(reportError);
   }, [route.view, scopedActivity]);
-  // unread count in the tab title, so a background tab still tells you
-  const baseTitleRef = useRef(typeof document !== "undefined" ? document.title.replace(/^\(\d+\)\s*/, "") : "Kanbo");
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.title = inboxCount > 0 ? `(${inboxCount}) ${baseTitleRef.current}` : baseTitleRef.current;
-  }, [inboxCount]);
-
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", resolvedTheme);
     try { localStorage.setItem("kanbo-theme", theme); } catch { /* private mode */ }
@@ -452,15 +512,18 @@ export default function App() {
   useEffect(() => { saveAppearance(appearance); }, [appearance]);
 
   /* ---- keyboard ---- */
-  const overlayRef = useRef({ quick: false, shortcuts: false, cmd: false, upgrade: false, deleteProject: false, newWorkspace: false, newProject: false, newTask: false, focus: false, detail: false, sidebar: false, selfManaged: false });
+  const overlayRef = useRef({ quick: false, cmd: false, upgrade: false, deleteProject: false, newWorkspace: false, newProject: false, newTask: false, focus: false, detail: false, sidebar: false, selfManaged: false });
   overlayRef.current = {
-    quick: quickCaptureOpen, shortcuts: shortcutsOpen, cmd: cmdOpen, upgrade: upgradeOpen, deleteProject: !!deleteProjectId,
+    quick: quickCaptureOpen, cmd: cmdOpen, upgrade: upgradeOpen, deleteProject: !!deleteProjectId,
     newWorkspace: newWorkspaceOpen, newProject: newProjectOpen, newTask: newTaskOpen, focus: focusOpen, detail: !!detailId, sidebar: sidebarOpen,
     // these dialogs handle Escape themselves; the window handler must leave them (and what's under them) alone
-    selfManaged: settingsOpen || tagManagerOpen || importOpen || welcomeOpen || onboardOpen,
+    selfManaged: settingsOpen || importOpen || welcomeOpen || onboardOpen,
   };
   const openNewTaskRef = useRef<() => void>(() => {});
   const openCaptureRef = useRef<() => void>(() => {});
+  const openSettingsRef = useRef<(s?: SettingsSection) => void>(() => {});
+  const openFocusRef = useRef<(start?: boolean) => void>(() => {});
+  const goRef = useRef<(r: Route) => void>(() => {});
   useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
       const h = el as HTMLElement | null;
@@ -469,14 +532,27 @@ export default function App() {
     const h = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;      // a field, menu or dialog already handled it
       if (!signedInRef.current) return;    // no app shortcuts on the signed-out site
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); return; }
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((v) => !v); return; }
+      const modal = () => !!document.querySelector('[aria-modal="true"]');
+      if (mod && !e.altKey && !e.shiftKey && e.key === ",") {
+        if (modal()) return;
+        e.preventDefault(); openSettingsRef.current(); return;
+      }
+      // ⌘Z: take back the newest undoable change (a text field keeps its own undo)
+      if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "z") {
+        if (isEditable(e.target) || modal()) return;
+        e.preventDefault();
+        const label = undoLast();
+        toastInfoRef.current(label ? `Undone: ${label}` : "Nothing to undo");
+        return;
+      }
       if (e.key === "Escape") {
         // close only the top-most overlay — never the task panel underneath a menu
         const o = overlayRef.current;
         if (o.selfManaged) return;
         const editable = isEditable(e.target);
         if (o.quick) setQuickCaptureOpen(false);
-        else if (o.shortcuts) setShortcutsOpen(false);
         else if (o.cmd) setCmdOpen(false);
         else if (o.upgrade) setUpgradeOpen(false);
         else if (o.deleteProject) setDeleteProjectId(null);
@@ -497,19 +573,19 @@ export default function App() {
       // single-key shortcuts — never while typing, with modifiers held, or while a dialog is open
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isEditable(e.target)) return;
-      if (document.querySelector('[aria-modal="true"]')) { gPrefixRef.current = false; return; }
+      if (modal()) { gPrefixRef.current = false; return; }
       if (gPrefixRef.current) {
         gPrefixRef.current = false;
-        const nav: Record<string, Route["view"]> = { h: "home", p: "plan", i: "inbox", t: "tasks", c: "calendar", s: "search", a: "analytics", r: "reports", w: "myweek" };
-        const v = nav[e.key.toLowerCase()];
-        if (v) { e.preventDefault(); setRouteRaw({ view: v }); setDetailId(null); setSidebarOpen(false); }
+        const to = G_KEYS[e.key.toLowerCase()];
+        if (to) { e.preventDefault(); goRef.current(to); }
         return;
       }
       if (e.key === "g") { gPrefixRef.current = true; window.setTimeout(() => { gPrefixRef.current = false; }, 800); return; }
       if (e.key === "c") { e.preventDefault(); openNewTaskRef.current(); return; }
       if (e.key === "q") { e.preventDefault(); openCaptureRef.current(); return; }
+      if (e.key === "f") { e.preventDefault(); openFocusRef.current(true); return; }
       if (e.key === "/") { e.preventDefault(); setCmdOpen(true); return; }
-      if (e.key === "?") { e.preventDefault(); setShortcutsOpen(true); return; }
+      if (e.key === "?") { e.preventDefault(); openSettingsRef.current("shortcuts"); return; }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -708,13 +784,56 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUserId]);
 
-  const setRoute = (r: Route) => {
+  /* ---- addresses: every route has a real URL, and Back / Forward work ----
+     setRoute pushes one history entry per user action (a redirect in the same
+     tick replaces it); the effect by the loading gates keeps the address in
+     step with anything else (the open task, a project's real id, a guard). */
+  const pushedThisTickRef = useRef(false);
+  const shellShownRef = useRef(false);
+  const writeUrl = useCallback((url: string, mode: "push" | "replace") => {
+    if (url === window.location.pathname + window.location.search) return;
+    try {
+      if (mode === "push" && !pushedThisTickRef.current) {
+        window.history.pushState({}, "", url);
+        pushedThisTickRef.current = true;
+        queueMicrotask(() => { pushedThisTickRef.current = false; });
+      } else window.history.replaceState(window.history.state, "", url);
+    } catch { /* a sandboxed frame: everything works, just without addresses */ }
+  }, []);
+
+  /** Go somewhere. Closes the task panel (unless `keepPanel`: a tab switch on
+   *  the same page) and the phone drawer; `replace` for redirects Back shouldn't revisit. */
+  const setRoute = useCallback((r: Route, opts: { replace?: boolean; keepPanel?: boolean } = {}) => {
     setRouteRaw(r);
     setSearchPrefill(null);
     if (r.smart) setSmart(true);
-    setDetailId(null);
+    if (!opts.keepPanel) setDetailId(null);
     setSidebarOpen(false); // close the mobile drawer on navigation
-  };
+    if (shellShownRef.current) writeUrl(addressFor(r, { task: opts.keepPanel ? detailIdRef.current : null }), opts.replace ? "replace" : "push");
+  }, [writeUrl]);
+  goRef.current = setRoute;
+  // the palette's Recent: the last five places you went, newest first (in memory only)
+  const recentRoutesRef = useRef<Route[]>([]);
+  useEffect(() => {
+    recentRoutesRef.current = [route, ...recentRoutesRef.current.filter((r) => !sameRoute(r, route))].slice(0, 5);
+  }, [route]);
+
+  // Back / Forward: follow the address. Overlays close; the task panel stays.
+  useEffect(() => {
+    const onPop = () => {
+      if (!shellShownRef.current) return;
+      const params = new URLSearchParams(window.location.search);
+      const r = routeOf(window.location.pathname, window.location.search) ?? { view: "plan" };
+      setRouteRaw(r);
+      const q = params.get("q");
+      setSearchPrefill(r.view === "search" && !r.list && q ? { text: q, key: `url-${Date.now()}` } : null);
+      setCmdOpen(false); setQuickCaptureOpen(false); setNewTaskOpen(false); setNewProjectOpen(false); setNewWorkspaceOpen(false);
+      setImportOpen(false); setSettingsOpen(false); setUpgradeOpen(false); setDeleteProjectId(null); setFocusOpen(false);
+      setExtract({ open: false }); setShutdownOpen(false); setWeeklyOpen(false); setSidebarOpen(false);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // remember the workspace per person, so the next visit opens where they left off
   // (only the user's own switches — not where we opened, nor a switch we forced)
@@ -745,34 +864,40 @@ export default function App() {
       if (!isGone || workspaceRef.current !== gone || workspacesRef.current.some((w) => w.id === gone)) return;
       const name = wsNamesRef.current.get(gone);
       skipWsPersistRef.current = true;
-      setWorkspace(null); setRoute({ view: "home" });
+      setWorkspace(null); setRoute({ view: "plan" }, { replace: true });
       toastInfo(name ? `You're no longer in ${name}` : "You're no longer in that workspace");
     }, (e) => reportError(e, { op: "confirmWorkspaceGone" })) // couldn't check: stay put, the next reload looks again
       .finally(() => { if (wsCheckRef.current === gone) wsCheckRef.current = null; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaces, workspace, tasks === null]);
-  // the open project was deleted, archived or moved to another workspace: go home.
+  // The open project was deleted, archived or moved to another workspace: go to Today.
   // "Missing" must show up in two reloads in a row before it counts (one can come back short).
+  // Arriving at a project that lives in another workspace (an address, Back, a link)
+  // follows it there instead; `seen` tells arriving apart from the workspace changing under it.
   const projMissRef = useRef<{ id: string; seq: number } | null>(null);
   const routeWsRef = useRef<string | null>(null);
+  const projSeenRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const switched = routeWsRef.current !== workspace; routeWsRef.current = workspace;
-    if (tasks === null || route.view !== "project" || !route.projectId || route.projectId.startsWith("tmp-")) { projMissRef.current = null; return; }
+    if (tasks === null) return;
+    if (route.view !== "project" || !route.projectId || route.projectId.startsWith("tmp-")) { projMissRef.current = null; projSeenRef.current = route.projectId; return; }
     const pid = route.projectId;
+    const arrived = projSeenRef.current !== pid; projSeenRef.current = pid;
     const p = projects.find((x) => x.id === pid);
     if (!p) {
       const miss = projMissRef.current;
       if (requestReloadRef.current && (!miss || miss.id !== pid)) { projMissRef.current = { id: pid, seq: appliedSeqRef.current }; requestReloadRef.current(); return; }
       if (requestReloadRef.current && miss && appliedSeqRef.current <= miss.seq) return; // wait for the confirming reload
       projMissRef.current = null;
-      setRoute({ view: "home" }); toastInfo("That project was deleted, or you no longer have access to it.");
+      setRoute({ view: "plan" }, { replace: true }); toastInfo("That project was deleted, or you no longer have access to it.");
       return;
     }
     projMissRef.current = null;
     // (only people who can archive see the sidebar's Restore)
-    if (p.archivedAt) { setRoute({ view: "home" }); toastInfo(canArchiveProject(p, { myRole: roleIn(p.workspaceId) }) ? `“${p.name}” was archived — restore it from the sidebar.` : `“${p.name}” was archived.`); }
+    if (p.archivedAt) { setRoute({ view: "plan" }, { replace: true }); toastInfo(canArchiveProject(p, { myRole: roleIn(p.workspaceId) }) ? `“${p.name}” was archived — restore it from the sidebar.` : `“${p.name}” was archived.`); }
     else if ((p.workspaceId ?? null) !== workspace) {
-      setRoute({ view: "home" });
+      if (arrived) { setWorkspace(p.workspaceId ?? null); return; }
+      setRoute({ view: "plan" }, { replace: true });
       // you switched workspace: nothing to explain. Otherwise (it was moved): say where it is.
       if (!switched) toastInfo(`“${p.name}” is now in ${workspaces.find((w) => w.id === (p.workspaceId ?? null))?.name || "Personal"} — switch workspace to open it.`);
     }
@@ -959,22 +1084,18 @@ export default function App() {
     setWelcomeOpen(false);
   }, [welcomeKey]);
 
-  // deep link: open ?task=<id> once tasks are loaded — in its own workspace —
-  // then clean the URL. Say so when the task can't be opened.
+  // deep link: open ?task=<id> once tasks are loaded — in its own workspace. While
+  // the panel is open the address keeps ?task= (so a refresh or a pasted link
+  // reopens it); closing it takes it off again. Say so when the task can't be opened.
   const deepLinkDone = useRef(false);
   useEffect(() => {
     if (deepLinkDone.current || tasks === null) return;
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const tid = params.get("task");
-      if (!tid) return;
-      deepLinkDone.current = true;
-      const t = tasks.find((x) => x.id === tid);
-      if (t) { setWorkspace(t.workspaceId ?? null); setDetailId(tid); }
-      else toastInfo("That task doesn't exist any more, or you don't have access to it.");
-      params.delete("task");
-      window.history.replaceState({}, "", window.location.pathname + (params.toString() ? "?" + params : ""));
-    } catch { /* ignore */ }
+    deepLinkDone.current = true;
+    const tid = bootUrlRef.current?.task;
+    if (!tid) return;
+    const t = tasks.find((x) => x.id === tid);
+    if (t) { setWorkspace(t.workspaceId ?? null); setDetailId(tid); }
+    else toastInfo("That task doesn't exist any more, or you don't have access to it.");
   }, [tasks, toastInfo]);
 
   // load connected calendars on sign-in, and handle the OAuth round-trip return
@@ -994,7 +1115,7 @@ export default function App() {
       if (!state || !code) toastError("Couldn't connect that calendar. Please try again.");
       else store.finishCalendarConnect(state, code).then(({ provider, accountEmail }) => {
         toastSuccess(`${provider === "microsoft" ? "Outlook" : "Google"} calendar connected${accountEmail ? ` (${accountEmail})` : ""}`);
-        setRouteRaw({ view: "calendar" });
+        setRoute({ view: "calendar" }, { replace: true });
         refreshCalendar();
       }, (e) => {
         reportError(e, { op: "finishCalendarConnect" });
@@ -1002,7 +1123,7 @@ export default function App() {
       });
     }
     // the older hand-off, which the server still uses for legacy connections
-    if (cal === "connected") { toastSuccess("Calendar connected"); setRouteRaw({ view: "calendar" }); }
+    if (cal === "connected") { toastSuccess("Calendar connected"); setRoute({ view: "calendar" }, { replace: true }); }
     if (cal === "error") toastError("Couldn't connect that calendar. Please try again.");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUserId]);
@@ -1603,6 +1724,51 @@ export default function App() {
   }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
   bulkPatchRef.current = bulkPatch;
 
+  /* ---- personal plan state: the assignee-only write guard ----
+     A task's plan fields (its slot, "on today", My-tasks section, Kanbo's order)
+     belong to its assignee. Anyone else planning it keeps their plan on their own
+     device (lib/planOverlay) and only the task's own fields are saved. */
+  const writeOverlay = useCallback((task: Task, personal: Partial<Pick<Task, PersonalKey>>) => {
+    const me = userIdRef.current;
+    const plan: { scheduled?: number | null; planToday?: boolean } = {};
+    if ("scheduled" in personal) plan.scheduled = personal.scheduled ?? null;
+    if ("planToday" in personal) plan.planToday = !!personal.planToday;
+    if (Object.keys(plan).length) writePlanOverlay(me, todayISO(), task.id, plan);
+    if ("mySectionId" in personal) writeSectionOverlay(me, task.id, personal.mySectionId);
+    const score: { aiScore?: number; aiReason?: string } = {};
+    if (typeof personal.aiScore === "number") score.aiScore = personal.aiScore;
+    if (typeof personal.aiReason === "string") score.aiReason = personal.aiReason;
+    if (Object.keys(score).length) writeScoreOverlay(me, task.id, score);
+    setOverlayRev((n) => n + 1);
+  }, []);
+
+  /** patchTask behind the plan-state guard (every view's single-task edits go through it). */
+  const guardedPatch = useCallback((id: string, patch: Partial<Task>) => {
+    const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
+    if (t.assigneeId === userIdRef.current) { patchTask(id, patch); return; }
+    const { personal, shared } = splitPersonal(patch);
+    if (Object.keys(personal).length) {
+      if (denyGuest([t.workspaceId])) return;
+      writeOverlay(t, personal);
+    }
+    if (Object.keys(shared).length) patchTask(id, shared);
+  }, [patchTask, denyGuest, writeOverlay]);
+
+  /** bulkPatch behind the same guard. */
+  const guardedBulkPatch = useCallback((ids: string[], patch: Partial<Task>) => {
+    const { personal, shared } = splitPersonal(patch);
+    const all = tasksRef.current ?? [], me = userIdRef.current;
+    const theirs = Object.keys(personal).length ? all.filter((t) => ids.includes(t.id) && t.assigneeId !== me) : [];
+    if (!theirs.length) { bulkPatch(ids, patch); return; }
+    if (denyGuest(theirs.map((t) => t.workspaceId))) return;
+    theirs.forEach((t) => writeOverlay(t, personal));
+    const theirIds = new Set(theirs.map((t) => t.id));
+    const own = ids.filter((id) => !theirIds.has(id));
+    if (own.length) bulkPatch(own, patch);
+    if (Object.keys(shared).length) bulkPatch([...theirIds], shared);
+    else if (!own.length) toastSuccess(`Updated ${plural(theirs.length, "task")} in your plan`);
+  }, [bulkPatch, denyGuest, writeOverlay, toastSuccess]);
+
   const deleteTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
     const t = all.find((x) => x.id === id); if (!t) return;
@@ -1898,7 +2064,7 @@ export default function App() {
     if (archived) {
       // one click in the sidebar hides a team project for everyone: make it easy to take back
       toastAction(`Archived “${p.name}”`, "Undo", () => setProjectArchivedRef.current(id, false), {});
-      if (routeRef.current.view === "project" && routeRef.current.projectId === id) setRoute({ view: "home" });
+      if (routeRef.current.view === "project" && routeRef.current.projectId === id) setRoute({ view: "plan" }, { replace: true });
     }
     else toastSuccess(`Restored “${p.name}”`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2095,8 +2261,9 @@ export default function App() {
   // and Retry never re-inserts a row that already made it. Rows nested under
   // another row become its sub-tasks; sections and tags the file names that
   // don't exist yet are created.
-  const importTasks = useCallback((rows: ImportRow[]) => {
+  const importTasks = useCallback((rows: ImportRow[], opts: { verb?: "Imported" | "Added" } = {}) => {
     if (!rows.length) return;
+    const verb = opts.verb ?? "Imported";
     const me = userIdRef.current, base = Date.now();
     const today = toLocalISO(new Date());
     const built: Task[] = rows.map((r, i) => applyAutomation({ ...buildNewTask({ ...r, position: base + i }), planToday: false }))
@@ -2156,10 +2323,10 @@ export default function App() {
     }
     Promise.all(runs).then((ids) => {
       const saved = ids.filter((x): x is string => !!x);
-      if (saved.length) log("created", { id: saved[0], title: `Imported ${plural(saved.length, "task")}` }, `Imported ${plural(saved.length, "task")}`);
+      if (saved.length) log("created", { id: saved[0], title: `${verb} ${plural(saved.length, "task")}` }, `${verb} ${plural(saved.length, "task")}`);
     });
     const projs = [...new Set(built.map((t) => t.projectId))];
-    toastSuccess(`Imported ${plural(built.length, "task")}${projs.length === 1 ? ` into “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
+    toastSuccess(`${verb} ${plural(built.length, "task")}${projs.length === 1 ? ` ${verb === "Added" ? "to" : "into"} “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
     noteElsewhere(projs);
   }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
 
@@ -2442,7 +2609,7 @@ export default function App() {
         const next = workspacesRef.current.filter((w) => w.id !== workspaceId);
         setWorkspaces(next); setReferenceData({ workspaces: next });
         setWsMembers((m) => m.filter((x) => x.workspaceId !== workspaceId));
-        setWorkspace(null); setRoute({ view: "home" });
+        setWorkspace(null); setRoute({ view: "plan" }, { replace: true });
         toastSuccess("Workspace closed");
       })
       .catch((e) => { reportError(e, { op: "deleteWorkspace" }); toastError("Couldn't close the workspace: " + (e?.message || e)); });
@@ -2483,7 +2650,7 @@ export default function App() {
         const name = workspacesRef.current.find((w) => w.id === m.workspaceId)?.name || "the workspace";
         const next = workspacesRef.current.filter((w) => w.id !== m.workspaceId);
         setWorkspaces(next); setReferenceData({ workspaces: next });
-        if (workspaceRef.current === m.workspaceId) { setWorkspace(null); setRoute({ view: "home" }); }
+        if (workspaceRef.current === m.workspaceId) { setWorkspace(null); setRoute({ view: "plan" }, { replace: true }); }
         toastSuccess(`You left ${name}`);
       })
       .catch((e) => { reportError(e, { op: "removeMember" }); toastError("Couldn't remove them: " + (e?.message || e)); refreshWorkspaceMembers(); });
@@ -2536,33 +2703,57 @@ export default function App() {
     } catch (e) { reportError(e, { op: "manageBilling" }); toastError("Couldn't open billing."); }
   }, [toastError]);
 
-  // AI auto-prioritise: your own open tasks in this workspace (never teammates')
-  const autoPrioritize = useCallback(async () => {
-    const cur = tasksRef.current; if (!cur) return;
+  /** Kanbo's order for your open tasks in this workspace (never teammates' work):
+   *  the scores land on your own tasks, and in your overlay on tasks you only
+   *  collaborate on. Resolves to where the order came from. `announce` says so in
+   *  a toast (the palette's "Prioritise"); Today's Plan my day tells it its own way. */
+  const appearanceRef = useRef(appearance); appearanceRef.current = appearance;
+  const rankMyTasks = useCallback(async (announce = false): Promise<"ai" | "heuristic" | "none"> => {
+    const cur = tasksRef.current; if (!cur) return "none";
     const ws = workspaceRef.current;
-    if (denyGuest([ws])) return;
-    setRouteRaw({ view: "tasks" }); setSmart(true); setSidebarOpen(false); setDetailId(null);
+    if (denyGuest([ws])) return "none";
     const me = userIdRef.current;
     const archivedP = new Set(projectsRef.current.filter((p) => p.archivedAt).map((p) => p.id));
     const scope = cur.filter((t) => (t.workspaceId ?? null) === ws && t.status !== "done" && !t.archivedAt && !archivedP.has(t.projectId)
       && (t.assigneeId === me || (t.collaborators ?? []).includes(me)));
-    if (!scope.length) { toastInfo("Nothing open is assigned to you here yet."); return; }
+    if (!scope.length) { if (announce) toastInfo("Nothing open is assigned to you here yet."); return "none"; }
+    // Kanbo AI switched off in Settings: nothing leaves the device, the order stays on-device
+    if (appearanceRef.current.ai === false) { if (announce) toastSuccess("Sorted by Kanbo's order, on this device."); return "heuristic"; }
     setAiBusy(true);
     try {
       const res = await store.aiPrioritize(scope, toLocalISO(new Date()));
-      const mine = new Set(scope.map((t) => t.id));
-      const patches = new Map(res.items.filter((i) => mine.has(i.id)).map((i) => [i.id, { aiScore: i.score, aiReason: i.reason } as Partial<Task>]));
-      applyLocal(patches);
-      patches.forEach((p, id) => { writeTask(id, p).catch(() => { /* scores are advisory — a failed write just recomputes next time */ }); });
-      toastSuccess((res.source === "ai" ? "✨ " : "") + res.summary);
-      // ranked without AI because the server said why (daily limit, awaiting approval): tell them
-      const why = res.source === "heuristic" ? store.aiNotice() : null;
-      if (why) toastInfo(why);
+      const byId = new Map(scope.map((t) => [t.id, t]));
+      const own = new Map<string, Partial<Task>>();
+      let theirs = 0;
+      for (const i of res.items) {
+        const t = byId.get(i.id); if (!t) continue;
+        const p = { aiScore: i.score, aiReason: i.reason };
+        if (t.assigneeId === me) own.set(i.id, p);
+        else { writeScoreOverlay(me, i.id, p); theirs++; }
+      }
+      applyLocal(own);
+      own.forEach((p, id) => { writeTask(id, p).catch(() => { /* scores are advisory — a failed write just recomputes next time */ }); });
+      if (theirs) setOverlayRev((n) => n + 1);
+      if (announce) {
+        toastSuccess(res.summary);
+        // ranked without AI because the server said why (daily limit, awaiting approval): tell them
+        const why = res.source === "heuristic" ? store.aiNotice() : null;
+        if (why) toastInfo(why);
+      }
+      return res.source;
     } catch (e) {
-      reportError(e, { op: "autoPrioritize" });
-      toastError("Couldn't prioritise right now.");
+      reportError(e, { op: "rankMyTasks" });
+      if (announce) toastError("Couldn't prioritise right now.");
+      return "none";
     } finally { setAiBusy(false); }
   }, [denyGuest, applyLocal, writeTask, toastSuccess, toastError, toastInfo]);
+  const rankForToday = useCallback(() => rankMyTasks(false), [rankMyTasks]);
+  // the palette's "Prioritise my tasks": My tasks in Kanbo's order, then rank
+  const autoPrioritize = useCallback(() => {
+    if (denyGuest([workspaceRef.current])) return;
+    goRef.current({ view: "tasks" }); setSmart(true);
+    void rankMyTasks(true);
+  }, [denyGuest, rankMyTasks]);
 
   const openNewTask = useCallback((status: Status = "todo") => {
     const r = routeRef.current;
@@ -2581,6 +2772,7 @@ export default function App() {
 
   // opening Focus never resumes a paused timer by itself; "Start a focus block" does start it
   const openFocus = (start?: boolean) => { if (start === true && !focus.running) focus.setRunning(true); setFocusOpen(true); };
+  openFocusRef.current = openFocus;
   // focus on one task: bank what was running for another task, then start fresh at this task's estimate
   const focusTask = (id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id);
@@ -2589,6 +2781,96 @@ export default function App() {
     if (!focus.pomodoro && t) focus.setTargetMin(Math.max(5, t.focusMin || t.dur || 30));
     setDetailId(null); setFocusOpen(true); focus.setRunning(true);
   };
+
+  /** Settings, open at a section (⌘, · ? for Shortcuts · Month's "connect" · Manage tags…). */
+  const openSettings = useCallback((section: SettingsSection = "profile") => { setSettingsSection(section); setSettingsOpen(true); }, []);
+  openSettingsRef.current = openSettings;
+  /** The command bar; with `query` it opens on its Ask row with that text. */
+  const openPalette = useCallback((query?: string) => { setPaletteQuery(query); setCmdOpen(true); }, []);
+  /** Paste notes → tasks: empty, or with the notes (and what they're from) already in. */
+  const openExtract = useCallback((text?: string, context?: string) => {
+    if (denyGuest([workspaceRef.current])) return;
+    setQuickCaptureOpen(false);
+    setExtract({ open: true, text, context });
+  }, [denyGuest]);
+
+  /** A workspace switch keeps the page when it still makes sense there: otherwise
+   *  the same place's first page (Personal's Team is Insights), or Today. */
+  const switchWorkspace = useCallback((id: string | null) => {
+    if (id === workspaceRef.current) return;
+    setWorkspace(id);
+    const r = routeRef.current;
+    if (r.view === "project") {
+      const p = projectsRef.current.find((x) => x.id === r.projectId);
+      if (!p || p.archivedAt || (p.workspaceId ?? null) !== id) setRoute({ view: "plan" });
+    } else if (id === null && (r.view === "pulse" || r.view === "team" || r.view === "workload")) setRoute({ view: "analytics" });
+    else if (roleIn(id) === "guest" && r.view === "automations") setRoute({ view: "projects" });
+  }, [roleIn, setRoute]);
+
+  /** Take back tasks created a moment ago (an undone Ask), without a delete toast of their own. */
+  const discardCreated = useCallback((ids: string[]) => {
+    const all = tasksRef.current ?? [];
+    const rows = [...all.filter((t) => ids.includes(t.id)), ...descendantsOf(ids, all)];
+    if (!rows.length) return;
+    const gone = new Set(rows.map((r) => r.id));
+    setTasks((ts) => ts && ts.filter((x) => !gone.has(x.id)));
+    noteDelete([...gone]); dropPending(gone);
+    serverDelete(rows).then((failed) => { if (failed.length) toastError(`${plural(failed.length, "new task")} couldn't be taken back — delete ${failed.length === 1 ? "it" : "them"} by hand.`); });
+  }, [noteDelete, dropPending, serverDelete, toastError]);
+
+  /** Ask Kanbo's Apply: the changes it proposed (validated upstream: allowed fields,
+   *  no deletes), then one Undo (and ⌘Z) that puts back every field it changed and
+   *  takes back what it created. Plan fields go through the plan-state guard. */
+  const applyAskActions = useCallback((actions: AskAction[]) => {
+    const all = tasksRef.current ?? [];
+    const before = new Map<string, Record<string, unknown>>();
+    const created: string[] = [];
+    let n = 0;
+    for (const a of actions) {
+      if (a.op === "update") {
+        const t = all.find((x) => x.id === a.id);
+        const keys = Object.keys(a.patch);
+        if (!t || !keys.length) continue;
+        const prev = before.get(a.id) ?? {};
+        for (const k of keys) if (!(k in prev)) prev[k] = (t as unknown as Record<string, unknown>)[k];
+        before.set(a.id, prev);
+        guardedPatch(a.id, a.patch);
+        n++;
+      } else if (a.op === "create") {
+        const { planToday, ...fields } = a.task;
+        const t = applyAutomation({ ...buildNewTask(fields), ...(planToday !== undefined ? { planToday } : {}) });
+        if (denyGuest([projectWs(t.projectId)])) continue;
+        persistTask(t);
+        noteElsewhere([t.projectId]);
+        created.push(t.id); n++;
+      } else if (a.op === "open") {
+        if (a.taskId) setDetailId(a.taskId);
+        else if (a.route) setRoute(a.route);
+      }
+    }
+    if (!n) return;
+    toastAction(`Applied ${plural(n, "change")}`, "Undo", () => {
+      before.forEach((p, id) => guardedPatch(id, p as Partial<Task>));
+      if (created.length) discardCreated(created);
+    }, {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guardedPatch, applyAutomation, buildNewTask, denyGuest, persistTask, noteElsewhere, discardCreated, toastAction]);
+
+  /** Waiting on: ask the assignee for an update, in a comment that mentions them. */
+  const nudge = useCallback((taskId: string) => {
+    const t = tasksRef.current?.find((x) => x.id === taskId);
+    if (!t?.assigneeId || t.assigneeId === userIdRef.current) return;
+    const first = (getMember(t.assigneeId)?.name || "").trim().split(/\s+/)[0] || "there";
+    void addComment(taskId, `@${first} — any update on this?`, [t.assigneeId]).then((c) => { if (c) toastSuccess(`Nudged ${first}`); });
+  }, [addComment, toastSuccess]);
+
+  /** My tasks' "Save view": today's My tasks filters as a saved search (they span every workspace). */
+  const saveMyTasksView = useCallback((name: string) => {
+    const f = readFilters("my");
+    saveSearch(name.trim() || "Saved view", {
+      assignee: f.assignee !== "all" ? f.assignee : userIdRef.current, priority: f.priority, tag: f.tag, due: f.due, status: "open",
+    });
+  }, [saveSearch]);
 
   // Early-access gate: a platform admin is always let through — by the profile's
   // is_admin flag, or else by asking the server (is_admin(), which also knows the
@@ -2616,26 +2898,66 @@ export default function App() {
     window.addEventListener(DAY_CHANGE_EVENT, onDay);
     return () => window.removeEventListener(DAY_CHANGE_EVENT, onDay);
   }, []);
+  // What this person sees: on tasks assigned to someone else, their own plan (slot,
+  // "on today", My-tasks section, Kanbo's order) instead of the assignee's.
+  const tasksSeen = useMemo(() => (tasks ? withOverlay(tasks, currentUserId, dayKey) : null),
+    // (overlayRev: this person just changed their plan on someone else's task)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tasks, currentUserId, dayKey, overlayRev]);
+  useEffect(() => { if (tasks !== null) prunePlanOverlay(currentUserId); }, [currentUserId, dayKey, tasks === null]); // eslint-disable-line react-hooks/exhaustive-deps
   // scope everything to the active workspace (memoised: the focus timer re-renders
   // App every second, and the Sidebar's badge counts key off this list)
   const allTasks = useMemo(() => {
     const archivedProjectIds = new Set(projects.filter((p) => p.archivedAt).map((p) => p.id));
-    return (tasks ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
-  }, [tasks, projects, workspace]);
+    return (tasksSeen ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
+  }, [tasksSeen, projects, workspace]);
+  // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
+  // sidebar's Team badge, Today's brief and each project's notice line
+  const risks = useMemo(() => {
+    if (tasks === null || workspace === null) return [];
+    const members = wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active" && m.userId)
+      .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email }));
+    return computeRisks({ tasks: allTasks, members, capacities: readCapacities(), today: dayKey });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allTasks, wsMembers, workspace, dayKey]);
+  const signalRisks = risks.filter((r) => r.severity === "signal").length;
   // Smart-list counts are computed over the SAME global task set the Search
   // view filters (search spans every workspace), so the sidebar badge and the
   // results it opens always agree. Saved searches become user-defined smart
   // lists with live counts over the same set (one predicate, always in sync).
   const { smartCounts, savedSearchCounts } = useMemo(() => {
-    const all = tasks ?? [];
+    const all = tasksSeen ?? [];
     const smart: Record<string, number> = {};
     for (const sl of SMART_LISTS) smart[sl.id] = all.filter((t) => sl.match(t, currentUserId)).length;
     const saved: Record<string, number> = {};
     for (const ss of savedSearches) { const q = toQuery(ss.query); saved[ss.id] = all.filter((t) => taskMatchesQuery(t, q)).length; }
     return { smartCounts: smart, savedSearchCounts: saved };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, projects, savedSearches, currentUserId, dayKey]);
+  }, [tasksSeen, projects, savedSearches, currentUserId, dayKey]);
   useEffect(() => { if (route.view !== "search" && searchPrefill) setSearchPrefill(null); }, [route.view, searchPrefill]);
+
+  // The app itself is on screen (not the sign-in site, a password link, the loader,
+  // the waiting room or the paywall): only then does it own the address and the title.
+  const shellShown = (!auth.configured || (!!auth.user && !auth.loading)) && !auth.recovery && tasks !== null
+    && !(gated && !letAdminIn) && !(subscription && !hasAccess(subscription));
+  shellShownRef.current = shellShown;
+  // keep the address in step: the route's canonical path (an old one like /home is
+  // rewritten), ?task= while a task is open, ?q= for text handed to Search
+  useEffect(() => {
+    if (!shellShown) return;
+    writeUrl(addressFor(route, { task: detailId, q: searchPrefill?.text }, window.location.search), "replace");
+  }, [shellShown, route, detailId, searchPrefill, writeUrl]);
+  // the tab's title: the page, then Kanbo, with the unread count first so a background tab still tells you
+  const baseTitleRef = useRef(typeof document !== "undefined" ? document.title.replace(/^\(\d+\)\s*/, "") : "Kanbo");
+  const pageTitle = route.view === "project" ? projects.find((p) => p.id === route.projectId)?.name || "Project" : titleOf(route, { personal: workspace === null });
+  useEffect(() => {
+    document.title = shellShown ? `${inboxCount > 0 ? `(${inboxCount}) ` : ""}${pageTitle} · Kanbo` : baseTitleRef.current;
+  }, [shellShown, pageTitle, inboxCount]);
+  // someone new to Kanbo never needs "What moved" (they get "Your five places" in the tour)
+  useEffect(() => { if (shellShown && !knewOldLayout) markWhatMovedSeen(); }, [shellShown, knewOldLayout]);
+  // after 16:00 Today offers "Shut down" (flips once, not every minute)
+  const [lateDay, setLateDay] = useState(() => new Date().getHours() >= 16);
+  useEffect(() => subscribeMinute(() => setLateDay(new Date().getHours() >= 16)), []);
 
   // ---- auth / loading gates ----
   if (auth.recovery) return <UpdatePasswordScreen />;
@@ -2659,10 +2981,11 @@ export default function App() {
 
   // "mine": assigned to me or I'm a collaborator. Planning, Focus and My week are
   // personal — they never show (or schedule) teammates' work.
+  const seen = tasksSeen ?? tasks;
   const isMine = (t: Task) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId);
   const myTasks = allTasks.filter(isMine);
   // "Show archived" follows the page: this project's archived tasks, or mine in My tasks
-  const wsArchived = tasks.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
+  const wsArchived = seen.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
   const archivedTasks = route.view === "project" && route.projectId ? wsArchived.filter((t) => t.projectId === route.projectId) : wsArchived.filter(isMine);
   const savedActive = route.list ? savedSearches.find((s) => s.id === route.list) : undefined;
   const searchPreset = smartListQuery(route.list, currentUserId) ?? (savedActive ? (toQuery(savedActive.query) as unknown as Record<string, string>) : undefined)
@@ -2673,23 +2996,17 @@ export default function App() {
   const myRole = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role;
   // guests can view and comment only — views can use these to hide editing controls
   const activeReadOnly = myRole === "guest";
-  const detailTask = detailId ? tasks.find((t) => t.id === detailId) : undefined;
+  const isAdmin = myRole === "owner" || myRole === "admin";
+  const personal = workspace === null;
+  const navCtx: NavCtx = { personal, guest: activeReadOnly, admin: isAdmin };
+  const aiOn = appearance.ai !== false;
+  const detailTask = detailId ? seen.find((t) => t.id === detailId) : undefined;
   const detailReadOnly = !!detailTask && roleIn(detailTask.workspaceId) === "guest";
 
-  // scope tasks by route
-  let scoped = allTasks, title = "My tasks", subtitle = "Everything assigned to you", breadcrumb = activeWsName;
-  let newProj = getProject("");
-  // "My tasks" stays within the workspace you're viewing — your personal tasks
-  // never mix with a team workspace's, and vice versa.
-  if (route.view === "tasks") { scoped = myTasks; }
-  else if (route.view === "project" && route.projectId) {
-    const p = getProject(route.projectId); newProj = p;
-    scoped = allTasks.filter((t) => t.projectId === route.projectId);
-    // top-level tasks only (sub-tasks nest under them), so the number matches the rows and the progress bar
-    const prog = topLevelProgress(scoped);
-    title = p?.name || "Project"; subtitle = `${plural(prog.count, "task")} · ${prog.pct}% complete`;
-    breadcrumb = workspaces.find((w) => w.id === (p?.workspaceId ?? null))?.name || "Personal";
-  }
+  // scope tasks by route: "My tasks" stays within the workspace you're viewing — your
+  // personal tasks never mix with a team workspace's, and vice versa
+  const openProject = route.view === "project" && route.projectId ? getProject(route.projectId) : undefined;
+  const scoped = route.view === "tasks" ? myTasks : openProject ? allTasks.filter((t) => t.projectId === openProject.id) : allTasks;
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt);
   // people you can assign/tag: active members of the ACTIVE workspace only, by
   // their profile name (then their invite name, then email). Personal resolves
@@ -2701,199 +3018,352 @@ export default function App() {
   })();
   // Search spans every workspace, so its people filter does too
   const everyone = (() => {
-    const seen = new Map<string, string>([[currentUserId, getMember(currentUserId)?.name || "You"]]);
-    wsMembers.forEach((m) => { if (m.status === "active" && m.userId && !seen.has(m.userId)) seen.set(m.userId, personName(m)); });
-    return [...seen].map(([id, name]) => ({ id, name }));
+    const names = new Map<string, string>([[currentUserId, getMember(currentUserId)?.name || "You"]]);
+    wsMembers.forEach((m) => { if (m.status === "active" && m.userId && !names.has(m.userId)) names.set(m.userId, personName(m)); });
+    return [...names].map(([id, name]) => ({ id, name }));
   })();
 
   const currentUser = getMember(currentUserId);
-  const firstName = currentUser?.name?.trim().split(/\s+/)[0] || "there";
-  const hour = new Date().getHours();
-  const greet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const monthLabel = new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const wsKey = workspace ?? "personal";
-  const canManageProject = (p: Project) => !activeReadOnly && (myRole === "owner" || myRole === "admin" || p.ownerId === currentUserId || !p.ownerId);
+  const canManageProject = (p: Project) => !activeReadOnly && (isAdmin || p.ownerId === currentUserId || !p.ownerId);
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
   const planProjectId = wsProjects.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
+  const askContext: AskContext = { today: dayKey, me: currentUserId, members: assignees, projects: wsProjects.map((p) => ({ id: p.id, name: p.name })) };
+  const wsRules = automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId));
+  const wsForms = forms.filter((f) => wsProjects.some((p) => p.id === f.projectId));
+
+  /* ---- Today ---- */
+  // momentum: what's done today out of today's work (done today + still open for today)
+  const doneToday = myTasks.filter((t) => t.status === "done" && t.completedAt === dayKey).length;
+  const openToday = myTasks.filter((t) => t.status !== "done" && (t.dueDate === dayKey || !!t.planToday || t.scheduled != null)).length;
+  const dayTotal = doneToday + openToday;
+  const setup = [
+    { label: "Add your first task", done: allTasks.length > 0, action: () => openNewTask() },
+    { label: "Plan your day", done: myTasks.some((t) => t.scheduled != null || !!t.planToday), action: () => setRoute({ view: "plan" }) },
+    { label: "Connect your calendar", done: calConnections.length > 0, action: () => openSettings("calendar") },
+    { label: "Invite your team", done: workspaces.some((w) => w.id !== null), action: () => setRoute({ view: "team" }) },
+  ];
+  const startFocus = (taskId?: string) => { if (taskId) focusTask(taskId); else openFocus(true); };
+
+  /* ---- a project's page ---- */
+  const projUpdates = openProject ? statusUpdates.filter((u) => u.projectId === openProject.id) : [];
+  const projRules = openProject ? automationRules.filter((r) => r.projectId === openProject.id) : [];
+  const projForms = openProject ? forms.filter((f) => f.projectId === openProject.id) : [];
+  // the tab in the address, else the view this project was last shown in
+  const taskView: TaskView = openProject && isTaskView(route.tab) ? route.tab : view;
+  const projectTab = openProject ? route.tab ?? view : undefined;
+  const goProjectTab = (tab: ProjectTab | string) => {
+    if (!openProject) return;
+    if (isTaskView(tab)) setView(tab);
+    setRoute({ view: "project", projectId: openProject.id, tab }, { keepPanel: true });
+  };
+  const projectHref = (tab: string) => (openProject ? pathOf({ view: "project", projectId: openProject.id, tab }) : undefined);
+  const extraTabs: TabItem[] = openProject ? [
+    { id: "updates", label: "Updates", count: projUpdates.length || undefined, secondary: true, href: projectHref("updates") },
+    { id: "requests", label: "Requests", count: projForms.length || undefined, secondary: true, href: projectHref("requests") },
+    ...(activeReadOnly ? [] : [{ id: "rules", label: "Rules", count: projRules.length || undefined, secondary: true, href: projectHref("rules") }]),
+    { id: "about", label: "About", secondary: true, href: projectHref("about") },
+  ] : [];
+  const rulesProps = (projectId?: string): React.ComponentProps<typeof AutomationsView> => ({
+    rules: projectId ? wsRules.filter((r) => r.projectId === projectId) : wsRules, projects: wsProjects, members: assignees, sections, tags,
+    onCreate: createRule, onUpdate: updateRule, onDelete: deleteRule, ...(projectId ? { projectId } : {}),
+  });
+  const formsProps = (projectId?: string): React.ComponentProps<typeof FormsView> => ({
+    forms: projectId ? wsForms.filter((f) => f.projectId === projectId) : wsForms, projects: wsProjects, members: assignees,
+    onCreate: createForm, onUpdate: updateForm, onDelete: deleteForm, onSubmit: submitForm, ...(projectId ? { projectId } : {}),
+  });
+  const aiStatus = aiOn ? (facts: unknown) => store.aiStatus(facts) : undefined;
+  const risksByProject: Record<string, number> = {};
+  risks.forEach((r) => { if (r.projectId) risksByProject[r.projectId] = (risksByProject[r.projectId] ?? 0) + 1; });
+  const saveAsTemplate = (id: string) => {
+    const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
+    const tpl = saveProjectTemplate({ name: p.name, emoji: p.emoji, color: p.color });
+    toastSuccess(`Saved “${tpl.name}” as a template`);
+  };
+
+  /* ---- the page header ---- */
+  const tabItem = (t: PlaceTab, extra: Partial<TabItem> = {}): TabItem => ({ id: t.id, label: t.label, secondary: t.secondary, href: pathOf(t.route), ...extra });
+  const placeTab = (tabs: PlaceTab[]) => (id: string) => { const t = tabs.find((x) => x.id === id); if (t) setRoute(t.route); };
+  const place = placeOf(route);
+  const header: Pick<PageHeaderProps, "title" | "meta" | "leading" | "titleAddon" | "switcher" | "actions" | "tabs" | "tabValue" | "onTab" | "tabsLabel" | "momentum"> = (() => {
+    switch (place) {
+      case "today": {
+        if (route.view === "home") {
+          return { title: "Today", meta: dayMeta(KANBO_TODAY), actions: <Button variant="ghost" size="sm" icon="arrowLeft" onClick={() => setRoute({ view: "plan" })}>Back to Today</Button> };
+        }
+        const shutDown = shutdownDone(currentUserId, dayKey);
+        return {
+          title: "Today", meta: dayMeta(KANBO_TODAY),
+          switcher: { items: tabsFor("today", navCtx).map((t) => ({ id: t.id, label: t.label })), value: route.view, onChange: (id) => setRoute({ view: id as Route["view"] }), label: "Show your day, week or month" },
+          actions: route.view === "plan" && lateDay && !activeReadOnly
+            ? <Button variant="secondary" size="sm" icon="sunset" iconRight={shutDown ? "check" : undefined} aria-label={shutDown ? "Shut down (done for today)" : "Shut down my day"} onClick={() => setShutdownOpen(true)}>Shut down</Button>
+            : undefined,
+          momentum: route.view === "plan" && dayTotal > 0 ? doneToday / dayTotal : null,
+        };
+      }
+      case "inbox":
+        return { title: "Inbox", meta: inboxCount > 0 ? `${inboxCount} new` : "Nothing new" };
+      case "tasks": {
+        if (route.view === "search") return { title: "Search" };
+        const open = myTasks.filter((t) => t.status !== "done" && !t.parentId).length;
+        return { title: "My tasks", meta: `${activeWsName} · ${open} open` };
+      }
+      case "projects": {
+        if (route.view === "project") {
+          if (!openProject) return { title: "Project" };
+          return {
+            title: openProject.name,
+            leading: (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <ProjectDot color={openProject.color} size={10} />
+                {openProject.emoji && <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1 }}>{openProject.emoji}</span>}
+              </span>
+            ),
+            titleAddon: <ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")} />,
+            actions: (
+              <ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
+                onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
+                onDuplicate={activeReadOnly ? undefined : duplicateProject}
+                onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}
+                onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)}
+                onSaveTemplate={activeReadOnly ? undefined : saveAsTemplate} />
+            ),
+          };
+        }
+        const tabs = tabsFor("projects", navCtx);
+        const counts: Record<string, number> = { automations: wsRules.length, forms: wsForms.length };
+        return {
+          title: "Projects", meta: activeWsName,
+          tabs: tabs.map((t) => tabItem(t, { count: counts[t.id] || undefined })), tabValue: route.view, onTab: placeTab(tabs), tabsLabel: "Projects",
+          actions: activeReadOnly ? undefined : <Button variant="primary" size="sm" icon="plus" onClick={() => setNewProjectOpen(true)}>New project</Button>,
+        };
+      }
+      case "team": {
+        if (personal) return { title: "Insights" };
+        const tabs = tabsFor("team", navCtx);
+        const people = assignees.length;
+        return {
+          title: "Team", meta: `${activeWsName} · ${people === 1 ? "1 person" : `${people} people`}`,
+          tabs: tabs.map((t) => tabItem(t, t.id === "team" ? { count: people } : {})),
+          tabValue: route.view === "reports" ? "analytics" : route.view, onTab: placeTab(tabs), tabsLabel: "Team",
+        };
+      }
+    }
+  })();
+  const createMenu: PageHeaderProps["create"] = activeReadOnly ? null : {
+    onNewTask: () => openNewTask(), onQuickCapture: openCapture, onPasteNotes: () => openExtract(),
+    onImport: () => setImportOpen(true), onNewProject: () => setNewProjectOpen(true),
+  };
+
+  /* Props the redesign adds to components other packages own (§4.3). They're spread in,
+     so they compile against today's components and the finished ones alike; once a
+     component declares one, TypeScript checks it here as usual. */
+  const headerNext = { momentumLabel: header.momentum != null ? `Today's work done, ${doneToday} of ${dayTotal}` : undefined };
+  const sidebarNext = { theme: resolvedTheme, onToggleTheme: flipTheme, teamBadge: !personal && signalRisks > 0 ? signalRisks : undefined, onOpenSearch: () => openPalette() };
+  const mobileNavNext = { onCapture: activeReadOnly ? undefined : openCapture, onMore: () => setSidebarOpen(true), personal };
+  const insightsNext = {
+    scope: insightsScope, onScopeChange: setInsightsScope, currentUserId, personal, onAsk: () => openPalette(""),
+    onOpenTrends: () => setRoute({ view: "reports" }), onOpenOverview: () => setRoute({ view: "analytics" }),
+    aiSummary: aiOn ? async () => {
+      const text = await store.aiSummary(allTasks, dayKey);
+      return text ? { data: text, source: "ai" as const } : { data: null, source: "unavailable" as const };
+    } : undefined,
+  };
+  const paletteNext = {
+    ai: aiOn ? (q: string, ts: Task[], ctx: AskContext) => store.aiCommand(q, ts, ctx) : undefined,
+    askContext, canAct: !activeReadOnly, onApplyAsk: applyAskActions, onGo: (r: Route) => setRoute(r),
+    recent: recentRoutesRef.current, initialQuery: paletteQuery,
+  };
+  const settingsNext = {
+    section: settingsSection, onSection: setSettingsSection, isAdmin,
+    renderWorkspace: workspace !== null && (isAdmin || workspaces.find((w) => w.id === workspace)?.ownerId === currentUserId)
+      ? () => <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
+        onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
+      : undefined,
+    tagsPanel: {
+      tags, onUpdate: updateTag, onDelete: deleteTag, onMerge: mergeTags, onCreate: createTag,
+      taskCounts: (() => { const c: Record<string, number> = {}; seen.forEach((t) => (t.tags || []).forEach((tg) => { c[tg] = (c[tg] || 0) + 1; })); return c; })(),
+    },
+    calendar: {
+      connections: calConnections, syncing: calSyncing,
+      onConnect: (provider: string) => { void connectCalendar(provider as CalProvider); },
+      onDisconnect: (provider: string) => { void disconnectCalendar(provider as CalProvider); },
+    },
+    billing: { enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling },
+    onImport: activeReadOnly ? undefined : () => { setSettingsOpen(false); setImportOpen(true); },
+  };
 
   const renderMain = () => {
     switch (route.view) {
-      case "plan": return <PlanView tasks={myTasks} onUpdate={patchTask} onCreate={createFromPlan} onOpen={setDetailId} externalEvents={calEvents} calendarConnected={calConnections.length > 0} currentUserId={currentUserId} captureDefaults={{ projectId: planProjectId, assigneeId: currentUserId }} />;
-      case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={patchTask} currentUserId={currentUserId} />;
-      // Home keeps the workspace's tasks for its project cards and "is this workspace empty?"
-      // (a new member with nothing assigned yet isn't on a clean slate); its personal
-      // widgets — today's brief, focus queue, weekly chart — use yours
+      case "plan": return <TodayView tasks={myTasks} allTasks={allTasks} events={calEvents} calendarConnected={calConnections.length > 0}
+        currentUserId={currentUserId} userName={currentUser?.name} captureDefaults={{ projectId: planProjectId, assigneeId: currentUserId }}
+        onUpdate={guardedPatch} onCreate={createFromPlan} onOpen={setDetailId} onRank={rankForToday} ranking={aiBusy}
+        onStartFocus={startFocus} onShutdown={() => setShutdownOpen(true)} onExtractFromMeeting={(title) => openExtract(undefined, title)}
+        onConnectCalendar={() => openSettings("calendar")} setup={setup} showSuggestions={appearance.suggestions !== false}
+        riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={() => setRoute({ view: "pulse" })} readOnly={activeReadOnly} />;
+      case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} />;
+      // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
+      // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
+      // personal widgets — today's brief, focus queue, weekly chart — use yours
       case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} />;
-      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} />;
-      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} />;
-      case "search": return <SearchView tasks={tasks} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch}
+      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} {...insightsNext} />;
+      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNext} />;
+      case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch}
         onDeleteSavedSearch={(id) => { removeSavedSearch(id)?.catch(() => toastError("Couldn't delete the saved search.")); }}
-        preset={searchPreset} presetKey={searchPresetKey} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields} />;
+        preset={searchPreset} presetKey={searchPresetKey} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields}
+        {...{ onToggle: toggleTask }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
-      case "automations": return <AutomationsView key={wsKey} rules={automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId))} projects={wsProjects} members={assignees} sections={sections} tags={tags} onCreate={createRule} onUpdate={updateRule} onDelete={deleteRule} />;
-      case "forms": return <FormsView key={wsKey} forms={forms.filter((f) => wsProjects.some((p) => p.id === f.projectId))} projects={wsProjects} members={assignees} onCreate={createForm} onUpdate={updateForm} onDelete={deleteForm} onSubmit={submitForm} />;
-      case "inbox": return <InboxView activity={scopedActivity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} />;
-      case "calendar": return <CalendarView tasks={allTasks} onOpen={setDetailId} onPatch={patchTask} connections={calConnections} externalEvents={calEvents} onConnect={connectCalendar} onDisconnect={disconnectCalendar} syncing={calSyncing} readOnly={activeReadOnly} />;
-      // W0: the redesign's Projects directory and Team › Pulse, until their packages land
+      case "automations": return <AutomationsView key={wsKey} {...rulesProps()} />;
+      case "forms": return <FormsView key={wsKey} {...formsProps()} />;
+      case "inbox": return <InboxView activity={scopedActivity} tasks={allTasks} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox}
+        {...{
+          currentUserId, members: assignees,
+          onReply: (taskId: string, body: string) => addComment(taskId, body),
+          onAcceptToday: (taskId: string) => guardedPatch(taskId, { planToday: true }),
+          onSchedule: (taskId: string, dueDate: string) => guardedPatch(taskId, { dueDate }),
+          onComplete: (taskId: string) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); },
+        }} />;
+      // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
+      case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} syncing={calSyncing} readOnly={activeReadOnly}
+        {...{ scope: calScope, onScopeChange: setCalScope, onOpenSettings: () => openSettings("calendar") }} />;
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
-        canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)} />;
+        canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
+        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={risksByProject} />;
       case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} readOnly={activeReadOnly}
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
-        onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={patchTask} onOpenWorkload={() => setRoute({ view: "workload" })} />;
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} />;
+        onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
+        onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined} />;
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace}
+        {...{ onOpenWorkspaceSettings: settingsNext.renderWorkspace ? () => openSettings("workspace") : undefined }} />;
       case "tasks":
-      case "project":
-        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={route.view === "project" && route.projectId ? route.projectId : "my"} readOnly={activeReadOnly}
-          boardScope={route.view === "project" && route.projectId ? `project:${route.projectId}` : `my:${wsKey}`}
-          exportName={route.view === "project" && newProj ? newProj.name : "my-tasks"}
-          tasks={scoped} allTasks={allTasks} projects={wsProjects} view={view} setView={setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
+      case "project": {
+        const inProject = !!openProject;
+        const pageNext = inProject ? {
+          tab: projectTab, onTab: goProjectTab, extraTabs,
+          renderExtra: (tab: string) => (
+            <ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={assignees}
+              canManage={canManageProject(openProject!)} readOnly={activeReadOnly} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
+              onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} rules={rulesProps(openProject!.id)} forms={formsProps(openProject!.id)} />
+          ),
+          notice: <ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} />,
+          currentUserId,
+        } : {
+          tab: route.tab ?? "open", onTab: (id: string) => setRoute({ view: "tasks", tab: id === "open" ? undefined : id }, { keepPanel: true }),
+          dueFocus: isDueFocus(route.list) ? route.list : undefined, currentUserId,
+          savedViews: savedSearches.map((s) => ({ id: s.id, name: s.name, count: savedSearchCounts[s.id] ?? 0 })),
+          onOpenSavedView: (id: string) => setRoute({ view: "search", list: id }), onSaveView: saveMyTasksView,
+          onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
+        };
+        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
+          boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
+          exportName={openProject ? openProject.name : "my-tasks"}
+          tasks={scoped} allTasks={allTasks} projects={wsProjects} view={taskView} setView={inProject ? goProjectTab : setView} groupBy={groupBy} setGroupBy={setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
             // a reorder within the same column is not a status change (completedAt stays put)
             const prev = tasksRef.current?.find((t) => t.id === id);
             const patch: Partial<Task> = {};
             if (prev && prev.status !== status) patch.status = status;
             if (position !== undefined) patch.position = position;
-            if (Object.keys(patch).length) patchTask(id, patch);
-          }} onBulkPatch={bulkPatch} onBulkDelete={bulkDelete} onPatch={patchTask} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => setImportOpen(true)} members={assignees} allTags={tags}
+            if (Object.keys(patch).length) guardedPatch(id, patch);
+          }} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} onPatch={guardedPatch} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => setImportOpen(true)} members={assignees} allTags={tags}
           archivedTasks={archivedTasks}
-          sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (route.view === "project" && route.projectId ? sections.filter((s) => s.projectId === route.projectId) : sections)}
+          sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (openProject ? sections.filter((s) => s.projectId === openProject.id) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
           sectionField={route.view === "tasks" ? "mySectionId" : "sectionId"}
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
-          customFields={route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields}
-          exportOpts={{ sections, customFields: route.view === "project" && route.projectId ? customFields.filter((f) => f.projectId === route.projectId) : customFields, allTasks }}
-          header={route.view === "project" && newProj && newProj.id !== "p-personal" ? <ProjectOverview project={newProj} tasks={scoped} onUpdate={updateProject} statusUpdates={statusUpdates} onPostStatus={activeReadOnly ? undefined : postStatusUpdate} members={assignees} onDuplicate={activeReadOnly ? undefined : duplicateProject} onArchive={activeReadOnly ? undefined : (id) => setProjectArchived(id, true)} canManagePeople={canManageProject(newProj)} /> : undefined} />;
+          customFields={openProject ? customFields.filter((f) => f.projectId === openProject.id) : customFields}
+          exportOpts={{ sections, customFields: openProject ? customFields.filter((f) => f.projectId === openProject.id) : customFields, allTasks }}
+          {...pageNext} />;
+      }
       default: return null;
     }
   };
 
-  const headerMap: Record<Route["view"], { title: string; subtitle: string; breadcrumb: string }> = {
-    plan: { title: `${greet}, ${firstName}`, subtitle: "Here's your day.", breadcrumb: "Plan" },
-    myweek: { title: "My week", subtitle: "Plan the week and clear what slipped.", breadcrumb: "Plan" },
-    home: { title: "Home", subtitle: "A focused look at what's moving today.", breadcrumb: "Today" },
-    analytics: { title: "Analytics", subtitle: "Your throughput, measured.", breadcrumb: "Insights" },
-    reports: { title: "Reports", subtitle: "Trends, velocity, and cycle time.", breadcrumb: "Reporting" },
-    inbox: { title: "Inbox", subtitle: "Mentions, assignments, and updates.", breadcrumb: "Notifications" },
-    calendar: { title: "Calendar", subtitle: monthLabel, breadcrumb: "Schedule" },
-    team: { title: "Team", subtitle: "Who's working on what.", breadcrumb: "People" },
-    search: { title: "Search", subtitle: "Find anything across your tasks.", breadcrumb: "Search" },
-    workload: { title: "Workload", subtitle: "Capacity across your team.", breadcrumb: "Reporting" },
-    goals: { title: "Goals", subtitle: "Objectives and their progress.", breadcrumb: "Reporting" },
-    portfolios: { title: "Portfolios", subtitle: "Projects, rolled up.", breadcrumb: "Reporting" },
-    automations: { title: "Automations", subtitle: "Rules that run on new tasks.", breadcrumb: "Reporting" },
-    forms: { title: "Forms", subtitle: "Capture requests as tasks.", breadcrumb: "Intake" },
-    projects: { title: "Projects", subtitle: "Every project in this workspace.", breadcrumb: activeWsName },
-    pulse: { title: "Pulse", subtitle: "What the team did, and what's at risk.", breadcrumb: "Team" },
-    tasks: { title, subtitle, breadcrumb },
-    project: { title, subtitle, breadcrumb },
-  };
-  const headerProps = headerMap[route.view];
-
   // App keeps the open project valid (its route guard), so the Sidebar's own guard stays off
   const sidebar = (
-    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={setWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
-      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => setSettingsOpen(true)} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
+    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
+      currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => openSettings()} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} smartCounts={smartCounts}
       savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch}
-      myRole={myRole} guardRoute={false} />
+      myRole={myRole} guardRoute={false} {...sidebarNext} />
   );
 
-  const bannerTone = (kind: string) => (kind === "warning" ? "var(--st-review)" : kind === "success" ? "var(--st-done)" : "var(--accent)");
-
   return (
-    <div style={{ position: "relative", height: "100vh", display: "flex", overflow: "hidden" }}>
-      <AppBg grid />
+    <div data-panel={detailId ? "open" : undefined} style={{ position: "relative", height: "100vh", display: "flex", overflow: "hidden", background: "var(--bg)" }}>
+      <AppBg />
       <GlobalTipStyles />
       {isMobile ? (
         <>
-          {sidebarOpen && <div aria-hidden="true" onClick={() => setSidebarOpen(false)} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 49, background: "color-mix(in oklch, var(--bg-deep) 50%, transparent)", backdropFilter: "blur(2px)" }} />}
-          <div ref={drawerRef} role="dialog" aria-modal={sidebarOpen ? true : undefined} aria-label="Menu" aria-hidden={sidebarOpen ? undefined : true} style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 50, transform: sidebarOpen ? "none" : "translateX(-100%)", boxShadow: sidebarOpen ? "var(--shadow-lg)" : "none",
+          {sidebarOpen && <div aria-hidden="true" onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 49, background: "var(--scrim, color-mix(in oklch, var(--bg-deep) 55%, transparent))", animation: "fadeIn var(--d-2, 160ms) var(--ease)" }} />}
+          <div ref={drawerRef} role="dialog" aria-modal={sidebarOpen ? true : undefined} aria-label="Menu" aria-hidden={sidebarOpen ? undefined : true} style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 50, display: "flex", transform: sidebarOpen ? "none" : "translateX(-100%)", boxShadow: sidebarOpen ? "var(--e3, var(--shadow-lg))" : "none",
             // hidden (not just off-screen) once the slide-out finishes, so nothing in it can be reached
-            visibility: sidebarOpen ? "visible" : "hidden", transition: sidebarOpen ? "transform .25s var(--ease), visibility 0s" : "transform .25s var(--ease), visibility 0s linear .25s" }}>
+            visibility: sidebarOpen ? "visible" : "hidden", transition: sidebarOpen ? "transform var(--d-3, 240ms) var(--ease), visibility 0s" : "transform var(--d-3, 240ms) var(--ease-exit, var(--ease)), visibility 0s linear var(--d-3, 240ms)" }}>
             {sidebar}
           </div>
         </>
       ) : sidebar}
       <main id="main" tabIndex={-1} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 1, outline: "none" }}>
         {!online && (
-          <div role="status" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 18px", background: "color-mix(in oklch, var(--st-review) 16%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--st-review) 30%, transparent)" }}>
-            <Icon name="refresh" size={14} style={{ color: "var(--st-review)", flexShrink: 0 }} />
-            <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>
-              You're offline — changes are saved on this device{pendingSync > 0 ? ` (${pendingSync} queued)` : ""} and will sync when you reconnect.
-            </span>
-          </div>
+          <Notice tone="warn" icon="refresh">
+            You're offline — changes are saved on this device{pendingSync > 0 ? ` (${pendingSync} queued)` : ""} and will sync when you reconnect.
+          </Notice>
         )}
         {online && (syncing || pendingSync > 0) && (
-          <div role="status" style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 18px", background: "color-mix(in oklch, var(--accent) 12%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--accent) 26%, transparent)" }}>
-            <Icon name="refresh" size={14} style={{ color: "var(--accent)", flexShrink: 0 }} className={syncing ? "spin" : undefined} />
-            <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>{syncing ? `Syncing ${pendingSync || ""} offline change${pendingSync === 1 ? "" : "s"}…` : `${plural(pendingSync, "change")} waiting to sync`}</span>
-            {!syncing && <button onClick={flushOffline} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "3px 10px", fontSize: 12 }}>Retry now</button>}
-          </div>
+          <Notice tone="accent" icon="refresh" spin={syncing}
+            actions={!syncing && <Button variant="ghost" size="sm" onClick={flushOffline}>Retry now</Button>}>
+            {syncing ? `Syncing ${pendingSync || ""} offline change${pendingSync === 1 ? "" : "s"}…` : `${plural(pendingSync, "change")} waiting to sync`}
+          </Notice>
         )}
         {deadLetters.length > 0 && (
-          <div role="status" style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", padding: "7px 18px", background: "color-mix(in oklch, var(--st-blocked) 11%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--st-blocked) 26%, transparent)" }}>
-            <Icon name="refresh" size={14} style={{ color: "var(--st-blocked)", flexShrink: 0 }} />
-            <span style={{ flex: 1, minWidth: 200, fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>
-              {/* retryable: a server problem that may clear up; otherwise the server refused the change itself (e.g. no permission) */}
-              {plural(deadLetters.length, "change")} couldn't be synced{deadLetters.every((d) => !d.retryable) ? ` — the server turned ${deadLetters.length === 1 ? "it" : "them"} down` : ""}. {deadLetters.length === 1 ? "It's" : "They're"} kept on this device.
-            </span>
-            <button onClick={retryDeadLetters} disabled={!online || syncing} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12 }}>Retry</button>
-            <button onClick={discardDeadLetters} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12, color: "var(--ink-3)" }}>Discard</button>
-          </div>
+          <Notice tone="signal" icon="refresh" actions={<>
+            <Button variant="ghost" size="sm" onClick={retryDeadLetters} disabled={!online || syncing}>Retry</Button>
+            <Button variant="ghost" size="sm" onClick={discardDeadLetters}>Discard</Button>
+          </>}>
+            {/* retryable: a server problem that may clear up; otherwise the server refused the change itself (e.g. no permission) */}
+            {plural(deadLetters.length, "change")} couldn't be synced{deadLetters.every((d) => !d.retryable) ? ` — the server turned ${deadLetters.length === 1 ? "it" : "them"} down` : ""}. {deadLetters.length === 1 ? "It's" : "They're"} kept on this device.
+          </Notice>
         )}
         {unsavedIds.length > 0 && (
-          <div role="status" style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", padding: "7px 18px", background: "color-mix(in oklch, var(--st-blocked) 11%, var(--surface-raised))", borderBottom: "1px solid color-mix(in oklch, var(--st-blocked) 26%, transparent)" }}>
-            <Icon name="refresh" size={14} style={{ color: "var(--st-blocked)", flexShrink: 0 }} />
-            <span style={{ flex: 1, minWidth: 200, fontSize: 13, color: "var(--ink-2)", fontWeight: 500 }}>
-              {plural(unsavedIds.length, "task")} couldn't be saved — {unsavedIds.length === 1 ? "it's" : "they're"} only on this screen for now.
-            </span>
-            <button onClick={retryUnsaved} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12 }}>Retry</button>
-            <button onClick={discardUnsaved} className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 12, color: "var(--ink-3)" }}>Discard</button>
-          </div>
+          <Notice tone="signal" icon="refresh" actions={<>
+            <Button variant="ghost" size="sm" onClick={retryUnsaved}>Retry</Button>
+            <Button variant="ghost" size="sm" onClick={discardUnsaved}>Discard</Button>
+          </>}>
+            {plural(unsavedIds.length, "task")} couldn't be saved — {unsavedIds.length === 1 ? "it's" : "they're"} only on this screen for now.
+          </Notice>
         )}
         {activeReadOnly && (
-          <div role="note" style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 18px", background: "var(--fill-1, var(--surface-2))", borderBottom: "1px solid var(--hairline)" }}>
-            <Icon name="lock" size={13} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
-            <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>You're a guest in {activeWsName} — you can view and comment. Ask a workspace admin for member access to edit.</span>
-          </div>
+          <Notice tone="neutral" icon="lock" role="note">
+            You're a guest in {activeWsName} — you can view and comment. Ask a workspace admin for member access to edit.
+          </Notice>
         )}
-        {banner && banner.id !== bannerDismissed && (() => {
-          const c = bannerTone(banner.kind);
-          return (
-            <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 18px", background: `color-mix(in oklch, ${c} 14%, var(--surface-raised))`, borderBottom: `1px solid color-mix(in oklch, ${c} 30%, transparent)` }}>
-              <Icon name="bell" size={15} style={{ color: c, flexShrink: 0 }} />
-              <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)", fontWeight: 500 }}>{banner.message}</span>
-              <button onClick={() => { setBannerDismissed(banner.id); try { localStorage.setItem("kanbo-banner-dismissed", banner.id); } catch { /* ignore */ } }} aria-label="Dismiss announcement" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 2, flexShrink: 0 }}><Icon name="x" size={16} /></button>
-            </div>
-          );
-        })()}
+        {banner && banner.id !== bannerDismissed && (
+          <Notice tone={banner.kind === "warning" ? "warn" : banner.kind === "success" ? "ok" : "accent"} icon="bell"
+            actions={<IconButton icon="x" label="Dismiss announcement" size="sm" onClick={() => { setBannerDismissed(banner.id); try { localStorage.setItem("kanbo-banner-dismissed", banner.id); } catch { /* ignore */ } }} />}>
+            {banner.message}
+          </Notice>
+        )}
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
-        <Topbar {...headerProps} theme={resolvedTheme} toggleTheme={flipTheme}
-          hasUnread={inboxCount > 0} unreadCount={inboxCount} canCreateProject={!activeReadOnly} onMenu={isMobile ? () => setSidebarOpen(true) : undefined}
-          onNewTask={() => openNewTask()} onNewProject={() => setNewProjectOpen(true)} onCommand={() => setCmdOpen(true)} onBell={() => setRoute({ view: "inbox" })}>
-          {(route.view === "project") && newProj && (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "0 4px" }}>
-              <span style={{ fontSize: 22 }}>{newProj.emoji}</span>
-            </span>
-          )}
-        </Topbar>
-        <ErrorBoundary key={`${route.view}:${route.projectId ?? ""}`} inline name="view" onHome={() => setRoute({ view: "home" })}>
-          <RenderView render={renderMain} />
-        </ErrorBoundary>
-        {isMobile && <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} />}
+        <PageHeader {...header} onSearch={() => openPalette()} create={createMenu} isMobile={isMobile} onOpenSettings={() => openSettings()} userId={currentUserId} {...headerNext} />
+        {/* the page fades in on a change of place (not of tab) */}
+        <div key={place} className="kroute" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <ErrorBoundary key={`${route.view}:${route.projectId ?? ""}`} inline name="view" onHome={() => setRoute({ view: "plan" })}>
+            <RenderView render={renderMain} />
+          </ErrorBoundary>
+        </div>
+        {isMobile && <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} {...mobileNavNext} />}
       </main>
 
       <ImportTasksModal open={importOpen} onClose={() => setImportOpen(false)}
         projects={wsProjects} members={assignees.map((a) => ({ ...a, email: wsMembers.find((m) => m.userId === a.id)?.email }))}
         sections={sections.filter((s) => !s.id.startsWith("tmp-") && wsProjects.some((p) => p.id === s.projectId))}
-        defaultProjectId={route.view === "project" ? route.projectId : undefined}
-        defaultProjectName={route.view === "project" ? newProj?.name : undefined}
+        defaultProjectId={openProject?.id}
+        defaultProjectName={openProject?.name}
         supports={{ details: true, subtasks: true, newTags: true, newSections: true }}
         onImport={importTasks} />
 
       {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
-      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={tasks} onOpenTask={setDetailId}
+      <CommandPalette open={cmdOpen} onClose={() => { setCmdOpen(false); setPaletteQuery(undefined); }} tasks={seen} onOpenTask={setDetailId}
         projects={projects} workspaces={workspaces} canCreateProject={!activeReadOnly}
         onOpenProject={(id) => {
           const p = projects.find((x) => x.id === id);
@@ -2902,49 +3372,32 @@ export default function App() {
         }}
         onSearchAll={(text) => { setRoute({ view: "search" }); setSearchPrefill({ text, key: "q-" + Date.now() }); }}
         onAction={(s) => {
-        if (s.id === "new-task") openNewTask();
-        else if (s.id === "quick-capture") openCapture();
-        else if (s.id === "new-project") setNewProjectOpen(true);
-        else if (s.id === "prioritize") autoPrioritize();
-        else if (s.id === "focus") openFocus(true);
-        else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
-        else if (s.id === "manage-tags") setTagManagerOpen(true);
-        else if (s.id === "toggle-theme") flipTheme();
-        else if (s.id === "settings") setSettingsOpen(true);
-      }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} />
+          if (s.id === "new-task") openNewTask();
+          else if (s.id === "quick-capture") openCapture();
+          else if (s.id === "paste-notes") openExtract();
+          else if (s.id === "import") { if (!denyGuest([workspace])) setImportOpen(true); }
+          else if (s.id === "new-project") setNewProjectOpen(true);
+          else if (s.id === "plan") setRoute({ view: "plan" });
+          else if (s.id === "prioritize") autoPrioritize();
+          else if (s.id === "focus") openFocus(true);
+          else if (s.id === "shutdown") setShutdownOpen(true);
+          else if (s.id === "board") { setRoute({ view: "tasks" }); setView("board"); }
+          else if (s.id === "manage-tags") openSettings("tags");
+          else if (s.id === "toggle-theme") flipTheme();
+          else if (s.id === "shortcuts") openSettings("shortcuts");
+          else if (s.id === "settings") openSettings();
+        }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} {...paletteNext} />
 
-      <TagManagerModal open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} tags={tags}
-        taskCounts={(() => { const c: Record<string, number> = {}; (tasks ?? []).forEach((t) => (t.tags || []).forEach((tg) => { c[tg] = (c[tg] || 0) + 1; })); return c; })()}
-        onUpdate={updateTag} onDelete={deleteTag} onMerge={mergeTags} onCreate={createTag} />
-      {shortcutsOpen && (
-        <div onClick={() => setShortcutsOpen(false)} className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 200, background: "color-mix(in oklch, var(--bg-deep) 60%, transparent)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
-          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" className="glass anim-scalein" style={{ width: 440, maxWidth: "94vw", borderRadius: 18, padding: 22, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
-              <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
-              <h2 style={{ fontSize: 17, fontWeight: 600 }}>Keyboard shortcuts</h2>
-              {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-              <button autoFocus onClick={() => setShortcutsOpen(false)} className="btn-icon" aria-label="Close keyboard shortcuts" style={{ marginLeft: "auto", border: "none" }}><Icon name="x" size={16} /></button>
-            </div>
-            {([["⌘K · Ctrl+K", "Command palette"], ["c", "New task"], ["q", "Quick capture"], ["/", "Search"], ["g then h", "Home"], ["g then p", "Plan my day"], ["g then i", "Inbox"], ["g then t", "My tasks"], ["g then c", "Calendar"], ["g then s", "Search"], ["g then a", "Analytics"], ["g then r", "Reports"], ["g then w", "My week"], ["?", "This help"], ["Esc", "Close / dismiss"]] as [string, string][]).map(([k, d]) => (
-              <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--hairline)" }}>
-                <span style={{ flex: 1, fontSize: 13.5, color: "var(--ink-2)" }}>{d}</span>
-                <kbd className="mono" style={{ fontSize: 11.5, padding: "2px 8px", borderRadius: 6, background: "var(--surface-2)", border: "1px solid var(--hairline)", color: "var(--ink-3)" }}>{k}</kbd>
-              </div>
-            ))}
-            <p style={{ margin: "12px 0 0", fontSize: 12, color: "var(--ink-4)" }}>Single-key shortcuts pause while you're typing or a dialog is open.</p>
-          </div>
-        </div>
-      )}
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
-          <TaskDetail taskId={detailId} tasks={tasks} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={patchTask} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} />
+          <TaskDetail taskId={detailId} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
+            readOnly={detailReadOnly} {...{ docked: docked && !isMobile, onStartFocus: focusTask }} />
         </ErrorBoundary>
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
-      {focusOpen && <FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...tasks.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
+      {focusOpen && <FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
-        tagUsage={(id) => tasks.filter((t) => t.tags.includes(id)).length} />
+        tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding} />
@@ -2960,9 +3413,18 @@ export default function App() {
         onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount}
         notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs}
         appearance={appearance} onChangeAppearance={setAppearance}
-        theme={theme} onChangeTheme={setTheme} />
+        theme={theme} onChangeTheme={setTheme} {...settingsNext} />
       <QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsProjects} members={assignees}
-        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask} />
+        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask}
+        {...{ onPasteNotes: (text: string) => openExtract(text), onImportRows: (rows: ImportRow[]) => importTasks(rows) }} />
+      <ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
+        projects={wsProjects} members={assignees} defaultProjectId={openProject?.id} currentUserId={currentUserId}
+        onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
+        onCreate={(rows) => importTasks(rows, { verb: "Added" })} />
+      <ShutdownSheet open={shutdownOpen} onClose={() => setShutdownOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} userName={currentUser?.name}
+        onPatch={guardedPatch} onComment={(taskId, body) => addComment(taskId, body)} focusMinutesToday={focus.focusMinToday} />
+      <WeeklyReview open={weeklyOpen} onClose={() => setWeeklyOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} onPatch={guardedPatch}
+        onSummarise={aiOn ? () => store.aiSummary(myTasks, dayKey) : undefined} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);
@@ -2974,6 +3436,32 @@ export default function App() {
           onArchive={proj.archivedAt || !canArchiveProject(proj, { myRole: roleIn(proj.workspaceId) }) ? undefined : () => setProjectArchived(proj.id, true)}
           onConfirm={(mode, target) => { confirmDeleteProject(deleteProjectId, mode, target); }} onClose={() => setDeleteProjectId(null)} />;
       })()}
+      {/* one time, for people who knew the old layout: where everything went */}
+      {knewOldLayout && !onboardOpen && !welcomeOpen && <WhatMoved isMobile={isMobile} onShowMe={() => openPalette()} />}
+    </div>
+  );
+}
+
+/** A one-line notice across the top of the page (offline, syncing, unsaved,
+ *  guest, an announcement): 32px, the tone's colour on a faint tint of itself. */
+function Notice({ tone, icon, role = "status", spin, actions, children }: {
+  tone: "signal" | "warn" | "accent" | "ok" | "neutral";
+  icon: IconName;
+  role?: "status" | "note";
+  spin?: boolean;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const ink = { signal: "var(--signal, var(--st-blocked))", warn: "var(--warn, var(--st-review))", accent: "var(--accent-text, var(--accent))", ok: "var(--ok, var(--st-done))", neutral: "var(--ink-3)" }[tone];
+  return (
+    <div role={role} style={{
+      display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minHeight: 32, padding: "2px var(--gutter, 32px)", flexShrink: 0,
+      background: tone === "neutral" ? "var(--fill-1, var(--surface-2))" : `color-mix(in oklch, ${ink} 8%, var(--bg))`,
+      borderBottom: `1px solid ${tone === "neutral" ? "var(--hairline)" : `color-mix(in oklch, ${ink} 22%, transparent)`}`,
+    }}>
+      <Icon name={icon} size={14} className={spin ? "spin" : undefined} style={{ color: ink, flexShrink: 0 }} />
+      <span style={{ flex: 1, minWidth: 200, fontSize: "var(--t-ui, 13px)", lineHeight: "var(--lh-ui, 20px)", fontWeight: 500, color: "var(--ink-2)" }}>{children}</span>
+      {actions && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginRight: -8 }}>{actions}</span>}
     </div>
   );
 }
