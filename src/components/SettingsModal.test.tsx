@@ -1,21 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor, act, within, cleanup } from "@testing-library/react";
-import { SettingsModal } from "./SettingsModal";
+import { SettingsModal, type SettingsSection } from "./SettingsModal";
+import { WorkspaceSettingsPanel } from "./views/TeamView";
 import { AuthProvider } from "../auth/AuthProvider";
+import type { Workspace } from "../data/types";
 
-function renderSettings(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}) {
-  const props: Parameters<typeof SettingsModal>[0] = {
-    open: true,
-    onClose: vi.fn(),
-    initial: { firstName: "Ada", lastName: "Lovelace", pronouns: "", avatarUrl: null },
-    email: "ada@acme.co.uk",
-    color: "oklch(0.6 0.2 264)",
-    onUpload: vi.fn(async () => "blob:demo"),
-    onSave: vi.fn(async () => {}),
-    onExport: vi.fn(),
-    onDeleteAccount: vi.fn(async () => {}),
-    ...overrides,
-  };
+type Props = Parameters<typeof SettingsModal>[0];
+const baseProps = (): Props => ({
+  open: true,
+  onClose: vi.fn(),
+  initial: { firstName: "Ada", lastName: "Lovelace", pronouns: "", avatarUrl: null },
+  email: "ada@acme.co.uk",
+  color: "oklch(0.6 0.2 264)",
+  onUpload: vi.fn(async () => "blob:demo"),
+  onSave: vi.fn(async () => {}),
+  onExport: vi.fn(),
+  onDeleteAccount: vi.fn(async () => {}),
+});
+
+function renderSettings(overrides: Partial<Props> = {}) {
+  const props: Props = { ...baseProps(), ...overrides };
   render(<AuthProvider><SettingsModal {...props} /></AuthProvider>);
   return props;
 }
@@ -215,6 +220,20 @@ describe("Settings sheet", () => {
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
+  it("renders the real workspace panel for owners, with Close workspace last", () => {
+    const acme: Workspace = { id: "ws-1", name: "Acme", kind: "team", ownerId: "u-1" };
+    const renderWorkspace = () => (
+      <WorkspaceSettingsPanel workspace="ws-1" workspaces={[acme]} myRole="owner"
+        onUpdateWorkspace={vi.fn()} onUploadLogo={vi.fn()} onDeleteWorkspace={vi.fn()} onNewWorkspace={vi.fn()} />
+    );
+    renderSettings({ isAdmin: true, renderWorkspace, onGoPeople: vi.fn() });
+    goTo("Workspace");
+    const panel = screen.getByRole("tabpanel", { name: "Workspace" });
+    const buttons = within(panel).getAllByRole("button");
+    expect(buttons[0]).toHaveTextContent("Members & roles");
+    expect(buttons[buttons.length - 1]).toHaveTextContent(/close workspace/i);
+  });
+
   it("shows Workspace to admins only, with the workspace panel and Close workspace inside", () => {
     const renderWorkspace = () => <button type="button">Close workspace</button>;
     const onGoPeople = vi.fn();
@@ -343,12 +362,134 @@ describe("Settings on a phone", () => {
     expect(screen.getByRole("heading", { name: "Account" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "All settings" })).toBeInTheDocument();
   });
+
+  it("opens on the list when the app keeps the section as state, and still follows a deep link", () => {
+    // the shape P02 wires: `section` is lasting state, handed back via onSection
+    function Host() {
+      const [open, setOpen] = useState(false);
+      const [section, setSection] = useState<SettingsSection>("appearance");
+      return (
+        <AuthProvider>
+          <button type="button" onClick={() => setOpen(true)}>Open settings</button>
+          <button type="button" onClick={() => { setSection("tags"); setOpen(true); }}>Manage tags</button>
+          <SettingsModal {...baseProps()} open={open} onClose={() => setOpen(false)} section={section} onSection={setSection} />
+        </AuthProvider>
+      );
+    }
+    render(<Host />);
+    const list = () => screen.queryByRole("navigation", { name: "Settings sections" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    expect(list()).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "All settings" })).toBeNull();
+    fireEvent.click(within(list()!).getByRole("button", { name: /Account/ }));
+    expect(screen.getByRole("heading", { name: "Account" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+
+    // the app still holds "account": a plain reopen shows the list again
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    expect(list()).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Account" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+
+    // a section the app changes on the way in is a deep link
+    fireEvent.click(screen.getByRole("button", { name: "Manage tags" }));
+    expect(screen.getByRole("heading", { name: "Tags" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All settings" })).toBeInTheDocument();
+  });
+
+  it("keeps the Save bar on the list while the profile has unsaved changes", () => {
+    renderSettings();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /Ada Lovelace/ }));
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Augusta" } });
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "All settings" }));
+    expect(screen.getByText("Unsaved profile changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save profile" })).toBeInTheDocument();
+  });
 });
 
 describe("Settings › closing", () => {
   it("Escape closes the sheet", () => {
     const props = renderSettings();
     fireEvent.keyDown(screen.getByRole("tab", { name: "Appearance" }), { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Settings › unsaved profile changes", () => {
+  const editName = (value = "Augusta") => {
+    goTo("Profile");
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value } });
+  };
+  const question = () => screen.queryByRole("group", { name: "Save profile changes before closing?" });
+
+  it("keeps the Save bar in every section, and saves from there", async () => {
+    const props = renderSettings();
+    editName();
+    goTo("Shortcuts");
+    expect(screen.getByText("Unsaved profile changes")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await waitFor(() => expect(props.onSave).toHaveBeenCalledWith({ firstName: "Augusta", lastName: "Lovelace", pronouns: "", avatarUrl: null }));
+    expect(await screen.findByText("Profile saved", { selector: ".kset-foot-note" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Shortcuts" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("asks before closing; Escape keeps editing, Discard closes without saving", async () => {
+    const props = renderSettings();
+    editName();
+    goTo("Appearance");
+    const x = screen.getByRole("button", { name: "Close settings" });
+    x.focus();
+    fireEvent.click(x);
+    expect(props.onClose).not.toHaveBeenCalled();
+    const saveAndClose = within(question()!).getByRole("button", { name: "Save and close" });
+    await waitFor(() => expect(saveAndClose).toHaveFocus());
+
+    fireEvent.keyDown(saveAndClose, { key: "Escape" });
+    expect(question()).toBeNull();
+    expect(props.onClose).not.toHaveBeenCalled();
+    await waitFor(() => expect(x).toHaveFocus());
+    expect(screen.getByText("Unsaved profile changes")).toBeInTheDocument();
+
+    fireEvent.keyDown(x, { key: "Escape" });
+    fireEvent.click(within(question()!).getByRole("button", { name: "Discard" }));
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+    expect(props.onSave).not.toHaveBeenCalled();
+  });
+
+  it("Save and close saves, closes, then carries on to what the close was for", async () => {
+    const order: string[] = [];
+    const props = renderSettings({
+      onClose: vi.fn(() => order.push("close")), onImport: vi.fn(() => order.push("import")),
+      onSave: vi.fn(async () => { order.push("save"); }),
+    });
+    editName();
+    goTo("Data");
+    fireEvent.click(screen.getByRole("button", { name: /import tasks/i }));
+    expect(order).toEqual([]);
+    fireEvent.click(within(question()!).getByRole("button", { name: "Save and close" }));
+    await waitFor(() => expect(order).toEqual(["save", "close", "import"]));
+    expect(props.onSave).toHaveBeenCalledWith(expect.objectContaining({ firstName: "Augusta" }));
+  });
+
+  it("a failed save keeps the sheet open and says why in the bar", async () => {
+    const props = renderSettings({ onSave: vi.fn(async () => { throw new Error("You're offline. Your profile wasn't saved."); }) });
+    editName();
+    goTo("Notifications");
+    fireEvent.mouseDown(screen.getByRole("dialog", { name: "Settings" }).parentElement!);
+    fireEvent.click(screen.getByRole("dialog", { name: "Settings" }).parentElement!);
+    fireEvent.click(within(question()!).getByRole("button", { name: "Save and close" }));
+    expect(await within(question()!).findByRole("alert")).toHaveTextContent("You're offline. Your profile wasn't saved.");
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes without asking once the changes are saved or discarded", () => {
+    const props = renderSettings();
+    editName();
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    expect(question()).toBeNull();
     expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 });

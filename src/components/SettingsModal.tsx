@@ -6,13 +6,15 @@
    the left (a vertical tablist: ↑/↓/Home/End move and select) and a
    scrolling pane on the right. Phones: full screen; the sections are a
    list and tapping one pushes it, with a Back button.
-   Appearance applies instantly; the profile has a Save bar that only
-   shows while something has changed. `section` / `onSection` make the
-   open section controllable (⌘, · ? → Shortcuts · Manage tags → Tags).
+   Appearance applies instantly; the profile has a Save bar that shows
+   while something has changed, in every section, and closing with unsaved
+   profile edits asks first. `section` / `onSection` make the open section
+   controllable (⌘, · ? → Shortcuts · Manage tags → Tags); on phones only a
+   section changed since the last close opens straight in (see `pushed`).
    ============================================================ */
 import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { Icon, Collapse, avatarPaint, Button, IconButton, Toggle, EmptyState } from "./primitives";
+import { Icon, Collapse, avatarPaint, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
 import type { IconName, CalendarConnection, CalProvider, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
@@ -38,11 +40,11 @@ export interface ProfileDraft {
 export type ThemeChoice = "light" | "dark" | "system";
 export type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
 
-const THEMES: { id: ThemeChoice; label: string; icon: IconName }[] = [
-  { id: "light", label: "Light", icon: "sun" }, { id: "dark", label: "Dark", icon: "moon" }, { id: "system", label: "System", icon: "settings" },
+const THEMES: SegmentedOption<ThemeChoice>[] = [
+  { value: "light", label: "Light", icon: "sun" }, { value: "dark", label: "Dark", icon: "moon" }, { value: "system", label: "System", icon: "settings" },
 ];
-const TEXT_SIZES: { id: TextSize; label: string }[] = [{ id: "small", label: "Small" }, { id: "normal", label: "Normal" }, { id: "large", label: "Large" }];
-const DENSITIES: { id: Density; label: string }[] = [{ id: "comfortable", label: "Comfortable" }, { id: "compact", label: "Compact" }];
+const TEXT_SIZES: SegmentedOption<TextSize>[] = [{ value: "small", label: "Small" }, { value: "normal", label: "Normal" }, { value: "large", label: "Large" }];
+const DENSITIES: SegmentedOption<Density>[] = [{ value: "comfortable", label: "Comfortable" }, { value: "compact", label: "Compact" }];
 
 const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   { key: "assigned", label: "Assigned to me", hint: "Someone gives you a task." },
@@ -136,15 +138,30 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const ids = "kset" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const phone = useMediaQuery("(max-width: 859px)");
 
+  // closing with unsaved profile edits asks first (Keep editing · Discard ·
+  // Save and close); `then` is what the close was for (Import tasks…, Members & roles)
+  const [askLeave, setAskLeave] = useState<{ then?: () => void } | null>(null);
+  const askFrom = useRef<HTMLElement | null>(null);
+
   /* ---------- which section ---------- */
   const available = SECTIONS.filter((s) => s.id !== "workspace" || (!!isAdmin && !!renderWorkspace && !isGuest));
   const [inner, setInner] = useState<SettingsSection>(section ?? DEFAULT_SECTION);
   const wanted = section ?? inner;
   const active: SettingsSection = available.some((s) => s.id === wanted) ? wanted : DEFAULT_SECTION;
   const meta = SECTIONS.find((s) => s.id === active)!;
-  // phones start on the list unless a section was asked for
-  const [pushed, setPushed] = useState(section !== undefined);
-  const pick = (s: SettingsSection) => { setInner(s); if (s !== active) onSection?.(s); };
+  // Phones open on the section list unless the host asked for a section for
+  // this open (a deep link: ? → Shortcuts, Manage tags → Tags). A host that
+  // keeps `section` as lasting state hands back the section the sheet last
+  // closed on, so only a section that has changed since then counts as asked
+  // for. (Mounted already open, any section given counts.)
+  const [restSection, setRestSection] = useState<SettingsSection | undefined>(open ? undefined : section);
+  const [pushed, setPushed] = useState(open && section !== undefined);
+  const pick = (s: SettingsSection) => {
+    setInner(s);
+    if (s !== active) onSection?.(s);
+    // moving on to another section answers "Save before closing?" with Keep editing
+    setAskLeave(null); askFrom.current = null;
+  };
 
   /* ---------- open / close (with the exit fade) ---------- */
   const [prevOpen, setPrevOpen] = useState(open);
@@ -152,7 +169,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   if (prevOpen !== open) {
     setPrevOpen(open);
     setLeaving(!open && !reducedMotion());
-    if (open) { setInner(section ?? DEFAULT_SECTION); setPushed(section !== undefined); }
+    if (open) { setInner(section ?? DEFAULT_SECTION); setPushed(section !== undefined && section !== restSection); }
+    else setRestSection(section);
   }
   useEffect(() => {
     if (!leaving) return;
@@ -195,6 +213,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [leavingHere, setLeavingHere] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const askSaveRef = useRef<HTMLButtonElement>(null);
+  const barSaveRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pwButtonRef = useRef<HTMLButtonElement>(null);
   const focusTimer = useRef(0);   // see focusLater
@@ -224,7 +244,29 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     if (unused.length) void removeAvatarObjects(unused, uid);
   };
   const dismiss = () => { discardUploads(); onClose(); };
-  const trapRef = useFocusTrap<HTMLDivElement>(open, dismiss);
+  const dirty = firstName !== base.firstName || lastName !== base.lastName || pronouns !== base.pronouns || avatarUrl !== base.avatarUrl;
+  // X, Escape, the scrim, Import tasks… and Members & roles all close through
+  // here: unsaved profile edits are never thrown away without asking
+  const requestClose = (then?: () => void) => {
+    if (askLeave) { askSaveRef.current?.focus(); return; }   // already asking
+    if (dirty && !saving) {
+      const from = document.activeElement;
+      askFrom.current = from instanceof HTMLElement && from !== document.body ? from : null;
+      setAskLeave({ then });
+      return;
+    }
+    dismiss(); then?.();
+  };
+  const keepEditing = () => {
+    const back = askFrom.current;
+    askFrom.current = null;
+    setAskLeave(null);
+    // back to where you were (the X, a field you left with Escape, a button),
+    // or to Save profile if that was in the bar the question replaced
+    window.setTimeout(() => { (back?.isConnected ? back : barSaveRef.current)?.focus({ preventScroll: true }); }, 0);
+  };
+  // Escape backs out of the question (not while it's saving); otherwise it asks to close
+  const trapRef = useFocusTrap<HTMLDivElement>(open, () => { if (!askLeave) requestClose(); else if (!saving) keepEditing(); });
 
   useEffect(() => {
     if (open) {
@@ -244,7 +286,13 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     setConfirmDelete(false); setDeleting(false); setDeleteWord(""); setDeleteError(null);
     setPwOpen(false); setPw(""); setPw2(""); setShowPw(false); setPwTried(false); setPwBusy(false); setPwError(null); setPwDone(null);
     setConfirmSignOut(false); setSigningOut(false); setSignOutError(null); setLeavingHere(false);
+    setAskLeave(null); askFrom.current = null;
   }, [open]);
+
+  // the question takes focus on its safest answer that keeps your work
+  useEffect(() => {
+    if (askLeave) askSaveRef.current?.focus({ preventScroll: true });
+  }, [askLeave]);
 
   // Google-only accounts have no password yet: offer to "set" one instead of "change"
   useEffect(() => {
@@ -324,10 +372,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     } catch { return undefined; }
   };
 
-  const dirty = firstName !== base.firstName || lastName !== base.lastName || pronouns !== base.pronouns || avatarUrl !== base.avatarUrl;
-
-  const save = async () => {
-    if (saving) return;
+  /** true once the profile is saved */
+  const save = async (): Promise<boolean> => {
+    if (saving) return false;
     const session = sessionRef.current;
     setSaving(true); setError(null);
     try {
@@ -342,13 +389,15 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       const unused = [...uploadsRef.current, base.avatarUrl, stored].filter((u) => u && u !== nextAvatar);
       uploadsRef.current = [];
       void removeAvatarObjects(unused, uid);
-      if (session !== sessionRef.current) return;
+      if (session !== sessionRef.current) return true;
       // the sheet stays open: what was saved is the new baseline
       setBase(draft);
       setFirstName(draft.firstName); setLastName(draft.lastName); setPronouns(draft.pronouns); setAvatarUrl(nextAvatar);
       setSavedFlash(true);
+      return true;
     } catch (err) {
-      if (session === sessionRef.current) setError(err instanceof Error ? err.message : "Couldn't save your profile.");
+      if (session === sessionRef.current) setError(err instanceof Error && err.message ? err.message : "Couldn't save your profile.");
+      return false;
     } finally {
       if (session === sessionRef.current) setSaving(false);
     }
@@ -358,6 +407,19 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     discardUploads();
     setFirstName(base.firstName); setLastName(base.lastName); setPronouns(base.pronouns); setAvatarUrl(base.avatarUrl);
     setAvatarError(null); setError(null);
+  };
+
+  // the answers to "Save profile changes before closing?"
+  const discardAndLeave = () => {
+    const then = askLeave?.then;
+    askFrom.current = null; setAskLeave(null);
+    discardChanges(); onClose(); then?.();
+  };
+  const saveAndLeave = async () => {
+    const then = askLeave?.then;
+    if (!(await save())) return;   // the error shows in the bar; the question stays
+    askFrom.current = null; setAskLeave(null);
+    dismiss(); then?.();
   };
 
   const longEnough = pw.length >= PASSWORD_MIN;
@@ -487,7 +549,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const savedName = [base.firstName, base.lastName].filter(Boolean).join(" ") || email;
   const pwLabel = hasPassword === false ? "Set a password" : "Change password";
   const setLook = (patch: Partial<Appearance>) => { if (appearance) onChangeAppearance?.({ ...appearance, ...patch }); };
-  const leaveThen = (fn?: () => void) => () => { dismiss(); fn?.(); };
+  const leaveThen = (fn?: () => void) => () => requestClose(fn);
 
   /* ---------- section bodies ---------- */
 
@@ -549,16 +611,6 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     </>
   );
 
-  const segmented = <T extends string>(opts: { id: T; label: string; icon?: IconName }[], value: T, onPick: (v: T) => void) => (
-    <div className="kseg kset-seg">
-      {opts.map((o) => (
-        <button key={o.id} type="button" className="kseg-btn" data-active={o.id === value} aria-pressed={o.id === value} onClick={() => onPick(o.id)}>
-          {o.icon && <Icon name={o.icon} size={16} sw={1.75} />}{o.label}
-        </button>
-      ))}
-    </div>
-  );
-
   const onSwatchKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!appearance) return;
     const dir = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
@@ -577,7 +629,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
         <Group title="Theme and colour">
           {theme && onChangeTheme && (
             <Row group label="Theme" desc="System follows your device's light or dark setting.">
-              {segmented(THEMES, theme, onChangeTheme)}
+              <Segmented options={THEMES} value={theme} onChange={onChangeTheme} />
             </Row>
           )}
           {appearance && (
@@ -602,10 +654,10 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
         <>
           <Group title="Layout">
             <Row group label="Text size" desc="Scales all of Kanbo, dialogs included.">
-              {segmented(TEXT_SIZES, appearance.textSize, (v) => setLook({ textSize: v }))}
+              <Segmented options={TEXT_SIZES} value={appearance.textSize} onChange={(v) => setLook({ textSize: v })} />
             </Row>
             <Row group label="Density" desc="Compact fits more rows on screen.">
-              {segmented(DENSITIES, appearance.density ?? "comfortable", (v) => setLook({ density: v }))}
+              <Segmented options={DENSITIES} value={appearance.density ?? "comfortable"} onChange={(v) => setLook({ density: v })} />
             </Row>
           </Group>
           <Group title="Suggestions and AI">
@@ -898,15 +950,42 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     tabRefs.current[next]?.focus();
   };
 
-  const footer = active === "profile" && (dirty || savedFlash) ? (
-    <div className="kset-foot" data-state={dirty ? "dirty" : "saved"}>
-      {dirty ? (
+  // The profile's Save bar follows you through every section while there's
+  // something to save, so an edit is never lost out of sight. Away from the
+  // profile it says whose changes they are, and shows a failed save itself
+  // (on the profile, the error sits under the fields).
+  const onProfileNow = active === "profile" && (!phone || pushed);
+  const footState = askLeave ? "ask" : dirty ? "dirty" : savedFlash ? "saved" : null;
+  const barError = error && !onProfileNow ? <span role="alert" className="kset-foot-err">{error}</span> : null;
+  const footer = footState ? (
+    <div key={footState} className="kset-foot" data-state={footState}
+      role={footState === "ask" ? "group" : undefined} aria-labelledby={footState === "ask" ? `${ids}-ask` : undefined}>
+      {footState === "ask" ? (
         <>
-          <span className="kset-foot-note">Unsaved changes</span>
-          <Button variant="ghost" onClick={discardChanges} disabled={saving}>Discard</Button>
-          <Button variant="primary" icon="check" onClick={() => { void save(); }} disabled={saving || uploading} aria-busy={saving || undefined}>
-            {saving ? "Saving…" : "Save profile"}
-          </Button>
+          <span className="kset-foot-text">
+            <span id={`${ids}-ask`} className="kset-foot-note">Save profile changes before closing?</span>
+            {barError}
+          </span>
+          <span className="kset-foot-acts">
+            <Button variant="ghost" onClick={keepEditing} disabled={saving}>Keep editing</Button>
+            <Button onClick={discardAndLeave} disabled={saving}>Discard</Button>
+            <Button ref={askSaveRef} variant="primary" icon="check" onClick={() => { void saveAndLeave(); }} disabled={saving || uploading} aria-busy={saving || undefined}>
+              {saving ? "Saving…" : "Save and close"}
+            </Button>
+          </span>
+        </>
+      ) : footState === "dirty" ? (
+        <>
+          <span className="kset-foot-text">
+            <span className="kset-foot-note">{onProfileNow ? "Unsaved changes" : "Unsaved profile changes"}</span>
+            {barError}
+          </span>
+          <span className="kset-foot-acts">
+            <Button variant="ghost" onClick={discardChanges} disabled={saving}>Discard</Button>
+            <Button ref={barSaveRef} variant="primary" icon="check" onClick={() => { void save(); }} disabled={saving || uploading} aria-busy={saving || undefined}>
+              {saving ? "Saving…" : "Save profile"}
+            </Button>
+          </span>
         </>
       ) : (
         <span className="kset-foot-note" data-tone="ok"><Icon name="check" size={16} sw={2} /> Profile saved</span>
@@ -938,7 +1017,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       <div className="kset-pane">
         <div className="kset-head" data-scrolled={scrolled || undefined}>
           <h2 id={`${ids}-title`} className="kset-title">{meta.label}</h2>
-          <IconButton icon="x" label="Close settings" onClick={dismiss} />
+          <IconButton icon="x" label="Close settings" onClick={() => requestClose()} />
         </div>
         <div ref={scrollRef} className="kset-scroll" role="tabpanel" id={`${ids}-panel`} aria-labelledby={`${ids}-tab-${active}`} tabIndex={0} onScroll={onScroll}>
           <div key={active} className="kset-sec" data-section={active}>{bodyOf(active)}</div>
@@ -949,9 +1028,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   );
 
   const openSection = (s: SettingsSection) => { pick(s); navFocus.current = "back"; setPushed(true); };
-  const backToList = () => { navFocus.current = active; setPushed(false); };
+  const backToList = () => { navFocus.current = active; setPushed(false); setAskLeave(null); askFrom.current = null; };
   const hintOf = (s: SettingsSection): string | null => {
-    if (s === "appearance" && theme) return THEMES.find((t) => t.id === theme)?.label ?? null;
+    if (s === "appearance" && theme) return THEMES.find((t) => t.value === theme)?.label ?? null;
     if (s === "calendar" && calendar) return calendar.connections.length ? "Connected" : null;
     if (s === "tags" && tagsPanel) { const n = Object.keys(tagsPanel.tags).length; return n ? String(n) : null; }
     return null;
@@ -962,7 +1041,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       <div className="kset-head" data-scrolled={scrolled || undefined} data-phone="">
         <IconButton ref={backRef} icon="arrowLeft" label="All settings" onClick={backToList} />
         <h2 id={`${ids}-title`} className="kset-title">{meta.label}</h2>
-        <IconButton icon="x" label="Close settings" onClick={dismiss} />
+        <IconButton icon="x" label="Close settings" onClick={() => requestClose()} />
       </div>
       <div ref={scrollRef} className="kset-scroll" role="region" aria-labelledby={`${ids}-title`} onScroll={onScroll}>
         <div key={active} className="kset-sec kset-push" data-section={active}>{bodyOf(active)}</div>
@@ -973,7 +1052,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     <>
       <div className="kset-head" data-scrolled={scrolled || undefined} data-phone="">
         <h2 id={`${ids}-title`} className="kset-title">Settings</h2>
-        <IconButton icon="x" label="Close settings" onClick={dismiss} />
+        <IconButton icon="x" label="Close settings" onClick={() => requestClose()} />
       </div>
       <div ref={scrollRef} className="kset-scroll" onScroll={onScroll}>
         <nav className="kset-sec kset-pop kset-mlist" aria-label="Settings sections">
@@ -1004,6 +1083,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
           ) : null)}
         </nav>
       </div>
+      {footer}
     </>
   );
 
@@ -1013,7 +1093,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       onMouseDown={(e) => { downOnScrim.current = e.target === e.currentTarget; }}
       onClick={(e) => {
         e.stopPropagation(); // a portal still bubbles to its React parent
-        if (!closing && downOnScrim.current && e.target === e.currentTarget) dismiss();
+        if (!closing && downOnScrim.current && e.target === e.currentTarget) requestClose();
         downOnScrim.current = false;
       }}>
       <style>{SETTINGS_CSS}</style>
@@ -1098,7 +1178,7 @@ function KeyCombo({ alts }: { alts: string[] }) {
                 {pair.split(" ").map((k, ki) => (
                   <span key={ki} className="kset-combo-alt">
                     {ki > 0 && <span className="kset-then">then</span>}
-                    <kbd className="kkbd">{visualKey(k)}</kbd>
+                    <Kbd>{visualKey(k)}</Kbd>
                   </span>
                 ))}
               </span>
@@ -1177,9 +1257,9 @@ const SETTINGS_CSS = `
 .kset-sync { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kset-embed:empty { display: none; }
 
-/* segmented (P01 restyles .kseg; this only sizes it for a row) */
-.kset-seg { flex-shrink: 0; }
-.kset-seg .kseg-btn { white-space: nowrap; }
+/* the kit's Segmented (P01 styles .kseg; this only sizes it for a row) */
+.kset-row-ctl > .kseg { flex-shrink: 0; }
+.kset-row-ctl > .kseg .kseg-btn { white-space: nowrap; }
 
 /* accent swatches */
 .kset-swatches { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px; }
@@ -1281,8 +1361,14 @@ const SETTINGS_CSS = `
   animation: ksetFoot var(--d-2, 160ms) var(--ease);
 }
 @keyframes ksetFoot { from { opacity: 0.35; translate: 0 6px; } }
-.kset-foot-note { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kset-foot-note { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
 .kset-foot-note[data-tone="ok"] { color: var(--ok, var(--st-done)); font-weight: 600; }
+.kset-foot-text { display: grid; gap: 2px; flex: 1 1 200px; min-width: 0; }
+.kset-foot-err { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); text-wrap: pretty; }
+.kset-foot-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+/* "Save profile changes before closing?": the bar asks, in ink */
+.kset-foot[data-state="ask"] { flex-wrap: wrap; row-gap: 10px; }
+.kset-foot[data-state="ask"] .kset-foot-note { color: var(--ink); font-weight: 600; }
 
 /* ---- phones: full screen; the list pushes a section ---- */
 .kset-mlist { display: flex; flex-direction: column; gap: 20px; }
@@ -1317,12 +1403,15 @@ const SETTINGS_CSS = `
   .kset-head > .kibtn:first-child { margin-left: -8px; }
   .kset-scroll { padding: 8px 16px 32px; }
   .kset-foot { padding: 12px 16px; }
+  /* the note takes what the buttons leave (two lines if it must); the question gets a line of its own */
+  .kset-foot-text { flex: 1 1 0; }
+  .kset-foot[data-state="ask"] .kset-foot-text { flex-basis: 100%; }
   .kset-fields { grid-template-columns: 1fr; }
   /* 16px stops iOS zooming into a field on focus */
   .kset-input { font-size: 16px; }
   .kset-row-ctl { margin-left: 0; }
   .kset-row[role="group"] .kset-row-ctl { width: 100%; }
-  .kset-seg { max-width: 100%; }
+  .kset-row-ctl > .kseg { max-width: 100%; }
   .kset-keys { columns: 1; }
   .kset-matrix th, .kset-matrix td { padding-left: 12px; }
   .kset-matrix thead th + th, .kset-matrix td { width: 56px; padding-left: 2px; padding-right: 2px; }
