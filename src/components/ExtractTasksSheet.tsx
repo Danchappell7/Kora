@@ -33,7 +33,15 @@ export interface ExtractTasksSheetProps {
   defaultProjectId?: string;
   currentUserId: string;
   onExtractAI?: (text: string, context?: string) => Promise<AiOutcome<ExtractedTask[]>>;
-  onCreate: (tasks: Array<Partial<Task> & { title: string }>) => void;
+  /**
+   * Creates the chosen tasks. Only the side that knows whether they were made
+   * reports it, so there's one toast:
+   *  · nothing (void) — the host announces it (App's batch create toasts
+   *    "Added n tasks…"); the sheet just closes
+   *  · `true` — made, and the sheet says so ("Created n tasks in X")
+   *  · `false` — not made (a guest, say; the host explains): the sheet stays open
+   */
+  onCreate: (tasks: Array<Partial<Task> & { title: string }>) => boolean | void;
 }
 
 /** one action under review */
@@ -175,7 +183,7 @@ export function ExtractTasksSheet({
 
   const create = () => {
     if (!chosen.length) return;
-    onCreate(chosen.map((r) => ({
+    const made = onCreate(chosen.map((r) => ({
       title: r.title.trim() || "Untitled task",
       status: "todo" as const,
       priority: r.priority,
@@ -184,7 +192,8 @@ export function ExtractTasksSheet({
       ...(r.dueDate ? { dueDate: r.dueDate } : {}),
       ...(r.dueTime ? { dueTime: r.dueTime } : {}),
     })));
-    toast?.success(`Created ${plural(chosen.length, "task")}${project ? ` in ${project.name}` : ""}`);
+    if (made === false) return;
+    if (made === true) toast?.success(`Created ${plural(chosen.length, "task")}${project ? ` in ${project.name}` : ""}`);
     onClose();
   };
 

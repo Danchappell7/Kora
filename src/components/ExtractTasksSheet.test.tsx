@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { ExtractTasksSheet, toRows } from "./ExtractTasksSheet";
+import { ToastProvider } from "./Toast";
 import { KANBO_TODAY, toLocalISO } from "../data/data";
 import type { AiOutcome, ExtractedTask } from "../lib/askTypes";
 import type { Project, Task } from "../data/types";
@@ -32,7 +33,7 @@ const nextFriday = () => {
   return toLocalISO(d);
 };
 
-type CreateFn = (tasks: Array<Partial<Task> & { title: string }>) => void;
+type CreateFn = (tasks: Array<Partial<Task> & { title: string }>) => boolean | void;
 function Harness({ onCreate = vi.fn(), onExtractAI, initialText = NOTES, context, defaultProjectId = "p-brand" }: {
   onCreate?: CreateFn;
   onExtractAI?: (text: string, context?: string) => Promise<AiOutcome<ExtractedTask[]>>;
@@ -108,6 +109,32 @@ describe("ExtractTasksSheet", () => {
     expect(made[0]).toMatchObject({ title: "Send the brief", assigneeId: "m-3", dueDate: nextFriday(), projectId: "p-launch", status: "todo", priority: "medium" });
     expect(made[1]).toMatchObject({ title: "Book the venue for the party", assigneeId: "m-2", priority: "high", projectId: "p-launch" });
     expect(screen.getByTestId("state")).toHaveTextContent("closed");
+  });
+
+  describe("one toast, from whoever knows the tasks were made", () => {
+    const createWith = async (result: boolean | undefined) => {
+      const onCreate = vi.fn(() => result);
+      render(<ToastProvider><Harness onCreate={onCreate} /></ToastProvider>);
+      await findTasks();
+      fireEvent.click(screen.getByRole("button", { name: "Create 3 tasks" }));
+      expect(onCreate).toHaveBeenCalledTimes(1);
+    };
+    it("the host announces it (it returns nothing): the sheet only closes", async () => {
+      await createWith(undefined);
+      expect(screen.getByTestId("state")).toHaveTextContent("closed");
+      expect(screen.queryByText(/Created 3 tasks/)).toBeNull();
+    });
+    it("the host says they were made (true): the sheet says so", async () => {
+      await createWith(true);
+      expect(screen.getByTestId("state")).toHaveTextContent("closed");
+      expect(await screen.findByText("Created 3 tasks in Brand Refresh")).toBeInTheDocument();
+    });
+    it("the host couldn't make them (false): no success, and the review stays open", async () => {
+      await createWith(false);
+      expect(screen.getByTestId("state")).toHaveTextContent("open");
+      expect(screen.getByRole("list", { name: "Tasks found" })).toBeInTheDocument();
+      expect(screen.queryByText(/Created 3 tasks/)).toBeNull();
+    });
   });
 
   it("Select none leaves nothing to create", async () => {
