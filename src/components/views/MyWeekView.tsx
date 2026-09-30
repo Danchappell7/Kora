@@ -123,12 +123,20 @@ const WEEK_CSS = `
 function Spark({ data, labels }: { data: number[]; labels: string[] }) {
   const gid = "kws" + useId().replace(/[^a-zA-Z0-9]/g, "");
   const w = 120, h = 28, pad = 3;
+  const label = `Completed over the last seven days: ${data.map((v, i) => `${labels[i]} ${v}`).join(", ")}`;
+  // a quiet week is a flat track, not a gradient line with nothing to say
+  if (data.every((v) => v === 0)) {
+    return (
+      <svg className="kweek-spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label}>
+        <line x1={1} x2={w - 1} y1={h - pad} y2={h - pad} stroke="var(--track, var(--fill-2))" strokeWidth={2} strokeLinecap="round" />
+      </svg>
+    );
+  }
   const max = Math.max(1, ...data);
   const pts = data.map((v, i) => [(i / Math.max(1, data.length - 1)) * w, h - pad - (v / max) * (h - pad * 2)] as const);
   const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
   return (
-    <svg className="kweek-spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img"
-      aria-label={`Completed over the last seven days: ${data.map((v, i) => `${labels[i]} ${v}`).join(", ")}`}>
+    <svg className="kweek-spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label}>
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="var(--brand-blue, #5B7CFA)" />
@@ -259,7 +267,8 @@ export function MyWeekView({ tasks, onOpen, onPatch, currentUserId, readOnly }: 
   const lastWeekIsos = Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() - 7 + i); return isoOf(d); });
   const doneLastWeek = tasks.filter((t) => t.status === "done" && t.completedAt && lastWeekIsos.includes(t.completedAt.slice(0, 10))).length;
   const trend = doneThisWeek - doneLastWeek;
-  const trendLabel = doneLastWeek === 0 ? (doneThisWeek > 0 ? "first wins this week" : "nothing yet") : `${trend >= 0 ? "+" : ""}${trend} vs last week`;
+  // only a week with something to compare against gets a trend
+  const trendLabel = doneLastWeek > 0 ? `${trend >= 0 ? "+" : ""}${trend} vs last week` : null;
   // the last seven days, ending today (the sparkline Home used to show)
   const last7 = Array.from({ length: 7 }, (_, i) => { const d = new Date(today); d.setDate(today.getDate() - 6 + i); return d; });
   const sparkData = last7.map((d) => doneOn(isoOf(d)));
@@ -362,7 +371,7 @@ export function MyWeekView({ tasks, onOpen, onPatch, currentUserId, readOnly }: 
         <h2 className="kweek-title">This week</h2>
         <span className="kweek-range">{rangeLabel}</span>
         <span className="kweek-stat">{doneThisWeek} done</span>
-        <span className="kweek-trend" data-tone={trend > 0 && doneLastWeek > 0 ? "up" : undefined}>{trendLabel}</span>
+        {trendLabel && <span className="kweek-trend" data-tone={trend > 0 ? "up" : undefined}>{trendLabel}</span>}
         <Spark data={sparkData} labels={last7.map((d) => weekdayShort(d))} />
         <div className="kweek-head-end">
           {myOverdue.length > 0 && !readOnly && (

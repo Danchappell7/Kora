@@ -260,7 +260,8 @@ function TodayDay({
 
     const n = moves.length, left = next.unplaced.length;
     const mins = moves.reduce((a, s) => a + (s.end - s.start), 0);
-    const onDevice = source === "heuristic" ? " (on-device ordering)" : "";
+    // a non-breaking hyphen: the toast wraps before "(on‑device", never inside it
+    const onDevice = source === "heuristic" ? " (on‑device ordering)" : "";
     if (n > 0) {
       setLanding(Object.fromEntries(moves.map((s, i) => [s.id, i])));
       window.clearTimeout(landTimer.current);

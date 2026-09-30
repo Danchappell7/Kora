@@ -48,7 +48,9 @@ const FOCUS_CSS = `
 .kfocus-lengths button[aria-pressed="true"] { background: var(--surface-raised); color: var(--ink); box-shadow: var(--e1, var(--shadow)); }
 .kfocus-play.kbtn { min-width: 132px; }
 .kfocus-picker { width: 100%; max-width: 720px; margin: 0 auto; padding: 0 var(--gutter, 32px) 28px; }
-.kfocus-chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; }
+/* centred under the timer; when they overflow they scroll from the first one ("safe") */
+.kfocus-picker .ksection { justify-content: center; }
+.kfocus-chips { display: flex; justify-content: safe center; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; }
 .kfocus-chip { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; max-width: 280px; height: 40px; padding: 0 12px;
   border: 0; border-radius: var(--r-md, 8px); background: var(--surface-raised); box-shadow: var(--e1, var(--shadow)); cursor: pointer; color: var(--ink); }
 .kfocus-chip:hover { box-shadow: var(--e2, var(--shadow-lg)); }

@@ -117,7 +117,7 @@ describe("TodayView: the suggested plan", () => {
     const { props } = renderToday(work(), { onRank: vi.fn(async () => "heuristic" as const) });
     fireEvent.click(screen.getByRole("button", { name: /Plan my day/ }));
     await waitFor(() => expect(props.onUpdate).toHaveBeenCalled());
-    expect(screen.getAllByText(/\(on-device ordering\)$/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/\(on.device ordering\)$/).length).toBeGreaterThan(0);
   });
 
   it("P plans the day from the keyboard (never while typing)", async () => {

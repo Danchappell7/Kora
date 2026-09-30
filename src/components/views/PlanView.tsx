@@ -54,6 +54,9 @@ const snapTo = (m: number, step = SNAP) => Math.round(m / step) * step;
 interface DayWindow { from: number; to: number; pxm: number }
 const FULL_DAY: DayWindow = { from: DAY_START, to: DAY_END, pxm: 1 };
 const yOf = (m: number, w: DayWindow) => (m - w.from) * w.pxm;
+/** Where a block of `h` px starting at `top` is drawn: a pixel of daylight above
+ *  and below, so back-to-back blocks read as two, never one run-on box. */
+const inset = (top: number, h: number) => ({ top: top + 1, height: Math.max(2, h - 2) });
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const stop = (e: SyntheticEvent) => e.stopPropagation();
 
@@ -182,7 +185,7 @@ const PLAN_CSS = `
 /* ---- the day ---- */
 .kday-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 16px var(--kp-gutter) 72px;
   /* the day slides away under the brief rather than being cut off */
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 12px); mask-image: linear-gradient(to bottom, transparent, #000 12px); }
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px); mask-image: linear-gradient(to bottom, transparent, #000 16px); }
 .kplan[data-stacked="true"] .kday-scroll { flex: none; overflow: visible; padding: 16px var(--kp-gutter) 24px; -webkit-mask-image: none; mask-image: none; }
 .kday-connect { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px ${LANE_LEFT}px; padding: 0; border: 0; background: none;
   font: 500 12px/16px var(--kp-ui); color: var(--ink-3); cursor: pointer; text-decoration: underline dotted var(--ink-4); text-underline-offset: 4px; }
@@ -230,7 +233,7 @@ const PLAN_CSS = `
 /* a short block grows over its neighbours while you're on it, so its actions fit */
 .kday-block[data-short="true"]:hover, .kday-block[data-short="true"]:focus-within,
 .kday-ghost[data-short="true"]:hover, .kday-ghost[data-short="true"]:focus-within { min-height: 30px; z-index: 6; }
-.kday-block-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.kday-block-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .kday-open { position: static; flex: 1; min-width: 0; padding: 0; margin: 0; border: 0; background: transparent; color: inherit;
   font: inherit; text-align: left; cursor: inherit; outline: none; }
 .kday-open::after { content: ""; position: absolute; inset: 0; z-index: 0; }
@@ -250,14 +253,19 @@ const PLAN_CSS = `
 .kplan[data-stacked="true"] .kday-event .kday-mini-label { display: none; }
 .kplan[data-stacked="true"] .kday-event .kday-mini.kbtn { width: 28px; padding: 0; justify-content: center; }
 
-.kday-ghost { position: absolute; z-index: 3; display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden;
-  padding: 0 4px 0 9px; border-radius: var(--kp-r-sm); cursor: grab; touch-action: pan-y;
-  border: 1px dashed var(--kp-accent-line); background: var(--kp-accent-tint);
+/* the tint is laid over the canvas (not see-through), so hour rules don't run through a suggestion */
+.kday-ghost { position: absolute; z-index: 3; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; overflow: hidden;
+  padding: 0 4px 0 10px; border-radius: var(--kp-r-sm); cursor: grab; touch-action: pan-y;
+  border: 1px dashed var(--kp-accent-line); background: linear-gradient(var(--kp-accent-tint), var(--kp-accent-tint)), var(--bg);
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   transition: background var(--kp-d1) var(--ease), box-shadow var(--kp-d1) var(--ease); }
-.kday-ghost[data-tall="true"] { align-items: flex-start; padding-top: 5px; }
+.kday-ghost[data-tall="true"] { justify-content: flex-start; padding-top: 5px; }
+.kday-ghost-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kday-ghost-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .kday-ghost-title { font: 500 13px/16px var(--kp-ui); color: var(--ink-2); }
 .kday-ghost-meta { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kday-ghost-sub { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 22px; overflow: hidden; white-space: nowrap; pointer-events: none;
+  font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kday-ghost-tag { position: relative; z-index: 1; margin-left: auto; padding-right: 6px; flex-shrink: 0; white-space: nowrap; pointer-events: none;
   font: 500 11px/16px var(--font-mono); color: var(--accent-text, var(--accent)); }
 .kday-ghost[data-overdue="true"] .kday-ghost-tag { color: var(--kp-signal); }
@@ -347,22 +355,28 @@ const PLAN_CSS = `
 .krail-note svg { color: var(--st-done-fill, var(--st-done)); flex-shrink: 0; }
 .krail-group .ksection { min-height: 24px; }
 
-.krail-item { position: relative; display: flex; align-items: flex-start; gap: 10px; margin: 0 -8px; padding: 8px 8px 8px 8px;
+/* glyph · title · suggested slot on the first line; the meta line under the title runs to the edge */
+.krail-item { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 10px; row-gap: 2px;
+  margin: 0 -8px; padding: 8px;
   border-radius: var(--kp-r-sm); cursor: grab; touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   transition: background var(--kp-d1) var(--ease), opacity var(--kp-d2) var(--ease); }
 .krail-item:hover { background: var(--fill-1); }
 .krail-item[data-ring="true"] { box-shadow: inset 0 0 0 2px var(--accent); }
 .krail-item[data-dragging="true"] { opacity: 0.45; touch-action: none; }
 .krail-item[data-done="true"] .krail-item-title { text-decoration: line-through; text-decoration-color: var(--ink-4); color: var(--ink-3); }
-.krail-item .kglyph { margin-top: -2px; position: relative; z-index: 1; }
-.krail-item-text { flex: 1; min-width: 0; }
+.krail-item > .kglyph { grid-column: 1; grid-row: 1; position: relative; z-index: 1; }
+.krail-item-open { grid-column: 2; grid-row: 1; }
 .krail-item-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 14px/20px var(--kp-ui); color: var(--ink); }
-.krail-item-meta { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 1px; overflow: hidden; white-space: nowrap;
+.krail-item-meta { grid-column: 2 / 4; grid-row: 2; display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap;
   font: 500 12px/16px var(--kp-ui); color: var(--ink-3); pointer-events: none; }
+.krail-item-meta > * { flex-shrink: 0; }
 .krail-item-meta .mono { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; }
 .krail-item-meta [data-tone="signal"] { color: var(--kp-signal); }
-.krail-item-meta .krail-proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.krail-side { position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end; gap: 2px; flex-shrink: 0; min-width: 60px; min-height: 20px; }
+.krail-item-meta .krail-dot { color: var(--ink-4); }
+/* when the line is short of room, the project name gives way first (it keeps its dot) */
+.krail-item-meta .krail-proj { flex-shrink: 1; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.krail-item-meta .krail-proj > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.krail-side { grid-column: 3; grid-row: 1; position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 56px; min-height: 20px; }
 .krail-slot { padding: 0 2px; border: 0; background: none; border-radius: var(--kp-r-xs); cursor: pointer;
   font: 500 11px/20px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--accent-text, var(--accent)); white-space: nowrap; }
 .krail-slot:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -437,7 +451,7 @@ function EventBlock({ ev, lane, win, nowMin, onExtract }: { ev: CalEvent; lane?:
   return (
     <div className="kday-event" data-kind={meeting ? "meeting" : "break"} data-tall={tall || undefined} data-past={ev.end <= nowMin || undefined}
       data-now={(ev.start <= nowMin && ev.end > nowMin) || undefined}
-      style={{ top, height: h, ...laneStyle(lane) }}>
+      style={{ ...inset(top, h), ...laneStyle(lane) }}>
       <span className="kday-event-title">{ev.title}</span>
       <span className="kday-event-meta">{fmtTimeRange(ev.start, ev.end)}{ev.with?.length ? ` · ${ev.with.join(", ")}` : ""}</span>
       {meeting && onExtract && (
@@ -469,7 +483,7 @@ function TaskBlock({ task, start, lane, win, nowMin, helpId, readOnly, onStartDr
   const tall = h >= 46;
   const done = task.status === "done";
   const focus = useFocusRing();
-  const style = { top, height: h, ...laneStyle(lane), "--edge": proj ? projectPaint(proj.color).solid : undefined, animationDelay: landing != null ? `${landing * 40}ms` : undefined } as CSSProperties;
+  const style = { ...inset(top, h), ...laneStyle(lane), "--edge": proj ? projectPaint(proj.color).solid : undefined, animationDelay: landing != null ? `${landing * 40}ms` : undefined } as CSSProperties;
   return (
     <div onPointerDown={(ev) => onStartDrag(ev, task, "canvas")} className="kday-block" style={style}
       data-deep={deep || undefined} data-now={(now && !done) || undefined} data-past={(start + dur <= nowMin && !done) || undefined}
@@ -521,25 +535,35 @@ function GhostView({ task, ghost, lane, win, helpId, onStartDrag, onOpen, onAcce
   const dur = ghost.end - ghost.start;
   const top = yOf(ghost.start, win), h = Math.max(MIN_BLOCK_PX, dur * win.pxm);
   const range = fmtTimeRange(ghost.start, ghost.end);
+  const tall = h >= 46;
+  const proj = tall ? getProject(task.projectId) : undefined;
   const focus = useFocusRing();
   return (
-    <div className="kday-ghost" data-overdue={ghost.overdue || undefined} data-tall={h >= 46 || undefined} data-short={h < 28 || undefined} data-dragging={dragging || undefined} data-ring={focus.ring || undefined}
+    <div className="kday-ghost" data-overdue={ghost.overdue || undefined} data-tall={tall || undefined} data-short={h < 28 || undefined} data-dragging={dragging || undefined} data-ring={focus.ring || undefined}
       onPointerDown={(ev) => onStartDrag(ev, task, "ghost", ghost.start)}
-      style={{ top, height: h, ...laneStyle(lane) }}>
-      <span aria-hidden="true" className="kday-glyph"><StatusGlyph status={task.status} size={14} readOnly /></span>
-      <button type="button" className="kday-open" data-ghost-id={task.id} onClick={() => onOpen(task.id)} onFocus={focus.onFocus} onBlur={focus.onBlur}
-        onKeyDown={(ev) => {
-          if (ev.key !== "Enter" || ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-          ev.preventDefault(); ev.stopPropagation();
-          onAccept(ghost, true);
-        }}
-        aria-label={`Suggested: ${task.title}, ${range}${ghost.overdue ? ", overdue" : ""}`} aria-describedby={helpId}>
-        <span style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
-          <span className="kday-ghost-title">{task.title}</span>
-          <span className="kday-ghost-meta" aria-hidden="true">{fmtDuration(dur)}</span>
-        </span>
-      </button>
-      <span className="kday-ghost-tag" aria-hidden="true">{ghost.overdue ? "Overdue · suggested" : "suggested"}</span>
+      style={{ ...inset(top, h), ...laneStyle(lane) }}>
+      <div className="kday-ghost-row">
+        <span aria-hidden="true" className="kday-glyph"><StatusGlyph status={task.status} size={14} readOnly /></span>
+        <button type="button" className="kday-open" data-ghost-id={task.id} onClick={() => onOpen(task.id)} onFocus={focus.onFocus} onBlur={focus.onBlur}
+          onKeyDown={(ev) => {
+            if (ev.key !== "Enter" || ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+            ev.preventDefault(); ev.stopPropagation();
+            onAccept(ghost, true);
+          }}
+          aria-label={`Suggested: ${task.title}, ${range}${ghost.overdue ? ", overdue" : ""}`} aria-describedby={helpId}>
+          <span className="kday-ghost-line">
+            <span className="kday-ghost-title">{task.title}</span>
+            <span className="kday-ghost-meta" aria-hidden="true">{fmtDuration(dur)}</span>
+          </span>
+        </button>
+        <span className="kday-ghost-tag" aria-hidden="true">{ghost.overdue ? "Overdue · suggested" : "suggested"}</span>
+      </div>
+      {tall && (
+        <div className="kday-ghost-sub" aria-hidden="true">
+          <span>{range}</span>
+          {proj && <span className="kday-proj"><ProjectDot color={proj.color} />{proj.name}</span>}
+        </div>
+      )}
       <span className="kday-ghost-acts" onPointerDown={stop}>
         <Button size="sm" className="kday-mini" kbd="⏎" aria-label={`Accept: ${task.title} at ${fmtTime(ghost.start)}`}
           onClick={(ev) => { ev.stopPropagation(); onAccept(ghost, ev.detail === 0); }}>Accept</Button>
@@ -587,8 +611,11 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
   const hours: number[] = [];
   for (let m = win.from; m <= win.to; m += 60) hours.push(m);
   const nowIn = nowMin >= win.from && nowMin <= win.to;
-  // overlapping blocks (two tasks at once, a task over a meeting) sit side by side
-  const minDur = MIN_BLOCK_PX / win.pxm;
+  // overlapping blocks (two tasks at once, a task over a meeting) sit side by side.
+  // A short block is drawn taller than its time (MIN_BLOCK_PX); only when that would
+  // hide more than a few px of the next one does it move over, so back-to-back
+  // 20-minute tasks stay in one column, even at a phone's 56px an hour.
+  const minDur = (MIN_BLOCK_PX - 6) / win.pxm;
   const lanes = layoutLanes([
     ...events.map((ev) => ({ id: "ev:" + ev.id, start: ev.start, end: ev.end })),
     ...blocks.map((b) => ({ id: "t:" + b.task.id, start: b.start, end: b.start + Math.max(durOf(b.task), minDur) })),
@@ -635,7 +662,7 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
         ) })),
       ].sort((x, y) => x.at - y.at).map((x) => x.node)}
       {previewStart != null && (
-        <div className="kday-drop" style={{ top: yOf(previewStart, win), height: Math.max(MIN_BLOCK_PX, previewDur * win.pxm) }}>
+        <div className="kday-drop" style={inset(yOf(previewStart, win), Math.max(MIN_BLOCK_PX, previewDur * win.pxm))}>
           <span>{fmtTimeRange(previewStart, previewStart + previewDur)}</span>
         </div>
       )}
@@ -799,17 +826,16 @@ function RailItem({ task, today, me, slot, tomorrow, readOnly, dragging, onStart
     <div data-intake-card className="krail-item" data-slot={(!!slot && !readOnly) || undefined} data-ring={focus.ring || undefined} data-dragging={dragging || undefined} data-done={done || undefined}
       onPointerDown={readOnly ? undefined : (ev) => onStartDrag(ev, task, "intake")}>
       <StatusGlyph status={task.status} label={task.title} celebrateKey={task.id} readOnly={readOnly} onToggle={readOnly ? undefined : () => onToggle(task)} />
-      <div className="krail-item-text">
-        <button type="button" data-intake-open className="kday-open" onClick={() => onOpen(task.id)} onFocus={focus.onFocus} onBlur={focus.onBlur}
-          aria-label={`${task.title}, ${fmtDuration(durOf(task))}${due ? `, due ${due}` : ""}${slot ? `, suggested for ${fmtTime(slot.start)}` : ""}`}>
-          <span className="krail-item-title">{task.title}</span>
-        </button>
-        <div className="krail-item-meta" aria-hidden="true">
-          <span className="mono">{fmtDuration(durOf(task))}</span>
-          {proj && <>·<ProjectDot color={proj.color} /><span className="krail-proj">{proj.name}</span></>}
-          {due && <>·<span className="mono" data-tone={overdue ? "signal" : undefined}>{due}</span></>}
-          {from && <>·<span>from {from}</span></>}
-        </div>
+      <button type="button" data-intake-open className="kday-open krail-item-open" onClick={() => onOpen(task.id)} onFocus={focus.onFocus} onBlur={focus.onBlur}
+        aria-label={`${task.title}, ${fmtDuration(durOf(task))}${due ? `, due ${due}` : ""}${slot ? `, suggested for ${fmtTime(slot.start)}` : ""}`}>
+        <span className="krail-item-title">{task.title}</span>
+      </button>
+      {/* the meta line runs the full width, under the suggested slot too */}
+      <div className="krail-item-meta" aria-hidden="true">
+        <span className="mono">{fmtDuration(durOf(task))}</span>
+        {proj && <><span className="krail-dot">·</span><span className="krail-proj"><ProjectDot color={proj.color} /><span>{proj.name}</span></span></>}
+        {due && <><span className="krail-dot">·</span><span className="mono" data-tone={overdue ? "signal" : undefined}>{due}</span></>}
+        {from && <><span className="krail-dot">·</span><span className="krail-from">from {from}</span></>}
       </div>
       <div className="krail-side" onPointerDown={stop}>
         {slot && !readOnly ? (
@@ -1016,7 +1042,12 @@ export function PlanView({
     const go = () => {
       if (el.clientHeight === 0 || el.scrollHeight <= el.clientHeight) return false;
       const hour = Math.max(DAY_START, Math.floor((clamp(nowMin, DAY_START, DAY_END) - 60) / 60) * 60);
-      el.scrollTop = Math.max(0, (canvasRef.current?.offsetTop ?? 0) + yOf(hour, win) - 12);
+      // that hour's rule 24px down, its label clear of the fade; late in the day the
+      // scroll runs out first, so land on the latest hour that still sits there whole
+      const base = (canvasRef.current?.offsetTop ?? 0) - 24, perHour = 60 * win.pxm;
+      const max = el.scrollHeight - el.clientHeight;
+      const want = base + yOf(hour, win);
+      el.scrollTop = Math.max(0, want <= max ? want : base + Math.floor((max - base) / perHour) * perHour);
       return true;
     };
     if (go() || typeof ResizeObserver !== "function") return;
@@ -1472,7 +1503,7 @@ export function PlanView({
   const railHead = (
     <div className="krail-head" data-first={stacked || (readOnly && !big3Tasks.length) || undefined}>
       <h2 ref={intakeHeadingRef} tabIndex={-1}>Unplanned</h2>
-      <span className="krail-head-count" aria-label={`${unplannedCount} task${unplannedCount === 1 ? "" : "s"}`}>{unplannedCount}</span>
+      {unplannedCount > 0 && <span className="krail-head-count" aria-label={`${unplannedCount} task${unplannedCount === 1 ? "" : "s"}`}>{unplannedCount}</span>}
       {unplannedCount > 1 && <OrderMenu value={order} onChange={setOrder} />}
     </div>
   );
@@ -1572,11 +1603,10 @@ export function PlanView({
               )}
             </>
           )}
-          {onShutdown && !readOnly && (
+          {/* the list ends where the day does: from 16:00, a way to close it */}
+          {onShutdown && !readOnly && hour >= 16 && (
             <div className="krail-foot">
-              {hour >= 16
-                ? <Button variant="ghost" size="sm" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
-                : <span>Shut down unlocks at 16:00</span>}
+              <Button variant="ghost" size="sm" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
             </div>
           )}
         </div>

@@ -29,7 +29,7 @@ const BEAM_CSS = `
 .kbeam-track { position: relative; flex: 1; height: 10px; border-radius: 999px; overflow: hidden;
   background: var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent));
   transition: box-shadow var(--d-1, 90ms) var(--ease); }
-.kbeam-seg { position: absolute; top: 0; bottom: 0; min-width: 2px; }
+.kbeam-seg { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px; }
 .kbeam-seg[data-kind="meeting"] { background: color-mix(in oklch, var(--ink-3) 55%, transparent); }
 .kbeam-seg[data-kind="break"] { background: color-mix(in oklch, var(--ink-3) 22%, transparent); }
 .kbeam-seg[data-kind="suggestion"] { background: var(--accent-tint, var(--accent-dim));
@@ -42,8 +42,9 @@ const BEAM_CSS = `
 .kbeam[data-drop="true"] .kbeam-track { box-shadow: 0 0 0 1.5px var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent)); }
 .kbeam-drop { position: absolute; top: 1px; bottom: 1px; z-index: 1; border-radius: 3px; pointer-events: none;
   background: var(--accent); box-shadow: 0 0 0 1.5px var(--bg); }
-.kbeam-cap { flex-shrink: 0; font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
-.kbeam-cap b { font-weight: 500; color: var(--ink-2); }
+/* the figures are data (mono); the words around them stay in the sentence's font */
+.kbeam-cap { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
+.kbeam-cap b { font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
 /* short of room: the bar takes the row, its two figures sit under either end */
 @container (max-width: 400px) {
   .kbeam-row { flex-wrap: wrap; row-gap: 6px; justify-content: space-between; }
