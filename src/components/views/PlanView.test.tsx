@@ -115,7 +115,7 @@ describe("PlanView", () => {
     vi.useFakeTimers();
     const { onUpdate } = renderPlan([task({ id: "b1", title: "Deck", planToday: true, scheduled: 9 * 60 + 7 })]);
     const btn = screen.getByRole("button", { name: /^Deck,/ });
-    btn.focus();
+    act(() => btn.focus());
     fireEvent.keyDown(btn, { key: "ArrowDown" });
     fireEvent.keyDown(btn, { key: "ArrowDown" });
     expect(onUpdate).not.toHaveBeenCalled(); // nudges settle before saving
@@ -136,6 +136,8 @@ describe("PlanView", () => {
     ]);
     const banner = screen.getByRole("region", { name: /Unfinished blocks/ });
     expect(within(banner).getByText(/Yesterday's plan: 2 unfinished blocks/)).toBeInTheDocument();
+    // the group names them, at their old times, earliest first
+    expect(within(banner).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["A09:00", "B11:00"]);
     fireEvent.click(within(banner).getByRole("button", { name: "Bring all" }));
     expect(onUpdate).toHaveBeenCalledTimes(2);
     expect(onUpdate).toHaveBeenCalledWith("a", { scheduled: null });
@@ -228,6 +230,20 @@ describe("PlanView", () => {
     first.unmount();
     renderPlan(tasks, { currentUserId: "u-blocked" });
     expect(screen.queryByText(/unfinished block/)).not.toBeInTheDocument();
+  });
+
+  it("a free gap centred on the hour steps its label clear of the hour rule", () => {
+    const events = [
+      { id: "m1", title: "Morning", start: 8 * 60, end: 15 * 60 + 30, kind: "meeting" as const },
+      { id: "m2", title: "Late", start: 16 * 60 + 30, end: 17 * 60, kind: "meeting" as const },
+    ];
+    const { container } = renderPlan([], { events, nowMin: 8 * 60 });
+    const labels = Array.from(container.querySelectorAll<HTMLElement>(".kday-free-label"));
+    const byText = (t: string) => labels.find((l) => l.textContent === t)!;
+    // 15:30–16:30 is centred on 16:00: its label sits 12px below the rule
+    expect(byText("Free · 1h").style.transform).toBe("translateY(12px)");
+    // 17:00–18:00 is centred on the half hour: left where it is
+    expect(labels.filter((l) => l.textContent === "Free · 1h").map((l) => l.style.transform)).toEqual(["translateY(12px)", ""]);
   });
 
   it("announces plan updates in a live region and points capture at q", () => {

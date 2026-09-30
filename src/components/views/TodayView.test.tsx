@@ -202,6 +202,8 @@ describe("TodayView: the suggested plan", () => {
     at(17, 40);
     const { props } = renderToday([task({ id: "big", title: "Big job", dueDate: today(), focusMin: 90 })]);
     expect(ghostButtons()).toHaveLength(0);
+    // there's free time, just not a piece big enough: the hint says so rather than "full"
+    expect(screen.getByText("1 task won't fit today")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Plan my day/ }));
     await waitFor(() => expect(props.onRank).toHaveBeenCalled());
     await waitFor(() => expect(screen.getAllByText("Your day's full — 1 task moved to tomorrow's suggestions.").length).toBeGreaterThan(0));
@@ -213,6 +215,38 @@ describe("TodayView: the suggested plan", () => {
     renderToday([task({ id: "p", title: "Placed", planToday: true, scheduled: 14 * 60 })]);
     expect(screen.getByRole("button", { name: /Re-plan/ })).toBeInTheDocument();
     expect(screen.getByText("Your day is planned")).toBeInTheDocument();
+  });
+
+  it("a day whose only block is under way still reads as planned, and Re-plan moves nothing", async () => {
+    at(14, 12);
+    const { props } = renderToday([task({ id: "now", title: "Under way", planToday: true, scheduled: 14 * 60, focusMin: 90 })]);
+    const btn = screen.getByRole("button", { name: /Re-plan/ });
+    expect(btn).toBeEnabled();
+    expect(screen.getByText("Your day is planned")).toBeInTheDocument();
+    fireEvent.click(btn);
+    await waitFor(() => expect(screen.getAllByText("Your day is planned — nothing needed moving.").length).toBeGreaterThan(0));
+    expect(props.onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("an empty day has nothing to plan", () => {
+    renderToday([]);
+    expect(screen.getByRole("button", { name: /Plan my day/ })).toBeDisabled();
+    expect(screen.getByText("Nothing to place yet")).toBeInTheDocument();
+  });
+
+  it("while Kanbo orders the day the button says so, holding its place (both labels share one cell)", async () => {
+    let release: (v: "ai") => void = () => {};
+    const onRank = vi.fn(() => new Promise<"ai">((r) => { release = r; }));
+    const { props } = renderToday(work(), { onRank });
+    const btn = screen.getByRole("button", { name: /Plan my day/ });
+    // the busy label is already there, hidden, so the button is as wide as it will be
+    expect(within(btn).getByText("Ordering your day…")).toHaveAttribute("aria-hidden", "true");
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn).toHaveAttribute("aria-busy", "true"));
+    expect(btn).toHaveAccessibleName(/Ordering your day…/);
+    expect(within(btn).getByText("Plan my day")).toHaveAttribute("aria-hidden", "true");
+    await act(async () => { release("ai"); });
+    await waitFor(() => expect(props.onUpdate).toHaveBeenCalledTimes(2));
   });
 });
 

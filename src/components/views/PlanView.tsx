@@ -43,6 +43,7 @@ const MIN_BLOCK_PX = 20;    // a 20-minute block is drawn to scale; short ones g
 const LANE_LEFT = 64;       // blocks start just right of the hour rules (the gutter is 56px)
 const LINGER_MS = 700;      // a block you tick off stays long enough to see it land
 const FREE_LABEL_MIN = 30;  // gaps this long say "Free · 1h"
+const FREE_LABEL_CLEAR = 12; // px between that label's centre and an hour rule (half its height, and a hair)
 const PHONE_PXM = 56 / 60;  // phones: 56px per hour
 const STACK_UNDER = 920;    // px: narrower than this (a tablet, a docked task panel) the rail goes under the day
 
@@ -247,6 +248,10 @@ const PLAN_CSS = `
 .kday-glyph, .kday-acts { position: relative; z-index: 1; display: inline-flex; flex-shrink: 0; }
 .kday-acts { gap: 2px; margin-left: auto; opacity: 0; transition: opacity var(--kp-d1) var(--ease); }
 .kday-block:hover .kday-acts, .kday-block:focus-within .kday-acts { opacity: 1; }
+/* now: "Start focus" stays in view; its neighbour (back to Unplanned) still waits for a hover */
+.kday-block[data-now="true"] .kday-acts { opacity: 1; }
+.kday-block[data-now="true"] .kday-acts > [data-tone="danger"] { opacity: 0; transition: opacity var(--kp-d1) var(--ease); }
+.kday-block[data-now="true"]:hover .kday-acts > [data-tone="danger"], .kday-block[data-now="true"]:focus-within .kday-acts > [data-tone="danger"] { opacity: 1; }
 /* in-canvas actions are compact so a half-hour block still holds them */
 .kday-acts .kibtn { width: 24px; height: 24px; }
 .kday-mini.kbtn { height: 24px; padding: 0 8px; gap: 4px; font-size: 12px; }
@@ -291,6 +296,8 @@ const PLAN_CSS = `
 .kday-free { position: absolute; left: ${LANE_LEFT}px; right: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
   border-radius: var(--kp-r-sm); pointer-events: none; font: 500 12px/16px var(--kp-ui); color: var(--ink-4);
   transition: background var(--kp-d2) var(--ease), box-shadow var(--kp-d2) var(--ease); }
+.kday-free-label { white-space: nowrap; }
+.kday-free-label .mono { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; }
 /* the brief's "free" figure: every free stretch outlined for a moment, over any suggestion in it */
 @keyframes kdayOpen { 0% { opacity: 0; } 15%, 75% { opacity: 1; } 100% { opacity: 0; } }
 .kday-openpulse { position: absolute; left: ${LANE_LEFT}px; right: 0; z-index: 7; pointer-events: none; border-radius: var(--kp-r-sm);
@@ -393,11 +400,16 @@ const PLAN_CSS = `
 .krail-later svg { transition: transform var(--kp-d2) var(--ease); }
 .krail-later[aria-expanded="true"] svg { transform: rotate(90deg); }
 .krail-later .mono { font: 500 11px/16px var(--font-mono); color: var(--ink-4); }
-.krail-carry { margin: 12px 0 4px; padding: 12px; border-radius: var(--kp-r-md); background: var(--surface); box-shadow: var(--kp-e1); }
-.krail-carry p { margin: 0; font: 500 13px/20px var(--kp-ui); color: var(--ink); }
-.krail-carry small { display: block; margin-top: 2px; font: 400 12px/16px var(--kp-ui); color: var(--ink-3); }
-.krail-carry-acts { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
-.krail-carry-acts .kibtn { margin-left: auto; }
+.krail-carry .ksection-action { gap: 2px; }
+.krail-carry-note { margin: 2px 0 0; font: 500 13px/20px var(--kp-ui); color: var(--ink-2); }
+.krail-carry-sub { display: block; font: 400 12px/16px var(--kp-ui); color: var(--ink-3); }
+.krail-carry-list { margin: 6px 0 0; padding: 0; list-style: none; }
+.krail-carry-row { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+.krail-carry-open { flex: 1; min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  font: 500 13px/20px var(--kp-ui); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.krail-carry-open:hover { color: var(--accent-text, var(--accent)); }
+.krail-carry-row .kglyph[aria-checked="true"] + .krail-carry-open { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
+.krail-carry-at { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .krail-big3 li { list-style: none; }
 .krail-big3 ol { margin: 4px 0 0; padding: 0; }
 .krail-big3-row { display: flex; align-items: center; gap: 10px; min-height: 32px; }
@@ -426,7 +438,7 @@ const PLAN_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .kday-block[data-landing="true"] { animation: kdayFade 120ms linear backwards; }
   .kday-openpulse { animation: none; }
-  .kday-free, .kday-block, .kday-ghost, .krail-item, .krail-later svg, .krail-menu-item { transition: none; }
+  .kday-free, .kday-block, .kday-ghost, .krail-item, .krail-later svg, .krail-menu-item, .kday-acts, .kday-acts > * { transition: none; }
 }
 `;
 
@@ -502,11 +514,14 @@ function TaskBlock({ task, start, lane, win, nowMin, helpId, readOnly, onStartDr
         </button>
         {!readOnly && (
           <span className="kday-acts" onPointerDown={stop}>
-            {onStartFocus && (
-              <button type="button" className="kibtn" data-size="sm" title="Start focus" aria-label={`Start focus on “${task.title}”`}
-                onClick={(ev) => { ev.stopPropagation(); onStartFocus(task.id); }}>
-                <Icon name="play" size={14} sw={1.75} />
-              </button>
+            {onStartFocus && (now && !done && h >= 28
+              // the block you should be in right now says so, without waiting for a hover
+              ? <Button size="sm" variant="secondary" icon="play" className="kday-mini" aria-label={`Start focus on “${task.title}”`}
+                  onClick={(ev) => { ev.stopPropagation(); onStartFocus(task.id); }}>Start focus</Button>
+              : <button type="button" className="kibtn" data-size="sm" title="Start focus" aria-label={`Start focus on “${task.title}”`}
+                  onClick={(ev) => { ev.stopPropagation(); onStartFocus(task.id); }}>
+                  <Icon name="play" size={14} sw={1.75} />
+                </button>
             )}
             <button type="button" className="kibtn" data-size="sm" data-tone="danger" title="Back to Unplanned" aria-label={`Move “${task.title}” back to Unplanned`}
               onClick={(ev) => { ev.stopPropagation(); onRemove(task.id, ev.detail === 0); }}>
@@ -632,11 +647,20 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
         </div>
       ))}
       {!dragId && freeGaps.map((g) => {
-        const len = g.end - g.start;
+        const len = g.end - g.start, h = len * win.pxm - 4;
+        // a gap centred on the hour would put its label on the hour rule (it reads as struck
+        // through): step it just clear of the rule, above or below, while the gap has room
+        const mid = (g.start + g.end) / 2;
+        const off = (mid - Math.round(mid / 60) * 60) * win.pxm;
+        const shift = Math.abs(off) < FREE_LABEL_CLEAR && h / 2 - 8 >= FREE_LABEL_CLEAR ? (off >= 0 ? FREE_LABEL_CLEAR - off : -(FREE_LABEL_CLEAR + off)) : 0;
         return (
           <div key={`free-${g.start}`} aria-hidden="true" className="kday-free"
-            style={{ top: yOf(g.start, win) + 2, height: len * win.pxm - 4 }}>
-            {len >= FREE_LABEL_MIN && <>Free · <span style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{fmtDuration(len)}</span></>}
+            style={{ top: yOf(g.start, win) + 2, height: h }}>
+            {len >= FREE_LABEL_MIN && (
+              <span className="kday-free-label" style={shift ? { transform: `translateY(${shift}px)` } : undefined}>
+                Free · <span className="mono">{fmtDuration(len)}</span>
+              </span>
+            )}
           </div>
         );
       })}
@@ -1562,17 +1586,30 @@ export function PlanView({
             </div>
           )}
           {carryTasks.length > 0 && !railFocus && (
-            <div className="krail-carry" role="region" aria-label="Unfinished blocks from an earlier plan">
-              <p>{carryLabel(carry.from, day)}: {carryTasks.length} unfinished block{carryTasks.length === 1 ? "" : "s"}</p>
-              <small>They're still on the day at their old times. Bring them back to re-plan, or clear them off today.</small>
-              <div className="krail-carry-acts">
-                <Button size="sm" variant="primary" onClick={() => resolveCarry("carry")}>Bring all</Button>
-                <Button size="sm" variant="ghost" onClick={() => resolveCarry("clear")}>Clear</Button>
-                <button type="button" className="kibtn" data-size="sm" onClick={() => resolveCarry("keep")} title="Keep them where they are" aria-label="Keep them where they are">
-                  <Icon name="x" size={16} sw={1.75} />
-                </button>
-              </div>
-            </div>
+            // an earlier day's unfinished blocks, still on the canvas at their old times:
+            // a group that asks one question (bring them back, clear them, or keep them)
+            <section className="krail-group krail-carry" role="region" aria-label="Unfinished blocks from an earlier plan">
+              <SectionLabel id={`${helpId}-carry`} count={carryTasks.length} action={
+                <>
+                  <Button size="sm" variant="secondary" onClick={() => resolveCarry("carry")} title="Take them off the canvas to re-plan">Bring all</Button>
+                  <Button size="sm" variant="ghost" onClick={() => resolveCarry("clear")} title="Take them off today altogether">Clear</Button>
+                  <button type="button" className="kibtn" data-size="sm" onClick={() => resolveCarry("keep")} title="Keep them where they are" aria-label="Keep them where they are">
+                    <Icon name="x" size={16} sw={1.75} />
+                  </button>
+                </>
+              }>Carried over</SectionLabel>
+              <p className="krail-carry-note">{carryLabel(carry.from, day)}: {carryTasks.length} unfinished block{carryTasks.length === 1 ? "" : "s"}</p>
+              <small className="krail-carry-sub">{carryTasks.length === 1 ? "Still on the day at its old time." : "Still on the day at their old times."}</small>
+              <ul className="krail-carry-list">
+                {[...carryTasks].sort((a, b) => a.scheduled! - b.scheduled!).map((t) => (
+                  <li key={t.id} className="krail-carry-row">
+                    <StatusGlyph status={t.status} size={14} label={t.title} celebrateKey={t.id} onToggle={() => toggleDone(t)} />
+                    <button type="button" className="krail-carry-open" onClick={() => onOpen(t.id)}>{t.title}</button>
+                    <span className="krail-carry-at" aria-label={`at ${fmtTime(t.scheduled!)}`}>{fmtTime(t.scheduled!)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
           {renderGroup("overdue", "Overdue", shown.overdue, "signal")}
           {renderGroup("today", "Today", shown.today)}

@@ -77,7 +77,12 @@ const TODAY_CSS = `
 .ktoday-fig:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ktoday-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; min-height: 40px; margin-top: 20px; }
 .ktoday-hint { display: inline-flex; align-items: center; gap: 8px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
-.ktoday-beam { flex: 1 1 280px; min-width: 220px; max-width: 460px; margin-left: auto; }
+/* the button holds its idle and busy labels in one cell, so it keeps its width while
+   Kanbo orders the day and nothing beside it jumps to a new line */
+.ktoday-hero-label { display: inline-grid; }
+.ktoday-hero-label > span { grid-area: 1 / 1; text-align: start; }
+.ktoday-hero-label > [aria-hidden="true"] { visibility: hidden; }
+.ktoday-beam { flex: 1 1 200px; min-width: 200px; max-width: 460px; margin-left: auto; }
 .ktoday-setup { display: flex; margin-top: 12px; }
 .ktoday-setup .kpill svg { margin-right: -2px; }
 .ktoday-steps { padding: 6px 6px 4px; min-width: 268px; }
@@ -92,14 +97,30 @@ const TODAY_CSS = `
 .ktoday-steps-foot { display: flex; justify-content: flex-end; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--hairline); }
 .ktoday-steps-foot .ktoday-link { color: var(--ink-3); font-weight: 500; }
 .ktoday-skel { display: block; border-radius: var(--r-sm, 6px); background: var(--fill-2, var(--surface-2)); }
+/* the skeleton keeps the day's own geometry: the rail beside the canvas while they fit
+   side by side (PlanView stacks them under 920px), under it otherwise */
+.ktoday-skeleton { --kp-gutter: var(--gutter, 32px); flex: 1; min-height: 0; display: flex; container-type: inline-size; overflow: hidden; }
+.ktoday-skeleton-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ktoday-skeleton-grid { position: relative; flex: 1; min-height: 540px; margin: 32px var(--kp-gutter) 0; overflow: hidden; }
+.ktoday-skeleton-grid > div { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 12px; }
+.ktoday-skeleton-grid > div > .ktoday-skel { margin-left: 8px; flex-shrink: 0; }
+.ktoday-skeleton-rule { flex: 1; height: 1px; background: var(--hairline); }
+.ktoday-skeleton-rail { width: var(--rail-w, 360px); flex: none; padding: 20px; border-left: 1px solid var(--hairline); }
+.ktoday-skeleton-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; }
+@container (max-width: 919px) {
+  .ktoday-skeleton-rail { display: none; }
+}
 @media (max-width: 859px) {
   .ktoday-lede { padding-top: 16px; }
   .ktoday-brief { font-size: 22px; line-height: 30px; }
   .ktoday-actions { margin-top: 16px; }
   .ktoday-actions > .kbtn { flex: 1 1 100%; height: var(--h-touch, 44px); }
   .ktoday-actions > .kbtn .kkbd { display: none; } /* no keyboard to press it on */
+  .ktoday-hero-label > span { text-align: center; }
   .ktoday-hint { flex: 1; }
   .ktoday-beam { flex: 1 1 100%; max-width: none; margin-left: 0; }
+  .ktoday-skeleton .ktoday-actions > .skel { flex: 1 1 100%; height: var(--h-touch, 44px) !important; }
+  .ktoday-skeleton { --kp-gutter: var(--gutter, 16px); }
 }
 `;
 
@@ -158,20 +179,41 @@ function SetupChip({ steps }: { steps: TodayViewProps["setup"] }) {
   );
 }
 
+/** The day's shape before its data: the brief, the action row and the canvas grid on
+ *  the left, the rail's capture field and a few rows beside them (under them in one
+ *  column), laid out as the day will be so nothing jumps when it arrives. */
 function TodaySkeleton() {
   return (
-    <div aria-busy="true" aria-label="Loading your day" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+    <div className="ktoday-skeleton" aria-busy="true" aria-label="Loading your day">
       <style>{TODAY_CSS}</style>
-      <div className="ktoday-lede">
-        <span className="ktoday-skel skel" style={{ width: "min(640px, 90%)", height: 28, marginTop: 4 }} />
-        <span className="ktoday-skel skel" style={{ width: "min(420px, 60%)", height: 28, marginTop: 8 }} />
-        <span className="ktoday-skel skel" style={{ width: 148, height: 40, marginTop: 20, borderRadius: 8 }} />
+      <div className="ktoday-skeleton-main" aria-hidden="true">
+        <div className="ktoday-lede">
+          <span className="ktoday-skel skel" style={{ width: "min(640px, 92%)", height: 28, marginTop: 4 }} />
+          <span className="ktoday-skel skel" style={{ width: "min(420px, 64%)", height: 28, marginTop: 8 }} />
+          <div className="ktoday-actions">
+            <span className="ktoday-skel skel" style={{ width: 212, height: 40, borderRadius: "var(--r-md, 8px)" }} />
+            <span className="ktoday-skel ktoday-beam" style={{ height: 10, borderRadius: 999 }} />
+          </div>
+        </div>
+        <div className="ktoday-skeleton-grid">
+          {Array.from({ length: 9 }, (_, i) => (
+            <div key={i} style={{ top: i * 60 }}>
+              <span className="ktoday-skel" style={{ width: 36, height: 10 }} />
+              <span className="ktoday-skeleton-rule" />
+            </div>
+          ))}
+        </div>
       </div>
-      <div aria-hidden="true" style={{ position: "relative", flex: 1, margin: "24px var(--gutter, 32px) 0", overflow: "hidden" }}>
-        {Array.from({ length: 9 }, (_, i) => (
-          <div key={i} style={{ position: "absolute", left: 0, right: 0, top: i * 60, display: "flex", alignItems: "center", gap: 12 }}>
-            <span className="ktoday-skel" style={{ width: 44, height: 10 }} />
-            <span style={{ flex: 1, height: 1, background: "var(--hairline)" }} />
+      <div className="ktoday-skeleton-rail" aria-hidden="true">
+        <span className="ktoday-skel skel" style={{ height: 40, borderRadius: "var(--r-md, 8px)" }} />
+        <span className="ktoday-skel" style={{ width: 96, height: 14, marginTop: 28 }} />
+        {[72, 58, 66].map((w, i) => (
+          <div key={i} className="ktoday-skeleton-row">
+            <span className="ktoday-skel" style={{ width: 16, height: 16, borderRadius: 999 }} />
+            <span style={{ flex: 1 }}>
+              <span className="ktoday-skel" style={{ width: `${w}%`, height: 12 }} />
+              <span className="ktoday-skel" style={{ width: "40%", height: 10, marginTop: 8 }} />
+            </span>
           </div>
         ))}
       </div>
@@ -228,10 +270,12 @@ function TodayDay({
 
   /* ----- Plan my day ----- */
   // Re-plan (when nothing's left to place): the blocks still ahead, except any
-  // pinned to a time, are laid out afresh around what's changed.
+  // pinned to a time, are laid out afresh around what's changed. A day whose only
+  // blocks are under way or behind you still reads as planned (Re-plan then just
+  // re-orders and says nothing needed moving); only an empty day has nothing to do.
   const replannable = placedOpen.filter((t) => t.scheduled! > nowMin && !t.dueTime);
   const mode: "plan" | "replan" | "none" = plan.suggestions.length > 0 || (plan.unplaced.length > 0 && replannable.length === 0) ? "plan"
-    : replannable.length > 0 ? "replan" : "none";
+    : placedOpen.length > 0 ? "replan" : "none";
   const [ordering, setOrdering] = useState(false);
   const [landing, setLanding] = useState<Record<string, number> | undefined>();
   const [srMsg, setSrMsg] = useState("");
@@ -339,11 +383,15 @@ function TodayDay({
   };
 
   const busy = ordering || ranking;
+  const wontFit = plan.unplaced.length;
   const hint = mode === "plan" ? (ghostsOff ? (prefs.hidden && showSuggestions ? "Suggestions hidden · H shows them" : "Plan my day places tasks in your free time")
-      : plan.suggestions.length === 0 ? "Your day's full"
+      // there may be free time, just not enough of it in one piece for what's left
+      : plan.suggestions.length === 0 ? `${wontFit} ${wontFit === 1 ? "task won't" : "tasks won't"} fit today`
       : placesHint(plan.suggestions.length, plan.suggestions.reduce((a, s) => a + s.end - s.start, 0)))
     : mode === "replan" ? "Your day is planned"
     : "Nothing to place yet";
+  const idleLabel = mode === "replan" ? "Re-plan" : "Plan my day";
+  const busyLabel = mode === "replan" ? "Re-planning…" : "Ordering your day…";
 
   const lede = (drop: { start: number; end: number } | null) => (
     <section className="ktoday-lede" aria-label="Your day in brief">
@@ -362,7 +410,10 @@ function TodayDay({
         {!readOnly && (
           <Button variant={mode === "plan" ? "hero" : "secondary"} size="lg" kbd="P" loading={busy} disabled={!busy && mode === "none"}
             icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()}>
-            {busy ? "Ordering your day…" : mode === "replan" ? "Re-plan" : "Plan my day"}
+            <span className="ktoday-hero-label">
+              <span aria-hidden={busy || undefined}>{idleLabel}</span>
+              <span aria-hidden={!busy || undefined}>{busyLabel}</span>
+            </span>
           </Button>
         )}
         {!readOnly && hint && <span className="ktoday-hint">{hint}</span>}

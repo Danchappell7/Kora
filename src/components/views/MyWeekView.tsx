@@ -47,10 +47,11 @@ const WEEK_CSS = `
 .kweek-range { font: 500 11px/16px var(--font-mono); color: var(--ink-4); white-space: nowrap; }
 .kweek-head-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
-/* seven equal days while they fit at 132px (1280 wide, even with the sidebar); the
-   box is measured, not the window, so a docked task panel wraps the days too */
+/* seven equal days while they fit (1280 wide beside the sidebar, with room to spare for
+   a classic scrollbar); the box is measured, not the window, so a docked task panel
+   folds the week too: four and three, then pairs, never an orphaned Sunday */
 .kweek-days { container-type: inline-size; }
-.kweek-grid { display: grid; grid-template-columns: repeat(7, minmax(132px, 1fr)); gap: 8px; }
+.kweek-grid { display: grid; grid-template-columns: repeat(7, minmax(128px, 1fr)); gap: 8px; }
 .kweek-day { display: flex; flex-direction: column; min-width: 0; min-height: 220px; padding: 0 6px 8px; border-radius: var(--r-md, 8px);
   background: var(--bg-deep); transition: box-shadow var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease); }
 .kweek-day[data-drop="true"] { background: color-mix(in oklch, var(--accent) 8%, var(--bg-deep)); box-shadow: inset 0 0 0 1.5px var(--kw-accent-line); }
@@ -106,7 +107,8 @@ const WEEK_CSS = `
 .kweek-menu-item .mono { margin-left: auto; padding-left: 16px; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kweek-menu-label { padding: 6px 8px 4px 32px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
-@container (max-width: 971px) { .kweek-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+@container (max-width: 943px) { .kweek-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@container (max-width: 559px) { .kweek-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 859px) {
   .kweek { padding: 16px 16px 32px; }
   .kweek-grid { grid-template-columns: 1fr; }

@@ -11,7 +11,7 @@ import type { Task } from "../../data/types";
 import type { FocusTimer } from "../../hooks/useFocusTimer";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { fmtDuration } from "./planCanvas";
+import { durOf, fmtDuration } from "./planCanvas";
 
 const fmtBanked = (m: number) => fmtDuration(m);
 
@@ -63,8 +63,11 @@ const FOCUS_CSS = `
   .kfocus { background: var(--bg); }
   .kfocus-top { padding: 8px 16px; }
   .kfocus-picker { padding: 0 16px 20px; }
-  /* a phone swipes through them in one row instead */
+  /* a phone swipes through them in one row instead: centred while they fit, and
+     from the first one when they don't (auto margins give way to the scroll) */
   .kfocus-chips { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; padding-bottom: 4px; }
+  .kfocus-chips > :first-child { margin-left: auto; }
+  .kfocus-chips > :last-child { margin-right: auto; }
   /* reset · play · Pomodoro on one row, the lengths centred under them */
   .kfocus-lengths { order: 1; }
 }
@@ -99,7 +102,7 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
   // fill with the highest-priority remaining tasks.
   const open = tasks.filter((t) => t.status !== "done" && !t.archivedAt && !t.parentId);
   const todaysPlanned = open.filter((t) => t.planToday && t.scheduled != null).sort((a, b) => (a.scheduled! - b.scheduled!));
-  const rest = open.filter((t) => !todaysPlanned.some((p) => p.id === t.id)).sort((a, b) => b.aiScore - a.aiScore);
+  const rest = open.filter((t) => !todaysPlanned.some((p) => p.id === t.id)).sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0));
   const candidates = [...todaysPlanned, ...rest].slice(0, 6);
   const pickerLabel = todaysPlanned.length > 0 ? "On your day" : "Suggested focus";
   const state = pomodoro
@@ -199,10 +202,10 @@ export function FocusMode({ focus, tasks, onClose, onOpenTask }: {
           <div role="group" aria-labelledby={gid + "-pick"} className="kfocus-chips">
             {candidates.map((t) => (
               <button type="button" key={t.id} className="kfocus-chip" onClick={() => setTaskId(t.id)} aria-pressed={t.id === taskId}
-                aria-label={`Focus on “${t.title}”, ${t.focusMin} minutes`}>
+                aria-label={`Focus on “${t.title}”, ${fmtDuration(durOf(t))}`}>
                 <StatusGlyph status={t.status} size={14} readOnly />
                 <b>{t.title}</b>
-                <small>{fmtDuration(t.focusMin)}</small>
+                <small>{fmtDuration(durOf(t))}</small>
               </button>
             ))}
           </div>
