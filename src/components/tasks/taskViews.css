@@ -447,6 +447,66 @@
   .ktv-add:not([data-open="true"]) { display: none; }
   .ktv-rowwrap { contain-intrinsic-size: auto 56px; }
 }
+/* ---------------- phones: swipe a row ----------------
+   Right completes (an accent reveal that fills once letting go will do it); left pulls out
+   Tomorrow · Next week · Pick. The row slides over the layer on the page's own colour. */
+.ktv-rowhost { position: relative; }
+.ktv-row[data-swipe="true"] { touch-action: pan-y pinch-zoom; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.ktv-row[data-shifted] { z-index: 1; background: var(--bg); }
+.ktv-row[data-shifted="left"] { box-shadow: 1px 0 0 var(--hairline), 12px 0 16px -12px oklch(0 0 0 / 0.28); }
+.ktv-row[data-shifted="right"] { box-shadow: -1px 0 0 var(--hairline), -12px 0 16px -12px oklch(0 0 0 / 0.28); }
+.ktv-row[data-glide="true"] {
+  transition: transform var(--d-2, 160ms) var(--ease), background var(--d-1, 90ms) var(--ease), opacity var(--d-2, 160ms) var(--ease);
+}
+.ktv-swipe { position: absolute; inset: 0; display: flex; overflow: hidden; }
+.ktv-swipe-done {
+  align-items: center; gap: 8px; padding-left: var(--tv-gutter);
+  background: var(--accent-tint, var(--accent-dim)); color: var(--accent-text, var(--accent));
+  font: 600 13px/20px var(--tv-ui);
+  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
+}
+.ktv-swipe-done > svg { transition: scale var(--d-2, 160ms) var(--ease-spring, var(--ease)); }
+.ktv-swipe-done[data-armed="true"] { background: var(--accent-fill, var(--accent)); color: var(--on-accent); }
+.ktv-swipe-done[data-armed="true"] > svg { scale: 1.15; }
+.ktv-swipe-tray { justify-content: flex-end; background: var(--bg-deep); }
+.ktv-swipe-tray > button {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 64px; flex-shrink: 0; padding: 0;
+  border: 0; box-shadow: inset 1px 0 0 var(--hairline); background: var(--bg-deep); color: var(--ink); cursor: pointer;
+  font: 600 12px/14px var(--tv-ui);
+}
+.ktv-swipe-tray > button .ktv-mono { color: var(--ink-3); }
+.ktv-swipe-tray > button:active { background: var(--tv-press); }
+.ktv-swipe-tray > button[data-pick="true"] { background: var(--accent-fill, var(--accent)); color: var(--on-accent); box-shadow: none; }
+.ktv-swipe-tray > button:focus-visible { outline-offset: -3px; }
+/* Pick opens the row's own date chip, so an empty one shows while its picker is open */
+.ktv-row .ktv-due:has(.kdate[aria-expanded="true"]) { display: flex; }
+
+/* the long-press sheet */
+.ktv-acts { display: grid; gap: 18px; padding-top: 2px; font-family: var(--tv-ui); }
+.ktv-acts-meta { display: flex; align-items: center; gap: 6px; min-width: 0; margin: -6px 0 0; font: 500 12px/16px var(--tv-ui); color: var(--ink-3); }
+.ktv-acts-meta .ktv-mono { color: var(--ink-3); }
+.ktv-acts-sec { display: grid; gap: 8px; }
+.ktv-acts-sec > h3 { margin: 0; font: 600 12px/16px var(--tv-ui); color: var(--ink-3); }
+.ktv-acts .ktv-chip { height: 36px; padding: 0 12px; gap: 6px; border-radius: var(--r-md, 8px); font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.ktv-acts .ktv-chip .ktv-mono { color: var(--ink-3); font-weight: 500; }
+.ktv-acts .ktv-chip > svg { color: var(--tv-quiet); }
+.ktv-acts .ktv-chip .kglyph { margin: 0; }
+.ktv-acts .ktv-chip:active { background: var(--tv-press); }
+.ktv-acts .ktv-chip[aria-pressed="true"] {
+  border-color: var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent));
+  background: var(--tv-selected); color: var(--accent-text, var(--accent));
+}
+.ktv-acts .ktv-chip[aria-pressed="true"] .ktv-mono { color: inherit; }
+.ktv-acts-list { display: grid; gap: 2px; margin: -4px -8px 0; }
+.ktv-acts-list::before { content: ""; height: 1px; margin: 0 8px 6px; background: var(--hairline); }
+.ktv-act {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 0 8px; border: 0; border-radius: var(--r-md, 8px);
+  background: transparent; color: var(--ink); cursor: pointer; text-align: left; font: 500 15px/22px var(--tv-ui);
+}
+.ktv-act > svg { flex-shrink: 0; color: var(--ink-3); }
+.ktv-act:hover, .ktv-act:active { background: var(--tv-hover); }
+.ktv-acts > .ktv-act { margin: 0 -8px; width: calc(100% + 16px); }
+
 @media (hover: none), (pointer: coarse) {
   .ktv-add, .ktv-gtools, .ktv-col-head .ktv-col-tools { opacity: 1; }
   .ktv-row .ktv-action { position: static; translate: none; padding: 0; background: none; -webkit-mask-image: none; mask-image: none; opacity: 1; pointer-events: auto; }
@@ -762,4 +822,6 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   .ktv-row, .ktv-add, .ktv-card, .ktv-tl-bar, .ktv-gtitle .ktv-gchev, .ktv-subbtn svg,
   .ktv-row .ktv-meta, .ktv-row .ktv-due > *, .ktv-row [data-row-priority] { transition: none !important; }
   .ktv-flash > .ktv-ghead, .ktv-row.kland-row, .ktv-float, .ktv-skel-row > i, .ktv-row[data-done="true"] .ktv-title.ktv-strike { animation: none; }
+  .ktv-row[data-glide="true"], .ktv-swipe-done, .ktv-swipe-done > svg { transition: none !important; }
+  .ktv-swipe-done[data-armed="true"] > svg { scale: none; }
 }

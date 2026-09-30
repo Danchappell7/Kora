@@ -6,18 +6,23 @@
    right-hand cluster that lines up row to row — project, due date,
    priority, assignee. No stripes, no dividers: groups carry the
    structure. J/K move, X selects, S/P/D/A edit, ⌘↵ completes.
+   Phones: swipe a row right to complete it, left for Tomorrow ·
+   Next week · Pick; a long press opens the row's action sheet.
    ============================================================ */
 import { useState, useRef, useEffect, useMemo, useCallback, memo, type ReactNode } from "react";
 import {
   Icon, Avatar, Check, AiScore, wasJustCompleted, wasJustLanded, markJustLanded, Collapse,
-  StatusGlyph, PriorityGlyph, DateChip, ProjectDot, projectPaint, EmptyState, Button, IconButton, Kbd, AiMark,
+  StatusGlyph, PriorityGlyph, DateChip, ProjectDot, projectPaint, EmptyState, Button, IconButton, Kbd, AiMark, Sheet,
 } from "../primitives";
 import { Popover } from "../primitives/Popover";
+import { useToast } from "../Toast";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useListKeyboard, isTypingTarget, type ListKeyAction } from "../../hooks/useListKeyboard";
 import { pushUndo } from "../../lib/undoStack";
+import { parseDateText } from "../../lib/nlp";
+import { dayLabel, daysFromToday, localDayOf } from "../../lib/myTaskBuckets";
 import {
-  getProject, getMember, dueState, fmtDue, toLocalISO, KANBO_TODAY, TAGS,
+  getProject, getMember, dueState, fmtDue, toLocalISO, presetDate, KANBO_TODAY, TAGS,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
 import type { Task, Subtask, IconName, Priority, Section, CustomFieldDef, Project, TagDef } from "../../data/types";
@@ -179,6 +184,32 @@ function CurrentMark() {
 /** A task edit from a row control: applied at once, and ⌘Z puts the old values back. */
 type RowEdit = (task: Task, patch: Partial<Task>, what: string) => void;
 
+/* ---------- phone gestures ---------- */
+/** the swipe-left tray: Tomorrow · Next week · Pick, 64px each */
+const TRAY_W = 192;
+/** how far a right swipe travels before letting go completes the task */
+const SWIPE_DONE_AT = 112;
+const LONG_PRESS_MS = 450;
+const buzz = (ms: number) => { try { navigator.vibrate?.(ms); } catch { /* unsupported */ } };
+/** A due date in words for a toast: "today", "tomorrow", else "Wed 7 Oct". */
+export function dueWords(iso: string, today: Date = KANBO_TODAY): string {
+  const n = daysFromToday(iso, today);
+  if (n === 0) return "today";
+  if (n === 1) return "tomorrow";
+  const d = localDayOf(iso);
+  return d ? dayLabel(d, today) : iso;
+}
+const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** "Thu 1" under a tray button */
+const shortDay = (iso: string) => { const d = localDayOf(iso); return d ? `${WD[d.getDay()]} ${d.getDate()}` : ""; };
+/** the natural-language date field in every row's picker ("fri", "in 2 weeks"); the chip's own parser covers the rest */
+const parseDue = (text: string) => parseDateText(text);
+
+/** The toast stack, when the page has one (the list also renders bare, in tests and previews). */
+function useOptionalToast(): ReturnType<typeof useToast> | null {
+  try { return useToast(); } catch { return null; }
+}
+
 interface TaskRowProps {
   task: Task;
   /** this row's sub-tasks (full tasks) and how many are done — from the parent's per-render map */
@@ -210,9 +241,19 @@ interface TaskRowProps {
   celebrate?: boolean;
   meta?: ReactNode;
   action?: ReactNode;
+  /** phones: swipe right completes, swipe left offers Tomorrow · Next week · Pick */
+  swipe?: boolean;
+  /** a date from the swipe tray (applied with an Undo toast) */
+  onQuickDue?: (task: Task, iso: string | undefined) => void;
+  /** the tray's Pick: open this row's date picker */
+  onPickDue?: (id: string) => void;
+  /** the row's own date chip changed (the list decides whether that gets a toast) */
+  onDue?: (task: Task, patch: Partial<Task>) => void;
+  /** phones: a long press opens the row's action sheet */
+  onLongPress?: (id: string) => void;
 }
 
-const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, onCheck, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, touchSelect = false, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onEdit, members = NO_MEMBERS, customFields = NO_FIELDS, showProject = true, quietAssignee = false, cursor = false, active = false, celebrate = true, meta, action }: TaskRowProps) {
+const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, onCheck, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, touchSelect = false, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onEdit, members = NO_MEMBERS, customFields = NO_FIELDS, showProject = true, quietAssignee = false, cursor = false, active = false, celebrate = true, meta, action, swipe = false, onQuickDue, onPickDue, onDue, onLongPress }: TaskRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -274,39 +315,162 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   };
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
+  /* ---- phones: swipe right to complete, left for the reschedule tray; long press for the sheet ---- */
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [shift, setShiftState] = useState(0);
+  const shiftRef = useRef(0);
+  const sideRef = useRef<"right" | "left">("right"); // which layer shows while the row is off-centre
+  const setShift = (n: number) => { shiftRef.current = n; if (n) sideRef.current = n > 0 ? "right" : "left"; setShiftState(n); };
+  const [tray, setTray] = useState(false);
+  const [glide, setGlide] = useState(false); // a released row eases home; a dragged one follows the finger
+  // the glide lasts one transition (reduced motion has none, so a timer ends it rather than transitionend)
+  useEffect(() => {
+    if (!glide) return;
+    const t = window.setTimeout(() => setGlide(false), 220);
+    return () => window.clearTimeout(t);
+  }, [glide]);
+  const [armed, setArmed] = useState(false);
+  const swipeRef = useRef<{ x: number; y: number; base: number; axis: "x" | null; reach: number } | null>(null);
+  const swallowUntil = useRef(0); // the click a finished swipe leaves behind
+  const closeTray = (animate = true) => { setGlide(animate); setShift(0); setTray(false); setArmed(false); };
+  // a selection starting, or the row being done, puts the row back
+  useEffect(() => {
+    if ((!swipe || done) && (shiftRef.current !== 0 || tray)) closeTray();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [swipe, done]);
+  // a touch anywhere else closes an open tray
+  useEffect(() => {
+    if (!tray) return;
+    const onDown = (e: Event) => { if (!(e.target instanceof Node) || !hostRef.current?.contains(e.target)) closeTray(); };
+    document.addEventListener("touchstart", onDown, { capture: true, passive: true });
+    document.addEventListener("mousedown", onDown, true);
+    return () => {
+      document.removeEventListener("touchstart", onDown, { capture: true });
+      document.removeEventListener("mousedown", onDown, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tray]);
+  // while a selection is under way a long press adds to it; otherwise it opens the sheet (phones) or starts one
+  const longPress = touchSelect && onSelect ? () => onSelect(task.id, false)
+    : onLongPress ? () => onLongPress(task.id)
+    : onSelect ? () => onSelect(task.id, false) : undefined;
+  const touchable = swipe || !!longPress;
+  const cancelPress = () => { const s = press.current; if (s && !s.fired) { window.clearTimeout(s.timer); press.current = null; } };
+  const onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const p = e.touches[0];
+    if (!p || e.touches.length > 1) { cancelPress(); swipeRef.current = null; return; }
+    if (swipe) swipeRef.current = { x: p.clientX, y: p.clientY, base: shiftRef.current, axis: null, reach: Math.min(SWIPE_DONE_AT, (hostRef.current?.clientWidth || 360) * 0.34) };
+    // the glyph keeps its own long press (the status menu, where the platform offers one)
+    if (!longPress || press.current || (e.target as HTMLElement).closest?.(".ktv-lead")) return;
+    const timer = window.setTimeout(() => {
+      if (!press.current) return;
+      press.current.fired = true;
+      swipeRef.current = null;
+      buzz(10);
+      longPress();
+    }, LONG_PRESS_MS);
+    press.current = { timer, x: p.clientX, y: p.clientY, fired: false };
+  };
+  const onTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    const p = e.touches[0];
+    if (!p) return;
+    const s = press.current;
+    if (s && !s.fired && Math.hypot(p.clientX - s.x, p.clientY - s.y) > 8) cancelPress();
+    const w = swipeRef.current;
+    if (!w) return;
+    const dx = p.clientX - w.x, dy = p.clientY - w.y;
+    if (!w.axis) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      // mostly vertical: it's a scroll, and the row stays put (a done row has no tray to pull out)
+      if (Math.abs(dx) <= Math.abs(dy) * 1.2 || (w.base === 0 && dx < 0 && done)) { swipeRef.current = null; return; }
+      w.axis = "x";
+      setGlide(false);
+    }
+    let next = w.base + dx;
+    if (w.base < 0) next = Math.min(0, next);          // an open tray only closes
+    if (done) next = Math.max(0, next);
+    if (next < -TRAY_W) next = -TRAY_W + (next + TRAY_W) * 0.25;       // resists past the tray
+    if (next > w.reach) next = w.reach + (next - w.reach) * 0.35;     // and past the finish line
+    const nowArmed = w.base === 0 && next >= w.reach;
+    if (nowArmed !== armed) { setArmed(nowArmed); if (nowArmed) buzz(8); }
+    setShift(next);
+  };
+  const onTouchEnd = (e: React.TouchEvent<HTMLDivElement>, cancelled: boolean) => {
+    // A long press that fired, or a swipe: the tap it ends is spent. Cancelling touchend stops the
+    // click the browser would send (which would land on the sheet's scrim and close it); any that
+    // still arrives is swallowed.
+    if (press.current?.fired) {
+      press.current = null;
+      swallowUntil.current = Date.now() + 400;
+      if (e.cancelable) e.preventDefault();
+    }
+    cancelPress();
+    const w = swipeRef.current;
+    swipeRef.current = null;
+    if (!w || w.axis !== "x") return;
+    if (e.cancelable) e.preventDefault();
+    swallowUntil.current = Date.now() + 400;
+    const x = shiftRef.current;
+    if (!cancelled && w.base === 0 && x >= w.reach) { closeTray(); onCheck(task.id); return; }
+    const open = !cancelled && !done && (w.base < 0 ? x <= -TRAY_W + 48 : x <= -64);
+    setGlide(true); setArmed(false);
+    setShift(open ? -TRAY_W : 0);
+    setTray(open);
+  };
+  const tomorrowIso = presetDate("tomorrow");
+  const nextWeekIso = presetDate("nextweek");
+  const trayDue = (iso: string) => { closeTray(); onQuickDue?.(task, iso); };
+
   return (
     <div className="ktv-rowwrap">
+      <div ref={hostRef} className="ktv-rowhost">
+      {swipe && (shift !== 0 || tray || glide) && (
+        sideRef.current === "right" ? (
+          <div className="ktv-swipe ktv-swipe-done" data-armed={armed || undefined} aria-hidden="true">
+            <Icon name={done ? "refresh" : "check"} size={16} sw={2.2} /><span>{done ? "Not done" : "Done"}</span>
+          </div>
+        ) : (
+          <div className="ktv-swipe ktv-swipe-tray" role="group" aria-label={`Reschedule ${q}`} aria-hidden={!tray || undefined}>
+            <button type="button" tabIndex={tray ? 0 : -1} onClick={() => trayDue(tomorrowIso)} aria-label={`Due tomorrow, ${shortDay(tomorrowIso)}`}>
+              Tomorrow<span className="ktv-mono" aria-hidden="true">{shortDay(tomorrowIso)}</span>
+            </button>
+            <button type="button" tabIndex={tray ? 0 : -1} onClick={() => trayDue(nextWeekIso)} aria-label={`Due next week, ${shortDay(nextWeekIso)}`}>
+              Next week<span className="ktv-mono" aria-hidden="true">{shortDay(nextWeekIso)}</span>
+            </button>
+            <button type="button" tabIndex={tray ? 0 : -1} data-pick="true" onClick={() => { swallowUntil.current = 0; closeTray(false); onPickDue?.(task.id); }} aria-label="Pick a due date">
+              <Icon name="calendar" size={16} sw={1.75} />Pick
+            </button>
+          </div>
+        )
+      )}
       <div role="group" aria-label={task.title} data-row-id={task.id} data-selected={selected || undefined}
         className={"ktv-row task-row" + (landed ? " kland-row" : "")}
         data-done={done || undefined} data-cursor={cursor || undefined} data-active={active || undefined} data-drag={dragging || undefined}
         data-drop={dropHint ?? undefined} data-draggable={draggable || undefined}
-        onClick={(e) => {
-          if (press.current?.fired) { press.current = null; e.preventDefault(); return; }
+        data-swipe={swipe || undefined} data-shifted={swipe && (shift !== 0 || tray || glide) ? sideRef.current : undefined} data-glide={glide || undefined}
+        onClickCapture={(e) => {
+          // the click a long press or a swipe leaves behind, or a tap that closes the open tray, goes no
+          // further (not even to the title or a chip inside the row)
+          if (Date.now() < swallowUntil.current || tray) {
+            e.stopPropagation(); e.preventDefault();
+            if (tray) closeTray();
+          }
+        }}
+        onClick={() => {
           if (touchSelect && onSelect) { onSelect(task.id, false); return; }
           onOpen(task.id);
         }}
-        onTouchStart={onSelect ? (e) => {
-          const p = e.touches[0];
-          if (!p || press.current) return;
-          const timer = window.setTimeout(() => {
-            if (!press.current) return;
-            press.current.fired = true;
-            try { navigator.vibrate?.(10); } catch { /* unsupported */ }
-            onSelect(task.id, false);
-          }, 450);
-          press.current = { timer, x: p.clientX, y: p.clientY, fired: false };
-        } : undefined}
-        onTouchMove={onSelect ? (e) => {
-          const p = e.touches[0], s = press.current;
-          if (s && p && !s.fired && Math.hypot(p.clientX - s.x, p.clientY - s.y) > 8) { window.clearTimeout(s.timer); press.current = null; }
-        } : undefined}
-        onTouchEnd={onSelect ? () => { const s = press.current; if (s && !s.fired) { window.clearTimeout(s.timer); press.current = null; } } : undefined}
+        onTouchStart={touchable ? onTouchStart : undefined}
+        onTouchMove={touchable ? onTouchMove : undefined}
+        onTouchEnd={touchable ? (e) => onTouchEnd(e, false) : undefined}
+        onTouchCancel={touchable ? (e) => onTouchEnd(e, true) : undefined}
+        onContextMenu={touchable ? (e) => { if (press.current?.fired) e.preventDefault(); } : undefined}
         draggable={draggable}
         onDragStart={draggable ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}
         onDragOver={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); onHover?.(task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
         onDrop={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); const r = e.currentTarget.getBoundingClientRect(); onRowDrop?.(id, task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
         onDragEnd={draggable ? () => onPickup?.("") : undefined}
-        style={depth ? { paddingLeft: `calc(var(--tv-gutter) + ${depth * 22}px)` } : undefined}>
+        style={depth || shift ? { ...(depth ? { paddingLeft: `calc(var(--tv-gutter) + ${depth * 22}px)` } : null), ...(shift ? { transform: `translate3d(${shift}px, 0, 0)` } : null) } : undefined}>
 
         {onSelect && (
           <button type="button" role="checkbox" aria-checked={selected} aria-label={`Select ${q}`} className="ktv-sel ksel"
@@ -385,7 +549,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           )}
           <span className="ktv-due" data-row-due={task.id} onClick={stop}>
             {edit ? (
-              <DateChip value={task.dueDate} time={task.dueTime} withTime size="sm" status={task.status} label={`Due date for ${q}`} placeholder="Add date"
+              <DateChip value={task.dueDate} time={task.dueTime} withTime size="sm" status={task.status} label={`Due date for ${q}`} placeholder="Add date" parse={parseDue}
                 onChange={(date, time) => {
                   const next: Partial<Task> = {};
                   if ((date ?? undefined) !== (task.dueDate ?? undefined)) next.dueDate = date;
@@ -393,7 +557,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
                   if ((t ?? undefined) !== (task.dueTime ?? undefined)) next.dueTime = t;
                   if (!Object.keys(next).length) return;
                   onRefocus?.(task.id, "due", false);
-                  edit(task, next, "Due date");
+                  if (onDue) onDue(task, next); else edit(task, next, "Due date");
                 }} />
             ) : task.dueDate ? <DateChip value={task.dueDate} time={task.dueTime} size="sm" status={task.status} label="Due" readOnly onChange={() => {}} /> : null}
           </span>
@@ -436,6 +600,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
           </span>
         </div>
       </div>
+      </div>
 
       {/* sub-tasks (full tasks) + any legacy checklist items */}
       {hasSubs && (<Collapse open={expanded} ms={240}>
@@ -470,6 +635,79 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
     </div>
   );
 });
+
+/** Phones: a long press on a row opens this sheet: open, status, due, priority, Today and select. */
+function RowActionSheet({ task, canSelect, onOpen, onStatus, onDue, onPickDue, onPriority, onToday, onSelect }: {
+  task: Task; canSelect: boolean;
+  onOpen: (id: string) => void;
+  onStatus: (t: Task, s: Task["status"]) => void;
+  onDue: (t: Task, iso: string | undefined) => void;
+  onPickDue: (id: string) => void;
+  onPriority: (t: Task, p: Priority) => void;
+  onToday: (t: Task) => void;
+  onSelect: (id: string) => void;
+}) {
+  const proj = getProject(task.projectId);
+  const quick = [
+    { label: "Today", iso: toLocalISO(KANBO_TODAY) },
+    { label: "Tomorrow", iso: presetDate("tomorrow") },
+    { label: "Next week", iso: presetDate("nextweek") },
+  ];
+  return (
+    <div className="ktv-acts">
+      <p className="ktv-acts-meta">
+        <StatusGlyph status={task.status} size={14} readOnly /><span>{STATUS_META[task.status].label}</span>
+        {proj && <><span aria-hidden="true">·</span><ProjectDot color={proj.color} /><span className="truncate">{proj.name}</span></>}
+        {task.dueDate && <><span aria-hidden="true">·</span><span className="ktv-mono">{fmtDue(task.dueDate)}</span></>}
+      </p>
+      <button type="button" className="ktv-act" onClick={() => onOpen(task.id)}>
+        <Icon name="arrowUpRight" size={18} sw={1.75} /><span>Open task</span>
+      </button>
+      <div className="ktv-acts-sec" role="group" aria-label="Status">
+        <h3>Status</h3>
+        <div className="ktv-chips">
+          {STATUS_ORDER.map((s) => (
+            <button key={s} type="button" className="ktv-chip" aria-pressed={task.status === s} onClick={() => onStatus(task, s)}>
+              <StatusGlyph status={s} size={14} readOnly /><span>{STATUS_META[s].label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="ktv-acts-sec" role="group" aria-label="Due date">
+        <h3>Due</h3>
+        <div className="ktv-chips">
+          {quick.map((d) => (
+            <button key={d.label} type="button" className="ktv-chip" aria-pressed={task.dueDate === d.iso} onClick={() => onDue(task, d.iso)}>
+              <span>{d.label}</span><span className="ktv-mono" aria-hidden="true">{shortDay(d.iso)}</span>
+            </button>
+          ))}
+          <button type="button" className="ktv-chip" onClick={() => onPickDue(task.id)}><Icon name="calendar" size={14} sw={1.75} /><span>Pick a date…</span></button>
+          {task.dueDate && <button type="button" className="ktv-chip" onClick={() => onDue(task, undefined)}><span>No date</span></button>}
+        </div>
+      </div>
+      <div className="ktv-acts-sec" role="group" aria-label="Priority">
+        <h3>Priority</h3>
+        <div className="ktv-chips">
+          {(["urgent", "high", "medium", "low"] as const).map((p) => (
+            <button key={p} type="button" className="ktv-chip" aria-pressed={task.priority === p} onClick={() => onPriority(task, p)}>
+              <PriorityGlyph priority={p} /><span>{PRIORITY_META[p].label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="ktv-acts-list">
+        <button type="button" className="ktv-act" onClick={() => onToday(task)}>
+          <Icon name="sun" size={18} sw={1.75} /><span>{task.planToday ? "Take off Today" : "Add to Today"}</span>
+        </button>
+        {canSelect && (
+          <button type="button" className="ktv-act" onClick={() => onSelect(task.id)}>
+            <Icon name="check" size={18} sw={1.75} /><span>Select, to change several at once</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function GroupHeader({ groupKey, label, tone, count, collapsed, onToggleCollapse, onRename, onDelete, selectState, onSelectAll, onAdd, dropActive = false, onDragOver, onDrop }: {
   groupKey: string; label: string; tone?: "signal"; count: number; collapsed: boolean; onToggleCollapse: () => void;
@@ -668,6 +906,42 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
     patch(t.id, p);
     pushUndo(`${what} of “${t.title}”`, () => patch(t.id, before));
   });
+
+  // ---- phones: swipes and the long-press sheet. Their changes say what happened, with an Undo ----
+  const toast = useOptionalToast();
+  const toastEdit = useStableCallback((t: Task, p: Partial<Task>, what: string, message: string) => {
+    if (!patch) return;
+    const before: Partial<Task> = {};
+    for (const k of Object.keys(p) as (keyof Task)[]) (before as Record<string, unknown>)[k] = t[k];
+    patch(t.id, p);
+    // one undo, whichever runs it first: the toast's button or ⌘Z
+    let undone = false;
+    let remove = () => {};
+    const undo = () => { if (undone) return; undone = true; remove(); patch(t.id, before); };
+    remove = pushUndo(`${what} of “${t.title}”`, undo);
+    toast?.action(message, "Undo", undo, {});
+  });
+  const onQuickDue = useStableCallback((t: Task, iso: string | undefined) => {
+    if ((iso ?? undefined) === (t.dueDate ?? undefined)) return;
+    toastEdit(t, iso ? { dueDate: iso } : { dueDate: undefined, dueTime: undefined }, "Due date",
+      iso ? `“${t.title}” is now due ${dueWords(iso)}` : `“${t.title}” has no due date now`);
+  });
+  // the tray's (or the sheet's) Pick opens the row's own date picker; what it picks gets the same toast
+  const pickFor = useRef<{ id: string; at: number } | null>(null);
+  const onPickDue = useStableCallback((id: string) => {
+    pickFor.current = { id, at: Date.now() };
+    const open = () => findRowEl("data-row-due", id)?.querySelector<HTMLElement>("button")?.click();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(open); else window.setTimeout(open, 16);
+  });
+  const onDue = useStableCallback((t: Task, p: Partial<Task>) => {
+    const pick = pickFor.current;
+    pickFor.current = null;
+    if (pick && pick.id === t.id && Date.now() - pick.at < 120000) {
+      toastEdit(t, p, "Due date", p.dueDate ? `“${t.title}” is now due ${dueWords(p.dueDate)}` : `“${t.title}” has no due date now`);
+    } else onEdit(t, p, "Due date");
+  });
+  const [sheetId, setSheetId] = useState<string | null>(null);
+  const onLongPress = useStableCallback((id: string) => setSheetId(id));
 
   // ---- completing a row: it settles in place (strike + filled glyph), then moves ----
   const settleRef = useRef(new Map<string, { key: string; until: number }>());
@@ -1034,6 +1308,13 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   };
   const recentlySettled = (id: string) => { const t = settledAt.current.get(id); return !!t && Date.now() - t < 1500; };
   const touchSelect = isTouch && selectionActive;
+  // phones: rows swipe (not while a selection is under way: taps toggle it then) and long-press for the sheet
+  const swipeRows = isMobile && !!patch && !selectionActive;
+  // (and don't also offer the browser's own drag, which would fight both on the phones that have it)
+  const sheetable = isMobile && !!patch;
+  const sheetTask = sheetId ? findTask(sheetId) : undefined;
+  const lastSheetTask = useRef<Task | undefined>(undefined);
+  if (sheetTask) lastSheetTask.current = sheetTask;
   const doneKey = isMac() ? "⌘↵" : "Ctrl ↵";
 
   return (
@@ -1098,12 +1379,13 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
                 <TaskRow key={t.id} task={t} childTasks={childrenOf.get(t.id) ?? NO_TASKS} childDone={doneKids.get(t.id) ?? 0} byId={byId}
                   onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} onCheck={onCheck} smart={smart} isMobile={isMobile} readOnly={readOnly}
                   selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? onSelectRow : undefined} touchSelect={touchSelect}
-                  draggable={dragEnabled} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
+                  draggable={dragEnabled && !sheetable} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
                   onPickup={onPickup} onHover={onHoverRow} onRowDrop={onRowDrop} onMoveBy={dragEnabled ? onMoveBy : undefined} onRefocus={onRefocus}
                   onEdit={patch ? onEdit : undefined} members={members} customFields={customFields}
                   showProject={showProject} quietAssignee={!!quietAssigneeFor && t.assigneeId === quietAssigneeFor}
                   cursor={kb.cursor === t.id} active={activeId === t.id} celebrate={!recentlySettled(t.id)}
-                  meta={renderMeta?.(t)} action={renderAction?.(t)} />
+                  meta={renderMeta?.(t)} action={renderAction?.(t)}
+                  swipe={swipeRows} onQuickDue={onQuickDue} onPickDue={onPickDue} onDue={onDue} onLongPress={sheetable ? onLongPress : undefined} />
               ))}</div>
               {!isCollapsed && !expandedGroups.has(g.key) && g.items.length > ROW_CAP && (
                 <button type="button" className="ktv-more" onClick={() => setExpandedGroups((s) => new Set(s).add(g.key))}>
@@ -1158,6 +1440,27 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
           })}
         </Popover>
       )}
+
+      {/* the long-press sheet keeps its task through the exit fade */}
+      <Sheet open={!!sheetTask} onClose={() => setSheetId(null)} side="bottom" title={lastSheetTask.current?.title}
+        label={lastSheetTask.current ? `Actions for “${lastSheetTask.current.title}”` : "Task actions"}>
+        {lastSheetTask.current && (
+          <RowActionSheet task={lastSheetTask.current} canSelect={bulkEnabled}
+            onOpen={(id) => { setSheetId(null); onOpen(id); }}
+            onStatus={(t, s) => {
+              setSheetId(null);
+              if (s === t.status) return;
+              // finishing, or reopening to To do, is the row's own completion toggle (the settle, and App's Undo toast)
+              if (s === "done" || (t.status === "done" && s === "todo")) { onCheck(t.id); return; }
+              toastEdit(t, { status: s, completedAt: undefined }, "Status", `“${t.title}” is now ${STATUS_META[s].label.toLowerCase()}`);
+            }}
+            onDue={(t, iso) => { setSheetId(null); onQuickDue(t, iso); }}
+            onPickDue={(id) => { setSheetId(null); window.setTimeout(() => onPickDue(id), 200); }}
+            onPriority={(t, pr) => { setSheetId(null); if (pr !== t.priority) toastEdit(t, { priority: pr }, "Priority", `“${t.title}” is now ${PRIORITY_META[pr].label.toLowerCase()} priority`); }}
+            onToday={(t) => { setSheetId(null); toastEdit(t, { planToday: !t.planToday }, "Today", t.planToday ? `Took “${t.title}” off Today` : `Added “${t.title}” to Today`); }}
+            onSelect={(id) => { setSheetId(null); onSelectRow(id, false); }} />
+        )}
+      </Sheet>
 
       {kb.hint && !selectionActive && (
         <div className="ktv-float ktv-hint" role="note" aria-label="Keyboard shortcuts for this list">

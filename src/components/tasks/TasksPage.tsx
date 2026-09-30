@@ -576,7 +576,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
 
   const emptyOpen = isMy && myTab === "open" && !loading && !narrowed && !showArchived && tasks.every((t) => t.status === "done") ? (
     <div className="ktv-empty">
-      <EmptyState art="tasks" title="You're all clear" body="Nothing open on your plate. Add what's next, or bring in a list."
+      <EmptyState art="tasks" title="You're all clear" body="Nothing open on your plate right now."
         action={!readOnly && (
           <>
             <Button variant="primary" icon="plus" onClick={() => onAdd("todo")}>New task</Button>

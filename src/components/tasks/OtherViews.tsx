@@ -12,6 +12,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useListKeyboard, type ListKeyAction } from "../../hooks/useListKeyboard";
 import { BulkMenuButton, CustomChips } from "./ListView";
+import { parseDateText } from "../../lib/nlp";
 import {
   getProject, getMember, dueState, fmtDue, TAGS,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
@@ -153,6 +154,8 @@ function MenuItem({ checked, onSelect, children }: { checked?: boolean; onSelect
 }
 
 /* ---------------- KANBAN ---------------- */
+/** the date picker's typed field ("fri", "in 2 weeks"); the chip's own parser covers the rest */
+const parseDue = (text: string) => parseDateText(text);
 type Half = "top" | "bottom";
 type CardMenu = null | "priority" | "assignee" | "status" | "move";
 const CARD_CAP = 50; // cards rendered per column before "Show more"
@@ -262,7 +265,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
       <div className="ktv-card-meta">
         <span onClick={stop} data-card-due style={{ display: "inline-flex" }}>
           {onPatch
-            ? <DateChip value={task.dueDate} time={task.dueTime} withTime size="sm" status={task.status} label={`Due date for ${task.title}`} placeholder="Add date"
+            ? <DateChip value={task.dueDate} time={task.dueTime} withTime size="sm" status={task.status} label={`Due date for ${task.title}`} placeholder="Add date" parse={parseDue}
                 onChange={(date, time) => onPatch(task.id, { dueDate: date, dueTime: date ? time : undefined })} />
             : task.dueDate ? <DateChip value={task.dueDate} time={task.dueTime} size="sm" status={task.status} label="Due" readOnly onChange={() => {}} /> : null}
         </span>

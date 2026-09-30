@@ -13,6 +13,7 @@ import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
 import { taskMatchesQuery, searchRank, isQueryActive, hasSearchText, inArchivedProject, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
 import { smartListById } from "../../lib/smartLists";
 import { useListKeyboard } from "../../hooks/useListKeyboard";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef } from "../../data/types";
 import { useEntrance } from "../../hooks/useEntrance";
 import "../tasks/taskViews.css";
@@ -74,6 +75,7 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   activeId?: string;
 }) {
   const entrance = useEntrance(presetKey);
+  const isMobile = useMediaQuery("(max-width: 860px)");
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const presetQuery = useMemo<Query | null>(() => (preset ? toQuery(preset) : null), [preset ? JSON.stringify(preset) : ""]);
@@ -344,8 +346,8 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
                 )}
                 <span className="ktv-lead">
                   {onToggle
-                    ? <StatusGlyph status={t.status} label={title} celebrateKey={t.id} onToggle={() => onToggle(t.id)} />
-                    : <StatusGlyph status={t.status} readOnly />}
+                    ? <StatusGlyph status={t.status} size={isMobile ? 20 : 16} label={title} celebrateKey={t.id} onToggle={() => onToggle(t.id)} />
+                    : <StatusGlyph status={t.status} size={isMobile ? 20 : 16} readOnly />}
                 </span>
                 <div className="ktv-main">
                   {/* a real button: Tab reaches it, Enter/Space open the task */}
