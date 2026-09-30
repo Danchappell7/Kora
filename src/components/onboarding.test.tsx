@@ -32,6 +32,13 @@ describe("WelcomeModal", () => {
     expect(screen.getByLabelText("First name")).toHaveValue("Priya");
   });
 
+  it("asks for a first name and last name, with no borrowed example names", () => {
+    render(<WelcomeModal open onClose={() => {}} onSaveProfile={vi.fn(async () => {})} />);
+    expect(screen.getByLabelText("First name")).toHaveAttribute("placeholder", "First name");
+    expect(screen.getByLabelText("Last name")).toHaveAttribute("placeholder", "Last name");
+    expect(screen.getByRole("button", { name: /Continue/ })).toBeDisabled();
+  });
+
   it("lets Escape close once a name exists", () => {
     const onClose = vi.fn();
     render(<WelcomeModal open canSkip initialFirst="Sam" onClose={onClose} onSaveProfile={vi.fn(async () => {})} />);
@@ -55,7 +62,7 @@ describe("OnboardingModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
     expect(screen.getByLabelText("First name")).toHaveValue("");
     rerender(<OnboardingModal {...base} profile={{ ...profile(""), lastName: "Okafor" }} />);
-    expect(screen.getByLabelText("Surname")).toHaveValue("Okafor");
+    expect(screen.getByLabelText("Last name")).toHaveValue("Okafor");
   });
 
   it("takes focus back when the welcome modal on top of it closes", () => {
@@ -82,5 +89,43 @@ describe("OnboardingModal", () => {
     render(<OnboardingModal {...base} onFinish={onFinish} profile={null} />);
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onFinish).toHaveBeenCalled();
+  });
+
+  it("creates the first project with the colour picked from the radio group", () => {
+    const onCreateProject = vi.fn();
+    render(<OnboardingModal {...base} onCreateProject={onCreateProject} workspaceId="w1" profile={profile("Sam")} />);
+    fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
+    fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Website redesign" } });
+    const colours = screen.getByRole("radiogroup", { name: "Project colour" });
+    expect(screen.getByRole("radio", { name: "Blue" })).toBeChecked();
+    fireEvent.keyDown(colours, { key: "ArrowRight" });
+    expect(screen.getByRole("radio", { name: "Violet" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Violet" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: /Create project/ }));
+    expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ name: "Website redesign", color: "oklch(0.74 0.16 305)", workspaceId: "w1" }));
+    expect(screen.getByRole("heading", { name: "Your five places" })).toBeInTheDocument();
+  });
+
+  it("ends on your five places, then takes you to Today", () => {
+    const onFinish = vi.fn();
+    const onGoToday = vi.fn();
+    render(<OnboardingModal {...base} onFinish={onFinish} onGoToday={onGoToday} profile={profile("Sam")} />);
+    fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(screen.getByRole("heading", { name: "Your five places" })).toBeInTheDocument();
+    expect(screen.getByText(/You're all set, Sam/)).toBeInTheDocument();
+    const places = screen.getAllByRole("listitem");
+    expect(places.map((li) => li.querySelector(".konb-place-name")?.textContent)).toEqual(["Today", "Inbox", "My tasks", "Projects", "Team"]);
+    expect(screen.getByText("Your plan for the day, drawn for you.")).toBeInTheDocument();
+    expect(screen.getByText("Mentions, assignments and requests.")).toBeInTheDocument();
+    expect(screen.getByText("Everything on your plate, and what you're waiting on.")).toBeInTheDocument();
+    expect(screen.getByText("Your team's projects, goals and requests.")).toBeInTheDocument();
+    expect(screen.getByText("Who's doing what, and what's at risk.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Step 3 of 3: Your five places");
+    const go = screen.getByRole("button", { name: /Take me to Today/ });
+    expect(go).toHaveFocus();
+    fireEvent.click(go);
+    expect(onFinish).toHaveBeenCalledTimes(1);
+    expect(onGoToday).toHaveBeenCalledTimes(1);
   });
 });

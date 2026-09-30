@@ -1,22 +1,21 @@
 /* ============================================================
-   KANBO — first-run onboarding (shown once to brand-new accounts).
+   KANBO — first-run welcome (shown once to brand-new accounts).
    Two guided steps: (1) build your profile — name is required so the
    account is more than an email and teammates/assignment notifications
-   show a real person; (2) the rhythm tour.
+   show a real person; (2) the rhythm Kanbo runs on.
+   Shares its sheet and styles with OnboardingModal.
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
-import { Icon, KanboLogo } from "./primitives";
+import { KanboLogo, Button } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
-import { TextField } from "../auth/AuthFields";
+import { FIRST_RUN_CSS, PlaceList } from "./OnboardingModal";
 import type { IconName } from "./../data/types";
 
-const STEPS: { icon: IconName; title: string; body: string }[] = [
-  { icon: "plus", title: "Capture anything", body: "Type a task in the bar at the top — Kanbo understands “Draft deck 90m deep work today”." },
-  { icon: "calendarPlus", title: "Plan your day", body: "Auto-plan lays your tasks around your meetings, deep work up front." },
-  { icon: "clock", title: "Focus & finish", body: "Start a focus block and watch the work get done." },
+const STEPS: { id: string; icon: IconName; title: string; body: string; key: string }[] = [
+  { id: "capture", icon: "plus", title: "Capture anything", body: "Press Q and type it the way you'd say it: “Draft deck 90m deep work today”.", key: "Q" },
+  { id: "plan", icon: "sun", title: "Plan your day", body: "Today sketches a plan around your meetings. Plan my day makes it yours.", key: "P" },
+  { id: "focus", icon: "play", title: "Focus and finish", body: "Start a focus block and let the timer keep you on one thing.", key: "F" },
 ];
-
-const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6, letterSpacing: ".01em", textAlign: "left" };
 
 export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst, initialLast, canSkip = false }: {
   open: boolean;
@@ -72,10 +71,11 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
   if (!open) return null;
 
   const greet = name?.trim() && !name.includes("@") ? `, ${name.trim().split(/\s+/)[0]}` : "";
+  const missing = !!error && !firstName.trim();
 
   const continueToTour = async () => {
     const f = firstName.trim(), l = lastName.trim();
-    if (!f) { setError("Add your first name so we can continue."); return; }
+    if (!f) { setError("Add your first name so we can continue."); firstRef.current?.focus(); return; }
     setSaving(true); setError(null);
     try {
       await onSaveProfile(f, l);
@@ -88,70 +88,64 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
   };
 
   return (
-    <div className="kbackdrop" style={{ position: "fixed", inset: 0, zIndex: 130, background: "color-mix(in oklch, var(--bg-deep) 62%, transparent)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, overflowY: "auto" }}>
-      <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="glass anim-scalein" style={{ width: 460, maxWidth: "94vw", borderRadius: 22, padding: 28, background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", textAlign: "center" }}>
-        <div style={{ display: "inline-grid", placeItems: "center", marginBottom: 16 }}><KanboLogo size={40} /></div>
-
-        {phase === "profile" ? (
-          <>
-            <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 6 }}>
-              Welcome to Kanbo{greet} 👋
-            </h2>
-            <p style={{ fontSize: 14, color: "var(--ink-3)", margin: "0 auto 22px", maxWidth: 360, lineHeight: 1.55 }}>
-              Let's set up your profile. Add your name so teammates — and anyone you work with on shared tasks — see a person, not an email address.
-            </p>
-
-            <form onSubmit={(e) => { e.preventDefault(); continueToTour(); }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 8 }}>
-                <div>
-                  <label htmlFor="kanbo-onb-first" style={labelStyle}>First name</label>
-                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                  <TextField ref={firstRef} id="kanbo-onb-first" autoFocus data-autofocus value={firstName} onChange={(e) => { edited.current = true; setFirstName(e.target.value); if (error) setError(null); }} placeholder="Daniel" autoComplete="given-name" invalid={!!error && !firstName.trim()} aria-describedby={error ? "kanbo-onb-error" : undefined} />
-                </div>
-                <div>
-                  <label htmlFor="kanbo-onb-last" style={labelStyle}>Surname</label>
-                  <TextField id="kanbo-onb-last" value={lastName} onChange={(e) => { edited.current = true; setLastName(e.target.value); }} placeholder="Chappell" autoComplete="family-name" />
+    // above the onboarding sheet it can open over (see OnboardingModal)
+    <div className="kbackdrop ksheet-layer konb-layer" data-side="center" style={{ zIndex: 130 }}>
+      <style>{FIRST_RUN_CSS}</style>
+      <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="ksheet konb">
+        <span className="ksheet-handle" aria-hidden="true" />
+        <div className="konb-body">
+          {phase === "profile" ? (
+            <form key="profile" className="konb-step" noValidate onSubmit={(e) => { e.preventDefault(); void continueToTour(); }}>
+              <div className="konb-intro">
+                <span className="konb-mark" aria-hidden="true"><KanboLogo size={40} /></span>
+                <div className="konb-head">
+                  <h2 className="konb-title">Welcome to Kanbo{greet}</h2>
+                  <p className="konb-lede">Let's set up your profile. Add your name so the people you work with see a person, not an email address.</p>
                 </div>
               </div>
 
-              {error && <div id="kanbo-onb-error" role="alert" style={{ fontSize: 12.5, color: "var(--prio-urgent)", textAlign: "left", margin: "4px 2px 0" }}>{error}</div>}
-
-              <button type="submit" className="btn btn-accent" disabled={saving || !firstName.trim()} style={{ width: "100%", justifyContent: "center", padding: "12px 15px", marginTop: 18, opacity: saving || !firstName.trim() ? 0.6 : 1 }}>
-                {saving ? "Saving…" : <>Continue <Icon name="arrowRight" size={16} /></>}
-              </button>
-            </form>
-            {canSkip && (
-              <button onClick={onClose} style={{ marginTop: 12, border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-display)" }}>
-                Skip for now
-              </button>
-            )}
-          </>
-        ) : (
-          <>
-            <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 6 }}>
-              You're all set{firstName.trim() ? `, ${firstName.trim()}` : ""} 🎉
-            </h2>
-            <p style={{ fontSize: 14, color: "var(--ink-3)", margin: "0 auto 22px", maxWidth: 360, lineHeight: 1.55 }}>
-              Here's the rhythm Kanbo runs on:
-            </p>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left", marginBottom: 24 }}>
-              {STEPS.map((s) => (
-                <div key={s.title} style={{ display: "flex", alignItems: "flex-start", gap: 13, padding: "12px 14px", borderRadius: 14, background: "var(--surface)", border: "1px solid var(--hairline)" }}>
-                  <span style={{ display: "grid", placeItems: "center", width: 34, height: 34, borderRadius: 10, flexShrink: 0, background: "var(--accent-dim)", color: "var(--accent)" }}><Icon name={s.icon} size={17} /></span>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{s.title}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5 }}>{s.body}</div>
-                  </div>
+              <div className="konb-fields">
+                <div className="konb-field">
+                  <label htmlFor="kanbo-onb-first">First name</label>
+                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                  <input ref={firstRef} id="kanbo-onb-first" className="konb-input" autoFocus data-autofocus value={firstName}
+                    onChange={(e) => { edited.current = true; setFirstName(e.target.value); if (error) setError(null); }}
+                    placeholder="First name" autoComplete="given-name" aria-invalid={missing || undefined} aria-describedby={error ? "kanbo-onb-error" : undefined} />
                 </div>
-              ))}
-            </div>
+                <div className="konb-field">
+                  <label htmlFor="kanbo-onb-last">Last name</label>
+                  <input id="kanbo-onb-last" className="konb-input" value={lastName}
+                    onChange={(e) => { edited.current = true; setLastName(e.target.value); }} placeholder="Last name" autoComplete="family-name" />
+                </div>
+              </div>
+              {error && <p id="kanbo-onb-error" role="alert" className="konb-err">{error}</p>}
 
-            <button className="btn btn-accent" onClick={onClose} style={{ width: "100%", justifyContent: "center", padding: "12px 15px" }}>
-              <Icon name="check" size={16} /> Start using Kanbo
-            </button>
-          </>
-        )}
+              <div className="konb-acts" data-stack="">
+                <Button type="submit" variant="primary" size="lg" full iconRight="arrowRight" disabled={!firstName.trim()} loading={saving}>
+                  {saving ? "Saving…" : "Continue"}
+                </Button>
+                {canSkip && <Button variant="ghost" onClick={onClose}>Skip for now</Button>}
+              </div>
+            </form>
+          ) : (
+            <div key="tour" className="konb-step">
+              <div className="konb-head">
+                <h2 className="konb-title">You're all set{firstName.trim() ? `, ${firstName.trim()}` : ""}</h2>
+                <p className="konb-lede">Here's the rhythm Kanbo runs on.</p>
+              </div>
+              <PlaceList rows={STEPS.map((s) => ({ id: s.id, icon: s.icon, name: s.title, line: s.body, keys: [s.key] }))} />
+              <div className="konb-acts" data-stack="">
+                {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                <Button autoFocus data-autofocus variant="primary" size="lg" full icon="check" onClick={onClose}>Start using Kanbo</Button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="konb-dots" aria-hidden="true">
+          <span className="konb-dot" data-on={phase === "profile" || undefined} />
+          <span className="konb-dot" data-on={phase === "tour" || undefined} />
+        </div>
+        <p className="sr-only" role="status">{phase === "tour" ? "Step 2 of 2: the rhythm Kanbo runs on" : ""}</p>
       </div>
     </div>
   );
