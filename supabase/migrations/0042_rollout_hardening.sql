@@ -5,7 +5,9 @@
 --   1. Invites: anyone could sign up with an invited colleague's address and
 --      claim their invite (no confirmed-email check); invited teammates were
 --      then stuck on the early-access waitlist. Now only a CONFIRMED address
---      can claim, and an accepted invite counts as approval.
+--      can claim, and an invite counts as approval from the moment the
+--      address is confirmed (so the invitee's first load is already past the
+--      waitlist). An invite never undoes an admin's "Revoke access".
 --   2. Access requests: anyone could insert a request already marked
 --      'approved' (self-approval) or of any size; repeats piled up. Admin
 --      checks were hard-coded to one email, so a delegated admin couldn't see
@@ -13,7 +15,8 @@
 --      A suspended platform admin also loses admin powers.
 --   3. Files: an attachments row could point at someone else's storage path
 --      and so unlock their file; the public avatars bucket could be listed by
---      anyone, leaking every user and workspace id.
+--      anyone, leaking every user and workspace id; a removed member could
+--      still delete files they had uploaded to the team's tasks.
 --   4. Notifications: @mentions, assignments and comment notices went to any
 --      uuid the client supplied (inbox spam, task titles leaking to strangers,
 --      and a comment failed outright if a follower's account was deleted).
@@ -26,9 +29,17 @@
 --      status updates, automations, forms and dependencies.
 --   8. Service-only tables for the edge functions (rate_limits, ai_usage) and
 --      a schema_migrations ledger.
--- Needs 0041. Idempotent: safe to run more than once. If 0041 is ever re-run
--- after this file, run this file again afterwards (0041 redefines two of the
--- functions below).
+--   9. Checklist items (subtasks) and task dependencies were writable by
+--      anyone who could see the task, guests included. They now follow 0041:
+--      everyone who sees the task reads them; only people who can edit the
+--      task (never guests) add, change or remove them.
+-- Needs 0041. Idempotent: safe to run more than once.
+-- RUN IT LAST. Re-running an older migration that this file overrides puts the
+-- old hole back (e.g. 0010 re-creates the listable avatar policy, 0025 the
+-- unchecked task-files read, 0037 notifications to any id, 0041 two functions
+-- below). If any of 0004, 0007, 0008, 0010, 0012, 0014, 0016, 0017, 0025,
+-- 0026, 0027, 0029, 0037 or 0041 is ever run again, run this file again
+-- straight afterwards.
 -- ============================================================
 
 -- ---------- 0. preflight + ledger ----------
@@ -85,10 +96,28 @@ returns boolean language sql security definer stable set search_path = public as
 $$;
 grant execute on function public.is_admin() to authenticated;
 
--- ---------- 2. invites: confirmed email only; an accepted invite = approval ----------
+-- ---------- 2. invites: confirmed email only; an invite = approval ----------
 -- With Supabase "Confirm email" OFF, GoTrue stamps email_confirmed_at at sign-up,
 -- so today's invites keep working; once it is ON, an unconfirmed squatter can't
 -- claim a colleague's invite.
+
+-- Did a platform admin revoke this account's access (Admin > Revoke access,
+-- logged as 'Revoked access') without granting it again since? An invite from a
+-- workspace owner must not quietly undo that. Internal helper.
+create or replace function public.access_revoked(p_user uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select coalesce((
+    select a.detail = 'Revoked access'
+      from public.admin_audit a
+     where a.action = 'approve'
+       and a.detail in ('Revoked access', 'Approved access')
+       and (a.target = p_user::text
+            or lower(btrim(a.target)) = (select lower(btrim(u.email)) from auth.users u where u.id = p_user))
+     order by a.created_at desc, a.id desc
+     limit 1), false);
+$$;
+revoke execute on function public.access_revoked(uuid) from public, anon, authenticated;
+
 create or replace function public.claim_invites()
 returns integer language plpgsql security definer set search_path = public as $$
 declare
@@ -112,8 +141,8 @@ begin
   n := coalesce(array_length(claimed, 1), 0);
 
   -- an invite from a workspace whose owner is in good standing lets you in
-  -- (never lifts a suspension)
-  if n > 0 and exists (
+  -- (never lifts a suspension or an admin's revocation)
+  if n > 0 and not public.access_revoked(me) and exists (
     select 1 from public.workspaces w
       left join public.profiles o on o.id = w.owner_id
      where w.id = any (claimed)
@@ -127,6 +156,45 @@ begin
   return n;
 end; $$;
 grant execute on function public.claim_invites() to authenticated;
+
+-- An invite also approves the account the moment its address is confirmed, so
+-- the invitee's FIRST load already passes the waitlist (the app reads the
+-- profile before it calls claim_invites). GoTrue inserts the user and stamps
+-- email_confirmed_at in a separate UPDATE (at once when "Confirm email" is off,
+-- when the link is clicked when it is on), so this watches both. Joining the
+-- workspace is still claim_invites' job. Never blocks a sign-up.
+create or replace function public.approve_invited_on_confirm() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.email_confirmed_at is null then return null; end if;
+  if tg_op = 'UPDATE' and old.email_confirmed_at is not null then return null; end if;
+  begin
+    if exists (
+         select 1 from public.workspace_members m
+           join public.workspaces w on w.id = m.workspace_id
+           left join public.profiles o on o.id = w.owner_id
+          where m.status = 'invited' and m.user_id is null
+            and lower(btrim(m.email)) = lower(btrim(new.email))
+            and coalesce(o.approved, true) and not coalesce(o.suspended, false))
+       and not public.access_revoked(new.id) then
+      perform set_config('kanbo.trusted', 'on', true);
+      insert into public.profiles (id, email, approved) values (new.id, new.email, true)
+      on conflict (id) do update set approved = true
+        where not public.profiles.approved and not public.profiles.suspended;
+      perform set_config('kanbo.trusted', 'off', true);
+    end if;
+  exception when others then
+    perform set_config('kanbo.trusted', 'off', true);
+    raise warning 'approve_invited_on_confirm skipped: %', sqlerrm;
+  end;
+  return null;
+end; $$;
+revoke execute on function public.approve_invited_on_confirm() from public, anon, authenticated;
+-- sorts after on_auth_user_created_profile (0041), so the profile row exists
+drop trigger if exists on_auth_user_invite_approval on auth.users;
+create trigger on_auth_user_invite_approval
+  after insert or update of email_confirmed_at on auth.users
+  for each row execute function public.approve_invited_on_confirm();
 
 -- invite rows addressed to you are visible only once that address is confirmed
 -- (returns only the caller's own address, so it is safe for any role to run)
@@ -164,10 +232,7 @@ begin
          left join public.profiles o on o.id = w.owner_id
         where m.user_id = p.id and m.status = 'active' and w.owner_id <> p.id
           and coalesce(o.approved, true) and not coalesce(o.suspended, false))
-     and not exists (
-       select 1 from public.admin_audit a
-        where a.action = 'approve' and a.detail = 'Revoked access'
-          and (a.target = p.id::text or lower(a.target) = lower(u.email)));
+     and not public.access_revoked(p.id);
   perform set_config('kanbo.trusted', 'off', true);
 end $backfill$;
 
@@ -182,9 +247,16 @@ begin
   if coalesce(auth.role(), '') in ('anon', 'authenticated') then
     new.created_at := now();
   end if;
+  -- a repeat while one is pending, or after approval (they can just sign up),
+  -- is a no-op. But if the approved account was later revoked, the new request
+  -- goes into the admin queue instead of vanishing.
   if new.status = 'pending' and exists (
        select 1 from public.access_requests r
-        where lower(btrim(r.email)) = new.email and r.status in ('pending', 'approved')) then
+        where lower(btrim(r.email)) = new.email
+          and (r.status = 'pending'
+               or (r.status = 'approved' and not exists (
+                     select 1 from auth.users u join public.profiles p on p.id = u.id
+                      where lower(btrim(u.email)) = new.email and not p.approved)))) then
     return null;
   end if;
   return new;
@@ -341,6 +413,27 @@ create policy "read shared task-files" on storage.objects
     and exists (select 1 from public.attachments a
                  where a.path = storage.objects.name
                    and split_part(a.path, '/', 2) = a.task_id::text)
+  );
+
+-- you may delete a file you uploaded only while you can still see the task it
+-- is attached to (or once nothing links to it, e.g. an upload whose attachment
+-- row never saved). A removed member can no longer wipe a file the team's task
+-- still shows. The helper only answers for paths in the caller's own folder.
+create or replace function public.my_task_file_attached(p_path text)
+returns boolean language sql security definer stable set search_path = public as $$
+  select split_part(p_path, '/', 1) = auth.uid()::text
+     and exists (select 1 from public.attachments a where a.path = p_path);
+$$;
+grant execute on function public.my_task_file_attached(text) to authenticated;
+drop policy if exists "owner delete task-files" on storage.objects;
+create policy "owner delete task-files" on storage.objects
+  for delete to authenticated
+  using (
+    bucket_id = 'task-files'
+    and owner = auth.uid()
+    and (storage.foldername(name))[1] = auth.uid()::text
+    and (exists (select 1 from public.attachments a where a.path = storage.objects.name)
+         or not public.my_task_file_attached(storage.objects.name))
   );
 
 -- avatars stay public by URL (public bucket), but nobody can list the bucket;
@@ -548,6 +641,51 @@ begin
 end; $$;
 revoke execute on function public.before_user_delete() from public, anon, authenticated;
 
+-- ---------- 7b. checklist items + dependencies: editors write, guests read ----------
+-- 0007's "for all" policies let anyone who could SEE the task (guests, too)
+-- add, tick, rename and delete checklist items and dependencies. Same rule as
+-- 0041's content now: may the caller edit this task?
+create or replace function public.can_edit_task(p_task uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (
+    select 1 from public.tasks t
+     where t.id = p_task
+       and ((t.workspace_id is null and t.user_id = auth.uid() and public.can_act())
+         or (t.workspace_id is not null and public.can_write(t.workspace_id))));
+$$;
+grant execute on function public.can_edit_task(uuid) to authenticated;
+
+do $children$
+declare t text; pol record;
+begin
+  foreach t in array array['subtasks', 'task_dependencies'] loop
+    for pol in select policyname from pg_policies where schemaname = 'public' and tablename = t loop
+      execute format('drop policy %I on public.%I', pol.policyname, t);
+    end loop;
+  end loop;
+end $children$;
+
+create policy "subtasks read: visible task" on public.subtasks
+  for select using (exists (select 1 from public.tasks t where t.id = task_id));
+create policy "subtasks create: task editors" on public.subtasks
+  for insert with check (public.can_edit_task(task_id));
+create policy "subtasks edit: task editors" on public.subtasks
+  for update using (public.can_edit_task(task_id)) with check (public.can_edit_task(task_id));
+create policy "subtasks delete: task editors" on public.subtasks
+  for delete using (public.can_edit_task(task_id));
+
+-- a dependency may only point at a task the caller can see
+create policy "dependencies read: visible task" on public.task_dependencies
+  for select using (exists (select 1 from public.tasks t where t.id = task_id));
+create policy "dependencies create: task editors" on public.task_dependencies
+  for insert with check (
+    public.can_edit_task(task_id) and exists (select 1 from public.tasks d where d.id = depends_on));
+create policy "dependencies edit: task editors" on public.task_dependencies
+  for update using (public.can_edit_task(task_id))
+  with check (public.can_edit_task(task_id) and exists (select 1 from public.tasks d where d.id = depends_on));
+create policy "dependencies delete: task editors" on public.task_dependencies
+  for delete using (public.can_edit_task(task_id));
+
 -- ---------- 8. realtime for the remaining shared tables ----------
 do $rt$
 declare t text;
@@ -619,6 +757,15 @@ insert into public.schema_migrations (version) values ('0042') on conflict (vers
 --     where pronamespace = 'public'::regnamespace and proname = 'claim_invites')              as invites_need_confirmed_email,
 --   (select prosrc like '%kanbo.trusted%' from pg_proc
 --     where pronamespace = 'public'::regnamespace and proname = 'protect_profile_privileges') as trusted_flag,
+--   exists (select 1 from pg_trigger where tgname = 'on_auth_user_invite_approval'
+--            and tgrelid = 'auth.users'::regclass)                                           as invite_approves_on_confirm,
+--   (select count(*) from pg_policies where schemaname = 'public'
+--       and tablename in ('subtasks', 'task_dependencies')) = 8
+--   and (select count(*) from pg_policies where schemaname = 'public'
+--       and tablename in ('subtasks', 'task_dependencies') and cmd <> 'SELECT'
+--       and coalesce(qual, '') || coalesce(with_check, '') like '%can_edit_task%') = 6    as checklist_deps_editors_only,
+--   exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
+--            and policyname = 'owner delete task-files' and qual like '%attachments%')      as task_file_delete_scoped,
 --   (select relrowsecurity from pg_class where oid = 'public.rate_limits'::regclass)
 --   and (select relrowsecurity from pg_class where oid = 'public.ai_usage'::regclass)          as service_tables_locked;
 --
