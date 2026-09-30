@@ -50,6 +50,9 @@ describe("App (demo mode)", () => {
     const nav = screen.getByRole("navigation", { name: "Main" });
     expect(within(nav).getByText("My tasks")).toBeInTheDocument();
     expect(within(nav).getByText("Inbox")).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: /^Projects/ })).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: /^Team/ })).toBeInTheDocument();
+    expect(within(nav).queryByText("Analytics")).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
     await waitFor(() => expect(address()).toBe("/today"));
     expect(document.title).toMatch(/^(\(\d+\) )?Today · Kanbo$/);
@@ -85,6 +88,7 @@ describe("App (demo mode)", () => {
     await boot();
     key("?");
     const settings = await screen.findByRole("dialog", { name: /settings/i });
+    expect(within(settings).getByRole("tab", { name: /^Shortcuts/ })).toHaveAttribute("aria-selected", "true");
     key("c");
     expect(screen.queryByRole("dialog", { name: "New task" })).not.toBeInTheDocument();
     fireEvent.keyDown(settings, { key: "Escape" });
@@ -303,12 +307,15 @@ describe("App (demo mode)", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Brand Refresh" })).toBeInTheDocument();
     expect(within(projectButton("Brand Refresh").parentElement!).getByRole("button", { name: "Archive project Brand Refresh" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Post update" })).toBeInTheDocument();
+    expect(screen.getByText(/Logo round two is with the client/)).toBeInTheDocument();
     unmount();
     role = "guest";
     await boot();
     fireEvent.click(projectButton("Brand Refresh"));
     expect(await screen.findByRole("heading", { level: 1, name: "Brand Refresh" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Post update" })).not.toBeInTheDocument();
+    // guests still read the project's updates
+    expect(screen.getByText(/Logo round two is with the client/)).toBeInTheDocument();
     expect(within(projectButton("Brand Refresh").parentElement!).queryByRole("button", { name: "Archive project Brand Refresh" })).not.toBeInTheDocument();
   });
 
@@ -337,6 +344,8 @@ describe("App (demo mode)", () => {
     fireEvent.click(lastOf(screen.getAllByRole("button", { name: "Post update" })));
     await waitFor(() => expect(screen.queryByPlaceholderText(/What's the latest/)).not.toBeInTheDocument());
     expect(post).toHaveBeenCalledTimes(2);
+    // the project's notice line now leads with it
+    expect(await screen.findByText(/Logo round two is with the client/)).toBeInTheDocument();
     expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ summary: "Logo round two is with the client" }), expect.anything());
   });
 
@@ -542,14 +551,16 @@ describe("App (demo mode)", () => {
   it("the quick theme toggle flips light and dark every time (also under StrictMode)", async () => {
     render(<StrictMode><ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider></StrictMode>);
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
-    const toggle = async () => {
-      key("k", { ctrlKey: true });
-      fireEvent.change(await screen.findByRole("combobox"), { target: { value: "theme" } });
-      fireEvent.click(screen.getByRole("option", { name: /Toggle .*theme/i }));
-    };
-    await toggle();
+    // the sidebar footer's toggle, then ⌘K's
+    fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
     await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("light"));
-    await toggle();
+    fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("dark"));
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "theme" } });
+    fireEvent.click(screen.getByRole("option", { name: /Toggle .*theme/i }));
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("light"));
+    fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
     await waitFor(() => expect(document.documentElement.getAttribute("data-theme")).toBe("dark"));
     expect(localStorage.getItem("kanbo-theme")).toBe("dark");
   });
@@ -790,5 +801,175 @@ describe("App (demo mode)", () => {
     fireEvent.change(await screen.findByRole("combobox"), { target: { value: "Q3 Product" } });
     fireEvent.click(within(await screen.findByRole("group", { name: "Projects" })).getAllByRole("option")[0]);
     await waitFor(() => expect(live).toHaveTextContent("Q3 Product Launch"));
+  });
+
+  /* ---- after the final merge: every capability that moved is still reachable ---- */
+
+  it("⌘Z after a real change: completing a task, then ⌘Z, puts it back, with one toast", async () => {
+    await boot();
+    key("g"); key("t");
+    const panel = await openTask(DECK);
+    const done = () => within(panel).getByRole("checkbox", { name: `Done: ${DECK}` });
+    fireEvent.click(done());
+    await waitFor(() => expect(done()).toHaveAttribute("aria-checked", "true"));
+    key("z", { metaKey: true });
+    await waitFor(() => expect(done()).toHaveAttribute("aria-checked", "false"));
+    expect(await screen.findAllByText(`Undone: Completed “${DECK}”`)).toHaveLength(1);
+    // taken back once: a second ⌘Z has nothing left
+    key("z", { metaKey: true });
+    expect(await screen.findByText("Nothing to undo")).toBeInTheDocument();
+  });
+
+  it("Manage tags, the shortcuts list and calendar connections live in Settings", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "manage tags" } });
+    fireEvent.click(screen.getByRole("option", { name: /Manage tags/ }));
+    const settings = await screen.findByRole("dialog", { name: /settings/i });
+    expect(within(settings).getByRole("tab", { name: /^Tags/ })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(settings).getByRole("tab", { name: /^Calendar/ }));
+    expect(await within(settings).findByRole("button", { name: /^Connect Google/ })).toBeInTheDocument();
+  });
+
+  it("a plain ⌘, opens Settings where people go most, not the last deep link", async () => {
+    await boot();
+    key("?");
+    let settings = await screen.findByRole("dialog", { name: /settings/i });
+    expect(within(settings).getByRole("tab", { name: /^Shortcuts/ })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(settings, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /settings/i })).not.toBeInTheDocument());
+    key(",", { metaKey: true });
+    settings = await screen.findByRole("dialog", { name: /settings/i });
+    expect(within(settings).getByRole("tab", { name: /^Appearance/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("Settings › Workspace (the owner's) ends with Close workspace, and Members & roles goes to Team › People", async () => {
+    await boot();
+    key(",", { metaKey: true });
+    const settings = await screen.findByRole("dialog", { name: /settings/i });
+    fireEvent.click(within(settings).getByRole("tab", { name: /^Workspace/ }));
+    const panel = await within(settings).findByRole("tabpanel");
+    const buttons = within(panel).getAllByRole("button");
+    expect(lastOf(buttons)).toHaveTextContent("Close workspace");
+    fireEvent.click(within(panel).getByRole("button", { name: /Members & roles/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /settings/i })).not.toBeInTheDocument());
+    await waitFor(() => expect(address()).toBe("/team/people"));
+  });
+
+  it("Today › Week opens the weekly review", async () => {
+    at("/today/week");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Weekly review" }));
+    expect(await screen.findByRole("dialog", { name: "Weekly review" })).toBeInTheDocument();
+  });
+
+  it("switching workspace from a project lands on Today", async () => {
+    at("/p/p-launch");
+    await boot();
+    expect(await screen.findByRole("heading", { level: 1, name: "Q3 Product Launch" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    fireEvent.click(screen.getAllByText("Reco HQ").map((el) => el.closest("button")).find(Boolean)!);
+    expect(await screen.findByText("Growth Experiments", { selector: ".kproj *" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/today"));
+    expect(screen.getByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+  });
+
+  it("quick capture keeps everything it read: the time, the estimate, the project and the repeat", async () => {
+    const create = track(vi.spyOn(store, "createTask"));
+    await boot();
+    key("g"); key("t");
+    key("q");
+    const input = await screen.findByLabelText("Quick capture a task");
+    fireEvent.change(input, { target: { value: "call Sana fri 3pm ~30m #launch every mon" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({ effortHours: 0.5, recurrence: "weekly", dueTime: "15:00", projectId: "p-launch", createdBy: "m-self" });
+  });
+
+  it("Ask Kanbo on-device: a move shows its change, Apply makes it, and ⌘Z puts it back", async () => {
+    const update = track(vi.spyOn(store, "updateTask"));
+    await boot();
+    key("k", { ctrlKey: true });
+    const box = await screen.findByRole("combobox", { name: "Search or ask Kanbo" });
+    fireEvent.change(box, { target: { value: "push the narrative deck back a week" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: /Apply 1 change/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument());
+    expect(await screen.findByText("Applied 1 change")).toBeInTheDocument();
+    await waitFor(() => expect(update.mock.calls.some(([id, patch]) => id === "t-1" && "dueDate" in patch)).toBe(true));
+    const moved = update.mock.calls.filter(([id, patch]) => id === "t-1" && "dueDate" in patch);
+    const to = moved[0][1].dueDate as string;
+    key("z", { metaKey: true });
+    expect(await screen.findByText("Undone: Applied 1 change")).toBeInTheDocument();
+    await waitFor(() => expect(update.mock.calls.filter(([id, patch]) => id === "t-1" && "dueDate" in patch)).toHaveLength(2));
+    const back = update.mock.calls.filter(([id, patch]) => id === "t-1" && "dueDate" in patch)[1][1].dueDate as string;
+    const week = (iso: string) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + 7); return toLocalISO(d); };
+    expect(week(back)).toBe(to);
+  });
+
+  it("Ask Kanbo answers a guest but offers no Apply", async () => {
+    asGuest();
+    await boot();
+    key("k", { ctrlKey: true });
+    const box = await screen.findByRole("combobox", { name: "Search or ask Kanbo" });
+    fireEvent.change(box, { target: { value: "push the narrative deck back a week" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(await screen.findByRole("region", { name: "Kanbo's answer" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Apply/ })).not.toBeInTheDocument();
+  });
+
+  it("Inbox › Archived keeps this session's archive after you leave, and Move back brings an item home", async () => {
+    const items = [{ id: "a-9", taskId: "t-1", taskTitle: "Inbox note", kind: "assigned" as const, detail: "Maya assigned this to you", createdAt: new Date().toISOString() }];
+    track(vi.spyOn(store, "listActivity")).mockResolvedValue(items);
+    track(vi.spyOn(store, "archiveActivity")).mockResolvedValue();
+    const unarchive = track(vi.spyOn(store, "unarchiveActivity")).mockResolvedValue();
+    await boot();
+    key("g"); key("i");
+    fireEvent.click(await screen.findByRole("button", { name: "Archive “Inbox note”" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Archive “Inbox note”" })).not.toBeInTheDocument());
+    key("g"); key("t");
+    expect(await screen.findByRole("heading", { level: 1, name: "My tasks" })).toBeInTheDocument();
+    key("g"); key("i");
+    fireEvent.click(within(await screen.findByRole("group", { name: "Show" })).getByRole("button", { name: /Archived/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Move “Inbox note” back to Inbox" }));
+    await waitFor(() => expect(unarchive).toHaveBeenCalledWith(["a-9"]));
+  });
+
+  it("every page keeps its address through a refresh, and the old ones move to their new homes", async () => {
+    const pages: [string, string][] = [
+      ["/today/week", "Today"], ["/today/month", "Today"], ["/inbox", "Inbox"], ["/tasks/waiting", "My tasks"], ["/projects", "Projects"],
+      ["/p/p-launch/board", "Q3 Product Launch"], ["/p/p-launch/updates", "Q3 Product Launch"], ["/team", "Team"],
+      ["/team/insights/trends", "Team"], ["/search?q=deck", "Search"],
+    ];
+    for (const [url, title] of pages) {
+      at(url);
+      const r = renderApp();
+      expect(await screen.findByRole("heading", { level: 1, name: title })).toBeInTheDocument();
+      await waitFor(() => expect(address()).toBe(url));
+      r.unmount();
+    }
+    at("/analytics");
+    renderApp();
+    await waitFor(() => expect(address()).toBe("/team/insights"));
+  });
+
+  it("the task panel tells a slipped task's story: t-3 has moved twice", async () => {
+    at("/tasks?task=t-3");
+    await boot();
+    const panel = await screen.findByRole("dialog", { name: /^Task: / });
+    expect(await within(panel).findByText(/Moved 2×/)).toBeInTheDocument();
+  });
+
+  it("P on Today plans the suggested blocks, and ⌘Z takes the plan back", async () => {
+    // Plan my day fills what's left of the working day: plan in the morning, whatever the real clock says
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(KANBO_TODAY.getTime() + 9 * 3600e3) });
+    const update = track(vi.spyOn(store, "updateTask"));
+    await boot();
+    key("p");
+    const placed = () => update.mock.calls.filter(([, p]) => typeof p.scheduled === "number").map(([id]) => id);
+    await waitFor(() => expect(placed().length).toBeGreaterThan(0), { timeout: 4000 });
+    const ids = placed();
+    key("z", { metaKey: true });
+    await waitFor(() => expect(update.mock.calls.some(([id, p]) => ids.includes(id) && "scheduled" in p && p.scheduled == null)).toBe(true));
   });
 });

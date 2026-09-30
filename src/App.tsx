@@ -13,7 +13,7 @@ import { NewTaskModal } from "./components/NewTaskModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { DeleteProjectModal, type DeleteMode } from "./components/DeleteProjectModal";
-import { SettingsModal, type ThemeChoice } from "./components/SettingsModal";
+import { SettingsModal, type ThemeChoice, type SettingsSection } from "./components/SettingsModal";
 import { MobileNav } from "./components/MobileNav";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { TrialBanner, UpgradeModal, Paywall, hasAccess, BILLING_ENABLED } from "./components/Billing";
@@ -48,7 +48,7 @@ import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
 import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { store, keepOnScreen, getStrippedColumns, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange } from "./data/store";
+import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange } from "./data/store";
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
@@ -57,9 +57,11 @@ import { splitPersonal, withOverlay, writePlanOverlay, writeSectionOverlay, writ
 import { undoLast } from "./lib/undoStack";
 import { computeRisks } from "./lib/radar";
 import { shutdownDone } from "./lib/rituals";
+import { momentumCounts } from "./lib/brief";
 import type { AskAction, AskContext } from "./lib/askTypes";
-import { BUILTIN_PROJECT_TEMPLATES, projectTemplateTasks, saveProjectTemplate } from "./lib/templates";
+import { findProjectTemplate, projectTemplateTasks } from "./lib/templates";
 import { resolveTagId } from "./components/views/reportingUtils";
+import type { InsightsNavProps } from "./components/views/InsightsSummary";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { QuickCapture } from "./components/QuickCapture";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
@@ -153,8 +155,6 @@ type ArchivePart = { items: Activity[]; archived: Promise<void> };
 /** Lets an error boundary catch errors thrown while building a view's props, too. */
 function RenderView({ render }: { render: () => React.ReactNode }) { return <>{render()}</>; }
 
-/** Settings' sections (SettingsModal's `section` prop). */
-type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
 const TASK_VIEWS: readonly TaskView[] = ["list", "board", "timeline", "calendar", "files", "matrix"];
 const isTaskView = (v: string | undefined): v is TaskView => !!v && (TASK_VIEWS as readonly string[]).includes(v);
 type DueFocus = "today" | "overdue" | "week";
@@ -232,7 +232,9 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState("m-self");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
+  // the section Settings was asked to open at (a deep link: ? → Shortcuts, Manage tags → Tags);
+  // none for a plain open, which is Appearance on a desktop and the section list on a phone
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
@@ -302,6 +304,12 @@ export default function App() {
   // bumped when this person's plan overlay (their plan on others' tasks) changes, so it's re-read
   const [overlayRev, setOverlayRev] = useState(0);
   const docked = useMediaQuery("(min-width: 1280px)");
+  // Import tasks opened with text already in it (a paste too long for Quick capture)
+  const [importText, setImportText] = useState<string | undefined>(undefined);
+  // bumped when Inbox items are archived or brought back (Inbox › Archived lists this session's)
+  const [archivedRev, setArchivedRev] = useState(0);
+  // Ask's context, kept as the same object while nothing in it changes (the palette snapshots it per question)
+  const askContextRef = useRef<{ key: string; value: AskContext } | null>(null);
 
   /* ---- live views of state for stable callbacks ---- */
   const routeRef = useRef<Route>(route); routeRef.current = route;
@@ -885,7 +893,7 @@ export default function App() {
       const q = params.get("q");
       setSearchPrefill(r.view === "search" && !r.list && q ? { text: q, key: `url-${Date.now()}` } : null);
       setCmdOpen(false); setQuickCaptureOpen(false); setNewTaskOpen(false); setNewProjectOpen(false); setNewWorkspaceOpen(false);
-      setImportOpen(false); setSettingsOpen(false); setUpgradeOpen(false); setDeleteProjectId(null); setFocusOpen(false);
+      setImportOpen(false); setSettingsOpen(false); setSettingsSection(undefined); setUpgradeOpen(false); setDeleteProjectId(null); setFocusOpen(false);
       setExtract({ open: false }); setShutdownOpen(false); setWeeklyOpen(false); setSidebarOpen(false);
     };
     window.addEventListener("popstate", onPop);
@@ -1007,6 +1015,7 @@ export default function App() {
     const items = parts.flatMap((p) => p.items);
     if (!items.length) return;
     items.forEach((a) => archivedHereRef.current.delete(a.id));
+    setArchivedRev((n) => n + 1);
     putBackActivity(items);
     Promise.all(parts.map((p) => p.archived.then(() => p.items.map((a) => a.id), () => [] as string[]))).then((landed) => {
       const ids = landed.flat();
@@ -1035,7 +1044,9 @@ export default function App() {
 
   const noteArchived = useCallback((items: Activity[], archived: Promise<void>) => {
     items.forEach((item) => archivedHereRef.current.set(item.id, { item, archived }));
-    archived.catch(() => items.forEach((a) => archivedHereRef.current.delete(a.id))); // it's back in the inbox
+    setArchivedRev((n) => n + 1);
+    // it's back in the inbox
+    archived.catch(() => { items.forEach((a) => archivedHereRef.current.delete(a.id)); setArchivedRev((n) => n + 1); });
   }, []);
 
   const archiveActivity = useCallback((id: string) => {
@@ -1368,7 +1379,9 @@ export default function App() {
   /** Show a new task at once and save it. Resolves to its saved id (null if the save failed). */
   const persistTask = useCallback((raw: Task, opts: CreateOpts = {}): Promise<string | null> => {
     const me = userIdRef.current;
-    const t: Task = {
+    // whoever creates the row is its creator (tasks.user_id), even for a copied
+    // recurrence or duplicate, so it's under your Waiting on straight away
+    const t: Task = stampCreator({
       ...raw,
       id: isTaskId(raw.id) ? raw.id : newTaskId(),
       assigneeId: raw.assigneeId === "m-self" ? me : raw.assigneeId,
@@ -1378,7 +1391,7 @@ export default function App() {
       position: raw.position ?? Date.now(),
       // created straight into Done (a Done column, an import): it was completed today
       completedAt: raw.status === "done" ? raw.completedAt ?? toLocalISO(new Date()) : raw.completedAt,
-    };
+    }, me);
     setTasks((ts) => (ts ? [t, ...ts] : [t]));
     // visible to callbacks straight away (the next render sets the same list), so a
     // follow-up in this same tick — e.g. taking back a just-spawned recurrence — finds it
@@ -2071,10 +2084,12 @@ export default function App() {
       title: partial.title, description: partial.description ?? "", status: partial.status || "todo", priority: partial.priority || "medium",
       projectId, assigneeId, tags: partial.tags ?? [], dependencies: [], subtasks: [],
       comments: 0, aiScore: 50, aiReason: undefined, focusMin, dur: focusMin, scheduled: null,
-      // only your own tasks added from Today go straight onto today's plan (a teammate's
-      // day is theirs to plan)
-      planToday: r.view === "plan" && assigneeId === me,
-      recurrence: "none", dueDate: partial.dueDate, dueTime: partial.dueTime, startDate: partial.startDate,
+      // only your own tasks go straight onto today's plan (a teammate's day is theirs to
+      // plan): one added from Today, or captured with a time today ("call Sana 3pm")
+      planToday: assigneeId === me && (partial.planToday ?? r.view === "plan"),
+      // what capture and import read: "every mon", "~30m"
+      recurrence: partial.recurrence ?? "none", ...(partial.effortHours ? { effortHours: partial.effortHours } : {}),
+      dueDate: partial.dueDate, dueTime: partial.dueTime, startDate: partial.startDate,
       sectionId: partial.sectionId, mySectionId: partial.mySectionId, collaborators: partial.collaborators,
       position: partial.position ?? Date.now(),
     };
@@ -2149,7 +2164,7 @@ export default function App() {
         applyProjects(op.deleted ? projectsRef.current.filter((x) => x.id !== tmpId) : swapTmp(projectsRef.current, tmpId, { ...p, ...op.patch }));
         setRouteRaw((r) => (r.view === "project" && r.projectId === tmpId ? { ...r, projectId: p.id } : r));
         // started from a built-in template: add its sections, then its starter tasks
-        const tpl = !op.deleted && templateId ? BUILTIN_PROJECT_TEMPLATES.find((t) => t.id === templateId) : undefined;
+        const tpl = !op.deleted && templateId ? findProjectTemplate(templateId) : undefined;
         if (tpl?.tasks?.length) {
           (async () => {
             const sectionIds: Record<string, string> = {};
@@ -2902,6 +2917,11 @@ export default function App() {
   }, [denyGuest]);
   openNewTaskRef.current = () => openNewTask();
   openCaptureRef.current = openCapture;
+  /** Import tasks: empty, or with text already in it (a paste too long for Quick capture). */
+  const openImport = useCallback((text?: string) => {
+    if (denyGuest([workspaceRef.current])) return;
+    setImportText(text); setImportOpen(true);
+  }, [denyGuest]);
 
   // opening Focus never resumes a paused timer by itself; "Start a focus block" does start it
   const openFocus = (start?: boolean) => { if (start === true && !focus.running) focus.setRunning(true); setFocusOpen(true); };
@@ -2915,10 +2935,12 @@ export default function App() {
     setDetailId(null); setFocusOpen(true); focus.setRunning(true);
   };
 
-  /** Settings, open at a section: Appearance (the preferences people reach for most) for
-   *  ⌘, and the Settings buttons, Profile from your avatar, Shortcuts for ?, Calendar from
-   *  Month and Today, Tags from Manage tags… */
-  const openSettings = useCallback((section: SettingsSection = "appearance") => { setSettingsSection(section); setSettingsOpen(true); }, []);
+  /** Settings: ⌘, and the Settings buttons open it plainly (Appearance on a desktop, the
+   *  section list on a phone); a deep link opens at its section: Profile from your avatar,
+   *  Shortcuts for ?, Calendar from Month and Today, Tags from Manage tags… Closing forgets
+   *  the section, so the same deep link twice in a row still lands on it. */
+  const openSettings = useCallback((section?: SettingsSection) => { setSettingsSection(section); setSettingsOpen(true); }, []);
+  const closeSettings = useCallback(() => { setSettingsOpen(false); setSettingsSection(undefined); }, []);
   openSettingsRef.current = openSettings;
   /** The command bar; with `query` it opens on its Ask row with that text. */
   const openPalette = useCallback((query?: string) => { setPaletteQuery(query); setCmdOpen(true); }, []);
@@ -3016,6 +3038,7 @@ export default function App() {
     const parts = ids.map((id) => archivedHereRef.current.get(id)).filter((p): p is { item: Activity; archived: Promise<void> } => !!p);
     if (!parts.length) return;
     ids.forEach((id) => archivedHereRef.current.delete(id));
+    setArchivedRev((n) => n + 1);
     undoArchive(parts.map((p) => ({ items: [p.item], archived: p.archived })));
   }, [undoArchive]);
 
@@ -3068,7 +3091,8 @@ export default function App() {
   const risks = useMemo(() => {
     if (tasks === null || workspace === null) return [];
     const members = wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active" && m.userId)
-      .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email }));
+      // (guests' work shows, but they carry no team capacity)
+      .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email, ...(m.role === "guest" ? { guest: true } : {}) }));
     return computeRisks({ tasks: allTasks, members, capacities: readCapacities(), today: dayKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allTasks, wsMembers, workspace, dayKey]);
@@ -3077,13 +3101,11 @@ export default function App() {
   // view filters (search spans every workspace), so the sidebar badge and the
   // results it opens always agree. Saved searches become user-defined smart
   // lists with live counts over the same set (one predicate, always in sync).
-  const { smartCounts, savedSearchCounts } = useMemo(() => {
+  const savedSearchCounts = useMemo(() => {
     const all = tasksSeen ?? [];
-    const smart: Record<string, number> = {};
-    for (const sl of SMART_LISTS) smart[sl.id] = all.filter((t) => sl.match(t, currentUserId)).length;
     const saved: Record<string, number> = {};
     for (const ss of savedSearches) { const q = toQuery(ss.query); saved[ss.id] = all.filter((t) => taskMatchesQuery(t, q)).length; }
-    return { smartCounts: smart, savedSearchCounts: saved };
+    return saved;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasksSeen, projects, savedSearches, currentUserId, dayKey]);
   useEffect(() => { if (route.view !== "search" && searchPrefill) setSearchPrefill(null); }, [route.view, searchPrefill]);
@@ -3190,23 +3212,17 @@ export default function App() {
   const canManageProject = (p: Project) => !activeReadOnly && (isAdmin || p.ownerId === currentUserId || !p.ownerId);
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
   const planProjectId = wsProjects.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
-  const askContext: AskContext = { today: dayKey, me: currentUserId, members: assignees, projects: wsProjects.map((p) => ({ id: p.id, name: p.name })) };
+  const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
+  const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects]);
+  if (askContextRef.current?.key !== askKey) askContextRef.current = { key: askKey, value: { today: dayKey, me: currentUserId, members: assignees, projects: askProjects } };
+  const askContext = askContextRef.current.value;
   const wsRules = automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId));
   const wsForms = forms.filter((f) => wsProjects.some((p) => p.id === f.projectId));
 
   /* ---- Today ---- */
-  // Momentum: today's work done ÷ today's work, counted the way Today counts it (P04's
-  // momentumCounts): top-level tasks only; yours, or ones you've put on today's plan;
-  // done today, or still open and due today or on today's plan (a block on today's
-  // canvas is on the plan, so "scheduled today" is counted there).
-  const day10 = (iso?: string | null) => (iso ? iso.slice(0, 10) : "");
-  let doneToday = 0, openToday = 0;
-  for (const t of myTasks) {
-    if (t.parentId || (!t.planToday && t.assigneeId !== currentUserId)) continue;
-    if (t.status === "done") { if (day10(t.completedAt) === dayKey) doneToday++; }
-    else if (day10(t.dueDate) === dayKey || !!t.planToday) openToday++;
-  }
-  const dayTotal = doneToday + openToday;
+  // Momentum: today's work done ÷ today's work (done today, plus open and due today,
+  // planned today or scheduled today), counted exactly as Today's brief and rail count it
+  const { done: doneToday, total: dayTotal } = momentumCounts(myTasks, dayKey, currentUserId);
   const setup = [
     { label: "Add your first task", done: allTasks.length > 0, action: () => openNewTask() },
     { label: "Plan your day", done: myTasks.some((t) => t.scheduled != null || !!t.planToday), action: () => setRoute({ view: "plan" }) },
@@ -3245,11 +3261,6 @@ export default function App() {
   const aiStatus = aiOn ? (facts: unknown) => store.aiStatus(facts) : undefined;
   const risksByProject: Record<string, number> = {};
   risks.forEach((r) => { if (r.projectId) risksByProject[r.projectId] = (risksByProject[r.projectId] ?? 0) + 1; });
-  const saveAsTemplate = (id: string) => {
-    const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
-    const tpl = saveProjectTemplate({ name: p.name, emoji: p.emoji, color: p.color });
-    toastSuccess(`Saved “${tpl.name}” as a template`);
-  };
 
   /* ---- the page header ---- */
   const tabItem = (t: PlaceTab, extra: Partial<TabItem> = {}): TabItem => ({ id: t.id, label: t.label, secondary: t.secondary, href: pathOf(t.route), ...extra });
@@ -3299,8 +3310,7 @@ export default function App() {
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
                 onDuplicate={activeReadOnly ? undefined : duplicateProject}
                 onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}
-                onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)}
-                onSaveTemplate={activeReadOnly ? undefined : saveAsTemplate} />
+                onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)} />
             ),
           };
         }
@@ -3328,51 +3338,27 @@ export default function App() {
   })();
   const createMenu: PageHeaderProps["create"] = activeReadOnly ? null : {
     onNewTask: () => openNewTask(), onQuickCapture: openCapture, onPasteNotes: () => openExtract(),
-    onImport: () => setImportOpen(true), onNewProject: () => setNewProjectOpen(true),
+    onImport: () => openImport(), onNewProject: () => setNewProjectOpen(true),
   };
 
-  /* Props the redesign adds to components other packages own (§4.3). They're spread in,
-     so they compile against today's components and the finished ones alike; once a
-     component declares one, TypeScript checks it here as usual. */
-  const headerNext = { momentumLabel: header.momentum != null ? `Today's work done, ${doneToday} of ${dayTotal}` : undefined };
-  const sidebarNext = {
-    theme: resolvedTheme, onToggleTheme: flipTheme, teamBadge: !personal && signalRisks > 0 ? signalRisks : undefined, onOpenSearch: () => openPalette(),
-    onOpenShortcuts: () => openSettings("shortcuts"),
-  };
-  const mobileNavNext = { onCapture: activeReadOnly ? undefined : openCapture, onMore: () => setSidebarOpen(true), personal };
-  const insightsNext = {
+  // Insights (Overview and Trends): the scope lives here, so moving between them keeps it.
+  // (No aiSummary: Trends asks Kanbo itself, with the scope and filters it's showing, and
+  // follows "Use Kanbo AI".)
+  const insightsNav = {
     scope: insightsScope, onScopeChange: setInsightsScope, currentUserId, personal, onAsk: () => openPalette(""),
     onOpenTrends: () => setRoute({ view: "reports" }), onOpenOverview: () => setRoute({ view: "analytics" }),
-    aiSummary: aiOn ? async () => {
-      const text = await store.aiSummary(allTasks, dayKey);
-      return text ? { data: text, source: "ai" as const } : { data: null, source: "unavailable" as const };
-    } : undefined,
-  };
-  const paletteNext = {
-    ai: aiOn ? (q: string, ts: Task[], ctx: AskContext) => store.aiCommand(q, ts, ctx) : undefined,
-    askContext, canAct: !activeReadOnly, onApplyAsk: applyAskActions, onGo: (r: Route) => setRoute(r),
-    recent: recentRoutesRef.current.filter((r) => !sameRoute(r, route)), recentTaskIds: recentTaskIdsRef.current,
-    // opened by an "Ask Kanbo" button: the example questions lead
-    initialQuery: paletteQuery, askFirst: paletteQuery !== undefined, personal,
-  };
-  const settingsNext = {
-    section: settingsSection, onSection: setSettingsSection, isAdmin,
-    renderWorkspace: workspace !== null && (isAdmin || workspaces.find((w) => w.id === workspace)?.ownerId === currentUserId)
-      ? () => <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
-        onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
-      : undefined,
-    tagsPanel: {
-      tags, onUpdate: updateTag, onDelete: deleteTag, onMerge: mergeTags, onCreate: createTag,
-      taskCounts: (() => { const c: Record<string, number> = {}; seen.forEach((t) => (t.tags || []).forEach((tg) => { c[tg] = (c[tg] || 0) + 1; })); return c; })(),
-    },
-    calendar: {
-      connections: calConnections, syncing: calSyncing,
-      onConnect: (provider: string) => { void connectCalendar(provider as CalProvider); },
-      onDisconnect: (provider: string) => { void disconnectCalendar(provider as CalProvider); },
-    },
-    billing: { enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling },
-    onImport: activeReadOnly ? undefined : () => { setSettingsOpen(false); setImportOpen(true); },
-  };
+  } satisfies InsightsNavProps;
+  // Settings › Workspace: the workspace's owner and admins (never a guest)
+  const canWorkspaceSettings = workspace !== null && !activeReadOnly && (isAdmin || workspaces.find((w) => w.id === workspace)?.ownerId === currentUserId);
+  const tagCounts: Record<string, number> = {};
+  seen.forEach((t) => (t.tags || []).forEach((tg) => { tagCounts[tg] = (tagCounts[tg] || 0) + 1; }));
+  // Inbox › Archived: what was archived this session, in this workspace, newest first
+  // (a task's activity belongs to the workspace its task lives in, as in the Inbox itself)
+  const wsTaskIds = new Set(tasks.filter((t) => (t.workspaceId ?? null) === workspace).map((t) => t.id));
+  const inboxArchived = archivedRev >= 0 ? [...archivedHereRef.current.values()].map((p) => p.item)
+    .filter((a) => !!a.taskId && wsTaskIds.has(a.taskId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
+  // Workload and Radar: guests' work shows, but they carry no team capacity
+  const loadMembers = assignees.map((a) => ({ ...a, guest: wsMembers.some((m) => m.userId === a.id && (m.workspaceId ?? null) === workspace && m.role === "guest") || undefined }));
 
   const renderMain = () => {
     switch (route.view) {
@@ -3381,36 +3367,35 @@ export default function App() {
         onUpdate={guardedPatch} onCreate={createFromPlan} onOpen={setDetailId} onRank={rankForToday} ranking={aiBusy}
         onStartFocus={startFocus} onShutdown={() => setShutdownOpen(true)} onExtractFromMeeting={(title) => openExtract(undefined, title)}
         onConnectCalendar={() => openSettings("calendar")} setup={setup} showSuggestions={appearance.suggestions !== false}
-        riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={() => setRoute({ view: "pulse" })} readOnly={activeReadOnly} />;
-      case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} />;
+        riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={activeReadOnly}
+        members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })} />;
+      case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} readOnly={activeReadOnly} />;
       // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
       // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
       // personal widgets — today's brief, focus queue, weekly chart — use yours
       case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} />;
-      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} {...insightsNext} />;
-      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNext} />;
+      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} {...insightsNav} />;
+      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNav} />;
       case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch}
         onDeleteSavedSearch={(id) => { removeSavedSearch(id)?.catch(() => toastError("Couldn't delete the saved search.")); }}
         preset={searchPreset} presetKey={searchPresetKey} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields}
-        {...{ onToggle: toggleTask, activeId: detailId ?? undefined }} />;
-      case "workload": return <WorkloadView tasks={allTasks} members={assignees} onOpen={setDetailId} />;
+        onToggle={toggleTask} activeId={detailId ?? undefined} />;
+      case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
-      case "automations": return <AutomationsView key={wsKey} {...rulesProps()} />;
-      case "forms": return <FormsView key={wsKey} {...formsProps()} />;
+      case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
+      case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)
       case "inbox": return <InboxView activity={scopedActivity} tasks={allSeen} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox}
-        {...{
-          currentUserId, members: assignees, readOnly: activeReadOnly, onUnarchive: unarchiveInbox,
-          // a reply to someone mentions them, so they hear about it
-          onReply: (taskId: string, body: string, mentions?: string[]) => addComment(taskId, body, mentions ?? []),
-          onAcceptToday: (taskId: string) => guardedPatch(taskId, { planToday: true }),
-          onSchedule: (taskId: string, dueDate: string) => guardedPatch(taskId, { dueDate }),
-          onComplete: (taskId: string) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); },
-        }} />;
+        currentUserId={currentUserId} members={assignees} readOnly={activeReadOnly} archived={inboxArchived} onUnarchive={unarchiveInbox}
+        // a reply to someone mentions them, so they hear about it
+        onReply={(taskId, body, mentions) => addComment(taskId, body, mentions ?? [])}
+        onAcceptToday={(taskId) => guardedPatch(taskId, { planToday: true })}
+        onSchedule={(taskId, dueDate) => guardedPatch(taskId, { dueDate })}
+        onComplete={(taskId) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); }} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} syncing={calSyncing} readOnly={activeReadOnly}
-        {...{ scope: calScope, onScopeChange: setCalScope, onOpenSettings: () => openSettings("calendar") }} />;
+        scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={risksByProject} />;
@@ -3418,33 +3403,13 @@ export default function App() {
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
         onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
         onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
-        {...{ personal, onNewWorkspace: () => setNewWorkspaceOpen(true) }} />;
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)} onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace}
-        {...{ onOpenWorkspaceSettings: settingsNext.renderWorkspace ? () => openSettings("workspace") : undefined }} />;
+        personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })} />;
+      // (the workspace's logo, name and Close workspace live in Settings › Workspace)
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
+        onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined} />;
       case "tasks":
       case "project": {
         const inProject = !!openProject;
-        const pageNext = inProject ? {
-          tab: projectTab, onTab: goProjectTab, extraTabs,
-          renderExtra: (tab: string) => (
-            <ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={assignees}
-              canManage={canManageProject(openProject!)} readOnly={activeReadOnly} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
-              onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} rules={rulesProps(openProject!.id)} forms={formsProps(openProject!.id)} />
-          ),
-          notice: <ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} />,
-          currentUserId,
-        } : {
-          tab: route.tab ?? "open", onTab: (id: string) => setRoute({ view: "tasks", tab: id === "open" ? undefined : id }, { keepPanel: true }),
-          dueFocus: isDueFocus(route.list) ? route.list : undefined, currentUserId,
-          savedViews: savedSearches.map((s) => ({ id: s.id, name: s.name, count: savedSearchCounts[s.id] ?? 0 })),
-          onOpenSavedView: (id: string) => setRoute({ view: "search", list: id }), onSaveView: saveMyTasksView,
-          onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
-        };
-        // both: rows follow Appearance's density (and the Display menu changes it there), and the open task stays marked
-        const pageBoth = {
-          density: appearance.density, onDensity: (density: "comfortable" | "compact") => setAppearance((a) => ({ ...a, density })),
-          activeTaskId: detailId ?? undefined,
-        };
         return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
@@ -3455,7 +3420,7 @@ export default function App() {
             if (prev && prev.status !== status) patch.status = status;
             if (position !== undefined) patch.position = position;
             if (Object.keys(patch).length) guardedPatch(id, patch);
-          }} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} onPatch={guardedPatch} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => setImportOpen(true)} members={assignees} allTags={tags}
+          }} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} onPatch={guardedPatch} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={assignees} allTags={tags}
           archivedTasks={archivedTasks}
           sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (openProject ? sections.filter((s) => s.projectId === openProject.id) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
@@ -3463,7 +3428,27 @@ export default function App() {
           sectionProjectId={route.view === "tasks" ? "__my" : route.projectId}
           customFields={openProject ? customFields.filter((f) => f.projectId === openProject.id) : customFields}
           exportOpts={{ sections, customFields: openProject ? customFields.filter((f) => f.projectId === openProject.id) : customFields, allTasks }}
-          {...pageNext} {...pageBoth} />;
+          currentUserId={currentUserId}
+          // rows follow Appearance's density (the Display menu changes it there), and the open task stays marked
+          density={appearance.density} onDensity={(density) => setAppearance((a) => ({ ...a, density }))} activeTaskId={detailId ?? undefined}
+          {...(inProject ? {
+            // a project: its views as tabs, then Updates · Requests · Rules · About, and its notice line
+            tab: projectTab, onTab: goProjectTab, extraTabs,
+            renderExtra: (tab: string) => (
+              <ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={assignees}
+                canManage={canManageProject(openProject!)} readOnly={activeReadOnly} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
+                onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus}
+                rules={{ ...rulesProps(openProject!.id), readOnly: activeReadOnly }} forms={{ ...formsProps(openProject!.id), readOnly: activeReadOnly }} />
+            ),
+            notice: <ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} />,
+          } satisfies Partial<React.ComponentProps<typeof TasksPage>> : {
+            // My tasks: Open · Waiting on · Done, due-date anchors, saved views
+            tab: route.tab ?? "open", onTab: (id: string) => setRoute({ view: "tasks", tab: id === "open" ? undefined : id }, { keepPanel: true }),
+            dueFocus: isDueFocus(route.list) ? route.list : undefined,
+            savedViews: savedSearches.map((s) => ({ id: s.id, name: s.name, count: savedSearchCounts[s.id] ?? 0 })),
+            onOpenSavedView: (id: string) => setRoute({ view: "search", list: id }), onSaveView: saveMyTasksView,
+            onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
+          } satisfies Partial<React.ComponentProps<typeof TasksPage>>)} />;
       }
       default: return null;
     }
@@ -3473,9 +3458,11 @@ export default function App() {
   const sidebar = (
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={inboxCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => openSettings()} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
-      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling} smartCounts={smartCounts}
+      subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling}
       savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch}
-      myRole={myRole} guardRoute={false} {...sidebarNext} />
+      myRole={myRole} guardRoute={false}
+      theme={resolvedTheme} onToggleTheme={flipTheme} teamBadge={!personal && signalRisks > 0 ? signalRisks : undefined}
+      onOpenSearch={() => openPalette()} onOpenShortcuts={() => openSettings("shortcuts")} />
   );
 
   return (
@@ -3538,7 +3525,8 @@ export default function App() {
           </Notice>
         )}
         {BILLING_ENABLED && subscription?.status === "trialing" && <TrialBanner sub={subscription} onUpgrade={() => setUpgradeOpen(true)} />}
-        <PageHeader {...header} onSearch={() => openPalette()} create={createMenu} isMobile={isMobile} onOpenSettings={() => openSettings("profile")} userId={currentUserId} {...headerNext} />
+        <PageHeader {...header} onSearch={() => openPalette()} create={createMenu} isMobile={isMobile} onOpenSettings={() => openSettings("profile")} userId={currentUserId}
+          momentumLabel={header.momentum != null ? `Today's work done, ${doneToday} of ${dayTotal}` : undefined} />
         {/* the page fades in on a change of place (not of tab) */}
         <div key={place} className="kroute" style={{ flex: isMobile ? "1 0 auto" : 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           {/* a page that fails offers Today, and Today itself offers My tasks (never the page that just failed) */}
@@ -3549,12 +3537,13 @@ export default function App() {
         </div>
         {isMobile && (
           <div style={{ position: "sticky", bottom: 0, zIndex: "var(--z-header, 10)" }}>
-            <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} {...mobileNavNext} />
+            <MobileNav route={route} setRoute={setRoute} inboxCount={inboxCount} personal={personal}
+              onCapture={activeReadOnly ? undefined : openCapture} onMore={() => setSidebarOpen(true)} moreOpen={sidebarOpen} />
           </div>
         )}
       </main>
 
-      <ImportTasksModal open={importOpen} onClose={() => setImportOpen(false)}
+      <ImportTasksModal open={importOpen} onClose={() => { setImportOpen(false); setImportText(undefined); }} initialText={importText}
         projects={wsProjects} members={assignees.map((a) => ({ ...a, email: wsMembers.find((m) => m.userId === a.id)?.email }))}
         sections={sections.filter((s) => !s.id.startsWith("tmp-") && wsProjects.some((p) => p.id === s.projectId))}
         defaultProjectId={openProject?.id}
@@ -3575,7 +3564,7 @@ export default function App() {
           if (s.id === "new-task") openNewTask();
           else if (s.id === "quick-capture") openCapture();
           else if (s.id === "paste-notes") openExtract();
-          else if (s.id === "import") { if (!denyGuest([workspace])) setImportOpen(true); }
+          else if (s.id === "import") openImport();
           else if (s.id === "new-project") setNewProjectOpen(true);
           else if (s.id === "plan") setRoute({ view: "plan" });
           else if (s.id === "prioritize") autoPrioritize();
@@ -3587,12 +3576,17 @@ export default function App() {
           else if (s.id === "toggle-theme") flipTheme();
           else if (s.id === "shortcuts") openSettings("shortcuts");
           else if (s.id === "settings") openSettings();
-        }} onNavigate={(v) => setRoute({ view: v as Route["view"] })} {...paletteNext} />
+        }} onNavigate={(v) => setRoute({ view: v as Route["view"] })}
+        ai={aiOn ? (q, ts, ctx) => store.aiCommand(q, ts, ctx) : undefined}
+        askContext={askContext} canAct={!activeReadOnly} onApplyAsk={applyAskActions} onGo={(r) => setRoute(r)}
+        recent={recentRoutesRef.current.filter((r) => !sameRoute(r, route))} recentTaskIds={recentTaskIdsRef.current}
+        // opened by an "Ask Kanbo" button: the example questions lead
+        initialQuery={paletteQuery} askFirst={paletteQuery !== undefined} personal={personal} />
 
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <TaskDetail taskId={detailId} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} {...{ docked: docked && !isMobile, onStartFocus: focusTask, onOpenProject: (pid: string) => setRoute({ view: "project", projectId: pid }) }} />
+            readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />
         </ErrorBoundary>
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
@@ -3601,31 +3595,49 @@ export default function App() {
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
-      <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding} />
+      <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
+        onGoToday={() => setRoute({ view: "plan" })} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}
         canSkip={!!((profile?.firstName?.trim()) || (profile?.lastName?.trim()))}
         onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "" })}
         name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined}
         initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""} />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
+      <SettingsModal open={settingsOpen} onClose={closeSettings}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? SELF_COLOR}
         onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount}
         notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs}
         appearance={appearance} onChangeAppearance={setAppearance}
-        theme={theme} onChangeTheme={setTheme} {...settingsNext} />
+        theme={theme} onChangeTheme={setTheme}
+        section={settingsSection} onSection={setSettingsSection} isAdmin={canWorkspaceSettings} isGuest={activeReadOnly}
+        renderWorkspace={canWorkspaceSettings ? () => (
+          <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
+            onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
+        ) : undefined}
+        onGoPeople={workspace !== null ? () => setRoute({ view: "team" }) : undefined}
+        tagsPanel={{ tags, taskCounts: tagCounts, onUpdate: updateTag, onDelete: deleteTag, onMerge: mergeTags, onCreate: createTag }}
+        calendar={{
+          connections: calConnections, syncing: calSyncing,
+          onConnect: (provider) => { void connectCalendar(provider as CalProvider); },
+          onDisconnect: (provider) => { void disconnectCalendar(provider as CalProvider); },
+        }}
+        billing={{ enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling }}
+        // (Settings closes itself first, so the import dialog isn't underneath)
+        onImport={activeReadOnly ? undefined : () => openImport()} />
       <QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsProjects} members={assignees}
-        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask}
-        {...{ onPasteNotes: (text: string) => openExtract(text), onImportRows: (rows: ImportRow[]) => importTasks(rows) }} />
+        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask} tags={tags}
+        onPasteNotes={(text) => openExtract(text)} onImportRows={(rows) => importTasks(rows)}
+        // a paste longer than Quick capture takes goes to Import tasks, with the text in
+        onOpenImport={(text) => { setQuickCaptureOpen(false); openImport(text); }} />
       <ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
         projects={wsProjects} members={assignees} defaultProjectId={openProject?.id} currentUserId={currentUserId}
         onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
         onCreate={(rows) => importTasks(rows, { verb: "Added" })} />
       <ShutdownSheet open={shutdownOpen} onClose={() => setShutdownOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} userName={currentUser?.name}
-        onPatch={guardedPatch} onComment={(taskId, body) => addComment(taskId, body)} focusMinutesToday={focus.focusMinToday} />
+        onPatch={guardedPatch} onComment={(taskId, body) => addComment(taskId, body)} focusMinutesToday={focus.focusMinToday} readOnly={activeReadOnly} />
       <WeeklyReview open={weeklyOpen} onClose={() => setWeeklyOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} onPatch={guardedPatch}
-        onSummarise={aiOn ? () => store.aiSummary(myTasks, dayKey) : undefined} />
+        onSummarise={aiOn ? () => store.aiSummary(myTasks, dayKey) : undefined} readOnly={activeReadOnly} />
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} seats={Math.max(1, wsMembers.filter((m) => m.status === "active").length || 1)} busyPlan={checkoutBusy} onChoose={startCheckout} />
       {deleteProjectId && (() => {
         const proj = getProject(deleteProjectId);

@@ -263,7 +263,7 @@ export interface GoTarget { id: string; label: string; keywords: string; icon: I
 /** Every place, every tab, and the old names people will still type. */
 export const GO_TARGETS: GoTarget[] = [
   { id: "today", label: "Today", keywords: "today day plan my day planner home dashboard", icon: "sun", route: { view: "plan" }, hint: "G D" },
-  { id: "week", label: "Week", keywords: "my week this week", icon: "calendarPlus", route: { view: "myweek" }, hint: "G W" },
+  { id: "week", label: "Week", keywords: "my week this week weekly review big 3", icon: "calendarPlus", route: { view: "myweek" }, hint: "G W" },
   { id: "month", label: "Month", keywords: "calendar month schedule", icon: "calendar", route: { view: "calendar" }, hint: "G C" },
   { id: "overview", label: "Overview (classic Home)", keywords: "home overview dashboard classic", icon: "home", route: { view: "home" }, hint: "G H" },
   { id: "inbox", label: "Inbox", keywords: "inbox notifications mentions assignments updates bell", icon: "inbox", route: { view: "inbox" }, hint: "G I" },
