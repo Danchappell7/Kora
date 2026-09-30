@@ -12,7 +12,7 @@
    that has to convert getBoundingClientRect() pixels back to CSS pixels.)
    ============================================================ */
 
-import { contrast, oklchToRgb, parseColor } from "./contrast";
+import { contrast, oklchToRgb, over, parseColor } from "./contrast";
 
 export type AccentId = "violet" | "blue" | "teal" | "green" | "amber" | "rose" | "magenta";
 export type TextSize = "small" | "normal" | "large";
@@ -20,8 +20,8 @@ export type ThemeName = "light" | "dark";
 
 export type Density = "comfortable" | "compact";
 
-// ambient = opt-in slow drift of the background aurora. Off by default: every
-// glass card re-blurs whatever moves beneath it, so it costs a little GPU.
+// ambient: the old opt-in aurora drift. The aurora is retired (Paper & Navy
+// has one static halo), so it's kept only so saved preferences still load.
 // The optional fields default to comfortable rows, suggestions on and Kanbo's
 // AI on (an Appearance saved before they existed reads as those defaults):
 //   density     — list row height; applyAppearance sets <html data-density>
@@ -33,8 +33,8 @@ export interface Appearance {
 }
 
 // each accent is a single oklch hue + chroma; the LIGHTNESS comes from the
-// theme (--accent-l in kanbo.css) so every accent is text-safe on paper and
-// glows on glass.
+// theme (--accent-l in kanbo.css) so every accent is text-safe on Paper and
+// still reads as a signal on Navy.
 export const ACCENTS: { id: AccentId; label: string; hue: number; chroma: number }[] = [
   { id: "violet", label: "Violet", hue: 287, chroma: 0.205 },
   { id: "blue", label: "Blue", hue: 264, chroma: 0.19 },
@@ -55,8 +55,12 @@ export const THEME_ACCENT_L: Record<ThemeName, { l: number; strong: number }> = 
   light: { l: 0.54, strong: 0.49 },
   dark: { l: 0.605, strong: 0.55 },
 };
-/** The darkest light-theme surface accent text sits on (--bg-deep: sidebar, lanes). */
-export const LIGHT_PANEL = "oklch(0.944 0.007 266)";
+/** The light-theme canvas (--bg), where pills and selected rows sit. */
+export const LIGHT_CANVAS = "oklch(0.992 0.002 268)";
+/** The light-theme panel (--bg-deep: sidebar, board lanes, wells). */
+export const LIGHT_PANEL = "oklch(0.968 0.005 268)";
+/** The darkest light-theme surface accent text sits on (--surface-2: chips and wells inside cards). */
+export const LIGHT_WELL = "oklch(0.964 0.005 268)";
 
 /** Text on an accent fill: white where it reaches AA, otherwise a deep ink. */
 export const ON_ACCENT_LIGHT = (hue: number) => `oklch(0.99 0.01 ${hue})`;
@@ -76,8 +80,9 @@ export interface AccentTheme {
 /**
  * How an accent renders in a theme.
  * - Light: the accent is also link/label text, so it steps darker than the
- *   base 0.54 until it reads ≥ 4.5:1 on the darkest panel (WCAG luminance
- *   runs high for teal/green/amber/blue at equal perceived lightness).
+ *   base 0.54 until it reads ≥ 4.5:1 on the panel, the darkest well and its
+ *   own 10% tint (WCAG luminance runs high for teal/green/amber/blue at equal
+ *   perceived lightness).
  * - White text is the house look, so if white misses 4.5:1 on the accent,
  *   the button fill (--accent-fill) is deepened by up to 6.5%; if even that
  *   isn't enough (teal, green, amber in dark) the accent carries deep ink.
@@ -87,8 +92,14 @@ export function accentTheme(id: AccentId, theme: ThemeName): AccentTheme {
   const base = THEME_ACCENT_L[theme];
   let l = base.l;
   if (theme === "light") {
-    const panel = parseColor(LIGHT_PANEL)!;
-    while (l > 0.4 && contrast(oklchToRgb(l, a.chroma, a.hue), panel) < 4.5) l = +(l - 0.005).toFixed(3);
+    // the panel, the darkest well, and the accent's own 10% tint (pills,
+    // selected rows) on the canvas
+    const panel = parseColor(LIGHT_PANEL)!, well = parseColor(LIGHT_WELL)!, canvas = parseColor(LIGHT_CANVAS)!;
+    const worst = (x: number) => {
+      const ink = oklchToRgb(x, a.chroma, a.hue);
+      return Math.min(contrast(ink, panel), contrast(ink, well), contrast(ink, over({ ...ink, a: 0.1 }, canvas)));
+    };
+    while (l > 0.4 && worst(l) < 4.5) l = +(l - 0.005).toFixed(3);
   }
   const strongL = +(l - (base.l - base.strong)).toFixed(3);
   const white = parseColor(ON_ACCENT_LIGHT(a.hue))!;
@@ -128,7 +139,8 @@ export function loadAppearance(): Appearance {
 
 // every inline property applyAppearance may set — cleared for the brand default
 const ACCENT_PROPS = [
-  "--accent", "--accent-strong", "--accent-dim", "--accent-glow", "--accent-text-dark", "--aurora-h",
+  "--accent", "--accent-strong", "--accent-dim", "--accent-glow", "--accent-text-dark",
+  "--aurora-h", // written by earlier versions (the retired aurora followed the accent)
   "--accent-l-light", "--accent-strong-l-light", "--accent-l-dark", "--accent-strong-l-dark",
   "--on-accent-light", "--on-accent-dark", "--accent-shade-light", "--accent-shade-dark",
   "--accent-hover-light", "--accent-hover-dark",
@@ -144,7 +156,6 @@ export function applyAppearance(a: Appearance, root: HTMLElement = document.docu
   ACCENT_PROPS.forEach((v) => root.style.removeProperty(v));
   if (a.accent !== "violet") {
     const set = (k: string, v: string) => root.style.setProperty(k, v);
-    set("--aurora-h", String(hue)); // background aurora follows the accent
     set("--accent", `oklch(var(--accent-l) ${chroma} ${hue})`);
     set("--accent-strong", `oklch(var(--accent-strong-l) ${chroma} ${hue})`);
     set("--accent-dim", `oklch(var(--accent-l) ${chroma} ${hue} / var(--accent-dim-a))`);

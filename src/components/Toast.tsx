@@ -1,14 +1,22 @@
 /* ============================================================
    KANBO — toast notifications (replaces alert())
-   Timers pause while the stack is hovered, holds keyboard focus, or the tab
-   is hidden, so nobody loses an Undo while reaching for it (WCAG 2.2.1).
-   The most recent Undo can also be run from anywhere with ⌘Z / Ctrl+Z.
+   Bottom-left, a raised 40px strip; at most three on screen (older ones
+   wait their turn with their clocks running). Timers pause while the
+   stack is hovered, holds keyboard focus, or the tab is hidden, so nobody
+   loses an Undo while reaching for it (WCAG 2.2.1).
+   Every Undo registers in lib/undoStack for as long as its toast is up,
+   and ⌘Z / Ctrl+Z runs the newest entry in that stack from anywhere —
+   a toast's Undo or any other undoable change (an applied Ask, a bulk
+   move). This provider owns the global ⌘Z: it marks the event handled
+   (preventDefault), so a second handler must check defaultPrevented.
    ============================================================ */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Button, Icon } from "./primitives";
+import { hasUndo, pushUndo, undoLast } from "../lib/undoStack";
 
 type ToastType = "error" | "success" | "info";
 interface ToastAction { label: string; run: () => void }
-interface ToastItem { id: number; message: string; type: ToastType; action?: ToastAction; renewed?: number }
+interface ToastItem { id: number; message: string; type: ToastType; action?: ToastAction }
 
 /**
  * Options for an action toast. Passing an options OBJECT (even `{}`) opts in to
@@ -49,6 +57,8 @@ interface ToastApi {
 /** Minimum on-screen time for a managed action toast (Undo). */
 export const ACTION_TOAST_MIN_MS = 10000;
 const LEGACY_ACTION_MS = 6000;
+/** Toasts on screen at once; the rest queue (newest last). */
+export const MAX_VISIBLE_TOASTS = 3;
 
 const ToastContext = createContext<ToastApi | null>(null);
 
@@ -61,11 +71,18 @@ interface Entry {
   pausable: boolean;           // legacy action toasts keep a fixed lifetime
   onExpire?: () => void;
   key?: string;                // a later toast with this key takes this one's place
+  unregister?: () => void;     // takes its Undo back off the ⌘Z stack
 }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
 const UNDO_KEYS = isMac ? "⌘Z" : "Ctrl+Z";
 const isUndo = (label: string) => /^undo$/i.test(label.trim());
+
+const alertIcon = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+  </svg>
+);
 
 const isEditable = (el: EventTarget | null): boolean => {
   const n = el as HTMLElement | null;
@@ -75,8 +92,6 @@ const isEditable = (el: EventTarget | null): boolean => {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
-  const itemsRef = useRef<ToastItem[]>([]);
-  itemsRef.current = items;
   const entries = useRef<Map<number, Entry>>(new Map());
   const stackRef = useRef<HTMLDivElement>(null);
   // why the clocks are paused — any one of these holds them
@@ -92,6 +107,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const e = entries.current.get(id);
     if (!e) return; // already gone — never run onExpire twice
     if (e.timer) clearTimeout(e.timer);
+    e.unregister?.();
     entries.current.delete(id);
     if (reason !== "action" && e.onExpire) {
       try { e.onExpire(); } catch (err) { console.error(err); }
@@ -131,6 +147,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     push({ id: ++_id, message, type }, { remaining: type === "error" ? 7000 : 4000, pausable: true });
   }, [push]);
 
+  // run a toast's action once, then take the toast (and its ⌘Z entry) away
+  const runById = useCallback((id: number, run: () => void) => {
+    if (!entries.current.has(id)) return;
+    try { run(); } finally { close(id, "action"); }
+  }, [close]);
+  const runActionRef = useRef(runById);
+  runActionRef.current = runById;
+  const runAction = useCallback((it: ToastItem) => { if (it.action) runById(it.id, it.action.run); }, [runById]);
+
+  // an Undo is on the ⌘Z stack for exactly as long as its toast is up (the
+  // toast's own lifecycle takes it off, hence no stack timeout of its own)
+  const toastUndone = useRef(false);
+  const registerUndo = (id: number, message: string, label: string, run: () => void) =>
+    isUndo(label) ? pushUndo(message, () => { toastUndone.current = true; runActionRef.current(id, run); }, Infinity) : undefined;
+
   const action = useCallback((message: string, label: string, run: () => void, opts?: number | ToastActionOptions) => {
     if (typeof opts === "object" && opts !== null) {
       const entry = { remaining: Math.max(ACTION_TOAST_MIN_MS, opts.ms ?? 0), pausable: true, onExpire: opts.onExpire, key: opts.key };
@@ -139,23 +170,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       if (prev) {
         const [id, old] = prev;
         if (old.timer) clearTimeout(old.timer);
-        entries.current.set(id, { ...entry, startedAt: Date.now(), timer: null });
-        const renewed = ++_id; // counts as the newest Undo for ⌘Z, though it keeps its slot
-        setItems((xs) => xs.map((x) => (x.id === id ? { ...x, message, action: { label, run }, renewed } : x)));
+        old.unregister?.();
+        // re-registered, so it's the newest Undo for ⌘Z, though it keeps its slot
+        entries.current.set(id, { ...entry, startedAt: Date.now(), timer: null, unregister: registerUndo(id, message, label, run) });
+        setItems((xs) => xs.map((x) => (x.id === id ? { ...x, message, action: { label, run } } : x)));
         if (old.onExpire) { try { old.onExpire(); } catch (err) { console.error(err); } }
         if (!paused.current) start(id);
         return;
       }
-      push({ id: ++_id, message, type: "info", action: { label, run } }, entry);
+      const id = ++_id;
+      push({ id, message, type: "info", action: { label, run } }, { ...entry, unregister: registerUndo(id, message, label, run) });
     } else {
-      push({ id: ++_id, message, type: "info", action: { label, run } }, { remaining: typeof opts === "number" ? opts : LEGACY_ACTION_MS, pausable: false });
+      const id = ++_id;
+      push({ id, message, type: "info", action: { label, run } },
+        { remaining: typeof opts === "number" ? opts : LEGACY_ACTION_MS, pausable: false, unregister: registerUndo(id, message, label, run) });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [push, start]);
-
-  const runAction = useCallback((it: ToastItem) => {
-    if (!it.action || !entries.current.has(it.id)) return;
-    try { it.action.run(); } finally { close(it.id, "action"); }
-  }, [close]);
 
   // pause while the tab is in the background
   useEffect(() => {
@@ -164,20 +195,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [syncPaused]);
 
-  // ⌘Z / Ctrl+Z runs the newest Undo from anywhere (text fields keep their own undo)
+  // ⌘Z / Ctrl+Z runs the newest undoable change from anywhere (text fields
+  // keep their own undo). A toast's Undo just takes its toast away; anything
+  // else says what it undid.
+  const toastRef = useRef<(message: string) => void>(() => {});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "z") return;
       if (isEditable(e.target) || isEditable(document.activeElement)) return;
-      const latest = itemsRef.current.filter((x) => x.action && isUndo(x.action.label))
-        .reduce<ToastItem | undefined>((best, x) => (!best || (x.renewed ?? x.id) > (best.renewed ?? best.id) ? x : best), undefined);
-      if (!latest) return;
+      if (!hasUndo()) return;
       e.preventDefault();
-      runAction(latest);
+      toastUndone.current = false;
+      const label = undoLast();
+      if (label && !toastUndone.current) toastRef.current(`Undone: ${label}`);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runAction]);
+  }, []);
 
   // a toast removed from under the pointer / focus never fires leave/blur —
   // re-read the real state whenever the stack changes
@@ -212,7 +246,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setItems((xs) => xs.every((x) => map.has(x.id)) ? xs : xs.filter((x) => map.has(x.id)));
     return () => {
       const pending = [...map.values()];
-      map.forEach((e) => { if (e.timer) clearTimeout(e.timer); });
+      map.forEach((e) => { if (e.timer) clearTimeout(e.timer); e.unregister?.(); });
       map.clear();
       pending.forEach((e) => { try { e.onExpire?.(); } catch (err) { console.error(err); } });
     };
@@ -220,36 +254,38 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const error = useCallback((m: string) => toast(m, "error"), [toast]);
   const success = useCallback((m: string) => toast(m, "success"), [toast]);
+  toastRef.current = toast;
   const api = useMemo<ToastApi>(() => ({ toast, error, success, action, flush }), [toast, error, success, action, flush]);
-
-  const color = (t: ToastType) => t === "error" ? "var(--st-blocked)" : t === "success" ? "var(--st-done)" : "var(--accent)";
+  const visible = items.slice(-MAX_VISIBLE_TOASTS);
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div ref={stackRef} role="status" aria-live="polite"
+      <div ref={stackRef} role="status" aria-live="polite" className="ktoasts"
         onMouseEnter={() => { hover.current = true; syncPaused(); }}
         onMouseLeave={() => { hover.current = false; syncPaused(); }}
         onFocus={() => { focusWithin.current = true; syncPaused(); }}
-        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { focusWithin.current = false; syncPaused(); } }}
-        style={{ position: "fixed", bottom: 20, right: 20, zIndex: 300, display: "flex", flexDirection: "column", gap: 10, maxWidth: "calc(100vw - 40px)", pointerEvents: "none" }}>
-        {items.map((it) => {
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { focusWithin.current = false; syncPaused(); } }}>
+        {visible.map((it) => {
           const undo = !!it.action && isUndo(it.action.label);
           return (
-            <div key={it.id} className="glass anim-fadeup" style={{ pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: 11, padding: "12px 14px", borderRadius: 13, width: 340, maxWidth: "100%", background: "var(--surface-raised)", boxShadow: "var(--shadow-lg)", borderLeft: `3px solid ${color(it.type)}` }}>
-              <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 99, marginTop: 5, flexShrink: 0, background: color(it.type) }} />
-              <p style={{ margin: 0, flex: 1, minWidth: 0, fontSize: 13.5, lineHeight: 1.45, color: "var(--ink-2)", overflowWrap: "anywhere" }}>
+            <div key={it.id} className="ktoast" data-type={it.type}>
+              {it.type === "error" && <span className="ktoast-icon">{alertIcon}</span>}
+              {it.type === "success" && <span className="ktoast-icon"><Icon name="check" size={16} sw={2} /></span>}
+              <p className="ktoast-msg">
                 {it.message}
                 {undo && <span className="sr-only">. Press {isMac ? "Command" : "Control"} Z to undo.</span>}
               </p>
-              {it.action && (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
-                  <button onClick={() => runAction(it)} aria-keyshortcuts={undo ? (isMac ? "Meta+Z" : "Control+Z") : undefined}
-                    style={{ border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", padding: "0 2px", fontSize: 13, fontWeight: 650, fontFamily: "var(--font-display)", lineHeight: 1.45 }}>{it.action.label}</button>
-                  {undo && <kbd aria-hidden="true" className="mono hide-sm" style={{ fontSize: 10.5, padding: "1px 5px", borderRadius: 5, background: "var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent))", border: "1px solid var(--hairline)", color: "var(--ink-4)", lineHeight: 1.5 }}>{UNDO_KEYS}</kbd>}
-                </span>
-              )}
-              <button onClick={() => close(it.id, "dismiss")} aria-label={`Dismiss: ${it.message}`} title="Dismiss" style={{ border: "none", background: "transparent", color: "var(--ink-4)", cursor: "pointer", padding: 0, fontSize: 16, lineHeight: 1, flexShrink: 0 }}>×</button>
+              <span className="ktoast-acts">
+                {it.action && (
+                  <Button variant="ghost" size="sm" onClick={() => runAction(it)} kbd={undo ? UNDO_KEYS : undefined}
+                    aria-keyshortcuts={undo ? (isMac ? "Meta+Z" : "Control+Z") : undefined}>{it.action.label}</Button>
+                )}
+                <button type="button" className="kibtn" data-size="sm" onClick={() => close(it.id, "dismiss")}
+                  aria-label={`Dismiss: ${it.message}`} data-tip="Dismiss">
+                  <Icon name="x" size={14} sw={1.75} />
+                </button>
+              </span>
             </div>
           );
         })}

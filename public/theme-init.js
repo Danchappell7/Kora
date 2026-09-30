@@ -8,7 +8,8 @@
    ============================================================ */
 (function () {
   var root = document.documentElement;
-  var CHROME = { light: "#f5f6f9", dark: "#1b1d24" };
+  // the browser chrome matches each theme's canvas: Paper and Canvas Navy
+  var CHROME = { light: "#FBFCFE", dark: "#0B1020" };
   var mq = null;
   try { mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null; } catch (e) { /* ignore */ }
 

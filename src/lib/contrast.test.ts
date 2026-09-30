@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { contrast, parseColor, over, oklchToRgb, rgbToOklch } from "./contrast";
+import { contrast, parseColor, over, oklchToRgb, rgbToOklch, toOklch } from "./contrast";
 
 describe("contrast maths", () => {
   it("matches the WCAG reference points", () => {
@@ -38,6 +38,17 @@ describe("contrast maths", () => {
     expect(violet.h).toBeGreaterThan(285);
     expect(violet.h).toBeLessThan(300);
     expect(rgbToOklch(parseColor("#808080")!).c).toBeLessThan(0.001); // greys have no chroma
+  });
+
+  it("reads a colour's oklch coordinates: exactly from oklch(), converted from hex or rgb()", () => {
+    expect(toOklch("oklch(0.74 0.14 230)")).toEqual({ l: 0.74, c: 0.14, h: 230 });
+    expect(toOklch("oklch(62% 0.15 400deg / 0.5)")).toEqual({ l: 0.62, c: 0.15, h: 40 });
+    const v = toOklch("#8B5CF6")!;
+    expect(v.h).toBeGreaterThan(285);
+    expect(v.h).toBeLessThan(300);
+    expect(toOklch("rgb(128, 128, 128)")!.c).toBeLessThan(0.001);
+    expect(toOklch("var(--accent)")).toBeNull();
+    expect(toOklch("")).toBeNull();
   });
 
   it("composites translucent foregrounds before measuring", () => {

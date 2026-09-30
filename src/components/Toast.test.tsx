@@ -1,14 +1,15 @@
 import { StrictMode, useEffect } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { ToastProvider, useToast, ACTION_TOAST_MIN_MS } from "./Toast";
+import { ToastProvider, useToast, ACTION_TOAST_MIN_MS, MAX_VISIBLE_TOASTS } from "./Toast";
+import { clearUndo, hasUndo, pushUndo, undoLast } from "../lib/undoStack";
 
 type Api = ReturnType<typeof useToast>;
 let api: Api;
 function Grab() { api = useToast(); return <input aria-label="Title" />; }
 const setup = () => render(<ToastProvider><Grab /></ToastProvider>);
 
-beforeEach(() => { vi.useFakeTimers(); });
+beforeEach(() => { vi.useFakeTimers(); clearUndo(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("Toast", () => {
@@ -146,6 +147,55 @@ describe("Toast", () => {
     expect(renewed).toHaveBeenCalledTimes(1);
     expect(other).not.toHaveBeenCalled();
     expect(older).not.toHaveBeenCalled();
+  });
+
+  it("registers every Undo on the ⌘Z stack while its toast is up; undoLast() runs it once", () => {
+    setup();
+    const run = vi.fn(); const onExpire = vi.fn();
+    act(() => api.action("Moved 3 tasks to Monday", "Undo", run, { onExpire }));
+    expect(hasUndo()).toBe(true);
+    let label: string | null = null;
+    act(() => { label = undoLast(); });
+    expect(label).toBe("Moved 3 tasks to Monday");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(onExpire).not.toHaveBeenCalled();
+    expect(screen.queryByText("Moved 3 tasks to Monday")).not.toBeInTheDocument();
+    act(() => { expect(undoLast()).toBeNull(); });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the Undo off the stack when the toast goes (its own Undo, ×, or timing out)", () => {
+    setup();
+    act(() => api.action("A", "Undo", () => {}, {}));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(hasUndo()).toBe(false);
+    act(() => api.action("B", "Undo", () => {}, {}));
+    fireEvent.click(screen.getByRole("button", { name: /Dismiss: B/ }));
+    expect(hasUndo()).toBe(false);
+    act(() => api.action("C", "Undo", () => {}, 3000));
+    expect(hasUndo()).toBe(true);
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(hasUndo()).toBe(false);
+    act(() => api.action("Retry the sync", "Retry", () => {}, {})); // not an Undo
+    expect(hasUndo()).toBe(false);
+  });
+
+  it("⌘Z also undoes changes registered outside a toast, and says what it undid", () => {
+    setup();
+    const restore = vi.fn();
+    act(() => { pushUndo("Applied 4 changes", restore); });
+    act(() => { fireEvent.keyDown(window, { key: "z", metaKey: true }); });
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Undone: Applied 4 changes");
+  });
+
+  it(`shows at most ${MAX_VISIBLE_TOASTS} at once; the next one takes a free slot`, () => {
+    setup();
+    act(() => { ["One", "Two", "Three", "Four"].forEach((m) => api.action(m, "Undo", () => {}, {})); });
+    expect(screen.queryByText("One")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(MAX_VISIBLE_TOASTS);
+    fireEvent.click(screen.getByRole("button", { name: /Dismiss: Four/ }));
+    expect(screen.getByText("One")).toBeInTheDocument();
   });
 
   it("never leaves a toast stuck on screen after a StrictMode remount", () => {

@@ -4,23 +4,23 @@
    PriorityGlyph · DateChip (+ DatePicker) · AiMark · Provenance ·
    Vellum · EmptyState · Sheet · Pill · ProjectDot / projectPaint ·
    SectionLabel · Toggle.
-   Styling lives in kanbo.css ("kit primitives"), keyed on classes and
-   data attributes, and reads every new token with a fallback to
-   today's, so the kit looks right before and after the token pass.
+   Styling lives in kanbo.css ("Component classes"), keyed on classes
+   and data attributes, so plain markup can wear the same look.
    Import from "components/primitives" (index.tsx re-exports all of it).
    ============================================================ */
 import {
   forwardRef, useEffect, useId, useMemo, useRef, useState,
   type ButtonHTMLAttributes, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode, type RefObject,
+  type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icon";
 import { Popover } from "./Popover";
 import { EmptyArt, type EmptyArtKind } from "./EmptyArt";
+import { KanboGlyph } from "./KanboLogo";
 import { markJustCompleted, wasJustCompleted } from "./celebrate";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
-import { parseColor, rgbToOklch } from "../../lib/contrast";
+import { toOklch } from "../../lib/contrast";
 import { KANBO_TODAY, PRIORITY_META, STATUS_META, presetDate, toLocalISO } from "../../data/data";
 import type { IconName, Priority, Status } from "../../data/types";
 
@@ -55,7 +55,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 ) {
   const iconSize = size === "sm" ? 14 : 16;
   const lead = loading
-    ? (variant === "hero" ? <KanboBars size={iconSize} thinking fill="currentColor" /> : <span className="kspin" aria-hidden="true" />)
+    ? (variant === "hero" ? <KanboGlyph size={iconSize} thinking /> : <span className="kspin" aria-hidden="true" />)
     : icon ? <Icon name={icon} size={iconSize} sw={1.75} /> : null;
   return (
     <button ref={ref} type={type} {...rest}
@@ -834,36 +834,13 @@ function DatePicker({ anchorRef, label, value, time, withTime, parse, onChange, 
 
 /* ============================== AiMark ============================== */
 
-/** The three-column board glyph (60% · 100% · 40%), hung from the top like a board. */
-function KanboBars({ size, thinking, fill, gradientId }: { size: number; thinking?: boolean; fill?: string; gradientId?: string }) {
-  const f = gradientId ? `url(#${gradientId})` : (fill ?? "currentColor");
-  return (
-    <svg className="kaimark" data-thinking={thinking || undefined} width={size} height={size} viewBox="0 0 16 16"
-      aria-hidden="true" focusable="false">
-      {gradientId && (
-        <defs>
-          <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1="0" y1="1" x2="16" y2="15">
-            <stop offset="0" stopColor="#5B7CFA" />
-            <stop offset="0.52" stopColor="#8B5CF6" />
-            <stop offset="1" stopColor="#C24BE0" />
-          </linearGradient>
-        </defs>
-      )}
-      <rect x={0.5} y={1} width={4} height={8.4} rx={1.5} fill={f} />
-      <rect x={6} y={1} width={4} height={14} rx={1.5} fill={f} />
-      <rect x={11.5} y={1} width={4} height={5.6} rx={1.5} fill={f} />
-    </svg>
-  );
-}
-
 /** Kanbo's AI mark (never a generic sparkle). `thinking` animates the columns
  *  only while a request is in flight; under reduced motion it holds still and
  *  shows "…" instead. Decorative unless `title` names it. */
 export function AiMark({ size = 14, thinking, title }: { size?: 12 | 14 | 16; thinking?: boolean; title?: string }) {
-  const gid = useDomId("kai");
   return (
     <span className="kaimark-wrap" role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}>
-      <KanboBars size={size} thinking={thinking} gradientId={gid} />
+      <KanboGlyph size={size} thinking={thinking} gradient />
       {thinking && <span className="kaimark-dots" aria-hidden="true">…</span>}
     </span>
   );
@@ -925,11 +902,14 @@ export function EmptyState({ art, title, body, action, size = "md" }: {
 /* ============================== Sheet ============================== */
 
 const SHEET_EXIT_MS = 160;
+/** a bottom sheet dragged down this far (or flicked faster than this, px/ms) closes */
+const DRAG_CLOSE_PX = 120, DRAG_CLOSE_SPEED = 0.6;
 
 /** The one dialog recipe: scrim (no blur), raised surface, 56px header with a
  *  Sora title and Close, 64px footer with actions on the right. `side` =
  *  centre dialog, right-hand panel or bottom sheet; phones always get a
- *  full-width bottom sheet. Focus is trapped; Escape and the scrim close it. */
+ *  full-width bottom sheet, which can be dragged down by its handle to close.
+ *  Focus is trapped; Escape, Close and the scrim close it. */
 export function Sheet({ open, onClose, label, title, side = "center", width, footer, children, initialFocus }: {
   open: boolean;
   onClose: () => void;
@@ -962,6 +942,36 @@ export function Sheet({ open, onClose, label, title, side = "center", width, foo
   const trapRef = useFocusTrap<HTMLDivElement>(open, onClose);
   const downOnScrim = useRef(false);
 
+  // drag the handle down to dismiss (the handle only shows on a bottom sheet;
+  // keyboard and screen-reader users have Escape and Close)
+  const drag = useRef<{ y: number; t: number; dy: number } | null>(null);
+  const settleTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
+  const onHandleDown = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    if (e.button !== 0 || !trapRef.current) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drag.current = { y: e.clientY, t: performance.now(), dy: 0 };
+    trapRef.current.dataset.dragging = "true";
+  };
+  const onHandleMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    const d = drag.current, el = trapRef.current;
+    if (!d || !el) return;
+    d.dy = Math.max(0, e.clientY - d.y); // down only: the sheet never lifts off its edge
+    el.style.translate = `0 ${d.dy}px`;
+  };
+  const onHandleUp = () => {
+    const d = drag.current, el = trapRef.current;
+    drag.current = null;
+    if (!d || !el) return;
+    delete el.dataset.dragging;
+    const speed = d.dy / Math.max(1, performance.now() - d.t);
+    if (d.dy > Math.min(DRAG_CLOSE_PX, el.offsetHeight / 3) || (d.dy > 24 && speed > DRAG_CLOSE_SPEED)) { onClose(); return; }
+    el.dataset.settling = "true";
+    el.style.translate = "";
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => { delete el.dataset.settling; }, SHEET_EXIT_MS);
+  };
+
   if ((!open && !leaving) || typeof document === "undefined") return null;
   const closing = !open;
   const w = width ?? (side === "bottom" ? 640 : 480);
@@ -976,7 +986,8 @@ export function Sheet({ open, onClose, label, title, side = "center", width, foo
       }}>
       <div ref={trapRef} className="ksheet" role={closing ? undefined : "dialog"} aria-modal={closing ? undefined : true} aria-label={label}
         style={{ "--sheet-w": `${w}px` } as CSSProperties}>
-        <span className="ksheet-handle" aria-hidden="true" />
+        <span className="ksheet-handle" aria-hidden="true"
+          onPointerDown={onHandleDown} onPointerMove={onHandleMove} onPointerUp={onHandleUp} onPointerCancel={onHandleUp} />
         {title && (
           <div className="ksheet-head">
             <h2 className="ksheet-title">{title}</h2>
@@ -1021,14 +1032,8 @@ export function projectPaint(color: string): { solid: string; tint: string; edge
   const key = color ?? "";
   const hit = paintCache.get(key);
   if (hit) return hit;
-  let c = 0.12, h = 268;
-  const ok = /^\s*oklch\(\s*[\d.]+%?\s+([\d.]+)\s+([\d.]+)(?:deg)?\s*(?:\/[^)]*)?\)\s*$/i.exec(key);
-  if (ok) { c = +ok[1]; h = +ok[2]; }
-  else {
-    const rgb = parseColor(key);
-    if (rgb) { const o = rgbToOklch(rgb); c = o.c; h = o.h; }
-  }
-  if (!Number.isFinite(c) || !Number.isFinite(h)) { c = 0.12; h = 268; }
+  const o = toOklch(key);
+  const c = o ? o.c : 0.12, h = o ? o.h : 268;
   const chroma = c < 0.03 ? c : Math.min(PC_MAX, Math.max(PC_MIN, c));
   const base = `var(--pl, 0.62) ${+chroma.toFixed(3)} ${+(h % 360).toFixed(1)}`;
   const paint = { solid: `oklch(${base})`, tint: `oklch(${base} / 0.14)`, edge: `oklch(${base} / 0.45)` };

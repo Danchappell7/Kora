@@ -67,9 +67,12 @@ function focusables(root: HTMLElement | null): HTMLElement[] {
 
 // Hover + keyboard-focus highlight for menu items. Items commonly carry an
 // inline `background: transparent`, hence !important. Scoped to open panels.
+// A separator (<hr> or .divider) is a hairline with 4px of air; a .kicker is
+// the 12/600 section label.
 const PANEL_CSS = `
 [data-kpop-panel] button:not(:disabled):hover, [data-kpop-panel] button:focus-visible { background: var(--fill-1, color-mix(in oklch, var(--ink) 7%, transparent)) !important; color: var(--ink) !important; }
 [data-kpop-panel] button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+[data-kpop-panel] > hr { height: 1px; margin: 4px -4px; border: 0; background: var(--hairline); }
 @media (prefers-reduced-motion: reduce) { [data-kpop-panel] { animation: none !important; } }
 `;
 
@@ -247,7 +250,8 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
           visibility: place ? "visible" : "hidden",
           minWidth, maxWidth: place?.maxWidth, maxHeight: Number.isFinite(cap) ? cap : undefined,
           overflowY: "auto", overscrollBehavior: "contain", boxSizing: "border-box",
-          padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)",
+          // the menu recipe: raised surface, r-lg, e2 (which draws its own hairline), 4px of padding
+          padding: 4, borderRadius: "var(--r-lg, 12px)", background: "var(--surface-raised, var(--surface-solid))", border: "none", boxShadow: "var(--e2, var(--shadow-lg))",
           transformOrigin: flipped ? "50% 100%" : "50% 0",
           ...style,
         }}>

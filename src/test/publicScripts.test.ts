@@ -17,13 +17,13 @@ describe("public/theme-init.js", () => {
     localStorage.setItem("kanbo-theme", "light");
     new Function(src)();
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
-    expect(meta()).toBe("#f5f6f9");
+    expect(meta()).toBe("#FBFCFE");
   });
 
   it("defaults to dark", () => {
     new Function(src)();
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
-    expect(meta()).toBe("#1b1d24");
+    expect(meta()).toBe("#0B1020");
   });
 
   it("keeps the browser chrome in step when the app toggles the theme", async () => {
@@ -31,7 +31,7 @@ describe("public/theme-init.js", () => {
     new Function(src)();
     document.documentElement.setAttribute("data-theme", "dark");
     await new Promise((r) => setTimeout(r, 0)); // MutationObserver callbacks are async
-    expect(meta()).toBe("#1b1d24");
+    expect(meta()).toBe("#0B1020");
   });
 
   it("has no inline-script dependency in index.html (CSP script-src 'self')", () => {

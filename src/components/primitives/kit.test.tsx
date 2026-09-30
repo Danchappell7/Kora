@@ -420,6 +420,34 @@ describe("Sheet", () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 
+  it("a bottom sheet drags down by its handle: a short pull springs back, a long one closes", () => {
+    // jsdom has no PointerEvent: a MouseEvent with a pointerId carries clientY and button
+    const had = "PointerEvent" in window;
+    if (!had) {
+      (window as unknown as { PointerEvent: unknown }).PointerEvent = class extends MouseEvent {
+        pointerId: number;
+        constructor(type: string, init: PointerEventInit = {}) { super(type, init); this.pointerId = init.pointerId ?? 1; }
+      };
+    }
+    const onClose = vi.fn();
+    render(<Sheet open onClose={onClose} label="Quick capture" side="bottom"><p>Body</p></Sheet>);
+    const sheet = screen.getByRole("dialog", { name: "Quick capture" });
+    const handle = sheet.querySelector(".ksheet-handle")!;
+    fireEvent.pointerDown(handle, { button: 0, clientY: 400, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientY: 430, pointerId: 1 });
+    expect(sheet.style.translate).toBe("0 30px");
+    fireEvent.pointerMove(handle, { clientY: 380, pointerId: 1 }); // never lifts above its edge
+    expect(sheet.style.translate).toBe("0 0px");
+    fireEvent.pointerUp(handle, { clientY: 380, pointerId: 1 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(sheet.style.translate).toBe("");
+    fireEvent.pointerDown(handle, { button: 0, clientY: 400, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientY: 700, pointerId: 1 });
+    fireEvent.pointerUp(handle, { clientY: 700, pointerId: 1 });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    if (!had) delete (window as unknown as { PointerEvent?: unknown }).PointerEvent;
+  });
+
   it("focuses initialFocus when given", async () => {
     function WithFocus() {
       const ref = createRef<HTMLInputElement>();

@@ -75,6 +75,21 @@ export function parseColor(input: string): RGBA | null {
   return null;
 }
 
+/**
+ * A colour's oklch coordinates — exact for an `oklch()` string (so a stored
+ * project hue survives untouched), converted for hex and rgb(). Null for
+ * anything unparseable; callers pick their own fallback hue.
+ */
+export function toOklch(input: string): { l: number; c: number; h: number } | null {
+  const m = /^\s*oklch\(\s*([\d.]+%?)\s+([\d.]+%?)\s+([\d.]+)(?:deg)?\s*(?:\/[^)]*)?\)\s*$/i.exec(input ?? "");
+  if (m) {
+    const l = num(m[1], 1), c = num(m[2], 0.4), h = num(m[3]);
+    return [l, c, h].every(Number.isFinite) ? { l, c, h: ((h % 360) + 360) % 360 } : null;
+  }
+  const rgb = parseColor(input ?? "");
+  return rgb ? rgbToOklch(rgb) : null;
+}
+
 /** Alpha-composite `top` over an opaque `bottom` (browsers blend in gamma-encoded sRGB). */
 export function over(top: RGBA, bottom: RGBA): RGBA {
   const a = top.a;
