@@ -70,6 +70,58 @@ describe("TagPicker", () => {
     expect(onToggle).toHaveBeenCalledWith("3f2a");
   });
 
+  it("never auto-selects a new tag on a different item when the parent switches items mid-create", () => {
+    const createFor = (selected: string[], onToggle: (id: string) => void, ownerKey?: string) => {
+      const r = render(<TagPicker tags={TAGS} selected={selected} onToggle={onToggle} onCreate={vi.fn()} onDelete={vi.fn()} ownerKey={ownerKey} />);
+      fireEvent.click(screen.getByRole("button", { name: /new tag/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: "New tag name" }), { target: { value: "Launch" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      return r;
+    };
+    const arrived = { ...TAGS, "uuid-launch": { label: "Launch", color: "x" } };
+
+    // no ownerKey, both tasks untagged: the tag lands on the task it was made for (t1)
+    const t1 = vi.fn(), t2 = vi.fn();
+    let r = createFor([], t1);
+    r.rerender(<TagPicker tags={arrived} selected={[]} onToggle={t2} onCreate={vi.fn()} onDelete={vi.fn()} />);
+    expect(t1).toHaveBeenCalledWith("uuid-launch");
+    expect(t2).not.toHaveBeenCalled();
+    r.unmount();
+
+    // no ownerKey, selection differs: can't tell, so nothing is tagged
+    const a1 = vi.fn(), a2 = vi.fn();
+    r = createFor(["tag-ops"], a1);
+    r.rerender(<TagPicker tags={arrived} selected={["tag-design"]} onToggle={a2} onCreate={vi.fn()} onDelete={vi.fn()} />);
+    expect(a1).not.toHaveBeenCalled();
+    expect(a2).not.toHaveBeenCalled();
+    r.unmount();
+
+    // ownerKey changes: dropped
+    const k1 = vi.fn(), k2 = vi.fn();
+    r = createFor([], k1, "t1");
+    r.rerender(<TagPicker tags={TAGS} selected={[]} onToggle={k2} onCreate={vi.fn()} onDelete={vi.fn()} ownerKey="t2" />);
+    r.rerender(<TagPicker tags={arrived} selected={[]} onToggle={k2} onCreate={vi.fn()} onDelete={vi.fn()} ownerKey="t2" />);
+    expect(k1).not.toHaveBeenCalled();
+    expect(k2).not.toHaveBeenCalled();
+    r.unmount();
+
+    // same ownerKey: still selected even after other tags were toggled meanwhile
+    const s1 = vi.fn(), s2 = vi.fn();
+    r = createFor([], s1, "t1");
+    r.rerender(<TagPicker tags={arrived} selected={["tag-ops"]} onToggle={s2} onCreate={vi.fn()} onDelete={vi.fn()} ownerKey="t1" />);
+    expect(s2).toHaveBeenCalledWith("uuid-launch");
+    expect(s1).not.toHaveBeenCalled();
+  });
+
+  it("keeps focus inside the picker when a tag is deleted while the New tag box is open", () => {
+    mockConfirm(true);
+    const p = setup();
+    fireEvent.click(screen.getByRole("button", { name: /new tag/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete tag Design" }));
+    expect(p.onDelete).toHaveBeenCalledWith("tag-design");
+    expect(screen.getByRole("textbox", { name: "New tag name" })).toHaveFocus();
+  });
+
   it("Escape closes only the new-tag box, not the dialog around it", () => {
     const onDialogClose = vi.fn();
     const onWindowEscape = vi.fn((e: KeyboardEvent) => { if (e.key === "Escape") onDialogClose("window"); });

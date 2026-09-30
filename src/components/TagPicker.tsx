@@ -14,37 +14,67 @@ const TAG_MAX = 40;
 /** optimistic tags carry a temporary id until the server confirms them */
 const isPendingTag = (id: string) => id.startsWith("tmp-");
 const norm = (s: string) => s.trim().toLowerCase();
+const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 
-export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small }: {
+/** a tag we asked to create, to select once its real (server) id shows up */
+interface PendingTag {
+  label: string;
+  before: Set<string>;
+  until: number;
+  owner: string | undefined;
+  /** onToggle/selected as they were when the tag was created — i.e. bound to
+   *  the item the tag was made for, even if the picker has since moved on */
+  toggle: (id: string) => void;
+  selected: string[];
+}
+
+export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small, ownerKey }: {
   tags: Record<string, TagDef>;
   selected: string[];
   onToggle: (id: string) => void;
   onCreate: (label: string, color: string) => void;
   onDelete: (id: string) => void;
   small?: boolean;
+  /** what's being tagged (e.g. the task id). A parent that re-points one
+   *  picker at different items should pass it, so a tag still being created
+   *  for one item is never auto-selected on the next. */
+  ownerKey?: string;
 }) {
   const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState("");
   const [color, setColor] = useState(TAG_COLORS[0].c);
   const [focusedChip, setFocusedChip] = useState<string | null>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
   const refocusAdd = useRef(false);
-  // a tag we just asked to create: once its real (server) id shows up, select it
-  const pending = useRef<{ label: string; before: Set<string>; until: number } | null>(null);
+  const pending = useRef<PendingTag | null>(null);
 
   useEffect(() => {
     if (!adding && refocusAdd.current) { refocusAdd.current = false; addBtnRef.current?.focus(); }
   }, [adding]);
 
+  // the picker now shows a different item: forget the auto-select (declared
+  // before the [tags] effect so a same-render switch is seen first)
+  useEffect(() => { pending.current = null; }, [ownerKey]);
+
   useEffect(() => {
     const p = pending.current;
     if (!p) return;
-    if (Date.now() > p.until) { pending.current = null; return; }
+    if (Date.now() > p.until || p.owner !== ownerKey) { pending.current = null; return; }
     const hit = Object.entries(tags).find(([id, def]) => !p.before.has(id) && !isPendingTag(id) && norm(def.label) === p.label);
-    if (hit) {
-      pending.current = null;
-      if (!selected.includes(hit[0])) onToggle(hit[0]);
+    if (!hit) return;
+    pending.current = null;
+    const id = hit[0];
+    if (ownerKey !== undefined) {
+      // same owner (a change would have cleared `pending`): use the live callbacks
+      if (!selected.includes(id)) onToggle(id);
+    } else if (sameIds(selected, p.selected)) {
+      // no owner key: the callback captured at creation is bound to the item the
+      // tag was made for, so it's safe even if the parent has switched items
+      if (!p.selected.includes(id)) p.toggle(id);
     }
+    // otherwise the selection changed and we can't tell whether it's still the
+    // same item — don't guess; the new tag is there to pick by hand
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tags]);
 
@@ -62,7 +92,7 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small 
       if (!selected.includes(existing[0])) onToggle(existing[0]);
     } else {
       // new (or still being saved) — select it as soon as the server id arrives
-      pending.current = { label: norm(v), before: new Set(Object.keys(tags)), until: Date.now() + 15000 };
+      pending.current = { label: norm(v), before: new Set(Object.keys(tags)), until: Date.now() + 15000, owner: ownerKey, toggle: onToggle, selected: [...selected] };
       if (!existing) onCreate(v, color);
     }
     close(true);
@@ -82,7 +112,9 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small 
     if (!window.confirm(`Delete tag “${def.label}” from every task?`)) return;
     onDelete(id);
     setFocusedChip(null);
-    addBtnRef.current?.focus();
+    // keep focus inside the picker (and any dialog around it): the "+ New tag"
+    // button, or the name box when that's open in its place
+    (addBtnRef.current ?? nameRef.current)?.focus();
   };
 
   const entries = Object.entries(tags);
@@ -134,7 +166,7 @@ export function TagPicker({ tags, selected, onToggle, onCreate, onDelete, small 
       </div>
       {adding && (
         <div role="group" aria-label="New tag" onKeyDownCapture={onBoxKeyDownCapture} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <input autoFocus value={label} maxLength={TAG_MAX} aria-label="New tag name"
+          <input ref={nameRef} autoFocus value={label} maxLength={TAG_MAX} aria-label="New tag name"
             onChange={(e) => setLabel(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); create(); } }}
             placeholder="Tag name…" style={{ height: 30, padding: "0 10px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 13, width: 130 }} />

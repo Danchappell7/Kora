@@ -89,6 +89,39 @@ describe("TagManagerModal", () => {
     expect(p.onUpdate).not.toHaveBeenCalled();
   });
 
+  it("keeps the filter box while a filter is typed, even when a delete takes the list under the threshold", () => {
+    const many: Record<string, TagDef> = {};
+    ["old-one", "old-two", "Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta"].forEach((l, i) => { many["t" + i] = { label: l, color: "x" }; });
+    const props = { open: true, onClose: vi.fn(), taskCounts: {}, onUpdate: vi.fn(), onDelete: vi.fn(), onMerge: vi.fn() };
+    const { rerender } = render(<TagManagerModal {...props} tags={many} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter tags" }), { target: { value: "old" } });
+    expect(screen.getAllByRole("textbox", { name: /^Rename tag/ })).toHaveLength(2);
+    const eight = { ...many };
+    delete eight.t0;
+    rerender(<TagManagerModal {...props} tags={eight} />);
+    const box = screen.getByRole("searchbox", { name: "Filter tags" });
+    expect(box).toHaveValue("old");
+    expect(screen.getAllByRole("textbox", { name: /^Rename tag/ })).toHaveLength(1);
+    // clearing it shows everything, and the box goes away again under the threshold
+    fireEvent.change(box, { target: { value: "" } });
+    expect(screen.getAllByRole("textbox", { name: /^Rename tag/ })).toHaveLength(8);
+    expect(screen.queryByRole("searchbox", { name: "Filter tags" })).toBeNull();
+  });
+
+  it("Escape in the filter box clears the filter before closing the dialog", () => {
+    const many: Record<string, TagDef> = {};
+    for (let i = 0; i < 10; i++) many["t" + i] = { label: `Tag ${i}`, color: "x" };
+    const p = setup({ tags: many, taskCounts: {} });
+    const box = screen.getByRole("searchbox", { name: "Filter tags" });
+    box.focus();
+    fireEvent.change(box, { target: { value: "Tag 1" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(p.onClose).not.toHaveBeenCalled();
+    expect(box).toHaveValue("");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(p.onClose).toHaveBeenCalled();
+  });
+
   it("can create tags when onCreate is provided, without duplicates", () => {
     const onCreate = vi.fn();
     setup({ onCreate });

@@ -48,12 +48,19 @@ describe("task templates", () => {
     expect(ids(getTemplates())).toEqual(ids(BUILTIN_TASK_TEMPLATES));
   });
 
-  it("updates a template saved again under the same name", () => {
-    const a = saveTemplate({ ...base, name: "Weekly sync", description: "v1" });
+  it("never overwrites a template saved under the same name — the new one gets a suffix", () => {
+    const a = saveTemplate({ ...base, name: "Weekly report", priority: "high", tags: ["t-finance"], description: "Finance checklist" });
     saveTemplate({ ...base, name: "Other" });
-    const b = saveTemplate({ ...base, name: "weekly sync ", description: "v2" });
-    expect(b.id).toBe(a.id);
-    expect(getUserTemplates().map((t) => [t.name, t.description])).toEqual([["weekly sync ", "v2"], ["Other", ""]]);
+    const b = saveTemplate({ ...base, name: "weekly report ", priority: "low" });
+    const c = saveTemplate({ ...base, name: "Weekly report" });
+    expect(new Set([a.id, b.id, c.id]).size).toBe(3);
+    expect(getUserTemplates().map((t) => [t.name, t.priority])).toEqual([
+      ["Weekly report (3)", "medium"], ["weekly report (2)", "low"], ["Other", "medium"], ["Weekly report", "high"],
+    ]);
+    // the first one is untouched
+    expect(getUserTemplates().find((t) => t.id === a.id)).toMatchObject({ tags: ["t-finance"], description: "Finance checklist" });
+    // a built-in's name isn't "taken" — they're listed in their own group
+    expect(saveTemplate({ ...base, name: "Bug report" }).name).toBe("Bug report");
   });
 
   it("deletes only the user's template and leaves built-ins alone", () => {
@@ -74,6 +81,12 @@ describe("project templates", () => {
     expect(new Set(ids(all)).size).toBe(all.length);
     expect(all.slice(0, BUILTIN_PROJECT_TEMPLATES.length)).toEqual(BUILTIN_PROJECT_TEMPLATES);
     expect(JSON.parse(localStorage.getItem(PKEY)!)).toHaveLength(4);
+  });
+
+  it("keeps both project templates saved under the same name", () => {
+    saveProjectTemplate({ name: "Client", emoji: "🤝", color: "#000" });
+    saveProjectTemplate({ name: "Client", emoji: "📁", color: "#fff" });
+    expect(getProjectTemplates().slice(BUILTIN_PROJECT_TEMPLATES.length).map((t) => [t.name, t.emoji])).toEqual([["Client (2)", "📁"], ["Client", "🤝"]]);
   });
 
   it("heals polluted project-template storage", () => {

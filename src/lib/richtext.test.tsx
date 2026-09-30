@@ -105,4 +105,18 @@ describe("renderRich links", () => {
     expect(container.querySelector("strong")?.textContent).toBe("@Dan");
     expect(container.querySelector("a")?.getAttribute("href")).toBe("https://acme.com");
   });
+
+  it("doesn't let an italic run cut a URL that carries on past the closing *", () => {
+    const md = "a*b https://x.com/c*d e*";
+    expect(links(md)).toEqual([{ text: "https://x.com/c*d", href: "https://x.com/c*d" }]);
+    const { container } = render(<div>{renderRich(md)}</div>);
+    expect(container.querySelector("em")).toBeNull();
+    expect(container.textContent).toBe(md);
+    // a URL that genuinely ends at the closing * is still italic
+    for (const ok of ["*see https://x.com* now", "*see https://x.com*.", "*see https://x.com*"]) {
+      const r = render(<div>{renderRich(ok)}</div>);
+      expect(r.container.querySelector("em a")?.getAttribute("href"), ok).toBe("https://x.com");
+      r.unmount();
+    }
+  });
 });

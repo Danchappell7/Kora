@@ -14,19 +14,21 @@ const TAGS: Record<string, TagDef> = {
   "tag-ops": { label: "Ops", color: "oklch(0.74 0.14 230)" },
 };
 
-function Harness({ onCreate = vi.fn(), onDeleteTag = vi.fn(), tags = TAGS, projectId }: { onCreate?: (t: Task) => void; onDeleteTag?: (id: string) => void; tags?: Record<string, TagDef>; projectId?: string }) {
+function Harness({ onCreate = vi.fn(), onDeleteTag = vi.fn(), tags = TAGS, projectId, projects = PROJECTS }: { onCreate?: (t: Task) => void; onDeleteTag?: (id: string) => void; tags?: Record<string, TagDef>; projectId?: string; projects?: Project[] }) {
   const [open, setOpen] = useState(true);
   return (
     <>
       <button onClick={() => setOpen(true)}>open-modal</button>
       <span data-testid="state">{open ? "open" : "closed"}</span>
       <NewTaskModal open={open} onClose={() => setOpen(false)} onCreate={onCreate} onCreateTag={vi.fn()} onDeleteTag={onDeleteTag}
-        projects={PROJECTS} allTags={tags} members={[]} currentUserId="u-1" defaultProjectId={projectId} />
+        projects={projects} allTags={tags} members={[]} currentUserId="u-1" defaultProjectId={projectId} />
     </>
   );
 }
 const title = () => screen.getByRole("textbox", { name: "Task title" }) as HTMLInputElement;
 const typeTitle = (v: string) => fireEvent.change(title(), { target: { value: v } });
+const reopen = () => { fireEvent.click(screen.getByText("open-modal")); act(() => { vi.advanceTimersByTime(50); }); };
+const escape = () => fireEvent.keyDown(title(), { key: "Escape" });
 
 beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ shouldAdvanceTime: true }); });
 // restore only our own spies — restoreAllMocks would also wipe the global
@@ -51,18 +53,83 @@ describe("NewTaskModal", () => {
     expect(screen.getByTestId("state")).toHaveTextContent("closed");
   });
 
-  it("keeps the draft after an accidental close, and Cancel starts fresh", () => {
+  it("opens blank after an accidental close and offers the draft back instead of forcing it", () => {
+    const onCreate = vi.fn();
+    render(<Harness onCreate={onCreate} />);
+    typeTitle("Chase Acme invoice");
+    fireEvent.change(screen.getByRole("combobox", { name: "Priority" }), { target: { value: "high" } });
+    escape();
+    reopen();
+    // blank and focused, so the usual "c, type, Enter" creates exactly what was typed
+    expect(title().value).toBe("");
+    expect(title()).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved draft: “Chase Acme invoice”");
+    typeTitle("Call supplier");
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ title: "Call supplier", priority: "medium" });
+
+    // the draft is still on offer until it's restored or discarded
+    reopen();
+    fireEvent.click(screen.getByRole("button", { name: "Restore draft “Chase Acme invoice”" }));
+    expect(title().value).toBe("Chase Acme invoice");
+    expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("high");
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate.mock.calls[1][0]).toMatchObject({ title: "Chase Acme invoice", priority: "high", projectId: "p-personal" });
+    reopen();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("Restore swaps with what's already typed, so neither is lost", () => {
+    render(<Harness />);
+    typeTitle("First draft");
+    escape();
+    reopen();
+    typeTitle("Second thought");
+    fireEvent.click(screen.getByRole("button", { name: "Restore draft “First draft”" }));
+    expect(title().value).toBe("First draft");
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved draft: “Second thought”");
+  });
+
+  it("Discard drops the saved draft, and Cancel never saves one", () => {
     render(<Harness />);
     typeTitle("Half-written task");
-    fireEvent.keyDown(title(), { key: "Escape" });
-    fireEvent.click(screen.getByText("open-modal"));
-    act(() => { vi.advanceTimersByTime(50); });
-    expect(title().value).toBe("Half-written task");
-    expect(screen.getByRole("status")).toHaveTextContent(/restored your unsaved draft/i);
+    escape();
+    reopen();
+    fireEvent.click(screen.getByRole("button", { name: "Discard draft “Half-written task”" }));
+    expect(screen.queryByRole("status")).toBeNull();
+    typeTitle("Not wanted");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getByText("open-modal"));
+    reopen();
     expect(title().value).toBe("");
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("never re-files a restored draft into another workspace's project", () => {
+    const onCreate = vi.fn();
+    const personal: Project[] = [{ id: "p-diary", name: "Diary", emoji: "📓", color: "#999", workspaceId: null }];
+    const team: Project[] = [{ id: "p-team", name: "Team board", emoji: "👥", color: "#39f", workspaceId: "ws-1" }];
+    const { rerender } = render(<Harness onCreate={onCreate} projects={personal} projectId="p-diary" />);
+    typeTitle("Book GP appointment re results");
+    escape();
+    // switch workspace, then come back to the modal
+    rerender(<Harness onCreate={onCreate} projects={team} />);
+    reopen();
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Restore draft “Book GP appointment re results”" }));
+    const project = screen.getByRole("combobox", { name: "Project" });
+    expect(project).toHaveValue("");
+    expect(project).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("“Diary” isn't in this workspace — choose a project for this draft.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create task/i })).toBeDisabled();
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(project).toHaveFocus();
+    // an explicit choice is fine
+    fireEvent.change(project, { target: { value: "p-team" } });
+    fireEvent.keyDown(title(), { key: "Enter" });
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ title: "Book GP appointment re results", projectId: "p-team" });
   });
 
   it("starts blank again after creating a task", () => {

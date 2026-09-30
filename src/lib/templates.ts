@@ -70,6 +70,16 @@ function readUserList<T extends { id: string }>(key: string, sanitize: (x: unkno
 }
 const newTemplateId = (prefix: string) => prefix + Date.now() + "-" + Math.round(Math.random() * 1e5);
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+/** "Weekly report" → "Weekly report (2)" when the user already has a template
+ *  with that name, so two saved from same-titled tasks can be told apart in the
+ *  picker (built-ins sit in their own group, so they don't count) */
+function uniqueName(name: string, taken: { name: string }[]): string {
+  const base = name.trim() || name;
+  if (!taken.some((x) => sameName(x.name, base))) return base;
+  let n = 2;
+  while (taken.some((x) => sameName(x.name, `${base} (${n})`))) n++;
+  return `${base} (${n})`;
+}
 
 function sanitizeTaskTemplate(x: unknown): TaskTemplate | null {
   if (!x || typeof x !== "object") return null;
@@ -98,13 +108,12 @@ export function getUserTemplates(): TaskTemplate[] {
 export function getTemplates(): TaskTemplate[] {
   return [...BUILTIN_TASK_TEMPLATES, ...getUserTemplates()];
 }
-/** Save a template. Saving again under an existing name updates that template
- *  (and moves it to the front) instead of adding a look-alike duplicate. */
+/** Save a new template (newest first). Never overwrites an existing one: a
+ *  name that's already taken gets a " (2)"-style suffix instead. */
 export function saveTemplate(t: Omit<TaskTemplate, "id">): TaskTemplate {
   const mine = getUserTemplates();
-  const existing = mine.find((x) => sameName(x.name, t.name));
-  const tpl: TaskTemplate = { ...t, id: existing?.id ?? newTemplateId("tpl-") };
-  writeList(KEY, [tpl, ...mine.filter((x) => x.id !== tpl.id)].slice(0, MAX_USER_TEMPLATES));
+  const tpl: TaskTemplate = { ...t, name: uniqueName(t.name, mine), id: newTemplateId("tpl-") };
+  writeList(KEY, [tpl, ...mine].slice(0, MAX_USER_TEMPLATES));
   return tpl;
 }
 export function deleteTemplate(id: string): void {
@@ -248,10 +257,10 @@ export function getUserProjectTemplates(): ProjectTemplate[] {
 export function getProjectTemplates(): ProjectTemplate[] {
   return [...BUILTIN_PROJECT_TEMPLATES, ...getUserProjectTemplates()];
 }
+/** Save a new project template; like saveTemplate, never overwrites one. */
 export function saveProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemplate {
   const mine = getUserProjectTemplates();
-  const existing = mine.find((x) => sameName(x.name, t.name));
-  const tpl: ProjectTemplate = { ...t, id: existing?.id ?? newTemplateId("ptpl-") };
-  writeList(PKEY, [tpl, ...mine.filter((x) => x.id !== tpl.id)].slice(0, MAX_USER_TEMPLATES));
+  const tpl: ProjectTemplate = { ...t, name: uniqueName(t.name, mine), id: newTemplateId("ptpl-") };
+  writeList(PKEY, [tpl, ...mine].slice(0, MAX_USER_TEMPLATES));
   return tpl;
 }

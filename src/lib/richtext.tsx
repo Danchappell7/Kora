@@ -106,6 +106,13 @@ function inline(s: string, names: string[], keyBase: string): ReactNode[] {
       re.lastIndex = last;
       continue;
     }
+    // "*see https://x.com/a*b …": the closing '*' is really inside a URL that
+    // carries on after it, so this isn't italic — leave the '*' as text and let
+    // the URL be matched whole
+    if (tok.startsWith("*") && !tok.startsWith("**") && /(?:https?:\/\/|www\.)\S*$/i.test(tok.slice(1, -1))) {
+      const after = s[m.index + tok.length];
+      if (after && !/[\s.,;:!?)\]}'"]/.test(after)) { re.lastIndex = m.index + 1; continue; }
+    }
     if (m.index > last) out.push(s.slice(last, m.index));
     if (tok.startsWith("**")) out.push(<strong key={key}>{inline(tok.slice(2, -2), names, key)}</strong>);
     else if (tok.startsWith("`")) out.push(<code key={key} style={{ fontFamily: "var(--font-mono)", fontSize: "0.88em", background: "var(--surface-2)", padding: "1px 5px", borderRadius: 5 }}>{tok.slice(1, -1)}</code>);

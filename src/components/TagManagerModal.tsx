@@ -40,10 +40,12 @@ export function TagManagerModal({ open, onClose, tags, taskCounts, onUpdate, onD
   const focusHome = () => window.setTimeout(() => (filterRef.current ?? closeRef.current)?.focus(), 0);
   const revert = (id: string) => setDrafts((d) => { const n = { ...d }; delete n[id]; return n; });
 
-  // Escape backs out one level at a time: merge picker → unsaved rename → dialog
+  // Escape backs out one level at a time: merge picker → unsaved rename →
+  // typed filter (while you're in the box) → dialog
   const onEscape = () => {
     if (mergeFrom) { const id = mergeFrom; setMergeFrom(null); window.setTimeout(() => mergeBtns.current[id]?.focus(), 0); return; }
     if (editing && drafts[editing] !== undefined) { revert(editing); return; }
+    if (filter && document.activeElement === filterRef.current) { setFilter(""); return; }
     onClose();
   };
   const trapRef = useFocusTrap<HTMLDivElement>(open, onEscape);
@@ -58,7 +60,9 @@ export function TagManagerModal({ open, onClose, tags, taskCounts, onUpdate, onD
   if (!open) return null;
 
   const all = Object.entries(tags).sort((a, b) => a[1].label.localeCompare(b[1].label));
-  const showFilter = all.length > FILTER_FROM;
+  // keep the box while a filter is typed, even if a merge/delete takes the list
+  // back under the threshold — otherwise the list stays filtered with no way to clear it
+  const showFilter = all.length > FILTER_FROM || filter !== "";
   const q = norm(filter);
   const entries = q ? all.filter(([, t]) => t.label.toLowerCase().includes(q)) : all;
   const labelOf = (id: string) => tags[id]?.label ?? "";
