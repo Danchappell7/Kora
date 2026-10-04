@@ -9,13 +9,20 @@
      hashed /assets/* files that neither it nor the previous deploy uses,
      so the cache holds at most two deploys instead of growing forever.
    - cross-origin (Supabase API, fonts CDN, etc.): never intercepted.
+   - web push (0043): shows each push as a notification; a click focuses an
+     open Kanbo window and takes it to the push's link (same origin only),
+     or opens one. Registered as /sw.js?push-only=1 by lib/push in a dev
+     build: then it does push and nothing else (no caching under Vite).
    Bump CACHE to invalidate.
    ============================================================ */
-const CACHE = "kanbo-v1";
-const SHELL = ["/", "/favicon.svg", "/manifest.webmanifest"];
+const CACHE = "kanbo-v2";
+const SHELL = ["/", "/favicon.svg", "/manifest.webmanifest", "/icon-192.png", "/badge-96.png"];
+/** dev registration: push and notification clicks only, never the fetch cache */
+const PUSH_ONLY = /[?&]push-only=1(?:&|$)/.test((self.location && self.location.search) || "");
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
+  if (PUSH_ONLY) return;
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {})));
 });
 
@@ -86,6 +93,7 @@ async function refreshShell(res) {
 }
 
 self.addEventListener("fetch", (e) => {
+  if (PUSH_ONLY) return;
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
@@ -118,5 +126,98 @@ self.addEventListener("fetch", (e) => {
         .catch(() => cached);
       return cached || network;
     }),
+  );
+});
+
+/* ============================ web push ============================
+   Payload (JSON, from supabase/functions/_shared/webpush.ts):
+     { title, body, url: "/?task=<id>" (same-origin path), tag?: "task-<id>", kind? }
+   Every push shows a notification (the subscription is userVisibleOnly). */
+
+/** A same-origin path to open, from whatever the payload says ("/" when it's anything else). */
+function safePath(raw) {
+  try {
+    if (typeof raw !== "string" || raw.charAt(0) !== "/" || raw.charAt(1) === "/" || raw.charAt(1) === "\\") return "/";
+    const u = new URL(raw, self.location.origin);
+    return u.origin === self.location.origin ? u.pathname + u.search + u.hash : "/";
+  } catch (err) { return "/"; }
+}
+
+/** title + options for showNotification, from a push's data (never throws). */
+function notificationFor(data) {
+  let d = {};
+  try { d = data ? data.json() : {}; } catch (err) {
+    try { d = { body: data ? data.text() : "" }; } catch (err2) { d = {}; }
+  }
+  if (!d || typeof d !== "object") d = {};
+  const str = (v, max) => (typeof v === "string" ? v : "").replace(/\s+/g, " ").trim().slice(0, max);
+  const title = str(d.title, 120) || "Kanbo";
+  const tag = str(d.tag, 120);
+  const options = {
+    body: str(d.body, 300),
+    icon: "/icon-192.png",
+    badge: "/badge-96.png",
+    lang: "en-GB",
+    data: { url: safePath(d.url), kind: str(d.kind, 20) },
+  };
+  // one notification per task: a newer one replaces it, and still alerts
+  if (tag) { options.tag = tag; options.renotify = true; }
+  return { title, options };
+}
+
+self.addEventListener("push", (e) => {
+  const n = notificationFor(e.data);
+  e.waitUntil(self.registration.showNotification(n.title, n.options));
+});
+
+/** Ask an open Kanbo window to route in place (lib/push listenForPushNavigation
+ *  answers on the port). Resolves false when nothing answers in time. */
+function askToRoute(client, path, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = (ev) => finish(!!(ev.data && ev.data.ok));
+      client.postMessage({ type: "kanbo:navigate", url: path }, [ch.port2]);
+    } catch (err) { finish(false); return; }
+    setTimeout(() => finish(false), ms);
+  });
+}
+
+async function openFromNotification(path) {
+  const origin = self.location.origin;
+  const href = new URL(path, origin).href;
+  const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const ours = wins.filter((c) => { try { return new URL(c.url).origin === origin; } catch (err) { return false; } });
+  // the window the person was last in, else any Kanbo window
+  const target = ours.find((c) => c.focused) || ours.find((c) => c.visibilityState === "visible") || ours[0];
+  if (target) {
+    try { await target.focus(); } catch (err) { /* focus can be refused; carry on */ }
+    if (await askToRoute(target, path, 800)) return;
+    try { if (target.navigate) { await target.navigate(href); return; } } catch (err) { /* uncontrolled window: open a new one */ }
+  }
+  if (self.clients.openWindow) await self.clients.openWindow(href);
+}
+
+self.addEventListener("notificationclick", (e) => {
+  const data = (e.notification && e.notification.data) || {};
+  e.notification.close();
+  e.waitUntil(openFromNotification(safePath(data.url)));
+});
+
+// The browser replaced this device's subscription (keys rotated or expired):
+// subscribe again with the same server key. The app saves the new one the
+// next time it starts (lib/push refreshPushSubscription); the old endpoint
+// answers 404/410 and the server drops it.
+self.addEventListener("pushsubscriptionchange", (e) => {
+  const old = e.oldSubscription;
+  const key = old && old.options && old.options.applicationServerKey;
+  if (!key) return;
+  e.waitUntil(
+    self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
+      .then(() => self.clients.matchAll({ type: "window", includeUncontrolled: true }))
+      .then((wins) => { for (const c of wins) { try { c.postMessage({ type: "kanbo:push-resubscribed" }); } catch (err) { /* ignore */ } } })
+      .catch(() => {}),
   );
 });

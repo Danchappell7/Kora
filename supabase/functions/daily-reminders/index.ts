@@ -1,19 +1,25 @@
 // ============================================================
-// KANBO — daily reminder emails (Deno / Supabase Edge Function)
-// Finds open tasks due today or overdue and emails each assignee one digest.
+// KANBO — daily reminder emails + push (Deno / Supabase Edge Function)
+// Finds open tasks due today or overdue and emails each assignee one digest,
+// and pushes one notification to each device they switched push on for.
 // Meant to be run once a day by a cron.
+//
+// Prefs (profiles.notify_prefs, default ON): "due_email" for the email,
+// "due_push" for the push. Email needs RESEND_API_KEY, push the VAPID
+// secrets; either runs without the other (with neither: 400, as before).
 //
 // Only the scheduler may run it: the request must carry the service-role key
 // (Authorization: Bearer <service-role-key>) or the CRON_SECRET secret
 // (x-cron-secret header). Anyone else gets 401.
 //
-// Idempotent per day: each person gets at most one digest per date, even if
-// the job is triggered twice (a retry, a manual run). Uses rate_limits from
-// migration 0042; without it every run sends (fails open).
+// Idempotent per day: each person gets at most one digest (and one push) per
+// date, even if the job is triggered twice (a retry, a manual run). Uses
+// rate_limits from migration 0042; without it every run sends (fails open).
 //
 // Deploy:  supabase functions deploy daily-reminders --no-verify-jwt
 // Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL
 //          optional: CRON_SECRET, REMINDER_TZ (default Europe/London)
+//          push: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (docs/integrations/push.md)
 // Schedule: pg_cron + pg_net, with the secret read from Vault — the exact SQL
 //   is in DEPLOYMENT.md ("Schedule the daily reminder email").
 //   POST https://<project>.supabase.co/functions/v1/daily-reminders
@@ -22,6 +28,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
+import { dueDigestPush, pushToUser, vapidFromEnv } from "../_shared/webpush.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -45,7 +52,9 @@ Deno.serve(async (req) => {
   const secret = req.headers.get("x-cron-secret") ?? "";
   const authed = (!!serviceKey && safeEq(bearer, serviceKey)) || (!!cronSecret && safeEq(secret, cronSecret));
   if (!authed) return json({ error: "unauthorized" }, 401);
-  if (!resendKey) return json({ error: "no RESEND_API_KEY" }, 400);
+  // push is optional: null (skipped quietly) until the VAPID secrets are set
+  const vapid = vapidFromEnv((k) => Deno.env.get(k));
+  if (!resendKey && !vapid) return json({ error: "no RESEND_API_KEY" }, 400);
 
   const supa = createClient(url, serviceKey);
   // "today" in the team's timezone, not UTC (YYYY-MM-DD)
@@ -96,13 +105,42 @@ Deno.serve(async (req) => {
     (byAssignee.get(a) ?? byAssignee.set(a, []).get(a)!).push(t);
   }
 
-  let sent = 0, skipped = 0, failed = 0, already = 0;
+  // who has push switched on anywhere (one batched read; none before 0043)
+  const pushUsers = new Set<string>();
+  if (vapid) {
+    const ids = [...byAssignee.keys()];
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data, error } = await supa.from("push_subscriptions").select("user_id").in("user_id", ids.slice(i, i + 200));
+      if (error) { console.warn("[push] subscriptions unavailable:", error.message); break; }
+      for (const r of data ?? []) if (r.user_id) pushUsers.add(r.user_id);
+    }
+  }
+
+  let sent = 0, skipped = 0, failed = 0, already = 0, pushed = 0;
   await sweep(supa);
   for (const [userId, list] of byAssignee) {
-    // respect Settings → Notifications → "Due-date reminders" email toggle; skip locked accounts
+    // respect Settings → Notifications → "Due-date reminders" email / push toggles; skip locked accounts
     const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended,approved").eq("id", userId).maybeSingle();
     const prefs = (prof?.notify_prefs ?? {}) as Record<string, boolean>;
-    if (prefs["due_email"] === false || prof?.suspended || prof?.approved === false) { skipped++; continue; }
+    if (prof?.suspended || prof?.approved === false) { skipped++; continue; }
+
+    // push: one per person per day, to every device they switched on
+    if (vapid && pushUsers.has(userId) && prefs["due_push"] !== false) {
+      const pushKey = `${KEY_PREFIX}digest-push:${userId}:${today}`;
+      if ((await hit(supa, pushKey, { windowSec: 36 * 3600 })).allowed) {
+        try {
+          const r = await pushToUser(supa, userId, dueDigestPush(list, today), vapid, { ttl: 12 * 3600 });
+          pushed += r.sent > 0 ? 1 : 0;
+          // nothing reached a device (none switched on, or all failed): a re-run today may try again
+          if (r.sent === 0) await release(supa, pushKey);
+        } catch (e) {
+          console.error("push", String((e as Error)?.message ?? e));
+          await release(supa, pushKey);
+        }
+      }
+    }
+
+    if (!resendKey || prefs["due_email"] === false) { skipped++; continue; }
     const { data: u } = await supa.auth.admin.getUserById(userId);
     const email = u?.user?.email;
     if (!email) { skipped++; continue; }
@@ -154,7 +192,7 @@ Deno.serve(async (req) => {
     await sleep(550);
   }
 
-  return json({ sent, skipped, failed, alreadySentToday: already, people: byAssignee.size, tasks: tasks.length });
+  return json({ sent, skipped, failed, alreadySentToday: already, pushed, people: byAssignee.size, tasks: tasks.length });
 });
 
 function safeEq(a: string, b: string) {

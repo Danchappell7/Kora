@@ -9,13 +9,22 @@
          default). A same-origin file, not an inline script: the CSP (script-src
          'self') blocks inline scripts. -->
     <script src="/theme-init.js"></script>
+    <!-- favicons: the PNG for browsers without SVG favicons (its sizes= lets the
+         ones that do pick the SVG); both are the brand's on-gradient knockout -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <!-- iOS ignores SVG touch icons; a full-bleed PNG (iOS rounds the corners itself) -->
+    <!-- iOS ignores SVG touch icons; a full-bleed, opaque PNG (iOS rounds the corners itself) -->
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- installed app (Add to Home Screen / Install): its own window, named Kanbo.
+         "default" keeps the status bar out of the page (no viewport-fit=cover
+         here, so content must not slide under it); iOS tints it from
+         theme-color, which theme-init.js keeps in step with Paper / Navy -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Kanbo" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="application-name" content="Kanbo" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
