@@ -1,0 +1,98 @@
+/* ============================================================
+   KANBO — Slack: the Settings panel and "Post to Slack".         [f6-slack]
+   The panel is built from SetGroup / SetRow (SettingsModal's kset-* rows),
+   so this file only adds what Settings doesn't have: the connect form, the
+   how-to steps, the time picker, messages and the post button's note.
+   Tokens are read with fallbacks; no backdrop-filter; motion is 160ms and
+   off under prefers-reduced-motion.
+   ============================================================ */
+
+/* a panel after the Calendars note sits a group's distance below it */
+* + .kslk { margin-top: 28px; }
+.kslk > .kset-intro:first-child { margin-top: 0; }
+
+.kslk-checking { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---- connect / replace form (inside the card, under its row) ---- */
+.kslk-form { display: grid; gap: 16px; padding: 4px 16px 16px; }
+.kslk-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 220px); gap: 16px; align-items: start; }
+.kslk-url { font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; letter-spacing: 0; }
+.kslk-url::placeholder { font-family: var(--font-ui, var(--font-display)); }
+.kslk-opt { font-weight: 500; color: var(--ink-3); }
+.kslk-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.kslk-form .kslk-form-err { margin: 0; }
+
+/* how to get a webhook link: a quiet disclosure */
+.kslk-help { border-radius: var(--r-md, 8px); background: var(--fill-1); padding: 0; }
+.kslk-help > summary {
+  display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: var(--r-md, 8px);
+  list-style: none; cursor: pointer; user-select: none;
+  font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
+  transition: color var(--d-1, 90ms) var(--ease, ease);
+}
+.kslk-help > summary::-webkit-details-marker { display: none; }
+.kslk-help > summary:hover { color: var(--ink); }
+.kslk-help > summary > svg { flex-shrink: 0; color: var(--ink-3); transition: transform var(--d-2, 160ms) var(--ease, ease); }
+.kslk-help[open] > summary > svg { transform: rotate(90deg); }
+.kslk-help > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kslk-steps {
+  display: grid; gap: 6px; margin: 0; padding: 0 16px 12px 34px;
+  font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty;
+}
+.kslk-steps strong { font-weight: 600; color: var(--ink); }
+.kslk-steps a { font-weight: 600; color: var(--accent-text, var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
+.kslk-steps a:hover { text-decoration-thickness: 2px; }
+
+/* ---- messages under a row (test sent, connected, refusals) ---- */
+.kslk-live:empty { display: none; }
+.kslk-msg {
+  display: flex; align-items: flex-start; gap: 6px; margin: -4px 16px 12px 48px;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); text-wrap: pretty;
+}
+.kslk-msg > svg { flex-shrink: 0; margin-top: 1px; }
+.kslk-msg[data-tone="signal"] { font-weight: 500; color: var(--signal, var(--prio-urgent)); }
+.kslk-form + .kslk-live .kslk-msg, [role="alert"] > .kslk-msg { margin-left: 16px; margin-top: 0; }
+.kset-row:not(:has(.kset-row-icon)) + .kslk-live .kslk-msg { margin-left: 16px; }
+.kslk-saved-slot { display: inline-flex; min-height: 16px; }
+.kslk-saved { display: inline-flex; align-items: center; gap: 4px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); }
+
+/* the daily stand-up time: a 32px select with tabular figures */
+.kslk-select {
+  height: var(--h-md, 32px); min-width: 96px; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display)); font-variant-numeric: tabular-nums;
+}
+.kslk-select:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* the disconnect confirmation keeps Settings' panel look; the Disconnect button reads as signal */
+.kslk .kbtn.kslk-off { color: var(--signal, var(--prio-urgent)); }
+
+/* ---- "Post to Slack" ---- */
+.kslk-post { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.kslk-post .kbtn[data-posted] > svg { color: var(--ok, var(--st-done)); }
+.kslk-post-note { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kslk-post-note:empty { display: none; }
+.kslk-post-note[data-tone="ok"] { color: var(--ok, var(--st-done)); font-weight: 600; }
+.kslk-post-note[data-tone="signal"] { color: var(--signal, var(--prio-urgent)); }
+.kslk-post-note > svg { flex-shrink: 0; }
+
+/* ---- entrance ---- */
+@keyframes kslkIn { from { opacity: 0.35; translate: 0 4px; } }
+.kslk-in { animation: kslkIn var(--d-2, 160ms) var(--ease, ease); }
+
+/* ---- phones ---- */
+@media (max-width: 859px) {
+  .kslk-fields { grid-template-columns: minmax(0, 1fr); }
+  .kslk-form { padding: 4px 12px 12px; }
+  .kslk-url { font-size: 16px; }              /* 16px stops iOS zooming into the field */
+  .kslk-select { height: var(--h-lg, 40px); font-size: 16px; }
+  .kslk-acts > .kbtn { flex: 1 1 auto; }
+  .kslk-msg { margin-left: 16px; }
+}
+@media (pointer: coarse) {
+  .kslk-help > summary { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kslk-in { animation: none; }
+  .kslk-help > summary, .kslk-help > summary > svg { transition: none; }
+}
