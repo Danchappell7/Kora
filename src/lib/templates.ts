@@ -8,7 +8,7 @@
    reads also drop stored "builtin-" rows, de-duplicate by id and quietly
    write the cleaned list back.)
    ============================================================ */
-import type { Priority, Recurrence, Task } from "../data/types";
+import type { Priority, Recurrence, Task, WorkspaceTemplate, WorkspacePlan, Project, Section, FormDef, FormFieldKey, AutomationRule, AutomationAction, AutomationTrigger } from "../data/types";
 import { toLocalISO } from "../data/data";
 
 export interface TaskTemplate {
@@ -333,4 +333,48 @@ export function storeProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTem
 export function saveProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemplate {
   const mine = getUserProjectTemplates();
   return storeProjectTemplate(t) ?? { ...t, name: uniqueName(t.name, mine), id: newTemplateId("ptpl-") };
+}
+
+/* ============================================================
+   Team (workspace) templates.                              [f10-templates-plans]
+   Four ready-made set-ups — Marketing, Operations, Product launch, Client
+   services — each 2–3 projects (emoji + spectrum hue), sections, 6–12 starter
+   tasks with relative due dates and estimates, and a sample request form and
+   rule where they make sense. Shown by <TeamTemplatePicker> (New workspace,
+   and Projects › New project › "From a team template").
+   CONTRACT STUB — f10 fills WORKSPACE_TEMPLATES and the bodies, keeps every
+   exported name/signature.
+   ============================================================ */
+
+/** The built-in team templates, in gallery order. */
+export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = [];
+
+export function findWorkspaceTemplate(id: string): WorkspaceTemplate | undefined {
+  return WORKSPACE_TEMPLATES.find((t) => t.id === id);
+}
+
+/** Pure: a template made concrete for a day — colours from the hue
+ *  (spectrumColor), due dates counted from `today`, defaults filled in.
+ *  `projectKeys` keeps only those projects (all when omitted). */
+export function buildWorkspaceFromTemplate(template: WorkspaceTemplate, today: Date | string, opts: { projectKeys?: string[] } = {}): WorkspacePlan {
+  void today; void opts;
+  return { templateId: template.id, name: template.name, projects: [] };
+}
+
+/** What applying a plan needs (App passes its own create callbacks, or the
+ *  store's bound to the signed-in user — both keep demo mode working). */
+export interface TemplateApplyDeps {
+  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null; description?: string }): Promise<Project>;
+  createSection(input: { projectId: string; workspaceId: string | null; name: string; position?: number }): Promise<Section>;
+  createTasks(tasks: Task[]): Promise<Task[]>;
+  createForm?(input: { workspaceId: string | null; projectId: string; name: string; fields: FormFieldKey[] }): Promise<FormDef>;
+  createRule?(input: { workspaceId: string | null; projectId: string; name: string; actions: AutomationAction[]; trigger?: AutomationTrigger }): Promise<AutomationRule>;
+}
+
+/** Create a plan's projects, sections, tasks (assigned to `assigneeId`), forms
+ *  and rules, in that order. A step that fails is reported in `failed` (by
+ *  name) and the rest carry on — never a half-silent failure. */
+export async function applyWorkspacePlan(plan: WorkspacePlan, ctx: { workspaceId: string | null; assigneeId: string }, deps: TemplateApplyDeps): Promise<{ projects: Project[]; tasks: Task[]; failed: string[] }> {
+  void plan; void ctx; void deps;
+  return { projects: [], tasks: [], failed: [] };
 }

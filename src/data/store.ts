@@ -457,8 +457,9 @@ interface StatusUpdateRow { id: string; workspace_id: string | null; project_id:
 const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at });
 interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
 const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: ((r.trigger as AutomationRule["trigger"]) || "task_created"), actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
-interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown }
-const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[] });
+interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown; public_token?: string | null; public_enabled?: boolean | null }
+// public_token / public_enabled arrive once 0043 is run (absent before: the link stays off)
+const rowToForm = (r: FormRow): FormDef => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, description: r.description ?? undefined, fields: (Array.isArray(r.fields) ? r.fields : []) as FormFieldKey[], publicToken: r.public_token ?? null, publicEnabled: !!r.public_enabled });
 
 export interface TaskEvent { id: string; actorName: string; field: string; oldValue: string | null; newValue: string | null; createdAt: string }
 export interface AdminAccount { id: string; name: string; email: string; createdAt: string; updatedAt: string; approved?: boolean; isAdmin?: boolean; suspended?: boolean }

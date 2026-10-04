@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { AdminApp } from "./admin/AdminApp";
@@ -8,9 +8,13 @@ import { ToastProvider } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initMonitoring } from "./lib/monitoring";
 import { startLiveClock } from "./lib/liveClock";
+import { listenForInstallPrompt } from "./lib/install";
+import { publicFormTokenFromPath } from "./lib/publicForms";
 import "./styles/kanbo.css";
 
 initMonitoring();
+// the browser offers "Install app" once, often before React mounts: keep it for <InstallPrompt>
+listenForInstallPrompt();
 
 // Hidden internal route: /admin loads the standalone admin app, never the
 // consumer product. Everything else loads Kanbo as normal.
@@ -19,6 +23,10 @@ const isAdminRoute = path === "/admin";
 // Public legal pages — standalone, no auth, so the URLs are stable for Google
 // OAuth verification and footer links.
 const legal = path === "/privacy" ? "privacy" : path === "/terms" ? "terms" : null;
+// Public request forms: /f/<token> is a standalone page for people without an
+// account — no auth, no app shell (f9 owns this route and src/public/).
+const publicFormToken = publicFormTokenFromPath(path);
+const PublicFormPage = lazy(() => import("./public/PublicFormPage"));
 
 const root = createRoot(document.getElementById("root")!);
 
@@ -33,7 +41,9 @@ function renderApp(): void {
     <StrictMode>
       <ErrorBoundary>
         <ToastProvider>
-          {legal === "privacy" ? <PrivacyPolicy /> : legal === "terms" ? <Terms /> : (
+          {publicFormToken !== null ? (
+            <Suspense fallback={null}><PublicFormPage token={publicFormToken} /></Suspense>
+          ) : legal === "privacy" ? <PrivacyPolicy /> : legal === "terms" ? <Terms /> : (
             <AuthProvider>
               {isAdminRoute ? <AdminApp /> : <App />}
             </AuthProvider>
@@ -50,7 +60,7 @@ renderApp();
 // open overnight shows the right "Today", overdue flags and date presets the
 // next morning. Minute-level updates (Plan's now-line) go only to components
 // that call useNowMin().
-if (!legal) startLiveClock(renderApp);
+if (!legal && publicFormToken === null) startLiveClock(renderApp);
 
 // PWA: register the service worker in production for instant loads + offline
 // shell. Network-first for HTML means new deploys are picked up immediately.

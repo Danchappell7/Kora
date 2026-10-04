@@ -38,6 +38,11 @@ verify_jwt = true
 [functions.notify]
 verify_jwt = true
 
+# 0043: post a stand-up / status update / risks to the workspace's Slack
+# channel (owner/admin/member; the webhook URL never leaves the server)
+[functions.slack-post]
+verify_jwt = true
+
 # ---- no JWT to verify: these authenticate callers themselves ----
 # signed-out "request early access" form (throttled per email / IP)
 [functions.request-access]
@@ -62,4 +67,19 @@ verify_jwt = false
 
 # external dashboard sends its own METRICS_TOKEN, not a Supabase JWT
 [functions.metrics]
+verify_jwt = false
+
+# 0043: the daily Slack stand-up auto-post, called by pg_cron with the
+# CRON_SECRET header (x-cron-secret); 401 for anyone else
+[functions.slack-standup]
+verify_jwt = false
+
+# 0043: private ICS calendar feed; calendar apps poll it with only the
+# person's unguessable feed token (?t=…), looked up with the service role
+[functions.ics-feed]
+verify_jwt = false
+
+# 0043: public request forms (/f/<token>): signed-out visitors read the form
+# and submit; token + honeypot + per-IP / per-token limits (rate_limits)
+[functions.public-form]
 verify_jwt = false

@@ -211,6 +211,10 @@ export interface FormDef {
   name: string;
   description?: string;
   fields: FormFieldKey[];
+  /** 0043: the form's public link token (server-generated; null until the link is first switched on) */
+  publicToken?: string | null;
+  /** 0043: "Anyone with the link can submit" */
+  publicEnabled?: boolean;
 }
 export type StatusKind = "on_track" | "at_risk" | "off_track";
 export interface StatusUpdate {
@@ -329,3 +333,187 @@ export type IconName =
   | "grid" | "arrowRight" | "arrowLeft" | "refresh" | "calendarPlus" | "layers" | "trash" | "menu" | "archive"
   | "pulse" | "radar" | "kanbo" | "undo" | "keyboard" | "copy" | "send" | "sliders" | "hourglass" | "sunset" | "notes"
   | "palette" | "eye" | "alert" | "coffee";
+
+/* ============================================================
+   0043 — integrations, push, public request forms, plans that follow you.
+   Contracts shared by the feature packages (see docs in
+   docs/integrations/*.md). Everything here degrades gracefully: a
+   feature whose migration / function / secret isn't set up yet hides
+   itself or explains why, never crashes.
+   ============================================================ */
+
+/* ---------- plans that follow you (public.task_user_state) ---------- */
+
+/** One person's own plan on one task. A missing field (or null) means "not
+ *  set": fall back (see lib/planOverlay withOverlay for the precedence). */
+export interface TaskUserState {
+  taskId: string;
+  userId: string;
+  /** minutes from midnight: the slot on the plan canvas (Task.scheduled) */
+  scheduled?: number | null;
+  /** on the person's day (Task.planToday) */
+  planToday?: boolean | null;
+  /** YYYY-MM-DD: the local day `scheduled` / `planToday` are for (a plan from an earlier day is stale) */
+  planDay?: string | null;
+  /** their My-tasks section (Task.mySectionId) */
+  mySectionId?: string | null;
+  /** Kanbo's ranking for them (Task.aiScore / aiReason) */
+  aiScore?: number | null;
+  aiReason?: string | null;
+  /** ISO timestamp, server-set */
+  updatedAt?: string;
+}
+/** The writable part of a TaskUserState (an upsert patch: absent keys are left alone). */
+export type TaskUserStatePatch = Partial<Pick<TaskUserState, "scheduled" | "planToday" | "planDay" | "mySectionId" | "aiScore" | "aiReason">>;
+
+/* ---------- web push (public.push_subscriptions) ---------- */
+
+export interface PushSubscriptionRow {
+  id: string;
+  userId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent?: string | null;
+  createdAt: string;
+  lastOkAt?: string | null;
+}
+/** Notification kinds that can push. Pref keys reuse notify_prefs with a
+ *  "_push" suffix ("assigned_push"…); unset = ON, like every other pref. */
+export type PushKind = "assigned" | "mention" | "comment" | "due";
+/** Whether push can be offered on this device:
+ *  unsupported (no service worker / PushManager / Notification), unconfigured
+ *  (no VITE_VAPID_PUBLIC_KEY, or demo mode), denied (the browser blocked it),
+ *  ready (can be switched on, or already is). */
+export type PushAvailability = "unsupported" | "unconfigured" | "denied" | "ready";
+
+/* ---------- Slack (public.workspace_integrations via slack_status()) ---------- */
+
+/** What anyone in the workspace may know about its Slack connection (never the URL). */
+export interface SlackStatus {
+  connected: boolean;
+  channelLabel: string | null;
+  /** daily stand-up auto-post is on (only ever true while connected) */
+  autopost: boolean;
+  /** "HH:MM", Europe/London */
+  autopostTime: string | null;
+  /** owner/admin: may connect, disconnect, test and set auto-post */
+  canManage: boolean;
+  /** owner/admin/member: may post stand-ups, status updates and risks (guests can't) */
+  canPost: boolean;
+  updatedAt: string | null;
+}
+export type SlackPostKind = "standup" | "status" | "risks";
+export type SlackFailure = "not_connected" | "not_allowed" | "rate_limited" | "slack_rejected" | "invalid" | "unavailable" | "network";
+export type SlackPostResult = { ok: true } | { ok: false; reason: SlackFailure; message: string; retryAfter?: number };
+
+/* ---------- calendar feed (public.calendar_feed_tokens) ---------- */
+
+export interface CalendarFeed {
+  /** the unguessable token in the feed URL (64 hex characters) */
+  token: string;
+  includeDue: boolean;
+  createdAt?: string;
+}
+
+/* ---------- public request forms (forms.public_token / public_enabled) ---------- */
+
+/** The fields a public form may ask for. "assignee" is never public (it would
+ *  list the team's names to strangers). Title, name and email are always asked. */
+export type PublicFormFieldKey = "description" | "priority" | "dueDate";
+/** What GET public-form?t=<token> returns: everything the public page shows, nothing more. */
+export interface PublicFormSchema {
+  name: string;
+  /** the form's description, shown as the intro */
+  intro?: string;
+  /** the project's identity (render with projectIdentity({ id: token, ...project })) */
+  project: { name: string; emoji: string; color: string };
+  /** the team's name and logo, when it has them */
+  workspace?: { name: string; logoUrl?: string | null } | null;
+  fields: PublicFormFieldKey[];
+}
+export interface PublicFormSubmission {
+  title: string;
+  name: string;
+  email: string;
+  description?: string;
+  priority?: Priority;
+  dueDate?: string;
+  /** honeypot: a hidden field people never fill in; anything here is a bot */
+  website?: string;
+}
+export type PublicFormFailure = "disabled" | "not_found" | "rate_limited" | "invalid" | "unavailable" | "network";
+export type PublicFormLoad = { ok: true; form: PublicFormSchema } | { ok: false; reason: PublicFormFailure; message: string; retryAfter?: number };
+export type PublicFormResult = { ok: true; reference: string } | { ok: false; reason: PublicFormFailure; message: string; retryAfter?: number };
+
+/* ---------- team (workspace) templates ---------- */
+
+/** A starter task in a team template. Due dates are relative to the day the template is used. */
+export interface TemplateTask {
+  title: string;
+  /** one of its project's `sections` */
+  section?: string;
+  priority?: Priority;
+  /** days from the day the template is used (0 = that day) */
+  dueInDays?: number;
+  /** estimate for workload planning (Task.effortHours) */
+  effortHours?: number;
+  /** focus block length in minutes (Task.focusMin / dur); defaults to 30 */
+  focusMin?: number;
+  description?: string;
+  recurrence?: Recurrence;
+}
+export interface TemplateForm { name: string; description?: string; fields: FormFieldKey[] }
+/** An automation rule; a "set_section" action's value is a section NAME, resolved to its id when applied. */
+export interface TemplateRule { name: string; trigger: AutomationTrigger; actions: AutomationAction[] }
+export interface TemplateProject {
+  /** stable within its template ("campaigns") */
+  key: string;
+  name: string;
+  emoji: string;
+  /** a lib/projectIdentity SpectrumKey ("jade"); stored as spectrumColor(hue) */
+  hue: import("../lib/projectIdentity").SpectrumKey;
+  description?: string;
+  sections: string[];
+  tasks: TemplateTask[];
+  form?: TemplateForm;
+  rule?: TemplateRule;
+}
+export interface WorkspaceTemplate {
+  id: string;
+  name: string;
+  /** one sentence for the gallery card */
+  summary: string;
+  emoji: string;
+  hue: import("../lib/projectIdentity").SpectrumKey;
+  projects: TemplateProject[];
+}
+/** A template made concrete for a day (buildWorkspaceFromTemplate): real dates and colours, no ids yet. */
+export interface PlannedTask {
+  title: string;
+  description: string;
+  priority: Priority;
+  section?: string;
+  /** YYYY-MM-DD */
+  dueDate?: string;
+  effortHours?: number;
+  focusMin: number;
+  recurrence: Recurrence;
+}
+export interface PlannedProject {
+  key: string;
+  name: string;
+  emoji: string;
+  /** the string to store as Project.color: spectrumColor(hue) */
+  color: string;
+  description?: string;
+  sections: string[];
+  tasks: PlannedTask[];
+  form?: TemplateForm;
+  rule?: TemplateRule;
+}
+export interface WorkspacePlan {
+  templateId: string;
+  name: string;
+  projects: PlannedProject[];
+}
