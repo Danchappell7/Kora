@@ -21,7 +21,9 @@
 // Safety: the URL is re-checked against the webhook rule before every
 // request and redirects are never followed (no SSRF through a stored URL);
 // everything people wrote is escaped for Slack (no @channel, mentions or
-// disguised links) and capped to Slack's limits (_shared/slack.ts).
+// disguised links) and capped to Slack's limits (_shared/slack.ts). The URL
+// never reaches the logs either: caught errors are logged through
+// safeErrorNote(), which cuts it out (Deno's fetch errors quote it).
 // Rate limits (rate_limits, 0042; fail open without it):
 //   test: 3 a minute per workspace · posts: 10 per 10 minutes per person and
 //   30 an hour per workspace.
@@ -32,7 +34,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX, sweep } from "../_shared/limits.ts";
 import {
-  buildSlackMessage, classifySlackResponse, isSlackWebhookUrl, isStatusKind, SLACK_LIMITS,
+  buildSlackMessage, classifySlackResponse, isSlackWebhookUrl, isStatusKind, safeErrorNote, SLACK_LIMITS,
   type SlackMessageKind, type SlackStatusKind,
 } from "../_shared/slack.ts";
 
@@ -157,7 +159,8 @@ Deno.serve(async (req) => {
         signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
       });
     } catch (e) {
-      console.error("slack-post fetch", String((e as Error)?.message ?? e));
+      // never e.message as it is: Deno's network errors include the webhook URL
+      console.error("slack-post: couldn't reach Slack", safeErrorNote(e, [hook]), workspaceId);
       return refuse(502, "slack_rejected", "Slack isn't responding.", { detail: "unreachable" });
     }
     const reply = await res.text().catch(() => "");
@@ -167,7 +170,7 @@ Deno.serve(async (req) => {
     if (out.reason === "rate_limited") return refuse(429, "rate_limited", "Slack asked Kanbo to slow down.", { retryAfter: out.retryAfter, detail: out.detail });
     return refuse(502, "slack_rejected", "Slack didn't accept the message.", { detail: out.detail, ...(out.gone ? { gone: true } : {}) });
   } catch (e) {
-    console.error("slack-post", String((e as Error)?.message ?? e));
+    console.error("slack-post", safeErrorNote(e));
     return refuse(503, "unavailable", "Something went wrong. Try again.");
   }
 });

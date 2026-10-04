@@ -14,7 +14,9 @@ Slack**. Then:
 The webhook link is a secret. Kanbo keeps it on the server
 (`workspace_integrations`, migration 0043): once it's saved, nobody can read it
 back from the app, owners included. The app only ever learns whether a channel
-is connected and the channel name typed beside it.
+is connected and the channel name typed beside it. It never appears in the
+function logs either: failures are logged against the workspace id, with any
+URL cut out of the error (Deno's network errors quote the request URL).
 
 Who can do what:
 

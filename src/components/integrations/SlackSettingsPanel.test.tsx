@@ -50,9 +50,15 @@ describe("SlackSettingsPanel", () => {
 
   it("sends a test and reports it", async () => {
     await connectSlack(WS, HOOK, "#team");
-    render(<SlackSettingsPanel workspaceId={WS} workspaceName="Acme" role="admin" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Send test" }));
-    expect(await screen.findByText("Test message sent to #team. Have a look in Slack.")).toBeInTheDocument();
+    const { container } = render(<SlackSettingsPanel workspaceId={WS} workspaceName="Acme" role="admin" />);
+    const send = await screen.findByRole("button", { name: "Send test" });
+    // the status region exists, empty, before the message arrives (so it's announced)
+    const region = container.querySelector(".kslk-live")!;
+    expect(region).toHaveAttribute("role", "status");
+    expect(region).toBeEmptyDOMElement();
+    fireEvent.click(send);
+    const msg = await screen.findByText("Test message sent to #team. Have a look in Slack.");
+    expect(msg.closest("[role='status']")).toBe(region);
   });
 
   it("switches the daily stand-up on and picks its time", async () => {

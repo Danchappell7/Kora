@@ -18,6 +18,9 @@
 // Without that table every due run posts (fails open) — the 20-minute window
 // still keeps it to one or two posts.
 //
+// Logs name the workspace, never its webhook: caught errors go through
+// safeErrorNote() (Deno's fetch errors quote the URL).
+//
 // Manual run (for checking): POST { "workspaceId": "<uuid>", "force": true }
 // posts that workspace's stand-up now, whatever the time or day, without
 // using up today's automatic post.
@@ -31,7 +34,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 import {
   addDaysIso, buildSlackMessage, buildStandupText, classifySlackResponse, isSlackWebhookUrl, isStandupDue,
-  isWeekday, lastWorkdayIso, zonedNow, type StandupEventRow, type StandupMember, type StandupTaskRow,
+  isWeekday, lastWorkdayIso, safeErrorNote, zonedNow, type StandupEventRow, type StandupMember, type StandupTaskRow,
 } from "../_shared/slack.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -106,7 +109,8 @@ Deno.serve(async (req) => {
       ok = out.ok;
       if (!out.ok) console.warn("slack-standup: slack said", res.status, out.detail, r.workspace_id);
     } catch (e) {
-      console.error("slack-standup", r.workspace_id, String((e as Error)?.message ?? e));
+      // never e.message as it is: Deno's network errors include the webhook URL
+      console.error("slack-standup", r.workspace_id, safeErrorNote(e, [hook]));
     }
     if (ok) posted++;
     else {

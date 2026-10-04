@@ -305,6 +305,42 @@ export function classifySlackResponse(status: number, body: string, retryAfter?:
     : { ok: false, reason: "slack_rejected", detail };
 }
 
+/* ---------------------------------------------------------------- logging */
+
+/**
+ * A short description of a caught error that's safe for console.*: never the
+ * webhook. Deno's network errors carry the whole request URL ("error sending
+ * request for url (https://hooks.slack.com/services/T…/B…/…): …"), and that
+ * URL is the workspace's secret, so it must never reach the function logs
+ * (they're kept, and can flow to log drains).
+ *
+ * Timeouts are just "timeout". Anything else is the error's name and its
+ * message with the given secrets, every URL, any hooks.slack.com or
+ * /services/… path and anything token-shaped cut out, clipped to 200
+ * characters. Never throws.
+ */
+export function safeErrorNote(e: unknown, secrets: readonly (string | null | undefined)[] = []): string {
+  try {
+    const err = (e && typeof e === "object" ? e : {}) as { name?: unknown; message?: unknown };
+    const name = typeof err.name === "string" && /^[A-Za-z]{1,40}$/.test(err.name) ? err.name : "Error";
+    if (name === "TimeoutError" || name === "AbortError") return "timeout";
+    let msg = typeof e === "string" ? e : typeof err.message === "string" ? err.message : "";
+    for (const s of secrets) {
+      const v = typeof s === "string" ? s.trim() : "";
+      if (v.length >= 8) msg = msg.split(v).join("[webhook]");
+    }
+    msg = msg
+      .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>()]*/gi, "[url]")
+      .replace(/hooks\.slack\.com[^\s"'<>()]*/gi, "[webhook]")
+      .replace(/\/?services\/[A-Za-z0-9_/-]+/gi, "[webhook]")
+      .replace(/[A-Za-z0-9]{20,}/g, "[redacted]")
+      .trim();
+    return oneLine(msg ? `${name}: ${msg}` : name, 200);
+  } catch {
+    return "Error";
+  }
+}
+
 /* ---------------------------------------------------------------- time (Europe/London) */
 
 export interface ZonedNow {

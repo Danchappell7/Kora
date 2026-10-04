@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   addDaysIso, buildSlackMessage, buildStandupText, classifySlackResponse, clip, escapeMrkdwn, fmtDay,
-  isSlackWebhookUrl, isStandupDue, isWeekday, lastWorkdayIso, oneLine, parseHhMm, safeLinkUrl, slackLink,
+  isSlackWebhookUrl, isStandupDue, isWeekday, lastWorkdayIso, oneLine, parseHhMm, safeErrorNote, safeLinkUrl, slackLink,
   SLACK_LIMITS, SLACK_WEBHOOK_RE, splitSections, tidyText, zonedNow, type SlackBlock, type StandupTaskRow,
 } from "./slack.ts";
 import { SLACK_WEBHOOK_RE as APP_RE, isSlackWebhookUrl as appIsSlack } from "../../../src/lib/slack";
@@ -168,6 +168,45 @@ describe("classifySlackResponse", () => {
     expect(classifySlackResponse(302, "")).toMatchObject({ detail: "redirect" });
     expect(classifySlackResponse(503, "x")).toMatchObject({ detail: "slack_unavailable" });
     expect(classifySlackResponse(400, "<html>nope</html>")).toMatchObject({ detail: "http_400" });
+  });
+});
+
+describe("safeErrorNote (what the functions log)", () => {
+  const SECRET = "abcdefghijklmnopqrstuvwx";
+  const leaks = (note: string) => note.includes(SECRET) || /hooks\.slack\.com\/services|T0001\/B0001/.test(note);
+
+  it("never includes the webhook, whatever shape Deno's error takes", () => {
+    for (const e of [
+      new TypeError(`error sending request for url (${HOOK}): client error (Connect): dns error: failed to lookup address information`),
+      new TypeError(`error sending request from 10.0.0.1:50000 for ${HOOK} (54.1.2.3:443): client error (Connect): tcp connect error`),
+      new TypeError(`invalid peer certificate for ${HOOK.replace("https://", "")}`),
+      new Error(`POST /services/T0001/B0001/${SECRET} failed`),
+      new Error(`token ${SECRET} rejected`),
+      `${HOOK} went away`,
+      { name: "TypeError", message: `fetch failed: ${HOOK}?x=1` },
+    ]) {
+      const note = safeErrorNote(e, [HOOK]);
+      expect(leaks(note), note).toBe(false);
+      expect(note.length).toBeLessThanOrEqual(200);
+    }
+    expect(safeErrorNote(new TypeError(`error sending request for url (${HOOK}): connection refused`), [HOOK]))
+      .toBe("TypeError: error sending request for url ([webhook]): connection refused");
+  });
+
+  it("cuts the exact secret even without a scheme or path around it", () => {
+    expect(safeErrorNote(new Error(`bad ${SECRET.slice(0, 18)}x`), [SECRET.slice(0, 18) + "x"])).toBe("Error: bad [webhook]");
+  });
+
+  it("timeouts are just 'timeout'; odd throws still give a line", () => {
+    const timeout = Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
+    expect(safeErrorNote(timeout)).toBe("timeout");
+    expect(safeErrorNote(Object.assign(new Error("aborted"), { name: "AbortError" }))).toBe("timeout");
+    expect(safeErrorNote(null)).toBe("Error");
+    expect(safeErrorNote(undefined)).toBe("Error");
+    expect(safeErrorNote(42)).toBe("Error");
+    expect(safeErrorNote({ get message() { throw new Error("no"); } })).toBe("Error");
+    expect(safeErrorNote(new Error('relation "workspace_integrations" does not exist'))).toBe('Error: relation "workspace_integrations" does not exist');
+    expect(safeErrorNote(new Error("x".repeat(500))).length).toBeLessThanOrEqual(200);
   });
 });
 

@@ -53,9 +53,14 @@ describe("SlackPostButton", () => {
     await slack.connectSlack(WS, HOOK);
     vi.mocked(slack.postToSlack).mockResolvedValueOnce({ ok: false, reason: "rate_limited", retryAfter: 300, message: "That's a lot of posts in a short time. Try again in 5 minutes." });
     render(<SlackPostButton workspaceId={WS} kind="risks" getText={() => "• late"} label="Share risks" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Share risks" }));
+    const btn = await screen.findByRole("button", { name: "Share risks" });
+    // the live region is already there, empty, before anything is said into it
+    const region = btn.closest(".kslk-post")!.querySelector("[role='status']")!;
+    expect(region).toBeEmptyDOMElement();
+    fireEvent.click(btn);
     const note = await screen.findByText("That's a lot of posts in a short time. Try again in 5 minutes.");
-    expect(note.closest("[role='status']")).toHaveAttribute("data-tone", "signal");
+    expect(note.closest("[role='status']")).toBe(region);
+    expect(region).toHaveAttribute("data-tone", "signal");
     expect(screen.getByRole("button", { name: "Share risks" })).not.toBeDisabled();
   });
 
