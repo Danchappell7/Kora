@@ -292,17 +292,40 @@ describe("Settings sheet", () => {
     expect(screen.queryByRole("button", { name: /save profile/i })).toBeNull();
   });
 
-  it("connects and disconnects calendars", () => {
+  it("connected calendars: several accounts, one disconnected at a time, more of either kind can be added", async () => {
     const onConnect = vi.fn(), onDisconnect = vi.fn();
-    renderSettings({ calendar: { connections: [{ provider: "google", accountEmail: "ada@acme.co.uk" }], onConnect, onDisconnect, syncing: true } });
+    const loadCalendars = vi.fn(async () => [
+      { id: "ada@acme.co.uk", name: "Work", color: "#3f7fe0", primary: true, selected: true },
+      { id: "team@g", name: "Launch team", color: "#2e9d6a", primary: false, selected: false },
+    ]);
+    const onSelect = vi.fn(async () => {});
+    renderSettings({ calendar: { connections: [
+      { id: "c-work", provider: "google", accountEmail: "ada@acme.co.uk", selectedCalendars: null, canChoose: true },
+      { id: "c-home", provider: "google", accountEmail: "ada@gmail.com", canChoose: true, selectedCalendars: [
+        { id: "ada@gmail.com", name: "Ada", color: "#e0663a", primary: true }, { id: "fam@g", name: "Family", color: "#a35bc4", primary: false }] },
+      { id: "c-ms", provider: "microsoft", accountEmail: "ada@outlook.com", selectedCalendars: [], canChoose: true },
+    ], onConnect, onDisconnect, syncing: true, loadCalendars, onSelect } });
     goTo("Calendar");
     const panel = screen.getByRole("tabpanel", { name: /Calendar/ });
+    expect(within(panel).getByRole("heading", { name: "Connected calendars" })).toBeInTheDocument();
     expect(within(panel).getAllByRole("status").some((el) => /Syncing/.test(el.textContent ?? ""))).toBe(true);
-    expect(within(panel).getByText(/ada@acme\.co\.uk/)).toBeInTheDocument();
-    fireEvent.click(within(panel).getByRole("button", { name: "Disconnect Google Calendar" }));
-    expect(onDisconnect).toHaveBeenCalledWith("google");
-    fireEvent.click(within(panel).getByRole("button", { name: "Connect Microsoft Outlook" }));
+    expect(within(panel).getByText("Google · Main calendar shown")).toBeInTheDocument();
+    expect(within(panel).getByText("Google · 2 calendars shown")).toBeInTheDocument();
+    expect(within(panel).getByText("Outlook · No calendars shown")).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "Disconnect ada@gmail.com" }));
+    expect(onDisconnect).toHaveBeenCalledWith("c-home");
+    fireEvent.click(within(panel).getByRole("button", { name: "Add Google account" }));
+    expect(onConnect).toHaveBeenCalledWith("google");
+    fireEvent.click(within(panel).getByRole("button", { name: "Add Outlook account" }));
     expect(onConnect).toHaveBeenCalledWith("microsoft");
+    // choose calendars inside one account
+    fireEvent.click(within(panel).getByRole("button", { name: "Choose calendars from ada@acme.co.uk" }));
+    expect(loadCalendars).toHaveBeenCalledWith("c-work");
+    const team = await within(panel).findByRole("checkbox", { name: /Launch team/ });
+    expect(within(panel).getByRole("checkbox", { name: /Work/ })).toBeChecked();
+    fireEvent.click(team);
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("c-work", ["ada@acme.co.uk", "team@g"]));
+    expect(await within(panel).findByText(/Saved\./)).toBeInTheDocument();
   });
 
   it("Calendar & integrations: the calendar feed always, and Slack for the active workspace", async () => {
@@ -318,7 +341,8 @@ describe("Settings sheet", () => {
     renderSettings({ calendar: { connections: [], onConnect: vi.fn(), onDisconnect: vi.fn(), syncing: false } });
     goTo("Calendar");
     const again = screen.getByRole("tabpanel", { name: /Calendar/ });
-    expect(within(again).getByRole("heading", { name: "Calendars" })).toBeInTheDocument();
+    expect(within(again).getByRole("heading", { name: "Connected calendars" })).toBeInTheDocument();
+    expect(within(again).getByText("No calendars connected yet")).toBeInTheDocument();
     expect(within(again).getByRole("heading", { name: "Add Kanbo to your calendar" })).toBeInTheDocument();
     // no slack prop (an older host): no Slack group at all
     expect(within(again).queryByRole("heading", { name: "Slack" })).toBeNull();

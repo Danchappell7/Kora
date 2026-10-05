@@ -1,0 +1,57 @@
+/* ============================================================
+   KANBO — Settings › Connected calendars (CalendarAccountsPanel).
+   Lives inside Settings, so groups, rows, buttons and tick boxes come
+   from SettingsModal's kset-* styles and the kit; this file only styles
+   the panel's own parts (kacct-*). Paper & Navy tokens with fallbacks,
+   reduced motion respected (Collapse is the only motion).
+   ============================================================ */
+
+.kacct { display: block; }
+.kacct > .kset-row { align-items: flex-start; }
+.kacct > .kset-row > .kset-row-ctl { align-self: center; }
+.kacct-email { overflow-wrap: anywhere; }
+.kacct-desc { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.kacct-dots { display: inline-flex; align-items: center; gap: 3px; }
+.kacct-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px var(--hairline); }
+.kacct-warn {
+  display: inline-flex; align-items: flex-start; gap: 6px; margin-top: 2px;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); text-wrap: pretty;
+}
+.kacct-warn > svg { flex-shrink: 0; margin-top: 2px; }
+.kacct-toggle[aria-expanded="true"] > svg:last-child { transform: rotate(180deg); }
+.kacct-toggle > svg:last-child { transition: transform var(--d-2, 160ms) var(--ease, ease); }
+
+/* ---- the account's calendars ---- */
+.kacct-panel { padding: 0 16px 14px 48px; }
+.kacct-list { display: grid; gap: 2px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.kacct-item {
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 8px 0 0; border-radius: var(--r-sm, 6px);
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); cursor: pointer;
+  transition: background var(--d-1, 90ms) var(--ease, ease);
+}
+.kacct-item:hover:not([data-disabled]) { background: var(--fill-1, transparent); }
+.kacct-item[data-disabled] { cursor: default; }
+.kacct-item[data-disabled] .kacct-name { color: var(--ink-3); }
+/* (Settings' tick box is 32px square; on these rows its 16px box lines up with the swatch) */
+.kacct-item .kset-check { flex-shrink: 0; }
+.kacct-item .kset-check[data-disabled] { opacity: 0.45; }
+.kacct-swatch { width: 10px; height: 10px; flex-shrink: 0; border-radius: 3px; box-shadow: 0 0 0 1px var(--hairline); }
+.kacct-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kacct-badge { flex-shrink: 0; }
+.kacct-role { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kacct-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0; padding: 6px 0;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kacct-status .kset-err { margin: 0; }
+.kacct-foot { margin: 8px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kacct-problem { color: var(--signal, var(--prio-urgent)); }
+
+/* ---- Add Google account · Add Outlook account ---- */
+.kset-row.kacct-add { min-height: 0; justify-content: flex-start; gap: 8px; }
+
+@media (max-width: 640px) {
+  .kacct-panel { padding: 0 12px 12px 12px; }
+  .kacct > .kset-row > .kset-row-ctl { margin-left: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kacct-toggle > svg:last-child { transition: none; }
+}

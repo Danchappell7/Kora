@@ -67,3 +67,10 @@ the user's JWT itself, and the callback is protected by a one-time `state` nonce
 Once all four are done: open **Calendar → Connect calendar → Google/Microsoft**,
 approve, and your real events appear in the month grid alongside tasks. You can
 do just Google first and add Microsoft later — each works independently.
+
+Several accounts per person, and choosing calendars inside each one, need
+migration `0045_multi_calendar.sql` and the updated `calendar` function (deploy
+the function first). The client ids and redirect URL above don't change. The
+function now also asks Microsoft for `User.Read`, which step 3.4 already adds,
+and `profile` (a standard sign-in scope, nothing to add), so it can tell
+Outlook accounts apart. See `docs/integrations/calendar-accounts.md`.

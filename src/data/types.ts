@@ -286,15 +286,40 @@ export interface CalEvent {
   end: number;
   kind: "meeting" | "break";
   with?: string[];
+  /** the connected calendar it came from: its colour (a thin left edge) and name */
+  color?: string;
+  calendarName?: string;
 }
 
-/* external calendar integration (Google / Microsoft) */
+/* external calendar integration (Google / Microsoft): several accounts per
+   person, and a choice of calendars inside each one (0045) */
 export type CalProvider = "google" | "microsoft";
 
+/** One calendar inside a connected account. */
+export interface ExtCalendar {
+  id: string;
+  name: string;
+  /** "#rrggbb" from the server; the app re-tones it per theme */
+  color: string;
+  /** the account's main calendar */
+  primary: boolean;
+  /** owner · writer · reader · freeBusyReader */
+  accessRole?: string;
+  /** shown in Kanbo (on an account's calendar list) */
+  selected?: boolean;
+}
+
+/** A connected calendar account. Never carries tokens: those stay on the server. */
 export interface CalendarConnection {
+  /** the connection's id (on a server from before several accounts: its provider) */
+  id: string;
   provider: CalProvider;
   accountEmail: string;
+  /** the calendars Kanbo shows from this account; null = just its primary calendar */
+  selectedCalendars: ExtCalendar[] | null;
   createdAt?: string;
+  /** the server can list and choose this account's calendars (and add more accounts of a kind) */
+  canChoose?: boolean;
 }
 
 export interface ExternalEvent {
@@ -304,6 +329,22 @@ export interface ExternalEvent {
   end: string;
   allDay: boolean;
   provider: string;
+  /** where it came from (absent from a server that predates several accounts) */
+  connectionId?: string;
+  calendarId?: string;
+  calendarName?: string;
+  color?: string;
+}
+
+/** One account or calendar the last sync couldn't read (the rest still came through). */
+export interface CalendarWarning {
+  connectionId: string;
+  provider: string;
+  accountEmail: string;
+  calendarId?: string;
+  calendarName?: string;
+  /** reconnect: the account's access was withdrawn; the others are usually passing */
+  reason: "reconnect" | "unavailable" | "timeout";
 }
 
 export interface StatusMeta {

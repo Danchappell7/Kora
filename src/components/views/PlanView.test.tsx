@@ -4,7 +4,7 @@ import { PlanView } from "./PlanView";
 import { ToastProvider } from "../Toast";
 import { localDayKey, planSeenKey, writeSeen } from "./planCanvas";
 import type { SeenMap } from "./planCanvas";
-import type { Task } from "../../data/types";
+import type { Task, ExternalEvent } from "../../data/types";
 
 // jsdom has no PointerEvent: without one, pointerId/pointerType/button never reach
 // the handlers and the drag code is never exercised
@@ -76,6 +76,26 @@ describe("PlanView", () => {
     expect(line().textContent).not.toMatch(/Tomorrow|Today/);
     fireEvent.change(input, { target: { value: "Call supplier tomorrow" } });
     expect(line().textContent).toContain("Tomorrow");
+  });
+
+  it("meetings from every connected calendar block time, each with its calendar's colour edge", () => {
+    atToday(10);
+    const at = (h: number, m = 0) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.toISOString(); };
+    const events: ExternalEvent[] = [
+      { id: "w1", title: "Roadmap review", start: at(10), end: at(11), allDay: false, provider: "google", connectionId: "c1", calendarId: "w", calendarName: "Work", color: "#3f7fe0" },
+      { id: "p1", title: "School run", start: at(11), end: at(12), allDay: false, provider: "microsoft", connectionId: "c2", calendarId: "primary", calendarName: "Family", color: "#a35bc4" },
+    ];
+    const onCreate = vi.fn();
+    const { container } = renderPlan([], { onCreate, externalEvents: events });
+    const blocks = Array.from(container.querySelectorAll<HTMLElement>(".kday-event[data-cal]"));
+    expect(blocks.map((b) => b.getAttribute("title"))).toEqual(["Roadmap review · Work", "School run · Family"]);
+    expect(blocks.every((b) => /^oklch\(/.test(b.style.getPropertyValue("--kev")))).toBe(true);
+    expect(blocks[0].style.getPropertyValue("--kev")).not.toBe(blocks[1].style.getPropertyValue("--kev"));
+    // a new task goes after both accounts' meetings, not over the personal one
+    const input = screen.getByLabelText("Capture a task for today");
+    fireEvent.change(input, { target: { value: "Call supplier 30m" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(onCreate.mock.calls[0][0].scheduled).toBeGreaterThanOrEqual(12 * 60);
   });
 
   it("Tab adds the capture and puts it on the day", () => {

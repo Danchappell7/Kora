@@ -14,7 +14,7 @@ import type {
   PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, FocusEvent as ReactFocusEvent,
   MouseEvent as ReactMouseEvent, CSSProperties, ReactNode, RefObject, SyntheticEvent,
 } from "react";
-import { Icon, chipInk, chipFill, chipEdge, Button, Kbd, StatusGlyph, ProjectTile, EmptyState, SectionLabel, projectIdentity } from "../primitives";
+import { Icon, chipInk, chipFill, chipEdge, Button, Kbd, StatusGlyph, ProjectTile, EmptyState, SectionLabel, projectIdentity, projectPaint } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useToast } from "../Toast";
@@ -221,6 +221,11 @@ const PLAN_CSS = `
 .kday-event[data-past="true"] .kday-event-title { color: var(--ink-3); }
 .kday-event[data-past="true"] .kday-event-meta { color: var(--ink-4); }
 .kday-event[data-kind="meeting"][data-now="true"] { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--kp-accent-line); }
+/* from a connected calendar: the edge is that calendar's colour (--kev, re-toned per theme),
+   quieter once it's past; the accent outline still marks the meeting that's on now */
+.kday-event[data-kind="meeting"][data-cal] { padding-left: 13px; box-shadow: inset 3px 0 0 var(--kev), inset 0 0 0 1px var(--hairline); }
+.kday-event[data-kind="meeting"][data-cal][data-past="true"] { box-shadow: inset 3px 0 0 color-mix(in oklch, var(--kev) 45%, transparent), inset 0 0 0 1px var(--hairline); }
+.kday-event[data-kind="meeting"][data-cal][data-now="true"] { box-shadow: inset 3px 0 0 var(--kev), inset 0 0 0 1px var(--kp-accent-line); }
 /* short of room, the time and people give way before the meeting's name does */
 .kday-event-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/16px var(--kp-ui); color: var(--ink-2); }
 .kday-event[data-kind="break"] .kday-event-title { font-weight: 500; color: var(--ink-3); }
@@ -498,11 +503,13 @@ function EventBlock({ ev, lane, win, nowMin, onExtract }: { ev: CalEvent; lane?:
   const top = yOf(from, win), h = (ev.end - from) * win.pxm;
   const tall = h >= 44;
   const meeting = ev.kind !== "break";
+  const cal = meeting && ev.color ? projectPaint(ev.color).solid : undefined;
   return (
     <div className="kday-event" data-kind={meeting ? "meeting" : "break"} data-tall={tall || undefined} data-past={ev.end <= nowMin || undefined}
-      data-now={(ev.start <= nowMin && ev.end > nowMin) || undefined}
-      style={{ ...inset(top, h), ...laneStyle(lane) }}>
-      <span className="kday-event-title">{ev.title}</span>
+      data-now={(ev.start <= nowMin && ev.end > nowMin) || undefined} data-cal={cal ? "" : undefined}
+      title={ev.calendarName ? `${ev.title} · ${ev.calendarName}` : undefined}
+      style={{ ...inset(top, h), ...laneStyle(lane), ...(cal ? { "--kev": cal } as CSSProperties : {}) }}>
+      <span className="kday-event-title">{ev.title}{ev.calendarName && <span className="sr-only">, {ev.calendarName} calendar</span>}</span>
       <span className="kday-event-meta">{fmtTimeRange(ev.start, ev.end)}{ev.with?.length ? ` · ${ev.with.join(", ")}` : ""}</span>
       {meeting && onExtract && (
         <Button variant="ghost" size="sm" icon="notes" className="kday-event-act kday-mini" aria-label={`Turn notes from “${ev.title}” into tasks`}

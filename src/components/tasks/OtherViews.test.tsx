@@ -4,7 +4,7 @@ import { BoardView, TimelineView, CalendarView, MatrixView, FilesView } from "./
 import { store } from "../../data/store";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import { addDaysISO } from "./otherViewsLogic";
-import type { Task, Attachment } from "../../data/types";
+import type { Task, Attachment, CalendarConnection, ExternalEvent } from "../../data/types";
 
 const mk = (over: Partial<Task>): Task => ({
   id: "t", title: "Task", description: "", status: "todo", priority: "medium", projectId: "p-launch", assigneeId: "m-self",
@@ -212,6 +212,60 @@ describe("CalendarView", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /Due thing 4/ }));
     expect(onOpen).toHaveBeenCalledWith("c4");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  describe("connected calendars", () => {
+    const conns: CalendarConnection[] = [
+      { id: "c1", provider: "google", accountEmail: "ada@work.example", canChoose: true, selectedCalendars: [
+        { id: "w", name: "Work", color: "#3f7fe0", primary: true }, { id: "t", name: "Launch team", color: "#2e9d6a", primary: false }] },
+      { id: "c2", provider: "microsoft", accountEmail: "ada@outlook.example", canChoose: true, selectedCalendars: null },
+    ];
+    const at = (h: number) => { const d = new Date(KANBO_TODAY); d.setHours(h, 0, 0, 0); return d.toISOString(); };
+    const events: ExternalEvent[] = [
+      { id: "e1", title: "Standup", start: at(9), end: at(10), allDay: false, provider: "google", connectionId: "c1", calendarId: "w", calendarName: "Work", color: "#3f7fe0" },
+      { id: "e2", title: "Launch sync", start: at(11), end: at(12), allDay: false, provider: "google", connectionId: "c1", calendarId: "t", calendarName: "Launch team", color: "#2e9d6a" },
+    ];
+    const chips = () => screen.getByRole("group", { name: "Calendars shown on Month" });
+
+    it("each event carries its calendar's colour; the legend names every calendar shown", () => {
+      render(<CalendarView tasks={[]} onOpen={noop} connections={conns} externalEvents={events} />);
+      expect(within(chips()).getAllByRole("button").map((b) => b.textContent)).toEqual(["Work", "Launch team", "ada@outlook.example"]);
+      const sync = screen.getByText("Launch sync").closest(".ktv-cal-event") as HTMLElement;
+      expect(sync.style.getPropertyValue("--kcal")).toMatch(/^oklch\(/);
+      expect(sync.getAttribute("title")).toBe("11:00 · Launch sync · Launch team");
+      expect(sync.style.getPropertyValue("--kcal")).not.toBe((screen.getByText("Standup").closest(".ktv-cal-event") as HTMLElement).style.getPropertyValue("--kcal"));
+    });
+
+    it("a chip hides that calendar on Month for now (remembered on this device), and shows it again", () => {
+      render(<CalendarView tasks={[]} onOpen={noop} connections={conns} externalEvents={events} />);
+      const team = within(chips()).getByRole("button", { name: "Launch team" });
+      expect(team).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(team);
+      expect(team).toHaveAttribute("aria-pressed", "false");
+      expect(screen.queryByText("Launch sync")).toBeNull();
+      expect(screen.getByText("Standup")).toBeInTheDocument();
+      expect(JSON.parse(localStorage.getItem("kanbo-cal-hidden")!)).toEqual(["c1|t"]);
+      cleanup();
+      render(<CalendarView tasks={[]} onOpen={noop} connections={conns} externalEvents={events} />);
+      expect(screen.queryByText("Launch sync")).toBeNull();
+      fireEvent.click(within(chips()).getByRole("button", { name: "Launch team" }));
+      expect(screen.getByText("Launch sync")).toBeInTheDocument();
+      expect(localStorage.getItem("kanbo-cal-hidden")).toBeNull();
+    });
+
+    it("says when a calendar couldn't load, with a way to Settings", () => {
+      const onOpenSettings = vi.fn();
+      render(<CalendarView tasks={[]} onOpen={noop} connections={conns} externalEvents={events} onOpenSettings={onOpenSettings}
+        warnings={[{ connectionId: "c2", provider: "microsoft", accountEmail: "ada@outlook.example", reason: "reconnect" }]} />);
+      expect(screen.getByText("1 calendar couldn't load")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "See Settings" }));
+      expect(onOpenSettings).toHaveBeenCalled();
+    });
+
+    it("a project's calendar (no connections) has no legend", () => {
+      render(<CalendarView tasks={[]} onOpen={noop} />);
+      expect(screen.queryByRole("group", { name: "Calendars shown on Month" })).toBeNull();
+    });
   });
 
   it("month → week → month comes back to the same month", () => {

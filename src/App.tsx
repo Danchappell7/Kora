@@ -72,7 +72,7 @@ import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate } from "./data/types";
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
@@ -270,6 +270,8 @@ export default function App() {
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [calConnections, setCalConnections] = useState<CalendarConnection[]>([]);
   const [calEvents, setCalEvents] = useState<ExternalEvent[]>([]);
+  const [calWarnings, setCalWarnings] = useState<CalendarWarning[]>([]);
+  const calConnectionsRef = useRef(calConnections); calConnectionsRef.current = calConnections;
   const [calSyncing, setCalSyncing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
@@ -1184,9 +1186,9 @@ export default function App() {
     if (auth.configured) await auth.signOut({ discardUnsynced: true });
   }, [auth]);
 
-  /* ---- external calendars (Google / Microsoft) ---- */
+  /* ---- external calendars: several Google / Outlook accounts, chosen calendars in each ---- */
+  // (demo mode: two example accounts from the store)
   const refreshCalendar = useCallback(async () => {
-    if (!store.configured) return;
     setCalSyncing(true);
     try {
       const conns = await store.listCalendarConnections();
@@ -1194,13 +1196,18 @@ export default function App() {
       if (conns.length) {
         const start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0);
         const end = new Date(start); end.setMonth(end.getMonth() + 2);
-        setCalEvents(await store.listExternalEvents(start.toISOString(), end.toISOString()));
+        const { events, warnings } = await store.loadExternalEvents(start.toISOString(), end.toISOString());
+        setCalEvents(events);
+        setCalWarnings(warnings);
       } else {
         setCalEvents([]);
+        setCalWarnings([]);
       }
     } catch (e) { reportError(e); }
     finally { setCalSyncing(false); }
   }, []);
+  // the demo's example accounts (a signed-in account loads its own below, on sign-in)
+  useEffect(() => { if (!store.configured) void refreshCalendar(); }, [refreshCalendar]);
 
   const connectCalendar = useCallback(async (provider: CalProvider) => {
     try {
@@ -1213,10 +1220,17 @@ export default function App() {
     }
   }, [toastError]);
 
-  const disconnectCalendar = useCallback(async (provider: CalProvider) => {
-    try { await store.disconnectCalendar(provider); toastSuccess("Calendar disconnected"); refreshCalendar(); }
+  /** Disconnect one account (by its id); its calendars leave Today and Month. */
+  const disconnectCalendar = useCallback(async (connectionId: string) => {
+    const who = calConnectionsRef.current.find((c) => c.id === connectionId)?.accountEmail;
+    try { await store.disconnectCalendar(connectionId); toastSuccess(who ? `Disconnected ${who}` : "Calendar disconnected"); refreshCalendar(); }
     catch (e) { reportError(e); toastError("Couldn't disconnect that calendar."); }
   }, [toastSuccess, toastError, refreshCalendar]);
+  /** Show these calendars from one account (Settings saves each tick straight away). */
+  const selectCalendars = useCallback(async (connectionId: string, calendarIds: string[]) => {
+    await store.selectCalendars(connectionId, calendarIds);
+    void refreshCalendar();
+  }, [refreshCalendar]);
 
   // first-run welcome — once, for a brand-new account (no tasks yet) OR any
   // account that still has no real name set (a name is needed so teammates and
@@ -1286,8 +1300,11 @@ export default function App() {
     }
     if (cal === "finish") {
       if (!state || !code) toastError("Couldn't connect that calendar. Please try again.");
-      else store.finishCalendarConnect(state, code).then(({ provider, accountEmail }) => {
-        toastSuccess(`${provider === "microsoft" ? "Outlook" : "Google"} calendar connected${accountEmail ? ` (${accountEmail})` : ""}`);
+      else store.finishCalendarConnect(state, code).then(({ provider, accountEmail, replaced }) => {
+        const kind = provider === "microsoft" ? "Outlook" : "Google";
+        toastSuccess(`${kind} calendar connected${accountEmail ? ` (${accountEmail})` : ""}`);
+        // (a server before Kanbo's calendar update keeps one account of each kind)
+        if (replaced) toastInfoRef.current(`It replaced your other ${kind} account. Several accounts of one kind arrive with Kanbo's next calendar update.`);
         setRoute({ view: "calendar" }, { replace: true });
         refreshCalendar();
       }, (e) => {
@@ -3500,7 +3517,8 @@ export default function App() {
 
   const renderMain = () => {
     switch (route.view) {
-      case "plan": return <TodayView tasks={myTasks} allTasks={allTasks} events={calEvents} calendarConnected={calConnections.length > 0}
+      // (the demo's Today keeps its illustrative day, already in the example calendars' colours)
+      case "plan": return <TodayView tasks={myTasks} allTasks={allTasks} events={calEvents} calendarConnected={store.configured && calConnections.length > 0}
         currentUserId={currentUserId} userName={currentUser?.name} captureDefaults={{ projectId: planProjectId, assigneeId: currentUserId }}
         onUpdate={guardedPatch} onCreate={createFromPlan} onOpen={setDetailId} onRank={rankForToday} ranking={aiBusy}
         onStartFocus={startFocus} onShutdown={() => setShutdownOpen(true)} onExtractFromMeeting={(title) => openExtract(undefined, title)}
@@ -3537,7 +3555,7 @@ export default function App() {
         // (hidden while you're a guest here: the notice says where to go)
         onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
-      case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} syncing={calSyncing} readOnly={activeReadOnly}
+      case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} warnings={calWarnings} syncing={calSyncing} readOnly={activeReadOnly}
         scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
@@ -3764,9 +3782,11 @@ export default function App() {
         onGoPeople={workspace !== null ? () => setRoute({ view: "team" }) : undefined}
         tagsPanel={{ tags, taskCounts: tagCounts, onUpdate: updateTag, onDelete: deleteTag, onMerge: mergeTags, onCreate: createTag }}
         calendar={{
-          connections: calConnections, syncing: calSyncing,
-          onConnect: (provider) => { void connectCalendar(provider as CalProvider); },
-          onDisconnect: (provider) => { void disconnectCalendar(provider as CalProvider); },
+          connections: calConnections, syncing: calSyncing, warnings: calWarnings,
+          onConnect: (provider) => { void connectCalendar(provider); },
+          onDisconnect: (connectionId) => { void disconnectCalendar(connectionId); },
+          loadCalendars: (connectionId) => store.listAccountCalendars(connectionId),
+          onSelect: selectCalendars,
         }}
         // Slack for the active team workspace: owners/admins manage it, everyone sees if it's connected
         slack={{ workspaceId: workspace, workspaceName: activeWsName, role: myRole ?? null }}

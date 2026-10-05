@@ -19,7 +19,7 @@ import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent 
 import { createPortal } from "react-dom";
 import { Icon, Collapse, avatarDisc, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
-import type { IconName, CalendarConnection, CalProvider, Project, Role, Subscription, TagDef } from "../data/types";
+import type { IconName, CalendarConnection, CalendarWarning, CalProvider, ExtCalendar, Project, Role, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useAuth } from "../auth/AuthProvider";
@@ -30,7 +30,7 @@ import { PASSWORD_MIN, passwordIssue, friendlyPasswordError, friendlySignOutErro
 import { SHORTCUTS, type Shortcut } from "../lib/nav";
 import { TagManagerPanel } from "./TagManagerModal";
 import { BillingPanel } from "./Billing";
-import { CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
+import { CalendarAccountsPanel, CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
 import { ApiDocs, DevelopersPanel, NotionPanel, WebhooksPanel, type DevWorkspace } from "./settings";
 import { apiBaseUrl } from "../lib/apiKeys";
 import { disablePushEverywhere, isPushDemo, pushAvailability } from "../lib/push";
@@ -44,8 +44,22 @@ export interface ProfileDraft {
   avatarUrl: string | null;
 }
 
-/** Settings › Calendar & integrations › Calendars (Google / Outlook connections) */
-type CalendarSettings = { connections: CalendarConnection[]; onConnect: (provider: string) => void; onDisconnect: (id: string) => void; syncing: boolean };
+/** Settings › Calendar & integrations › Connected calendars: several Google / Outlook
+ *  accounts, and which calendars Kanbo shows from each (CalendarAccountsPanel). */
+type CalendarSettings = {
+  connections: CalendarConnection[];
+  syncing: boolean;
+  /** accounts / calendars the last sync couldn't read */
+  warnings?: CalendarWarning[];
+  /** add an account (the provider asks which one) */
+  onConnect: (provider: CalProvider) => void;
+  /** disconnect one account, by its id */
+  onDisconnect: (connectionId: string) => void;
+  /** an account's calendars, to choose from */
+  loadCalendars?: (connectionId: string) => Promise<ExtCalendar[]>;
+  /** show these calendars from an account */
+  onSelect?: (connectionId: string, calendarIds: string[]) => Promise<void>;
+};
 
 export type ThemeChoice = "light" | "dark" | "system";
 export type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "developers" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
@@ -65,11 +79,6 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
 /** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */
 const notifHint = (r: { key: string; hint: string }): string =>
   r.key === "due" && (isPushDemo() || pushAvailability() !== "unconfigured") ? "Your morning summary of what's due." : r.hint;
-
-const CAL_PROVIDERS: { id: CalProvider; label: string; short: string }[] = [
-  { id: "google", label: "Google Calendar", short: "Google Calendar" },
-  { id: "microsoft", label: "Microsoft Outlook", short: "Outlook" },
-];
 
 /** the sections, in order; `sep` starts a new group in the list */
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName; sep?: boolean }[] = [
@@ -799,22 +808,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   ) : null;
 
   const calendarGroup = (calendar: CalendarSettings) => (
-    <>
-      <Group title="Calendars" action={calendar.syncing ? <span className="kset-sync" role="status"><span className="kspin" aria-hidden="true" />Syncing…</span> : undefined}>
-        {CAL_PROVIDERS.map((p, i) => {
-          const conn = calendar.connections.find((c) => c.provider === p.id);
-          return (
-            <Row key={p.id} icon={<Icon name="calendar" size={16} sw={1.75} />} label={p.label}
-              desc={conn ? <><span className="kset-ok">Connected</span>{conn.accountEmail ? ` · ${conn.accountEmail}` : ""}</> : `Connect ${p.short} to see meetings on Today.`}>
-              {conn
-                ? <Button size="sm" onClick={() => calendar.onDisconnect(p.id)} aria-label={`Disconnect ${p.label}`}>Disconnect</Button>
-                : <Button size="sm" variant={i === 0 ? "primary" : "secondary"} onClick={() => calendar.onConnect(p.id)} aria-label={`Connect ${p.label}`}>Connect</Button>}
-            </Row>
-          );
-        })}
-      </Group>
-      <p className="kset-note">Kanbo only reads your events, to show your meetings on Today and Month. Nothing is written back to your calendar.</p>
-    </>
+    <CalendarAccountsPanel connections={calendar.connections} syncing={calendar.syncing} warnings={calendar.warnings}
+      onConnect={calendar.onConnect} onDisconnect={calendar.onDisconnect} loadCalendars={calendar.loadCalendars} onSelect={calendar.onSelect} />
   );
 
   const workspaceSection = () => (
@@ -1122,7 +1117,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const backToList = () => { navFocus.current = active; setPushed(false); setAskLeave(null); askFrom.current = null; };
   const hintOf = (s: SettingsSection): string | null => {
     if (s === "appearance" && theme) return THEMES.find((t) => t.value === theme)?.label ?? null;
-    if (s === "calendar" && calendar) return calendar.connections.length ? "Connected" : null;
+    if (s === "calendar" && calendar) return calendar.connections.length > 1 ? `${calendar.connections.length} accounts` : calendar.connections.length ? "Connected" : null;
     if (s === "tags" && tagsPanel) { const n = Object.keys(tagsPanel.tags).length; return n ? String(n) : null; }
     return null;
   };

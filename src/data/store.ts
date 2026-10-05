@@ -13,8 +13,10 @@ import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
   DEMO_ACTIVITY, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
+  EVENTS, KANBO_TODAY,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch } from "./types";
+import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -289,21 +291,69 @@ function rowToAttachment(r: AttachmentRow, url?: string): Attachment {
 
 const ATTACH_BUCKET = "task-files";
 
-// Call the `calendar` Edge Function (GET, query-string actions) with the live
-// session token. Throws with the function's error message on non-2xx.
+// Call the `calendar` Edge Function with the live session token: GET with
+// query-string actions, or POST with a JSON body. Throws a CalendarError with
+// the function's message (and its `reason`, e.g. "needs_migration") on non-2xx.
 const CALENDAR_FN = (import.meta.env.VITE_SUPABASE_URL || "") + "/functions/v1/calendar";
-async function callCalendarFn(qs: string): Promise<Record<string, unknown>> {
-  if (!supabase) throw new Error("Calendar sync needs the live backend.");
+export class CalendarError extends Error {
+  constructor(message: string, public status = 0, public reason?: string) { super(message); this.name = "CalendarError"; }
+}
+async function callCalendarFn(qs: string, body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!supabase) throw new CalendarError("Calendar sync needs the live backend.");
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
-  if (!token) throw new Error("Not signed in.");
-  const res = await fetch(`${CALENDAR_FN}${qs}`, {
-    headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || "", Authorization: `Bearer ${token}` },
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as { error?: string }).error || `Calendar request failed (${res.status})`);
-  return body as Record<string, unknown>;
+  if (!token) throw new CalendarError("Not signed in.");
+  const headers: Record<string, string> = { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || "", Authorization: `Bearer ${token}` };
+  const res = await fetch(`${CALENDAR_FN}${qs}`, body
+    ? { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    : { headers });
+  const out = await res.json().catch(() => ({})) as { error?: string; reason?: string };
+  if (!res.ok) throw new CalendarError(out.error || `Calendar request failed (${res.status})`, res.status, out.reason);
+  return out as Record<string, unknown>;
 }
+
+/** The copy for a calendar function that predates choosing calendars. */
+const CHOOSE_NEEDS_UPDATE = "Choosing calendars needs Kanbo's latest calendar update. Until then Kanbo shows each account's main calendar.";
+const asCalendarError = (e: unknown): Error =>
+  e instanceof CalendarError && (e.reason === "needs_migration" || /unknown action/i.test(e.message)) ? new CalendarError(CHOOSE_NEEDS_UPDATE, e.status, "needs_update")
+    : e instanceof Error ? e : new Error("Couldn't reach your calendar.");
+
+const CAL_HEX = /^#[0-9a-f]{6}$/i;
+/** A calendar from the server, made safe to show (strings only, a plain hex colour). */
+function toExtCalendar(raw: unknown): ExtCalendar | null {
+  const c = raw as Record<string, unknown> | null;
+  if (!c || typeof c.id !== "string" || !c.id) return null;
+  return {
+    id: c.id, name: typeof c.name === "string" && c.name ? c.name : c.id,
+    color: typeof c.color === "string" && CAL_HEX.test(c.color) ? c.color.toLowerCase() : "",
+    primary: c.primary === true,
+    ...(typeof c.accessRole === "string" ? { accessRole: c.accessRole } : {}),
+    ...(typeof c.selected === "boolean" ? { selected: c.selected } : {}),
+  };
+}
+const toExtCalendars = (raw: unknown): ExtCalendar[] => (Array.isArray(raw) ? raw.map(toExtCalendar).filter((c): c is ExtCalendar => !!c) : []);
+/** A connection from action=list: the new shape, or the old one (provider + account_email, one per provider). */
+function toConnection(raw: unknown, multi: boolean): CalendarConnection | null {
+  const c = raw as Record<string, unknown> | null;
+  const provider = c?.provider;
+  if (provider !== "google" && provider !== "microsoft") return null;
+  const id = typeof c!.id === "string" && c!.id ? c!.id : provider;
+  return {
+    id, provider,
+    accountEmail: String(c!.accountEmail ?? c!.account_email ?? ""),
+    selectedCalendars: Array.isArray(c!.selectedCalendars) ? toExtCalendars(c!.selectedCalendars) : null,
+    createdAt: (c!.createdAt ?? c!.created_at) as string | undefined,
+    canChoose: multi && id !== provider,
+  };
+}
+
+/* demo calendars: two accounts, several calendars each (session-only, like the rest of demo mode) */
+let demoCal: DemoCalendarAccount[] | null = null;
+const demoCalAccounts = () => (demoCal ??= demoCalendarAccounts());
+const demoConnection = (a: DemoCalendarAccount): CalendarConnection => ({
+  id: a.id, provider: a.provider, accountEmail: a.accountEmail, canChoose: true,
+  selectedCalendars: a.selected === null ? null : a.calendars.filter((c) => a.selected!.includes(c.id)).map(({ selected: _s, ...c }) => ({ ...c })),
+});
 
 /* demo-mode in-memory stores (session-only, like the rest of demo mode) */
 const demoComments: Record<string, Comment[]> = {};
@@ -2963,14 +3013,45 @@ export const store = {
   },
 
   /* ---------- external calendars (Google / Microsoft) ---------- */
-  // which calendars the user has connected (no tokens — those stay server-side)
+  /** The calendar accounts the user has connected: id, provider, account email and which
+   *  calendars Kanbo shows from each (no tokens — those stay server-side). Demo: two
+   *  example accounts. [] when the function can't be reached. */
   async listCalendarConnections(): Promise<CalendarConnection[]> {
-    if (!supabase) return [];
+    if (!supabase) return demoCalAccounts().map(demoConnection);
     try {
       const b = await callCalendarFn("?action=list");
-      return ((b.connections ?? []) as { provider: CalProvider; account_email: string; created_at?: string }[])
-        .map((c) => ({ provider: c.provider, accountEmail: c.account_email, createdAt: c.created_at }));
+      return (Array.isArray(b.connections) ? b.connections : [])
+        .map((c) => toConnection(c, b.multi === true)).filter((c): c is CalendarConnection => !!c);
     } catch { return []; }
+  },
+
+  /** Every calendar in one connected account, as the provider lists them, with Kanbo's
+   *  colour for each and whether it's shown (`selected`). Throws with a message to show. */
+  async listAccountCalendars(connectionId: string): Promise<ExtCalendar[]> {
+    if (!supabase) {
+      const a = demoCalAccounts().find((x) => x.id === connectionId);
+      if (!a) throw new CalendarError("That calendar account isn't connected any more.", 404);
+      return a.calendars.map((c) => ({ ...c, selected: a.selected === null ? c.primary : a.selected.includes(c.id) }));
+    }
+    try {
+      const b = await callCalendarFn(`?${new URLSearchParams({ action: "calendars", connection: connectionId })}`);
+      return toExtCalendars(b.calendars);
+    } catch (e) { throw asCalendarError(e); }
+  },
+
+  /** Show these calendars (by id) from one account; [] shows none. Returns the saved choice. */
+  async selectCalendars(connectionId: string, calendarIds: string[]): Promise<ExtCalendar[]> {
+    if (!supabase) {
+      const a = demoCalAccounts().find((x) => x.id === connectionId);
+      if (!a) throw new CalendarError("That calendar account isn't connected any more.", 404);
+      const known = new Set(a.calendars.map((c) => c.id));
+      a.selected = a.calendars.map((c) => c.id).filter((id) => calendarIds.includes(id) && known.has(id));
+      return demoConnection(a).selectedCalendars ?? [];
+    }
+    try {
+      const b = await callCalendarFn("", { action: "select", connection: connectionId, calendarIds });
+      return toExtCalendars(b.selectedCalendars);
+    } catch (e) { throw asCalendarError(e); }
   },
 
   /** The provider's OAuth consent URL to redirect the browser to. With
@@ -2981,6 +3062,7 @@ export const store = {
    *  Switch it on in the same change that adds the handler, and only then
    *  treat the app as ready for CALENDAR_APP_FINISH_ONLY (DEPLOYMENT.md). */
   async getCalendarAuthUrl(provider: CalProvider, opts: { finishInApp?: boolean } = {}): Promise<string> {
+    if (!supabase) throw new CalendarError("The demo shows example calendars. Sign in to Kanbo to connect your own.");
     const qs = new URLSearchParams({ action: "connect", provider });
     if (opts.finishInApp) qs.set("finish", "app");
     const b = await callCalendarFn(`?${qs}`);
@@ -2991,22 +3073,41 @@ export const store = {
   /** Finish a connection started with finishInApp, as whoever is signed in
    *  here (the server refuses a handshake started by another account).
    *  Throws with the server's message, e.g. an expired link. */
-  async finishCalendarConnect(state: string, code: string): Promise<{ provider?: CalProvider; accountEmail?: string }> {
+  async finishCalendarConnect(state: string, code: string): Promise<{ provider?: CalProvider; accountEmail?: string; replaced?: boolean }> {
     const b = await callCalendarFn(`?action=finish&state=${encodeURIComponent(state)}&code=${encodeURIComponent(code)}`);
-    return { provider: b.provider as CalProvider | undefined, accountEmail: b.accountEmail as string | undefined };
+    return {
+      provider: b.provider as CalProvider | undefined, accountEmail: b.accountEmail as string | undefined,
+      // (a server before 0045 keeps one account per provider: the new one replaced the old)
+      ...(b.replaced === true ? { replaced: true } : {}),
+    };
+  },
+
+  /** Events in a window from every calendar shown, across all accounts, each tagged with its
+   *  account, calendar, name and colour; plus the accounts/calendars that couldn't be read
+   *  (one failing never hides the others). Demo: the example accounts' month. */
+  async loadExternalEvents(startISO: string, endISO: string): Promise<{ events: ExternalEvent[]; warnings: CalendarWarning[] }> {
+    if (!supabase) return { events: demoCalendarEvents(startISO, endISO, demoCalAccounts(), KANBO_TODAY, EVENTS), warnings: [] };
+    try {
+      const b = await callCalendarFn(`?action=events&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`);
+      const events = (Array.isArray(b.events) ? b.events : []) as ExternalEvent[];
+      for (const e of events) if (e.color && !CAL_HEX.test(e.color)) delete e.color;
+      return { events, warnings: (Array.isArray(b.warnings) ? b.warnings : []) as CalendarWarning[] };
+    } catch { return { events: [], warnings: [] }; }
   },
 
   // merged upcoming events across all connected calendars in a window
   async listExternalEvents(startISO: string, endISO: string): Promise<ExternalEvent[]> {
-    if (!supabase) return [];
-    try {
-      const b = await callCalendarFn(`?action=events&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`);
-      return (b.events ?? []) as ExternalEvent[];
-    } catch { return []; }
+    return (await store.loadExternalEvents(startISO, endISO)).events;
   },
 
-  async disconnectCalendar(provider: CalProvider): Promise<void> {
-    await callCalendarFn(`?action=disconnect&provider=${provider}`);
+  /** Disconnect one account by its id. (An id that is a provider name — a server from before
+   *  several accounts — disconnects that provider, the old way.) */
+  async disconnectCalendar(connectionId: string): Promise<void> {
+    if (!supabase) { demoCal = demoCalAccounts().filter((a) => a.id !== connectionId); return; }
+    const qs = connectionId === "google" || connectionId === "microsoft"
+      ? new URLSearchParams({ action: "disconnect", provider: connectionId })
+      : new URLSearchParams({ action: "disconnect", connection: connectionId });
+    await callCalendarFn(`?${qs}`);
   },
 
   async logActivity(input: NewActivity, userId: string): Promise<Activity> {

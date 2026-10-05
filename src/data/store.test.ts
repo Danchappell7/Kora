@@ -1138,6 +1138,74 @@ describe("store (supabase) — integration wiring", () => {
     expect(urls[2]).toMatch(/action=finish&state=app%3Aabc%2F1&code=code%26x$/);
   });
 
+  it("calendar: several accounts and a choice of calendars, through the function (never a token)", async () => {
+    const fake = makeFake();
+    fake.client.auth.getSession = async () => ({ data: { session: { user: { id: "user-a" }, access_token: "tok" } as never }, error: null });
+    const calls: { url: string; init?: RequestInit }[] = [];
+    let respond: (url: string, init?: RequestInit) => { status?: number; body: unknown } = () => ({ body: {} });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      const r = respond(url, init);
+      return { ok: (r.status ?? 200) < 400, status: r.status ?? 200, json: async () => r.body };
+    }));
+    const { store: s } = await loadStore(fake);
+
+    // the new list: ids, emails, choices; colours are checked (a non-hex colour is dropped)
+    respond = () => ({ body: { multi: true, connections: [
+      { id: "11111111-0000-4000-8000-000000000001", provider: "google", accountEmail: "ada@work.example", selectedCalendars: null },
+      { id: "22222222-0000-4000-8000-000000000002", provider: "microsoft", accountEmail: "ada@outlook.example",
+        selectedCalendars: [{ id: "AAMk=", name: "Family", color: "url(https://evil.example/x)", primary: false }, { name: "no id" }] },
+    ] } });
+    const conns = await s.listCalendarConnections();
+    expect(conns).toEqual([
+      { id: "11111111-0000-4000-8000-000000000001", provider: "google", accountEmail: "ada@work.example", selectedCalendars: null, createdAt: undefined, canChoose: true },
+      { id: "22222222-0000-4000-8000-000000000002", provider: "microsoft", accountEmail: "ada@outlook.example", createdAt: undefined, canChoose: true,
+        selectedCalendars: [{ id: "AAMk=", name: "Family", color: "", primary: false }] },
+    ]);
+    // an older function: one per provider, no ids (the provider stands in), can't choose
+    respond = () => ({ body: { connections: [{ provider: "google", account_email: "ada@work.example", created_at: "2026-01-01" }] } });
+    expect(await s.listCalendarConnections()).toEqual([{ id: "google", provider: "google", accountEmail: "ada@work.example", selectedCalendars: null, createdAt: "2026-01-01", canChoose: false }]);
+
+    respond = () => ({ body: { calendars: [{ id: "w", name: "Work", color: "#3F7FE0", primary: true, accessRole: "owner", selected: true }] } });
+    expect(await s.listAccountCalendars("11111111-0000-4000-8000-000000000001")).toEqual([{ id: "w", name: "Work", color: "#3f7fe0", primary: true, accessRole: "owner", selected: true }]);
+    expect(calls[calls.length - 1].url).toMatch(/\?action=calendars&connection=11111111-0000-4000-8000-000000000001$/);
+
+    respond = () => ({ body: { ok: true, selectedCalendars: [{ id: "w", name: "Work", color: "#3f7fe0", primary: true }] } });
+    expect(await s.selectCalendars("11111111-0000-4000-8000-000000000001", ["w"])).toHaveLength(1);
+    const sel = calls[calls.length - 1];
+    expect(sel.init?.method).toBe("POST");
+    expect(JSON.parse(String(sel.init?.body))).toEqual({ action: "select", connection: "11111111-0000-4000-8000-000000000001", calendarIds: ["w"] });
+
+    // a function or database that predates choosing: one clear sentence
+    respond = () => ({ status: 409, body: { error: "needs 0045", reason: "needs_migration" } });
+    await expect(s.selectCalendars("11111111-0000-4000-8000-000000000001", ["w"])).rejects.toThrow(/latest calendar update/);
+    respond = () => ({ status: 400, body: { error: "unknown action" } });
+    await expect(s.listAccountCalendars("11111111-0000-4000-8000-000000000001")).rejects.toThrow(/latest calendar update/);
+    respond = () => ({ status: 409, body: { error: "Kanbo can't read ada@work.example any more. Disconnect it and add it again.", reason: "reconnect" } });
+    await expect(s.listAccountCalendars("11111111-0000-4000-8000-000000000001")).rejects.toThrow(/Disconnect it and add it again/);
+
+    // disconnect one account by id; a provider "id" (older function) the old way
+    respond = () => ({ body: { ok: true } });
+    await s.disconnectCalendar("11111111-0000-4000-8000-000000000001");
+    expect(calls[calls.length - 1].url).toMatch(/\?action=disconnect&connection=11111111-0000-4000-8000-000000000001$/);
+    await s.disconnectCalendar("google");
+    expect(calls[calls.length - 1].url).toMatch(/\?action=disconnect&provider=google$/);
+
+    // events with warnings; a bad colour is dropped; a failure is an empty month, not a crash
+    respond = () => ({ body: { events: [
+      { id: "g-1", title: "Standup", start: "2026-10-05T08:00:00Z", end: "2026-10-05T08:30:00Z", allDay: false, provider: "google", connectionId: "c1", calendarId: "w", calendarName: "Work", color: "#3f7fe0" },
+      { id: "g-2", title: "Odd", start: "2026-10-05T09:00:00Z", end: "2026-10-05T09:30:00Z", allDay: false, provider: "google", color: "red;background:url(x)" },
+    ], warnings: [{ connectionId: "c2", provider: "google", accountEmail: "old@g", reason: "reconnect" }] } });
+    const { events, warnings } = await s.loadExternalEvents("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z");
+    expect(events.map((e) => e.color)).toEqual(["#3f7fe0", undefined]);
+    expect(warnings).toEqual([{ connectionId: "c2", provider: "google", accountEmail: "old@g", reason: "reconnect" }]);
+    expect((await s.listExternalEvents("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z")).map((e) => e.title)).toEqual(["Standup", "Odd"]);
+    respond = () => ({ status: 500, body: { error: "boom" } });
+    expect(await s.loadExternalEvents("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z")).toEqual({ events: [], warnings: [] });
+    // every call carried the session token as a bearer, never in the address
+    expect(calls.every((c) => !c.url.includes("tok") && String((c.init?.headers as Record<string, string>)?.Authorization) === "Bearer tok")).toBe(true);
+  });
+
   it("AI: says why when the daily limit is reached or the account isn't approved", async () => {
     const fake = makeFake();
     const { store: s } = await loadStore(fake);
