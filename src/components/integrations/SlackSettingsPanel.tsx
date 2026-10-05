@@ -180,7 +180,9 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
       const s = await connectSlack(workspaceId, u, label);
       if (!alive.current) return;
       setUrl(""); setLabel(""); setEditing(false);
-      setHealthAsk((n) => n + 1);   // a new link: the old link's failures no longer apply
+      // a new link: the old link's failures no longer apply (drop the line now, then ask again)
+      setHealth((h) => (h?.health?.lastError ? { ...h, health: { ...h.health, lastError: null } } : h));
+      setHealthAsk((n) => n + 1);
       setLinkMsg({ tone: "ok", text: `Connected to ${s.channelLabel || "Slack"}. Send a test to check it.` });
       focusNext.current = "test";
     } catch (err) {
