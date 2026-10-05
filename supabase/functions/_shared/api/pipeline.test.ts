@@ -294,6 +294,23 @@ describe("idempotency: committed work never runs twice", () => {
     const busy = await never.call(WRITE, "POST", "/tx", "{}", { "Idempotency-Key": "f-2" });
     expect(busy.json.error.code).toBe("idempotency_in_progress");
   });
+  it("a webhook signing secret is never stored with the answer (a replay carries secret: null)", async () => {
+    const SECRET = "whsec_" + "s".repeat(43);
+    const hookRoutes: Route[] = [
+      { method: "POST", path: "/webhooks", handler: async (ctx) => ctx.db.withUser({ userId: ctx.principal.userId }, async () => ok(ctx, { object: "webhook", id: "h-1", secret: SECRET }, 201)) },
+      { method: "POST", path: "/webhooks/:id/rotate-secret", handler: async (ctx) => ctx.db.withUser({ userId: ctx.principal.userId }, async () => ok(ctx, { object: "webhook_secret", webhookId: ctx.params.id, secret: SECRET })) },
+    ];
+    const { call, idem } = setup(hookRoutes);
+    for (const path of ["/webhooks", "/webhooks/h-1/rotate-secret"]) {
+      const h = { "Idempotency-Key": `sec-${path}` };
+      const first = await call(WRITE, "POST", path, "{}", h);
+      expect(first.json.secret).toBe(SECRET);
+      const again = await call(WRITE, "POST", path, "{}", h);
+      expect(again.res.headers.get("Idempotent-Replayed")).toBe("true");
+      expect(again.json.secret).toBeNull();
+    }
+    expect(JSON.stringify([...idem.values()])).not.toContain("whsec_");
+  });
   it("a 5xx after the work committed keeps the key; 'applied' answers 409 conflict", async () => {
     const { call, idem } = setup(routes);
     const r = await call(WRITE, "POST", "/tx-lost", "{}", { "Idempotency-Key": "l-1" });

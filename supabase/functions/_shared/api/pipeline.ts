@@ -93,6 +93,17 @@ async function readCapped(req: Request, cap: number): Promise<string | null> {
   return new TextDecoder("utf-8", { fatal: true }).decode(all);
 }
 
+/**
+ * What an idempotent answer may keep for 24 h: never a webhook signing secret
+ * (POST /webhooks, POST /webhooks/:id/rotate-secret). A replay carries
+ * `secret: null`; the secret lives only in webhooks.secret, shown once.
+ */
+export function withoutSecret(stored: unknown): unknown {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return stored;
+  const o = stored as Record<string, unknown>;
+  return "secret" in o ? { ...o, secret: null } : stored;
+}
+
 /** Same response, plus the request id and any extra headers (rate limits). */
 function decorate(res: Response, requestId: string, extra: Record<string, string>, stripBody = false): Response {
   const headers = new Headers(res.headers);
@@ -297,6 +308,7 @@ export async function handleApiRequest(req: Request, deps: ApiDeps): Promise<Res
         const text = res.status === 204 ? "" : await res.clone().text();
         stored = text ? JSON.parse(text) : null;
       } catch { stored = null; }
+      stored = withoutSecret(stored);
       // a few tries: an answer that isn't stored leaves the key "running" (409),
       // then "applied" (409) — never run twice, but the caller can't see the result
       const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));

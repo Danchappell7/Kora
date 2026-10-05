@@ -227,6 +227,9 @@ request that went through is **never** run twice, whatever fails afterwards:
   with a new key.
 - A request that never finished (its server stopped) holds the key for 10
   minutes; after that the retry runs.
+- A replayed `POST /webhooks` or `POST /webhooks/:id/rotate-secret` answer
+  carries `"secret": null`: a signing secret is shown only once and is never
+  kept with the stored answer. If you lost it, rotate the secret.
 
 ## Caching
 

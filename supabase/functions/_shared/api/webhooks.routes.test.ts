@@ -351,7 +351,12 @@ describe("the OpenAPI description matches the routes", () => {
     expect(Object.values(webhookOpenApiPaths).flatMap((o) => Object.keys(o))).toHaveLength(webhookRoutes.length);
     const doc = buildOpenApi("https://x.supabase.co/functions/v1/api/v1");
     expect(doc.paths["/webhooks"]?.post?.operationId).toBe("createWebhook");
-    expect(JSON.stringify(doc)).not.toContain("$ref");
+    // a2's webhook operations are written out inline; a1's core paths use
+    // $refs into components.schemas, and every one of those must resolve.
+    expect(JSON.stringify(webhookOpenApiPaths)).not.toContain("$ref");
+    const refs = [...JSON.stringify(doc).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)].map((m) => m[1]);
+    expect(JSON.stringify(doc).match(/"\$ref"/g)?.length ?? 0).toBe(refs.length);
+    for (const name of refs) expect(doc.components?.schemas?.[name], `$ref ${name}`).toBeTruthy();
   });
   it("no two routes collide", () => {
     for (const r of webhookRoutes) {

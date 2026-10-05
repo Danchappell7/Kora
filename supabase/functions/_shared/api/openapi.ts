@@ -476,7 +476,7 @@ const INTRO = [
   "",
   "**Rate limits.** 120 requests a minute per key; every answer carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`, and a 429 carries `Retry-After`.",
   "",
-  "**Retries.** Send an `Idempotency-Key` header on POST requests: the same key within 24 hours returns the first answer (with `Idempotent-Replayed: true`) instead of doing it again.",
+  "**Retries.** Send an `Idempotency-Key` header on POST requests: the same key within 24 hours returns the first answer (with `Idempotent-Replayed: true`) instead of doing it again. A replayed answer never repeats a webhook signing secret (`secret` is null): rotate it if the first answer was lost.",
   "",
   "**Caching.** GET answers carry an `ETag`; send it back as `If-None-Match` and an unchanged answer is a bodyless 304.",
   "",

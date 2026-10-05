@@ -583,6 +583,10 @@ Base address: `https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1`
 | `GET /webhooks/:id/deliveries?limit=1–100` | Recent deliveries, newest first. | read |
 | `POST /webhooks/:id/deliveries/:deliveryId/redeliver` | Send one again now (one of the last 100, not a `ping`) (202). 10 a minute per endpoint. | write |
 
+With an `Idempotency-Key`, a replay of either answer that carries a secret
+comes back with `"secret": null`: the secret is never stored with the
+answer. If the first answer was lost, rotate the secret.
+
 Only the person who added an endpoint, or a workspace owner or admin, can
 change, test, rotate or delete it (`canManage` says whether you can). Everyone
 else who can see a team endpoint gets its `url` **masked**: the host and the
