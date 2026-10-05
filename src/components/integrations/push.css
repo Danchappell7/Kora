@@ -1,0 +1,65 @@
+/* ============================================================
+   KANBO — push notifications + installable app (f8). Prefix kpush-.
+   The Settings panels sit on SettingsModal's kset-* rows and cards; this
+   adds only what they don't have: the device switch's busy state, the
+   inline message line, the iOS share glyph and the sidebar nudge.
+   Tokens with fallbacks, both themes, no backdrop-filter.
+   ============================================================ */
+
+/* ---- the panel sits under Settings' In-app / Email table: a group's gap above it.
+   .kpush-app wraps the "Kanbo app" group (InstallPrompt's Settings row) the same way ---- */
+.kpush-panel, .kpush-app { margin-top: 28px; }
+.kpush-panel:first-child, .kpush-app:first-child { margin-top: 0; }
+
+/* ---- device switch (the kit's ktoggle-switch look, with busy/disabled) ---- */
+/* the switch stays on the right on a phone, like the per-kind switches under it
+   (Settings' 240px text basis would push it under the text while it's busy) */
+.kpush-device > .kset-row-text { flex-basis: 160px; }
+.kpush-ctl { display: inline-flex; align-items: center; gap: 10px; }
+.kpush-ctl > .kspin { width: 14px; height: 14px; }
+.kpush-switch:disabled { opacity: 0.45; cursor: not-allowed; }
+.kpush-switch[aria-busy="true"] { cursor: progress; }
+
+/* ---- one line under the device row: what just happened ---- */
+.kpush-msg {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 16px;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty;
+}
+.kpush-msg > svg { flex-shrink: 0; margin-top: 0; color: var(--ink-3); }
+.kpush-msg[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
+.kpush-msg[data-tone="signal"] > svg { color: currentColor; }
+.kpush-msg[data-tone="ok"] > svg { color: var(--ok, var(--st-done)); }
+
+/* ---- iOS "Share" glyph inline in a sentence ---- */
+.kpush-share { display: inline-block; width: 14px; height: 14px; margin: 0 -1px 0 2px; vertical-align: -2px; color: var(--accent-text, var(--accent)); }
+
+/* ---- installed / not available states on the right of a row ---- */
+.kpush-state { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); white-space: nowrap; }
+
+/* ---- the sidebar nudge: a quiet card in the footer (like the plan card) ---- */
+.kpush-nudge {
+  position: relative; display: flex; align-items: center; gap: 2px; min-height: 44px; padding: 0 4px 0 0;
+  border-radius: var(--r-md, 8px); background: var(--surface-raised, var(--surface));
+  box-shadow: var(--e1, 0 0 0 1px var(--hairline), 0 1px 2px oklch(0.2 0.03 268 / 0.06));
+}
+[data-theme="dark"] .kpush-nudge { background: var(--surface); }
+@media (prefers-reduced-motion: no-preference) {
+  .kpush-nudge { animation: kpushIn var(--d-3, 240ms) var(--ease, cubic-bezier(0.2, 0, 0, 1)); }
+}
+@keyframes kpushIn { from { opacity: 0.35; translate: 0 4px; } }
+.kpush-nudge-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; align-self: stretch; padding: 6px 6px 6px 10px;
+  border: 0; border-radius: var(--r-md, 8px); background: transparent; color: var(--ink); cursor: pointer; text-align: left;
+  transition: background-color var(--d-1, 90ms) var(--ease);
+}
+.kpush-nudge-main:hover { background: var(--fill-1); }
+.kpush-nudge-main > svg { flex-shrink: 0; }
+.kpush-nudge-text { display: grid; min-width: 0; }
+.kpush-nudge-title { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kpush-nudge-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpush-nudge .kibtn { flex-shrink: 0; }
+
+@media (max-width: 860px) {
+  .kpush-nudge { min-height: 52px; }
+  .kpush-nudge .kibtn { width: 36px; height: 36px; }
+}
