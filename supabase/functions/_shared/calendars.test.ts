@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
-  clampWindow, dedupeEvents, distinctColours, eventId, fetchTargets, isUuid, mapLimit, missingSelectionColumn,
-  normaliseGoogleCalendars, normaliseMicrosoftCalendars, paintCalendars, PALETTE, parseSelected, safeColour,
-  sameEmail, selectionFrom, TimeoutError, validateSelection, withTimeout, MAX_SELECTED,
+  clampWindow, cleanIdentity, dedupeEvents, distinctColours, eventId, fetchTargets, idTokenIdentity, isUuid, mapLimit, missingSelectionColumn,
+  normaliseGoogleCalendars, normaliseMicrosoftCalendars, paintCalendars, PALETTE, parseSelected, primarySelection, safeColour,
+  sameEmail, selectionFrom, TimeoutError, unsavedPrimaryColours, validateSelection, withTimeout, MAX_SELECTED,
 } from "./calendars";
 
 afterEach(() => { vi.useRealTimers(); });
@@ -192,7 +192,11 @@ describe("small helpers", () => {
   });
   it("sameEmail / isUuid / missingSelectionColumn", () => {
     expect(sameEmail(" Ada@Work.example", "ada@work.EXAMPLE ")).toBe(true);
-    expect(sameEmail("", null)).toBe(true);
+    // not knowing who an account is never matches anything, not even another unknown
+    expect(sameEmail("", null)).toBe(false);
+    expect(sameEmail("", "")).toBe(false);
+    expect(sameEmail("  ", "")).toBe(false);
+    expect(sameEmail("ada@work.example", "")).toBe(false);
     expect(isUuid("aaaaaaaa-0000-4000-8000-000000000001")).toBe(true);
     expect(isUuid("google")).toBe(false);
     expect(isUuid("aaaaaaaa-0000-4000-8000-000000000001' or 1=1")).toBe(false);
@@ -200,5 +204,66 @@ describe("small helpers", () => {
     expect(missingSelectionColumn({ code: "PGRST204", message: "Could not find the 'selected_calendars' column" })).toBe(true);
     expect(missingSelectionColumn({ code: "23505", message: "duplicate key" })).toBe(false);
     expect(missingSelectionColumn(null)).toBe(false);
+  });
+});
+
+describe("which account: idTokenIdentity", () => {
+  const b64url = (v: string) => Buffer.from(v).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const jwt = (claims: unknown) => `${b64url('{"alg":"RS256"}')}.${b64url(JSON.stringify(claims))}.sig`;
+
+  it("reads the email claim, and Microsoft's preferred_username, trimmed", () => {
+    expect(idTokenIdentity(jwt({ sub: "1", email: " Ada@Work.example " }))).toEqual({ email: "Ada@Work.example", username: "" });
+    expect(idTokenIdentity(jwt({ sub: "1", preferred_username: "ada@contoso.example" }))).toEqual({ email: "", username: "ada@contoso.example" });
+    // base64url payloads that need padding, and non-ASCII names, decode
+    expect(idTokenIdentity(jwt({ email: "zoë@exämple.co.uk", name: "Zoë Ångström ✓" })).email).toBe("zoë@exämple.co.uk");
+  });
+
+  it("is empty for anything missing or malformed, never a throw", () => {
+    const none = { email: "", username: "" };
+    for (const bad of [undefined, null, 42, "", "abc", "a.b.c", "a..c", `${b64url("{}")}.${b64url("[1,2]")}.s`, `x.${b64url("null")}.s`,
+      jwt({ email: 7, preferred_username: { x: 1 } }), `x.${"A".repeat(20_000)}.s`]) {
+      expect(idTokenIdentity(bad)).toEqual(none);
+    }
+  });
+
+  it("cleanIdentity: strings only, trimmed, capped", () => {
+    expect(cleanIdentity("  a@b.example ")).toBe("a@b.example");
+    expect(cleanIdentity(null)).toBe("");
+    expect(cleanIdentity(["a@b"])).toBe("");
+    expect(cleanIdentity("x".repeat(400))).toHaveLength(320);
+  });
+});
+
+describe("an account still on \"primary only\": one colour everywhere", () => {
+  const LIST = normaliseGoogleCalendars([
+    { id: "me@gmail.example", summary: "me@gmail.example", backgroundColor: "#9fc6e7", primary: true },
+    { id: "club", summary: "Running club", backgroundColor: "#9fc6e7" },
+  ]);
+
+  it("primarySelection saves the primary in exactly the colour the list shows it in", () => {
+    // its own colour when nothing else uses it (not one of Kanbo's palette)
+    expect(primarySelection(LIST)).toEqual([{ id: "me@gmail.example", name: "me@gmail.example", color: "#9fc6e7", primary: true }]);
+    expect(primarySelection(LIST)![0].color).toBe(paintCalendars(LIST, null)[0].color);
+    // another account already shows that colour: the first free one, as paintCalendars would
+    const taken = ["#9fc6e7", PALETTE[0]];
+    expect(primarySelection(LIST, taken)![0].color).toBe(paintCalendars(LIST, null, taken)[0].color);
+    expect(primarySelection(LIST, taken)![0].color).toBe(PALETTE[1]);
+    // nothing marked primary: nothing to save
+    expect(primarySelection(LIST.map((c) => ({ ...c, primary: false })))).toBeNull();
+  });
+
+  it("unsavedPrimaryColours: oldest first, never a saved colour or each other's", () => {
+    const rows = [
+      { id: "a", selected_calendars: null },
+      { id: "b", selected_calendars: [{ id: "x", name: "X", color: PALETTE[0], primary: true }] },
+      { id: "c" }, // before 0045: no column at all
+      { id: "d", selected_calendars: [] },
+    ];
+    const got = unsavedPrimaryColours(rows);
+    expect([...got.keys()]).toEqual(["a", "c"]);
+    expect(got.get("a")).toBe(PALETTE[1]);
+    expect(got.get("c")).toBe(PALETTE[2]);
+    // the same rows always give the same colours (events and the calendar list agree)
+    expect(unsavedPrimaryColours(rows)).toEqual(got);
   });
 });

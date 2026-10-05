@@ -47,7 +47,9 @@ describe("words", () => {
   it("how many calendars an account shows", () => {
     expect(shownSummary({ selectedCalendars: null })).toBe("Main calendar shown");
     expect(shownSummary({ selectedCalendars: [] })).toBe("No calendars shown");
-    expect(shownSummary({ selectedCalendars: [{ id: "a", name: "A", color: "", primary: true }] })).toBe("1 calendar shown");
+    // (the server saves an account still on "primary only" as just its primary: same words)
+    expect(shownSummary({ selectedCalendars: [{ id: "a", name: "A", color: "", primary: true }] })).toBe("Main calendar shown");
+    expect(shownSummary({ selectedCalendars: [{ id: "b", name: "B", color: "", primary: false }] })).toBe("1 calendar shown");
     expect(shownSummary({ selectedCalendars: Array.from({ length: 3 }, (_, i) => ({ id: `${i}`, name: "", color: "", primary: false })) })).toBe("3 calendars shown");
   });
   it("what went wrong, in plain words", () => {

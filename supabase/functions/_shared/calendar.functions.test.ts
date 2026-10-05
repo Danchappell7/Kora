@@ -8,6 +8,10 @@
    - events from every chosen calendar of every account, tagged with where
      they came from, with one failing / slow / revoked account or calendar
      reported in `warnings` instead of breaking the rest;
+   - which account was connected: the id_token's email, then the provider's
+     profile; an account nothing names is refused, never saved over another;
+   - an account still on "primary only" shows in one colour everywhere, saved
+     the first time the accounts are listed;
    - before 0045 (no selected_calendars column, one account per provider)
      everything still works the old way;
    - tokens never reach a response (or the logs). */
@@ -104,6 +108,11 @@ const GOOGLE_LISTS: Record<string, Row[]> = {
     { id: "ana@gmail.example", summary: "ana@gmail.example", backgroundColor: "#3f7fe0", primary: true, accessRole: "owner" },
     { id: "family@group.calendar.google.com", summary: "Family", backgroundColor: "#d14d72", accessRole: "owner" },
   ],
+  // an account connected before 0045, whose primary's colour isn't one of Kanbo's own
+  "at-legacy": [
+    { id: "legacy@gmail.example", summary: "legacy@gmail.example", backgroundColor: "#9fc6e7", primary: true, accessRole: "owner" },
+    { id: "club@group.calendar.google.com", summary: "Running club", backgroundColor: "#9fc6e7", accessRole: "reader" },
+  ],
 };
 const ev = (id: string, title: string, start: string, end: string, extra: Row = {}) => ({ id, summary: title, start: { dateTime: start }, end: { dateTime: end }, ...extra });
 const GOOGLE_EVENTS: Record<string, Row[]> = {
@@ -115,7 +124,16 @@ const GOOGLE_EVENTS: Record<string, Row[]> = {
   ],
   "family@group.calendar.google.com": [{ id: "f1", summary: "Half term", start: { date: "2026-10-26" }, end: { date: "2026-10-31" } }],
   "ana@gmail.example": [ev("g1", "Gym", "2026-10-05T06:30:00Z", "2026-10-05T07:30:00Z")],
+  "legacy@gmail.example": [ev("l1", "Dinner", "2026-10-05T18:00:00Z", "2026-10-05T19:30:00Z")],
 };
+/* id_tokens the token endpoint returns: by auth code, and by refresh token */
+const ID_TOKENS: Record<string, Row> = {};
+const REFRESH_ID_TOKENS: Record<string, Row> = {};
+const b64url = (s: string) => Buffer.from(s).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const jwt = (claims: Row) => `${b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${b64url(JSON.stringify(claims))}.c2lnbmF0dXJl`;
+let userinfoDown = false;  // Google's userinfo answers 503
+let meStatus = 200;        // Microsoft's /me (403: the token has no User.Read)
+const listDown = new Set<string>(); // tokens whose calendar list answers 503
 let slowHang = false;
 const fetchLog: string[] = [];
 function fakeFetch(input: string | URL, init: RequestInit = {}) {
@@ -128,13 +146,17 @@ function fakeFetch(input: string | URL, init: RequestInit = {}) {
     const body = new URLSearchParams(String(init.body));
     if (body.get("refresh_token") === "rt-revoked") return no(400);
     const code = body.get("code") ?? "refresh";
-    return ok({ access_token: `at-${code}`, refresh_token: body.get("grant_type") === "authorization_code" ? `rt-${code}` : undefined, expires_in: 3600 });
+    const claims = body.get("grant_type") === "authorization_code" ? ID_TOKENS[code] : REFRESH_ID_TOKENS[body.get("refresh_token") ?? ""];
+    return ok({ access_token: `at-${code}`, refresh_token: body.get("grant_type") === "authorization_code" ? `rt-${code}` : undefined, expires_in: 3600,
+      ...(claims ? { id_token: jwt(claims) } : {}) });
   }
   if (u.host === "www.googleapis.com" && u.pathname === "/oauth2/v2/userinfo") {
+    if (userinfoDown) return no(503);
     return ok({ email: { "at-code-personal": "ana@gmail.example", "at-code-work-again": "ANA@Work.Example", "at-code-second": "ana.second@gmail.example" }[auth] ?? "new@gmail.example" });
   }
-  if (u.host === "graph.microsoft.com" && u.pathname === "/v1.0/me") return ok({ mail: "ana@outlook.example" });
+  if (u.host === "graph.microsoft.com" && u.pathname === "/v1.0/me") return meStatus === 200 ? ok({ mail: "ana@outlook.example" }) : no(meStatus);
   if (u.pathname === "/calendar/v3/users/me/calendarList") {
+    if (listDown.has(auth)) return no(503);
     const items = GOOGLE_LISTS[auth] ?? GOOGLE_LISTS["at-personal"];
     return ok({ items });
   }
@@ -171,7 +193,10 @@ beforeAll(async () => {
 
 const logged: unknown[][] = [];
 beforeEach(() => {
-  seq = 0; PRE_0045 = false; CALLER = ANA; slowHang = false; fetchLog.length = 0; logged.length = 0;
+  seq = 0; PRE_0045 = false; CALLER = ANA; slowHang = false; userinfoDown = false; meStatus = 200; fetchLog.length = 0; logged.length = 0;
+  for (const k of Object.keys(ID_TOKENS)) delete ID_TOKENS[k];
+  for (const k of Object.keys(REFRESH_ID_TOKENS)) delete REFRESH_ID_TOKENS[k];
+  listDown.clear();
   DB = {
     oauth_states: [],
     calendar_connections: [
@@ -188,6 +213,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(
 
 const WORK = "11111111-0000-4000-8000-000000000001";
 const BOBS = "22222222-0000-4000-8000-000000000002";
+const LEGACY = "66666666-0000-4000-8000-000000000006";
 const get = (qs: string) => handler(new Request(`https://fn.test/calendar?${qs}`, { headers: { Authorization: "Bearer jwt" } }));
 const post = (body: Record<string, unknown>) => handler(new Request("https://fn.test/calendar", {
   method: "POST", headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -204,14 +230,16 @@ async function addAccount(provider: "google" | "microsoft", code: string) {
 }
 
 describe("connect", () => {
-  it("always asks which account (so a second one of the same provider can be added), with the same read-only scopes", async () => {
+  it("always asks which account (so a second one of the same provider can be added), with read-only scopes", async () => {
     const g = new URL((await read(await get("action=connect&provider=google&finish=app"))).body.url);
     expect(g.searchParams.get("prompt")).toBe("select_account consent");
     expect(g.searchParams.get("access_type")).toBe("offline");
     expect(g.searchParams.get("scope")).toBe("openid email https://www.googleapis.com/auth/calendar.readonly");
     const m = new URL((await read(await get("action=connect&provider=microsoft&finish=app"))).body.url);
     expect(m.searchParams.get("prompt")).toBe("select_account");
-    expect(m.searchParams.get("scope")).toBe("openid email offline_access https://graph.microsoft.com/Calendars.Read");
+    // (User.Read, already in the Azure app's permissions, lets /me name the account;
+    // profile puts the sign-in name in the id_token)
+    expect(m.searchParams.get("scope")).toBe("openid email profile offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Calendars.Read");
   });
 });
 
@@ -223,14 +251,17 @@ describe("several accounts", () => {
     expect(noSecrets(r.text)).toBe(true);
     const mine = DB.calendar_connections.filter((c) => c.user_id === ANA);
     expect(mine.map((c) => c.account_email)).toEqual(["ana@work.example", "ana@gmail.example"]);
+    // the older account (still on "primary only") is saved first, keeping its blue;
+    // the new one's primary is blue too, so it gets a colour of its own
+    expect(mine[0].selected_calendars).toEqual([{ id: "ana@work.example", name: "Work", color: "#3f7fe0", primary: true }]);
     const added = mine[1];
     expect(added.id).toBe(r.body.connectionId);
-    expect(added.selected_calendars).toEqual([{ id: "ana@gmail.example", name: "ana@gmail.example", color: "#3f7fe0", primary: true }]);
+    expect(added.selected_calendars).toEqual([{ id: "ana@gmail.example", name: "ana@gmail.example", color: "#2e9d6a", primary: true }]);
     // the list the app sees: ids, providers, emails, choices; never a token
     const list = await read(await get("action=list"));
     expect(list.body.multi).toBe(true);
     expect(list.body.connections.map((c: Row) => [c.provider, c.accountEmail, c.selectedCalendars?.length ?? null])).toEqual([
-      ["google", "ana@work.example", null], ["google", "ana@gmail.example", 1],
+      ["google", "ana@work.example", 1], ["google", "ana@gmail.example", 1],
     ]);
     expect(list.body.connections[0]).toMatchObject({ id: WORK, account_email: "ana@work.example" }); // (older apps' field names too)
     expect(noSecrets(list.text)).toBe(true);
@@ -251,8 +282,13 @@ describe("several accounts", () => {
     const r = await addAccount("microsoft", "code-ms");
     expect(r.body).toMatchObject({ ok: true, provider: "microsoft", accountEmail: "ana@outlook.example" });
     const ms = DB.calendar_connections.find((c) => c.provider === "microsoft")!;
-    // its default calendar, in Outlook's own colour (no chosen calendar uses it yet)
-    expect(ms.selected_calendars).toEqual([{ id: "AAMk-default=", name: "Calendar", color: "#3f7fe0", primary: true }]);
+    // its default calendar; Outlook's blue is the (older) Work calendar's, so another colour
+    expect(ms.selected_calendars).toEqual([{ id: "AAMk-default=", name: "Calendar", color: "#2e9d6a", primary: true }]);
+    // with no other account, it keeps Outlook's own colour
+    DB.calendar_connections = DB.calendar_connections.filter((c) => c.provider !== "microsoft" && c.id !== WORK);
+    const again = await addAccount("microsoft", "code-ms-2");
+    expect(DB.calendar_connections.find((c) => c.id === again.body.connectionId)!.selected_calendars)
+      .toEqual([{ id: "AAMk-default=", name: "Calendar", color: "#3f7fe0", primary: true }]);
   });
 
   it("a handshake started by someone else can't be finished here", async () => {
@@ -262,6 +298,129 @@ describe("several accounts", () => {
     const r = await read(await get(`action=finish&state=${state}&code=code-personal`));
     expect(r.status).toBe(403);
     expect(DB.calendar_connections.filter((x) => x.user_id === BOB)).toHaveLength(1);
+  });
+});
+
+describe("which account was connected", () => {
+  const anas = () => DB.calendar_connections.filter((c) => c.user_id === ANA).map((c) => ({ id: c.id, email: c.account_email, at: c.access_token, sel: c.selected_calendars }));
+
+  it("comes from the id_token's email, with no profile call needed", async () => {
+    ID_TOKENS["code-idt"] = { sub: "g-1", email: "ana.idtoken@gmail.example" };
+    userinfoDown = true;
+    const r = await addAccount("google", "code-idt");
+    expect(r.body).toMatchObject({ ok: true, accountEmail: "ana.idtoken@gmail.example", replaced: false });
+    expect(fetchLog.some((x) => x.includes("userinfo"))).toBe(false);
+    expect(noSecrets(r.text)).toBe(true);
+  });
+
+  it("an account nothing names is refused, and never saved over another account (any number of times)", async () => {
+    userinfoDown = true; // no id_token either
+    const before = JSON.stringify(anas());
+    for (const code of ["code-second", "code-third"]) {
+      const r = await addAccount("google", code);
+      expect(r.status).toBe(502);
+      expect(r.body.error).toBe("Couldn't tell which Google account that was, so it wasn't connected. Please try again.");
+      expect(r.body.ok).toBeUndefined();
+      expect(noSecrets(r.text)).toBe(true);
+    }
+    expect(JSON.stringify(anas())).toBe(before);
+    expect(noSecrets(allLogs()), allLogs()).toBe(true);
+  });
+
+  it("an older row saved without an address is never taken for a new account", async () => {
+    DB.calendar_connections[0].account_email = ""; // the old function's profile call had failed
+    const r = await addAccount("google", "code-personal");
+    expect(r.body).toMatchObject({ ok: true, accountEmail: "ana@gmail.example", replaced: false });
+    expect(r.body.connectionId).not.toBe(WORK);
+    expect(DB.calendar_connections.find((c) => c.id === WORK)).toMatchObject({ account_email: "", access_token: "at-work", refresh_token: "rt-work" });
+  });
+
+  it("Outlook: the sign-in name when there's no email claim and /me is refused, so two accounts stay two", async () => {
+    meStatus = 403;
+    ID_TOKENS["code-ms-a"] = { sub: "m-a", preferred_username: "ana@contoso.example" };
+    ID_TOKENS["code-ms-b"] = { sub: "m-b", preferred_username: "ana@fabrikam.example" };
+    const a = await addAccount("microsoft", "code-ms-a");
+    const b = await addAccount("microsoft", "code-ms-b");
+    expect([a.body.accountEmail, b.body.accountEmail]).toEqual(["ana@contoso.example", "ana@fabrikam.example"]);
+    expect(a.body.connectionId).not.toBe(b.body.connectionId);
+    expect(DB.calendar_connections.filter((c) => c.provider === "microsoft").map((c) => [c.account_email, c.access_token]))
+      .toEqual([["ana@contoso.example", "at-code-ms-a"], ["ana@fabrikam.example", "at-code-ms-b"]]);
+  });
+
+  it("Outlook with neither: refused", async () => {
+    meStatus = 403;
+    const r = await addAccount("microsoft", "code-ms-anon");
+    expect(r.status).toBe(502);
+    expect(r.body.error).toMatch(/^Couldn't tell which Outlook account that was/);
+    expect(DB.calendar_connections.some((c) => c.provider === "microsoft")).toBe(false);
+  });
+
+  it("a row saved without an address learns it at its next token refresh, so the same account added again is recognised", async () => {
+    Object.assign(DB.calendar_connections[0], { account_email: "", expires_at: "2020-01-01T00:00:00Z" });
+    REFRESH_ID_TOKENS["rt-work"] = { sub: "g-work", email: "ana@work.example" };
+    expect((await read(await get("action=events"))).status).toBe(200);
+    expect(DB.calendar_connections[0]).toMatchObject({ id: WORK, account_email: "ana@work.example", access_token: "at-refresh" });
+    const r = await addAccount("google", "code-work-again");
+    expect(r.body).toMatchObject({ ok: true, connectionId: WORK, replaced: false });
+    expect(anas()).toHaveLength(1);
+  });
+});
+
+describe("an account still on \"primary only\" (connected before 0045)", () => {
+  beforeEach(() => {
+    DB.calendar_connections.unshift({ id: LEGACY, user_id: ANA, provider: "google", account_email: "legacy@gmail.example", access_token: "at-legacy", refresh_token: "rt-legacy",
+      expires_at: SOON(), created_at: "2025-12-01T00:00:00Z", selected_calendars: null });
+  });
+  const legacyRow = () => DB.calendar_connections.find((c) => c.id === LEGACY)!;
+  const dinnerColour = async () => {
+    const e = await read(await get("action=events&start=2026-10-01T00:00:00Z&end=2026-11-01T00:00:00Z"));
+    return e.body.events.find((x: Row) => x.title === "Dinner");
+  };
+
+  it("is saved on its primary the first time the accounts are listed: Settings, Month and Today show one colour, and it stays put", async () => {
+    const list = await read(await get("action=list"));
+    expect(noSecrets(list.text)).toBe(true);
+    // oldest first, each in its provider's colour (they don't clash)
+    expect(legacyRow().selected_calendars).toEqual([{ id: "legacy@gmail.example", name: "legacy@gmail.example", color: "#9fc6e7", primary: true }]);
+    expect(DB.calendar_connections.find((c) => c.id === WORK)!.selected_calendars).toEqual([{ id: "ana@work.example", name: "Work", color: "#3f7fe0", primary: true }]);
+    expect(list.body.connections.map((c: Row) => c.selectedCalendars?.[0]?.color)).toEqual(["#9fc6e7", "#3f7fe0"]);
+
+    // the Settings swatch and the colour its events carry are the same
+    const cals = await read(await get(`action=calendars&connection=${LEGACY}`));
+    const swatch = cals.body.calendars.find((c: Row) => c.primary).color;
+    expect(swatch).toBe("#9fc6e7");
+    expect(await dinnerColour()).toMatchObject({ color: "#9fc6e7", calendarId: "legacy@gmail.example", calendarName: "legacy@gmail.example" });
+
+    // adding another account, and ticking a second calendar, leave it alone
+    await addAccount("google", "code-personal");
+    const s = await read(await post({ action: "select", connection: LEGACY, calendarIds: ["legacy@gmail.example", "club@group.calendar.google.com"] }));
+    expect(s.body.selectedCalendars.map((c: Row) => c.color)[0]).toBe("#9fc6e7");
+    expect(new Set(DB.calendar_connections.filter((c) => c.user_id === ANA).flatMap((c) => c.selected_calendars.map((x: Row) => x.color))).size).toBe(4);
+    expect((await dinnerColour()).color).toBe("#9fc6e7");
+    expect((await read(await get(`action=calendars&connection=${LEGACY}`))).body.calendars.find((c: Row) => c.primary).color).toBe("#9fc6e7");
+  });
+
+  it("opening its calendars saves it too, and its swatch is the colour its events then carry", async () => {
+    const cals = await read(await get(`action=calendars&connection=${LEGACY}`));
+    expect(cals.body.selectedCalendars).toEqual([{ id: "legacy@gmail.example", name: "legacy@gmail.example", color: "#9fc6e7", primary: true }]);
+    expect(cals.body.calendars.map((c: Row) => [c.name, c.selected])).toEqual([["legacy@gmail.example", true], ["Running club", false]]);
+    expect(cals.body.calendars[1].color).not.toBe("#9fc6e7");
+    expect((await dinnerColour()).color).toBe(cals.body.calendars[0].color);
+  });
+
+  it("if its calendars can't be read yet it stays as it is, in one colour everywhere, and is saved next time", async () => {
+    listDown.add("at-legacy");
+    const first = await read(await get("action=list"));
+    expect(first.status).toBe(200);
+    expect(first.body.connections[0]).toMatchObject({ id: LEGACY, selectedCalendars: null });
+    const e = await read(await get("action=events"));
+    const primaryThing = e.body.events.find((x: Row) => x.connectionId === LEGACY);
+    // (the other account was saved in its blue, so this one is shown in the next free colour)
+    expect(primaryThing).toMatchObject({ calendarId: "primary", color: "#2e9d6a" });
+    // back again: saved now
+    listDown.clear();
+    await read(await get("action=list"));
+    expect(legacyRow().selected_calendars).toEqual([{ id: "legacy@gmail.example", name: "legacy@gmail.example", color: "#9fc6e7", primary: true }]);
   });
 });
 
@@ -398,6 +557,16 @@ describe("before 0045 (no selected_calendars, one account per provider)", () => 
     expect(r.body).toMatchObject({ ok: true, connectionId: WORK, replaced: true, accountEmail: "ana@gmail.example" });
     expect(DB.calendar_connections.filter((c) => c.user_id === ANA)).toHaveLength(1);
     expect(DB.calendar_connections[0]).toMatchObject({ account_email: "ana@gmail.example", access_token: "at-code-personal" });
+  });
+
+  it("an account's primary swatch and its events agree on one colour (nothing can be saved yet)", async () => {
+    DB.calendar_connections[0].access_token = "at-legacy"; // its primary's own colour is #9fc6e7
+    const cals = await read(await get(`action=calendars&connection=${WORK}`));
+    const swatch = cals.body.calendars.find((c: Row) => c.primary).color;
+    const e = await read(await get("action=events"));
+    expect(e.body.events[0]).toMatchObject({ calendarId: "primary", color: swatch });
+    expect(cals.body.calendars[1].color).not.toBe(swatch);
+    expect(DB.calendar_connections[0]).not.toHaveProperty("selected_calendars");
   });
 
   it("calendars can be listed but not chosen yet, with a clear reason; events read the primary", async () => {

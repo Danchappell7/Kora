@@ -57,10 +57,10 @@ export function calendarLegend(connections: CalendarConnection[], events: Extern
   return out;
 }
 
-/** "Main calendar shown" · "3 calendars shown" · "No calendars shown" */
+/** "Main calendar shown" (nothing chosen yet, or just the primary) · "3 calendars shown" · "No calendars shown" */
 export function shownSummary(c: Pick<CalendarConnection, "selectedCalendars">): string {
   const n = c.selectedCalendars?.length;
-  if (n === undefined) return "Main calendar shown";
+  if (n === undefined || (n === 1 && c.selectedCalendars![0].primary)) return "Main calendar shown";
   if (n === 0) return "No calendars shown";
   return `${n} calendar${n === 1 ? "" : "s"} shown`;
 }

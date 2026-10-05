@@ -89,6 +89,59 @@ describe("CalendarAccountsPanel", () => {
     expect(team).not.toBeChecked();
   });
 
+  it("while a save is in flight every box stays usable (focus never drops off the one pressed), and a tick made meanwhile is saved straight after", async () => {
+    let release!: () => void;
+    const calls: string[][] = [];
+    const onSelect = vi.fn((_id: string, ids: string[]) => {
+      calls.push(ids);
+      return calls.length === 1 ? new Promise<void>((r) => { release = r; }) : Promise.resolve();
+    });
+    setup({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: "Choose calendars from ada@acme.co.uk" }));
+    const list = await screen.findByRole("group", { name: "Calendars to show from ada@acme.co.uk" });
+    const team = within(list).getByRole("checkbox", { name: /Launch team/ });
+    team.focus();
+    fireEvent.click(team);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    // saving: no box is disabled (a disabled box loses focus), the group says it's busy
+    for (const box of within(list).getAllByRole("checkbox")) expect(box).toBeEnabled();
+    expect(team).toBeChecked();
+    expect(document.activeElement).toBe(team);
+    expect(list).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("Saving…")).toBeInTheDocument();
+    // a second tick meanwhile is kept, and waits for the first save
+    const hol = within(list).getByRole("checkbox", { name: /Holidays/ });
+    fireEvent.click(hol);
+    expect(hol).toBeChecked();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    release();
+    await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(2));
+    expect(calls).toEqual([["ada@acme.co.uk", "team"], ["ada@acme.co.uk", "hol", "team"]]);
+    expect(await screen.findByText("Saved. Today and Month now show these calendars.")).toBeInTheDocument();
+    expect(list).not.toHaveAttribute("aria-busy");
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it("if a later save fails, the ticks go back to what was last saved, and it says why", async () => {
+    let release!: () => void;
+    let n = 0;
+    const onSelect = vi.fn(() => {
+      n += 1;
+      return n === 1 ? new Promise<void>((r) => { release = r; }) : Promise.reject(new Error("Couldn't reach ada@acme.co.uk just now. Try again in a moment."));
+    });
+    setup({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: "Choose calendars from ada@acme.co.uk" }));
+    const team = await screen.findByRole("checkbox", { name: /Launch team/ });
+    fireEvent.click(team);
+    const hol = screen.getByRole("checkbox", { name: /Holidays/ });
+    fireEvent.click(hol);
+    release();
+    expect(await screen.findByText("Couldn't reach ada@acme.co.uk just now. Try again in a moment.")).toBeInTheDocument();
+    expect(team).toBeChecked();      // the first save went through
+    expect(hol).not.toBeChecked();   // the second didn't
+    expect(screen.getByRole("checkbox", { name: /Work/ })).toBeChecked();
+  });
+
   it("a list that won't load says why and can be tried again", async () => {
     let fail = true;
     const loadCalendars = vi.fn(async () => { if (fail) throw new Error("Kanbo can't read ada@acme.co.uk any more. Disconnect it and add it again."); return LIST; });
@@ -108,6 +161,10 @@ describe("CalendarAccountsPanel", () => {
     expect(extra).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "Calendar 3" })).toBeEnabled();
     expect(screen.getByText(`Up to ${MAX_CALENDARS} calendars per account.`)).toBeInTheDocument();
+    // unticking one frees a place
+    fireEvent.click(screen.getByRole("checkbox", { name: "Calendar 3" }));
+    expect(extra).toBeEnabled();
+    expect(await screen.findByText("Saved. Today and Month now show these calendars.")).toBeInTheDocument();
   });
 
   it("says when an account needs reconnecting, or a calendar couldn't load", () => {

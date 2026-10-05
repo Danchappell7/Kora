@@ -63,8 +63,38 @@ export function safeColour(c: unknown): string | null {
   return "#" + (h.length === 3 ? h.split("").map((x) => x + x).join("") : h);
 }
 
-export const sameEmail = (a: unknown, b: unknown): boolean =>
-  String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+/** The same account address (any case, stray spaces ignored). An empty address
+ *  never matches anything, not even another empty one: "we don't know who this
+ *  is" must never pick out an existing account. */
+export const sameEmail = (a: unknown, b: unknown): boolean => {
+  const x = String(a ?? "").trim().toLowerCase();
+  return x !== "" && x === String(b ?? "").trim().toLowerCase();
+};
+
+/** An account address fit to store: trimmed, at most 320 characters, "" if none. */
+export const cleanIdentity = (v: unknown): string => (typeof v === "string" ? v.trim().slice(0, 320) : "");
+
+/** Who the person signed in as, from the id_token the token endpoint returns
+ *  alongside the access token (we ask for `openid email`): the `email` claim,
+ *  and Microsoft's `preferred_username` (its sign-in name, usually an address).
+ *  The token came straight from the provider over TLS in the code exchange, so
+ *  its signature needn't be checked (OpenID Connect Core 3.1.3.7). "" for
+ *  anything missing or malformed. */
+export function idTokenIdentity(idToken: unknown): { email: string; username: string } {
+  const none = { email: "", username: "" };
+  if (typeof idToken !== "string") return none;
+  const part = idToken.split(".")[1];
+  if (!part || part.length > 16_384) return none;
+  try {
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
+    const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+    const claims = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+    if (!claims || typeof claims !== "object") return none;
+    return { email: cleanIdentity(claims.email), username: cleanIdentity(claims.preferred_username) };
+  } catch {
+    return none;
+  }
+}
 
 export const isUuid = (s: unknown): s is string =>
   typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -157,6 +187,34 @@ export function paintCalendars(list: ProviderCalendar[], selected: SelectedCalen
   const free = distinctColours(fixed.filter((c) => !saved.get(c.id)), keep);
   const byId = new Map(free.map((c) => [c.id, c]));
   return fixed.map((c) => byId.get(c.id) ?? c);
+}
+
+/** The selection an account on "primary only" (NULL) gets saved as: its
+ *  primary calendar, in exactly the colour the calendar list (paintCalendars,
+ *  with the same other accounts' colours) shows it in. null if the account
+ *  marks no calendar as primary. */
+export function primarySelection(list: ProviderCalendar[], takenElsewhere: Iterable<string> = []): SelectedCalendar[] | null {
+  const painted = paintCalendars(list, null, takenElsewhere);
+  const primary = painted.find((c) => c.primary);
+  return primary ? selectionFrom([primary.id], painted) : null;
+}
+
+/** The one colour each account still on "primary only" (NULL, not saved yet)
+ *  is shown in, everywhere: on its events and as its primary's swatch in the
+ *  calendar list. A palette colour no saved calendar and no earlier such
+ *  account uses, in account order (oldest first). Only used until the
+ *  account's primary is saved (primarySelection), which is normally the first
+ *  time the app lists the accounts after 0045. */
+export function unsavedPrimaryColours(rows: { id: string; selected_calendars?: unknown }[]): Map<string, string> {
+  const used = rows.flatMap((r) => (parseSelected(r.selected_calendars) ?? []).map((s) => s.color));
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    if (parseSelected(r.selected_calendars) !== null) continue;
+    const c = distinctColours([{ color: "" }], used)[0].color;
+    used.push(c);
+    out.set(r.id, c);
+  }
+  return out;
 }
 
 /** Check a requested selection against the account's real calendars. */

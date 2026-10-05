@@ -4,7 +4,11 @@
    Outlook…): one row per account with its email, provider and how
    many calendars Kanbo shows. "Choose calendars" opens the account's
    own list to tick: colour swatch, name, Primary badge. Each tick saves
-   straight away (like Appearance). "Disconnect" removes that account
+   straight away (like Appearance). The tick boxes stay usable while a
+   save is in flight (so keyboard and screen-reader focus never drops
+   off the box just pressed): a tick made meanwhile is kept and saved
+   straight after, the latest choice winning. Only the cap disables
+   (unticked boxes once 25 are shown). "Disconnect" removes that account
    only. "Add Google account" / "Add Outlook account" are always there:
    the provider asks which account, so a second one of a kind is easy.
    Older server (before 0045 / the updated function): each account's
@@ -91,6 +95,14 @@ function AccountRow({ conn, warnings, onDisconnect, loadCalendars, onSelect }: {
   const [problem, setProblem] = useState<string | null>(null);
   const alive = useRef(true);
   const savedTimer = useRef(0);
+  // the ticks as they are now, and as the server last accepted them
+  const chosenRef = useRef<Set<string>>(new Set());
+  const confirmed = useRef<Set<string>>(new Set());
+  /** the account's calendar ids, in its own order (what a save sends them in) */
+  const order = useRef<string[]>([]);
+  const inFlight = useRef(false);
+  /** ticked again while a save was in flight: save the latest choice after it */
+  const again = useRef(false);
   useEffect(() => {
     alive.current = true; // (StrictMode mounts twice)
     return () => { alive.current = false; window.clearTimeout(savedTimer.current); };
@@ -105,7 +117,14 @@ function AccountRow({ conn, warnings, onDisconnect, loadCalendars, onSelect }: {
     try {
       const calendars = await loadCalendars(conn.id);
       if (!alive.current) return;
-      setChosen(new Set(calendars.filter((c) => c.selected).map((c) => c.id)));
+      order.current = calendars.map((c) => c.id);
+      // (a save still in flight knows better than this list)
+      if (!inFlight.current) {
+        const sel = new Set(calendars.filter((c) => c.selected).map((c) => c.id));
+        confirmed.current = sel;
+        chosenRef.current = sel;
+        setChosen(sel);
+      }
       setLoad({ state: "ready", calendars });
     } catch (e) {
       if (!alive.current) return;
@@ -119,27 +138,51 @@ function AccountRow({ conn, warnings, onDisconnect, loadCalendars, onSelect }: {
     if (next) void fetchList();
   };
 
-  const toggle = async (cal: ExtCalendar) => {
-    if (!onSelect || load.state !== "ready" || saving) return;
-    const before = chosen;
-    const next = new Set(before);
-    if (next.has(cal.id)) next.delete(cal.id); else next.add(cal.id);
-    // in the account's own order
-    const list = load.calendars.map((c) => c.id).filter((id) => next.has(id));
-    setChosen(next); setSaving(true); setSaved(false); setProblem(null);
+  /** Save the ticks as they are now; one save at a time, and a tick made
+   *  meanwhile is saved straight after it (the latest choice wins). A save
+   *  that fails puts the ticks back as last saved and says why. */
+  const save = async () => {
+    if (!onSelect) return;
+    if (inFlight.current) { again.current = true; return; }
+    inFlight.current = true;
+    setSaving(true); setSaved(false); setProblem(null);
+    let failed: string | null = null;
     try {
-      await onSelect(conn.id, list);
-      if (!alive.current) return;
-      setSaved(true);
-      window.clearTimeout(savedTimer.current);
-      savedTimer.current = window.setTimeout(() => { if (alive.current) setSaved(false); }, SAVED_MS);
-    } catch (e) {
-      if (!alive.current) return;
-      setChosen(before);
-      setProblem(e instanceof Error && e.message ? e.message : "Couldn't save that. Try again.");
+      do {
+        again.current = false;
+        const want = chosenRef.current;
+        try {
+          await onSelect(conn.id, order.current.filter((id) => want.has(id)));
+          confirmed.current = want;
+        } catch (e) {
+          failed = e instanceof Error && e.message ? e.message : "Couldn't save that. Try again.";
+        }
+      } while (!failed && again.current && alive.current);
     } finally {
-      if (alive.current) setSaving(false);
+      inFlight.current = false;
     }
+    if (!alive.current) return;
+    setSaving(false);
+    if (failed) {
+      chosenRef.current = confirmed.current;
+      setChosen(confirmed.current);
+      setProblem(failed);
+      return;
+    }
+    setSaved(true);
+    window.clearTimeout(savedTimer.current);
+    savedTimer.current = window.setTimeout(() => { if (alive.current) setSaved(false); }, SAVED_MS);
+  };
+
+  const toggle = (cal: ExtCalendar) => {
+    if (!onSelect || load.state !== "ready") return;
+    const next = new Set(chosenRef.current);
+    if (next.has(cal.id)) next.delete(cal.id);
+    else if (next.size >= MAX_CALENDARS) return;
+    else next.add(cal.id);
+    chosenRef.current = next;
+    setChosen(next);
+    void save();
   };
 
   const reconnect = warnings.find((w) => w.reason === "reconnect");
@@ -187,15 +230,17 @@ function AccountRow({ conn, warnings, onDisconnect, loadCalendars, onSelect }: {
             )}
             {load.state === "ready" && (
               count === 0 ? <p className="kacct-status">This account has no calendars Kanbo can read.</p> : (
-                <fieldset className="kacct-list" aria-describedby={`${panelId}-foot`}>
+                <fieldset className="kacct-list" aria-describedby={`${panelId}-foot`} aria-busy={saving || undefined}>
                   <legend className="sr-only">Calendars to show from {who}</legend>
                   {load.calendars.map((cal) => {
                     const on = chosen.has(cal.id);
-                    const off = saving || (!on && atCap);
+                    // only the cap disables a box (never a save in flight: that would
+                    // drop keyboard focus off the box just pressed)
+                    const off = !on && atCap;
                     return (
                       <label key={cal.id} className="kacct-item" data-disabled={off || undefined}>
                         <span className="kset-check" data-disabled={off || undefined}>
-                          <input type="checkbox" checked={on} disabled={off} onChange={() => void toggle(cal)} />
+                          <input type="checkbox" checked={on} disabled={off} onChange={() => toggle(cal)} />
                           <span className="kset-check-box" aria-hidden="true"><Icon name="check" size={12} sw={2.5} /></span>
                         </span>
                         <span className="kacct-swatch" style={swatch(cal.color)} aria-hidden="true" />

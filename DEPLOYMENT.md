@@ -652,7 +652,9 @@ than one Google or Outlook account and choose which calendars Kanbo shows
 from each. Deploy the updated `calendar` function **first**, then run
 `supabase/migrations/0045_multi_calendar.sql`: the old function can't save a
 connection once 0045 has dropped the one-per-provider rule. No Google Cloud
-or Azure change is needed. Details, and what happens in between, are in
+change is needed. Outlook now also asks for `User.Read`, which the Azure app's
+API permissions already list (CALENDAR_SETUP.md), and the standard sign-in
+scope `profile`. Details, and what happens in between, are in
 [calendar-accounts.md](docs/integrations/calendar-accounts.md).
 
 ### Local development
