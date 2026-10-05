@@ -1,0 +1,158 @@
+/* ============================================================
+   KANBO — Settings › Developers › Webhooks.                      [a2, 0046]
+   The panel is built from SetGroup / SetRow (SettingsModal's kset-* rows
+   and panels), so this file only adds what Settings doesn't have: the
+   scope picker, the endpoint form and events checklist, the secret box,
+   the row's switch and the deliveries list. Tokens with fallbacks; no
+   backdrop-filter; motion is 160ms and off under prefers-reduced-motion.
+   ============================================================ */
+
+* + .kwh { margin-top: 28px; }
+.kwh > .kset-intro:first-child { margin-top: 0; }
+
+/* ---- scope ---- */
+.kwh-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 2px 20px; }
+.kwh-scope-label { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kwh-scope .kset-hint { flex-basis: 100%; margin: 0; }
+.kwh-select {
+  height: var(--h-md, 32px); min-width: 0; max-width: 100%; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.kwh-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.kwh-checking { display: inline-flex; align-items: center; gap: 6px; }
+.kwh-opt { font-weight: 500; color: var(--ink-3); }
+.kwh-mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; letter-spacing: 0; }
+.kwh-mono::placeholder { font-family: var(--font-ui, var(--font-display)); }
+.kwh-code {
+  padding: 0 4px; border-radius: var(--r-xs, 4px); background: var(--fill-1);
+  font: 500 12px/16px var(--font-mono, ui-monospace, monospace); color: var(--ink-2); overflow-wrap: anywhere;
+}
+
+/* ---- an endpoint ---- */
+.kwh-item + .kwh-item, .kwh-form + .kwh-item, .kwh-secret + * { box-shadow: inset 0 1px 0 var(--hairline); }
+.kwh-row { align-items: flex-start; }
+.kwh-url {
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; font-weight: 500; letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+.kwh-item[data-off] .kwh-url { color: var(--ink-2); }
+.kwh-last[data-tone="warn"] { color: var(--ink-2); }
+.kwh-ctl { flex-wrap: wrap; justify-content: flex-end; }
+.kwh-switch:disabled { opacity: 0.45; cursor: progress; }
+.kwh-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- details ---- */
+.kwh-details { display: grid; gap: 12px; padding: 0 16px 16px 48px; }
+.kwh-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.kwh .kbtn.kwh-danger { color: var(--signal, var(--prio-urgent)); }
+.kwh-details > .kset-panel { margin: 0; }
+.kwh-readonly {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty;
+}
+.kwh-readonly > svg { flex-shrink: 0; margin-top: 1px; }
+
+.kwh-dl-head { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.kwh-dl-title { flex: 1; margin: 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kwh-dl-empty {
+  display: flex; align-items: center; gap: 6px; margin: 0;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3);
+}
+.kwh-dl { margin: 0; padding: 0; list-style: none; border-radius: var(--r-md, 8px); box-shadow: 0 0 0 1px var(--hairline); }
+.kwh-dl-item { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px 12px; padding: 10px 12px; }
+.kwh-dl-item + .kwh-dl-item { box-shadow: inset 0 1px 0 var(--hairline); }
+.kwh-dl-main { display: grid; gap: 2px; flex: 1 1 220px; min-width: 0; }
+.kwh-dl-event { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kwh-dl-meta { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.kwh-dl-error { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); overflow-wrap: anywhere; }
+.kwh-dl-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+
+/* ---- form ---- */
+.kwh-form { display: grid; gap: 16px; padding: 4px 16px 16px; }
+.kwh-details .kwh-form { padding: 0; }
+.kwh-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 240px); gap: 16px; align-items: start; }
+.kwh-events { margin: 0; padding: 0; border: 0; min-width: 0; }
+.kwh-legend { padding: 0; margin: 0 0 2px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kwh-ev-hint { margin: 0 0 10px; }
+.kwh-all { font-size: 12px; line-height: 16px; }
+.kwh-ev-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px 20px; }
+.kwh-ev-group { display: grid; gap: 4px; align-content: start; }
+.kwh-ev-group-title { margin: 0 0 2px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kwh-ev { display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; margin: 0 -8px; border-radius: var(--r-sm, 6px); cursor: pointer; }
+.kwh-ev:hover { background: var(--fill-1); }
+.kwh-ev-box { flex-shrink: 0; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent-fill, var(--accent)); cursor: pointer; }
+.kwh-ev-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kwh-ev-text { display: grid; gap: 2px; min-width: 0; }
+.kwh-ev-label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kwh-ev-label .kwh-code { margin-left: 4px; color: var(--ink-3); }
+.kwh-ev-desc { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kwh-events:disabled .kwh-ev { cursor: default; opacity: 0.6; }
+.kwh-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.kwh-form .kwh-form-err { margin: 0; }
+
+/* ---- the secret, shown once ---- */
+.kwh-secret { margin: 12px 16px 16px; }
+.kwh-secret-row { display: flex; gap: 8px; }
+.kwh-secret-row > .kset-input { flex: 1; min-width: 0; }
+
+/* ---- messages (live regions stay in the tree while empty: never display:none) ---- */
+.kwh-msg {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0 16px 12px 48px;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); text-wrap: pretty;
+}
+.kwh-msg > svg { flex-shrink: 0; margin-top: 1px; }
+.kwh-msg[data-tone="signal"] { font-weight: 500; color: var(--signal, var(--prio-urgent)); }
+.kwh-details .kwh-msg { margin: 0; }
+/* its own formatting context, so the message's margin stays inside the card */
+.kwh-live { display: flow-root; }
+
+/* ---- how to verify ---- */
+.kwh-help { margin-top: 16px; border-radius: var(--r-md, 8px); background: var(--fill-1); }
+.kwh-help > summary {
+  display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: var(--r-md, 8px);
+  list-style: none; cursor: pointer; user-select: none;
+  font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
+  transition: color var(--d-1, 90ms) var(--ease, ease);
+}
+.kwh-help > summary::-webkit-details-marker { display: none; }
+.kwh-help > summary:hover { color: var(--ink); }
+.kwh-help > summary > svg { flex-shrink: 0; color: var(--ink-3); transition: transform var(--d-2, 160ms) var(--ease, ease); }
+.kwh-help[open] > summary > svg { transform: rotate(90deg); }
+.kwh-help > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kwh-help-body { display: grid; gap: 10px; padding: 0 16px 14px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kwh-help-body p { margin: 0; text-wrap: pretty; }
+.kwh-pre {
+  margin: 0; padding: 12px; overflow-x: auto; border-radius: var(--r-sm, 6px);
+  background: var(--surface, var(--bg)); box-shadow: 0 0 0 1px var(--hairline);
+  font: 500 12px/18px var(--font-mono, ui-monospace, monospace); color: var(--ink); tab-size: 2;
+}
+.kwh-pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- entrance ---- */
+@keyframes kwhIn { from { opacity: 0.35; translate: 0 4px; } }
+.kwh-in { animation: kwhIn var(--d-2, 160ms) var(--ease, ease); }
+
+/* ---- phones ---- */
+@media (max-width: 859px) {
+  .kwh-fields { grid-template-columns: minmax(0, 1fr); }
+  .kwh-form { padding: 4px 12px 12px; }
+  .kwh-mono, .kwh-select { font-size: 16px; }          /* 16px stops iOS zooming into the field */
+  .kwh-select { height: var(--h-lg, 40px); flex: 1 1 100%; }
+  .kwh-details { padding: 0 12px 12px; }
+  .kwh-msg { margin-left: 16px; }
+  .kwh-ctl { width: 100%; justify-content: flex-start; }
+  .kwh-acts > .kbtn { flex: 1 1 auto; }
+  .kwh-secret { margin: 12px; }
+  .kwh-secret-row { flex-wrap: wrap; }
+  .kwh-dl-side { margin-left: 0; }
+}
+@media (pointer: coarse) {
+  .kwh-help > summary { min-height: 44px; }
+  .kwh-ev { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kwh-in { animation: none; }
+  .kwh-help > summary, .kwh-help > summary > svg { transition: none; }
+}
