@@ -717,9 +717,10 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
 .ktv-cal-task .kglyph-art { width: 12px; height: 12px; }
 .ktv-cal-task[data-done="true"] > span:last-child { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
 .ktv-cal-task[draggable="true"] { cursor: grab; }
+/* a connected calendar's event: a thin left edge in its calendar's colour (--kcal, re-toned per theme) */
 .ktv-cal-event {
-  display: flex; align-items: center; gap: 5px; min-width: 0; height: 20px; padding: 0 5px; border-radius: var(--r-xs, 4px);
-  background: var(--bg-deep); box-shadow: inset 2px 0 0 var(--tv-quiet); color: var(--ink-2); font: 500 12px/16px var(--tv-ui);
+  display: flex; align-items: center; gap: 5px; min-width: 0; height: 20px; padding: 0 5px 0 7px; border-radius: var(--r-xs, 4px);
+  background: var(--bg-deep); box-shadow: inset 3px 0 0 var(--kcal, var(--tv-quiet)); color: var(--ink-2); font: 500 12px/16px var(--tv-ui);
 }
 .ktv-cal-event > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ktv-cal-event time { flex-shrink: 0; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
@@ -737,7 +738,28 @@ button.ktv-wip:hover { background: var(--tv-hover); color: var(--ink-2); }
   background: var(--surface-raised); box-shadow: var(--e1, var(--shadow)); color: var(--ink); text-align: left; cursor: pointer; font: 500 14px/20px var(--tv-ui);
 }
 .ktv-agenda-item > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ktv-agenda-item[data-event="true"] { background: var(--bg-deep); box-shadow: inset 2px 0 0 var(--tv-quiet); cursor: default; color: var(--ink-2); }
+.ktv-agenda-item[data-event="true"] { background: var(--bg-deep); box-shadow: inset 3px 0 0 var(--kcal, var(--tv-quiet)); cursor: default; color: var(--ink-2); }
+
+/* ---- the calendars shown: one chip each (Month hides a calendar here, per device) ---- */
+.ktv-cal-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; }
+.ktv-cal-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ktv-cal-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px; height: 28px; padding: 0 10px 0 8px;
+  border: 0; border-radius: 999px; background: var(--surface-raised); box-shadow: 0 0 0 1px var(--hairline-strong);
+  color: var(--ink-2); cursor: pointer; font: 500 12px/16px var(--tv-ui);
+  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
+}
+.ktv-cal-chip:hover { background: var(--tv-hover); color: var(--ink); }
+.ktv-cal-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ktv-cal-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktv-cal-swatch { width: 10px; height: 10px; flex-shrink: 0; border-radius: 3px; background: var(--kcal, var(--tv-quiet)); box-shadow: inset 0 0 0 1.5px var(--kcal, var(--tv-quiet)); }
+/* hidden for now: a hollow swatch and a quieter (still legible) name */
+.ktv-cal-chip[data-off] { background: transparent; color: var(--ink-3); box-shadow: 0 0 0 1px var(--hairline); }
+.ktv-cal-chip[data-off] .ktv-cal-swatch { background: transparent; }
+.ktv-cal-chip[data-off] .ktv-cal-chip-name { text-decoration: line-through; text-decoration-color: var(--ink-4); }
+.ktv-cal-warn { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/16px var(--tv-ui); color: var(--signal, var(--prio-urgent)); }
+.ktv-cal-warn-link { padding: 0; border: 0; background: none; cursor: pointer; font: 600 12px/16px var(--tv-ui); color: var(--accent-text, var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
+.ktv-cal-warn-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .ktv-dayp { display: grid; gap: 2px; }
 .ktv-dayp-head { display: flex; align-items: center; gap: 8px; padding: 4px 2px 6px 8px; font: 600 13px/20px var(--tv-ui); color: var(--ink); }
 .ktv-dayp-head .kibtn { margin-left: auto; }

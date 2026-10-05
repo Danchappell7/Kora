@@ -9,6 +9,7 @@ import type {
   Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/supabase";
+import { demoDayCalendar } from "./demoCalendars";
 import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";
 
@@ -506,13 +507,13 @@ export const PLAN_TODAY_IDS = ["t-1", "t-6", "t-3", "t-9", "t-5", "t-10"];
 
 /* fixed calendar events the plan works around (demo data until calendars
    are connected — empty for real accounts). */
-export let EVENTS: CalEvent[] = [
+export let EVENTS: CalEvent[] = ([
   { id: "e1", title: "Team standup", start: 9 * 60, end: 9 * 60 + 30, kind: "meeting", with: ["Maya", "Theo", "Sana"] },
   { id: "e5", title: "Launch sync", start: 11 * 60, end: 11 * 60 + 30, kind: "meeting", with: ["Maya", "Theo"] },
   { id: "e2", title: "Lunch", start: 12 * 60, end: 13 * 60, kind: "break" },
   { id: "e3", title: "Design review", start: 13 * 60, end: 14 * 60, kind: "meeting", with: ["Sana", "Theo"] },
   { id: "e4", title: "1:1 with Maya", start: 16 * 60 + 30, end: 17 * 60, kind: "meeting", with: ["Maya"] },
-];
+] satisfies CalEvent[]).map((e) => ({ ...e, ...demoDayCalendar(e.id) }));   // (each in its demo calendar's colour)
 
 /* ============================================================
    Demo seed for the redesign's surfaces: Inbox, Pulse and Radar,

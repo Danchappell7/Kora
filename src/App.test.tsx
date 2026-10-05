@@ -927,7 +927,11 @@ describe("App (demo mode)", () => {
     const settings = await screen.findByRole("dialog", { name: /settings/i });
     expect(within(settings).getByRole("tab", { name: /^Tags/ })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(within(settings).getByRole("tab", { name: /^Calendar/ }));
-    expect(await within(settings).findByRole("button", { name: /^Connect Google/ })).toBeInTheDocument();
+    expect(await within(settings).findByRole("button", { name: "Add Google account" })).toBeInTheDocument();
+    // the demo's two example accounts, each with its own calendars
+    expect(await within(settings).findByText("daniel@foundrise.co")).toBeInTheDocument();
+    expect(within(settings).getByText("Google · 3 calendars shown")).toBeInTheDocument();
+    expect(within(settings).getByText("Outlook · 2 calendars shown")).toBeInTheDocument();
   });
 
   it("a plain ⌘, opens Settings where people go most, not the last deep link", async () => {

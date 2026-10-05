@@ -65,7 +65,11 @@ export function todaysEvents(ext: ExternalEvent[], now: Date = new Date()): CalE
     startMin = Math.max(DAY_START, Math.min(DAY_END, startMin));
     endMin = Math.max(DAY_START, Math.min(DAY_END, endMin));
     if (endMin <= startMin) continue;
-    out.push({ id: e.id, title: e.title, start: startMin, end: endMin, kind: "meeting" });
+    out.push({
+      id: e.id, title: e.title, start: startMin, end: endMin, kind: "meeting",
+      // which of the connected calendars it's from (a thin edge in its colour on the canvas)
+      ...(e.color ? { color: e.color } : {}), ...(e.calendarName ? { calendarName: e.calendarName } : {}),
+    });
   }
   return out.sort((a, b) => a.start - b.start);
 }

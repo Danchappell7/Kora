@@ -2,7 +2,7 @@
    KANBO — Board (Kanban), Timeline (Gantt), Month calendar,
    Matrix and Files views
    ============================================================ */
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, memo, type ReactNode } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, memo, type ReactNode, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
   Icon, Avatar, wasJustLanded, markJustLanded, Segmented,
@@ -17,7 +17,8 @@ import {
   getProject, getMember, dueState, fmtDue, TAGS,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
-import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, ExternalEvent, Attachment, CustomFieldDef } from "../../data/types";
+import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Attachment, CustomFieldDef } from "../../data/types";
+import { calendarLegend, eventCalendarKey, eventColour, loadHiddenCalendars, saveHiddenCalendars, type LegendEntry } from "../../lib/calendars";
 import { store } from "../../data/store";
 import { reportError } from "../../lib/monitoring";
 import {
@@ -30,10 +31,12 @@ import "./taskViews.css";
 
 export type BoardGroup = "status" | "priority" | "project" | "assignee";
 
-const PROVIDER_META: Record<CalProvider, { label: string; color: string }> = {
-  google: { label: "Google Calendar", color: "oklch(0.7 0.18 25)" },
-  microsoft: { label: "Microsoft / Outlook", color: "oklch(0.62 0.16 250)" },
+const PROVIDER_META: Record<CalProvider, { label: string; add: string; color: string }> = {
+  google: { label: "Google Calendar", add: "Add Google account", color: "oklch(0.7 0.18 25)" },
+  microsoft: { label: "Microsoft / Outlook", add: "Add Outlook account", color: "oklch(0.62 0.16 250)" },
 };
+/** a connected calendar's colour, re-toned for the theme (the same lightness as project colours) */
+const calInk = (hex: string) => ({ "--kcal": projectPaint(hex).solid }) as CSSProperties;
 
 // fixed English names, so every browser says "Sep" (some en-GB builds say "Sept")
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1030,39 +1033,40 @@ function RowButton({ onClick, children, autoFocus }: { onClick: () => void; chil
 }
 
 /* ---------------- CALENDAR ---------------- */
+/** Connected accounts as chips (each can be disconnected) and an "Add calendar" menu that
+ *  always offers both providers: several accounts of either kind can be connected. */
 function ConnectCalendarMenu({ connections, onConnect, onDisconnect, syncing }: {
   connections: CalendarConnection[];
   onConnect: (p: CalProvider) => void;
-  onDisconnect: (p: CalProvider) => void;
+  onDisconnect: (connectionId: string) => void;
   syncing?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
-  const connectedFor = (p: CalProvider) => connections.find((c) => c.provider === p);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       {connections.map((c) => {
         const meta = PROVIDER_META[c.provider];
+        const who = c.accountEmail || meta.label;
         return (
-          <span key={c.provider} className="ktv-saved" style={{ height: 28 }}>
+          <span key={c.id} className="ktv-saved" style={{ height: 28 }}>
             <span className="ktv-dot" style={{ background: meta.color, marginRight: 6 }} />
-            <span style={{ color: "var(--ink-2)" }}>{c.accountEmail || meta.label}</span>
-            <button type="button" title={`Disconnect ${meta.label}`} aria-label={`Disconnect ${meta.label}`} onClick={() => onDisconnect(c.provider)}><Icon name="x" size={12} /></button>
+            <span style={{ color: "var(--ink-2)" }}>{who}</span>
+            <button type="button" title={`Disconnect ${who}`} aria-label={`Disconnect ${who}`} onClick={() => onDisconnect(c.id)}><Icon name="x" size={12} /></button>
           </span>
         );
       })}
       {syncing && <span className="ktv-note">Syncing…</span>}
-      <Button ref={btn} variant="ghost" size="sm" icon="calendarPlus" iconRight="chevronDown" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>Connect calendar</Button>
+      <Button ref={btn} variant="ghost" size="sm" icon="calendarPlus" iconRight="chevronDown" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>Add calendar</Button>
       {open && (
-        <Popover anchor={btn.current} align="end" label="Connect a calendar" onClose={() => setOpen(false)} minWidth={248}>
+        <Popover anchor={btn.current} align="end" label="Add a calendar account" onClose={() => setOpen(false)} minWidth={248}>
           {(Object.keys(PROVIDER_META) as CalProvider[]).map((p) => {
             const meta = PROVIDER_META[p];
-            const conn = connectedFor(p);
             return (
-              <MenuItem key={p} onSelect={() => { setOpen(false); if (conn) onDisconnect(p); else onConnect(p); }}>
+              <MenuItem key={p} onSelect={() => { setOpen(false); onConnect(p); }}>
                 <span className="ktv-dot" style={{ background: meta.color, margin: "0 4px" }} />
-                <span style={{ flex: 1 }}>{meta.label}</span>
-                {conn ? <span className="ktv-mi-end">Disconnect</span> : <Icon name="plus" size={14} />}
+                <span style={{ flex: 1 }}>{meta.add}</span>
+                <Icon name="plus" size={14} />
               </MenuItem>
             );
           })}
@@ -1074,15 +1078,63 @@ function ConnectCalendarMenu({ connections, onConnect, onDisconnect, syncing }: 
   );
 }
 
-export function CalendarView({ tasks, onOpen, onPatch, connections = [], externalEvents = [], onConnect, onDisconnect, syncing, readOnly = false, scope, onScopeChange, onOpenSettings }: {
+/** Month's key to the calendars shown: one chip per calendar, in its colour. A chip hides
+ *  (or shows again) that calendar's events here, on this device only — Settings decides
+ *  what's connected; this is "not right now". */
+function CalendarLegend({ entries, hidden, onToggle, warnings, onOpenSettings }: {
+  entries: LegendEntry[];
+  hidden: Set<string>;
+  onToggle: (key: string) => void;
+  warnings: CalendarWarning[];
+  onOpenSettings?: () => void;
+}) {
+  if (entries.length === 0 && warnings.length === 0) return null;
+  const nameCount = new Map<string, number>();
+  for (const e of entries) nameCount.set(e.name, (nameCount.get(e.name) ?? 0) + 1);
+  const failed = new Set(warnings.map((w) => `${w.connectionId}|${w.calendarId ?? "*"}`)).size;
+  return (
+    <div className="ktv-cal-legend">
+      {entries.length > 0 && (
+        <div className="ktv-cal-chips" role="group" aria-label="Calendars shown on Month">
+          {entries.map((e) => {
+            const on = !hidden.has(e.key);
+            const detail = e.accountEmail ? `${e.name} (${e.accountEmail})` : e.name;
+            return (
+              <button key={e.key} type="button" className="ktv-cal-chip" aria-pressed={on} data-off={!on || undefined}
+                title={on ? `Hide ${detail} here for now` : `Show ${detail}`} style={calInk(e.color)} onClick={() => onToggle(e.key)}>
+                <span className="ktv-cal-swatch" aria-hidden="true" />
+                <span className="ktv-cal-chip-name">{e.name}</span>
+                {/* two calendars with one name ("Calendar" in two Outlook accounts) are told apart */}
+                {(nameCount.get(e.name) ?? 0) > 1 && e.accountEmail && <span className="sr-only"> ({e.accountEmail})</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {failed > 0 && (
+        <span className="ktv-cal-warn" role="note">
+          <Icon name="alert" size={12} sw={2} />
+          {failed === 1 ? "1 calendar couldn't load" : `${failed} calendars couldn't load`}
+          {onOpenSettings && <button type="button" className="ktv-cal-warn-link" onClick={onOpenSettings}>See Settings</button>}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function CalendarView({ tasks, onOpen, onPatch, connections = [], externalEvents = [], warnings = [], onConnect, onDisconnect, syncing, readOnly = false, scope, onScopeChange, onOpenSettings }: {
   tasks: Task[];
   onOpen: (id: string) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
+  /** connected calendar accounts (several, each with its chosen calendars) */
   connections?: CalendarConnection[];
+  /** their events, each tagged with its calendar and colour */
   externalEvents?: ExternalEvent[];
-  /** the connect / disconnect menu shows only when these are passed (connect lives in Settings) */
+  /** calendars the last sync couldn't read */
+  warnings?: CalendarWarning[];
+  /** the add / disconnect menu shows only when these are passed (connect lives in Settings) */
   onConnect?: (p: CalProvider) => void;
-  onDisconnect?: (p: CalProvider) => void;
+  onDisconnect?: (connectionId: string) => void;
   syncing?: boolean;
   /** view-only calendar (guests): tasks open, but can't be dragged to another day */
   readOnly?: boolean;
@@ -1135,16 +1187,33 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
     </div>
   );
 
+  // the calendars shown, and the ones hidden here for now (per device)
+  const legend = useMemo(() => calendarLegend(connections, externalEvents), [connections, externalEvents]);
+  const [hiddenCals, setHiddenCals] = useState<Set<string>>(loadHiddenCalendars);
+  const toggleCal = (key: string) => setHiddenCals((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    saveHiddenCalendars(next);
+    return next;
+  });
+  const shownEvents = hiddenCals.size ? externalEvents.filter((e) => !hiddenCals.has(eventCalendarKey(e))) : externalEvents;
+  const legendBar = (connections.length > 0 || legend.length > 0) && (
+    <CalendarLegend entries={legend} hidden={hiddenCals} onToggle={toggleCal} warnings={warnings} onOpenSettings={onOpenSettings} />
+  );
+
   // index tasks and external events by local calendar day once (not per cell)
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const tasksByDay = new Map<string, Task[]>();
   for (const t of tasks) if (t.dueDate) (tasksByDay.get(t.dueDate) ?? tasksByDay.set(t.dueDate, []).get(t.dueDate)!).push(t);
   const evByDate: Record<string, ExternalEvent[]> = {};
-  for (const e of externalEvents) {
+  for (const e of shownEvents) {
     const key = e.allDay ? (e.start || "").slice(0, 10) : toLocalISO(new Date(e.start));
     if (key) (evByDate[key] ||= []).push(e);
   }
   const fmtTime = (e: ExternalEvent) => (e.allDay ? "" : hhmm(new Date(e.start)));
+  // "09:00 · Standup · Work" for the hover title, and the calendar's name for screen readers
+  const evTitle = (e: ExternalEvent, time: string) => `${time ? time + " · " : ""}${e.title}${e.calendarName ? ` · ${e.calendarName}` : ""}`;
+  const evCal = (e: ExternalEvent) => e.calendarName ? <span className="sr-only">, {e.calendarName}</span> : null;
   const isMobile = useMediaQuery("(max-width: 860px)");
   const todayIso = toLocalISO(KANBO_TODAY);
 
@@ -1154,7 +1223,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
   const prompt = onOpenSettings && connections.length === 0 && (
     <div className="ktv-cal-prompt">
       <Icon name="calendar" size={16} sw={1.75} />
-      <span>Connect Google Calendar in Settings to see your meetings.</span>
+      <span>Connect your Google or Outlook calendars in Settings to see your meetings here.</span>
       <Button variant="ghost" size="sm" onClick={onOpenSettings}>Open Settings</Button>
     </div>
   );
@@ -1176,6 +1245,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
           {nav}
           <div className="ktv-cal-end">{scopeSwitch}{connectMenu}</div>
         </div>
+        {legendBar}
         {prompt}
         {agenda.length === 0 ? (
           <EmptyState art="calendar" title="Nothing scheduled this month" body="Tasks with a due date, and your connected calendar's events, show up here." />
@@ -1183,9 +1253,9 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
           <div key={day.iso} className="ktv-agenda-day">
             <h3 data-today={day.iso === todayIso || undefined}>{dayLabel(day.iso, "long")}{day.iso === todayIso && <span className="ktv-mono">Today</span>}</h3>
             {day.events.map((e) => (
-              <div key={e.id} className="ktv-agenda-item" data-event="true">
+              <div key={e.id} className="ktv-agenda-item" data-event="true" style={calInk(eventColour(e))} title={evTitle(e, fmtTime(e))}>
                 <Icon name="calendar" size={14} />
-                <span>{e.title}</span>
+                <span>{e.title}{evCal(e)}</span>
                 <span className="ktv-mono" style={{ color: "var(--ink-3)" }}>{fmtTime(e) || "All day"}</span>
               </div>
             ))}
@@ -1238,6 +1308,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
           {scopeSwitch}
         </div>
       </div>
+      {legendBar}
       {prompt}
       <div style={{ overflowX: "auto" }}>
         <div className="ktv-cal-wd" aria-hidden="true">{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <span key={d}>{d}</span>)}</div>
@@ -1260,9 +1331,9 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
                 {dayEvents.slice(0, evCap).map((e) => {
                   const time = fmtTime(e);
                   return (
-                    <span key={e.id} className="ktv-cal-event" title={`${time ? time + " · " : ""}${e.title}`}>
+                    <span key={e.id} className="ktv-cal-event" title={evTitle(e, time)} style={calInk(eventColour(e))}>
                       {time && <time>{time}</time>}
-                      <span>{e.title}</span>
+                      <span>{e.title}{evCal(e)}</span>
                     </span>
                   );
                 })}
@@ -1296,8 +1367,8 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
               <IconButton icon="x" size="sm" label="Close" onClick={() => setDayPop(null)} />
             </div>
             {popDay.de.map((e) => (
-              <div key={e.id} className="ktv-cal-event" style={{ height: 28, margin: "0 4px" }}>
-                <time>{fmtTime(e) || "All day"}</time><span>{e.title}</span>
+              <div key={e.id} className="ktv-cal-event" style={{ height: 28, margin: "0 4px", ...calInk(eventColour(e)) }} title={evTitle(e, fmtTime(e))}>
+                <time>{fmtTime(e) || "All day"}</time><span>{e.title}{evCal(e)}</span>
               </div>
             ))}
             {popDay.dt.map((t, i) => (

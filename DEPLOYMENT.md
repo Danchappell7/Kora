@@ -647,6 +647,14 @@ name. The old way says just "Calendar connected". Then add this secret at
 Don't add it before that app update is live, or connecting a calendar will
 fail with "Couldn't connect that calendar".
 
+**Several accounts and chosen calendars (0045).** People can connect more
+than one Google or Outlook account and choose which calendars Kanbo shows
+from each. Deploy the updated `calendar` function **first**, then run
+`supabase/migrations/0045_multi_calendar.sql`: the old function can't save a
+connection once 0045 has dropped the one-per-provider rule. No Google Cloud
+or Azure change is needed. Details, and what happens in between, are in
+[calendar-accounts.md](docs/integrations/calendar-accounts.md).
+
 ### Local development
 
 ```bash

@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   layoutLanes, mergeIntervals, totalMinutes, durOf, energyMetaOf, energyKindOf,
-  carryOver, recordSeen, markSeen, touchSeen, readSeen, writeSeen, planSeenKey, isMine, carryLabel, localDayKey,
+  carryOver, recordSeen, markSeen, touchSeen, readSeen, writeSeen, planSeenKey, isMine, carryLabel, localDayKey, todaysEvents,
 } from "./planCanvas";
 import type { SeenMap } from "./planCanvas";
 import { ENERGY } from "../../data/data";
-import type { Task } from "../../data/types";
+import type { Task, ExternalEvent } from "../../data/types";
 
 const task = (o: Partial<Task>): Task => ({
   id: "t", title: "x", description: "", status: "todo", priority: "medium",
@@ -183,5 +183,25 @@ describe("the per-device record", () => {
     spies.push(vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); }));
     writeSeen(planSeenKey("u-3"), { a: { day: "2026-09-30", at: 540 } });
     expect(readSeen(planSeenKey("u-3"))).toEqual({ a: { day: "2026-09-30", at: 540 } });
+  });
+});
+
+describe("todaysEvents: every connected calendar's meetings, in their colours", () => {
+  const now = new Date(2026, 9, 5, 8, 0);
+  const at = (h: number, m = 0) => new Date(2026, 9, 5, h, m).toISOString();
+  const ext = (o: Partial<ExternalEvent>): ExternalEvent => ({ id: "x", title: "M", start: at(9), end: at(10), allDay: false, provider: "google", ...o });
+  it("keeps each meeting's calendar name and colour, from every account; all-day and other days stay off", () => {
+    const evs = todaysEvents([
+      ext({ id: "a", title: "Standup", start: at(9), end: at(9, 30), connectionId: "c1", calendarId: "w", calendarName: "Work", color: "#3f7fe0" }),
+      ext({ id: "b", title: "Dentist", start: at(14), end: at(14, 30), provider: "microsoft", connectionId: "c2", calendarId: "primary", calendarName: "Calendar", color: "#c98a1b" }),
+      ext({ id: "c", title: "Half term", start: "2026-10-05", end: "2026-10-06", allDay: true, color: "#a35bc4" }),
+      ext({ id: "d", title: "Tomorrow", start: new Date(2026, 9, 6, 9).toISOString(), end: new Date(2026, 9, 6, 10).toISOString() }),
+      ext({ id: "e", title: "Old server", start: at(11), end: at(11, 30) }),
+    ], now);
+    expect(evs.map((e) => [e.title, e.calendarName, e.color])).toEqual([
+      ["Standup", "Work", "#3f7fe0"], ["Old server", undefined, undefined], ["Dentist", "Calendar", "#c98a1b"],
+    ]);
+    expect(evs.every((e) => e.kind === "meeting")).toBe(true);
+    expect(evs[1]).not.toHaveProperty("color");
   });
 });
