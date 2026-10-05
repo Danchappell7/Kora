@@ -2,9 +2,9 @@
    helpers. The real-backend paths are in slack.remote.test.ts. */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
-  connectSlack, disconnectSlack, getSlackStatus, loadSlackStatus, normaliseChannelLabel, onSlackStatusChange, parseSlackStatus,
-  peekSlackStatus, postToSlack, resetSlackState, risksSlackText, setSlackAutopost, SLACK_AUTOPOST_TIMES, SLACK_COPY,
-  slackFailureMessage, testSlack, waitWords,
+  autopostNote, connectSlack, disconnectSlack, getSlackStatus, loadSlackAutopostHealth, loadSlackStatus, normaliseChannelLabel,
+  onSlackStatusChange, parseAutopostHealth, parseSlackStatus, peekSlackStatus, postToSlack, resetSlackState, risksSlackText,
+  setDemoAutopostHealth, setSlackAutopost, SLACK_AUTOPOST_TIMES, SLACK_COPY, slackFailureMessage, testSlack, waitWords,
 } from "./slack";
 
 const HOOK = "https://hooks.slack.com/services/T0001/B0001/abcdefghijklmnopqrstuvwx";
@@ -153,5 +153,72 @@ describe("helpers for the integrator", () => {
     expect(many.split("\n")).toHaveLength(7);
     expect(many).toContain("+15 more in Kanbo");
     expect(risksSlackText([])).toContain("Nothing on the Radar");
+  });
+});
+
+describe("the daily post's health", () => {
+  const err = (detail: string) => ({ health: { ready: true, lastError: { detail, at: "2026-10-05T08:05:00.000Z", day: "2026-10-05" } } });
+
+  it("demo: running, nothing refused (or what a test sets)", async () => {
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: { ready: true, lastError: null } });
+    expect(await loadSlackAutopostHealth(null)).toEqual({ health: null });
+    setDemoAutopostHealth({ ready: false, lastError: null });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: { ready: false, lastError: null } });
+  });
+
+  it("demo, like the server: a new link or a delivered test forgets a refused daily post", async () => {
+    const refused = { ready: true, lastError: { detail: "no_service", at: "2026-10-05T08:05:00.000Z", day: "2026-10-05" } };
+    await connectSlack(WS, HOOK, "#team");
+    setDemoAutopostHealth(refused);
+    expect((await loadSlackAutopostHealth(WS)).health?.lastError?.detail).toBe("no_service");
+    expect(await testSlack(WS)).toEqual({ ok: true });
+    expect((await loadSlackAutopostHealth(WS)).health?.lastError).toBeNull();
+    setDemoAutopostHealth(refused);
+    await connectSlack(WS, HOOK.replace("B0001", "B0002"), "#team");
+    expect((await loadSlackAutopostHealth(WS)).health?.lastError).toBeNull();
+  });
+
+  it("parseAutopostHealth needs the server's field and a clean failure", () => {
+    expect(parseAutopostHealth({ ok: true })).toBeNull();
+    expect(parseAutopostHealth(null)).toBeNull();
+    expect(parseAutopostHealth({ autopostReady: "yes" })).toEqual({ ready: null, lastError: null });
+    expect(parseAutopostHealth({ autopostReady: true, lastAutopostError: { detail: "no_service", at: "2026-10-05T08:05:00Z", day: "2026-10-05" } }))
+      .toEqual({ ready: true, lastError: { detail: "no_service", at: "2026-10-05T08:05:00Z", day: "2026-10-05" } });
+    expect(parseAutopostHealth({ autopostReady: true, lastAutopostError: { detail: "https://hooks.slack.com/x", at: "x", day: "2026-10-05" } })?.lastError).toBeNull();
+  });
+
+  it("says nothing when all is well, offline, or before asking", () => {
+    expect(autopostNote(null)).toBeNull();
+    expect(autopostNote({ health: { ready: true, lastError: null } })).toBeNull();
+    expect(autopostNote({ health: null, problem: "offline" })).toBeNull();
+  });
+
+  it("not scheduled on the server yet", () => {
+    expect(autopostNote({ health: { ready: false, lastError: null } })).toEqual({
+      tone: "warn", text: "The daily post isn't scheduled on Kanbo's server yet, so nothing will be posted until it is. Your choice is saved.",
+    });
+  });
+
+  it("couldn't check (slack-post not deployed, or another error): a quiet line", () => {
+    expect(autopostNote({ health: null, problem: "unavailable" })).toMatchObject({ tone: "quiet", text: expect.stringMatching(/^Kanbo couldn't check that the daily post is running\./) });
+    expect(autopostNote({ health: null, problem: "error" })?.tone).toBe("quiet");
+  });
+
+  it("Slack refused it: what happened, on which day, and what to do", () => {
+    expect(autopostNote(err("no_service"))).toEqual({ tone: "signal", text: "Slack refused the stand-up on Mon 5 Oct: it no longer accepts this webhook link. Replace the link to start posting again." });
+    expect(autopostNote(err("http_404"))?.text).toMatch(/no longer accepts this webhook link/);
+    expect(autopostNote(err("channel_is_archived"))).toEqual({ tone: "signal", text: "Slack refused the stand-up on Mon 5 Oct: the channel has been archived. Replace the link with one for another channel." });
+    expect(autopostNote(err("action_prohibited"))?.text).toMatch(/your Slack admins don't allow posts to that channel/);
+    expect(autopostNote(err("invalid_payload"))).toEqual({ tone: "signal", text: "Slack refused the stand-up on Mon 5 Oct. Send a test to check the channel, or replace the link." });
+  });
+
+  it("Slack wasn't responding, or Kanbo failed: a warning, it tries again", () => {
+    expect(autopostNote(err("slack_unavailable"))).toEqual({ tone: "warn", text: "The stand-up on Mon 5 Oct didn't reach Slack because Slack wasn't responding. Kanbo will post again on the next weekday." });
+    expect(autopostNote(err("unreachable"))?.tone).toBe("warn");
+    expect(autopostNote(err("kanbo_error"))).toEqual({ tone: "warn", text: "Kanbo couldn't put together the stand-up on Mon 5 Oct. It will try again on the next weekday." });
+  });
+
+  it("not running beats a refusal (fix the schedule first)", () => {
+    expect(autopostNote({ health: { ready: false, lastError: err("no_service").health.lastError } })?.text).toMatch(/isn't scheduled/);
   });
 });

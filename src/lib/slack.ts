@@ -11,6 +11,9 @@
              status?: StatusKind, title?: string }
      200   { ok: true }
      4xx/5xx { error: string, reason: SlackFailure, retryAfter?: number, detail?: string }
+     body  { action: "status", workspaceId }   (owners/admins; read-only)
+     200   { ok: true, autopostReady: boolean | null,
+             lastAutopostError: { detail, at, day } | null }
    Demo mode (no Supabase): an in-memory fake that always succeeds.
 
    Degrades gracefully: before 0043 runs (slack_status missing) every read
@@ -21,7 +24,8 @@
    ============================================================ */
 import type { SlackFailure, SlackPostKind, SlackPostResult, SlackStatus, StatusKind } from "../data/types";
 import { supabase } from "./supabase";
-import { SLACK_LIMITS, SLACK_URL_MAX, SLACK_WEBHOOK_RE, isSlackWebhookUrl as isWebhook } from "../../supabase/functions/_shared/slack.ts";
+import { fmtDay, SLACK_LIMITS, SLACK_URL_MAX, SLACK_WEBHOOK_RE, isSlackWebhookUrl as isWebhook } from "../../supabase/functions/_shared/slack.ts";
+import { FAILURE_DETAIL_RE } from "../../supabase/functions/_shared/slackHealth.ts";
 
 /** The only webhook shape accepted (same rule as the database check; one copy, shared with the edge functions). */
 export { SLACK_WEBHOOK_RE };
@@ -200,6 +204,7 @@ export async function connectSlack(workspaceId: string, webhookUrl: string, chan
     await wait(DEMO_DELAY_MS);
     const s: SlackStatus = { ...demoStatus(workspaceId), connected: true, channelLabel: label, updatedAt: new Date().toISOString() };
     demo.set(workspaceId, s);
+    demoHealth = { ...demoHealth, lastError: null };   // as the server: the old link's failures don't apply
     publish(workspaceId, s);
     return s;
   }
@@ -322,7 +327,9 @@ async function invokeSlack(workspaceId: string, body: Record<string, unknown>, a
 export async function testSlack(workspaceId: string): Promise<SlackPostResult> {
   if (!supabase) {
     await wait(DEMO_DELAY_MS);
-    return demoStatus(workspaceId).connected ? { ok: true } : fail("not_connected", { action: "test" });
+    if (!demoStatus(workspaceId).connected) return fail("not_connected", { action: "test" });
+    demoHealth = { ...demoHealth, lastError: null };   // as the server: a delivered post clears a failed daily one
+    return { ok: true };
   }
   return invokeSlack(workspaceId, { action: "test" }, "test");
 }
@@ -401,9 +408,101 @@ export function risksSlackText(risks: readonly SlackRisk[], opts: { max?: number
   return [`*${risks.length} ${risks.length === 1 ? "risk" : "risks"} on the Radar*`, ...lines].join("\n");
 }
 
+/* ------------------------------------------------------------ is the daily post going out? */
+
+/** Is Kanbo's daily stand-up really being posted? (Settings, owners/admins.) */
+export interface SlackAutopostHealth {
+  /** true: Kanbo's scheduler ran in the last hour · false: it isn't running
+   *  (slack-standup not deployed or its pg_cron job not scheduled) · null: can't tell */
+  ready: boolean | null;
+  /** the last daily post that didn't go out with the current link, if none has since */
+  lastError: { detail: string; at: string; day: string } | null;
+}
+export interface SlackHealthLoad {
+  health: SlackAutopostHealth | null;
+  /** why it couldn't be checked: slack-post isn't deployed (or predates "status"), offline, or another error */
+  problem?: "unavailable" | "offline" | "error";
+}
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+let demoHealth: SlackAutopostHealth = { ready: true, lastError: null };
+
+/** slack-post's "status" answer → SlackAutopostHealth; null for anything malformed. */
+export function parseAutopostHealth(raw: unknown): SlackAutopostHealth | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (!("autopostReady" in r)) return null;
+  const ready = typeof r.autopostReady === "boolean" ? r.autopostReady : null;
+  const e = r.lastAutopostError as Record<string, unknown> | null | undefined;
+  const lastError = e && typeof e === "object" && typeof e.detail === "string" && FAILURE_DETAIL_RE.test(e.detail)
+    && typeof e.day === "string" && DAY_RE.test(e.day) && typeof e.at === "string"
+    ? { detail: e.detail, at: e.at, day: e.day } : null;
+  return { ready, lastError };
+}
+
+/** Owner/admin: is the daily stand-up going out? Never throws; not cached
+ *  (Settings asks once when it opens). */
+export async function loadSlackAutopostHealth(workspaceId: string | null): Promise<SlackHealthLoad> {
+  if (!workspaceId) return { health: null };
+  if (!supabase) {
+    await wait(DEMO_DELAY_MS / 2);
+    return { health: { ...demoHealth } };
+  }
+  if (schemaMissing) return { health: null, problem: "unavailable" };
+  if (isOffline()) return { health: null, problem: "offline" };
+  try {
+    const { data, error } = await supabase.functions.invoke("slack-post", { body: { action: "status", workspaceId }, timeout: POST_TIMEOUT_MS });
+    if (error) {
+      const r = await invokeFailure(error, "test", workspaceId);
+      if (r.ok) return { health: null, problem: "error" };
+      // an older slack-post doesn't know "status" (400 invalid): as good as not deployed
+      return { health: null, problem: r.reason === "network" ? "offline" : r.reason === "unavailable" || r.reason === "invalid" ? "unavailable" : "error" };
+    }
+    const health = parseAutopostHealth(data);
+    return health ? { health } : { health: null, problem: "unavailable" };
+  } catch (e) {
+    return { health: null, problem: isNetworkError(e) ? "offline" : "error" };
+  }
+}
+
+/** What to tell an owner/admin under the daily stand-up switch (null: nothing). */
+export interface AutopostNote { tone: "warn" | "signal" | "quiet"; text: string }
+
+const GONE_WORDS = new Set(["no_service", "no_team", "team_disabled", "invalid_token", "channel_not_found", "no_active_hooks", "http_404", "http_410"]);
+const PROHIBITED_WORDS = new Set(["action_prohibited", "posting_to_general_channel_denied"]);
+const UNREACHABLE_WORDS = new Set(["slack_unavailable", "unreachable", "rate_limited", "timeout"]);
+
+/** The sentence for a daily post that's on but not (or not reliably) going out. */
+export function autopostNote(load: SlackHealthLoad | null): AutopostNote | null {
+  if (!load) return null;
+  const h = load.health;
+  if (!h) {
+    if (load.problem === "offline" || !load.problem) return null;
+    return { tone: "quiet", text: "Kanbo couldn't check that the daily post is running. If a stand-up doesn't arrive, send a test to check the channel." };
+  }
+  if (h.ready === false) {
+    return { tone: "warn", text: "The daily post isn't scheduled on Kanbo's server yet, so nothing will be posted until it is. Your choice is saved." };
+  }
+  const e = h.lastError;
+  if (!e) return null;
+  const day = fmtDay(e.day);
+  if (GONE_WORDS.has(e.detail)) return { tone: "signal", text: `Slack refused the stand-up on ${day}: it no longer accepts this webhook link. Replace the link to start posting again.` };
+  if (e.detail === "channel_is_archived") return { tone: "signal", text: `Slack refused the stand-up on ${day}: the channel has been archived. Replace the link with one for another channel.` };
+  if (PROHIBITED_WORDS.has(e.detail)) return { tone: "signal", text: `Slack refused the stand-up on ${day}: your Slack admins don't allow posts to that channel. Replace the link with one for another channel.` };
+  if (UNREACHABLE_WORDS.has(e.detail)) return { tone: "warn", text: `The stand-up on ${day} didn't reach Slack because Slack wasn't responding. Kanbo will post again on the next weekday.` };
+  if (e.detail === "kanbo_error") return { tone: "warn", text: `Kanbo couldn't put together the stand-up on ${day}. It will try again on the next weekday.` };
+  return { tone: "signal", text: `Slack refused the stand-up on ${day}. Send a test to check the channel, or replace the link.` };
+}
+
 /** Tests only: forget the cache, the demo connections, listeners and the
  *  "0043 missing" flag; optionally shorten the demo's pretend network delay. */
 export function resetSlackState(opts: { demoDelayMs?: number } = {}): void {
   cache.clear(); inflight.clear(); demo.clear(); listeners.clear(); schemaMissing = false;
   DEMO_DELAY_MS = opts.demoDelayMs ?? 450;
+  demoHealth = { ready: true, lastError: null };
+}
+
+/** Tests only: what the demo says about the daily post (default: running, nothing refused). */
+export function setDemoAutopostHealth(health: SlackAutopostHealth): void {
+  demoHealth = { ready: health.ready, lastError: health.lastError ? { ...health.lastError } : null };
 }

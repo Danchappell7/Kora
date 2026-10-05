@@ -29,7 +29,10 @@ Who can do what:
 | See whether Slack is connected (and the channel name) | Yes | Yes | Yes |
 
 Until these steps are done the app keeps working: Settings says Slack "isn't
-switched on yet" and no **Post to Slack** buttons appear.
+switched on yet" and no **Post to Slack** buttons appear. Until step 2 is
+done, an owner/admin who switches the daily stand-up on is told under the
+switch that "the daily post isn't scheduled on Kanbo's server yet, so nothing
+will be posted until it is" (their choice is still saved).
 
 ## What it needs
 
@@ -105,7 +108,9 @@ select cron.schedule(
 
 (The first line says "0 rows" the first time. That's fine.)
 
-**2c. Check it after 15 minutes.** The latest `status` should be `succeeded`:
+**2c. Check it after 15 minutes.** The latest `status` should be `succeeded`
+(and Settings › Slack stops saying the daily post isn't scheduled: every run
+leaves a heartbeat, see "Is the daily post going out?" below):
 
 ```sql
 select start_time, status, return_message
@@ -188,6 +193,23 @@ It answers `{"due":1,"posted":1,…}` and the stand-up appears in the channel.
 - **Limits**: a test message 3 times a minute per workspace; posts 10 per 10
   minutes per person and 30 an hour per workspace. Over that, people see "Try
   again in N minutes".
+- **Is the daily post going out?** While the daily stand-up is switched on,
+  Settings › Slack asks `slack-post` (action `status`, owners and admins only,
+  read-only) and says under the switch when it isn't:
+  - "The daily post isn't scheduled on Kanbo's server yet…": no run of
+    `slack-standup` in the last hour. Every scheduled run (weekends too, not a
+    forced manual run) stamps the `rate_limits` row
+    `kanbo:slack-standup:heartbeat`.
+  - "Slack refused the stand-up on Mon 5 Oct: …" (link removed, channel
+    archived, posting not allowed) or "…didn't reach Slack because Slack
+    wasn't responding": a stand-up that didn't go out is kept as
+    `kanbo:slack-standup:fail:<workspace id>:<tag>:<Slack's error word>`,
+    where `<tag>` is 12 characters of the link's SHA-256 (never the link).
+    Replacing the link makes it irrelevant; any post that reaches Slack
+    (the next stand-up, a test, a post from Pulse) clears it.
+  - "Kanbo couldn't check that the daily post is running…" (quiet): `slack-post`
+    isn't deployed, or is an older version without `status`.
+  Members and guests never see these.
 - **The daily stand-up** is written on the server from the workspace's tasks
   (what was finished since the last workday, what's in progress, due today,
   overdue and blocked, per person; people with nothing to report are left
@@ -206,4 +228,14 @@ It answers `{"due":1,"posted":1,…}` and the stand-up appears in the channel.
 | "That Slack channel has been archived…" | The channel was archived | Connect another channel |
 | "Your Slack admins don't allow posts to that channel." | The Slack workspace restricts posting there | Pick another channel |
 | "That's a lot of posts in a short time…" | One of the limits above | Wait and try again |
+| Settings: "The daily post isn't scheduled on Kanbo's server yet…" | `slack-standup` hasn't run in the last hour: not deployed, the job isn't scheduled, or the cron secret doesn't match (`401`) | Steps 1, 2b and 2c. The line goes away within 15 minutes of the first good run (reopen Settings) |
+| Settings: "Slack refused the stand-up on …" | Slack turned the last daily post away (the reason follows) | An owner/admin chooses **Replace** with a new link, then **Send test** |
+| Settings: "Kanbo couldn't check that the daily post is running…" | `slack-post` isn't deployed (or is older than the `status` action) | Step 1 (redeploy `slack-post`) |
 | No daily stand-up | The job isn't scheduled, the time hasn't come yet, it's the weekend, or it already posted today | Step 2c; check `slack_autopost` and `slack_autopost_time` with the query in step 4 |
+
+To see the marks Settings reads (SQL editor):
+
+```sql
+select key, last_at from public.rate_limits
+where key like 'kanbo:slack-standup:%' order by last_at desc limit 20;
+```

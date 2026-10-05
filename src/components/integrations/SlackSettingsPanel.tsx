@@ -11,14 +11,20 @@
    The webhook link is a secret: once saved it's never shown again (the
    field clears; the row says "Connected to #channel"). Before migration
    0043 runs the panel explains that Slack isn't switched on yet.
+
+   While the daily stand-up is on, owners/admins are told when it isn't
+   really going out (slack-post's "status" action): Kanbo's scheduler isn't
+   running yet (slack-standup not deployed or its pg_cron job missing), or
+   Slack refused the last one (link removed, channel archived…). If that
+   can't be checked (slack-post not deployed), a quiet line says so.
    ============================================================ */
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { Role, SlackStatus } from "../../data/types";
 import { Button, Icon, Toggle } from "../primitives";
 import { isSupabaseConfigured } from "../../lib/supabase";
 import {
-  connectSlack, DEFAULT_AUTOPOST_TIME, disconnectSlack, isSlackWebhookUrl, setSlackAutopost, SLACK_AUTOPOST_TIMES,
-  SLACK_COPY, testSlack,
+  autopostNote, connectSlack, DEFAULT_AUTOPOST_TIME, disconnectSlack, isSlackWebhookUrl, loadSlackAutopostHealth,
+  setSlackAutopost, SLACK_AUTOPOST_TIMES, SLACK_COPY, testSlack, type SlackHealthLoad,
 } from "../../lib/slack";
 import { SetGroup, SetIntro, SetNote, SetRow } from "./settingsBits";
 import { useSlackStatus } from "./useSlackStatus";
@@ -106,6 +112,9 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
   const [autopost, setAutopost] = useState(status.autopost);
   const [saving, setSaving] = useState(false);
   const autoSeq = useRef(0);
+  // is the daily post really going out? (owners/admins, while connected)
+  const [health, setHealth] = useState<SlackHealthLoad | null>(null);
+  const [healthAsk, setHealthAsk] = useState(0);
 
   const urlRef = useRef<HTMLInputElement>(null);
   const testRef = useRef<HTMLButtonElement>(null);
@@ -123,6 +132,15 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
     if (status.autopostTime) setTime(status.autopostTime);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.autopost, status.autopostTime]);
+
+  // ask the server while the daily post is on: when the panel opens with it
+  // on, when it's switched on, and again after a new link is saved
+  useEffect(() => {
+    if (!canManage || !status.connected || !autopost) return;
+    let live = true;
+    void loadSlackAutopostHealth(workspaceId).then((h) => { if (live && alive.current) setHealth(h); });
+    return () => { live = false; };
+  }, [workspaceId, canManage, status.connected, autopost, healthAsk]);
 
   // move focus where the change put the person, once the DOM has it
   useEffect(() => {
@@ -162,6 +180,7 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
       const s = await connectSlack(workspaceId, u, label);
       if (!alive.current) return;
       setUrl(""); setLabel(""); setEditing(false);
+      setHealthAsk((n) => n + 1);   // a new link: the old link's failures no longer apply
       setLinkMsg({ tone: "ok", text: `Connected to ${s.channelLabel || "Slack"}. Send a test to check it.` });
       focusNext.current = "test";
     } catch (err) {
@@ -193,6 +212,8 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
     if (!alive.current) return;
     setBusy(null);
     setLinkMsg(r.ok ? { tone: "ok", text: `Test message sent to ${where}. Have a look in Slack.` } : { tone: "signal", text: r.message });
+    // the link works: the server forgets a refused daily post, and so do we
+    if (r.ok) setHealth((h) => (h?.health?.lastError ? { ...h, health: { ...h.health, lastError: null } } : h));
   };
 
   /* ---- disconnect ---- */
@@ -236,6 +257,8 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
       if (alive.current && id === autoSeq.current) setSaving(false);
     }
   };
+
+  const note = autopost ? autopostNote(health) : null;
 
   const msgLine = (m: Msg) => m && (
     <p className="kslk-msg kslk-in" data-tone={m.tone}>
@@ -357,6 +380,14 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
                   {(SLACK_AUTOPOST_TIMES.includes(time) ? SLACK_AUTOPOST_TIMES : [...SLACK_AUTOPOST_TIMES, time].sort()).map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </SetRow>
+              <div role="status" className="kslk-live kslk-health">
+                {note && (
+                  <p className="kslk-msg kslk-in" data-tone={note.tone}>
+                    <Icon name={note.tone === "signal" ? "alert" : "clock"} size={14} sw={2} />
+                    <span>{note.text}</span>
+                  </p>
+                )}
+              </div>
               {autoMsg?.tone === "signal" && <div role="alert">{msgLine(autoMsg)}</div>}
             </>
           ) : (

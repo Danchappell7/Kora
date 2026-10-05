@@ -8,13 +8,21 @@
 //   POST { action: "test" | "post_standup" | "post_status" | "post_risks",
 //          workspaceId, text?, projectId?, status?, title? }
 //   200  { ok: true }
+//   POST { action: "status", workspaceId }        (read-only, posts nothing)
+//   200  { ok: true, autopostReady: boolean | null,
+//          lastAutopostError: { detail, at, day } | null }
+//        is the daily stand-up really going out? autopostReady: slack-standup
+//        ran in the last hour (pg_cron); null when it can't be told.
+//        lastAutopostError: the last time the daily post didn't go with the
+//        current link, with Slack's error word, if nothing has worked since
+//        (_shared/slackHealth.ts). Never the webhook.
 //   4xx/5xx { error: "<sentence>", reason, retryAfter?, detail? }
 //        400 invalid · 401 not signed in · 403 not_allowed · 409 not_connected
 //        429 rate_limited · 502 slack_rejected · 503 unavailable (0043 not run)
 //
 // Who may do what (decided by the database's own slack_status(), called as
 // the caller, so it's the same rule as everywhere else):
-//   test         owners and admins (can_manage)
+//   test, status owners and admins (can_manage)
 //   post_*       owners, admins and members (can_post); never guests,
 //                suspended or unapproved accounts, or outsiders
 //
@@ -25,11 +33,12 @@
 // never reaches the logs either: caught errors are logged through
 // safeErrorNote(), which cuts it out (Deno's fetch errors quote it).
 // Rate limits (rate_limits, 0042; fail open without it):
-//   test: 3 a minute per workspace · posts: 10 per 10 minutes per person and
-//   30 an hour per workspace.
+//   test: 3 a minute per workspace · status: 30 a minute per person ·
+//   posts: 10 per 10 minutes per person and 30 an hour per workspace.
 //
 // Deploy:  supabase functions deploy slack-post        (Verify JWT: ON, see config.toml)
 // Secrets: APP_URL (already set for reminders): the links back to Kanbo
+//          optional: SLACK_STANDUP_TZ (default Europe/London), as slack-standup
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX, sweep } from "../_shared/limits.ts";
@@ -37,6 +46,7 @@ import {
   buildSlackMessage, classifySlackResponse, isSlackWebhookUrl, isStatusKind, safeErrorNote, SLACK_LIMITS,
   type SlackMessageKind, type SlackStatusKind,
 } from "../_shared/slack.ts";
+import { clearStandupFailure, loadAutopostHealth } from "../_shared/slackHealth.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -64,6 +74,7 @@ Deno.serve(async (req) => {
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
   const appUrl = (Deno.env.get("APP_URL") ?? "").trim().replace(/\/+$/, "");
+  const tz = Deno.env.get("SLACK_STANDUP_TZ") ?? "Europe/London";
 
   try {
     // ---- the request ----
@@ -72,12 +83,14 @@ Deno.serve(async (req) => {
     if (raw.length > MAX_BODY) return refuse(400, "invalid", "That's too much to post at once.");
     let b: Record<string, unknown>;
     try { b = (JSON.parse(raw || "{}") ?? {}) as Record<string, unknown>; } catch { return refuse(400, "invalid", "That request wasn't understood."); }
-    const kind = ACTIONS[String(b.action ?? "")];
+    const action = String(b.action ?? "");
+    const asksStatus = action === "status";
+    const kind: SlackMessageKind | undefined = Object.prototype.hasOwnProperty.call(ACTIONS, action) ? ACTIONS[action] : undefined;
     const workspaceId = String(b.workspaceId ?? "");
-    if (!kind) return refuse(400, "invalid", "That request wasn't understood.");
+    if (!kind && !asksStatus) return refuse(400, "invalid", "That request wasn't understood.");
     if (!UUID.test(workspaceId)) return refuse(400, "invalid", "Slack is for team workspaces.");
     const text = typeof b.text === "string" ? b.text : "";
-    if (kind !== "test" && !text.trim()) return refuse(400, "invalid", "There's nothing to post yet.");
+    if (kind && kind !== "test" && !text.trim()) return refuse(400, "invalid", "There's nothing to post yet.");
     const title = typeof b.title === "string" ? b.title.slice(0, SLACK_LIMITS.title) : "";
     const projectId = typeof b.projectId === "string" ? b.projectId : "";
     if (kind === "status" && !UUID.test(projectId)) return refuse(400, "invalid", "Choose the project to post about.");
@@ -103,9 +116,26 @@ Deno.serve(async (req) => {
     }
     const s = (st ?? null) as { connected?: boolean; can_manage?: boolean; can_post?: boolean; channel_label?: string | null } | null;
     if (!s) return refuse(403, "not_allowed", "You're not in this workspace.");
-    if (kind === "test" ? !s.can_manage : !s.can_post) {
-      return refuse(403, "not_allowed", kind === "test" ? "Only owners and admins can send a test message." : "You can't post to Slack from this workspace.");
+    if ((asksStatus || kind === "test") ? !s.can_manage : !s.can_post) {
+      return refuse(403, "not_allowed", asksStatus ? "Only owners and admins can check the daily post."
+        : kind === "test" ? "Only owners and admins can send a test message." : "You can't post to Slack from this workspace.");
     }
+
+    // ---- is the daily stand-up going out? (read-only) ----
+    if (asksStatus) {
+      const lim = await hit(admin, `${KEY_PREFIX}slack-status:u:${user.id}`, { windowSec: 60, max: 30 });
+      if (!lim.allowed) return refuse(429, "rate_limited", "That's a lot of checks in a short time.", { retryAfter: lim.retryAfter });
+      const { data: row, error: rErr } = await admin.from("workspace_integrations")
+        .select("slack_webhook_url").eq("workspace_id", workspaceId).maybeSingle();
+      if (rErr) {
+        if (missingSchema(rErr)) return refuse(503, "unavailable", "Slack isn't switched on for Kanbo yet.");
+        console.error("workspace_integrations", rErr.code, rErr.message);
+        return refuse(503, "unavailable", "Couldn't read the Slack connection. Try again.");
+      }
+      const health = await loadAutopostHealth(admin, workspaceId, s.connected ? row?.slack_webhook_url : null, { tz });
+      return json({ ok: true, ...health });
+    }
+    if (!kind) return refuse(400, "invalid", "That request wasn't understood.");
     if (!s.connected) return refuse(409, "not_connected", "Slack isn't connected to this workspace.");
 
     // ---- how often ----
@@ -165,7 +195,11 @@ Deno.serve(async (req) => {
     }
     const reply = await res.text().catch(() => "");
     const out = classifySlackResponse(res.status, reply.slice(0, 200), res.headers.get("retry-after"));
-    if (out.ok) return json({ ok: true });
+    if (out.ok) {
+      // the link works: any failed daily post with it is no longer news
+      await clearStandupFailure(admin, workspaceId);
+      return json({ ok: true });
+    }
     console.warn("slack-post: slack said", res.status, out.detail, workspaceId);
     if (out.reason === "rate_limited") return refuse(429, "rate_limited", "Slack asked Kanbo to slow down.", { retryAfter: out.retryAfter, detail: out.detail });
     return refuse(502, "slack_rejected", "Slack didn't accept the message.", { detail: out.detail, ...(out.gone ? { gone: true } : {}) });

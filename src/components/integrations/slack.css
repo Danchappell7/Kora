@@ -53,6 +53,9 @@
 }
 .kslk-msg > svg { flex-shrink: 0; margin-top: 1px; }
 .kslk-msg[data-tone="signal"] { font-weight: 500; color: var(--signal, var(--prio-urgent)); }
+/* the daily post's health: not running yet / Slack wasn't responding (warn), couldn't check (quiet) */
+.kslk-msg[data-tone="warn"] { font-weight: 500; color: var(--warn, var(--signal, var(--prio-urgent))); }
+.kslk-msg[data-tone="quiet"] { font-weight: 500; color: var(--ink-3); }
 .kslk-form + .kslk-live .kslk-msg, [role="alert"] > .kslk-msg { margin-left: 16px; margin-top: 0; }
 .kset-row:not(:has(.kset-row-icon)) + .kslk-live .kslk-msg { margin-left: 16px; }
 .kslk-saved-slot { display: inline-flex; min-height: 16px; }

@@ -10,8 +10,8 @@ vi.mock("./supabase", () => ({
 }));
 
 import {
-  connectSlack, disconnectSlack, getSlackStatus, loadSlackStatus, onSlackStatusChange, postToSlack, resetSlackState,
-  setSlackAutopost, SLACK_COPY, testSlack,
+  connectSlack, disconnectSlack, getSlackStatus, loadSlackAutopostHealth, loadSlackStatus, onSlackStatusChange, postToSlack,
+  resetSlackState, setSlackAutopost, SLACK_COPY, testSlack,
 } from "./slack";
 
 const WS = "11111111-2222-4333-8444-555555555555";
@@ -185,6 +185,44 @@ describe("posting", () => {
   it("offline: no request", async () => {
     setOnline(false);
     expect(await postToSlack(WS, { kind: "standup", text: "x" })).toMatchObject({ ok: false, reason: "network", message: SLACK_COPY.offline });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("is the daily post going out? (slack-post \"status\")", () => {
+  it("asks slack-post, read-only, and reads its answer", async () => {
+    invoke.mockResolvedValueOnce({ data: { ok: true, autopostReady: true, lastAutopostError: { detail: "channel_is_archived", at: "2026-10-05T08:05:00.000Z", day: "2026-10-05" } }, error: null });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: { ready: true, lastError: { detail: "channel_is_archived", at: "2026-10-05T08:05:00.000Z", day: "2026-10-05" } } });
+    expect(invoke).toHaveBeenCalledWith("slack-post", { body: { action: "status", workspaceId: WS }, timeout: expect.any(Number) });
+    invoke.mockResolvedValueOnce({ data: { ok: true, autopostReady: false, lastAutopostError: null }, error: null });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: { ready: false, lastError: null } });
+    invoke.mockResolvedValueOnce({ data: { ok: true, autopostReady: null, lastAutopostError: { detail: "<b>", at: "x", day: "today" } }, error: null });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: { ready: null, lastError: null } });
+  });
+
+  it("can't be checked: slack-post not deployed, or too old to know \"status\"; offline; refused", async () => {
+    invoke.mockResolvedValueOnce({ data: null, error: httpError(404, { code: "NOT_FOUND", message: "Requested function was not found" }) });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "unavailable" });
+    invoke.mockResolvedValueOnce({ data: null, error: httpError(400, { error: "That request wasn't understood.", reason: "invalid" }) });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "unavailable" });
+    invoke.mockResolvedValueOnce({ data: { ok: true }, error: null });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "unavailable" });
+    invoke.mockResolvedValueOnce({ data: null, error: { name: "FunctionsFetchError", message: "Failed to send a request to the Edge Function" } });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "offline" });
+    invoke.mockResolvedValueOnce({ data: null, error: httpError(403, { error: "x", reason: "not_allowed" }) });
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "error" });
+    invoke.mockRejectedValueOnce(new Error("boom"));
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "error" });
+    setOnline(false);
+    const calls = invoke.mock.calls.length;
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "offline" });
+    expect(invoke.mock.calls.length).toBe(calls);
+  });
+
+  it("before 0043: doesn't ask", async () => {
+    rpc.mockResolvedValue({ data: null, error: { code: "PGRST202", message: "Could not find the function public.slack_status(p_ws) in the schema cache" } });
+    await loadSlackStatus(WS);
+    expect(await loadSlackAutopostHealth(WS)).toEqual({ health: null, problem: "unavailable" });
     expect(invoke).not.toHaveBeenCalled();
   });
 });

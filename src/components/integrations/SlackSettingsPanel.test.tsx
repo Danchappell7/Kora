@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SlackSettingsPanel } from "./SlackSettingsPanel";
-import { connectSlack, getSlackStatus, resetSlackState, setSlackAutopost, SLACK_COPY } from "../../lib/slack";
+import { connectSlack, getSlackStatus, resetSlackState, setDemoAutopostHealth, setSlackAutopost, SLACK_COPY } from "../../lib/slack";
 
 const HOOK = "https://hooks.slack.com/services/T0001/B0001/abcdefghijklmnopqrstuvwx";
 const WS = "ws-acme";
@@ -140,6 +140,60 @@ describe("SlackSettingsPanel", () => {
     await screen.findByText("Not connected");
     await act(async () => { await connectSlack(WS, HOOK, "#elsewhere"); });
     expect(await within(slackGroup()).findByText("#elsewhere")).toBeInTheDocument();
+  });
+
+  it("says when the daily post isn't scheduled on Kanbo's server, once it's switched on", async () => {
+    await connectSlack(WS, HOOK, "#team");
+    setDemoAutopostHealth({ ready: false, lastError: null });
+    const { container } = render(<SlackSettingsPanel workspaceId={WS} role="owner" />);
+    const daily = await screen.findByRole("region", { name: "Daily stand-up" });
+    const region = container.querySelector(".kslk-health")!;
+    expect(region).toHaveAttribute("role", "status");
+    expect(region).toBeEmptyDOMElement();             // off: nothing to say (and the region is there to announce)
+    fireEvent.click(within(daily).getByRole("switch", { name: "Post the stand-up every weekday" }));
+    const note = await within(daily).findByText(/isn't scheduled on Kanbo's server yet, so nothing will be posted until it is/);
+    expect(note.closest("[role='status']")).toBe(region);
+    expect(note.closest(".kslk-msg")).toHaveAttribute("data-tone", "warn");
+    expect(await getSlackStatus(WS)).toMatchObject({ autopost: true });   // the choice is still saved
+    fireEvent.click(within(daily).getByRole("switch", { name: "Post the stand-up every weekday" }));
+    await waitFor(() => expect(region).toBeEmptyDOMElement());
+  });
+
+  it("says when Slack refused the last stand-up; a test that gets through clears it", async () => {
+    await connectSlack(WS, HOOK, "#team");
+    await setSlackAutopost(WS, true, "09:00");
+    setDemoAutopostHealth({ ready: true, lastError: { detail: "channel_is_archived", at: "2026-10-05T08:05:00.000Z", day: "2026-10-05" } });
+    render(<SlackSettingsPanel workspaceId={WS} role="admin" />);
+    const daily = await screen.findByRole("region", { name: "Daily stand-up" });
+    const note = await within(daily).findByText("Slack refused the stand-up on Mon 5 Oct: the channel has been archived. Replace the link with one for another channel.");
+    expect(note.closest(".kslk-msg")).toHaveAttribute("data-tone", "signal");
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await screen.findByText("Test message sent to #team. Have a look in Slack.");
+    await waitFor(() => expect(within(daily).queryByText(/Slack refused the stand-up/)).toBeNull());
+  });
+
+  it("replacing the link asks again (the old link's refusal no longer applies)", async () => {
+    await connectSlack(WS, HOOK, "#team");
+    await setSlackAutopost(WS, true, "09:00");
+    setDemoAutopostHealth({ ready: true, lastError: { detail: "no_service", at: "2026-10-05T08:05:00.000Z", day: "2026-10-05" } });
+    render(<SlackSettingsPanel workspaceId={WS} role="owner" />);
+    const daily = await screen.findByRole("region", { name: "Daily stand-up" });
+    expect(await within(daily).findByText(/it no longer accepts this webhook link/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    fireEvent.change(screen.getByLabelText("Webhook link"), { target: { value: HOOK.replace("B0001", "B0002") } });
+    fireEvent.click(screen.getByRole("button", { name: "Replace link" }));
+    await screen.findByText(/Connected to #team\. Send a test to check it\./);
+    await waitFor(() => expect(within(daily).queryByText(/no longer accepts/)).toBeNull());
+  });
+
+  it("members don't get the server's view of the daily post", async () => {
+    await connectSlack(WS, HOOK, "#team");
+    await setSlackAutopost(WS, true, "09:00");
+    setDemoAutopostHealth({ ready: false, lastError: null });
+    render(<SlackSettingsPanel workspaceId={WS} role="member" />);
+    expect(await screen.findByText("Every weekday at 09:00")).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(screen.queryByText(/isn't scheduled/)).toBeNull();
   });
 
   it("says it's a demo", async () => {

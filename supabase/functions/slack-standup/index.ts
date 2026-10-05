@@ -21,6 +21,11 @@
 // Logs name the workspace, never its webhook: caught errors go through
 // safeErrorNote() (Deno's fetch errors quote the URL).
 //
+// So Settings can tell an owner/admin when the daily post isn't happening
+// (_shared/slackHealth.ts, in rate_limits): every scheduled run stamps a
+// heartbeat (weekends too), a stand-up that doesn't go out records Slack's
+// error word against the workspace and its link, and one that does clears it.
+//
 // Manual run (for checking): POST { "workspaceId": "<uuid>", "force": true }
 // posts that workspace's stand-up now, whatever the time or day, without
 // using up today's automatic post.
@@ -36,6 +41,7 @@ import {
   addDaysIso, buildSlackMessage, buildStandupText, classifySlackResponse, isSlackWebhookUrl, isStandupDue,
   isWeekday, lastWorkdayIso, safeErrorNote, zonedNow, type StandupEventRow, type StandupMember, type StandupTaskRow,
 } from "../_shared/slack.ts";
+import { clearStandupFailure, markStandupHeartbeat, recordStandupFailure } from "../_shared/slackHealth.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PAGE = 1000;
@@ -69,6 +75,8 @@ Deno.serve(async (req) => {
   const only = force ? String(body.workspaceId) : null;
 
   const supa = createClient(url, serviceKey);
+  // the scheduler is running (a forced manual run doesn't say so)
+  if (!force) await markStandupHeartbeat(supa);
   const now = zonedNow(new Date(), tz);
   if (!force && !isWeekday(now.weekday)) return json({ due: 0, posted: 0, note: "weekend" });
 
@@ -94,6 +102,8 @@ Deno.serve(async (req) => {
     if (!force && !(await hit(supa, dayKey, { windowSec: 36 * 3600 })).allowed) { already++; continue; }
 
     let ok = false;
+    // why it didn't go, for Settings: Slack's word, "unreachable", or our own failure
+    let why = "kanbo_error";
     try {
       const text = await standupFor(supa, r.workspace_id, now.day, tz);
       const { data: ws } = await supa.from("workspaces").select("name").eq("id", r.workspace_id).maybeSingle();
@@ -101,21 +111,29 @@ Deno.serve(async (req) => {
         kind: "standup", text, workspaceName: ws?.name ?? undefined, actorName: null, day: now.day,
         url: appUrl ? `${appUrl}/team/pulse` : null,
       });
+      why = "unreachable";
       const res = await fetch(hook, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(message),
         redirect: "manual", signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
       });
       const out = classifySlackResponse(res.status, (await res.text().catch(() => "")).slice(0, 200), res.headers.get("retry-after"));
       ok = out.ok;
-      if (!out.ok) console.warn("slack-standup: slack said", res.status, out.detail, r.workspace_id);
+      if (!out.ok) {
+        why = out.detail;
+        console.warn("slack-standup: slack said", res.status, out.detail, r.workspace_id);
+      }
     } catch (e) {
       // never e.message as it is: Deno's network errors include the webhook URL
       console.error("slack-standup", r.workspace_id, safeErrorNote(e, [hook]));
     }
-    if (ok) posted++;
-    else {
+    if (ok) {
+      posted++;
+      await clearStandupFailure(supa, r.workspace_id);
+    } else {
       failed++;
-      // not posted: free today's slot so the next run in the window tries again
+      // tell the workspace's owners/admins (Settings › Slack), then free
+      // today's slot so the next run in the window tries again
+      await recordStandupFailure(supa, r.workspace_id, hook, why);
       if (!force) await release(supa, dayKey);
     }
     await sleep(300);
