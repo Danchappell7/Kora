@@ -517,3 +517,253 @@ export interface WorkspacePlan {
   name: string;
   projects: PlannedProject[];
 }
+
+/* ============================================================
+   0046 — public API keys, signed webhooks, Notion.
+   Contracts shared by packages a1 (API + Settings › Developers),
+   a2 (webhooks) and a3 (Notion). Database: 0046_api_webhooks_notion.sql.
+   The definer functions answer snake_case JSON; lib/apiKeys, lib/webhooks
+   and lib/notion parse it into these camelCase shapes. Every feature hides
+   itself or explains why until its migration / function is live.
+   ============================================================ */
+
+/* ---------- API keys (public.api_keys; create/list/revoke_api_key) ---------- */
+
+/** "read" keys (kanbo_pk_…) can only make GET requests; "write" keys (kanbo_sk_…) can change data. */
+export type ApiKeyAccess = "read" | "write";
+export type ApiKeyStatus = "active" | "revoked" | "expired";
+export interface ApiKey {
+  id: string;
+  name: string;
+  /** the first 13 characters, e.g. "kanbo_sk_Ab3x" — the full key is never stored */
+  prefix: string;
+  access: ApiKeyAccess;
+  /** null = a personal key (acts as you everywhere you can act); else a team key limited to that workspace */
+  workspaceId: string | null;
+  workspaceName: string | null;
+  /** whose key it is: requests act as this person */
+  userId: string;
+  createdByName: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  status: ApiKeyStatus;
+  /** may the signed-in person revoke it (their own key, or owner/admin of its workspace) */
+  canRevoke: boolean;
+}
+/** create_api_key()'s answer: the only time the full key exists outside the caller's clipboard. */
+export interface CreatedApiKey extends ApiKey {
+  /** "kanbo_sk_…" / "kanbo_pk_…" — show once, with a copy button and a warning */
+  key: string;
+}
+export interface NewApiKeyInput {
+  name: string;
+  /** null = personal; a workspace id = team key (owners/admins only) */
+  workspaceId: string | null;
+  access: ApiKeyAccess;
+  /** ISO timestamp, at least an hour and at most five years ahead; null = never */
+  expiresAt: string | null;
+}
+export type ApiKeyFailure = "not_allowed" | "too_many" | "invalid" | "not_found" | "unavailable" | "network" | "error";
+
+/* ---------- webhooks (public.webhooks / webhook_deliveries; *_webhook functions) ---------- */
+
+export type WebhookEvent =
+  | "task.created" | "task.updated" | "task.completed" | "task.deleted"
+  | "comment.created" | "project.created" | "project.updated" | "member.joined";
+/** what a delivery carried: an event, or a test ping */
+export type WebhookDeliveryEvent = WebhookEvent | "ping";
+export interface Webhook {
+  id: string;
+  /** null = personal (your personal tasks and projects) */
+  workspaceId: string | null;
+  url: string;
+  description: string | null;
+  events: WebhookEvent[];
+  active: boolean;
+  createdBy: string;
+  createdByName: string | null;
+  /** failed attempts in a row (20 switches it off) */
+  failureCount: number;
+  lastStatus: number | null;
+  lastError: string | null;
+  lastDeliveryAt: string | null;
+  disabledAt: string | null;
+  disabledReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** creator (while a writer) or a workspace owner/admin */
+  canManage: boolean;
+}
+/** create_webhook()'s answer: the signing secret, shown once. */
+export interface CreatedWebhook extends Webhook {
+  /** "whsec_…" */
+  secret: string;
+}
+export interface NewWebhookInput {
+  workspaceId: string | null;
+  url: string;
+  events: WebhookEvent[];
+  description?: string | null;
+}
+/** update_webhook(): only the fields given change; description "" clears it */
+export interface WebhookPatch {
+  url?: string;
+  events?: WebhookEvent[];
+  active?: boolean;
+  description?: string | null;
+}
+export type WebhookDeliveryState = "pending" | "delivered" | "failed";
+export interface WebhookDelivery {
+  id: string;
+  webhookId: string;
+  outboxId: number;
+  event: WebhookDeliveryEvent;
+  state: WebhookDeliveryState;
+  /** attempts made so far */
+  attempt: number;
+  /** the endpoint's HTTP status (0 / null: no answer — timeout, DNS, refused) */
+  statusCode: number | null;
+  error: string | null;
+  /** how long the endpoint took to answer */
+  durationMs: number | null;
+  /** pending: when the next try is due */
+  nextAttemptAt: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export type WebhookFailure = "not_allowed" | "invalid_url" | "invalid_events" | "too_many" | "too_many_tests" | "not_found" | "unavailable" | "network" | "error";
+
+/* ---------- Notion (workspace_integrations.notion_*, notion_syncs, notion_links, notion_page_cache) ---------- */
+
+export type { NotionFieldMapping } from "../../supabase/functions/_shared/notion.ts";
+
+/** notion_status(): what anyone in the workspace may know (never the token). */
+export interface NotionStatus {
+  connected: boolean;
+  /** the Notion workspace's name, from the token check */
+  workspaceName: string | null;
+  botId: string | null;
+  /** owners/admins only: "…abcd" */
+  tokenHint: string | null;
+  connectedAt: string | null;
+  connectedByName: string | null;
+  /** owner/admin: connect, disconnect, import, syncs */
+  canManage: boolean;
+  /** owner/admin/member: link pages to tasks (guests can't) */
+  canLink: boolean;
+  syncCount: number;
+}
+export type NotionSyncDirection = "two_way" | "from_notion";
+/** The last run's counts (notion_syncs.stats). */
+export interface NotionSyncStats {
+  created?: number;
+  updated?: number;
+  /** Kanbo → Notion page updates */
+  pushed?: number;
+  skipped?: number;
+  /** ISO time of the run */
+  at?: string;
+}
+export interface NotionSync {
+  id: string;
+  workspaceId: string;
+  projectId: string;
+  databaseId: string;
+  databaseTitle: string | null;
+  mapping: import("../../supabase/functions/_shared/notion.ts").NotionFieldMapping;
+  direction: NotionSyncDirection;
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  /** shown in Settings as written (a sentence) */
+  lastError: string | null;
+  lastErrorAt: string | null;
+  stats: NotionSyncStats;
+  /** the person the sync acts as (null: they left — an owner/admin saves it again) */
+  createdBy: string | null;
+  createdByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export type NotionLinkKind = "synced" | "reference";
+/** A Notion page's title / icon as last fetched (notion_page_cache). */
+export interface NotionPageMeta {
+  title: string | null;
+  /** an emoji, or an https image URL */
+  icon: string | null;
+  url: string | null;
+  lastEditedTime: string | null;
+  archived: boolean;
+  fetchedAt: string | null;
+}
+export interface NotionLink {
+  id: string;
+  workspaceId: string;
+  taskId: string;
+  /** dashed lower-case id */
+  pageId: string;
+  databaseId: string | null;
+  syncId: string | null;
+  /** synced: made by an import / sync (unlinking needs an owner/admin); reference: someone linked it */
+  kind: NotionLinkKind;
+  lastSyncedAt: string | null;
+  notionLastEdited: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  /** null until the notion function has fetched it */
+  page: NotionPageMeta | null;
+}
+/** A database the integration can see (notion function: "databases"). */
+export interface NotionDatabaseSummary {
+  id: string;
+  title: string;
+  /** an emoji or https image URL */
+  icon: string | null;
+  url: string | null;
+  lastEditedTime: string | null;
+}
+export type NotionPropertyType =
+  | "title" | "rich_text" | "status" | "select" | "multi_select" | "date" | "people"
+  | "checkbox" | "number" | "url" | "email" | "phone_number" | "other";
+export interface NotionPropertySchema {
+  id: string;
+  name: string;
+  type: NotionPropertyType;
+  /** status / select / multi_select option names */
+  options?: string[];
+}
+export interface NotionDatabaseSchema {
+  id: string;
+  title: string;
+  properties: NotionPropertySchema[];
+}
+/** One page of the import preview: property name → display text. */
+export interface NotionPreviewRow {
+  pageId: string;
+  values: Record<string, string | string[] | null>;
+}
+export interface NotionImportRequest {
+  workspaceId: string;
+  databaseId: string;
+  mapping: import("../../supabase/functions/_shared/notion.ts").NotionFieldMapping;
+  /** an existing project in the workspace, or null with `newProject` */
+  projectId: string | null;
+  newProject?: { name: string; emoji: string; color: string } | null;
+  /** also save a sync (notion_syncs) so later changes keep flowing */
+  keepInSync: boolean;
+  direction: NotionSyncDirection;
+}
+export interface NotionImportResult {
+  projectId: string;
+  syncId: string | null;
+  created: number;
+  skipped: number;
+  /** per-page problems, as sentences (at most 20) */
+  errors: string[];
+}
+export type NotionFailure =
+  | "not_connected" | "not_allowed" | "invalid_token" | "not_shared" | "rate_limited"
+  | "notion_error" | "invalid" | "not_found" | "unavailable" | "network" | "error";

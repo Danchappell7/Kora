@@ -43,6 +43,12 @@ verify_jwt = true
 [functions.slack-post]
 verify_jwt = true
 
+# 0046: Notion — connect / import / sync / page links for signed-in members
+# (owner/admin actions checked inside); the 10-minute cron run sends
+# x-cron-secret with the anon key as its bearer, so the gateway still passes it
+[functions.notion]
+verify_jwt = true
+
 # ---- no JWT to verify: these authenticate callers themselves ----
 # signed-out "request early access" form (throttled per email / IP)
 [functions.request-access]
@@ -82,4 +88,15 @@ verify_jwt = false
 # 0043: public request forms (/f/<token>): signed-out visitors read the form
 # and submit; token + honeypot + per-IP / per-token limits (rate_limits)
 [functions.public-form]
+verify_jwt = false
+
+# 0046: the public REST API (/functions/v1/api/v1/…). Callers send a Kanbo
+# API key (Authorization: Bearer kanbo_sk_… / kanbo_pk_…), not a Supabase
+# JWT; the function verifies the key and runs every query as its owner (RLS)
+[functions.api]
+verify_jwt = false
+
+# 0046: delivers signed webhooks; pg_cron every minute and a pg_net poke after
+# changes, both with the CRON_SECRET header (x-cron-secret); 401 for anyone else
+[functions.webhook-dispatch]
 verify_jwt = false
