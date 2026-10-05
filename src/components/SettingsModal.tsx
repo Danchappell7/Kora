@@ -15,7 +15,7 @@
    controllable (⌘, · ? → Shortcuts · Manage tags → Tags); on phones only a
    section changed since the last close opens straight in (see `pushed`).
    ============================================================ */
-import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type CSSProperties } from "react";
+import { useState, useEffect, useRef, useId, lazy, Suspense, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Icon, Collapse, avatarDisc, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
@@ -31,9 +31,23 @@ import { SHORTCUTS, type Shortcut } from "../lib/nav";
 import { TagManagerPanel } from "./TagManagerModal";
 import { BillingPanel } from "./Billing";
 import { CalendarAccountsPanel, CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
-import { ApiDocs, DevelopersPanel, NotionPanel, WebhooksPanel, type DevWorkspace } from "./settings";
-import { apiBaseUrl } from "../lib/apiKeys";
+import type { DevWorkspace } from "./settings";
 import { disablePushEverywhere, isPushDemo, pushAvailability } from "../lib/push";
+
+// 0046: loaded when first shown, so the API reference, webhooks and Notion stay out of the first download.
+// If the code can't be fetched (offline, or a tab left open across a new release), the section says so
+// instead of the error reaching the app's error boundary.
+function NotLoaded() {
+  return (
+    <p className="kset-loading" role="alert">
+      <Icon name="alert" size={14} sw={2} />
+      <span>This part of Settings couldn't load. <button type="button" className="kset-link" onClick={() => window.location.reload()}>Reload Kanbo</button> to get the latest version.</span>
+    </p>
+  );
+}
+const notLoaded = { default: NotLoaded };
+const DevelopersSection = lazy(() => import("./settings/DevelopersSection").catch(() => notLoaded));
+const NotionPanel = lazy(() => import("./settings/NotionPanel").then((m) => ({ default: m.NotionPanel }), () => notLoaded));
 
 const PRONOUN_SUGGESTIONS = ["she/her", "he/him", "they/them", "she/they", "he/they", "ze/zir"];
 
@@ -200,12 +214,6 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     setAskLeave(null); askFrom.current = null;
   };
 
-  /* ---------- Developers › API reference: shown in place of the panels, until the section changes or Settings closes ---------- */
-  const [apiDocsOpen, setApiDocsOpen] = useState(false);
-  const docsRef = useRef<HTMLDivElement | null>(null);
-  const [docsSection, setDocsSection] = useState<SettingsSection>(active);
-  if (docsSection !== active) { setDocsSection(active); setApiDocsOpen(false); }
-
   /* ---------- open / close (with the exit fade) ---------- */
   const [prevOpen, setPrevOpen] = useState(open);
   const [leaving, setLeaving] = useState(false);
@@ -214,7 +222,6 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     setLeaving(!open && !reducedMotion());
     if (open) { setInner(section ?? DEFAULT_SECTION); setPushed(section !== undefined && section !== restSection); }
     else setRestSection(section);
-    setApiDocsOpen(false);
   }
   useEffect(() => {
     if (!leaving) return;
@@ -768,43 +775,24 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       {/* Slack is per team workspace; the panel explains itself in Personal */}
       {slack && <SlackSettingsPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null} />}
       {/* Notion, for the same workspace: owners/admins connect and import; members see the status */}
-      {slack && <NotionPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null}
-        projects={notion?.projects ?? []} onOpenProject={notion?.onOpenProject ? (id) => requestClose(() => notion.onOpenProject?.(id)) : undefined} />}
+      {slack && (
+        <Suspense fallback={sectionLoading("Notion")}>
+          <NotionPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null}
+            projects={notion?.projects ?? []} onOpenProject={notion?.onOpenProject ? (id) => requestClose(() => notion.onOpenProject?.(id)) : undefined} />
+        </Suspense>
+      )}
     </>
   );
 
-  // The panels stay mounted (hidden) under the reference, so a key or secret
-  // that's on screen once isn't lost by a look at the docs.
-  const openApiDocs = () => {
-    setApiDocsOpen(true);
-    requestAnimationFrame(() => {
-      if (scrollRef.current) scrollRef.current.scrollTop = 0;
-      // land on the reference's heading, so it's read out; the wrapper if it has none
-      const heading = docsRef.current?.querySelector<HTMLElement>("h2") ?? docsRef.current;
-      if (heading && heading !== docsRef.current) heading.tabIndex = -1;
-      heading?.focus({ preventScroll: true });
-    });
-  };
-  const closeApiDocs = () => {
-    setApiDocsOpen(false);
-    requestAnimationFrame(() => {
-      const link = scrollRef.current?.querySelector<HTMLElement>(".kdev-docs-link");
-      link?.focus({ preventScroll: true });
-      link?.scrollIntoView?.({ block: "nearest" });
-    });
-  };
+  /** while a lazily loaded panel arrives: a quiet row, announced politely */
+  const sectionLoading = (what: string) => (
+    <p className="kset-loading" role="status"><span className="kspin" aria-hidden="true" />Loading {what}…</p>
+  );
+  // API keys, the API reference (in place) and webhooks; the reference closes with the section
   const developersSection = () => developers ? (
-    <>
-      {apiDocsOpen && (
-        <div ref={docsRef} tabIndex={-1} className="kset-docs">
-          <ApiDocs baseUrl={apiBaseUrl()} onClose={closeApiDocs} />
-        </div>
-      )}
-      <div hidden={apiDocsOpen}>
-        <DevelopersPanel workspaces={developers.workspaces} currentWorkspaceId={developers.currentWorkspaceId} onOpenDocs={openApiDocs} />
-        <WebhooksPanel workspaces={developers.workspaces} currentWorkspaceId={developers.currentWorkspaceId} />
-      </div>
-    </>
+    <Suspense fallback={sectionLoading("Developers")}>
+      <DevelopersSection workspaces={developers.workspaces} currentWorkspaceId={developers.currentWorkspaceId} />
+    </Suspense>
   ) : null;
 
   const calendarGroup = (calendar: CalendarSettings) => (
@@ -1439,6 +1427,7 @@ const SETTINGS_CSS = `
 .kset-bullets strong { font-weight: 600; color: var(--ink); }
 /* Developers › API reference: focus lands on its heading when it opens (no ring on a heading) */
 .kset-docs:focus, .kset-docs h2:focus { outline: none; }
+.kset-loading { display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kset-link { padding: 0; border: 0; background: transparent; cursor: pointer; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
 .kset .kbtn.kset-btn-signal { color: var(--signal, var(--prio-urgent)); }
 

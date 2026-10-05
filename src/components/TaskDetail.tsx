@@ -8,7 +8,7 @@
    sub-tasks, dependencies, files and one activity timeline, with the
    composer pinned underneath. Empty sections stay out of the way.
    ============================================================ */
-import { useState, useEffect, useRef, useMemo, useId, forwardRef, useImperativeHandle } from "react";
+import { useState, useEffect, useRef, useMemo, useId, forwardRef, useImperativeHandle, lazy, Suspense } from "react";
 import type { ReactNode, RefObject, MutableRefObject, Dispatch, SetStateAction, KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Icon, Avatar, AvatarStack, Check, EmojiPicker, Button, IconButton, Kbd, StatusGlyph, PriorityGlyph,
@@ -29,7 +29,6 @@ import {
   STATUS_META, STATUS_ORDER, PRIORITY_META, nextDueDate, nextOccurrence, seriesAnchorDay,
 } from "../data/data";
 import { timelineStartPatch } from "./tasks/otherViewsLogic";
-import { NotionLinkChip } from "./NotionLinkChip";
 import type {
   Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project,
   CustomFieldDef, CustomValue, Section, Attachment, EnergyKind,
@@ -40,6 +39,10 @@ import {
   consequenceOf, slipNote, dueMoves, eventText, buildTimeline, shortDay, dayLabel, ago, fmtHours, parseHours,
   type MentionCandidate, type UnsavedField, type HistoryEvent,
 } from "./taskDetailHelpers";
+
+// 0046: Notion pages on a task, loaded when a task first opens (it renders nothing until it knows there's something to show)
+// (if its code can't be fetched, the task simply shows no Notion section)
+const NotionLinkChip = lazy(() => import("./NotionLinkChip").then((m) => ({ default: m.NotionLinkChip }), () => ({ default: () => null })));
 
 const REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅", "🚀"];
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
@@ -2154,7 +2157,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         )}
 
         {/* ================= Notion: pages linked to this task (team tasks, once Notion is connected; guests read-only) ================= */}
-        <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly} />
+        <Suspense fallback={null}>
+          <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly} />
+        </Suspense>
 
         {/* ================= activity: comments, history and notifications, oldest first ================= */}
         {timeline.length > 0 && (

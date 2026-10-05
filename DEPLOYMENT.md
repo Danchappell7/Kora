@@ -560,6 +560,41 @@ workspace's chosen time. Check it after 15 minutes with the query in slack.md
 Incoming Webhook at <https://api.slack.com/apps> and pastes it in **Settings ›
 Calendar & integrations › Slack** (slack.md, step 3, has the clicks).
 
+### Step 12: The Kanbo API, webhooks and Notion (database update 0046)
+
+People make API keys and webhooks in **Settings › Developers**; owners and
+admins connect Notion in **Settings › Calendar & integrations**. Until these
+steps are done the panels say they aren't switched on yet and the app works
+as before. The details are in [docs/api/README.md](docs/api/README.md) (the
+REST API), [docs/api/webhooks.md](docs/api/webhooks.md),
+[docs/integrations/notion.md](docs/integrations/notion.md) and
+[docs/integrations/database-0046.md](docs/integrations/database-0046.md).
+
+1. **Run 0046** in the SQL editor
+   (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>):
+   the whole of `supabase/migrations/0046_api_webhooks_notion.sql`. It needs
+   0042, is safe to re-run, and must be run **again after 0041 or 0042** is
+   ever re-run (they drop its "api key scope" policies). Check it with the
+   query in database-0046.md (every column `true`).
+2. **Deploy the three functions** (no new secrets: `SUPABASE_DB_URL`,
+   `CRON_SECRET` and `APP_URL` are already there). `api` and
+   `webhook-dispatch` run without the gateway's JWT check; `notion` keeps it:
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && R=htnchiljplrnjkwimgla && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notion --project-ref $R --use-api && echo done; unset SUPABASE_ACCESS_TOKEN
+   ```
+
+3. **Put the anon key in the Vault** as `kanbo_anon_key` (the scheduled Notion
+   sync needs it to pass the gateway), then **schedule** `kanbo-webhook-dispatch`
+   (every minute), `kanbo-notion-sync` (every 10 minutes) and
+   `kanbo-api-housekeeping` (daily), and add `kanbo_functions_url` so webhooks go
+   out within seconds. The SQL is in docs/api/webhooks.md ("Running it"),
+   notion.md (step 2) and database-0046.md ("Daily tidy-up").
+4. **Check**: `https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1/openapi.json`
+   answers with the API description; make a key in Settings › Developers and
+   `curl -H "Authorization: Bearer <key>" https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1/me`
+   answers `{"object":"user",…}`.
+
 ---
 
 ## Reference
@@ -572,6 +607,9 @@ This matches `supabase/config.toml`. Deploy the "no" rows with
 | Function | Gateway JWT check | Who calls it |
 |---|---|---|
 | `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify`, `slack-post` | yes | the signed-in app |
+| `notion` | yes | the signed-in app; pg_cron every 10 minutes with the anon key (Vault `kanbo_anon_key`) and `x-cron-secret` |
+| `api` | no | scripts and tools with a Kanbo API key (`kanbo_sk_…` / `kanbo_pk_…`), checked against its SHA-256; every query runs as the key's user under RLS |
+| `webhook-dispatch` | no | pg_cron every minute, and the database right after a change, with `x-cron-secret` (anyone else gets 401) |
 | `request-access`, `reset-password` | no | signed-out forms (throttled per email and per network) |
 | `daily-reminders`, `slack-standup` | no | pg_cron with `x-cron-secret` (anyone else gets 401) |
 | `ics-feed` | no | calendar apps, with the person's private feed token |

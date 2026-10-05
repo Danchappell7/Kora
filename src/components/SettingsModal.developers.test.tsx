@@ -96,10 +96,10 @@ describe("Settings › Developers", () => {
 });
 
 describe("Settings › Calendar & integrations › Notion", () => {
-  it("sits under Slack for the same workspace, and explains itself in Personal", () => {
+  it("sits under Slack for the same workspace (loaded when first shown), and explains itself in Personal", async () => {
     renderSettings({ slack: { workspaceId: null }, notion: { projects: [] } });
     goTo("Calendar");
-    expect(within(screen.getByRole("region", { name: "Notion" })).getByText("Notion is for team workspaces")).toBeInTheDocument();
+    expect(within(await screen.findByRole("region", { name: "Notion" })).getByText("Notion is for team workspaces")).toBeInTheDocument();
   });
 
   it("owners see how to connect; members see the status only", async () => {
