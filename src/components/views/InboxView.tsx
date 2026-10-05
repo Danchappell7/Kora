@@ -27,6 +27,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   deleted:   { icon: "trash",   verb: "deleted" },
   assigned:  { icon: "user",    verb: "assigned you" },
   mention:   { icon: "message", verb: "mentioned you in" },
+  integration: { icon: "zap",   verb: "" },
 };
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -337,12 +338,14 @@ export interface InboxViewProps {
    *  dot): told on every change, so the page header and the Inbox badges show the
    *  same number as the list — falling as items are opened, archived or snoozed. */
   onNewCount?: (n: number) => void;
+  /** an integration notice (no task, e.g. "Webhook to … switched off"): open where it's fixed (Settings › Developers) */
+  onOpenIntegration?: (a: Activity) => void;
 }
 
 export function InboxView({
   activity, tasks, onOpen, onArchive, onClearAll,
   currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
-  loading, loadError, onRetry, onNewCount,
+  loading, loadError, onRetry, onNewCount, onOpenIntegration,
 }: InboxViewProps) {
   const entrance = useEntrance();
   const toast = useOptionalToast();
@@ -518,6 +521,12 @@ export function InboxView({
     });
   };
   const openItem = (a: Activity) => {
+    if (a.kind === "integration" && !a.taskId) {
+      if (!onOpenIntegration) return;
+      forget([a.id]);
+      onOpenIntegration(a);
+      return;
+    }
     if (!a.taskId || !taskById.has(a.taskId)) return;
     forget([a.id]);
     onOpen(a.taskId);
@@ -725,7 +734,9 @@ export function InboxView({
     const composing = replyOn?.id === a.id ? replyOn : null;
     const acts = actsFor(a, title);
     const snoozedUntil = segment === "snoozed" ? snz.until[a.id] : undefined;
-    const excerpt = !actor && !via && a.detail && (a.kind === "comment" || a.kind === "status")
+    const integ = a.kind === "integration" && !a.taskId;
+    const openable = !!task || (integ && !!onOpenIntegration);
+    const excerpt = !actor && !via && a.detail && (a.kind === "comment" || a.kind === "status" || integ)
       ? (a.kind === "comment" ? `“${a.detail}”` : a.detail) : null;
     // the row's description: where it's from, its marks, its date (when it has
     // one) and its age; never the empty "Schedule" chip
@@ -777,19 +788,21 @@ export function InboxView({
     const style = { "--acts-w": `${Math.max(64, acts.length * 30)}px` } as CSSProperties;
     return (
       <div key={a.id} role="listitem" className="kinbox-row" data-unread={isUnread || undefined} data-cursor={isCursor || undefined}
-        data-open={composing ? true : undefined} data-gone={task ? undefined : true} style={style}
+        data-open={composing ? true : undefined} data-gone={task || integ ? undefined : true} style={style}
         ref={(el) => { if (el) rowEls.current.set(a.id, el); else rowEls.current.delete(a.id); }}
         onFocus={() => { if (cursorOn !== a.id) setCursor(a.id); }}>
         <ActorMark actor={actor} kind={a.kind} request={!!via} members={members} />
         <div className="kinbox-body">
           <button type="button" className="kinbox-main" aria-describedby={describedBy}
             ref={(el) => { if (el) rowRefs.current.set(a.id, el); else rowRefs.current.delete(a.id); }}
-            onClick={() => openItem(a)} aria-disabled={task ? undefined : true}
-            title={task ? undefined : "This task has been archived or is no longer available"}>
+            onClick={() => openItem(a)} aria-disabled={openable ? undefined : true}
+            title={openable || integ ? undefined : "This task has been archived or is no longer available"}>
             {isUnread && <span className="sr-only">Unread: </span>}
             {/* two lines before clipping, so "who did what" survives a phone-width row */}
             <span className="kinbox-say">
-              {via
+              {integ
+                ? <strong>{a.taskTitle || "An integration needs you"}</strong>
+                : via
                 ? <>New request: <strong>{title}</strong></>
                 : actor
                   ? <><strong>{actor}</strong> {ACTOR_VERB[a.kind]} <strong>{title}</strong></>

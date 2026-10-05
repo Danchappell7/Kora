@@ -29,6 +29,7 @@ import {
   STATUS_META, STATUS_ORDER, PRIORITY_META, nextDueDate, nextOccurrence, seriesAnchorDay,
 } from "../data/data";
 import { timelineStartPatch } from "./tasks/otherViewsLogic";
+import { NotionLinkChip } from "./NotionLinkChip";
 import type {
   Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project,
   CustomFieldDef, CustomValue, Section, Attachment, EnergyKind,
@@ -2151,6 +2152,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
             ))}
           </section>
         )}
+
+        {/* ================= Notion: pages linked to this task (team tasks, once Notion is connected; guests read-only) ================= */}
+        <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly} />
 
         {/* ================= activity: comments, history and notifications, oldest first ================= */}
         {timeline.length > 0 && (

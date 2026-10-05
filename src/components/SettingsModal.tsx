@@ -19,7 +19,7 @@ import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent 
 import { createPortal } from "react-dom";
 import { Icon, Collapse, avatarDisc, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
-import type { IconName, CalendarConnection, CalProvider, Role, Subscription, TagDef } from "../data/types";
+import type { IconName, CalendarConnection, CalProvider, Project, Role, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useAuth } from "../auth/AuthProvider";
@@ -31,6 +31,8 @@ import { SHORTCUTS, type Shortcut } from "../lib/nav";
 import { TagManagerPanel } from "./TagManagerModal";
 import { BillingPanel } from "./Billing";
 import { CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
+import { ApiDocs, DevelopersPanel, NotionPanel, WebhooksPanel, type DevWorkspace } from "./settings";
+import { apiBaseUrl } from "../lib/apiKeys";
 import { disablePushEverywhere, isPushDemo, pushAvailability } from "../lib/push";
 
 const PRONOUN_SUGGESTIONS = ["she/her", "he/him", "they/them", "she/they", "he/they", "ze/zir"];
@@ -46,7 +48,7 @@ export interface ProfileDraft {
 type CalendarSettings = { connections: CalendarConnection[]; onConnect: (provider: string) => void; onDisconnect: (id: string) => void; syncing: boolean };
 
 export type ThemeChoice = "light" | "dark" | "system";
-export type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
+export type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "developers" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
 
 const THEMES: SegmentedOption<ThemeChoice>[] = [
   { value: "light", label: "Light", icon: "sun" }, { value: "dark", label: "Dark", icon: "moon" }, { value: "system", label: "System", icon: "settings" },
@@ -75,6 +77,7 @@ const SECTIONS: { id: SettingsSection; label: string; icon: IconName; sep?: bool
   { id: "appearance", label: "Appearance", icon: "sun" },
   { id: "notifications", label: "Notifications", icon: "bell" },
   { id: "calendar", label: "Calendar & integrations", icon: "calendar" },
+  { id: "developers", label: "Developers", icon: "command" },
   { id: "workspace", label: "Workspace", icon: "briefcase", sep: true },
   { id: "billing", label: "Billing", icon: "zap", sep: true },
   { id: "tags", label: "Tags", icon: "layers" },
@@ -82,6 +85,9 @@ const SECTIONS: { id: SettingsSection; label: string; icon: IconName; sep?: bool
   { id: "data", label: "Data", icon: "archive" },
   { id: "account", label: "Account", icon: "lock" },
 ];
+/** the phone list's groups: you (… Developers), then Workspace · Billing · Tags, then Shortcuts · Data · Account */
+const M_TEAM = SECTIONS.findIndex((s) => s.id === "workspace");
+const M_KEYS = SECTIONS.findIndex((s) => s.id === "shortcuts");
 /** where an uncontrolled sheet opens: the preferences people reach for most
  *  (the avatar in the sidebar can ask for "profile" instead) */
 const DEFAULT_SECTION: SettingsSection = "appearance";
@@ -98,7 +104,7 @@ const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
 
 export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance, theme, onChangeTheme,
-  section, onSection, renderWorkspace, tagsPanel, calendar, slack, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut }: {
+  section, onSection, renderWorkspace, tagsPanel, calendar, slack, notion, developers, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -134,6 +140,13 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   /** Settings › Calendar & integrations › Slack: the active workspace (null = Personal) and your
    *  role there. Owners and admins manage it; everyone else sees whether it's connected. */
   slack?: { workspaceId: string | null; workspaceName?: string; role?: Role | null };
+  /** Settings › Calendar & integrations › Notion (shown with Slack, for the same workspace):
+   *  that workspace's projects (archived ones too) for "Import into…", and how to open one
+   *  (Settings closes first, asking about unsaved profile changes as usual) */
+  notion?: { projects: Array<Pick<Project, "id" | "name" | "emoji" | "color" | "archivedAt">>; onOpenProject?: (projectId: string) => void };
+  /** Settings › Developers (API keys, the API reference, webhooks): every team workspace you're
+   *  in, with your role there. Hidden without it, and for guests. */
+  developers?: { workspaces: DevWorkspace[]; currentWorkspaceId: string | null };
   /** Settings › Billing */
   billing?: { enabled: boolean; subscription: Subscription | null; onUpgrade: () => void; onManageBilling: () => void };
   /** Settings › Data › Import tasks… (Settings closes first, so the import dialog isn't underneath) */
@@ -158,7 +171,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   const askFrom = useRef<HTMLElement | null>(null);
 
   /* ---------- which section ---------- */
-  const available = SECTIONS.filter((s) => s.id !== "workspace" || (!!isAdmin && !!renderWorkspace && !isGuest));
+  const available = SECTIONS.filter((s) => (s.id !== "workspace" || (!!isAdmin && !!renderWorkspace && !isGuest))
+    && (s.id !== "developers" || (!!developers && !isGuest)));
   const [inner, setInner] = useState<SettingsSection>(section ?? DEFAULT_SECTION);
   const wanted = section ?? inner;
   const active: SettingsSection = available.some((s) => s.id === wanted) ? wanted : DEFAULT_SECTION;
@@ -177,6 +191,12 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     setAskLeave(null); askFrom.current = null;
   };
 
+  /* ---------- Developers › API reference: shown in place of the panels, until the section changes or Settings closes ---------- */
+  const [apiDocsOpen, setApiDocsOpen] = useState(false);
+  const docsRef = useRef<HTMLDivElement | null>(null);
+  const [docsSection, setDocsSection] = useState<SettingsSection>(active);
+  if (docsSection !== active) { setDocsSection(active); setApiDocsOpen(false); }
+
   /* ---------- open / close (with the exit fade) ---------- */
   const [prevOpen, setPrevOpen] = useState(open);
   const [leaving, setLeaving] = useState(false);
@@ -185,6 +205,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     setLeaving(!open && !reducedMotion());
     if (open) { setInner(section ?? DEFAULT_SECTION); setPushed(section !== undefined && section !== restSection); }
     else setRestSection(section);
+    setApiDocsOpen(false);
   }
   useEffect(() => {
     if (!leaving) return;
@@ -737,8 +758,45 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       <CalendarFeedPanel />
       {/* Slack is per team workspace; the panel explains itself in Personal */}
       {slack && <SlackSettingsPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null} />}
+      {/* Notion, for the same workspace: owners/admins connect and import; members see the status */}
+      {slack && <NotionPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null}
+        projects={notion?.projects ?? []} onOpenProject={notion?.onOpenProject ? (id) => requestClose(() => notion.onOpenProject?.(id)) : undefined} />}
     </>
   );
+
+  // The panels stay mounted (hidden) under the reference, so a key or secret
+  // that's on screen once isn't lost by a look at the docs.
+  const openApiDocs = () => {
+    setApiDocsOpen(true);
+    requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = 0;
+      // land on the reference's heading, so it's read out; the wrapper if it has none
+      const heading = docsRef.current?.querySelector<HTMLElement>("h2") ?? docsRef.current;
+      if (heading && heading !== docsRef.current) heading.tabIndex = -1;
+      heading?.focus({ preventScroll: true });
+    });
+  };
+  const closeApiDocs = () => {
+    setApiDocsOpen(false);
+    requestAnimationFrame(() => {
+      const link = scrollRef.current?.querySelector<HTMLElement>(".kdev-docs-link");
+      link?.focus({ preventScroll: true });
+      link?.scrollIntoView?.({ block: "nearest" });
+    });
+  };
+  const developersSection = () => developers ? (
+    <>
+      {apiDocsOpen && (
+        <div ref={docsRef} tabIndex={-1} className="kset-docs">
+          <ApiDocs baseUrl={apiBaseUrl()} onClose={closeApiDocs} />
+        </div>
+      )}
+      <div hidden={apiDocsOpen}>
+        <DevelopersPanel workspaces={developers.workspaces} currentWorkspaceId={developers.currentWorkspaceId} onOpenDocs={openApiDocs} />
+        <WebhooksPanel workspaces={developers.workspaces} currentWorkspaceId={developers.currentWorkspaceId} />
+      </div>
+    </>
+  ) : null;
 
   const calendarGroup = (calendar: CalendarSettings) => (
     <>
@@ -951,6 +1009,7 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       case "appearance": return appearanceSection();
       case "notifications": return notificationsSection();
       case "calendar": return calendarSection();
+      case "developers": return developersSection();
       case "workspace": return workspaceSection();
       case "billing": return billingSection();
       case "tags": return tagsSection();
@@ -1096,9 +1155,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
             </span>
             <Icon name="chevronRight" size={16} sw={1.75} className="kset-chev" />
           </button>
-          {[available.filter((s) => s.id !== "profile" && !s.sep && SECTIONS.indexOf(s) < 4),
-            available.filter((s) => SECTIONS.indexOf(s) >= 4 && SECTIONS.indexOf(s) < 7),
-            available.filter((s) => SECTIONS.indexOf(s) >= 7)].map((grp, gi) => grp.length ? (
+          {[available.filter((s) => s.id !== "profile" && SECTIONS.indexOf(s) < M_TEAM),
+            available.filter((s) => SECTIONS.indexOf(s) >= M_TEAM && SECTIONS.indexOf(s) < M_KEYS),
+            available.filter((s) => SECTIONS.indexOf(s) >= M_KEYS)].map((grp, gi) => grp.length ? (
             <div key={gi} className="kset-mgroup">
               {grp.map((s) => {
                 const hint = hintOf(s.id);
@@ -1383,6 +1442,8 @@ const SETTINGS_CSS = `
 .kset-panel-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .kset-bullets { margin: 0; padding-left: 18px; display: grid; gap: 6px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
 .kset-bullets strong { font-weight: 600; color: var(--ink); }
+/* Developers › API reference: focus lands on its heading when it opens (no ring on a heading) */
+.kset-docs:focus, .kset-docs h2:focus { outline: none; }
 .kset-link { padding: 0; border: 0; background: transparent; cursor: pointer; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
 .kset .kbtn.kset-btn-signal { color: var(--signal, var(--prio-urgent)); }
 

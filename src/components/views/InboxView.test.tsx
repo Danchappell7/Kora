@@ -646,3 +646,28 @@ describe("InboxView — Inbox zero", () => {
     } finally { window.matchMedia = mm; }
   });
 });
+
+describe("InboxView — integration notices (0046: a webhook switched off)", () => {
+  const off = (p: Partial<Activity> = {}) => act_({
+    id: "i1", taskId: null, kind: "integration", readAt: undefined,
+    taskTitle: "Webhook to hooks.zapier.com switched off",
+    detail: "Kanbo couldn't deliver to hooks.zapier.com 20 times in a row, so it stopped sending. Fix the endpoint, then switch it back on in Settings › Developers › Webhooks.",
+    ...p,
+  });
+  it("reads as the notice itself, with what to do, and opens Settings › Developers", () => {
+    const onOpenIntegration = vi.fn();
+    const { props } = inbox([off()], { onOpenIntegration });
+    const row = screen.getByRole("button", { name: /^(Unread: )?Webhook to hooks\.zapier\.com switched off$/ });
+    expect(row).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByText(/^You /)).toBeNull();
+    expect(screen.getByText(/switch it back on in Settings › Developers › Webhooks/)).toBeInTheDocument();
+    fireEvent.click(row);
+    expect(onOpenIntegration).toHaveBeenCalledWith(expect.objectContaining({ id: "i1" }));
+    expect(props.onOpen).not.toHaveBeenCalled();
+  });
+  it("without a way to open Settings (a guest here) it still shows, but isn't a link", () => {
+    inbox([off()]);
+    expect(screen.getByRole("button", { name: /^(Unread: )?Webhook to hooks\.zapier\.com switched off$/ })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText(/switch it back on/)).toBeInTheDocument();
+  });
+});

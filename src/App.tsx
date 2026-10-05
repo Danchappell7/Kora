@@ -565,9 +565,11 @@ export default function App() {
     if (!tasks) return [] as Activity[];
     // a task's activity belongs to the workspace its task lives in, so personal
     // activity never leaks into a team inbox (or vice versa). Unresolvable
-    // (deleted-task) items are dropped.
+    // (deleted-task) items are dropped. Integration notices (a webhook switched
+    // off) have no task: they're about your own setup, so every inbox shows them.
     const wsOfTask = new Map(tasks.map((t) => [t.id, t.workspaceId ?? null]));
-    return activity.filter((a) => a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace);
+    return activity.filter((a) => (a.kind === "integration" && a.taskId == null)
+      || (a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace));
   }, [tasks, activity, workspace]);
   const scopedActivityRef = useRef<Activity[]>([]); scopedActivityRef.current = scopedActivity;
   // unread = not read on the server (any device), and not your own actions
@@ -3492,7 +3494,7 @@ export default function App() {
   // (a task's activity belongs to the workspace its task lives in, as in the Inbox itself)
   const wsTaskIds = new Set(tasks.filter((t) => (t.workspaceId ?? null) === workspace).map((t) => t.id));
   const inboxArchived = archivedRev >= 0 ? [...archivedHereRef.current.values()].map((p) => p.item)
-    .filter((a) => !!a.taskId && wsTaskIds.has(a.taskId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
+    .filter((a) => (a.kind === "integration" && !a.taskId) || (!!a.taskId && wsTaskIds.has(a.taskId))).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
   // Workload and Radar: guests' work shows, but they carry no team capacity
   const loadMembers = assignees.map((a) => ({ ...a, guest: wsMembers.some((m) => m.userId === a.id && (m.workspaceId ?? null) === workspace && m.role === "guest") || undefined }));
 
@@ -3530,7 +3532,10 @@ export default function App() {
         onReply={(taskId, body, mentions) => addComment(taskId, body, mentions ?? [])}
         onAcceptToday={(taskId) => guardedPatch(taskId, { planToday: true })}
         onSchedule={(taskId, dueDate) => guardedPatch(taskId, { dueDate })}
-        onComplete={(taskId) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); }} />;
+        onComplete={(taskId) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); }}
+        // "Webhook to … switched off" opens Settings › Developers, where it's switched back on
+        // (hidden while you're a guest here: the notice says where to go)
+        onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} syncing={calSyncing} readOnly={activeReadOnly}
         scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
@@ -3765,6 +3770,10 @@ export default function App() {
         }}
         // Slack for the active team workspace: owners/admins manage it, everyone sees if it's connected
         slack={{ workspaceId: workspace, workspaceName: activeWsName, role: myRole ?? null }}
+        // Notion sits under Slack for the same workspace; imports land in its projects (archived ones keep their names in sync rows)
+        notion={{ projects: projects.filter((p) => (p.workspaceId ?? null) === workspace), onOpenProject: (pid) => setRoute({ view: "project", projectId: pid }) }}
+        // Settings › Developers: every team workspace you're in, with your role (guests too: the panels explain)
+        developers={{ workspaces: workspaces.filter((w) => w.id && roleIn(w.id)).map((w) => ({ id: w.id!, name: w.name, role: roleIn(w.id)! })), currentWorkspaceId: workspace }}
         billing={{ enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling }}
         // (Settings closes itself first, so the import dialog isn't underneath)
         onImport={activeReadOnly ? undefined : () => openImport()} />

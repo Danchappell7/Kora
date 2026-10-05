@@ -253,7 +253,8 @@ export interface Attachment {
   userId?: string;
 }
 
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention";
+/** "integration": a notice about one of your integrations, with no task (0046: a webhook switched off after 20 failures) */
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration";
 
 export interface Activity {
   id: string;

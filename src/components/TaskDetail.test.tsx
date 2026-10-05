@@ -857,3 +857,26 @@ describe("TaskDetail — the description's Edit button", () => {
     expect(desc.querySelector(".ktd-desc-view")).toHaveTextContent("Old text");
   });
 });
+
+describe("TaskDetail — Notion pages (0046)", () => {
+  // demo Notion: Foundrise is connected and its task t-1 has two linked pages
+  it("shows a team task's linked pages after Files; guests can't link or unlink", async () => {
+    const { resetNotionDemo } = await import("../lib/notion");
+    resetNotionDemo({ demoDelayMs: 0 });
+    await setup({ taskId: "t-1", tasks: [mk({ id: "t-1", workspaceId: "ws-foundrise" })], readOnly: true });
+    const section = await screen.findByRole("region", { name: /Notion/ });
+    expect(within(section).getAllByRole("link")).toHaveLength(2);
+    expect(within(section).queryByRole("button")).toBeNull();
+  });
+  it("falls back to the project's workspace (demo tasks carry none); writers can link a page", async () => {
+    const { resetNotionDemo } = await import("../lib/notion");
+    resetNotionDemo({ demoDelayMs: 0 });
+    await setup({ taskId: "t-9", tasks: [mk({ id: "t-9", workspaceId: undefined, projectId: "p-x" })],
+      projects: [{ id: "p-x", name: "Launch", workspaceId: "ws-foundrise" } as never] });
+    expect(await screen.findByRole("button", { name: "Link a page" })).toBeInTheDocument();
+  });
+  it("nothing for a Personal task", async () => {
+    await setup({ tasks: [mk({ workspaceId: null as never, projectId: "p-personal" })] });
+    expect(screen.queryByRole("region", { name: /Notion/ })).toBeNull();
+  });
+});
