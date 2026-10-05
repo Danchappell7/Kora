@@ -193,13 +193,28 @@ export function requestLine(formName: string): string {
   return `Request via ${name} (public link)`;
 }
 
-/** The task description a public submission files. */
-export function requestDescription(formName: string, s: Pick<CleanSubmission, "name" | "email" | "description">): string {
+/**
+ * The task description a public submission files:
+ *
+ *   Request via Design requests (public link).
+ *
+ *   From: Sam Jones <sam@example.com>
+ *   Reference: KB-7F3A9C
+ *
+ *   (their details)
+ *
+ * The first line is what the Inbox recognises (requestSource reads up to its
+ * first full stop, so nothing else goes on it). The reference is the one the
+ * requester was given, so when they quote it the team's search finds the task.
+ */
+export function requestDescription(formName: string, s: Pick<CleanSubmission, "name" | "email" | "description">, reference?: string): string {
   const from = `From: ${cleanLine(s.name)} <${cleanLine(s.email)}>`;
-  return [`${requestLine(formName)}.`, from, s.description ? cleanText(s.description) : ""].filter(Boolean).join("\n\n");
+  const who = reference ? `${from}\nReference: ${cleanLine(reference)}` : from;
+  return [`${requestLine(formName)}.`, who, s.description ? cleanText(s.description) : ""].filter(Boolean).join("\n\n");
 }
 
-/** A short reference the requester can quote: "KB-" + the first six hex of the task id. */
+/** A short reference the requester can quote: "KB-" + the first six hex of the task id.
+ *  The function chooses the id before saving, so the reference is in the task too. */
 export function taskReference(taskId: string): string {
   const hex = String(taskId || "").replace(/[^0-9a-f]/gi, "").slice(0, 6).toUpperCase();
   return `KB-${hex.padEnd(6, "0")}`;
@@ -219,6 +234,14 @@ export const FAILURE_MESSAGES: Record<PublicFailure, string> = {
   network: "Kanbo couldn't be reached. Check your connection, then try again.",
 };
 
+/** Whose limit a 429 is: this sender's (their network or their email address)
+ *  or the form's own hourly allowance (everyone's). */
+export type RateLimitScope = "sender" | "form";
+export const RATE_LIMIT_MESSAGES: Record<RateLimitScope, string> = {
+  sender: FAILURE_MESSAGES.rate_limited,
+  form: "This form has had a lot of requests in the last hour. Wait a while, then try again.",
+};
+
 /* ---------------- what GET returns ---------------- */
 
 export interface PublicSchemaOut {
@@ -235,6 +258,37 @@ export function safeColour(v: unknown, fallback = "oklch(0.62 0.16 270)"): strin
   const s = typeof v === "string" ? v.trim() : "";
   return /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla|oklch|oklab|lch|lab)\([0-9a-z.,%\s/+-]{1,80}\))$/i.test(s) ? s : fallback;
 }
+/** The twelve hues of the app's project spectrum, in order (src/lib/projectIdentity.ts
+ *  SPECTRUM; publicForms.test.ts keeps the two equal). */
+export const SPECTRUM_HUES = [270, 293, 318, 350, 22, 48, 78, 110, 158, 190, 225, 250] as const;
+/** Below this chroma the app reads a colour as having no hue (projectIdentity's MIN_HUED_CHROMA). */
+const MIN_HUED_CHROMA = 0.02;
+
+/** FNV-1a, as projectIdentity's stableHash: the same id always lands on the same hue. */
+export function stableHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+
+/**
+ * The colour the public page paints a project in, so it wears the same
+ * identity there as in Kanbo without the page ever seeing the project's id.
+ * A colour with a hue goes as it is (the page snaps it to the spectrum, as
+ * the app does). A grey or unusable one is where the app falls back to a
+ * stable hash of the project's id: that hue is worked out here and sent as
+ * a colour instead. Without an id (the page re-reading what it was sent)
+ * it's safeColour.
+ */
+export function identityColour(colour: unknown, projectId?: unknown): string {
+  const safe = safeColour(colour, "");
+  if (typeof projectId !== "string" || !projectId) return safe || safeColour(null);
+  const m = /^oklch\(\s*[\d.]+%?\s+([\d.]+)(%?)\s+[\d.]+/i.exec(safe);
+  const chroma = m ? (m[2] ? (parseFloat(m[1]) / 100) * 0.4 : parseFloat(m[1])) : null;
+  if (safe && (chroma === null || chroma >= MIN_HUED_CHROMA)) return safe;
+  return `oklch(0.62 0.15 ${SPECTRUM_HUES[stableHash(projectId) % SPECTRUM_HUES.length]})`;
+}
+
 /** Only an https image URL may become the team logo on the public page. */
 export function safeLogoUrl(v: unknown): string | null {
   if (typeof v !== "string" || v.length > 1000) return null;
@@ -247,7 +301,8 @@ export function safeLogoUrl(v: unknown): string | null {
 /** Build the public schema from the rows the function read (only what the page shows). */
 export function buildPublicSchema(input: {
   form: { name: unknown; description?: unknown; fields: unknown };
-  project: { name: unknown; emoji?: unknown; color?: unknown };
+  /** id: the project's own (server side only), for identityColour; never sent */
+  project: { id?: unknown; name: unknown; emoji?: unknown; color?: unknown };
   workspace?: { name: unknown; logo_url?: unknown } | null;
 }): PublicSchemaOut {
   const intro = cleanText(input.form.description);
@@ -259,7 +314,7 @@ export function buildPublicSchema(input: {
     project: {
       name: cap(cleanLine(input.project.name) || "Untitled project", SCHEMA_LIMITS.projectName),
       emoji: emoji ? cap(emoji, SCHEMA_LIMITS.emoji) : "",
-      color: safeColour(input.project.color),
+      color: identityColour(input.project.color, input.project.id),
     },
     workspace: wsName ? { name: cap(wsName, SCHEMA_LIMITS.workspaceName), logoUrl: safeLogoUrl(input.workspace?.logo_url) } : null,
     fields: publicFieldsOf(input.form.fields),

@@ -294,8 +294,9 @@ function RequestForm({ token, form, demo, onGone }: { token: string; form: Publi
         return;
       }
     }
+    const busy = r.scope === "form" ? "This form has had a lot of requests in the last hour." : "There have been a lot of requests from here.";
     const message = r.reason === "rate_limited"
-      ? `There have been a lot of requests from here. Wait about ${plural(minutes(r.retryAfter), "minute")}, then send it again. Your answers are still here.`
+      ? `${busy} Wait about ${plural(minutes(r.retryAfter), "minute")}, then send it again. Your answers are still here.`
       : r.reason === "network"
         ? "Your request wasn't sent: Kanbo couldn't be reached. Check your connection, then send it again. Your answers are still here."
         : `Your request wasn't sent. ${r.reason === "invalid" ? r.message : "Try again in a few minutes."} Your answers are still here.`;

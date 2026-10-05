@@ -8,8 +8,8 @@
 //                      404 not_found · 410 disabled · 429 rate_limited
 //   GET  ?ping       → 200 { ok: true }   (lets the app see the function is live)
 //   POST ?t=<token>  body: PublicFormSubmission
-//                    → 200 { ok: true, reference: "KB-7F3A9C" }
-//                      400 invalid (+ field, fields) · 404 · 410 · 429 · 503
+//                    → 200 { ok: true, reference: "KB-7F3A9C" } (also written into the task)
+//                      400 invalid (+ field, fields) · 404 · 410 · 429 (+ scope) · 503
 //
 // Who can do what: anyone with an enabled form's link reads the form's
 // public face (name, intro, project name / emoji / colour, team name and
@@ -21,22 +21,31 @@
 //
 // Abuse limits (rate_limits from 0042, failing open without it):
 //   reads   120 per IP per 10 minutes
-//   sends     5 per IP per 10 minutes, 50 per form per hour,
-//             3 per email address per 10 minutes
+//   sends    30 per IP per 10 minutes (an office or event Wi-Fi is one
+//             address, and the QR code invites a queue), 100 per form per
+//             hour, 3 per email address per 10 minutes
 //   a filled honeypot ("website") gets a normal-looking reference and
 //   nothing is stored. IPs, emails and tokens are hashed in keys.
+//   A form whose hourly allowance is used up says so in its own words
+//   (scope "form"); regenerating the link starts a fresh allowance.
+//
+// Whose project: a team form files only into a project of its own team; a
+// personal form only into its creator's own projects (forms.project_id is
+// free text, so it's checked here, with the service role, every time), and
+// only its creator is ever assigned or told: the same audience the app's
+// own notify_assignee / is_task_audience allow.
 // ============================================================
 import { KEY_PREFIX, type Db } from "../_shared/limits.ts";
 import {
   buildPublicSchema, checkSubmission, FAILURE_MESSAGES, FAILURE_STATUS, isHoneypotHit, isPublicToken,
-  MAX_BODY_BYTES, publicFieldsOf, requestDescription, requestLine, taskReference,
-  type PublicFailure, type PublicFieldKey, type SubmissionKey,
+  MAX_BODY_BYTES, publicFieldsOf, RATE_LIMIT_MESSAGES, requestDescription, requestLine, taskReference,
+  type PublicFailure, type PublicFieldKey, type RateLimitScope, type SubmissionKey,
 } from "../_shared/publicForm.ts";
 
 export const PUBLIC_FORM_LIMITS = {
   getPerIp: { windowSec: 600, max: 120 },
-  postPerIp: { windowSec: 600, max: 5 },
-  postPerForm: { windowSec: 3600, max: 50 },
+  postPerIp: { windowSec: 600, max: 30 },
+  postPerForm: { windowSec: 3600, max: 100 },
   postPerEmail: { windowSec: 600, max: 3 },
 } as const;
 
@@ -64,7 +73,7 @@ export interface PublicFormDeps {
   hit: (key: string, opts: { windowSec: number; max?: number }) => Promise<{ allowed: boolean; retryAfter: number }>;
   /** hashKey from _shared/limits.ts (non-reversible key parts) */
   hash: (value: string) => Promise<string>;
-  /** a random uuid (the honeypot's fake reference) */
+  /** a random v4 uuid: the new task's id (so its reference is known before it's saved), and the honeypot's fake one */
   randomId: () => string;
   now?: () => number;
   /** diagnostics: never given names, emails or tokens */
@@ -78,9 +87,14 @@ const WRITER_ROLES = new Set(["owner", "admin", "member"]);
 function fail(reason: Exclude<PublicFailure, "network">, message?: string, extra: Record<string, unknown> = {}): PublicFormResponse {
   return { status: FAILURE_STATUS[reason], body: { reason, error: message ?? FAILURE_MESSAGES[reason], ...extra } };
 }
-function limited(retryAfter: number): PublicFormResponse {
+/** 429. scope "sender": this address or this email has sent a lot; "form": the form's hourly allowance is used up. */
+function limited(retryAfter: number, scope: RateLimitScope = "sender"): PublicFormResponse {
   const s = Math.max(1, Math.ceil(retryAfter || 60));
-  return { status: 429, body: { reason: "rate_limited", error: FAILURE_MESSAGES.rate_limited, retryAfter: s }, headers: { "Retry-After": String(s) } };
+  return {
+    status: 429,
+    body: { reason: "rate_limited", scope, error: RATE_LIMIT_MESSAGES[scope], retryAfter: s },
+    headers: { "Retry-After": String(s) },
+  };
 }
 const dbError = (e: unknown) => {
   const err = e as { code?: string; message?: string } | null;
@@ -134,13 +148,20 @@ async function findTarget(db: Db, token: string, log?: PublicFormDeps["log"]): P
     if (!p || (p as ProjectRow).archived_at) return { ok: false, reason: "disabled" };
     project = p as ProjectRow;
   } else if (f.project_id === PERSONAL.id && !f.workspace_id) {
-    project = { ...PERSONAL, owner_id: f.user_id, workspace_id: null };
+    project = { ...PERSONAL, user_id: f.user_id, owner_id: f.user_id, workspace_id: null };
   } else {
     return { ok: false, reason: "disabled" };
   }
   // a form only ever files into its own team: a project and form that disagree take nothing
-  const wsOf = (v: string | null | undefined) => (v ? String(v).toLowerCase() : null);
-  if (wsOf(project.workspace_id) !== wsOf(f.workspace_id)) return { ok: false, reason: "disabled" };
+  const idOf = (v: string | null | undefined) => (v ? String(v).toLowerCase() : null);
+  if (idOf(project.workspace_id) !== idOf(f.workspace_id)) return { ok: false, reason: "disabled" };
+  // ...and a personal form only into its creator's own projects. forms.project_id is
+  // free text: without this, a form could point at anyone's personal project and
+  // show its name to strangers, file tasks into it and reach its owner's Inbox.
+  if (!f.workspace_id && idOf(project.user_id) !== idOf(f.user_id)) {
+    log?.("public-form: personal form points at a project its creator doesn't own");
+    return { ok: false, reason: "disabled" };
+  }
 
   let workspace: WorkspaceRow | null = null;
   if (f.workspace_id) {
@@ -159,25 +180,33 @@ async function findTarget(db: Db, token: string, log?: PublicFormDeps["log"]): P
   return { ok: true, target: { form: f, project, workspace, fields: publicFieldsOf(f.fields) } };
 }
 
-/** The project's owner if they can take it (an active writer in good standing), else the
- *  form's creator, else the team's owner. Also says whether they want an Inbox item. */
+/** Who gets the request, and whether they want an Inbox item. Only someone who
+ *  could see the task in the app (is_task_audience): on a personal form that's
+ *  its creator, nobody else, whatever the project row says. On a team form:
+ *  the project's owner if they're an active writer in good standing, else the
+ *  form's creator on the same terms, else the team's owner (always in the team). */
 async function chooseAssignee(db: Db, t: Target, log?: PublicFormDeps["log"]): Promise<{ id: string; notify: boolean }> {
-  const candidates = [...new Set([t.project.owner_id, t.form.user_id, t.workspace?.owner_id].filter((x): x is string => typeof x === "string" && UUID.test(x)))];
-  const fallback = t.workspace?.owner_id ?? t.form.user_id;
+  const ws = t.workspace;
+  const candidates = ws
+    ? [...new Set([t.project.owner_id, t.form.user_id, ws.owner_id].filter((x): x is string => typeof x === "string" && UUID.test(x)))]
+    : [t.form.user_id];
+  const fallback = ws ? ws.owner_id : t.form.user_id;
   const profiles = await profilesOf(db, candidates, log);
-  let writers: Set<string> | null = null;
-  if (t.workspace) {
+  let writers = new Set<string>();
+  if (ws) {
     const { data, error } = await db.from("workspace_members").select("user_id, role, status")
-      .eq("workspace_id", t.workspace.id).in("user_id", candidates);
+      .eq("workspace_id", ws.id).in("user_id", candidates);
+    // can't tell who's still in the team: only the team's owner is certain
     if (error) log?.("public-form: members lookup failed", dbError(error));
     else writers = new Set(((data ?? []) as { user_id: string; role: string; status: string }[])
       .filter((m) => m.status === "active" && WRITER_ROLES.has(m.role)).map((m) => m.user_id));
   }
-  const eligible = (id: string) =>
-    inGoodStanding(profiles?.get(id)) && (!t.workspace || id === t.workspace.owner_id || writers === null || writers.has(id));
+  const eligible = (id: string) => inGoodStanding(profiles?.get(id)) && (!ws || id === ws.owner_id || writers.has(id));
   const id = candidates.find(eligible) ?? fallback;
+  // notif_on(user, 'assigned'): on unless they've switched it off (a stored "false" counts too)
   const prefs = profiles?.get(id)?.notify_prefs;
-  return { id, notify: !(prefs && typeof prefs === "object" && (prefs as Record<string, unknown>).assigned === false) };
+  const assigned = prefs && typeof prefs === "object" ? (prefs as Record<string, unknown>).assigned : undefined;
+  return { id, notify: !(assigned === false || assigned === "false") };
 }
 
 export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormDeps): Promise<PublicFormResponse> {
@@ -232,18 +261,24 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
   const s = checked.value;
 
   const perForm = await deps.hit(`${KEY_PREFIX}pf:form:${await deps.hash(token)}`, PUBLIC_FORM_LIMITS.postPerForm);
-  if (!perForm.allowed) return limited(perForm.retryAfter);
+  if (!perForm.allowed) return limited(perForm.retryAfter, "form");
   const perEmail = await deps.hit(`${KEY_PREFIX}pf:email:${await deps.hash(s.email)}`, PUBLIC_FORM_LIMITS.postPerEmail);
   if (!perEmail.allowed) return limited(perEmail.retryAfter);
 
   const assignee = await chooseAssignee(db, t, log);
   const now = deps.now?.() ?? Date.now();
+  // the id is chosen here so the reference the requester is given is in the
+  // task itself (its description), where the team's search finds it
+  const newId = deps.randomId();
+  if (!UUID.test(newId)) return fail("unavailable", "Your request wasn't saved. Try again in a few minutes.");
+  const reference = taskReference(newId);
   const row: Record<string, unknown> = {
+    id: newId,
     user_id: t.form.user_id,
     workspace_id: t.form.workspace_id,
     project_id: t.form.project_id,
     title: s.title,
-    description: requestDescription(t.form.name, s),
+    description: requestDescription(t.form.name, s, reference),
     status: "todo",
     priority: s.priority ?? "medium",
     assignee_id: assignee.id,
@@ -270,5 +305,5 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
     });
     if (actErr) log?.("public-form: activity insert failed", dbError(actErr));
   }
-  return { status: 200, body: { ok: true, reference: taskReference(taskId) } };
+  return { status: 200, body: { ok: true, reference } };
 }

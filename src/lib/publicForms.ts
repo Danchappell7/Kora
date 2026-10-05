@@ -21,15 +21,19 @@
    The validation rules, caps and messages are shared with the function
    (supabase/functions/_shared/publicForm.ts): one copy, never drifting.
    main.tsx imports this module at startup, so it stays small: no React,
-   no demo data, nothing from the app shell.
+   no demo data, nothing from the app shell. The page itself never uses
+   the Supabase client: it talks to the function with plain fetch, no
+   cookies and no Kanbo session.
    ============================================================ */
 import type { PublicFormFailure, PublicFormLoad, PublicFormResult, PublicFormSchema, PublicFormSubmission } from "../data/types";
 import {
-  checkSubmission, FAILURE_MESSAGES, isPublicToken, parsePublicSchema, PUBLIC_LIMITS, type PublicFieldKey,
+  checkSubmission, FAILURE_MESSAGES, isPublicToken, parsePublicSchema, PUBLIC_LIMITS, RATE_LIMIT_MESSAGES,
+  type PublicFieldKey, type RateLimitScope,
 } from "../../supabase/functions/_shared/publicForm.ts";
 import { supabase } from "./supabase";
 
-export { PUBLIC_LIMITS, PUBLIC_PRIORITIES, FIELD_MESSAGES, FAILURE_MESSAGES, isPublicToken } from "../../supabase/functions/_shared/publicForm.ts";
+export { PUBLIC_LIMITS, PUBLIC_PRIORITIES, FIELD_MESSAGES, FAILURE_MESSAGES, RATE_LIMIT_MESSAGES, isPublicToken } from "../../supabase/functions/_shared/publicForm.ts";
+export type { RateLimitScope } from "../../supabase/functions/_shared/publicForm.ts";
 
 /** The token /f/demo uses: the page renders demoPublicForm() and fakes a submission. */
 export const DEMO_PUBLIC_TOKEN = "demo";
@@ -81,10 +85,12 @@ export interface PublicFormCallOptions {
   demoDelayMs?: number;
 }
 
-/** What a failed submission says about each field (the server's own words). */
+/** What a failed submission says about each field (the server's own words),
+ *  and for a 429 whose limit it hit ("form": the form's hourly allowance). */
 export type PublicSubmitResult = PublicFormResult & {
   field?: keyof PublicFormSubmission;
   fields?: Partial<Record<keyof PublicFormSubmission, string>>;
+  scope?: RateLimitScope;
 };
 
 const envBase = (): string => {
@@ -125,7 +131,10 @@ function failureFrom(res: Response, body: Record<string, unknown> | null): Publi
   const said = typeof body?.reason === "string" && (REASONS as readonly string[]).includes(body.reason) ? (body.reason as PublicFormFailure) : null;
   const retryRaw = Number(body?.retryAfter ?? res.headers?.get?.("Retry-After") ?? 0);
   const retryAfter = Number.isFinite(retryRaw) && retryRaw > 0 ? Math.ceil(retryRaw) : undefined;
-  if (res.status === 429 || said === "rate_limited") return failed("rate_limited", FAILURE_MESSAGES.rate_limited, retryAfter ?? 60);
+  if (res.status === 429 || said === "rate_limited") {
+    const scope: RateLimitScope = body?.scope === "form" ? "form" : "sender";
+    return { ...failed("rate_limited", RATE_LIMIT_MESSAGES[scope], retryAfter ?? 60), scope };
+  }
   if (res.status === 410 || said === "disabled") return failed("disabled");
   // a 404 without our reason is the gateway's: the function isn't deployed yet
   if (res.status === 404) return said === "not_found" ? failed("not_found") : failed("unavailable");
@@ -303,10 +312,11 @@ let pageProbe: Promise<PublicLinksStatus["page"]> | null = null;
 /** Probe once per session (an "unknown" answer is tried again next time). Never throws. */
 export async function publicLinksStatus(opts: PublicFormCallOptions & { checkPage?: boolean } = {}): Promise<PublicLinksStatus> {
   if (!supabase) return { links: "demo", page: "demo" };
+  const db = supabase;
   if (!linksProbe) {
     linksProbe = (async (): Promise<PublicLinksStatus["links"]> => {
       try {
-        const { error } = await supabase!.from("forms").select("public_enabled").limit(0);
+        const { error } = await db.from("forms").select("public_enabled").limit(0);
         if (!error) return "ready";
         return isMissingFeature(error) ? "unavailable" : "unknown";
       } catch { return "unknown"; }

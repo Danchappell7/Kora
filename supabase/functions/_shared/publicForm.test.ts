@@ -2,9 +2,9 @@
 // The rules the public-form function and the /f/<token> page share.
 import { describe, expect, it } from "vitest";
 import {
-  buildPublicSchema, charLength, checkSubmission, cleanLine, cleanText, FIELD_MESSAGES, isEmailShape, isHoneypotHit,
+  buildPublicSchema, charLength, checkSubmission, cleanLine, cleanText, FAILURE_MESSAGES, FIELD_MESSAGES, isEmailShape, isHoneypotHit,
   isIsoDay, isPublicToken, parsePublicSchema, PUBLIC_LIMITS, publicFieldsOf, requestDescription, requestLine,
-  safeColour, safeLogoUrl, taskReference,
+  identityColour, RATE_LIMIT_MESSAGES, safeColour, safeLogoUrl, SPECTRUM_HUES, stableHash, taskReference,
 } from "./publicForm.ts";
 
 const ALL = ["description", "priority", "dueDate"] as const;
@@ -98,10 +98,19 @@ describe("the task it files", () => {
       .toBe("Request via Design requests (public link).\n\nFrom: Sam Jones <sam@example.com>\n\nBigger banner.\nThanks");
     expect(requestDescription("Design requests", { name: "Sam", email: "sam@example.com" }))
       .toBe("Request via Design requests (public link).\n\nFrom: Sam <sam@example.com>");
+
+    // the reference the requester was given sits under who sent it, never on the first line
+    expect(requestDescription("Design requests", { name: "Sam", email: "sam@example.com", description: "Bigger." }, "KB-7F3A9C"))
+      .toBe("Request via Design requests (public link).\n\nFrom: Sam <sam@example.com>\nReference: KB-7F3A9C\n\nBigger.");
   });
   it("a short reference from the task id", () => {
     expect(taskReference("7f3a9c12-0000-4000-8000-000000000000")).toBe("KB-7F3A9C");
     expect(taskReference("ab")).toBe("KB-AB0000");
+  });
+  it("a 429 says whose limit it is", () => {
+    expect(RATE_LIMIT_MESSAGES.sender).toBe(FAILURE_MESSAGES.rate_limited);
+    expect(RATE_LIMIT_MESSAGES.form).toMatch(/^This form has had a lot of requests/);
+    expect(RATE_LIMIT_MESSAGES.form).not.toMatch(/from here|!/);
   });
   it("the honeypot", () => {
     expect(isHoneypotHit({ website: "http://spam.example" })).toBe(true);
@@ -141,6 +150,24 @@ describe("the public schema", () => {
     expect(safeColour("#5B7CFA")).toBe("#5B7CFA");
     expect(safeColour("rgb(1, 2, 3)")).toBe("rgb(1, 2, 3)");
     expect(safeColour("expression(alert(1))")).toBe("oklch(0.62 0.16 270)");
+  });
+  it("a project's colour: its own when it has a hue, else the hue the app gives its id", () => {
+    const id = "22222222-2222-4222-8222-222222222222";
+    const hashed = `oklch(0.62 0.15 ${SPECTRUM_HUES[stableHash(id) % 12]})`;
+    expect(identityColour("oklch(0.62 0.16 293)", id)).toBe("oklch(0.62 0.16 293)");
+    expect(identityColour("oklch(62% 40% 160)", id)).toBe("oklch(62% 40% 160)");
+    expect(identityColour("#5B7CFA", id)).toBe("#5B7CFA");
+    // a grey, nothing, or something unsafe: where the app falls back to the id's hash
+    for (const grey of ["oklch(0.6 0 0)", "oklch(0.7 0.01 120)", "oklch(50% 2% 40)", "", null, "url(javascript:x)"]) {
+      expect(identityColour(grey, id)).toBe(hashed);
+    }
+    // without an id (the page reading what it was sent) it's only made safe
+    expect(identityColour("oklch(0.6 0 0)")).toBe("oklch(0.6 0 0)");
+    expect(identityColour("url(x)")).toBe("oklch(0.62 0.16 270)");
+    // and the schema never carries the id
+    const out = buildPublicSchema({ form: { name: "F", fields: [] }, project: { id, name: "P", color: "oklch(0.6 0 0)" }, workspace: null });
+    expect(out.project).toEqual({ name: "P", emoji: "", color: hashed });
+    expect(JSON.stringify(out)).not.toContain(id);
   });
   it("reads what came over the wire, or nothing", () => {
     const wire = { name: "Design requests", intro: "Hi", project: { name: "Web", emoji: "🎨", color: "#123456" }, workspace: { name: "Foundrise", logoUrl: null }, fields: ["description", "assignee"], secret: "x" };

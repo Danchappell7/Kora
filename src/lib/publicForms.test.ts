@@ -6,11 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyPublicTheme, DEMO_PUBLIC_TOKEN, demoPublicForm, FAILURE_MESSAGES, FIELD_MESSAGES, loadPublicForm, localISODate,
   publicFormEndpoint, publicFormTokenFromPath, publicFormUrl, publicLinksStatus, regenerateFormLink, setFormPublic,
-  submissionBody, submitPublicForm, validateSubmission, PUBLIC_LIMITS,
+  submissionBody, submitPublicForm, validateSubmission, PUBLIC_LIMITS, RATE_LIMIT_MESSAGES,
 } from "./publicForms";
 import { isRequestTask, requestSource } from "./inboxTriage";
-import { requestDescription } from "../../supabase/functions/_shared/publicForm.ts";
+import { identityColour, requestDescription, SPECTRUM_HUES, stableHash as sharedHash } from "../../supabase/functions/_shared/publicForm.ts";
+import { projectSpectrum, SPECTRUM, stableHash } from "./projectIdentity";
 import { DEMO_FORMS, PROJECTS, WORKSPACES } from "../data/data";
+import { EMPTY_QUERY, taskMatchesQuery } from "./searchQuery";
+import type { Task } from "../data/types";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 const BASE = "https://abc.supabase.co";
@@ -65,6 +68,23 @@ describe("the demo form", () => {
   });
 });
 
+describe("the project's identity on the public page", () => {
+  it("the function's copy of the spectrum and the hash are the app's own", () => {
+    expect([...SPECTRUM_HUES]).toEqual(SPECTRUM.map((s) => s.hue));
+    for (const id of ["", "p-personal", "22222222-2222-4222-8222-222222222222", "ünïcode"]) expect(sharedHash(id)).toBe(stableHash(id));
+  });
+  it("wears the hue it has in Kanbo, whatever the page's stand-in id", () => {
+    const ids = ["22222222-2222-4222-8222-222222222222", "7f3a9c01-0000-4000-8000-000000000001", "p-personal-x"];
+    for (const id of ids) {
+      for (const color of ["oklch(0.62 0.16 293)", "oklch(0.6 0 0)", "#5B7CFA", "", "garbage"]) {
+        const inApp = projectSpectrum({ id, color }).key;
+        const onPage = projectSpectrum({ id: "public:Website refresh", color: identityColour(color, id) }).key;
+        expect(onPage).toBe(inApp);
+      }
+    }
+  });
+});
+
 describe("validateSubmission (the page's check before sending)", () => {
   it("uses the server's rules plus 'not before today'", () => {
     const today = localISODate();
@@ -84,9 +104,20 @@ describe("validateSubmission (the page's check before sending)", () => {
 
 describe("the task a submission files", () => {
   it("is recognised by the Inbox as a request, from the right form", () => {
-    const description = requestDescription("Design requests", { name: "Sam", email: "sam@example.com", description: "Bigger." });
+    const description = requestDescription("Design requests", { name: "Sam", email: "sam@example.com", description: "Bigger." }, "KB-7F3A9C");
     expect(isRequestTask({ description })).toBe(true);
     expect(requestSource({ description })).toBe("Design requests (public link)");
+  });
+  it("is found by the reference the requester was given (Search looks through descriptions)", () => {
+    const description = requestDescription("Design requests", { name: "Sam", email: "sam@example.com" }, "KB-7F3A9C");
+    const task: Task = {
+      id: "t-ref", title: "New hero banner", description, status: "todo", priority: "medium", projectId: "p-public-ref",
+      assigneeId: "", tags: [], dependencies: [], subtasks: [], focusMin: 30, comments: 0, aiScore: 0,
+    };
+    expect(taskMatchesQuery(task, { ...EMPTY_QUERY, text: "KB-7F3A9C" })).toBe(true);
+    expect(taskMatchesQuery(task, { ...EMPTY_QUERY, text: "kb-7f3a9c" })).toBe(true);
+    expect(taskMatchesQuery(task, { ...EMPTY_QUERY, text: "7F3A9C" })).toBe(true);
+    expect(taskMatchesQuery(task, { ...EMPTY_QUERY, text: "KB-000000" })).toBe(false);
   });
 });
 
@@ -151,7 +182,11 @@ describe("submitPublicForm", () => {
     expect(await submitPublicForm(TOKEN, s, { baseUrl: BASE, fetchImpl })).toEqual({ ok: false, reason: "invalid", message: "Bad email", field: "email", fields: { email: "Bad email" } });
   });
   it("rate limits, switched off, offline", async () => {
-    expect(await submitPublicForm(TOKEN, s, { baseUrl: BASE, fetchImpl: answer(429, { reason: "rate_limited", retryAfter: 300 }).fetchImpl })).toMatchObject({ reason: "rate_limited", retryAfter: 300 });
+    expect(await submitPublicForm(TOKEN, s, { baseUrl: BASE, fetchImpl: answer(429, { reason: "rate_limited", retryAfter: 300 }).fetchImpl }))
+      .toMatchObject({ reason: "rate_limited", retryAfter: 300, scope: "sender", message: RATE_LIMIT_MESSAGES.sender });
+    // the form's own hourly allowance is used up: said as the form being busy, not "from here"
+    expect(await submitPublicForm(TOKEN, s, { baseUrl: BASE, fetchImpl: answer(429, { reason: "rate_limited", scope: "form", retryAfter: 1800 }).fetchImpl }))
+      .toMatchObject({ reason: "rate_limited", retryAfter: 1800, scope: "form", message: RATE_LIMIT_MESSAGES.form });
     expect(await submitPublicForm(TOKEN, s, { baseUrl: BASE, fetchImpl: answer(410, { reason: "disabled" }).fetchImpl })).toMatchObject({ reason: "disabled" });
     expect(await submitPublicForm(TOKEN, s, { baseUrl: BASE, fetchImpl: answer(200, { ok: false }).fetchImpl })).toMatchObject({ reason: "unavailable" });
     const down = vi.fn(async () => { throw new TypeError("Load failed"); }) as unknown as typeof fetch;

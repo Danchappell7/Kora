@@ -166,13 +166,24 @@ describe("sending", () => {
     fill("What do you need?", "Banner"); fill("Your name", "Sam"); fill("Your email", "sam@example.com");
     send();
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/Wait about 4 minutes/);
+    expect(alert).toHaveTextContent(/a lot of requests from here\. Wait about 4 minutes/);
     expect(alert).toHaveTextContent(/Your answers are still here/);
     await waitFor(() => expect(alert).toHaveFocus());
     expect(screen.getByLabelText("What do you need?")).toHaveValue("Banner");
     net.submit = vi.fn(async () => ({ ok: false, reason: "network", message: "x" }));
     send();
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/couldn't be reached/));
+  });
+  it("the form's hourly allowance is used up: says the form is busy, not their network", async () => {
+    loads({ ok: true, form: FORM });
+    net.submit = vi.fn(async () => ({ ok: false, reason: "rate_limited", message: "x", retryAfter: 1800, scope: "form" }));
+    render(<PublicFormPage token={TOKEN} />);
+    await screen.findByRole("heading", { name: "Design requests" });
+    fill("What do you need?", "Banner"); fill("Your name", "Sam"); fill("Your email", "sam@example.com");
+    send();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/This form has had a lot of requests in the last hour\. Wait about 30 minutes/);
+    expect(alert).not.toHaveTextContent(/from here/);
   });
   it("switched off while they were filling it in: the form gives way to the explanation", async () => {
     loads({ ok: true, form: FORM });

@@ -4,7 +4,7 @@
 // and the real rate limiter from _shared/limits.ts.
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashKey, hit, KEY_PREFIX } from "../_shared/limits.ts";
-import { FIELD_MESSAGES } from "../_shared/publicForm.ts";
+import { FIELD_MESSAGES, identityColour, RATE_LIMIT_MESSAGES } from "../_shared/publicForm.ts";
 import { handlePublicForm, PUBLIC_FORM_LIMITS, type PublicFormDeps, type PublicFormRequest } from "./handler.ts";
 
 type Row = Record<string, unknown>;
@@ -52,8 +52,9 @@ class Query implements PromiseLike<{ data: unknown; error: unknown }> {
     const rows = this.db.rows(this.table);
     const match = (r: Row) => this.filters.every((f) => f(r));
     if (this.op === "insert") {
+      // like Postgres: an id given is kept, otherwise one is made up
       const row = { id: `00000000-0000-4000-8000-${String(++this.db.seq).padStart(12, "0")}`, ...this.payload };
-      if (this.table === "tasks") row.id = `7f3a9c${String(this.db.seq).padStart(2, "0")}-0000-4000-8000-000000000000`;
+      if (rows.some((r) => r.id === row.id)) return { data: null, error: { code: "23505", message: "duplicate key" } };
       rows.push(row);
       return { data: this.mode === "many" ? [row] : row, error: null };
     }
@@ -96,7 +97,7 @@ const deps = (): PublicFormDeps => ({
   db,
   hit: (key, opts) => hit(db, key, { ...opts, now: clock }),
   hash: hashKey,
-  randomId: () => `deadbeef-0000-4000-8000-${String(++ids).padStart(12, "0")}`,
+  randomId: () => `7f3a9c01-0000-4000-8000-${String(++ids).padStart(12, "0")}`,
   now: () => clock,
 });
 const get = (token: string | null = TOKEN, ip = "203.0.113.7") => handlePublicForm({ method: "GET", token, ip }, deps());
@@ -107,6 +108,7 @@ const good = { title: "New hero banner", name: "Sam Jones", email: "sam@example.
 beforeEach(() => {
   db = new FakeDb();
   clock = T0;
+  ids = 0;
   db.rows("workspaces").push({ id: WS, name: "Foundrise", logo_url: "https://abc.supabase.co/storage/v1/object/public/avatars/x/logo.png", owner_id: OWNER });
   db.rows("workspace_members").push(
     { workspace_id: WS, user_id: OWNER, role: "owner", status: "active" },
@@ -136,6 +138,13 @@ describe("GET: the form's public face", () => {
     });
     const wire = JSON.stringify(r.body);
     for (const secret of [TOKEN, WS, OWNER, CREATOR, LEAD, PROJECT, FORM, "assignee"]) expect(wire).not.toContain(secret);
+  });
+  it("a grey project wears the hue Kanbo gives it, without the page seeing its id", async () => {
+    db.rows("projects").find((p) => p.id === PROJECT)!.color = "oklch(0.6 0 0)";
+    const r = await get();
+    expect((r.body.form as { project: { color: string } }).project.color).toBe(identityColour("oklch(0.6 0 0)", PROJECT));
+    expect((r.body.form as { project: { color: string } }).project.color).not.toBe("oklch(0.6 0 0)");
+    expect(JSON.stringify(r.body)).not.toContain(PROJECT);
   });
   it("a token of the wrong shape is not found, without a database query", async () => {
     for (const t of [null, "", "demo", "short", "../../etc/passwd", "a".repeat(200)]) {
@@ -200,9 +209,11 @@ describe("POST: filing a request", () => {
     expect(r).toEqual({ status: 200, body: { ok: true, reference: "KB-7F3A9C" } });
     expect(tasks()).toHaveLength(1);
     expect(tasks()[0]).toMatchObject({
+      id: "7f3a9c01-0000-4000-8000-000000000001",
       user_id: CREATOR, workspace_id: WS, project_id: PROJECT, title: "New hero banner", status: "todo", priority: "high",
       assignee_id: LEAD, due_date: "2026-10-20", plan_today: false, ai_score: 50, position: T0,
-      description: "Request via Design requests (public link).\n\nFrom: Sam Jones <sam@example.com>\n\nBigger and bolder.",
+      // the reference they were given is in the task, so the team can find it when they quote it
+      description: "Request via Design requests (public link).\n\nFrom: Sam Jones <sam@example.com>\nReference: KB-7F3A9C\n\nBigger and bolder.",
     });
     expect(activity()).toEqual([expect.objectContaining({ user_id: LEAD, task_id: tasks()[0].id, task_title: "New hero banner", kind: "assigned", detail: "Request via Design requests (public link)" })]);
   });
@@ -227,7 +238,7 @@ describe("POST: filing a request", () => {
   it("the honeypot: looks like it worked, stores nothing", async () => {
     const r = await post({ ...good, website: "https://cheap-pills.example" });
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ ok: true, reference: "KB-DEADBE" });
+    expect(r.body).toEqual({ ok: true, reference: "KB-7F3A9C" });
     expect(tasks()).toHaveLength(0);
     expect(activity()).toHaveLength(0);
     expect(db.log.filter((l) => !l.includes("rate_limits"))).toEqual([]);
@@ -242,8 +253,16 @@ describe("POST: filing a request", () => {
     for (let i = 0; i < PUBLIC_FORM_LIMITS.postPerIp.max; i++) expect((await post({ ...good, email: `p${i}@example.com` })).status).toBe(200);
     const r = await post({ ...good, email: "late@example.com" });
     expect(r.status).toBe(429);
+    expect(r.body).toMatchObject({ reason: "rate_limited", scope: "sender", error: RATE_LIMIT_MESSAGES.sender });
     expect(r.body.retryAfter).toBeGreaterThan(0);
     expect(tasks()).toHaveLength(PUBLIC_FORM_LIMITS.postPerIp.max);
+    // another network has its own allowance
+    expect((await post({ ...good, email: "elsewhere@example.com" }, { ip: "198.51.100.20" })).status).toBe(200);
+  });
+  it("lets a room on one network send: a QR code on a poster, everyone on the office Wi-Fi", async () => {
+    expect(PUBLIC_FORM_LIMITS.postPerIp.max).toBeGreaterThanOrEqual(30);
+    for (let i = 0; i < 25; i++) expect((await post({ ...good, email: `colleague${i}@example.com` })).status).toBe(200);
+    expect(tasks()).toHaveLength(25);
   });
   it("limits sends per email address (whatever the IP)", async () => {
     for (let i = 0; i < PUBLIC_FORM_LIMITS.postPerEmail.max; i++) expect((await post(good, { ip: `198.51.100.${i}` })).status).toBe(200);
@@ -254,11 +273,23 @@ describe("POST: filing a request", () => {
     for (let i = 0; i < PUBLIC_FORM_LIMITS.postPerForm.max; i++) {
       expect((await post({ ...good, email: `p${i}@example.com` }, { ip: `10.0.${Math.floor(i / 200)}.${i % 200}` })).status).toBe(200);
     }
-    expect((await post({ ...good, email: "one-more@example.com" }, { ip: "10.9.9.9" })).status).toBe(429);
+    const r = await post({ ...good, email: "one-more@example.com" }, { ip: "10.9.9.9" });
+    expect(r.status).toBe(429);
+    // the visitor is told it's the form that's busy, not their network
+    expect(r.body).toMatchObject({ reason: "rate_limited", scope: "form", error: RATE_LIMIT_MESSAGES.form });
     expect(db.rows("rate_limits").some((x) => String(x.key).includes(TOKEN))).toBe(false);
     expect(db.rows("rate_limits").every((x) => String(x.key).startsWith(KEY_PREFIX + "pf:"))).toBe(true);
     clock += 3600_000;
     expect((await post({ ...good, email: "next-hour@example.com" }, { ip: "10.9.9.9" })).status).toBe(200);
+  });
+  it("a regenerated link starts a fresh allowance", async () => {
+    for (let i = 0; i < PUBLIC_FORM_LIMITS.postPerForm.max; i++) {
+      await post({ ...good, email: `p${i}@example.com` }, { ip: `10.1.${Math.floor(i / 200)}.${i % 200}` });
+    }
+    expect((await post({ ...good, email: "x@example.com" }, { ip: "10.9.9.8" })).status).toBe(429);
+    const fresh = "fedcba9876543210fedcba9876543210";
+    form().public_token = fresh;
+    expect((await post({ ...good, email: "y@example.com" }, { ip: "10.9.9.8", token: fresh })).status).toBe(200);
   });
   it("without an IP it still applies the per-form and per-email limits", async () => {
     for (let i = 0; i < PUBLIC_FORM_LIMITS.postPerEmail.max; i++) expect((await post(good, { ip: "" })).status).toBe(200);
@@ -292,11 +323,21 @@ describe("POST: who gets it", () => {
     expect((await post(good)).status).toBe(200);
     expect(tasks()).toHaveLength(1);
     expect(activity()).toHaveLength(0);
+    // stored as text, as notif_on's ::boolean reads it
+    db.rows("profiles")[2].notify_prefs = { assigned: "false" };
+    await post({ ...good, email: "c@example.com" });
+    expect(tasks()).toHaveLength(2);
+    expect(activity()).toHaveLength(0);
+    // anything else (or nothing) leaves it on
+    db.rows("profiles")[2].notify_prefs = { mention: false };
+    await post({ ...good, email: "d@example.com" });
+    expect(activity()).toEqual([expect.objectContaining({ user_id: LEAD })]);
   });
-  it("still files the task when the members lookup fails (assigns the project's owner)", async () => {
+  it("still files the task when the members lookup fails, for the team's owner (the one person surely in the team)", async () => {
     db.broken.set("workspace_members", { code: "XX000", message: "boom" });
     expect((await post(good)).status).toBe(200);
-    expect(tasks()[0].assignee_id).toBe(LEAD);
+    expect(tasks()[0].assignee_id).toBe(OWNER);
+    expect(activity()).toEqual([expect.objectContaining({ user_id: OWNER })]);
   });
   it("says so when the task can't be saved, and writes no Inbox item", async () => {
     db.broken.set("tasks", { code: "23514", message: "check constraint" });
@@ -309,5 +350,57 @@ describe("POST: who gets it", () => {
     Object.assign(form(), { workspace_id: null, project_id: "p-personal" });
     await post(good);
     expect(tasks()[0]).toMatchObject({ user_id: CREATOR, workspace_id: null, project_id: "p-personal", assignee_id: CREATOR });
+  });
+});
+
+describe("a personal form only reaches its creator's own work", () => {
+  const STRANGER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const THEIRS = "44444444-4444-4444-8444-444444444444";
+  const MINE = "55555555-5555-4555-8555-555555555555";
+  beforeEach(() => {
+    db.rows("profiles").push({ id: STRANGER, suspended: false, approved: true, notify_prefs: {} });
+    db.rows("projects").push(
+      { id: THEIRS, user_id: STRANGER, name: "Stranger's secret project", emoji: "🔒", color: "oklch(0.6 0.1 20)", owner_id: STRANGER, workspace_id: null, archived_at: null },
+      { id: MINE, user_id: CREATOR, name: "Side project", emoji: "🌱", color: "oklch(0.6 0.1 140)", owner_id: CREATOR, workspace_id: null, archived_at: null },
+    );
+  });
+
+  it("pointed at someone else's personal project, it shows nothing about it", async () => {
+    Object.assign(form(), { workspace_id: null, project_id: THEIRS, name: "Spoof" });
+    const r = await get();
+    expect(r.status).toBe(410);
+    expect(r.body.reason).toBe("disabled");
+    expect(JSON.stringify(r.body)).not.toMatch(/secret|🔒/);
+    // the id's case doesn't get it past the check
+    form().project_id = THEIRS.toUpperCase();
+    expect((await get()).status).toBe(410);
+  });
+
+  it("pointed at someone else's personal project, it files nothing and tells nobody", async () => {
+    Object.assign(form(), { workspace_id: null, project_id: THEIRS, name: "Spoof" });
+    const r = await post({ ...good, title: "Your account is locked - click here" });
+    expect(r.status).toBe(410);
+    expect(tasks()).toHaveLength(0);
+    expect(activity()).toHaveLength(0);
+  });
+
+  it("pointed at a team's project, it takes nothing", async () => {
+    Object.assign(form(), { workspace_id: null, project_id: PROJECT });
+    expect((await get()).status).toBe(410);
+    expect((await post(good)).status).toBe(410);
+    expect(tasks()).toHaveLength(0);
+  });
+
+  it("on the creator's own project, only the creator is assigned or told, whoever the row names as owner", async () => {
+    Object.assign(form(), { workspace_id: null, project_id: MINE });
+    const r = await get();
+    expect(r.status).toBe(200);
+    expect(r.body.form).toMatchObject({ project: { name: "Side project", emoji: "🌱" }, workspace: null });
+    // projects.owner_id is only RLS-checked against the creator: it could name anyone
+    db.rows("projects").find((p) => p.id === MINE)!.owner_id = STRANGER;
+    expect((await post(good)).status).toBe(200);
+    expect(tasks()[0]).toMatchObject({ user_id: CREATOR, workspace_id: null, project_id: MINE, assignee_id: CREATOR });
+    expect(activity()).toEqual([expect.objectContaining({ user_id: CREATOR })]);
+    expect(activity().some((a) => a.user_id === STRANGER)).toBe(false);
   });
 });

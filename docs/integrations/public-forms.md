@@ -48,8 +48,9 @@ the existing catch-all rewrite and rendered before sign-in.
    reference like `KB-7F3A9C`.
 4. Back in Kanbo: the task is in the project, assigned to the project's owner,
    status To do, its description starting
-   `Request via <form name> (public link).` then `From: <name> <email>`. The
-   project owner has an Inbox item "New request: …".
+   `Request via <form name> (public link).` then `From: <name> <email>` and
+   `Reference: KB-…` (the reference the requester was given, so searching for
+   it finds the task). The project owner has an Inbox item "New request: …".
 5. Switch the link off and reload the public page: "This form isn't taking
    requests". Switch it on again: the same link works again.
 6. **Regenerate link** › confirm: the old link now says "We couldn't find this
@@ -71,9 +72,9 @@ curl -s -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/public-fo
 
 | Call | Answer |
 |---|---|
-| `GET ?t=<token>` | `200 { form }` — name, intro (the form's description), project name / emoji / colour, team name and logo, which of description / priority / due date it asks for. Nothing else: no ids, no people, no token. |
-| | `404 not_found` (no such link), `410 disabled` (switched off, or the project was archived or deleted, or the account behind it is suspended), `429 rate_limited` (+ `Retry-After`), `503 unavailable` (0043 missing or a database error) |
-| `POST ?t=<token>` | `200 { ok: true, reference }`, `400 invalid` (+ `field`, `fields`: the same messages the page shows), `404`, `410`, `429`, `503` |
+| `GET ?t=<token>` | `200 { form }` — name, intro (the form's description), project name / emoji / colour (the hue the project wears in Kanbo, worked out on the server when its stored colour is a grey), team name and logo, which of description / priority / due date it asks for. Nothing else: no ids, no people, no token. |
+| | `404 not_found` (no such link), `410 disabled` (switched off, or the project was archived or deleted, or the account behind it is suspended, or the form points at a project it can't file into), `429 rate_limited` (+ `Retry-After`), `503 unavailable` (0043 missing or a database error) |
+| `POST ?t=<token>` | `200 { ok: true, reference }`, `400 invalid` (+ `field`, `fields`: the same messages the page shows), `404`, `410`, `429` (+ `scope`: `sender` for this network or email address, `form` when the form's hourly allowance is used up; the page words each one), `503` |
 | `GET ?ping` | `200 { ok: true }` (lets the app see the function is deployed) |
 
 ## The rules it enforces
@@ -89,17 +90,29 @@ curl -s -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/public-fo
 - **Honeypot.** A hidden "website" field people never see. If it's filled in,
   the function answers with a normal-looking reference and stores nothing.
 - **Rate limits** (in `rate_limits`; IPs, emails and tokens are hashed):
-  reads 120 per IP per 10 minutes; sends 5 per IP per 10 minutes, 50 per form
-  per hour, 3 per email address per 10 minutes.
-- **Who gets the task.** The project's owner if they're an active owner, admin
-  or member in good standing; otherwise the form's creator; otherwise the
-  team's owner. The Inbox item respects their "assigned" notification setting.
+  reads 120 per IP per 10 minutes; sends 30 per IP per 10 minutes (an office
+  or event Wi-Fi is one address, and a QR code on a poster invites a queue),
+  100 per form per hour, 3 per email address per 10 minutes. Regenerating the
+  link starts the form's hourly allowance afresh.
+- **Whose project.** A team form only files into a project of its own team,
+  and a personal form only into its creator's own projects (`forms.project_id`
+  is free text, so the function checks it every time with the service role).
+  Anything else answers `410` and shows nothing about the project.
+- **Who gets the task.** On a team form: the project's owner if they're an
+  active owner, admin or member in good standing; otherwise the form's creator
+  on the same terms; otherwise the team's owner. On a personal form: always its
+  creator. The Inbox item respects their "assigned" notification setting.
 
 To clear the limits while testing:
 
-```sql
-delete from public.rate_limits where key like 'kanbo:pf:%';
-```
+1. Open the SQL editor: https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new
+2. Paste this and press **Run**:
+
+   ```sql
+   delete from public.rate_limits where key like 'kanbo:pf:%';
+   ```
+
+3. Send from the public page again.
 
 ## Where it lives
 
