@@ -11,11 +11,17 @@ import { offlineQueue, LEGACY_QUEUE_KEY, type QueuedMutation } from "../lib/offl
 import { reportError } from "../lib/monitoring";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
-  PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, SELF_COLOR,
+  PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
   DEMO_ACTIVITY, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
 } from "./data";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
+import type { TemplateApplyDeps } from "../lib/templates";
+import {
+  loadPlanState, restorePlanState, resetPlanState, planTableMissing, onPlanWrite, planMode, planUser, planEntry,
+  writePlan, withPlanDay, pendingPlans, settlePlan, discardPlan, prunePendingPlans, remapPlanTask, applyRemotePlan,
+  mergeOwnPlans, planRowToState, toPlanRow, PLAN_COLUMN, PLAN_FIELDS,
+} from "./planState";
 
 export interface Bootstrap {
   tasks: Task[];
@@ -555,6 +561,9 @@ function clearLocalOnSignOut() {
     stale.forEach((k) => localStorage.removeItem(k));
   } catch { /* storage unavailable */ }
   offlineQueue.setUser(null);
+  resetPlanState(); // their plans leave memory and this device's cache (unsaved writes stay theirs)
+  planRefusals.clear();
+  landedBeforePlans = [];
   claimedFor = null;
   deadRetriedFor = null;
   sessionGen++;
@@ -657,6 +666,203 @@ async function updateTaskRow(client: SupabaseClient, id: string, patch: Partial<
 async function deleteTaskRow(client: SupabaseClient, id: string): Promise<void> {
   const { error } = await client.from("tasks").delete().eq("id", id);
   if (error) throw error;
+}
+
+/* ============================================================
+   Plans that follow you (public.task_user_state, migration 0043).
+   Each person's own plan on a task — its slot, "on today" (with the
+   day it's for), their My-tasks section, Kanbo's ranking for them —
+   saved per person so it follows them to every device. The state
+   itself is in ./planState (lib/planOverlay reads and writes it):
+   - bootstrap loads the caller's rows (paged) and fills their plan
+     into their own tasks where the row has none;
+   - plans on teammates' tasks are written there by lib/planOverlay,
+     and the caller's own plan writes on their tasks are mirrored
+     there too once the row has them (updateTask, or the queue's
+     replay), so a task handed to them keeps its plan;
+   - every write is shown at once, kept on the device until it lands
+     (offline, or behind a queued create of its task), and upserted
+     in batches of one shape (an upsert only touches the columns it
+     names);
+   - realtime streams the caller's rows from their other devices.
+   Until 0043 is run the table is missing: everything stays as it was
+   (plans on the device), nothing is reported as an error.
+   ============================================================ */
+const PLAN_TABLE = "task_user_state";
+const PLAN_DEBOUNCE_MS = 400;
+const PLAN_BATCH = 200;
+/** a write the server keeps refusing (not a passing problem) is dropped after this many tries */
+const PLAN_MAX_REFUSALS = 3;
+let planFlushTimer: ReturnType<typeof setTimeout> | undefined;
+let planBackoff = 2000;
+let planFlushing: Promise<void> | null = null;
+const planRefusals = new Map<string, number>();
+/** realtime subscriptions waiting for the caller's plans to load before they listen to them */
+const planChannelOpeners = new Set<() => void>();
+/** When the table was last found missing: every reload doesn't ask again (and
+ *  log a 404) before 0043 is run, but a session picks it up within minutes after. */
+let planTableMissingAt = 0;
+const PLAN_RECHECK_MS = 10 * 60_000;
+
+/** The table isn't there yet (0043 not run): Postgres or PostgREST's schema cache says so. */
+function isMissingTable(e: unknown, table = PLAN_TABLE): boolean {
+  const code = String((e as { code?: unknown })?.code ?? "");
+  if (code === "42P01" || code === "PGRST205") return true;
+  const msg = String((e as { message?: unknown })?.message ?? "");
+  return msg.includes(table) && !/column/i.test(msg) && /does not exist|could not find the table|schema cache/i.test(msg);
+}
+
+/** The caller's plan rows, a page at a time; "missing" before 0043; null if
+ *  they couldn't be read this time (the device's last copy is used instead). */
+async function loadPlanRows(client: SupabaseClient, uid: string): Promise<TaskUserState[] | "missing" | null> {
+  if (planTableMissingAt && Date.now() - planTableMissingAt < PLAN_RECHECK_MS) return "missing";
+  const out: TaskUserState[] = [];
+  let after: string | null = null;
+  try {
+    for (let page = 0; page < 200; page++) {
+      let q = client.from(PLAN_TABLE).select("*").eq("user_id", uid).order("task_id", { ascending: true }).limit(TASK_PAGE);
+      if (after) q = q.gt("task_id", after);
+      const res = await q;
+      if (res.error) {
+        if (isMissingTable(res.error)) { planTableMissingAt = Date.now(); return "missing"; }
+        reportOnce("plan-state-load", res.error, { op: "bootstrap", part: "task_user_state" });
+        return null;
+      }
+      const got = (res.data as Record<string, unknown>[] | null) ?? [];
+      for (const r of got) { const s = planRowToState(r, uid); if (s) out.push(s); }
+      if (got.length < TASK_PAGE) break;
+      after = String(got[got.length - 1].task_id);
+    }
+  } catch (e) {
+    if (!isNetworkError(e)) reportOnce("plan-state-load", e, { op: "bootstrap", part: "task_user_state" });
+    return null;
+  }
+  planTableMissingAt = 0;
+  return out;
+}
+
+/** The caller's own plan, mirrored from a write to a task row once that write
+ *  has landed (updateTask, or replayQueue for a queued one) — never from one
+ *  the server refused, so a change shown as not saved can't come back from
+ *  their plan on the next load. `uid` is who made the write: nothing is
+ *  mirrored into anyone else's plans. A change that hands the task to someone
+ *  else leaves their plan alone (it's theirs, and stays theirs if they keep
+ *  helping on it); one that hands it to them keeps only what it sets — the
+ *  fields it clears were the last assignee's plan, not theirs. */
+function mirrorOwnPlan(id: string, patch: Partial<Task>, uid: string | null): void {
+  if (!uid || planUser() !== uid || planMode(uid) !== "server") return;
+  if ("assigneeId" in patch && patch.assigneeId !== uid) return;
+  const taking = "assigneeId" in patch;
+  const p: TaskUserStatePatch = {};
+  if ("planToday" in patch && (!taking || patch.planToday)) p.planToday = !!patch.planToday;
+  if ("scheduled" in patch && (!taking || patch.scheduled != null)) p.scheduled = patch.scheduled ?? null;
+  if ("mySectionId" in patch && (!taking || patch.mySectionId)) p.mySectionId = patch.mySectionId || null;
+  if (typeof patch.aiScore === "number") p.aiScore = patch.aiScore;
+  if (typeof patch.aiReason === "string") p.aiReason = patch.aiReason;
+  if (Object.keys(p).length) writePlan(id, withPlanDay(planEntry(id), todayISO(), p));
+}
+/** Queued writes that landed before their author's plans were loaded (a
+ *  replay at start-up): mirrored as soon as the plans are (see bootstrap). */
+let landedBeforePlans: { uid: string; id: string; patch: Partial<Task> }[] = [];
+function mirrorLanded(id: string, patch: Partial<Task>, uid: string): void {
+  if (planUser() === null) { if (landedBeforePlans.length < 500) landedBeforePlans.push({ uid, id, patch }); return; }
+  mirrorOwnPlan(id, patch, uid);
+}
+function mirrorLandedBeforePlans(uid: string): void {
+  const early = landedBeforePlans;
+  landedBeforePlans = [];
+  for (const e of early) if (e.uid === uid) mirrorOwnPlan(e.id, e.patch, uid);
+}
+
+function schedulePlanFlush(delay = PLAN_DEBOUNCE_MS) {
+  if (!supabase || planFlushTimer !== undefined || typeof window === "undefined") return;
+  planFlushTimer = setTimeout(() => { planFlushTimer = undefined; void flushPlans(); }, delay);
+}
+function retryPlansLater() {
+  schedulePlanFlush(planBackoff);
+  planBackoff = Math.min(planBackoff * 2, 60_000);
+}
+onPlanWrite(() => schedulePlanFlush());
+// back online: plans written meanwhile go up (the task queue has its own trigger)
+if (supabase && typeof window !== "undefined") {
+  window.addEventListener("online", () => { if (planMode() === "server" && pendingPlans().length) schedulePlanFlush(0); });
+}
+
+type PlanSend = { taskId: string; patch: TaskUserStatePatch };
+type PlanSendResult = "ok" | "offline" | "missing" | { error: unknown };
+/** One upsert of rows that all name the same columns. A column the database
+ *  doesn't have yet is stripped and the rest still saved. */
+async function upsertPlanRows(client: SupabaseClient, uid: string, part: PlanSend[]): Promise<PlanSendResult> {
+  let rows = part.map((p) => ({ task_id: p.taskId, user_id: uid, ...toPlanRow(p.patch) }));
+  for (let i = 0; i < PLAN_FIELDS.length + 1; i++) {
+    let error: unknown;
+    try { ({ error } = await client.from(PLAN_TABLE).upsert(rows, { onConflict: "task_id,user_id" })); }
+    catch (e) { error = e; }
+    if (!error) return "ok";
+    if (isNetworkError(error)) return "offline";
+    if (isMissingTable(error)) return "missing";
+    const miss = missingColumn((error as { message?: string }).message);
+    if (!miss || !Object.values(PLAN_COLUMN).includes(miss.col) || !rows.some((r) => miss.col in r)) return { error };
+    noteStripped(miss.col, PLAN_TABLE);
+    rows = rows.map((r) => { const c: Record<string, unknown> = { ...r }; delete c[miss.col]; return c as typeof r; });
+    if (rows.every((r) => Object.keys(r).length <= 2)) return "ok"; // nothing left to save but the key
+  }
+  return { error: new Error("task_user_state: could not save after stripping unknown columns") };
+}
+
+/** Save the caller's pending plan writes. One flush at a time; writes made
+ *  meanwhile are picked up by the next. Writes for tasks that are still being
+ *  created (a client id, or a queued create) wait for them. */
+async function flushPlans(): Promise<void> {
+  if (planFlushing) return planFlushing;
+  const client = supabase;
+  const uid = planUser();
+  if (!client || !uid || planMode(uid) !== "server" || isOffline()) return;
+  planFlushing = (async () => {
+    let sid: string | undefined;
+    try { sid = (await client.auth.getSession()).data.session?.user?.id; } catch { /* token refresh failing */ }
+    if (!sid) { if (!isOffline()) retryPlansLater(); return; }
+    if (sid !== uid || planUser() !== uid) return; // someone else is signed in: theirs only replay for them
+    const canSend = (id: string) => isUuid(id) && !offlineQueue.hasPending(id);
+    prunePendingPlans(isUuid);
+    const ready = pendingPlans().filter((p) => canSend(p.taskId));
+    if (!ready.length) return;
+    const groups = new Map<string, PlanSend[]>();
+    for (const p of ready) {
+      const key = Object.keys(toPlanRow(p.patch)).sort().join(",");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push({ taskId: p.taskId, patch: p.patch });
+    }
+    let again = false;
+    const refused = (p: PlanSend, error: unknown) => {
+      if (!isPermanentError(error)) { again = true; reportOnce("plan-state-retry", error, { op: "flushPlans" }); return; }
+      const n = (planRefusals.get(p.taskId) ?? 0) + 1;
+      if (n >= PLAN_MAX_REFUSALS) { planRefusals.delete(p.taskId); discardPlan(p.taskId); reportOnce("plan-state-refused", error, { op: "flushPlans" }); }
+      else { planRefusals.set(p.taskId, n); again = true; }
+    };
+    outer: for (const list of groups.values()) {
+      for (const part of chunk(list, PLAN_BATCH)) {
+        const res = await upsertPlanRows(client, uid, part);
+        if (res === "offline") { again = true; break outer; }
+        if (res === "missing") { planTableMissingAt = Date.now(); planTableMissing(); return; }
+        if (res === "ok") { part.forEach((p) => { planRefusals.delete(p.taskId); settlePlan(p.taskId, p.patch); }); continue; }
+        if (part.length === 1) { refused(part[0], res.error); continue; }
+        // one bad row fails the statement: go row by row to save the rest
+        for (const p of part) {
+          const one = await upsertPlanRows(client, uid, [p]);
+          if (one === "offline") { again = true; break outer; }
+          if (one === "missing") { planTableMissingAt = Date.now(); planTableMissing(); return; }
+          if (one === "ok") { planRefusals.delete(p.taskId); settlePlan(p.taskId, p.patch); }
+          else refused(p, one.error);
+        }
+      }
+    }
+    if (again) { if (!isOffline()) retryPlansLater(); return; }
+    planBackoff = 2000;
+    // written while this flush was sending: send those too
+    if (pendingPlans().some((p) => canSend(p.taskId))) schedulePlanFlush();
+  })().finally(() => { planFlushing = null; });
+  return planFlushing;
 }
 
 /** How the invitation email went. The invite itself is saved either way (it's
@@ -1025,11 +1231,13 @@ async function replayQueue(client: SupabaseClient, remap?: RemapFn): Promise<num
         const saved = stampCreator(await insertTaskRow(client, m.task, id, uid), uid);
         // deleted while the request was in flight: its delete is already queued
         if (!offlineQueue.ack(m.id)) continue;
-        if (saved.id !== m.task.id) offlineQueue.remapId(m.task.id, saved.id);
+        if (saved.id !== m.task.id) { offlineQueue.remapId(m.task.id, saved.id); remapPlanTask(m.task.id, saved.id); }
         remap?.(m.task.id, saved.id, saved);
       } else if (m.kind === "update") {
         await updateTaskRow(client, m.taskId, m.patch);
-        offlineQueue.ack(m.id, m.patch);
+        // landed: the caller's own plan in it follows them now (one parked
+        // or discarded instead never gets this far)
+        if (offlineQueue.ack(m.id, m.patch)) mirrorLanded(m.taskId, m.patch, uid);
       } else {
         await deleteTaskRow(client, m.taskId);
         offlineQueue.ack(m.id);
@@ -1157,7 +1365,10 @@ export const store = {
     scopeQueueTo(uid);
     const restore = (snap: Snapshot): Bootstrap => {
       setReferenceData(snap.ref);
-      return { ...snap.boot, tasks: applyQueue(snap.boot.tasks), defaultWorkspace: resolveDefaultWorkspace(uid, snap.boot.workspaces) };
+      // their plans as last loaded on this device, with any unsaved writes
+      restorePlanState(uid);
+      mirrorLandedBeforePlans(uid);
+      return { ...snap.boot, tasks: mergeOwnPlans(applyQueue(snap.boot.tasks), uid, todayISO()), defaultWorkspace: resolveDefaultWorkspace(uid, snap.boot.workspaces) };
     };
 
     // Offline reload: restore the cached snapshot instead of failing. The
@@ -1311,10 +1522,19 @@ export const store = {
       forms = ((fmData as FormRow[] | null) ?? []).map(rowToForm);
     } catch { /* table not present yet */ }
 
+    // this person's own plans (0043): the table missing means plans stay on the
+    // device; a read that failed this time keeps the device's last copy
+    const planRows = await loadPlanRows(supabase, uid);
+    const planLive = gen === sessionGen && offlineQueue.currentUser() === uid; // not signed out meanwhile
+    if (planLive) {
+      if (planRows) loadPlanState(uid, planRows); else restorePlanState(uid);
+      mirrorLandedBeforePlans(uid);
+    }
+
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
     setReferenceData(ref);
     const boot: Bootstrap = {
-      tasks: taskRows.map(rowToTask),
+      tasks: planLive ? mergeOwnPlans(taskRows.map(rowToTask), uid, todayISO()) : taskRows.map(rowToTask),
       projects,
       tags,
       workspaces,
@@ -1347,6 +1567,12 @@ export const store = {
       const retry = offlineQueue.deadLetters().filter((d) => d.retryable).map((d) => d.op.id);
       if (retry.length) offlineQueue.retryDeadLetters(retry);
     }
+    // plans saved on this device meanwhile go up now, and a live subscription
+    // that was waiting for them starts listening
+    if (planMode(uid) === "server") {
+      if (pendingPlans().length) schedulePlanFlush();
+      planChannelOpeners.forEach((open) => open());
+    }
     // show edits still waiting in the queue rather than the server's older copy
     return offlineQueue.size() ? { ...boot, tasks: applyQueue(boot.tasks) } : boot;
   },
@@ -1374,8 +1600,16 @@ export const store = {
       ? locks.request("kanbo-flush", { ifAvailable: true }, (lock) => (lock ? run() : Promise.resolve(0))).then((n) => n)
       : run();
     try { return await flushInFlight; }
-    finally { flushInFlight = null; }
+    finally {
+      flushInFlight = null;
+      // plan writes waiting behind queued creates can go now
+      if (planMode() === "server" && pendingPlans().length) void flushPlans();
+    }
   },
+
+  /** Save this person's pending plan writes now (they also go by themselves,
+   *  shortly after each change and when back online). */
+  flushPlans(): Promise<void> { return flushPlans(); },
 
   /* ---------- workspaces & membership ---------- */
   async createWorkspace(name: string, owner: { id: string; email: string; name: string }): Promise<Workspace> {
@@ -1603,9 +1837,13 @@ export const store = {
   async updateTask(id: string, patch: Partial<Task>): Promise<void> {
     if (!supabase) return;
     if (Object.keys(patchToRow(patch)).length === 0) return; // nothing that persists
+    // your plan on your own task follows you too (0043), once the row has it:
+    // whose plans those are is read now, before anything is awaited
+    const planner = planUser();
     // offline — or older queued edits to this task still waiting: queue behind
     // them, so a stale queued value can't be replayed over this newer one
-    // Queued before anything is awaited (see queueOwner).
+    // Queued before anything is awaited (see queueOwner). Its plan is
+    // mirrored when the replay lands it.
     if (isOffline() || offlineQueue.hasPending(id)) {
       offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid(""));
       if (!isOffline()) scheduleFlush();
@@ -1614,6 +1852,7 @@ export const store = {
     try {
       await updateTaskRow(supabase, id, patch);
       offlineQueue.supersede(id, Object.keys(patch)); // a parked older value must never come back over this
+      mirrorOwnPlan(id, patch, planner);
     } catch (e) {
       if (isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid("")); scheduleFlush(); return; } // dropped mid-flight — queue it
       throw e;
@@ -1878,12 +2117,35 @@ export const store = {
   },
 
   /* ---------- intake forms ---------- */
-  async createForm(input: { workspaceId: string | null; projectId: string; name: string; fields: FormFieldKey[] }, userId: string): Promise<FormDef> {
-    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, name: input.name, fields: input.fields };
+  async createForm(input: { workspaceId: string | null; projectId: string; name: string; fields: FormFieldKey[]; description?: string }, userId: string): Promise<FormDef> {
+    const description = input.description?.trim() || undefined;
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, name: input.name, fields: input.fields, ...(description ? { description } : {}) };
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("forms").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, fields: input.fields }).select("*").single();
+    const row: Record<string, unknown> = { user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, name: input.name, fields: input.fields };
+    if (description) row.description = description; // only when set: a plain create never depends on it
+    const { data, error } = await supabase.from("forms").insert(row).select("*").single();
     if (error) throw error;
     return rowToForm(data as FormRow);
+  },
+
+  /** What applying a team template (lib/templates applyWorkspacePlan) needs,
+   *  bound to the signed-in person. Works in demo mode too (the objects come
+   *  back without being stored, like every demo create): the caller adds what
+   *  it returns to its own state. */
+  templateDeps(userId: string): TemplateApplyDeps {
+    return {
+      createProject: async (input) => {
+        const p = await store.createProject({ name: input.name, emoji: input.emoji, color: input.color, workspaceId: input.workspaceId }, userId);
+        if (!input.description) return p;
+        // a description is a nice-to-have: the project stands without it
+        await store.updateProject(p.id, { description: input.description }).catch((e) => reportOnce("template-description", e, { op: "templateDeps" }));
+        return { ...p, description: input.description };
+      },
+      createSection: (input) => store.createSection(input, userId),
+      createTasks: (tasks) => store.createTasksBatch(tasks, userId),
+      createForm: (input) => store.createForm(input, userId),
+      createRule: (input) => store.createRule(input, userId),
+    };
   },
   async updateForm(id: string, patch: { name?: string; description?: string; fields?: FormFieldKey[] }): Promise<void> {
     if (!supabase) return;
@@ -2784,6 +3046,9 @@ export const store = {
     let core: RealtimeChannel | null = null;
     let extras: RealtimeChannel | null = null;
     let extrasOff = false;   // the server refused the extra tables (not in the publication)
+    let plans: RealtimeChannel | null = null;
+    let plansOff = false;    // the server refused task_user_state (0043 not run, or not in the publication)
+    let coreUp = false;
     let dropped = false;     // the core channel lost its connection: resync once it's back
     let reopenTimer: ReturnType<typeof setTimeout> | undefined;
     let reopenDelay = 2000;
@@ -2824,6 +3089,37 @@ export const store = {
       // SUBSCRIBED opens a fresh one.
       ch.subscribe((status) => { if (status === "CLOSED" && extras === ch) extras = null; });
     };
+    // this person's own plans (0043), on a channel of their own so a missing
+    // table can never take live task sync down with it. Only once their plans
+    // are on the server; bootstrap calls this again when they load.
+    const closePlans = () => { if (plans) { void client.removeChannel(plans); plans = null; } };
+    const openPlans = () => {
+      const uid = planUser();
+      if (disposed || plans || plansOff || !coreUp || !uid || planMode(uid) !== "server") return;
+      let ch = client.channel(topic("kanbo-plans"));
+      ch = ch.on("postgres_changes", { event: "*", schema: "public", table: PLAN_TABLE, filter: `user_id=eq.${uid}` },
+        (p: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+          if (disposed) return;
+          const rowNew = p.new && Object.keys(p.new).length ? p.new as Record<string, unknown> : null;
+          const rowOld = p.old && Object.keys(p.old).length ? p.old as Record<string, unknown> : null;
+          const taskId = rowNew?.task_id ?? rowOld?.task_id;
+          if (typeof taskId !== "string") return;
+          // our own write coming back changes nothing: only another device's does
+          if (applyRemotePlan(taskId, p.eventType === "DELETE" || !rowNew ? null : planRowToState(rowNew, uid))) forward(p);
+        });
+      ch = ch.on("system", {}, (msg: { extension?: string; status?: string; message?: string }) => {
+        if (msg?.extension !== "postgres_changes" || msg?.status !== "error" || disposed) return;
+        plansOff = true;
+        closePlans();
+        if (!reportedOnce.has("realtime-plans")) {
+          reportedOnce.add("realtime-plans");
+          console.info("[kanbo] Live updates for your plans are off — the realtime publication doesn't include task_user_state yet:", msg.message || "subscription refused");
+        }
+      });
+      plans = ch;
+      ch.subscribe((status) => { if (status === "CLOSED" && plans === ch) plans = null; });
+    };
+    planChannelOpeners.add(openPlans);
     const scheduleReopen = () => {
       if (disposed || reopenTimer !== undefined) return;
       reopenTimer = setTimeout(() => {
@@ -2831,6 +3127,7 @@ export const store = {
         if (disposed) return;
         core = null; // already closed and detached by the client
         closeExtras();
+        closePlans();
         openCore();
       }, reopenDelay);
       reopenDelay = Math.min(reopenDelay * 2, 60_000);
@@ -2843,8 +3140,10 @@ export const store = {
         if (disposed || core !== ch) return;
         if (status === "SUBSCRIBED") {
           reopenDelay = 2000;
+          coreUp = true;
           if (dropped) { dropped = false; resync("reconnected"); }
           openExtras();
+          openPlans();
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           dropped = true; // the client rejoins by itself; catch up when it does
         } else if (status === "CLOSED") {
@@ -2873,6 +3172,8 @@ export const store = {
       if (core) void client.removeChannel(core);
       core = null;
       closeExtras();
+      closePlans();
+      planChannelOpeners.delete(openPlans);
     };
   },
 
