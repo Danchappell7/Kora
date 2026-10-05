@@ -393,6 +393,47 @@ describe("the sign-out guard (watchPushSession)", () => {
     expect(b.state.sub).toBeNull();
   });
 
+  it("opening offline with an expired session isn't a sign-out: push stays until the session is refreshed or rejected", async () => {
+    const b = fakeBrowser({ perm: "granted" });
+    const s = fakeSupabase({ uid: "me" });
+    h.client = s.client;
+    const push = await load();
+    s.emit("INITIAL_SESSION", "me");
+    await push.enablePush();
+    await flush();
+    const sub = b.state.sub!;
+    // supabase-js couldn't refresh (offline): it reports no session but keeps the stored one
+    localStorage.setItem("sb-test-auth-token", JSON.stringify({ access_token: "a", refresh_token: "r", user: { id: "me" } }));
+    s.emit("INITIAL_SESSION", null);
+    await flush();
+    expect(sub.unsubscribe).not.toHaveBeenCalled();
+    // back online: the same person, refreshed
+    s.emit("TOKEN_REFRESHED", "me");
+    await flush();
+    expect(b.state.sub).toBe(sub);
+
+    // offline again; this time Auth rejects the session and removes it
+    s.emit("INITIAL_SESSION", null);
+    await flush();
+    expect(sub.unsubscribe).not.toHaveBeenCalled();
+    localStorage.removeItem("sb-test-auth-token");
+    s.emit("SIGNED_OUT", null); // a second null in a row still counts
+    await flush();
+    expect(sub.unsubscribe).toHaveBeenCalled();
+    expect(b.state.sub).toBeNull();
+  });
+
+  it("a stored session without a refresh token doesn't hold push", async () => {
+    const b = fakeBrowser({ perm: "granted", existingKey: KEY_BYTES });
+    const s = fakeSupabase();
+    h.client = s.client;
+    await load();
+    localStorage.setItem("sb-test-auth-token", JSON.stringify({ access_token: "a" }));
+    s.emit("INITIAL_SESSION", null);
+    await flush();
+    expect(b.state.sub).toBeNull();
+  });
+
   it("someone else signing in drops the previous person's subscription", async () => {
     const b = fakeBrowser({ perm: "granted" });
     const s = fakeSupabase({ uid: "ana" });

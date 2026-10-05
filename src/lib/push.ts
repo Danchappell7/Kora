@@ -20,7 +20,8 @@
 
    Signing out (shared computers): push is only offered while the app runs
    watchPushSession() (mounted once, in AuthProvider). It drops this
-   browser's subscription whenever nobody is signed in, and drops one that
+   browser's subscription whenever nobody is signed in (but not while an
+   expired session is merely waiting to refresh offline), and drops one that
    belongs to a different account when someone signs in. The app also calls
    disablePush() before signing out (deletes the row while it still can)
    and disablePushEverywhere() before "Sign out of all devices".
@@ -424,12 +425,42 @@ export async function refreshPushSubscription(): Promise<void> {
 }
 
 /**
+ * Does supabase-js still hold a session it just couldn't use? Opening Kanbo
+ * offline (or while Auth is unreachable) with an expired access token makes
+ * it report "no session" (INITIAL_SESSION with null) while keeping the
+ * stored session and its refresh token, and it signs the same person back
+ * in once it can refresh. That isn't a sign-out. A real sign-out (any
+ * button, another tab, a revoked or rejected session) removes the stored
+ * session first.
+ */
+function sessionStillHeld(): boolean {
+  try {
+    const own = (supabase?.auth as unknown as { storageKey?: string } | undefined)?.storageKey;
+    const keys = own ? [own] : [];
+    if (!keys.length) {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && /^sb-.+-auth-token$/.test(k)) keys.push(k);
+      }
+    }
+    return keys.some((k) => {
+      const raw = localStorage.getItem(k);
+      if (!raw) return false;
+      const s = JSON.parse(raw) as { refresh_token?: unknown } | null;
+      return typeof s?.refresh_token === "string" && s.refresh_token.length > 0;
+    });
+  } catch { return false; }
+}
+
+/**
  * The sign-out guard. Mount it once, at startup, for the life of the page
  * (AuthProvider: `useEffect(() => watchPushSession(), [])`); push is only
- * offered while it runs. Nobody signed in (sign-out, an expired or revoked
- * session, a page that opens signed out): this browser's subscription is
- * dropped, so the next person at a shared computer never sees the last
- * person's notifications. Someone signed in: refreshPushSubscription().
+ * offered while it runs. Nobody signed in (sign-out, a revoked session, a
+ * page that opens signed out): this browser's subscription is dropped, so
+ * the next person at a shared computer never sees the last person's
+ * notifications. An expired session supabase-js couldn't refresh yet
+ * (offline) isn't a sign-out: push stays until it's sorted either way.
+ * Someone signed in: refreshPushSubscription().
  * Returns the stop function. A no-op in demo mode.
  */
 export function watchPushSession(): () => void {
@@ -443,7 +474,15 @@ export function watchPushSession(): () => void {
       if (uid === last) return; // token refreshes, profile updates
       last = uid;
       // outside the auth callback: supabase-js deadlocks when a callback awaits its own client
-      setTimeout(() => { if (!stopped) void (uid ? refreshPushSubscription() : dropSubscriptionHere()); }, 0);
+      setTimeout(() => {
+        if (stopped) return;
+        if (uid) { void refreshPushSubscription(); return; }
+        if (!sessionStillHeld()) { void dropSubscriptionHere(); return; }
+        // a held session that couldn't refresh (offline): not settled, so the
+        // next event counts even if it's another null (SIGNED_OUT once the
+        // session is rejected and removed); a refresh brings the uid back
+        if (last === null) last = undefined;
+      }, 0);
     });
     unsubscribe = () => data.subscription.unsubscribe();
   } catch { return () => {}; }

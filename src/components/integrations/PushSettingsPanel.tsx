@@ -137,7 +137,7 @@ export function PushSettingsPanel({ notifyPrefs, onSaveNotifyPrefs }: PushSettin
     <div className="kpush-panel">
       <SetGroup title="Push notifications" action={demo ? <Pill tone="neutral">Demo</Pill> : undefined}>
         {/* SetRow's markup, with the description's id so the switch can point at it */}
-        <div className="kset-row">
+        <div className="kset-row kpush-device">
           <div className="kset-row-text">
             <span className="kset-row-label">On this device</span>
             <span id={descId} className="kset-row-desc">{deviceDesc}</span>

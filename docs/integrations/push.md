@@ -162,7 +162,9 @@ Once the app is wired as below (the Push section doesn't appear until it is):
 - **Nobody signed in** (a sign-out from any button or tab, an expired or
   revoked session, or a page that opens signed out): the sign-out guard
   (`watchPushSession()`) drops the browser's subscription, so the next person
-  at a shared computer never sees the last person's notifications.
+  at a shared computer never sees the last person's notifications. Opening
+  Kanbo offline with an expired session isn't a sign-out (Supabase keeps the
+  session and refreshes it when it can), so push stays on through that.
 - **Someone else signs in** on a browser where another account left push on:
   the guard drops that subscription. Push is never inherited; each person
   switches it on for themselves.
@@ -174,13 +176,19 @@ Once the app is wired as below (the Push section doesn't appear until it is):
 
 ## Wiring into the app (integrator)
 
-This package can't edit `AuthProvider`, `App` or `SettingsModal`, so these
-calls are the integrator's. Until the first one is in, the Push section stays
-hidden (`pushAvailability()` says "unconfigured"); everything else is safe to
-leave out but works worse without it.
+This package can't edit `AuthProvider`, `App`, `Sidebar` or `SettingsModal`,
+so these calls are the integrator's. Until the `watchPushSession()` one is in,
+the Push section stays hidden (`pushAvailability()` says "unconfigured");
+everything else is safe to leave out but works worse without it. Components
+come from `src/components/integrations` (its `index.ts`), functions from
+`src/lib/push` and `src/lib/install`.
 
 | Where | Call | Why |
 |---|---|---|
+| `SettingsModal` › `notificationsSection`, straight after the In-app / Email `kset-card` | `<PushSettingsPanel notifyPrefs={notifyPrefs} onSaveNotifyPrefs={onSaveNotifyPrefs} />` | The Push section (device switch, test, per-kind `<kind>_push` toggles). Renders nothing until push is configured; in demo mode it's a local stand-in. It brings its own top gap. |
+| `SettingsModal` › `notificationsSection`, after the panel | `<div className="kpush-app"><SetGroup title="Kanbo app"><InstallPrompt variant="settings" /></SetGroup></div>` | Install (or the iOS Home Screen hint, or "Installed"). On iPhone, push needs the Home Screen app, so it sits next to Push. `kpush-app` gives it the group gap. |
+| `SettingsModal` › `NOTIF_ROWS`, the `due` row's hint | "Your morning summary of what's due." (instead of "Sent by email only.") when `pushAvailability() !== "unconfigured"` | Once push is configured, due-date reminders can push too (the In-app column stays "–"). |
+| `Sidebar` › `.ksb-foot`, first child (above `<FocusPill>`) | `<InstallPrompt variant="nudge" />` | The one-time "Install Kanbo" card. Renders nothing unless the browser offers an install and it hasn't been dismissed on this device. |
 | `src/auth/AuthProvider.tsx`, once at mount (next to its `onAuthStateChange`) | `useEffect(() => watchPushSession(), [])` | **Required.** The sign-out guard (above). Also re-saves a rotated subscription after sign-in. Push stays hidden without it. |
 | `AuthProvider` › `finishSignOut`, before the `supabase.auth.signOut(…)` race | `await disablePush()` | Deletes this device's row while the session can still do it. Never throws; gives up after about 6 s at worst (usually milliseconds). Every sign-out button goes through here. |
 | `SettingsModal` › `signOutEverywhere`, before `supabase.auth.signOut({ scope: "global" })` | `await disablePushEverywhere()` | Deletes every device's row for the account. |

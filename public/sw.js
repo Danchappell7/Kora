@@ -15,7 +15,9 @@
      build: then it does push and nothing else (no caching under Vite).
    Bump CACHE to invalidate.
    ============================================================ */
-const CACHE = "kanbo-v2";
+// (not bumped for push: install adds the new SHELL entries to this same
+// cache, and keeping it keeps the previous deploy's chunks for open tabs)
+const CACHE = "kanbo-v1";
 const SHELL = ["/", "/favicon.svg", "/manifest.webmanifest", "/icon-192.png", "/badge-96.png"];
 /** dev registration: push and notification clicks only, never the fetch cache */
 const PUSH_ONLY = /[?&]push-only=1(?:&|$)/.test((self.location && self.location.search) || "");
