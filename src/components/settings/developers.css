@@ -1,0 +1,210 @@
+/* ============================================================
+   KANBO — Settings › Developers: API keys (kdev-*) and the API
+   reference (kdoc-*).                                       [0046 · a1]
+   The panel is built from SetGroup / SetRow (SettingsModal's kset-* rows),
+   so this file only adds its own parts: key rows, the create form, the
+   once-only key, code blocks and the reference's endpoint list.
+   Paper & Navy tokens with fallbacks; no gradients or blur; motion is
+   160ms and off under prefers-reduced-motion; phones get 44px targets
+   and 16px inputs.
+   ============================================================ */
+
+* + .kdev { margin-top: 28px; }
+.kdev > .kset-intro:first-child { margin-top: 0; }
+.kdev .kset-group + .kset-note { margin-top: 12px; }
+.kdev-checking { display: inline-flex; align-items: center; gap: 6px; }
+.kdev-docs-link { font-size: 12px; line-height: 16px; }
+
+/* ---- key list ---- */
+.kdev-keys { margin: 0; padding: 0; list-style: none; }
+.kset-card > .kdev-keys > li + li { box-shadow: inset 0 1px 0 var(--hairline); }
+.kdev-key { display: block; }
+.kdev-key-main { display: flex; align-items: flex-start; gap: 12px 16px; padding: 12px 16px; min-height: 60px; }
+.kdev-key-icon { display: grid; place-items: center; width: 16px; flex-shrink: 0; margin-top: 2px; color: var(--ink-3); }
+.kdev-key[data-status="active"] .kdev-key-icon { color: var(--accent-text, var(--accent)); }
+.kdev-key-text { display: grid; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.kdev-key-top { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.kdev-key-name { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); overflow-wrap: anywhere; }
+.kdev-key[data-status="revoked"] .kdev-key-name { color: var(--ink-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+.kdev-prefix {
+  font: 500 12px/16px var(--font-mono, ui-monospace, monospace); color: var(--ink-2); letter-spacing: 0;
+  padding: 1px 6px; border-radius: var(--r-sm, 6px); background: var(--fill-1);
+}
+.kdev-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.kdev-key-meta { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kdev-key-meta [data-tone="warn"] { color: var(--warn, var(--ink-2)); font-weight: 600; }
+.kdev-key .kbtn.kdev-revoke { flex-shrink: 0; color: var(--signal, var(--prio-urgent)); }
+.kdev-key > .kset-panel { margin-top: -4px; }
+
+/* the key-list view switch + workspace picker */
+.kdev-select {
+  height: var(--h-md, 32px); min-width: 140px; max-width: 100%; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.kdev-select-full { display: block; width: 100%; height: 40px; }
+.kdev-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kdev-select:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- messages (role="status": stays rendered while empty) ---- */
+.kdev-msg {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 0 16px 12px 48px;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); text-wrap: pretty;
+}
+.kdev-msg > svg { flex-shrink: 0; margin-top: 1px; }
+.kdev-msg[data-tone="signal"] { font-weight: 500; color: var(--signal, var(--prio-urgent)); }
+
+/* ---- create form ---- */
+.kdev-form { display: grid; gap: 16px; padding: 16px; }
+.kdev-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.kdev-choices > legend { padding: 0; margin: 0 0 6px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kdev-choice {
+  position: relative; display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer;
+  border-radius: var(--r-md, 8px); box-shadow: inset 0 0 0 1px var(--hairline-strong); background: var(--surface-raised, transparent);
+  transition: box-shadow var(--d-1, 90ms) var(--ease, ease), background var(--d-1, 90ms) var(--ease, ease);
+}
+.kdev-choice:hover { background: var(--fill-1); }
+.kdev-choice:has(input:checked) { box-shadow: inset 0 0 0 2px var(--accent); }
+.kdev-choice > input { margin: 2px 0 0; accent-color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
+.kdev-choice > input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kdev-choice-text { display: grid; gap: 2px; min-width: 0; }
+.kdev-choice-label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kdev-choice-desc { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kdev-choices:disabled .kdev-choice { opacity: 0.6; cursor: not-allowed; }
+.kdev-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.kdev-form .kdev-form-err { margin: 0; }
+
+/* ---- the new key, shown once ---- */
+.kdev-reveal {
+  display: grid; gap: 12px; margin: 0 0 28px; padding: 16px; border-radius: var(--r-lg, 12px);
+  background: var(--surface-raised); box-shadow: 0 0 0 1px color-mix(in oklch, var(--ok, var(--st-done)) 45%, transparent);
+}
+.kdev-reveal-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; color: var(--ok, var(--st-done)); }
+.kdev-reveal-title { margin: 0; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kdev-reveal-scope { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kdev-warn {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 8px 10px; border-radius: var(--r-md, 8px);
+  background: var(--warn-fill, var(--fill-1)); font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink); text-wrap: pretty;
+}
+.kdev-warn > svg { flex-shrink: 0; margin-top: 1px; color: var(--warn, var(--ink-2)); }
+.kdev-keyfield { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kdev-keyinput {
+  flex: 1 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--fill-1, transparent); color: var(--ink);
+  font: 500 13px/20px var(--font-mono, ui-monospace, monospace); letter-spacing: 0; text-overflow: ellipsis;
+}
+.kdev-keyinput:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kdev-keyfield > .kbtn { flex-shrink: 0; }
+.kdev-try { border-radius: var(--r-md, 8px); background: var(--fill-1); }
+.kdev-try > summary {
+  display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: var(--r-md, 8px);
+  list-style: none; cursor: pointer; user-select: none; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
+}
+.kdev-try > summary::-webkit-details-marker { display: none; }
+.kdev-try > summary > svg { flex-shrink: 0; color: var(--ink-3); transition: transform var(--d-2, 160ms) var(--ease, ease); }
+.kdev-try[open] > summary > svg { transform: rotate(90deg); }
+.kdev-try > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kdev-try > .kdev-pre { margin: 0 12px 12px; }
+
+/* ---- code blocks (both) ---- */
+.kdev-pre {
+  margin: 0; padding: 10px 12px; overflow-x: auto; border-radius: var(--r-md, 8px);
+  background: var(--surface-sunken, var(--fill-2, var(--fill-1))); box-shadow: inset 0 0 0 1px var(--hairline);
+  font: 500 12px/18px var(--font-mono, ui-monospace, monospace); color: var(--ink); white-space: pre; tab-size: 2;
+}
+.kdev-pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kdev-pre code { font: inherit; }
+
+/* ================= the API reference ================= */
+.kdoc { display: grid; gap: 20px; min-width: 0; }
+.kdoc code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.92em; letter-spacing: 0; }
+.kdoc :not(pre) > code { padding: 0 4px; border-radius: 4px; background: var(--fill-1); color: var(--ink); overflow-wrap: anywhere; }
+.kdoc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.kdoc-head-text { min-width: 0; }
+.kdoc-title { margin: 0; font: 600 20px/28px var(--font-head, var(--font-display)); letter-spacing: -0.012em; color: var(--ink); }
+.kdoc-subtitle { margin: 2px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kdoc-base {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 12px; border-radius: var(--r-lg, 12px);
+  background: var(--surface-raised); box-shadow: 0 0 0 1px var(--hairline-strong);
+}
+.kdoc-base-label { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kdoc .kdoc-base-url { flex: 1 1 260px; min-width: 0; padding: 0; background: none; font-size: 13px; line-height: 20px; color: var(--ink); overflow-wrap: anywhere; }
+
+.kdoc-guides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.kdoc-guide { display: grid; align-content: start; gap: 8px; padding: 12px 14px; border-radius: var(--r-lg, 12px); background: var(--surface-raised); box-shadow: 0 0 0 1px var(--hairline); min-width: 0; }
+.kdoc-guide:first-child { grid-column: 1 / -1; }
+.kdoc-guide-title { margin: 0; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kdoc-guide-body { display: grid; gap: 8px; min-width: 0; }
+.kdoc-guide-body p { margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+
+.kdoc-filter { position: relative; display: flex; align-items: center; gap: 12px; }
+.kdoc-filter > svg { position: absolute; left: 11px; color: var(--ink-3); pointer-events: none; }
+.kdoc-filter-input { flex: 1 1 auto; min-width: 0; padding-left: 32px; }
+.kdoc-count { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.kdoc-empty { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+.kdoc-group { display: grid; gap: 8px; min-width: 0; }
+.kdoc-group-title { margin: 0; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kdoc-group-desc { margin: -4px 0 4px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kdoc-ops { border-radius: var(--r-lg, 12px); background: var(--surface-raised); box-shadow: 0 0 0 1px var(--hairline-strong); overflow: hidden; }
+.kdoc-op + .kdoc-op { box-shadow: inset 0 1px 0 var(--hairline); }
+.kdoc-op > summary {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-height: 44px; padding: 10px 14px;
+  list-style: none; cursor: pointer; transition: background var(--d-1, 90ms) var(--ease, ease);
+}
+.kdoc-op > summary::-webkit-details-marker { display: none; }
+.kdoc-op > summary:hover { background: var(--fill-1); }
+.kdoc-op > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kdoc-op > summary > svg { flex-shrink: 0; color: var(--ink-3); transition: transform var(--d-2, 160ms) var(--ease, ease); }
+.kdoc-op[open] > summary > svg { transform: rotate(90deg); }
+.kdoc-method { display: inline-flex; min-width: 58px; }
+.kdoc-method .kpill { font-family: var(--font-mono, ui-monospace, monospace); letter-spacing: 0.02em; }
+.kdoc .kdoc-path { padding: 0; background: none; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--ink); }
+.kdoc-sum { flex: 1 1 160px; min-width: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kdoc-access { flex-shrink: 0; font: 600 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kdoc-op-body { display: grid; gap: 10px; padding: 4px 14px 16px 38px; min-width: 0; }
+.kdoc-desc { margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kdoc-h { margin: 6px 0 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kdoc-status { font: 600 12px/16px var(--font-mono, ui-monospace, monospace); color: var(--ink); font-variant-numeric: tabular-nums; }
+.kdoc-errors { margin: 0; padding: 0 0 0 16px; display: grid; gap: 4px; font: 400 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kdoc-table-wrap { overflow-x: auto; border-radius: var(--r-md, 8px); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kdoc-table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kdoc-table { width: 100%; border-collapse: collapse; font: 400 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kdoc-table th, .kdoc-table td { padding: 6px 10px; text-align: left; vertical-align: top; }
+.kdoc-table thead th { font-weight: 600; color: var(--ink-3); white-space: nowrap; }
+.kdoc-table tbody tr { box-shadow: inset 0 1px 0 var(--hairline); }
+.kdoc-table tbody th { font-weight: 500; white-space: nowrap; color: var(--ink); }
+.kdoc-req { font-weight: 600; color: var(--signal, var(--prio-urgent)); }
+.kdoc-code { position: relative; min-width: 0; }
+.kdoc-code-acts { position: absolute; top: 4px; right: 4px; }
+.kdoc-code-acts .kbtn { background: var(--surface-raised); }
+.kdoc-foot { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+
+/* ---- entrance ---- */
+@keyframes kdevIn { from { opacity: 0.35; translate: 0 4px; } }
+.kdev-in { animation: kdevIn var(--d-2, 160ms) var(--ease, ease); }
+
+/* ---- phones ---- */
+@media (max-width: 859px) {
+  .kdev-key-main { flex-wrap: wrap; padding: 12px; }
+  .kdev-key .kbtn.kdev-revoke { margin-left: 28px; }
+  .kdev-form { padding: 12px; }
+  .kdev-choices { grid-template-columns: minmax(0, 1fr); }
+  .kdev-acts > .kbtn { flex: 1 1 auto; }
+  .kdev-select, .kdev-select-full { height: 44px; font-size: 16px; }
+  .kdev-keyinput { font-size: 16px; height: 44px; }
+  .kdev-keyfield { flex-wrap: wrap; }
+  .kdev-keyfield > .kbtn { flex: 1 1 auto; }
+  .kdev-msg { padding-left: 16px; }
+  .kdoc-guides { grid-template-columns: minmax(0, 1fr); }
+  .kdoc-op-body { padding: 4px 12px 14px; }
+  .kdoc-filter-input { font-size: 16px; }
+}
+@media (pointer: coarse) {
+  .kdev-try > summary { min-height: 44px; }
+  .kdev-choice { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kdev-in { animation: none; }
+  .kdev-try > summary > svg, .kdoc-op > summary > svg, .kdoc-op > summary, .kdev-choice { transition: none; }
+}
