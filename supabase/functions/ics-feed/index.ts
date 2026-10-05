@@ -8,6 +8,8 @@
 // up with the service role. The feed holds that person's planned blocks for
 // today and the next 14 days (busy) and, if they want them, their due dates
 // (all-day, free), each linking back to <APP_URL>/?task=<id>.
+// GET ?ping=1 answers 204 (no token, no database): the Settings panel's
+// check that this function is deployed before it offers anyone a link.
 //
 // All the logic (and its tests) lives in ../_shared/icsFeed.ts and
 // ../_shared/ics.ts; this file only wires in the environment.

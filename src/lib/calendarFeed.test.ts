@@ -44,7 +44,12 @@ async function load(f: ReturnType<typeof fake>) {
   return import("./calendarFeed");
 }
 
-afterEach(() => { vi.doUnmock("./supabase"); vi.restoreAllMocks(); });
+afterEach(() => { vi.doUnmock("./supabase"); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
+
+const SB = "https://abc.supabase.co";
+const PING = `${SB}/functions/v1/ics-feed?ping=1`;
+type PingAnswer = { ok: boolean; status: number };
+const answer = (status: number): PingAnswer => ({ ok: status >= 200 && status < 300, status });
 
 describe("parseCalendarFeed", () => {
   const { parseCalendarFeed } = demoLib;
@@ -83,6 +88,9 @@ describe("URLs", () => {
     expect(w.searchParams.get("url")).toBe(url);
     expect(w.searchParams.get("name")).toBe("Kanbo plan");
   });
+  it("the function's ping URL", () => {
+    expect(demoLib.calendarFeedPingUrl("https://abc.supabase.co/")).toBe(PING);
+  });
   it("the demo shows an example link with the demo token", () => {
     expect(demoLib.demoCalendarFeedUrl()).toBe(`${demoLib.DEMO_FEED_BASE}/functions/v1/ics-feed?t=demo`);
     expect(demoLib.DEMO_FEED_TOKEN).toBe("demo");
@@ -99,7 +107,13 @@ describe("demo mode (no Supabase)", () => {
 });
 
 describe("signed in", () => {
-  beforeEach(() => { vi.spyOn(navigator, "onLine", "get").mockReturnValue(true); });
+  let ping: ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<PingAnswer>>>;
+  beforeEach(() => {
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
+    vi.stubEnv("VITE_SUPABASE_URL", SB);
+    ping = vi.fn(async () => answer(204));
+    vi.stubGlobal("fetch", ping);
+  });
 
   it("loads (and makes) the feed with calendar_feed(), then serves it from memory", async () => {
     const f = fake({ rpc: () => ({ data: { token: TOKEN, include_due: true, created_at: "2026-10-04T09:00:00Z" } }) });
@@ -165,6 +179,88 @@ describe("signed in", () => {
     await expect(lib.setCalendarFeedIncludeDue(false)).rejects.toThrow("You're offline");
     await expect(lib.resetCalendarFeed()).rejects.toThrow("You're offline");
     expect(f.calls).toHaveLength(0);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  describe("is the ics-feed function deployed?", () => {
+    const ok = () => fake({ rpc: () => ({ data: { token: TOKEN, include_due: true } }) });
+
+    it("asks once a session, the way a calendar app would (no credentials, no auth header)", async () => {
+      const f = ok();
+      const lib = await load(f);
+      expect((await lib.loadCalendarFeed()).state).toBe("ready");
+      expect(ping).toHaveBeenCalledTimes(1);
+      const [url, init] = ping.mock.calls[0];
+      expect(url).toBe(PING);
+      expect(init).toMatchObject({ method: "GET", credentials: "omit", cache: "no-store" });
+      expect(init?.headers).toBeUndefined();
+      expect((await lib.loadCalendarFeed()).state).toBe("ready");
+      expect((await lib.loadCalendarFeed({ refresh: true })).state).toBe("ready");
+      expect(ping).toHaveBeenCalledTimes(1);
+      expect(f.calls.filter((c) => c.kind === "rpc")).toHaveLength(2);
+    });
+
+    it("0043 run but the function not deployed (404): not switched on yet, no link, remembered until a refresh", async () => {
+      ping.mockResolvedValue(answer(404));
+      const f = ok();
+      const lib = await load(f);
+      expect(await lib.loadCalendarFeed()).toEqual({ state: "unavailable" });
+      expect(await lib.getCalendarFeed()).toBeNull();
+      expect(ping).toHaveBeenCalledTimes(1);
+      expect(f.calls).toHaveLength(1);
+      // deployed now: a refresh asks again
+      ping.mockResolvedValue(answer(204));
+      expect((await lib.loadCalendarFeed({ refresh: true })).state).toBe("ready");
+      expect(ping).toHaveBeenCalledTimes(2);
+    });
+
+    it("deployed with JWT checks on (401): calendar apps can't read it either, so not switched on yet", async () => {
+      ping.mockResolvedValue(answer(401));
+      const lib = await load(ok());
+      expect(await lib.loadCalendarFeed()).toEqual({ state: "unavailable" });
+    });
+
+    it("a network or CORS error, or a 5xx: not switched on yet this time, and asks again next time", async () => {
+      ping.mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValueOnce(answer(503)).mockResolvedValue(answer(204));
+      const lib = await load(ok());
+      expect(await lib.loadCalendarFeed()).toEqual({ state: "unavailable" });
+      expect(await lib.loadCalendarFeed()).toEqual({ state: "unavailable" });
+      expect((await lib.loadCalendarFeed()).state).toBe("ready");
+      expect(ping).toHaveBeenCalledTimes(3);
+    });
+
+    it("gives up after 10 seconds", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      ping.mockImplementation((_url, init) => new Promise((_ok, fail) => {
+        init?.signal?.addEventListener("abort", () => fail(new DOMException("The operation was aborted.", "AbortError")));
+      }));
+      const lib = await load(ok());
+      const p = lib.loadCalendarFeed();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await p).toEqual({ state: "unavailable" });
+    });
+
+    it("the row's own answer comes first: 0043 missing, signed out, or a server error", async () => {
+      expect(await (await load(fake({ rpc: () => ({ error: { code: "PGRST202", message: "Could not find the function" } }) }))).loadCalendarFeed()).toEqual({ state: "unavailable" });
+      ping.mockResolvedValue(answer(404));
+      expect(await (await load(fake({ rpc: () => ({ error: { code: "P0001", message: "not authorized" } }) }))).loadCalendarFeed()).toEqual({ state: "signedOut" });
+      expect((await (await load(fake({ rpc: () => ({ error: { code: "XX000", message: "boom" } }) }))).loadCalendarFeed()).state).toBe("error");
+    });
+
+    it("never asks a relative address (no Supabase URL)", async () => {
+      vi.stubEnv("VITE_SUPABASE_URL", "");
+      const lib = await load(ok());
+      expect(await lib.loadCalendarFeed()).toEqual({ state: "unavailable" });
+      expect(ping).not.toHaveBeenCalled();
+    });
+
+    it("clearCalendarFeedCache asks the function again", async () => {
+      const lib = await load(ok());
+      await lib.loadCalendarFeed();
+      lib.clearCalendarFeedCache();
+      await lib.loadCalendarFeed();
+      expect(ping).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("include due dates: updates the caller's own row and returns what saved", async () => {

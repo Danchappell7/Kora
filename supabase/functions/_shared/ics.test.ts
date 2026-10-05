@@ -337,6 +337,24 @@ describe("feedEvents", () => {
     ], states: [st("a", today), st("b", "2026-10-05")] }));
     expect(ev).toEqual([]);
   });
+  it("never includes tasks in an archived project (the app hides them everywhere)", () => {
+    const P2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const tasks = [
+      task({ id: "gone", project_id: P2, plan_today: true, scheduled: 600, due_date: today }),
+      task({ id: "gone2", project_id: P2, assignee_id: YOU }),
+      task({ id: "kept", plan_today: true, scheduled: 660, due_date: "2026-10-05" }),
+      task({ id: "loose", project_id: null, workspace_id: null, assignee_id: null, due_date: "2026-10-06" }),
+    ];
+    const states = [st("gone", "2026-10-05"), st("gone2", "2026-10-06", 14 * 60), st("kept", "2026-10-07")];
+    const all = feedEvents(base({ tasks, states }));
+    expect(all.map((e) => e.uid)).toEqual(expect.arrayContaining(["plan-gone-20261004@kanbo.co.uk", "due-gone@kanbo.co.uk", "plan-gone2-20261006@kanbo.co.uk"]));
+    for (const archivedProjects of [new Set([P2]), [P2]]) {
+      const ev = feedEvents(base({ tasks, states, archivedProjects }));
+      expect(ev.map((e) => e.uid).sort()).toEqual([
+        "due-kept@kanbo.co.uk", "due-loose@kanbo.co.uk", "plan-kept-20261004@kanbo.co.uk", "plan-kept-20261007@kanbo.co.uk",
+      ]);
+    }
+  });
   it("a teammate's task: never their plan, only mine (task_user_state), on the day it's for", () => {
     const theirs = task({ id: "t2", assignee_id: YOU, plan_today: true, scheduled: 600, collaborators: [ME] });
     expect(feedEvents(base({ includeDue: false, tasks: [theirs] }))).toEqual([]);

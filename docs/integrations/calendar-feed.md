@@ -16,7 +16,7 @@ What the feed contains:
   - tasks they collaborate on;
   - their unassigned personal tasks.
 - Every event links back to `https://www.kanbo.co.uk/?task=<id>`. The link is in the event's URL and also in its description, because Google ignores the URL field.
-- Done and archived tasks never appear.
+- Done and archived tasks never appear, and nor do tasks in an archived project (the app hides those everywhere).
 - The feed only includes tasks the person can see in the app: their personal tasks, plus workspaces where they're an active member or guest. A suspended or unapproved account gets an empty feed. Leaving a workspace removes its tasks from the feed straight away.
 
 Where people find it: **Settings › Calendar & integrations › Add Kanbo to your
@@ -32,6 +32,7 @@ calendar**. The panel offers:
 ## Before you start
 
 - Migration **0043** must have been run (see `database-0043.md`). Until then the panel says "Not switched on yet" and nothing else changes.
+- The panel also says "Not switched on yet" until the function below is deployed. It checks with `GET …/functions/v1/ics-feed?ping=1` (no token, no database), which answers `204` once the function is live, so nobody is handed a link Google or Outlook can't read. Running 0043 and deploying the function are separate steps; do both.
 - Migration **0042**'s `rate_limits` table is used for throttling. Without it the function still works, just without limits.
 
 ## Owner steps
@@ -60,6 +61,13 @@ calendar**. The panel offers:
 
 ## Check it works
 
+0. The function is live and open to calendar apps:
+
+   ```sh
+   curl -si "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/ics-feed?ping=1" | head -n 1
+   ```
+
+   You should see `HTTP/2 204`. A `404` means it isn't deployed; a `401` means it was deployed with JWT verification on.
 1. Sign in on <https://www.kanbo.co.uk>. Open **Settings › Calendar & integrations** and choose **Copy** under "Your private calendar link".
 2. In a terminal (paste the link between the quotes):
 
@@ -111,7 +119,7 @@ calendar**. The panel offers:
 
 | What you see | Why | Fix |
 |---|---|---|
-| Panel: "Not switched on yet" | 0043 hasn't been run | Run it (`database-0043.md`), then reopen Settings |
+| Panel: "Not switched on yet" | 0043 hasn't been run, or the function isn't deployed (or was deployed with JWT verification on) | Run 0043 (`database-0043.md`) and deploy with `--no-verify-jwt`; check step 0 above answers `204`. Then reload Kanbo: the panel remembers the answer until the page is reloaded |
 | `curl` answers `401` "Missing authorization header" | The function was deployed with JWT verification on | Redeploy with `--no-verify-jwt` |
 | `curl` answers `404` for a fresh link | The function isn't deployed, or the link was reset | Deploy it, or copy the link again |
 | Google says it couldn't add the calendar | Google fetches the link from its own servers; a `401`/`404` breaks this | Fix the `curl` check first, then try again |
@@ -130,7 +138,7 @@ Every subscribed calendar stops updating. The tokens left in the database are ha
 | File | Purpose |
 |---|---|
 | `supabase/functions/ics-feed/index.ts` | The edge function (a thin wrapper) |
-| `supabase/functions/_shared/icsFeed.ts` | Request handling: token lookup, limits, queries, ETag/304. Tests: `icsFeed.test.ts` |
+| `supabase/functions/_shared/icsFeed.ts` | Request handling: the `?ping=1` check, token lookup, limits, queries, ETag/304. Tests: `icsFeed.test.ts` |
 | `supabase/functions/_shared/ics.ts` | RFC 5545 builder and "what goes in the feed". The one copy; the app re-exports it from `src/lib/ics.ts`. Tests: `ics.test.ts` |
-| `src/lib/calendarFeed.ts` | The panel's data: `calendar_feed()`, include due dates, reset, subscribe URLs |
+| `src/lib/calendarFeed.ts` | The panel's data: `calendar_feed()` plus the once-a-session function check, include due dates, reset, subscribe URLs |
 | `src/components/integrations/CalendarFeedPanel.tsx` | The Settings panel. Styles: `calendarFeed.css` |

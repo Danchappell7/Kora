@@ -222,10 +222,54 @@ describe("ics-feed handler", () => {
     await run(w, req());
     const proj = w.log.find((q) => q.name === "projects")!;
     expect(op(proj, "in")).toEqual(["id", [P1]]);
-    const broken = world({ tasks: [task({ id: T(1), plan_today: true, scheduled: 600, title: "Plain" })], fail: { projects: { message: "boom" } } });
-    const res = await run(broken, req());
+    expect(op(proj, "select")).toEqual(["id,name,archived_at"]);
+    const unnamed = world({ tasks: [task({ id: T(1), plan_today: true, scheduled: 600, title: "Plain" })], projects: [{ id: P1, name: null, archived_at: null }] });
+    const res = await run(unnamed, req());
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("SUMMARY:Plain\r\n");
+  });
+
+  it("tasks in an archived project never appear: planned blocks, plan rows or due dates", async () => {
+    const P2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const w = world({
+      projects: [{ id: P1, name: "Launch", archived_at: null }, { id: P2, name: "Old site", archived_at: "2026-09-30T12:00:00Z" }],
+      tasks: [
+        task({ id: T(1), title: "Shelved block", project_id: P2, plan_today: true, scheduled: 600, due_date: "2026-10-05" }),
+        task({ id: T(2), title: "Shelved teammate", project_id: P2, assignee_id: YOU }),
+        task({ id: T(3), title: "Live work", plan_today: true, scheduled: 660, due_date: "2026-10-06" }),
+      ],
+      states: [{ user_id: ME, task_id: T(2), plan_day: "2026-10-05", scheduled: 14 * 60, plan_today: true }],
+    });
+    const res = await run(w, req());
+    expect(res.status).toBe(200);
+    const body = (await res.text()).replace(/\r\n /g, "");
+    expect(body).not.toContain("Shelved");
+    expect(body).not.toContain("Old site");
+    expect(body).toContain("SUMMARY:Live work · Launch");
+    expect(body).toContain("SUMMARY:Due: Live work · Launch");
+    expect(body.match(/BEGIN:VEVENT/g)).toHaveLength(2);
+  });
+
+  it("a projects lookup error is a 503: without it the feed can't tell what's archived", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const broken = world({ tasks: [task({ id: T(1), plan_today: true, scheduled: 600, title: "Plain" })], fail: { projects: { message: "boom" } } });
+    const res = await run(broken, req());
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBe("300");
+  });
+
+  it("?ping=1 answers 204 (the app's 'is it deployed?' check) without the database or the limiter", async () => {
+    const w = world();
+    for (const q of ["?ping=1", "?ping", `?ping=1&t=${TOKEN}`]) {
+      const res = await run(w, req(q));
+      expect(res.status).toBe(204);
+      expect(await res.text()).toBe("");
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+    }
+    expect((await run(w, req("?ping=1", { method: "POST" }))).status).toBe(405);
+    expect(w.log).toHaveLength(0);
+    expect(allow).not.toHaveBeenCalled();
   });
 
   it("If-None-Match: the same ETag (weak or strong) is a 304 with no body", async () => {

@@ -8,8 +8,11 @@
 //   · token: the person's calendar_feed_tokens.token (0043; server-generated,
 //     64 hex). Unknown or malformed → 404 text/plain, nothing else said.
 //   · tasks: tasks_visible_to(user) (service role; the app's own read rule,
-//     nothing for a suspended or unapproved account), open and unarchived;
-//     their own plan rows from task_user_state; project names.
+//     nothing for a suspended or unapproved account), open and unarchived,
+//     and not in an archived project; their own plan rows from
+//     task_user_state; project names.
+//   · GET ?ping=1 → 204 before anything else (no token, no database): the
+//     app's check that this function is deployed.
 //   · 200 text/calendar, Cache-Control private 15 min, a strong ETag of the
 //     body; If-None-Match → 304.
 //   · Limits (rate_limits, 0042; fail open): 120 fetches an hour per token,
@@ -130,15 +133,22 @@ export async function loadFeedData(db: FeedDb, userId: string, today: string, da
     for (const t of (data ?? []) as FeedTaskRow[]) if (!have.has(t.id)) { have.add(t.id); tasks.push(t); }
   }
 
-  // project names, for "Task · Project" (best effort: a title without one is fine)
+  // their projects: names for "Task · Project", and which are archived (0039).
+  // The app hides an archived project's tasks everywhere, so the feed must
+  // too; not knowing is a database error (503), not a guess.
   const projectNames: Record<string, string> = {};
+  const archivedProjects = new Set<string>();
   const pids = [...new Set(tasks.map((t) => t.project_id).filter((p): p is string => !!p && UUID.test(p)))];
   for (let i = 0; i < pids.length; i += CHUNK) {
-    const { data, error } = await db.from("projects").select("id,name").in("id", pids.slice(i, i + CHUNK));
-    if (error) break;
-    for (const p of (data ?? []) as { id: string; name: string | null }[]) if (p?.id && p.name) projectNames[p.id] = p.name;
+    const { data, error } = await db.from("projects").select("id,name,archived_at").in("id", pids.slice(i, i + CHUNK));
+    if (error) throw new FeedError(String(error.message ?? error));
+    for (const p of (data ?? []) as { id: string; name: string | null; archived_at?: string | null }[]) {
+      if (!p?.id) continue;
+      if (p.name) projectNames[p.id] = p.name;
+      if (p.archived_at) archivedProjects.add(p.id);
+    }
   }
-  return { tasks, states, projectNames };
+  return { tasks, states, projectNames, archivedProjects };
 }
 
 /** The whole request → response. Never throws. */
@@ -153,7 +163,10 @@ export async function handleFeedRequest(req: Request, deps: FeedDeps): Promise<R
   const unavailable = () => text("Kanbo's calendar feed is unavailable right now. Your calendar will try again.", 503, { "Retry-After": "300" });
 
   try {
-    const token = (new URL(req.url).searchParams.get("t") ?? "").trim();
+    const params = new URL(req.url).searchParams;
+    // "is the function deployed?" (the Settings panel asks before offering a link)
+    if (params.has("ping")) return new Response(null, { status: 204, headers: { ...FEED_CORS, ...QUIET, "Cache-Control": "no-store" } });
+    const token = (params.get("t") ?? "").trim();
     if (!FEED_TOKEN_RE.test(token)) return notFound();
 
     const { data: row, error } = await db.from("calendar_feed_tokens").select("user_id,include_due").eq("token", token).maybeSingle();
@@ -176,8 +189,8 @@ export async function handleFeedRequest(req: Request, deps: FeedDeps): Promise<R
 
     const today = dayIn(FEED_TZ, now);
     const includeDue = row.include_due !== false;
-    const { tasks, states, projectNames } = await loadFeedData(db, userId, today, FEED_DAYS, includeDue);
-    const events = feedEvents({ userId, tasks, states, projectNames, today, days: FEED_DAYS, includeDue, appUrl: deps.appUrl });
+    const { tasks, states, projectNames, archivedProjects } = await loadFeedData(db, userId, today, FEED_DAYS, includeDue);
+    const events = feedEvents({ userId, tasks, states, projectNames, archivedProjects, today, days: FEED_DAYS, includeDue, appUrl: deps.appUrl });
     const body = buildIcs({
       name: "Kanbo",
       description: includeDue ? "Your Kanbo plan: planned work and due dates." : "Your Kanbo plan: planned work.",

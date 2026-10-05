@@ -9,7 +9,11 @@
    Demo mode: an example URL and a note that it works once signed in.
 
    loadCalendarFeed() says which state the panel is in (demo, ready,
-   not switched on yet, signed out, or a passing error). The contract's
+   not switched on yet, signed out, or a passing error). "Ready" needs
+   both halves: 0043's calendar_feed() and the deployed ics-feed function
+   (asked once a session with GET ics-feed?ping=1, which answers 204 with
+   no token and no database). They're set up separately, and a link to a
+   function that isn't there is a 404 for Google and Outlook. The contract's
    getCalendarFeed() is the "feed or null" view of it. Changes
    (include due dates, reset) resolve the new feed, resolve null in demo
    mode or before 0043, and throw an Error whose message is a sentence
@@ -30,7 +34,7 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{32,128}$/;
 export type CalendarFeedLoad =
   | { state: "demo" }
   | { state: "ready"; feed: CalendarFeed }
-  /** 0043 (or the function's table) isn't there yet */
+  /** 0043 isn't there yet, or the ics-feed function isn't deployed */
   | { state: "unavailable" }
   /** not signed in, or the account can't act (suspended / awaiting approval) */
   | { state: "signedOut" }
@@ -89,6 +93,11 @@ function sentence(e: unknown): string {
 
 let cache: { uid: string; feed: CalendarFeed } | null = null;
 let missing = false; // 0043 answered "not there" this session
+/** The ics-feed function's answer this session: deployed, or definitely not
+ *  (404, or 401 = deployed with JWT checks on, which calendar apps can't pass).
+ *  Anything else (a timeout, a network or CORS error, a 5xx) isn't kept. */
+let fnChecked: "ok" | "missing" | null = null;
+const PING_TIMEOUT_MS = 10_000;
 
 async function currentUserId(): Promise<string | null> {
   if (!supabase) return null;
@@ -98,8 +107,28 @@ async function currentUserId(): Promise<string | null> {
   } catch { return null; }
 }
 
+/** Is the ics-feed function deployed and open to calendar apps? Asks like a
+ *  calendar app does (no credentials, no auth header) and never throws. */
+async function checkFeedFunction(refresh = false): Promise<"ok" | "missing" | "failed"> {
+  if (fnChecked === "ok" || (fnChecked === "missing" && !refresh)) return fnChecked;
+  const url = calendarFeedPingUrl();
+  if (!/^https?:\/\//i.test(url) || typeof fetch !== "function") return "failed";
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), PING_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(url, { method: "GET", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: ctl?.signal });
+    if (res.ok) return (fnChecked = "ok");
+    if (res.status === 404 || res.status === 401) return (fnChecked = "missing");
+    return "failed";
+  } catch {
+    return "failed"; // offline, timed out, or a 404 the gateway sent without CORS headers
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Forget the cached feed (e.g. on sign-out). */
-export function clearCalendarFeedCache(): void { cache = null; missing = false; }
+export function clearCalendarFeedCache(): void { cache = null; missing = false; fnChecked = null; }
 
 /** The panel's state: demo, ready (with the feed), not switched on yet,
  *  signed out, or a passing error. Never throws. Cached per account; pass
@@ -108,16 +137,19 @@ export async function loadCalendarFeed(opts: { refresh?: boolean } = {}): Promis
   if (!isSupabaseConfigured || !supabase) return { state: "demo" };
   const uid = await currentUserId();
   if (!uid) return { state: "signedOut" };
-  if (!opts.refresh && cache?.uid === uid) return { state: "ready", feed: cache.feed };
-  if (!opts.refresh && missing) return { state: "unavailable" };
+  if (!opts.refresh && cache?.uid === uid && fnChecked === "ok") return { state: "ready", feed: cache.feed };
+  if (!opts.refresh && (missing || fnChecked === "missing")) return { state: "unavailable" };
   if (offline()) return { state: "error", message: OFFLINE_MSG };
   try {
-    const { data, error } = await supabase.rpc("calendar_feed");
+    // both at once: the row (made on first use) and "is the function there?"
+    const [{ data, error }, fn] = await Promise.all([supabase.rpc("calendar_feed"), checkFeedFunction(opts.refresh)]);
     if (error) throw error;
+    missing = false;
     const feed = parseCalendarFeed(data);
     if (!feed) return { state: "error", message: SERVER_MSG };
+    // a link that would 404 in Google or Outlook isn't offered
+    if (fn !== "ok") return { state: "unavailable" };
     cache = { uid, feed };
-    missing = false;
     return { state: "ready", feed };
   } catch (e) {
     if (isFeedMissing(e)) { missing = true; return { state: "unavailable" }; }
@@ -189,6 +221,12 @@ export async function resetCalendarFeed(): Promise<CalendarFeed | null> {
 export function calendarFeedUrl(token: string, supabaseUrl?: string): string {
   const base = (supabaseUrl ?? (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? "").replace(/\/+$/, "");
   return `${base}/functions/v1/ics-feed?t=${encodeURIComponent(token)}`;
+}
+
+/** The function's "are you there?" URL: 204 when it's deployed (no token, no database). */
+export function calendarFeedPingUrl(supabaseUrl?: string): string {
+  const base = (supabaseUrl ?? (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? "").replace(/\/+$/, "");
+  return `${base}/functions/v1/ics-feed?ping=1`;
 }
 
 /** The example URL the demo shows. */

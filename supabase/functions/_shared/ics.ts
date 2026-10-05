@@ -259,6 +259,8 @@ export interface FeedInput {
   states: FeedStateRow[];
   /** project id → name (for "Task · Project" titles) */
   projectNames: Record<string, string>;
+  /** archived projects: their tasks are hidden in the app, so the feed leaves them out too */
+  archivedProjects?: Iterable<string>;
   /** today in Europe/London, YYYY-MM-DD */
   today: string;
   /** how many days ahead (14) */
@@ -309,7 +311,8 @@ const uidDay = (day: string) => day.replace(/-/g, "");
 
 /** Which tasks become which events: planned blocks (the person's own plan,
  *  today … today+days) and, optionally, due dates as all-day events.
- *  Done and archived tasks never appear.
+ *  Done and archived tasks never appear, and nor do tasks in an archived
+ *  project (the app hides those everywhere).
  *
  *  Whose plan counts (the same rule as the app's lib/planOverlay):
  *  · a task ASSIGNED TO THEM: the task row's plan is theirs and is today's
@@ -327,11 +330,13 @@ export function feedEvents(input: FeedInput): IcsEvent[] {
   const base = String(appUrl || "").replace(/\/+$/, "");
   const link = (id: string) => `${base}/?task=${encodeURIComponent(id)}`;
   const names = input.projectNames ?? {};
+  const archivedProjects = new Set(input.archivedProjects ?? []);
 
   const open = new Map<string, FeedTaskRow>();
   for (const t of input.tasks ?? []) {
     if (!t || typeof t.id !== "string" || !t.id) continue;
     if (t.status === "done" || t.archived_at) continue;
+    if (t.project_id && archivedProjects.has(t.project_id)) continue;
     open.set(t.id, t);
   }
   const isMine = (t: FeedTaskRow) => t.assignee_id === userId;
