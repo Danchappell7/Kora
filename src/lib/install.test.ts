@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetInstallForTests, browserFamily, installState, isIos, isStandalone, listenForInstallPrompt, onInstallStateChange, promptInstall,
+  takeNewTaskShortcut,
 } from "./install";
 
 const UA = {
@@ -104,5 +105,29 @@ describe("install state", () => {
     onInstallStateChange(fn);
     fireInstallPrompt();
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the New task shortcut (/today?new=1)", () => {
+  afterEach(() => { window.history.replaceState(null, "", "/"); });
+
+  it("is true once, and takes `new` off the address while keeping everything else", () => {
+    window.history.replaceState({ kScroll: 12 }, "", "/today?new=1&task=t1#x");
+    expect(takeNewTaskShortcut()).toBe(true);
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe("/today?task=t1#x");
+    expect(window.history.state).toEqual({ kScroll: 12 }); // Back/Forward state survives
+    expect(takeNewTaskShortcut()).toBe(false); // a second call (or a re-render) doesn't reopen it
+  });
+
+  it("is false without the parameter (and leaves the address alone)", () => {
+    window.history.replaceState(null, "", "/inbox?q=brief");
+    expect(takeNewTaskShortcut()).toBe(false);
+    expect(window.location.pathname + window.location.search).toBe("/inbox?q=brief");
+  });
+
+  it("only new=1 opens capture; any other value is just tidied away", () => {
+    window.history.replaceState(null, "", "/today?new=0");
+    expect(takeNewTaskShortcut()).toBe(false);
+    expect(window.location.search).toBe("");
   });
 });

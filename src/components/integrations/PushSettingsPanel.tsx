@@ -3,7 +3,8 @@
    "On this device" switch (asks permission from the click), "Send a test
    notification", and per-kind toggles (notify_prefs "<kind>_push", unset
    = on; they follow the person to every device). Hidden entirely when
-   lib/push says "unconfigured" (no VAPID key); explains "unsupported"
+   lib/push says "unconfigured" (no VAPID key, or the app isn't running the
+   sign-out guard, watchPushSession, yet); explains "unsupported"
    (iPhone: add to Home Screen first) and "denied" (how to allow it again)
    instead of hiding. Demo mode: a local stand-in (the test notification
    is shown right here; nothing leaves the browser).

@@ -170,8 +170,9 @@ self.addEventListener("push", (e) => {
   e.waitUntil(self.registration.showNotification(n.title, n.options));
 });
 
-/** Ask an open Kanbo window to route in place (lib/push listenForPushNavigation
- *  answers on the port). Resolves false when nothing answers in time. */
+/** Ask an open Kanbo window to route in place (lib/push listenForPushMessages,
+ *  mounted by the app, answers on the port). Resolves false when nothing
+ *  answers in time (a tab from an older build). */
 function askToRoute(client, path, ms) {
   return new Promise((resolve) => {
     let done = false;
@@ -185,6 +186,11 @@ function askToRoute(client, path, ms) {
   });
 }
 
+/** Same path and query (the hash doesn't matter). */
+function samePage(a, b) {
+  try { const x = new URL(a), y = new URL(b); return x.origin === y.origin && x.pathname === y.pathname && x.search === y.search; } catch (err) { return false; }
+}
+
 async function openFromNotification(path) {
   const origin = self.location.origin;
   const href = new URL(path, origin).href;
@@ -195,6 +201,9 @@ async function openFromNotification(path) {
   if (target) {
     try { await target.focus(); } catch (err) { /* focus can be refused; carry on */ }
     if (await askToRoute(target, path, 800)) return;
+    // nothing answered: it's already showing that address, so don't reload it
+    // (and lose what's on screen); otherwise go there
+    if (samePage(target.url, href)) return;
     try { if (target.navigate) { await target.navigate(href); return; } } catch (err) { /* uncontrolled window: open a new one */ }
   }
   if (self.clients.openWindow) await self.clients.openWindow(href);

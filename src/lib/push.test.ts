@@ -62,10 +62,11 @@ function fakeBrowser(opts: { perm?: Perm; answer?: Perm; registered?: boolean; e
   return { state, reg, sw, pushManager, FakeNotification, shown, listeners };
 }
 
-/** A fake supabase client: rpc, push_subscriptions rows (own rows only), functions.invoke, the session. */
-function fakeSupabase(o: { rpcError?: unknown; invoke?: () => Promise<{ data: unknown; error: unknown }>; uid?: string } = {}) {
+/** A fake supabase client: rpc, push_subscriptions rows (own rows only), functions.invoke, the session and its events. */
+function fakeSupabase(o: { rpcError?: unknown; invoke?: () => Promise<{ data: unknown; error: unknown }>; uid?: string; hangDelete?: boolean } = {}) {
   const rows: { endpoint: string }[] = [];
-  const calls = { rpc: [] as unknown[], deleted: [] as string[], invoked: [] as unknown[] };
+  const calls = { rpc: [] as unknown[], deleted: [] as string[], deletedBy: [] as [string, string][], invoked: [] as unknown[] };
+  const authCbs: ((event: string, session: unknown) => void)[] = [];
   const client = {
     rpc: vi.fn(async (_fn: string, args: { p_endpoint: string }) => {
       calls.rpc.push(args);
@@ -75,22 +76,44 @@ function fakeSupabase(o: { rpcError?: unknown; invoke?: () => Promise<{ data: un
     }),
     from: vi.fn(() => ({
       select: () => ({ eq: (_k: string, v: string) => ({ maybeSingle: async () => ({ data: rows.find((r) => r.endpoint === v) ?? null, error: null }) }) }),
-      delete: () => ({ eq: async (_k: string, v: string) => { calls.deleted.push(v); const i = rows.findIndex((r) => r.endpoint === v); if (i >= 0) rows.splice(i, 1); return { error: null }; } }),
+      delete: () => ({
+        eq: (k: string, v: string) => {
+          calls.deletedBy.push([k, v]);
+          if (o.hangDelete) return new Promise(() => {}); // the network never answers
+          if (k === "endpoint") calls.deleted.push(v);
+          for (let i = rows.length - 1; i >= 0; i--) if (k === "user_id" || rows[i].endpoint === v) rows.splice(i, 1);
+          return Promise.resolve({ error: null });
+        },
+      }),
     })),
     functions: { invoke: vi.fn(async (_n: string, opts: unknown) => { calls.invoked.push(opts); return o.invoke ? o.invoke() : { data: { ok: true }, error: null }; }) },
-    auth: { getSession: async () => ({ data: { session: { user: { id: o.uid ?? "me" } } } }) },
+    auth: {
+      getSession: async () => ({ data: { session: { user: { id: o.uid ?? "me" } } } }),
+      onAuthStateChange: vi.fn((cb: (event: string, session: unknown) => void) => {
+        authCbs.push(cb);
+        return { data: { subscription: { unsubscribe: vi.fn(() => { authCbs.splice(authCbs.indexOf(cb), 1); }) } } };
+      }),
+    },
   };
-  return { client, rows, calls };
+  /** supabase-js telling its listeners about a sign-in / sign-out */
+  const emit = (event: string, uid: string | null) => { for (const cb of [...authCbs]) cb(event, uid ? { user: { id: uid } } : null); };
+  return { client, rows, calls, emit, authCbs };
 }
 
-async function load(env: { key?: string; configured?: boolean } = {}) {
+/** let the guard's deferred work (setTimeout 0, then its awaits) finish */
+const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+/** a fresh copy of lib/push; by default the app's sign-out guard is running (as AuthProvider mounts it) */
+async function load(env: { key?: string; configured?: boolean; watch?: boolean } = {}) {
   h.configured = env.configured ?? true;
   vi.stubEnv("VITE_VAPID_PUBLIC_KEY", env.key ?? KEY);
   vi.resetModules();
-  return await import("./push");
+  const push = await import("./push");
+  if (env.watch !== false) push.watchPushSession();
+  return push;
 }
 
-beforeEach(() => { localStorage.clear(); });
+beforeEach(() => { localStorage.clear(); h.client = fakeSupabase().client; });
 afterEach(() => {
   vi.unstubAllEnvs();
   delete (window as unknown as Record<string, unknown>).PushManager;
@@ -271,7 +294,7 @@ describe("demo stand-in", () => {
 });
 
 describe("refreshPushSubscription", () => {
-  it("re-saves a replaced subscription for the account that switched push on, and nobody else", async () => {
+  it("re-saves a replaced subscription for the account that switched push on", async () => {
     const b = fakeBrowser({ perm: "granted" });
     const s = fakeSupabase({ uid: "me" });
     h.client = s.client;
@@ -280,16 +303,156 @@ describe("refreshPushSubscription", () => {
     expect(s.calls.rpc).toHaveLength(1);
     await push.refreshPushSubscription(); // same endpoint: no write
     expect(s.calls.rpc).toHaveLength(1);
-    // the browser rotated the subscription (sw.js resubscribed)
+    // the browser rotated the subscription (sw.js resubscribed, e.g. Firefox)
     await b.pushManager.subscribe({ applicationServerKey: KEY_BYTES });
     await push.refreshPushSubscription();
     expect(s.calls.rpc).toHaveLength(2);
-    // another account signs in on this browser: never inherits push
-    await b.pushManager.subscribe({ applicationServerKey: KEY_BYTES });
-    h.client = fakeSupabase({ uid: "someone-else" }).client;
-    const push2 = await load();
-    await push2.refreshPushSubscription();
-    expect((h.client as ReturnType<typeof fakeSupabase>["client"]).rpc).not.toHaveBeenCalled();
+    expect(b.state.sub).not.toBeNull();
+  });
+
+  it("another account signing in on this browser never inherits push: the old subscription is dropped", async () => {
+    const b = fakeBrowser({ perm: "granted" });
+    h.client = fakeSupabase({ uid: "me" }).client;
+    let push = await load();
+    await push.enablePush();
+    const mine = b.state.sub!;
+    // "me" left without signing out properly (e.g. the session was dropped offline)
+    const other = fakeSupabase({ uid: "someone-else" });
+    h.client = other.client;
+    push = await load();
+    await push.refreshPushSubscription();
+    expect(other.client.rpc).not.toHaveBeenCalled();
+    expect(mine.unsubscribe).toHaveBeenCalled();
+    expect(b.state.sub).toBeNull();
+    expect(localStorage.getItem("kanbo-push-owner")).toBeNull();
+  });
+
+  it("when this browser forgot whose subscription it is, keeps it only if it's saved for the person signed in", async () => {
+    const b = fakeBrowser({ perm: "granted" });
+    const s = fakeSupabase({ uid: "me" });
+    h.client = s.client;
+    let push = await load();
+    await push.enablePush();
+    localStorage.clear(); // site data cleared
+    await push.refreshPushSubscription();
+    expect(b.state.sub).not.toBeNull();
+    expect(localStorage.getItem("kanbo-push-owner")).toBe("me");
+
+    localStorage.clear();
+    h.client = fakeSupabase({ uid: "someone-else" }).client; // their rows don't include it
+    push = await load();
+    await push.refreshPushSubscription();
+    expect(b.state.sub).toBeNull();
+  });
+});
+
+describe("the sign-out guard (watchPushSession)", () => {
+  it("push is only offered while the guard runs", async () => {
+    fakeBrowser({ perm: "granted" });
+    const push = await load({ watch: false });
+    expect(push.pushAvailability()).toBe("unconfigured");
+    expect(await push.enablePush()).toMatchObject({ ok: false, reason: "unconfigured" });
+    const changed = vi.fn();
+    push.onPushChange(changed);
+    const stop = push.watchPushSession();
+    expect(push.pushAvailability()).toBe("ready");
+    expect(changed).toHaveBeenCalled(); // an open Settings panel re-reads
+    stop();
+    stop(); // twice is harmless
+    expect(push.pushAvailability()).toBe("unconfigured");
+  });
+
+  it("signing out drops this browser's subscription, so the next person never sees the last one's notifications", async () => {
+    const b = fakeBrowser({ perm: "granted" });
+    const s = fakeSupabase({ uid: "me" });
+    h.client = s.client;
+    const push = await load();
+    s.emit("INITIAL_SESSION", "me");
+    await push.enablePush();
+    await flush();
+    const sub = b.state.sub!;
+    expect(sub).not.toBeNull();
+    s.emit("TOKEN_REFRESHED", "me"); // same person: nothing happens
+    await flush();
+    expect(sub.unsubscribe).not.toHaveBeenCalled();
+
+    s.emit("SIGNED_OUT", null);
+    await flush();
+    expect(sub.unsubscribe).toHaveBeenCalled();
+    expect(b.state.sub).toBeNull();
+    expect(s.calls.deletedBy).toEqual([]); // signed out: the row can't be deleted; the server drops it on 410
+  });
+
+  it("a page that opens signed out drops a subscription left behind", async () => {
+    const b = fakeBrowser({ perm: "granted", existingKey: KEY_BYTES });
+    const s = fakeSupabase();
+    h.client = s.client;
+    await load();
+    s.emit("INITIAL_SESSION", null);
+    await flush();
+    expect(b.state.sub).toBeNull();
+  });
+
+  it("someone else signing in drops the previous person's subscription", async () => {
+    const b = fakeBrowser({ perm: "granted" });
+    const s = fakeSupabase({ uid: "ana" });
+    h.client = s.client;
+    const push = await load();
+    await push.enablePush();
+    expect(b.state.sub).not.toBeNull();
+    s.client.auth.getSession = async () => ({ data: { session: { user: { id: "ben" } } } });
+    s.emit("SIGNED_IN", "ben");
+    await flush();
+    expect(b.state.sub).toBeNull();
+    expect(s.client.rpc).toHaveBeenCalledTimes(1); // only Ana's own switch-on
+  });
+
+  it("stopped guards don't act, and demo mode has nothing to guard", async () => {
+    const b = fakeBrowser({ perm: "granted", existingKey: KEY_BYTES });
+    const s = fakeSupabase();
+    h.client = s.client;
+    const push = await load({ watch: false });
+    const stop = push.watchPushSession();
+    stop();
+    s.emit("SIGNED_OUT", null);
+    await flush();
+    expect(b.state.sub).not.toBeNull();
+    const demo = await load({ configured: false, watch: false });
+    expect(() => demo.watchPushSession()()).not.toThrow();
+  });
+});
+
+describe("disablePush before sign-out", () => {
+  it("drops the browser subscription even when the network never answers, and doesn't hang", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const b = fakeBrowser({ perm: "granted" });
+      const s = fakeSupabase({ hangDelete: true });
+      h.client = s.client;
+      const push = await load();
+      await push.enablePush();
+      const sub = b.state.sub!;
+      const done = push.disablePush();
+      await vi.advanceTimersByTimeAsync(3500);
+      await done;
+      expect(sub.unsubscribe).toHaveBeenCalled();
+      expect(b.state.sub).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("disablePushEverywhere deletes every device's row for this account, then this one", async () => {
+    const b = fakeBrowser({ perm: "granted" });
+    const s = fakeSupabase({ uid: "me" });
+    h.client = s.client;
+    const push = await load();
+    await push.enablePush();
+    s.rows.push({ endpoint: "https://web.push.apple.com/phone" });
+    await push.disablePushEverywhere();
+    expect(s.calls.deletedBy[0]).toEqual(["user_id", "me"]);
+    expect(s.rows).toEqual([]);
+    expect(b.state.sub).toBeNull();
+    const demo = await load({ configured: false });
+    await expect(demo.disablePushEverywhere()).resolves.toBeUndefined();
   });
 });
 

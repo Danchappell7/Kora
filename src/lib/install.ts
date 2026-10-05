@@ -110,6 +110,31 @@ export function onInstallStateChange(fn: (s: InstallState) => void): () => void 
   return () => { listeners.delete(fn); };
 }
 
+/** The query the manifest's "New task" shortcut adds (`/today?new=1`). */
+export const NEW_TASK_PARAM = "new";
+
+/**
+ * The installed app's "New task" shortcut (long-press the icon, or right-click
+ * it in the dock) opens `/today?new=1`. True when this page was opened that
+ * way, and in every case takes `new` off the address (history.replaceState,
+ * keeping every other parameter), so a reload or Back never reopens it and the
+ * app's address builder doesn't carry it along. So it's true once per visit.
+ * The app calls it once it can open quick capture (signed in, tasks loaded).
+ */
+export function takeNewTaskShortcut(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(NEW_TASK_PARAM)) return false;
+    const asked = url.searchParams.get(NEW_TASK_PARAM) === "1";
+    url.searchParams.delete(NEW_TASK_PARAM);
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+    return asked;
+  } catch {
+    return false;
+  }
+}
+
 /** Tests only: forget everything this module has seen. */
 export function __resetInstallForTests(): void {
   deferred = null;

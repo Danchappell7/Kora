@@ -17,6 +17,13 @@
    contract), and isPushDemo() lets Settings offer a local stand-in: the
    switch asks the browser for permission and the test notification is
    shown right here, without a server. Nothing leaves the browser.
+
+   Signing out (shared computers): push is only offered while the app runs
+   watchPushSession() (mounted once, in AuthProvider). It drops this
+   browser's subscription whenever nobody is signed in, and drops one that
+   belongs to a different account when someone signs in. The app also calls
+   disablePush() before signing out (deletes the row while it still can)
+   and disablePushEverywhere() before "Sign out of all devices".
    ============================================================ */
 import type { PushAvailability, PushKind } from "../data/types";
 import { isSupabaseConfigured, supabase } from "./supabase";
@@ -66,9 +73,15 @@ function vapidKey(): Uint8Array | null {
   return keyBytes;
 }
 
-/** Can push be offered on this device right now? (Synchronous; no prompts.) */
+/** How many watchPushSession() guards are running (see the header). */
+let sessionWatchers = 0;
+
+/** Can push be offered on this device right now? (Synchronous; no prompts.)
+ *  "unconfigured" in demo, without a usable key, or while the app isn't
+ *  running the sign-out guard (watchPushSession): a device must never be
+ *  left subscribed for someone who has signed out. */
 export function pushAvailability(): PushAvailability {
-  if (!isSupabaseConfigured || !vapidKey()) return "unconfigured";
+  if (!isSupabaseConfigured || !vapidKey() || sessionWatchers === 0) return "unconfigured";
   if (!pushSupported()) return "unsupported";
   if (notifPermission() === "denied") return "denied";
   return "ready";
@@ -139,6 +152,10 @@ async function registration(create: boolean): Promise<ServiceWorkerRegistration 
     return await withTimeout(navigator.serviceWorker.ready, 10_000, null as ServiceWorkerRegistration | null);
   } catch { return null; }
 }
+
+/** sub.unsubscribe() that never throws or rejects. */
+const unsubscribeQuietly = (sub: PushSubscription): Promise<boolean> =>
+  Promise.resolve().then(() => sub.unsubscribe()).catch(() => false);
 
 async function currentSubscription(): Promise<PushSubscription | null> {
   if (!pushSupported()) return null;
@@ -289,21 +306,50 @@ export async function enablePush(): Promise<PushEnableResult> {
   return { ok: true };
 }
 
-/** Unsubscribe this device and delete its row. Never throws. Call it before
- *  signing out (the row can only be deleted while signed in; if it's left
- *  behind, the next push gets 410 and the server drops it). */
+/** Unsubscribe this device and delete its row. Never throws, and gives up
+ *  after about 6 s at worst. Call it before signing out: the row can only be
+ *  deleted while signed in (if it's left behind, the browser's subscription
+ *  is still gone, so the next push gets 410 and the server drops the row). */
 export async function disablePush(): Promise<void> {
   if (isPushDemo()) { if (demoOn) { demoOn = false; changed(); } return; }
   try {
     const sub = await withTimeout(currentSubscription(), 3000, null);
     remember(null, null);
     if (!sub) return;
-    if (supabase) {
-      try { await withTimeout(Promise.resolve(supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint)), 3000, null); } catch { /* offline */ }
-    }
-    try { await sub.unsubscribe(); } catch { /* already gone */ }
+    const endpoint = sub.endpoint;
+    const deleteRow = supabase
+      ? Promise.resolve(supabase.from("push_subscriptions").delete().eq("endpoint", endpoint)).catch(() => null)
+      : Promise.resolve(null);
+    // both at once: the browser side matters most, and must not wait on the network
+    await withTimeout(Promise.all([deleteRow, unsubscribeQuietly(sub)]), 3000, null);
   } catch { /* never throws */ }
   changed();
+}
+
+/** "Sign out of all devices": delete every device's row for this account
+ *  (while still signed in), so phones and laptops that are closed right now
+ *  stop getting notifications at once, then switch this device off. Never throws. */
+export async function disablePushEverywhere(): Promise<void> {
+  if (!isPushDemo() && supabase) {
+    try {
+      const me = await withTimeout(myId(), 3000, null);
+      if (me) await withTimeout(Promise.resolve(supabase.from("push_subscriptions").delete().eq("user_id", me)).catch(() => null), 3000, null);
+    } catch { /* best effort */ }
+  }
+  await disablePush();
+}
+
+/** Drop this browser's subscription without touching the database (nobody
+ *  is signed in to delete the row; the next push to it gets 410 and the
+ *  server drops it). Never throws. */
+async function dropSubscriptionHere(sub?: PushSubscription | null): Promise<void> {
+  try {
+    remember(null, null);
+    const s = sub ?? await withTimeout(currentSubscription(), 3000, null);
+    if (!s) return;
+    await withTimeout(unsubscribeQuietly(s), 3000, false);
+    changed();
+  } catch { /* never throws */ }
 }
 
 /** Send a test notification to this device. */
@@ -335,25 +381,81 @@ export async function sendTestPush(): Promise<{ ok: boolean; message: string }> 
   }
 }
 
+/** Is this endpoint saved for the signed-in person? null when we can't tell (offline, before 0043). */
+async function savedForMe(endpoint: string): Promise<boolean | null> {
+  if (!supabase) return null;
+  try {
+    // RLS: only the caller's own rows are visible
+    const { data, error } = await supabase.from("push_subscriptions").select("id").eq("endpoint", endpoint).maybeSingle();
+    if (error) return null;
+    return !!data;
+  } catch { return null; }
+}
+
 /**
- * Re-save this device's subscription when the browser has replaced it
- * (sw.js resubscribes on `pushsubscriptionchange`). Only for the account
- * that switched push on here, and only when the endpoint really changed —
- * so a second account signing in on this browser never inherits push.
- * Best effort; never throws. The integrator calls it once after sign-in.
+ * After sign-in (watchPushSession calls it): make sure this browser only
+ * receives the signed-in person's notifications.
+ *  - The subscription belongs to another account (someone else switched push
+ *    on here and never signed out properly): drop it from this browser.
+ *  - It's this person's, and the browser replaced it (sw.js resubscribes on
+ *    `pushsubscriptionchange`, e.g. Firefox rotating it): save the new one.
+ * A second account signing in never inherits push. Best effort; never throws.
  */
 export async function refreshPushSubscription(): Promise<void> {
-  if (isPushDemo() || pushAvailability() !== "ready" || notifPermission() !== "granted") return;
+  if (isPushDemo() || !supabase || !pushSupported()) return;
   try {
-    const { owner, endpoint } = recalled();
-    if (!owner) return;
+    const sub = await withTimeout(currentSubscription(), 3000, null);
+    if (!sub) return;
     const me = await myId();
-    if (!me || me !== owner) return;
-    const sub = await currentSubscription();
+    if (!me) return;
+    const { owner, endpoint } = recalled();
+    if (owner && owner !== me) { await dropSubscriptionHere(sub); return; }
+    if (!owner) {
+      // we don't know whose it is (site data was cleared): keep it only if it's saved for this person
+      const mine = await savedForMe(sub.endpoint);
+      if (mine === true) remember(me, sub.endpoint);
+      else if (mine === false) await dropSubscriptionHere(sub);
+      return;
+    }
     const key = vapidKey();
-    if (!sub || !key || !madeWithOurKey(sub, key) || sub.endpoint === endpoint) return;
+    if (notifPermission() !== "granted" || !key || !madeWithOurKey(sub, key) || sub.endpoint === endpoint) return;
     await saveSubscription(sub);
   } catch { /* best effort */ }
+}
+
+/**
+ * The sign-out guard. Mount it once, at startup, for the life of the page
+ * (AuthProvider: `useEffect(() => watchPushSession(), [])`); push is only
+ * offered while it runs. Nobody signed in (sign-out, an expired or revoked
+ * session, a page that opens signed out): this browser's subscription is
+ * dropped, so the next person at a shared computer never sees the last
+ * person's notifications. Someone signed in: refreshPushSubscription().
+ * Returns the stop function. A no-op in demo mode.
+ */
+export function watchPushSession(): () => void {
+  if (isPushDemo() || !supabase) return () => {};
+  let stopped = false;
+  let last: string | null | undefined;
+  let unsubscribe = () => {};
+  try {
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      const uid = session?.user?.id ?? null;
+      if (uid === last) return; // token refreshes, profile updates
+      last = uid;
+      // outside the auth callback: supabase-js deadlocks when a callback awaits its own client
+      setTimeout(() => { if (!stopped) void (uid ? refreshPushSubscription() : dropSubscriptionHere()); }, 0);
+    });
+    unsubscribe = () => data.subscription.unsubscribe();
+  } catch { return () => {}; }
+  sessionWatchers++;
+  changed();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    sessionWatchers = Math.max(0, sessionWatchers - 1);
+    try { unsubscribe(); } catch { /* ignore */ }
+    changed();
+  };
 }
 
 /**
@@ -384,5 +486,6 @@ export function listenForPushMessages(onNavigate: (path: string) => void): () =>
 export function __resetPushForTests(): void {
   demoOn = false;
   keyBytes = undefined;
+  sessionWatchers = 0;
   changeListeners.clear();
 }

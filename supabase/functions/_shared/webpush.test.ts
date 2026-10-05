@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDecipheriv, createECDH, createPublicKey, generateKeyPairSync, hkdfSync, verify as nodeVerify } from "node:crypto";
 import {
-  b64urlDecode, b64urlEncode, dueDigestPush, encodePushMessage, encryptPayload, importEcdhKeyPair, isAllowedPushEndpoint,
+  assignmentEventKey, b64urlDecode, b64urlEncode, dueDigestPush, PUSH_EVENT_WINDOW_SEC, pushOnceKeys, encodePushMessage, encryptPayload, importEcdhKeyPair, isAllowedPushEndpoint,
   MAX_PAYLOAD_BYTES, pushToUser, safePushPath, sendWebPush, taskEventPush, TEST_PUSH, vapidAuthHeader, vapidFromEnv,
   vapidKeysMatch, VAPID_MAX_TTL_SEC, type PushMessage, type VapidKeys,
 } from "./webpush.ts";
@@ -360,6 +360,21 @@ describe("pushToUser", () => {
     expect(r).toEqual({ total: 1, sent: 1, failed: 0, pruned: 0 });
   });
 
+  it("asks `allow` only when the person has a device, and sends nothing when it says no", async () => {
+    const v = vapidKeys();
+    const fetch = vi.fn(async () => new Response("", { status: 201 })) as unknown as typeof globalThis.fetch;
+    const none = new FakeDb();
+    const allowNone = vi.fn(async () => true);
+    expect(await pushToUser(none, "u1", TEST_PUSH, v, { fetch, allow: allowNone })).toEqual({ total: 0, sent: 0, failed: 0, pruned: 0 });
+    expect(allowNone).not.toHaveBeenCalled(); // no device: no de-duplication write either
+    const db = new FakeDb();
+    db.rows = [{ id: "1", user_id: "u1", ...browserSub("https://fcm.googleapis.com/fcm/send/a") }];
+    expect(await pushToUser(db, "u1", TEST_PUSH, v, { fetch, allow: async () => false })).toEqual({ total: 1, sent: 0, failed: 0, pruned: 0, skipped: true });
+    expect(await pushToUser(db, "u1", TEST_PUSH, v, { fetch, allow: async () => { throw new Error("db down"); } })).toMatchObject({ sent: 0, skipped: true });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await pushToUser(db, "u1", TEST_PUSH, v, { fetch, allow: async () => true })).toEqual({ total: 1, sent: 1, failed: 0, pruned: 0 });
+  });
+
   it("sends nothing before 0043, or when the VAPID keys aren't a pair", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const v = vapidKeys();
@@ -373,5 +388,47 @@ describe("pushToUser", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(db.rows).toHaveLength(1);
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("notify's guard rails", () => {
+  const now = Date.UTC(2026, 9, 5, 9, 0);
+  const ago = (sec: number) => new Date(now - sec * 1000).toISOString();
+  const task = (o: Partial<{ user_id: string; assignee_id: string | null; created_at: string }> = {}) =>
+    ({ id: "t1", user_id: "creator", assignee_id: "bob", created_at: ago(86_400), ...o });
+  const ev = (o: Partial<AssigneeEventLike> = {}): AssigneeEventLike => ({ id: "e1", actor_id: "ana", new_value: "bob", created_at: ago(5), ...o });
+  type AssigneeEventLike = { id: string; actor_id: string | null; new_value: string | null; created_at: string };
+
+  it("an assignment the database shows the caller just made: one key per event", () => {
+    expect(assignmentEventKey(task(), [ev()], "ana", now)).toBe("ev:e1");
+    // the newest matching change wins (re-assigning back and forth is a new event)
+    expect(assignmentEventKey(task(), [ev({ id: "old", created_at: ago(300) }), ev({ id: "new", created_at: ago(2) })], "ana", now)).toBe("ev:new");
+  });
+
+  it("no push without proof: someone else's change, another assignee, too old, or nobody assigned", () => {
+    expect(assignmentEventKey(task(), [], "ana", now)).toBeNull();                                        // just naming people
+    expect(assignmentEventKey(task(), [ev({ actor_id: "carl" })], "ana", now)).toBeNull();                // carl did it, not the caller
+    expect(assignmentEventKey(task(), [ev({ new_value: "dina" })], "ana", now)).toBeNull();               // since re-assigned
+    expect(assignmentEventKey(task(), [ev({ created_at: ago(PUSH_EVENT_WINDOW_SEC + 1) })], "ana", now)).toBeNull(); // replayed later
+    expect(assignmentEventKey(task(), [ev({ created_at: "nonsense" })], "ana", now)).toBeNull();
+    expect(assignmentEventKey(task({ assignee_id: null }), [ev()], "ana", now)).toBeNull();
+    expect(assignmentEventKey(task({ assignee_id: "ana" }), [ev({ new_value: "ana" })], "ana", now)).toBeNull(); // self
+  });
+
+  it("a task the caller just created, already assigned, counts (no change event for an insert)", () => {
+    expect(assignmentEventKey(task({ user_id: "ana", created_at: ago(3) }), [], "ana", now)).toBe("new:t1");
+    expect(assignmentEventKey(task({ user_id: "ana", created_at: ago(PUSH_EVENT_WINDOW_SEC + 5) }), [], "ana", now)).toBeNull();
+    expect(assignmentEventKey(task({ user_id: "carl", created_at: ago(3) }), [], "ana", now)).toBeNull();
+    // a creation date in the future can't keep the window open
+    expect(assignmentEventKey(task({ user_id: "ana", created_at: new Date(now + 3_600_000).toISOString() }), [], "ana", now)).toBeNull();
+  });
+
+  it("de-duplicates per recipient: once per event, and once a minute per task and kind", () => {
+    expect(pushOnceKeys("bob", "t1", "assigned", "ev:e1")).toEqual([
+      { key: "push:bob:ev:e1", windowSec: PUSH_EVENT_WINDOW_SEC + 60 },
+      { key: "push:bob:t1:assigned", windowSec: 60 },
+    ]);
+    // the event key outlives the window in which the event still counts as fresh
+    expect(pushOnceKeys("bob", "t1", "comment", "c:9")[0].windowSec).toBeGreaterThan(PUSH_EVENT_WINDOW_SEC);
   });
 });

@@ -15,7 +15,17 @@
 // Trust model: the caller must be signed in and able to see the task. The
 // task title, link and recipients all come from the database — the client
 // only says which task and what happened — so this can't be used to send
-// arbitrary Kanbo-branded mail to arbitrary people.
+// arbitrary Kanbo-branded mail to arbitrary people. "assigned" also needs
+// write access (guests are read-only, so they never assign anyone).
+//
+// Push is stricter, because it lands on a lock screen:
+//  - "assigned" pushes only to the task's assignee as the database has it,
+//    and only when the database shows the caller just made that assignment
+//    (task_events from the last 10 minutes, or they just created the task
+//    already assigned) — never to ids the request names;
+//  - mention / comment push for the caller's most recent comment only;
+//  - each recipient gets one push per event (so replaying a call alerts
+//    nobody again) and at most one a minute per task and kind.
 //
 // Volume cap: 150 calls per person per 10 minutes (room for bulk
 // reassignments), then 429 — in-app notifications still arrive via triggers.
@@ -27,7 +37,10 @@
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX } from "../_shared/limits.ts";
-import { isAllowedPushEndpoint, pushToUser, taskEventPush, TEST_PUSH, vapidFromEnv, type VapidKeys } from "../_shared/webpush.ts";
+import {
+  assignmentEventKey, isAllowedPushEndpoint, PUSH_EVENT_WINDOW_SEC, pushOnceKeys, pushToUser, taskEventPush, TEST_PUSH,
+  vapidFromEnv, type AssigneeEvent, type VapidKeys,
+} from "../_shared/webpush.ts";
 
 const COPY: Record<string, { subj: (t: string) => string; line: string }> = {
   assigned: { subj: (t) => `You were assigned: ${t}`, line: "assigned you a task" },
@@ -45,8 +58,10 @@ const MAX_RECIPIENTS = 25;
 
 interface TaskRow {
   id: string; title: string | null; user_id: string; workspace_id: string | null; assignee_id: string | null;
-  followers: string[] | null; collaborators: string[] | null; archived_at: string | null;
+  followers: string[] | null; collaborators: string[] | null; archived_at: string | null; created_at: string | null;
 }
+/** roles that may change tasks (0041 can_write); guests are read-only */
+const WRITERS = new Set(["owner", "admin", "member"]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -80,39 +95,61 @@ Deno.serve(async (req) => {
 
     // the task — title/recipients come from here, never from the request
     const { data: t } = await supa.from("tasks")
-      .select("id,title,user_id,workspace_id,assignee_id,followers,collaborators,archived_at")
+      .select("id,title,user_id,workspace_id,assignee_id,followers,collaborators,archived_at,created_at")
       .eq("id", taskId).maybeSingle<TaskRow>();
     if (!t) return json({ error: "task not found" }, 404);
     if (t.archived_at) return json({ ok: true, sent: 0, note: "archived" });
 
     // who can see this task: its creator (personal) or active workspace members
     const members = new Set<string>();
+    let actorRole = "none";
     if (t.workspace_id) {
-      const { data: ms } = await supa.from("workspace_members").select("user_id")
+      const { data: ms } = await supa.from("workspace_members").select("user_id,role")
         .eq("workspace_id", t.workspace_id).eq("status", "active");
-      for (const m of ms ?? []) if (m.user_id) members.add(m.user_id);
+      for (const m of ms ?? []) {
+        if (!m.user_id) continue;
+        members.add(m.user_id);
+        if (m.user_id === actorId) actorRole = String(m.role ?? "none");
+      }
       const { data: ws } = await supa.from("workspaces").select("owner_id").eq("id", t.workspace_id).maybeSingle();
-      if (ws?.owner_id) members.add(ws.owner_id);
+      if (ws?.owner_id) { members.add(ws.owner_id); if (ws.owner_id === actorId) actorRole = "owner"; }
     } else {
       members.add(t.user_id);
+      if (t.user_id === actorId) actorRole = "owner";
     }
     if (!members.has(actorId)) return json({ error: "not allowed" }, 403);
+    // only someone who can change tasks can have assigned one (guests can still comment)
+    if (kind === "assigned" && !WRITERS.has(actorRole)) return json({ error: "not allowed" }, 403);
 
     // recipients by event, from the database
     let recips: string[] = [];
+    // push: the event this call is about (null → no push), and who may get one
+    let eventKey: string | null = null;
+    let pushTo: Set<string> | null = null;
     if (kind === "assigned") {
-      // the app fires this alongside the save, so the row may not show the new
-      // assignee yet — accept the named assignee too (still members-only below)
+      // email: the app fires this alongside the save, so the row may not show
+      // the new assignee yet — accept the named assignee too (still members-only below)
       const named = Array.isArray(body?.recipientIds) ? body.recipientIds.slice(0, 3).map(String) : [];
       recips = [t.assignee_id ?? "", ...named];
+      // push: only the assignee the database has, and only if it shows this
+      // person just made that assignment
+      if (vapid && t.assignee_id) {
+        const since = new Date(Date.now() - PUSH_EVENT_WINDOW_SEC * 1000).toISOString();
+        const { data: evs } = await supa.from("task_events").select("id,actor_id,new_value,created_at")
+          .eq("task_id", taskId).eq("field", "assignee").eq("actor_id", actorId).gte("created_at", since)
+          .order("created_at", { ascending: false }).limit(5);
+        eventKey = assignmentEventKey(t, (evs ?? []) as AssigneeEvent[], actorId);
+        pushTo = new Set([String(t.assignee_id)]);
+      }
     } else {
       // the actor's most recent comment on this task (the one that triggered this)
       const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-      const { data: c } = await supa.from("comments").select("mentions,created_at")
+      const { data: c } = await supa.from("comments").select("id,mentions,created_at")
         .eq("task_id", taskId).eq("user_id", actorId).gte("created_at", since)
         .order("created_at", { ascending: false }).limit(1).maybeSingle();
       const mentioned = ((c?.mentions as string[] | null) ?? []).map(String);
       if (!c) return json({ ok: true, sent: 0, note: "no recent comment" });
+      if (c.id) eventKey = `c:${c.id}`;
       if (kind === "mention") {
         recips = mentioned;
       } else {
@@ -128,15 +165,22 @@ Deno.serve(async (req) => {
 
     const title = oneLine(t.title || "a task");
     const link = appUrl ? `${appUrl}/?task=${encodeURIComponent(taskId)}` : "";
-    const push = vapid ? taskEventPush(kind as "assigned" | "mention" | "comment", actorName, t.title || "", taskId) : null;
+    const push = vapid && eventKey ? taskEventPush(kind as "assigned" | "mention" | "comment", actorName, t.title || "", taskId) : null;
+    // once per recipient per event, and at most once a minute per task and kind
+    const pushOnce = (id: string) => async () => {
+      for (const k of pushOnceKeys(id, taskId, kind, eventKey!)) {
+        if (!(await hit(supa, `${KEY_PREFIX}${k.key}`, { windowSec: k.windowSec })).allowed) return false;
+      }
+      return true;
+    };
     let sent = 0, pushed = 0;
     for (const id of recips) {
       const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended").eq("id", id).maybeSingle();
       if (prof?.suspended) continue;
       const prefs = (prof?.notify_prefs ?? {}) as Record<string, boolean>;
       // push: every device they switched on, unless "<kind>_push" is off
-      if (push && vapid && prefs[`${kind}_push`] !== false) {
-        try { pushed += (await pushToUser(supa, id, push, vapid)).sent; }
+      if (push && vapid && (!pushTo || pushTo.has(id)) && prefs[`${kind}_push`] !== false) {
+        try { pushed += (await pushToUser(supa, id, push, vapid, { allow: pushOnce(id) })).sent; }
         catch (e) { console.error("push", String((e as Error)?.message ?? e)); }
       }
       if (!resendKey) continue; // push-only set-up: no email

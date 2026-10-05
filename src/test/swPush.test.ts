@@ -95,6 +95,15 @@ describe("sw.js notificationclick", () => {
     expect(w.navigate).toHaveBeenCalledWith(`${O}/inbox`);
   });
 
+  it("doesn't reload a window that's already at that address when the app doesn't answer", async () => {
+    const w = win(`${O}/?task=t1`);
+    const { listeners, openWindow } = boot({ wins: [w] });
+    await fire(listeners.notificationclick, click("/?task=t1"));
+    expect(w.focus).toHaveBeenCalled();
+    expect(w.navigate).not.toHaveBeenCalled();
+    expect(openWindow).not.toHaveBeenCalled();
+  });
+
   it("opens a window when Kanbo isn't open, and only ever on Kanbo", async () => {
     const { listeners, openWindow } = boot({ wins: [win("https://other.site/")] });
     await fire(listeners.notificationclick, click("/?task=t9"));

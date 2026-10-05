@@ -412,6 +412,58 @@ export interface PushRunResult {
   failed: number;
   /** deleted: gone (404/410), unusable keys or not a push service */
   pruned: number;
+  /** true when `allow` said no (already pushed about this) */
+  skipped?: boolean;
+}
+
+/* ---------- notify's guard rails for event pushes ---------- */
+
+/** How recent an event must be for notify to push about it (the app calls
+ *  notify straight after the save), and how long one event is remembered. */
+export const PUSH_EVENT_WINDOW_SEC = 600;
+
+/** A task_events row (0038; written only by the database's own trigger). */
+export interface AssigneeEvent { id: string; actor_id: string | null; new_value: string | null; created_at: string }
+
+/**
+ * Proof that `actorId` really did just give this task to its current
+ * assignee, so an "assigned" push can't be fired at will by naming people:
+ * a task_events row from the last 10 minutes (the trigger records who changed
+ * the assignee; clients can't write it), or the actor created the task,
+ * already assigned, in the last 10 minutes. Returns a key naming that event
+ * (notify pushes once per recipient per event), or null: no push.
+ */
+export function assignmentEventKey(
+  task: { id: string; user_id: string | null; assignee_id: string | null; created_at?: string | null },
+  events: readonly AssigneeEvent[],
+  actorId: string,
+  now = Date.now(),
+): string | null {
+  const assignee = String(task.assignee_id ?? "");
+  if (!assignee || assignee === actorId) return null;
+  const fresh = (iso: string | null | undefined) => {
+    const t = Date.parse(String(iso ?? ""));
+    return Number.isFinite(t) && t <= now + 60_000 && now - t <= PUSH_EVENT_WINDOW_SEC * 1000;
+  };
+  const ev = events
+    .filter((e) => e.actor_id === actorId && e.new_value === assignee && fresh(e.created_at))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  if (ev) return `ev:${ev.id}`;
+  if (task.user_id === actorId && fresh(task.created_at)) return `new:${task.id}`;
+  return null;
+}
+
+/**
+ * The rate_limits keys (with windows) an event push must get past for one
+ * recipient: once per event (a replayed notify call alerts nobody again),
+ * and at most once a minute per task and kind (a burst of real comments is
+ * one alert). The caller adds its KEY_PREFIX.
+ */
+export function pushOnceKeys(recipientId: string, taskId: string, kind: string, eventKey: string): { key: string; windowSec: number }[] {
+  return [
+    { key: `push:${recipientId}:${eventKey}`, windowSec: PUSH_EVENT_WINDOW_SEC + 60 },
+    { key: `push:${recipientId}:${taskId}:${kind}`, windowSec: 60 },
+  ];
 }
 
 const isMissing = (err: unknown) => {
@@ -427,7 +479,12 @@ const isMissing = (err: unknown) => {
  */
 export async function pushToUser(
   db: Db, userId: string, message: PushMessage, vapid: VapidKeys,
-  opts: SendOptions & { endpoint?: string } = {},
+  opts: SendOptions & {
+    endpoint?: string;
+    /** asked once the person has at least one device, just before sending;
+     *  false sends nothing (notify's per-recipient de-duplication) */
+    allow?: () => Promise<boolean>;
+  } = {},
 ): Promise<PushRunResult> {
   const out: PushRunResult = { total: 0, sent: 0, failed: 0, pruned: 0 };
   if (!(await vapidKeysMatch(vapid))) {
@@ -444,6 +501,12 @@ export async function pushToUser(
   }
   const subs = (data ?? []) as ({ id: string } & PushSubscriptionKeys)[];
   out.total = subs.length;
+  if (!subs.length) return out;
+  if (opts.allow) {
+    let go = false;
+    try { go = await opts.allow(); } catch { go = false; }
+    if (!go) return { ...out, skipped: true };
+  }
   const nowIso = new Date(opts.now ?? Date.now()).toISOString();
   await Promise.all(subs.map(async (s) => {
     const r = await sendWebPush(s, message, vapid, opts);
