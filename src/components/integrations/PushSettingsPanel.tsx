@@ -10,7 +10,7 @@
    Mount (integrator): in SettingsModal's notifications section, under the
    In-app / Email table, with the same notifyPrefs / onSaveNotifyPrefs.
    ============================================================ */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, Icon, Pill, Toggle } from "../primitives";
 import { SetGroup, SetNote, SetRow } from "./settingsBits";
 import { useOptionalToast } from "../rituals/shared";
@@ -39,6 +39,7 @@ export function PushSettingsPanel({ notifyPrefs, onSaveNotifyPrefs }: PushSettin
   const [msg, setMsg] = useState<Msg | null>(null);
   const [live, setLive] = useState("");
   const alive = useRef(true);
+  const descId = "kpush-d" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const busyRef = useRef<Busy>("check");
   const setBusyBoth = (b: Busy) => { busyRef.current = b; setBusy(b); };
 
@@ -134,24 +135,31 @@ export function PushSettingsPanel({ notifyPrefs, onSaveNotifyPrefs }: PushSettin
   return (
     <div className="kpush-panel">
       <SetGroup title="Push notifications" action={demo ? <Pill tone="neutral">Demo</Pill> : undefined}>
-        <SetRow label="On this device" desc={deviceDesc}>
-          {blocked ? (
-            <span className="kpush-state" style={{ color: avail === "denied" ? "var(--signal, var(--st-blocked))" : "var(--ink-3)" }}>
-              <Icon name={avail === "denied" ? "lock" : "alert"} size={14} sw={2} />
-              {avail === "denied" ? "Blocked" : "Not available"}
-            </span>
-          ) : (
-            <span className="kpush-ctl">
-              {(busy === "enable" || busy === "disable" || busy === "check") && <span className="kspin" aria-hidden="true" />}
-              <button type="button" role="switch" className="ktoggle-switch kpush-switch"
-                aria-checked={on} aria-label="Push notifications on this device"
-                aria-busy={busy === "enable" || busy === "disable" || undefined}
-                disabled={busy === "check"} onClick={() => { void toggleDevice(); }}>
-                <span className="ktoggle-thumb" aria-hidden="true" />
-              </button>
-            </span>
-          )}
-        </SetRow>
+        {/* SetRow's markup, with the description's id so the switch can point at it */}
+        <div className="kset-row">
+          <div className="kset-row-text">
+            <span className="kset-row-label">On this device</span>
+            <span id={descId} className="kset-row-desc">{deviceDesc}</span>
+          </div>
+          <div className="kset-row-ctl">
+            {blocked ? (
+              <span className="kpush-state" style={{ color: avail === "denied" ? "var(--signal, var(--st-blocked))" : "var(--ink-3)" }}>
+                <Icon name={avail === "denied" ? "lock" : "alert"} size={14} sw={2} />
+                {avail === "denied" ? "Blocked" : "Not available"}
+              </span>
+            ) : (
+              <span className="kpush-ctl">
+                {(busy === "enable" || busy === "disable" || busy === "check") && <span className="kspin" aria-hidden="true" />}
+                <button type="button" role="switch" className="ktoggle-switch kpush-switch"
+                  aria-checked={on} aria-label="Push notifications on this device" aria-describedby={descId}
+                  aria-busy={busy === "enable" || busy === "disable" || undefined}
+                  disabled={busy === "check"} onClick={() => { void toggleDevice(); }}>
+                  <span className="ktoggle-thumb" aria-hidden="true" />
+                </button>
+              </span>
+            )}
+          </div>
+        </div>
         {msg && (
           <p className="kpush-msg" data-tone={msg.tone}>
             <Icon name={msg.tone === "signal" ? "alert" : msg.tone === "ok" ? "check" : "bell"} size={14} sw={2} />

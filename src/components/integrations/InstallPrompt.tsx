@@ -89,7 +89,7 @@ export function InstallPrompt({ variant, onDismiss }: InstallPromptProps) {
   if (state === "installed") {
     return (
       <SetRow icon={icon} label="Kanbo app"
-        desc={isStandalone() ? "You're using the installed app." : "Installed. Open Kanbo from your dock, Start menu or Home Screen."}>
+        desc={isStandalone() ? "You're using the installed app." : "Open Kanbo from your dock, Start menu or Home Screen."}>
         <span className="kpush-state"><Icon name="check" size={14} sw={2.25} />Installed</span>
       </SetRow>
     );

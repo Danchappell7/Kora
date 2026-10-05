@@ -149,6 +149,18 @@ describe("VAPID", () => {
     warn.mockRestore();
   });
 
+  it("canonicalises keys pasted as padded or plain base64 (JWK import and k= need base64url)", async () => {
+    const v = vapidKeys();
+    const std = (s: string) => Buffer.from(s, "base64url").toString("base64"); // + / and = padding
+    const read = vapidFromEnv((k) => ({ VAPID_PUBLIC_KEY: std(v.publicKey), VAPID_PRIVATE_KEY: std(v.privateKey), VAPID_SUBJECT: "mailto:ops@kanbo.test" } as Record<string, string>)[k]);
+    expect(read).toEqual({ publicKey: v.publicKey, privateKey: v.privateKey, subject: "mailto:ops@kanbo.test" });
+    expect(read!.publicKey).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(read!.privateKey).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(await vapidKeysMatch(read!)).toBe(true);
+    const header = await vapidAuthHeader("https://fcm.googleapis.com/fcm/send/abc", read!, { now: Date.now() });
+    expect(header.endsWith(`, k=${v.publicKey}`)).toBe(true);
+  });
+
   it("tells a matching pair from a mismatched one", async () => {
     const a = vapidKeys(), b = vapidKeys();
     expect(await vapidKeysMatch(a)).toBe(true);

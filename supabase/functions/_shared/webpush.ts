@@ -155,9 +155,11 @@ export function vapidFromEnv(get: (k: string) => string | undefined): VapidKeys 
   const subject = (get("VAPID_SUBJECT") ?? "").trim() || (/^https:\/\//.test(appUrl) ? appUrl.replace(/\/+$/, "") : "");
   if (!publicKey && !privateKey) return null; // not set up: stay quiet
   if (!publicKey || !privateKey) { warnOnce("half", "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must both be set. Push is off."); return null; }
+  let pub: Uint8Array, priv: Uint8Array;
   try {
-    const pub = b64urlDecode(publicKey), priv = b64urlDecode(privateKey);
+    pub = b64urlDecode(publicKey);
     if (pub.length !== 65 || pub[0] !== 4) throw new Error("public key");
+    priv = b64urlDecode(privateKey);
     if (priv.length !== 32) throw new Error("private key");
   } catch (e) {
     warnOnce("shape", `VAPID ${(e as Error).message === "private key" ? "private" : "public"} key isn't a base64url P-256 key. Push is off.`);
@@ -167,7 +169,9 @@ export function vapidFromEnv(get: (k: string) => string | undefined): VapidKeys 
     warnOnce("subject", "VAPID_SUBJECT must be mailto:you@example.com or an https:// URL. Push is off.");
     return null;
   }
-  return { publicKey, privateKey, subject };
+  // canonical unpadded base64url, whatever was pasted (padded or plain base64
+  // too): the JWK import and the `k=` header both need exactly that form
+  return { publicKey: b64urlEncode(pub), privateKey: b64urlEncode(priv), subject };
 }
 
 /** JWK for a P-256 key from its raw base64url parts. */
