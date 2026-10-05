@@ -9,7 +9,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initMonitoring } from "./lib/monitoring";
 import { startLiveClock } from "./lib/liveClock";
 import { listenForInstallPrompt } from "./lib/install";
-import { publicFormTokenFromPath } from "./lib/publicForms";
+import { applyPublicTheme, publicFormTokenFromPath } from "./lib/publicForms";
 import "./styles/kanbo.css";
 
 initMonitoring();
@@ -27,6 +27,9 @@ const legal = path === "/privacy" ? "privacy" : path === "/terms" ? "terms" : nu
 // account — no auth, no app shell (f9 owns this route and src/public/).
 const publicFormToken = publicFormTokenFromPath(path);
 const PublicFormPage = lazy(() => import("./public/PublicFormPage"));
+// Paper unless the visitor's system is dark (never the app's saved theme), set
+// before the first paint so the page doesn't flash Navy while its code loads
+if (publicFormToken !== null) applyPublicTheme();
 
 const root = createRoot(document.getElementById("root")!);
 
