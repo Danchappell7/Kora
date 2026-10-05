@@ -218,7 +218,8 @@ function RequestForm({ token, form, demo, onGone }: { token: string; form: Publi
   const doneRef = useRef<HTMLHeadingElement>(null);
   const bannerRef = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  // set in the body too: StrictMode (dev) runs this cleanup and then the effect again
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const today = useMemo(() => localISODate(), []);
 
   // focus moves happen after React has committed what they point at

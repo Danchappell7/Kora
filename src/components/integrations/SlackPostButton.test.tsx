@@ -1,4 +1,5 @@
 /* "Post to Slack", in demo mode (lib/slack's in-memory fake). */
+import { StrictMode } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ToastProvider } from "../Toast";
@@ -86,5 +87,34 @@ describe("SlackPostButton", () => {
     expect(await screen.findByRole("button", { name: "Post to Slack" })).toBeInTheDocument();
     await act(async () => { await slack.disconnectSlack(WS); });
     await waitFor(() => expect(screen.queryByRole("button")).toBeNull());
+  });
+});
+
+/* `npx vite` renders under <StrictMode>, which mounts, unmounts and remounts
+   every effect once: the button must still finish posting and settle back. */
+describe("SlackPostButton under StrictMode (dev builds)", () => {
+  it("posts, says where it went, then goes back to the button", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await slack.connectSlack(WS, HOOK, "#launch-team");
+      render(<StrictMode><SlackPostButton workspaceId={WS} kind="standup" getText={() => "Shipped the hero."} /></StrictMode>);
+      fireEvent.click(await screen.findByRole("button", { name: "Post to Slack, #launch-team" }));
+      expect(await screen.findByText("Posted to #launch-team")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Posted to #launch-team" })).not.toHaveAttribute("aria-busy", "true");
+      await act(async () => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByRole("button", { name: "Post to Slack, #launch-team" })).not.toBeDisabled();
+      expect(screen.queryByText("Posted to #launch-team")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a refused post frees the button and says why", async () => {
+    await slack.connectSlack(WS, HOOK);
+    vi.mocked(slack.postToSlack).mockResolvedValueOnce({ ok: false, reason: "network", message: "Kanbo couldn't reach Slack. Try again in a moment." });
+    render(<StrictMode><SlackPostButton workspaceId={WS} kind="risks" getText={() => "• late"} label="Share risks" /></StrictMode>);
+    fireEvent.click(await screen.findByRole("button", { name: "Share risks" }));
+    expect(await screen.findByText("Kanbo couldn't reach Slack. Try again in a moment.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Share risks" })).not.toHaveAttribute("aria-busy", "true");
   });
 });

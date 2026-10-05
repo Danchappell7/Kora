@@ -2,6 +2,7 @@
    paths, the theme, and the demo preview. The function is stubbed by
    mocking lib/publicForms' two network calls (the rest of the module is
    real: validation, the demo form, the theme). */
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { PublicFormLoad, PublicFormSchema } from "../data/types";
@@ -269,5 +270,50 @@ describe("theme and the demo", () => {
     expect(screen.getByText(/This was a preview, so nothing was sent anywhere/)).toBeInTheDocument();
     expect(screen.getByText(/^KB-[0-9A-F]{6}$/)).toBeInTheDocument();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+/* `npx vite` renders under <StrictMode>, which mounts, unmounts and remounts
+   every effect once: Send must still reach the thank-you (or the explanation). */
+describe("under StrictMode (dev builds)", () => {
+  it("sends, thanks them with a reference, and copies it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      loads({ ok: true, form: FORM });
+      net.submit = vi.fn(async () => ({ ok: true, reference: "KB-7F3A9C" }));
+      const writeText = vi.fn(async () => {});
+      Object.assign(navigator, { clipboard: { writeText } });
+      render(<StrictMode><PublicFormPage token={TOKEN} /></StrictMode>);
+      await screen.findByRole("heading", { name: "Design requests" });
+      fill("What do you need?", "Banner"); fill("Your name", "Sam"); fill("Your email", "sam@example.com");
+      send();
+      const done = await screen.findByRole("heading", { name: "Request sent" });
+      await waitFor(() => expect(done).toHaveFocus());
+      expect(screen.getByText("KB-7F3A9C")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Copy reference KB-7F3A9C" }));
+      expect(await screen.findByText("Copied")).toBeInTheDocument();
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(screen.queryByText("Copied")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("a refused send frees the button and says why", async () => {
+    loads({ ok: true, form: FORM });
+    net.submit = vi.fn(async () => ({ ok: false, reason: "network", message: "x" }));
+    render(<StrictMode><PublicFormPage token={TOKEN} /></StrictMode>);
+    await screen.findByRole("heading", { name: "Design requests" });
+    fill("What do you need?", "Banner"); fill("Your name", "Sam"); fill("Your email", "sam@example.com");
+    send();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't be reached/);
+    expect(screen.getByRole("button", { name: /send request/i })).not.toHaveAttribute("aria-busy", "true");
+  });
+  it("/f/demo reaches the thank-you", async () => {
+    render(<StrictMode><PublicFormPage token="demo" /></StrictMode>);
+    await screen.findByRole("heading", { name: "Launch requests" });
+    fill("What do you need?", "Launch tweet"); fill("Your name", "Sam"); fill("Your email", "sam@example.com");
+    send();
+    expect(await screen.findByRole("heading", { name: "Request sent" })).toBeInTheDocument();
+    expect(screen.getByText(/^KB-[0-9A-F]{6}$/)).toBeInTheDocument();
   });
 });

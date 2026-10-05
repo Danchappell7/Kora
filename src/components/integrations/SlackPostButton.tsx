@@ -43,7 +43,11 @@ export function SlackPostButton({ workspaceId, kind, getText, projectId, status,
   const [note, setNote] = useState<{ tone: "ok" | "signal"; text: string } | null>(null);
   const alive = useRef(true);
   const timer = useRef<ReturnType<typeof setTimeout>>();
-  useEffect(() => () => { alive.current = false; clearTimeout(timer.current); }, []);
+  // set in the body too: StrictMode (dev) runs this cleanup and then the effect again
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; clearTimeout(timer.current); };
+  }, []);
 
   if (!workspaceId || !slack?.connected || !slack.canPost) return null;
   const where = slack.channelLabel || "Slack";

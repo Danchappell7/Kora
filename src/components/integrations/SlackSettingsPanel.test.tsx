@@ -1,4 +1,5 @@
 /* Settings › Slack, in demo mode (lib/slack's in-memory fake). */
+import { StrictMode } from "react";
 import { describe, it, expect, beforeEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SlackSettingsPanel } from "./SlackSettingsPanel";
@@ -199,5 +200,45 @@ describe("SlackSettingsPanel", () => {
   it("says it's a demo", async () => {
     render(<SlackSettingsPanel workspaceId={WS} role="owner" />);
     expect(await screen.findByText("This is a demo: nothing is sent to Slack.")).toBeInTheDocument();
+  });
+});
+
+/* `npx vite` renders under <StrictMode>, which mounts, unmounts and remounts
+   every effect once. A "still mounted?" flag that only its cleanup touches
+   stays false after that, and every reply is then dropped on the floor. */
+describe("SlackSettingsPanel under StrictMode (dev builds)", () => {
+  it("connect, test, the daily stand-up, replace and disconnect all finish", async () => {
+    render(<StrictMode><SlackSettingsPanel workspaceId={WS} workspaceName="Acme" role="owner" /></StrictMode>);
+    await screen.findByText("Not connected");
+    fireEvent.change(screen.getByLabelText("Webhook link"), { target: { value: HOOK } });
+    fireEvent.change(screen.getByLabelText(/Channel name/), { target: { value: "launch-team" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText(/Connected to #launch-team\. Send a test to check it\./)).toBeInTheDocument();
+
+    const test = screen.getByRole("button", { name: "Send test" });
+    await waitFor(() => expect(test).not.toBeDisabled());
+    await waitFor(() => expect(test).toHaveFocus());
+    fireEvent.click(test);
+    expect(await screen.findByText("Test message sent to #launch-team. Have a look in Slack.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send test" })).not.toHaveAttribute("aria-busy", "true");
+
+    const daily = screen.getByRole("region", { name: "Daily stand-up" });
+    fireEvent.click(within(daily).getByRole("switch", { name: "Post the stand-up every weekday" }));
+    expect(await within(daily).findByText("Saved")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    fireEvent.change(screen.getByLabelText("Webhook link"), { target: { value: HOOK.replace("B0001", "B0002") } });
+    fireEvent.change(screen.getByLabelText(/Channel name/), { target: { value: "launch" } });
+    fireEvent.click(screen.getByRole("button", { name: "Replace link" }));
+    expect(await within(slackGroup()).findByText("#launch")).toBeInTheDocument();
+
+    const off = screen.getByRole("button", { name: "Disconnect" });
+    await waitFor(() => expect(off).not.toBeDisabled());
+    fireEvent.click(off);
+    const confirm = screen.getByRole("group", { name: "Disconnect Slack?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Disconnect" }));
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect" })).not.toBeDisabled();
+    expect(await getSlackStatus(WS)).toMatchObject({ connected: false, autopost: false });
   });
 });

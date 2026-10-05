@@ -123,7 +123,8 @@ function SlackPanelBody({ workspaceId, wsName, status, role }: { workspaceId: st
   const cancelOffRef = useRef<HTMLButtonElement>(null);
   const focusNext = useRef<HTMLElement | null | "url" | "test" | "replace" | "off" | "cancelOff">(null);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  // set in the body too: StrictMode (dev) runs this cleanup and then the effect again
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   // follow the server (another tab, another admin) unless a change of ours is in flight
   useEffect(() => {
