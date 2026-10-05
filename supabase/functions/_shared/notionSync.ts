@@ -10,44 +10,56 @@
 // an import, the sync's created_by for a sync run — scoped to the
 // workspace (kanbo.api_workspace). The service connection only does what
 // no person can: read the integration token, write notion_links /
-// notion_page_cache (no client writes exist) and the sync's bookkeeping
-// (last_run_at, cursor, stats, errors).
+// notion_page_cache (no client writes exist), keep notion_link_state (the
+// per-field baselines; no client can read or write it), the per-database
+// lease, and the sync's bookkeeping (last_run_at, cursor, stats, errors).
 //
 // NOTION → KANBO. Each run queries the database for pages edited since the
 // last one (last_edited_time on or after the cursor − 2 minutes, oldest
 // first, 100 a request). A page with no link becomes a task in the project.
-// A linked page is compared with its task:
-//   Kanbo changed since the last sync (tasks.updated_at > last_synced_at)
-//   and the page isn't newer than that change → Kanbo wins: the page is
-//   left for the push (two-way) or alone (from Notion only).
-//   Otherwise the page's fields are applied (pullPatch: only fields that
-//   differ, read in Kanbo's terms). Last writer wins by time; Notion's times
-//   are whole minutes, so a tie goes to Kanbo: a newer Kanbo change is never
-//   overwritten.
-// After writing, the link stores the task's new updated_at
-// (last_synced_at) and the page's last_edited_time (notion_last_edited), so
-// the sync never mistakes its own writes for someone's change.
-// A page plainly linked to a task in the project (a one-off import, or a
-// removed sync) is taken over rather than imported twice. An old page this
-// workspace has seen before that lost its link had its task deleted in
-// Kanbo: it isn't brought back (notion_page_cache remembers it); a page
-// moved into the database from elsewhere was never seen and is imported.
+// THE MERGE IS PER FIELD (notionMap planSync). notion_link_state keeps, for
+// each link, a fingerprint of every field's value as both sides last agreed
+// it. A field only Notion changed comes in; one only Kanbo changed goes out
+// (two-way) or stays (from Notion only); one both changed goes the way of the
+// later edit (task updated_at against the page's last_edited_time, whole
+// minutes, so a tie goes to Kanbo); one neither changed is left alone. An
+// edit to anything the sync doesn't carry (priority, position, an unmapped
+// property, the page body) therefore never carries a stale field across.
+// A link also stores the task's updated_at (last_synced_at) and the page's
+// last_edited_time (notion_last_edited) after each write, so a run skips
+// pages and tasks nobody has touched since.
+// A page whose IMPORTER-MADE plain link (a one-off import of this database,
+// or a removed sync of it: notion_links.notion_database_id is set) sits on a
+// task in the project is taken over rather than imported twice, merged with
+// the baseline the import left. Links people add by hand (no database id)
+// are never taken over. An old page this workspace has seen before that
+// lost its link had its task deleted in Kanbo: it isn't brought back
+// (notion_page_cache remembers it); a page moved into the database from
+// elsewhere was never seen and is imported.
 // KANBO → NOTION (two-way). Linked tasks changed since their last sync are
-// compared with the page (pushProperties) and only the differing properties
+// merged with their page the same way, and only the fields Kanbo changed
 // are PATCHed. A page archived or in the trash archives its task.
+//
+// ONE AT A TIME. A lease per (workspace, database) in rate_limits
+// ('kanbo:notion:lease:…', 3 minutes, released at the end) means an import
+// and a sync run of the same database never overlap, so nothing is
+// imported twice by a double submit or two admins at once. Sync runs are
+// also claimed (notion_syncs.last_run_at).
 //
 // LIMITS. A run stops starting Notion requests at its deadline or request
 // budget; the cursor then remembers where the query got to and the next run
-// carries on. Imports and syncs are claimed (notion_syncs.last_run_at) so two
-// runs of one sync never overlap.
+// carries on. A one-off import reads oldest-created first and brings in up
+// to 1,000 new tasks; it answers with where it stopped (`resume`), and
+// "Import the rest" carries on from there.
 // ============================================================
 import { parseNotionId, type NotionFieldMapping } from "./notion.ts";
 import type { Tx, UserScope } from "./api/types.ts";
 import { isNotionError, type NotionApi } from "./notionApi.ts";
 import {
-  checkMapping, formatCursor, isKanboStatus, LIMITS, ms, OVERLAP_MS, oneLine, pageMeta, parseCursor, pullPatch, pushProperties,
-  readMapping, readPage, schemaOf, tagColour, tagKey, taskFromPage,
-  type KanboStatus, type MapContext, type NPage, type PullPatch, type SyncCursor, type SyncTask, type TagValue,
+  baselineOf, checkMapping, formatCursor, isKanboStatus, LIMITS, ms, nextBaseline, OVERLAP_MS, oneLine, pageMeta, parseCursor,
+  planSync, pullPatch, pushProperties, readBaseline, readMapping, readPage, sameBaseline, schemaOf, tagColour, tagKey, taskFromPage,
+  type Baseline, type KanboStatus, type MapContext, type NPage, type PageFields, type PullPatch, type SyncCursor, type SyncField,
+  type SyncTask, type TagValue,
 } from "./notionMap.ts";
 
 export interface NotionDb {
@@ -85,6 +97,7 @@ export const SYNC_TEXT = {
   rateLimited: "Notion asked Kanbo to slow down. The sync carries on at its next run.",
   unavailable: "Notion wasn't responding. The sync tries again at its next run.",
   internal: "Something went wrong on Kanbo's side. The sync tries again at its next run.",
+  busy: "This database is being imported or synced right now. Try again in a minute or two.",
 } as const;
 
 class SyncStop extends Error {}
@@ -222,6 +235,54 @@ async function cachePages(service: Tx, ws: string, pages: NPage[]) {
        last_edited_time = excluded.last_edited_time, archived = excluded.archived, fetched_at = now()`, [ws, J(rows)]);
 }
 
+/** The baselines of these pages' links in the workspace (by link id). */
+async function loadBaselines(service: Tx, ws: string, by: { pages: string[] } | { links: string[] }): Promise<Map<string, Baseline>> {
+  const out = new Map<string, Baseline>();
+  const ids = "pages" in by ? by.pages : by.links;
+  if (!ids.length) return out;
+  const r = await service.query<{ id: string; synced: unknown }>(
+    `select s.link_id::text as id, s.synced from public.notion_link_state s join public.notion_links l on l.id = s.link_id
+      where l.workspace_id = $1::uuid and ${"pages" in by ? "l.notion_page_id" : "l.id::text"} in (select jsonb_array_elements_text($2::jsonb))`,
+    [ws, J(ids)]);
+  for (const x of r) {
+    let raw = x.synced;
+    if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
+    const b = readBaseline(raw);
+    if (b) out.set(x.id, b);
+  }
+  return out;
+}
+async function saveBaselines(service: Tx, items: { id: string; b: Baseline }[]) {
+  if (!items.length) return;
+  await service.query(
+    `insert into public.notion_link_state (link_id, synced, updated_at)
+     select x.id, x.b, now() from jsonb_to_recordset($1::jsonb) as x(id uuid, b jsonb)
+     on conflict (link_id) do update set synced = excluded.synced, updated_at = now()`, [J(items)]);
+}
+
+export const LEASE_SEC = 180;
+/** One import or sync run per database at a time: a lease row in rate_limits.
+ *  Returns its release, or null when someone else holds it. Fails open (with
+ *  a warning) if the limiter can't be reached, like the rate limits. */
+export async function takeLease(deps: Pick<SyncDeps, "db" | "log">, ws: string, databaseId: string): Promise<(() => Promise<void>) | null> {
+  const key = `kanbo:notion:lease:${ws}:${parseNotionId(databaseId) ?? databaseId}`.slice(0, 200);
+  let at: string;
+  try {
+    const r = await deps.db.service.query<{ at: string }>(
+      `insert into public.rate_limits as rl (key, last_at, count) values ($1, now(), 1)
+       on conflict (key) do update set last_at = now(), count = 1 where rl.last_at <= now() - make_interval(secs => $2::int)
+       returning rl.last_at::text as at`, [key, LEASE_SEC]);
+    if (!r[0]) return null;
+    at = r[0].at;
+  } catch (e) {
+    deps.log("warn", "notion lease unavailable (carrying on)", { error: String((e as Error)?.message ?? e).slice(0, 120) });
+    return async () => {};
+  }
+  return async () => {
+    try { await deps.db.service.query(`delete from public.rate_limits where key = $1 and last_at = $2::timestamptz`, [key, at]); } catch { /* it expires */ }
+  };
+}
+
 /* ------------------------------------------------------------ a run */
 
 interface Run {
@@ -249,13 +310,41 @@ const note = (run: Run, s: string) => { if (run.notes.length < 20 && !run.notes.
 const timeLeft = (run: Run) => run.deadline - run.deps.now();
 const canAsk = (run: Run, reserveMs = 3000) => run.api.calls < run.maxRequests && timeLeft(run) > reserveMs;
 
-/** One query response: create the new pages' tasks, pull the changed ones. */
+/** Settle a linked task with its page on Kanbo's side, as the person: plan
+ *  the merge, apply the fields that come in. Returns the link's bookkeeping
+ *  (s: the task's updated_at to remember, null = keep the old one because
+ *  fields wait to go to Notion), or null when RLS refused the write. */
+async function settleIn(tx: Tx, run: Run, row: LinkTaskRow, page: NPage, f: PageFields, base: Baseline | null):
+  Promise<{ s: string | null; base: Baseline } | null> {
+  const task = asTask(row);
+  const plan = planSync(task, f, run.mapping, run.ctx, base, {
+    notionLater: ms(page.last_edited_time) * 1000 > Number(row.updated_us), twoWay: run.direction === "two_way",
+  });
+  let at = row.updated_at;
+  if (plan.pull.length) {
+    const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx, plan.pull);
+    if (changed.length) {
+      const u = await applyPatch(tx, run.scope.userId, run.scope.workspaceId, run.ctx, task, patch);
+      if (!u) return null;
+      at = u;
+      run.stats.updated++;
+    }
+  }
+  return { s: plan.push.length ? null : at, base: nextBaseline(base, plan, plan.pull, []) };
+}
+
+/** One query response: create the new pages' tasks, merge the changed ones. */
 async function pullBatch(run: Run, pages: NPage[]) {
   const { deps, scope } = run;
   const ws = scope.workspaceId;
-  // ids in the one spelling the database accepts (Notion sends it already; never trust it)
-  const live = pages.filter((p) => p && typeof p.id === "string" && !p.archived && !p.in_trash && Number.isFinite(ms(p.last_edited_time)))
-    .map((p) => ({ ...p, id: parseNotionId(p.id) ?? "" })).filter((p) => p.id);
+  // ids in the one spelling the database accepts (Notion sends it already; never trust it), each page once
+  const uniq = new Map<string, NPage>();
+  for (const p of pages) {
+    if (!p || typeof p.id !== "string" || p.archived || p.in_trash || !Number.isFinite(ms(p.last_edited_time))) continue;
+    const id = parseNotionId(p.id);
+    if (id && !uniq.has(id)) uniq.set(id, { ...p, id });
+  }
+  const live = [...uniq.values()];
   run.stats.skipped += pages.length - live.length;
   for (const p of live) {
     run.seen.set(p.id, p);
@@ -264,10 +353,14 @@ async function pullBatch(run: Run, pages: NPage[]) {
   }
   if (!live.length) return;
   const ids = live.map((p) => p.id);
+  const bases = run.createOnly ? new Map<string, Baseline>() : await loadBaselines(deps.db.service, ws, { pages: ids });
 
   const linkTouches: LinkTouch[] = [];
-  const adopted: LinkTouch[] = [];
+  const adopted: (LinkTouch & { task: string })[] = [];
   const newLinks: { task_id: string; page_id: string; s: string; e: string }[] = [];
+  const newBases = new Map<string, Baseline>();   // task id → baseline (new tasks)
+  const baseSaves: { id: string; b: Baseline }[] = [];
+  const adoptedBases = new Map<string, Baseline>();   // link id → baseline (taken over)
   const cached: NPage[] = [];
 
   await deps.db.withUser(scope, async (tx) => {
@@ -280,15 +373,17 @@ async function pullBatch(run: Run, pages: NPage[]) {
         `select ${LINK_COLS}, ${TASK_COLS}, (l.last_synced_at is null or t.updated_at > l.last_synced_at) as k_changed
            from public.notion_links l left join public.tasks t on t.id = l.task_id
           where l.sync_id = $1::uuid and l.notion_page_id in (select jsonb_array_elements_text($2::jsonb))`, [run.syncId, J(ids)]);
-      // pages already linked (plainly) to a task in the project — a one-off import, or a sync that was
-      // removed — are taken over rather than imported twice
+      // pages this database's importer already linked (plainly) to a task in the project — a one-off import,
+      // or a sync that was removed — are taken over rather than imported twice. Only importer-made links
+      // carry the database's id; a link someone added by hand never does, and is never taken over.
       const free = rows.length === ids.length ? [] : await tx.query<LinkTaskRow>(
         `select distinct on (l.notion_page_id) ${LINK_COLS}, ${TASK_COLS}
            from public.notion_links l join public.tasks t on t.id = l.task_id
-          where l.workspace_id = $1::uuid and l.sync_id is null and t.project_id = $2 and t.archived_at is null
+          where l.workspace_id = $1::uuid and l.sync_id is null and l.notion_database_id = public.notion_norm_id($4)
+            and t.project_id = $2 and t.archived_at is null
             and l.notion_page_id in (select jsonb_array_elements_text($3::jsonb))
-            and not exists (select 1 from public.notion_links o where o.task_id = l.task_id and o.kind = 'synced')
-          order by l.notion_page_id, l.created_at`, [ws, run.projectId, J(ids)]);
+            and not exists (select 1 from public.notion_links o where o.task_id = l.task_id and o.kind = 'synced' and o.id <> l.id)
+          order by l.notion_page_id, l.created_at`, [ws, run.projectId, J(ids), run.databaseId]);
       plain = new Map(free.map((r) => [r.notion_page_id, r]));
       if (run.knownBefore != null && rows.length < ids.length) {
         const c = await tx.query<{ p: string }>(
@@ -303,6 +398,7 @@ async function pullBatch(run: Run, pages: NPage[]) {
       existing = new Set(got.map((g) => g.p));
     }
     const byPage = new Map(rows.map((r) => [r.notion_page_id, r]));
+    const takenTasks = new Set<string>();
 
     const creates: { id: string; page: NPage; row: Record<string, unknown> }[] = [];
     for (const page of live) {
@@ -312,13 +408,14 @@ async function pullBatch(run: Run, pages: NPage[]) {
         if (existing.has(page.id)) { run.stats.skipped++; continue; }
         const own = plain.get(page.id);
         if (own?.t_id && own.t_ws === ws) {
-          // take the plain link over: the page's fields win, as in an import
-          const task = asTask(own);
-          const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx);
-          const u = changed.length ? await applyPatch(tx, scope.userId, ws, run.ctx, task, patch) : own.updated_at;
-          if (!u) { run.stats.skipped++; continue; }
-          if (changed.length) run.stats.updated++;
-          adopted.push({ id: own.link_id, s: u, e: page.last_edited_time });
+          // one task, one synced page: a second page on the same task waits (its plain link stays)
+          if (takenTasks.has(own.t_id)) { run.stats.skipped++; note(run, `“${oneLine(f.title, 60)}” is linked to a task that already syncs with another page, so it was left out.`); continue; }
+          takenTasks.add(own.t_id);
+          // take the importer's link over, merged with the baseline the import left
+          const r = await settleIn(tx, run, own, page, f, bases.get(own.link_id) ?? null);
+          if (!r) { run.stats.skipped++; continue; }
+          adopted.push({ id: own.link_id, s: r.s, e: page.last_edited_time, task: own.t_id });
+          adoptedBases.set(own.link_id, r.base);
           cached.push(page);
           continue;
         }
@@ -332,21 +429,13 @@ async function pullBatch(run: Run, pages: NPage[]) {
       }
       if (run.createOnly) { run.stats.skipped++; continue; }
       if (!row.t_id || row.archived || row.t_ws !== ws) { run.stats.skipped++; continue; }
-      const pageMs = ms(page.last_edited_time);
-      const notionNewer = row.notion_ms == null || pageMs > Number(row.notion_ms);
-      const notionWins = notionNewer && pageMs * 1000 > Number(row.updated_us);
-      if (row.k_changed && !notionWins) continue;          // Kanbo's newer change stands (pushed later when two-way)
-      const task = asTask(row);
-      const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx);
-      if (!changed.length && !notionNewer && !row.k_changed) continue;   // our own write coming back
-      let updatedAt = row.updated_at;
-      if (changed.length) {
-        const u = await applyPatch(tx, scope.userId, ws, run.ctx, task, patch);
-        if (!u) { run.stats.skipped++; note(run, `Kanbo couldn't update “${oneLine(task.title, 60)}”.`); continue; }
-        updatedAt = u;
-        run.stats.updated++;
-      }
-      linkTouches.push({ id: row.link_id, s: updatedAt, e: page.last_edited_time });
+      const notionNewer = row.notion_ms == null || ms(page.last_edited_time) > Number(row.notion_ms);
+      if (!row.k_changed && !notionNewer) continue;   // nobody touched either side since the last sync (our own write coming back)
+      const base = bases.get(row.link_id) ?? null;
+      const r = await settleIn(tx, run, row, page, f, base);
+      if (!r) { run.stats.skipped++; note(run, `Kanbo couldn't update “${oneLine(row.title, 60)}”.`); continue; }
+      linkTouches.push({ id: row.link_id, s: r.s, e: page.last_edited_time });
+      if (!sameBaseline(base, r.base)) baseSaves.push({ id: row.link_id, b: r.base });
       cached.push(page);
     }
 
@@ -372,50 +461,86 @@ async function pullBatch(run: Run, pages: NPage[]) {
                                                   due_date text, start_date text, tags jsonb)
          returning id::text as id, updated_at::text as u`, [scope.userId, run.projectId, ws, J(rowsIn)]);
       const madeAt = new Map(made.map((m) => [m.id, m.u]));
-      for (const c of creates) {
+      for (const [i, c] of creates.entries()) {
         const u = madeAt.get(c.id);
         if (!u) continue;
         newLinks.push({ task_id: c.id, page_id: c.page.id, s: u, e: c.page.last_edited_time });
+        const r = rowsIn[i];
+        // the task was made from the page: what Kanbo now holds is what both sides agree on
+        newBases.set(c.id, baselineOf({
+          id: c.id, title: r.title, description: r.description, status: r.status, due_date: r.due_date, start_date: r.start_date,
+          assignee_id: r.assignee_id, tags: r.tags,
+        }, run.mapping, run.ctx));
         cached.push(c.page);
       }
       run.stats.created += madeAt.size;
     }
   });
 
-  // bookkeeping (service): links and the page cache
+  // bookkeeping (service): links, their baselines and the page cache
   if (newLinks.length) {
-    await deps.db.service.query(
+    const made = await deps.db.service.query<{ id: string; task_id: string }>(
       `insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind,
                                         last_synced_at, notion_last_edited, created_by)
-       select $1::uuid, x.task_id, x.page_id, $2, $3::uuid, $4, x.s::timestamptz, x.e::timestamptz, $5::uuid
+       select $1::uuid, x.task_id, x.page_id, public.notion_norm_id($2), $3::uuid, $4, x.s::timestamptz, x.e::timestamptz, $5::uuid
          from jsonb_to_recordset($6::jsonb) as x(task_id uuid, page_id text, s text, e text)
-       on conflict do nothing`,
+       on conflict do nothing
+       returning id::text as id, task_id::text as task_id`,
       [ws, run.databaseId, run.syncId, run.syncId ? "synced" : "reference", scope.userId, J(newLinks)]);
+    for (const l of made) { const b = newBases.get(l.task_id); if (b) baseSaves.push({ id: l.id, b }); }
   }
   if (adopted.length) {
-    await deps.db.service.query(
-      `update public.notion_links l set kind = 'synced', sync_id = $1::uuid, notion_database_id = $2,
-              last_synced_at = x.s::timestamptz, notion_last_edited = x.e::timestamptz
-         from jsonb_to_recordset($3::jsonb) as x(id uuid, s text, e text)
-        where l.id = x.id and l.sync_id is null`, [run.syncId, run.databaseId, J(adopted)]);
+    // one synced page per task, one task per page: a link that would break either (someone else got
+    // there first) stays as it is, and the run carries on
+    try {
+      const took = await deps.db.service.query<{ id: string }>(
+        `update public.notion_links l set kind = 'synced', sync_id = $1::uuid, notion_database_id = public.notion_norm_id($2),
+                last_synced_at = x.s::timestamptz, notion_last_edited = x.e::timestamptz
+           from jsonb_to_recordset($3::jsonb) as x(id uuid, s text, e text)
+          where l.id = x.id and l.sync_id is null
+            and not exists (select 1 from public.notion_links o where o.task_id = l.task_id and o.kind = 'synced' and o.id <> l.id)
+            and not exists (select 1 from public.notion_links o where o.sync_id = $1::uuid and o.notion_page_id = l.notion_page_id)
+          returning l.id::text as id`, [run.syncId, run.databaseId, J(adopted.map(({ id, s, e }) => ({ id, s, e })))]);
+      for (const t of took) { const b = adoptedBases.get(t.id); if (b) baseSaves.push({ id: t.id, b }); }
+      if (took.length < adopted.length) note(run, "Some pages already linked to tasks couldn't be taken over by the sync. Their tasks keep a plain link.");
+    } catch (e) {
+      deps.log("warn", "notion take-over failed", { error: String((e as Error)?.message ?? e).slice(0, 200) });
+      note(run, "Some pages already linked to tasks couldn't be taken over by the sync. Their tasks keep a plain link.");
+    }
   }
   await touchLinks(deps.db.service, linkTouches);
+  await saveBaselines(deps.db.service, baseSaves);
   await cachePages(deps.db.service, ws, cached);
 }
 
-/** Read the database from the cursor (or from the start), as far as the run's budget allows. */
-async function pullAll(run: Run, cursor: SyncCursor, maxPages = Infinity): Promise<{ cursor: SyncCursor; done: boolean }> {
+/** Read the database from the cursor (or from the start), as far as the run's budget allows.
+ *  `maxNew`: stop once this many tasks were made (pages already there don't count).
+ *  `byCreated`: a one-off import reads oldest-created first (from `after`, when it
+ *  carries on); `reached` follows the newest created_time read so far, which is
+ *  where the next import carries on from (it survives a run that throws). */
+async function pullAll(run: Run, cursor: SyncCursor, opts: { maxNew?: number; byCreated?: { after: string | null; reached: string | null } } = {}):
+  Promise<{ cursor: SyncCursor; done: boolean }> {
   const since = cursor.since;
   let next = cursor.next;
-  let pages = 0;
+  const made0 = run.stats.created;
+  const maxNew = opts.maxNew ?? Infinity;
+  const by = opts.byCreated;
+  const after = by?.after ?? null;
   let retriedCursor = false;
-  while (canAsk(run) && pages < maxPages) {
-    const body: Record<string, unknown> = {
-      page_size: 100,
-      sorts: [{ timestamp: "last_edited_time", direction: "ascending" }],
-      ...(since ? { filter: { timestamp: "last_edited_time", last_edited_time: { on_or_after: new Date(ms(since) - OVERLAP_MS).toISOString() } } } : {}),
-      ...(next ? { start_cursor: next } : {}),
-    };
+  while (canAsk(run) && run.stats.created - made0 < maxNew) {
+    const body: Record<string, unknown> = by
+      ? {
+        page_size: 100,
+        sorts: [{ timestamp: "created_time", direction: "ascending" }],
+        ...(after ? { filter: { timestamp: "created_time", created_time: { on_or_after: after } } } : {}),
+        ...(next ? { start_cursor: next } : {}),
+      }
+      : {
+        page_size: 100,
+        sorts: [{ timestamp: "last_edited_time", direction: "ascending" }],
+        ...(since ? { filter: { timestamp: "last_edited_time", last_edited_time: { on_or_after: new Date(ms(since) - OVERLAP_MS).toISOString() } } } : {}),
+        ...(next ? { start_cursor: next } : {}),
+      };
     let res;
     try {
       res = await run.api.query(run.databaseId, body);
@@ -426,8 +551,14 @@ async function pullAll(run: Run, cursor: SyncCursor, maxPages = Infinity): Promi
       throw e;
     }
     const results = Array.isArray(res?.results) ? res.results : [];
-    pages += results.length;
     await pullBatch(run, results);
+    // every page up to the newest created here has been read (oldest-created first)
+    if (by) {
+      for (const p of results) {
+        const c = ms(p?.created_time);
+        if (Number.isFinite(c) && (by.reached == null || c > ms(by.reached))) by.reached = new Date(c).toISOString();
+      }
+    }
     if (!res.has_more || !res.next_cursor) {
       const newest = run.maxEdited != null ? new Date(run.maxEdited).toISOString() : since;
       return { cursor: { since: newest && since && ms(since) > ms(newest) ? since : newest, next: null }, done: true };
@@ -437,7 +568,7 @@ async function pullAll(run: Run, cursor: SyncCursor, maxPages = Infinity): Promi
   return { cursor: { since, next }, done: false };
 }
 
-/** Kanbo → Notion: the linked tasks changed since their last sync. */
+/** Kanbo → Notion: the linked tasks changed since their last sync, merged with their page field by field. */
 async function pushChanged(run: Run, limit: number) {
   const { deps, scope } = run;
   const ws = scope.workspaceId;
@@ -447,6 +578,8 @@ async function pushChanged(run: Run, limit: number) {
         and t.updated_at > coalesce(l.last_synced_at, '-infinity'::timestamptz)
       order by t.updated_at asc, t.id limit $3`, [run.syncId, ws, limit]));
   if (!rows.length) return;
+  // after this run's pull wrote them
+  const bases = await loadBaselines(deps.db.service, ws, { links: rows.map((r) => r.link_id) });
   let usersLoaded = false;
   const loadUsers = async () => {
     if (usersLoaded) return;
@@ -486,44 +619,64 @@ async function pushChanged(run: Run, limit: number) {
       run.stats.updated++;
       continue;
     }
-    const pageMs = ms(page.last_edited_time);
-    const notionNewer = row.notion_ms == null || pageMs > Number(row.notion_ms);
     const f = readPage(page, run.mapping);
-    if (notionNewer && pageMs * 1000 > Number(row.updated_us)) {
-      // edited in Notion after the Kanbo change (and not seen by this run's query): Notion wins
-      const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx);
-      let at: string | null = row.updated_at;
-      if (changed.length) at = await deps.db.withUser(scope, (tx) => applyPatch(tx, scope.userId, ws, run.ctx, task, patch));
-      if (at && changed.length) run.stats.updated++;
-      await touchLinks(deps.db.service, [{ id: row.link_id, s: at ?? row.updated_at, e: page.last_edited_time }]);
-      continue;
-    }
-    if (run.mapping.assignee && task.assignee_id && !usersLoaded) {
-      try { await loadUsers(); } catch (e) { if (isNotionError(e) && e.kind === "timeout") break; note(run, "Kanbo couldn't read your Notion workspace's people, so assignees weren't sent."); }
-    }
-    const { properties, changed } = pushProperties(task, f, run.mapping, run.ctx);
-    if (!changed.length) {
-      await touchLinks(deps.db.service, [{ id: row.link_id, s: row.updated_at, e: page.last_edited_time }]);
-      continue;
-    }
-    try {
-      const updated = await run.api.updatePage(row.notion_page_id, properties);
-      await touchLinks(deps.db.service, [{ id: row.link_id, s: row.updated_at, e: updated?.last_edited_time ?? page.last_edited_time }]);
-      await cachePages(deps.db.service, ws, [updated?.id ? updated : page]);
-      run.stats.pushed++;
-    } catch (e) {
-      if (isNotionError(e) && e.kind === "timeout") break;
-      if (isNotionError(e) && (e.kind === "rate_limited" || e.kind === "invalid_token")) throw e;
-      if (isNotionError(e) && e.kind === "archived") {
-        await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws));
-        run.stats.updated++;
-      } else {
-        note(run, `“${oneLine(task.title, 60)}” couldn't be updated in Notion: ${syncErrorText(e, "page").replace(/\.$/, "")}.`);
-        run.stats.skipped++;
+    const base = bases.get(row.link_id) ?? null;
+    const plan = planSync(task, f, run.mapping, run.ctx, base, { notionLater: ms(page.last_edited_time) * 1000 > Number(row.updated_us), twoWay: true });
+    let at: string = row.updated_at;
+    let pulled: SyncField[] = [];
+    let pushed: SyncField[] = [];
+    let edited: string | null = page.last_edited_time;
+    let retry = false;              // Notion stopped us part-way: last_synced_at stays, so the next run tries again
+    let stopRun: unknown = null;    // a 429 or a revoked token stops the run, after this task's bookkeeping
+    // fields Notion changed since the last sync (that this run's query didn't bring in) come in
+    if (plan.pull.length) {
+      const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx, plan.pull);
+      if (!changed.length) pulled = plan.pull;
+      else {
+        const u = await deps.db.withUser(scope, (tx) => applyPatch(tx, scope.userId, ws, run.ctx, task, patch));
+        if (u) { at = u; pulled = plan.pull; run.stats.updated++; }
+        else note(run, `Kanbo couldn't update “${oneLine(task.title, 60)}”.`);
       }
-      // don't try the same change again every run
-      await touchLinks(deps.db.service, [{ id: row.link_id, s: row.updated_at, e: null }]);
     }
+    // fields Kanbo changed go out: only those
+    if (plan.push.length) {
+      let ready = true;
+      if (plan.push.includes("assignee") && task.assignee_id && !usersLoaded) {
+        try { await loadUsers(); } catch (e) {
+          if (isNotionError(e) && e.kind === "timeout") { retry = true; ready = false; }
+          else note(run, "Kanbo couldn't read your Notion workspace's people, so assignees weren't sent.");
+        }
+      }
+      const { properties, changed } = ready ? pushProperties(task, f, run.mapping, run.ctx, plan.push) : { properties: {}, changed: [] as SyncField[] };
+      if (changed.length) {
+        try {
+          const updated = await run.api.updatePage(row.notion_page_id, properties);
+          edited = updated?.last_edited_time ?? page.last_edited_time;
+          await cachePages(deps.db.service, ws, [updated?.id ? updated : page]);
+          pushed = changed;
+          run.stats.pushed++;
+        } catch (e) {
+          if (isNotionError(e) && e.kind === "timeout") retry = true;
+          else if (isNotionError(e) && (e.kind === "rate_limited" || e.kind === "invalid_token")) { retry = true; stopRun = e; }
+          else {
+            if (isNotionError(e) && e.kind === "archived") {
+              await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws));
+              run.stats.updated++;
+            } else {
+              note(run, `“${oneLine(task.title, 60)}” couldn't be updated in Notion: ${syncErrorText(e, "page").replace(/\.$/, "")}.`);
+              run.stats.skipped++;
+            }
+            // don't try the same change again every run
+            edited = null;
+          }
+        }
+      }
+    }
+    await touchLinks(deps.db.service, [{ id: row.link_id, s: retry ? null : at, e: edited }]);
+    const b = nextBaseline(base, plan, pulled, pushed);
+    if (!sameBaseline(base, b)) await saveBaselines(deps.db.service, [{ id: row.link_id, b }]);
+    if (stopRun) throw stopRun;
+    if (retry) break;
   }
 }
 
@@ -593,11 +746,25 @@ async function record(service: Tx, syncId: string, cursor: SyncCursor | null, st
     [syncId, cursor ? formatCursor(cursor) : null, J(stats), success, error ? error.slice(0, 1000) : null]);
 }
 
-export interface RunResult { stats: SyncStats; error: string | null; fatal: boolean }
+export interface RunResult {
+  stats: SyncStats; error: string | null; fatal: boolean;
+  /** the database was being imported (or synced) by someone else: nothing ran, nothing recorded */
+  busy?: boolean;
+}
 
 /** One run of a claimed sync. Never throws: the outcome is recorded on the sync and returned. */
 export async function runSync(deps: SyncDeps, sync: SyncRow, opts: { deadline: number; maxRequests?: number; pushLimit?: number; sweep?: number }): Promise<RunResult> {
   const stats: SyncStats = { created: 0, updated: 0, pushed: 0, skipped: 0 };
+  const release = await takeLease(deps, sync.workspace_id, sync.database_id);
+  if (!release) return { stats, error: null, fatal: false, busy: true };
+  try {
+    return await runLeased(deps, sync, opts, stats);
+  } finally {
+    await release();
+  }
+}
+
+async function runLeased(deps: SyncDeps, sync: SyncRow, opts: { deadline: number; maxRequests?: number; pushLimit?: number; sweep?: number }, stats: SyncStats): Promise<RunResult> {
   let cursor: SyncCursor | null = null;
   let run: Run | null = null;
   let fatal: string | null = null;
@@ -653,10 +820,15 @@ export interface ImportInput {
   newProject: { name: string; emoji: string; color: string } | null;
   keepInSync: boolean;
   direction: Direction;
+  /** a one-off import carrying on: pages created before this were read last time */
+  resume?: string | null;
 }
 export interface ImportOutcome {
   projectId: string; syncId: string | null; created: number; skipped: number; errors: string[]; partial: boolean;
+  /** a one-off import that stopped part-way: send it back to carry on ("Import the rest") */
+  resume: string | null;
 }
+/** A one-off import makes at most this many tasks a request (pages already there don't count). */
 export const IMPORT_MAX_PAGES = 1000;
 
 /** Import a database into a project (as the caller), optionally keeping it in sync. */
@@ -668,8 +840,23 @@ export async function importDatabase(deps: SyncDeps, api: NotionApi, input: Impo
   const checked = checkMapping(input.mapping, schema);
   if (!checked.ok) throw new NotionActionError(400, "invalid", checked.error);
   const mapping = checked.mapping;
-  const databaseId = String(db.id ?? input.databaseId);
+  const databaseId = parseNotionId(String(db.id ?? "")) ?? input.databaseId;
 
+  // one import (or sync run) of a database at a time: a double submit or two admins can't both import it
+  const release = await takeLease(deps, ws, databaseId);
+  if (!release) throw new NotionActionError(409, "rate_limited", SYNC_TEXT.busy, 60);
+  try {
+    return await importLeased(deps, api, input, { scope, schema, mapping, databaseId }, deadline);
+  } finally {
+    await release();
+  }
+}
+
+async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
+  c: { scope: UserScope & { workspaceId: string }; schema: ReturnType<typeof schemaOf>; mapping: NotionFieldMapping; databaseId: string },
+  deadline: number): Promise<ImportOutcome> {
+  const { scope, schema, mapping, databaseId } = c;
+  const ws = scope.workspaceId;
   // the project (and the sync), as the caller
   const { projectId, syncId } = await deps.db.withUser(scope, async (tx) => {
     if (input.keepInSync) {
@@ -708,8 +895,11 @@ export async function importDatabase(deps: SyncDeps, api: NotionApi, input: Impo
   };
   let done = false, cursor: SyncCursor = { since: null, next: null };
   let stopped: string | null = null;
+  // a one-off import reads oldest-created first, so it can carry on where it stopped; an import that
+  // keeps in sync reads the way the sync does (by edit time), and the sync carries on its query
+  const byCreated = syncId ? undefined : { after: input.resume ?? null, reached: input.resume ?? null };
   try {
-    const r = await pullAll(run, cursor, IMPORT_MAX_PAGES);
+    const r = await pullAll(run, cursor, { maxNew: IMPORT_MAX_PAGES, byCreated });
     done = r.done; cursor = r.cursor;
   } catch (e) {
     stopped = syncErrorText(e);
@@ -720,11 +910,15 @@ export async function importDatabase(deps: SyncDeps, api: NotionApi, input: Impo
   if (stopped) errors.unshift(`The import stopped part-way: ${stopped}`);
   else if (!done) errors.unshift(syncId
     ? "That's a big database: Kanbo brought in the first part, and the sync brings in the rest over the next runs."
-    : "That's a big database: Kanbo brought in the first part. Import it again to bring in the rest.");
+    : "That's a big database: Kanbo brought in the first part. Choose Import the rest to carry on from where it stopped.");
   if (syncId) {
     stats.at = new Date(deps.now()).toISOString();
     // done: carry on from the newest page; not done: the sync continues this same query
     await record(deps.db.service, syncId, done ? cursor : { since: null, next: cursor.next }, stats, stopped, !stopped);
   }
-  return { projectId, syncId, created: stats.created, skipped: stats.skipped, errors: errors.slice(0, 20), partial: !done };
+  const partial = !done;
+  return {
+    projectId, syncId, created: stats.created, skipped: stats.skipped, errors: errors.slice(0, 20), partial,
+    resume: partial && byCreated ? byCreated.reached : null,
+  };
 }

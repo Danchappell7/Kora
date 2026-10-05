@@ -17,7 +17,8 @@
 // Every task / project / tag read or write runs as a person with RLS
 // (withUser: SET LOCAL ROLE authenticated + their JWT claims, scoped to the
 // workspace). The service connection reads the integration token and keeps
-// notion_links / notion_page_cache / the sync's bookkeeping, nothing else.
+// notion_links / notion_page_cache / notion_link_state / the sync's
+// bookkeeping (and the per-database lease in rate_limits), nothing else.
 //
 // Deploy:   supabase functions deploy notion --project-ref htnchiljplrnjkwimgla
 // Secrets:  none new (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_DB_URL are

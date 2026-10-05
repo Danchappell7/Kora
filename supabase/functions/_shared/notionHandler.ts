@@ -15,7 +15,7 @@
 //   databases    owner/admin         { workspaceId, query? } → { databases }
 //   schema       owner/admin         { workspaceId, databaseId } → { schema }
 //   preview      owner/admin         { workspaceId, databaseId } → { rows }   (5 pages)
-//   import       owner/admin         NotionImportRequest → { result }
+//   import       owner/admin         NotionImportRequest (+ resume?) → { result }   (one at a time per database)
 //   sync_now     owner/admin         { syncId } → { stats, error, fatal }
 //   page         members             { workspaceId, pageId, force? } → { page }   (a linked page's title / icon)
 //   link_page    can edit the task   { taskId, url } → { link }
@@ -27,13 +27,14 @@
 // and never leaves the server. Limits (rate_limits via api_rate_hit, fail
 // open): 60 requests a minute per person; connect 10 / 10 min and import
 // 10 / 10 min per workspace; links 30 a minute and page refreshes 60 a
-// minute per person; Sync now 5 per 5 minutes per sync.
+// minute per person; Sync now 5 per 5 minutes per sync. One import or sync
+// run per database at a time (notionSync takeLease): a second gets 409.
 // ============================================================
 import { parseNotionId, NOTION_TOKEN_RE } from "./notion.ts";
 import { isNotionError, type NotionApiError } from "./notionApi.ts";
 import { oneLine, pageMeta, previewRow, schemaOf, summariseDatabase, type NDatabase, type NPage, type PageMeta } from "./notionMap.ts";
 import {
-  claimSync, dueSyncs, importDatabase, NotionActionError, readToken, runSync, type SyncDeps,
+  claimSync, dueSyncs, importDatabase, NotionActionError, readToken, runSync, SYNC_TEXT, type SyncDeps,
 } from "./notionSync.ts";
 
 export interface HandlerDeps extends SyncDeps {
@@ -177,6 +178,7 @@ export async function runCron(deps: HandlerDeps, budgetMs = 50_000): Promise<Res
     const row = await claimSync(deps.db.service, id, 540);
     if (!row) continue;
     const r = await runSync(deps, row, { deadline: Math.min(end, deps.now() + 30_000) });
+    if (r.busy) continue;   // being imported right now: the next scheduled run picks it up
     results.push({ id, created: r.stats.created, updated: r.stats.updated, pushed: r.stats.pushed, skipped: r.stats.skipped, failed: !!r.error });
   }
   // tidy old limiter rows. (Cached pages stay: a cached page with no link is how a sync knows a
@@ -320,11 +322,18 @@ async function manageAction(deps: HandlerDeps, userId: string, action: string, b
   const direction = b.direction === "from_notion" ? "from_notion" : b.direction === "two_way" || b.direction == null ? "two_way" : null;
   if (!direction) return refuse(400, "invalid", "Choose which way the sync goes.");
   if (b.mapping == null || typeof b.mapping !== "object" || JSON.stringify(b.mapping).length > 16_000) return refuse(400, "invalid", "Choose which Notion fields to bring in.");
+  // "Import the rest": where a one-off import stopped (a time it answered with)
+  let resume: string | null = null;
+  if (b.resume != null && b.resume !== "") {
+    const t = typeof b.resume === "string" && b.resume.length <= 40 && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(b.resume) ? Date.parse(b.resume) : NaN;
+    if (!Number.isFinite(t) || b.keepInSync === true || !projectId) return refuse(400, "invalid", "That import can't carry on from there. Start it again from Import a database.");
+    resume = new Date(t).toISOString();
+  }
   const lim = await hit(deps, `kanbo:notion:import:${ws}`, 600, 10);
   if (!lim.allowed) return refuse(429, "rate_limited", "That's a lot of imports in a short time. Try again in a few minutes.", lim.retryAfter);
   try {
     const result = await importDatabase(deps, deps.notion(token, deps.now() + 50_000), {
-      userId, workspaceId: ws, databaseId, mapping: b.mapping, projectId, newProject, keepInSync: b.keepInSync === true, direction,
+      userId, workspaceId: ws, databaseId, mapping: b.mapping, projectId, newProject, keepInSync: b.keepInSync === true, direction, resume,
     }, deps.now() + 50_000);
     return json({ ok: true, result });
   } catch (e) { return dbFailure(e, deps, "import"); }
@@ -347,6 +356,7 @@ async function syncNow(deps: HandlerDeps, userId: string, b: Record<string, unkn
     const row = await claimSync(deps.db.service, syncId, 60);
     if (!row) return refuse(409, "rate_limited", "This sync is running or ran a moment ago. Try again in a minute.", 60);
     const r = await runSync(deps, row, { deadline: deps.now() + 45_000 });
+    if (r.busy) return refuse(409, "rate_limited", SYNC_TEXT.busy, 60);
     return json({ ok: true, stats: r.stats, error: r.error, fatal: r.fatal });
   } catch (e) { return dbFailure(e, deps, "sync_now"); }
 }

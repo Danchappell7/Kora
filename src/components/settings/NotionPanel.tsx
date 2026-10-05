@@ -343,7 +343,7 @@ function SyncList({ workspaceId, connected, canManage, projects, importButton }:
 }
 
 function SyncNote({ show }: { show: boolean }) {
-  return show ? <SetNote>Kanbo checks synced databases every 10 minutes. When a task and its page both change in between, the later edit wins. A task deleted in Kanbo isn't brought back, and its Notion page stays.</SetNote> : null;
+  return show ? <SetNote>Kanbo checks synced databases every 10 minutes and brings each field across from whichever side changed it. If both sides change the same field in between, the later edit wins. A task deleted in Kanbo isn't brought back, and its Notion page stays.</SetNote> : null;
 }
 
 function SyncRow({ sync, canManage, connected, project, onChanged }: {
@@ -482,6 +482,7 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [result, setResult] = useState<NotionImportSummary | null>(null);
+  const [holdNote, setHoldNote] = useState(false);
   const headRef = useRef<HTMLHeadingElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
@@ -493,9 +494,14 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
     setStep("pick"); setQuery(""); setDbs(null); setDb(null); setSchema(null); setRows(null); setMapping(null); setMapError(null);
     setTarget(live.length ? "existing" : "new"); setProjectId(live[0]?.id ?? ""); setName(""); setEmoji("");
     setColor(spectrumColor(freshSpectrum(projects))); setKeep(true); setDirection("two_way");
-    setImporting(false); setImportError(null); setResult(null);
+    setImporting(false); setImportError(null); setResult(null); setHoldNote(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+  // an import that's running finishes before the wizard closes (closing part-way would leave people guessing)
+  const close = () => {
+    if (importing) { setHoldNote(true); return; }
+    onClose();
+  };
   // the step's heading takes focus, so screen readers hear where they are
   useEffect(() => {
     if (!open) return;
@@ -547,14 +553,36 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
     }
   };
 
+  // a big one-off import: carry on from where the last one stopped, into the same project
+  const importRest = async () => {
+    if (!db || !mapping || !result?.resume || importing) return;
+    setImporting(true); setImportError(null); setHoldNote(false);
+    try {
+      const r = await importNotionDatabase({
+        workspaceId, databaseId: db.id, mapping, projectId: result.projectId, newProject: null, keepInSync: false, direction, resume: result.resume,
+      });
+      if (!alive.current) return;
+      setResult({ ...r, created: result.created + r.created, skipped: r.skipped });
+      headRef.current?.focus();
+    } catch (e) {
+      if (alive.current) setImportError(errMsg(e));
+    } finally {
+      if (alive.current) { setImporting(false); setHoldNote(false); }
+    }
+  };
+  const more = step === "done" && !!result?.partial && !result.syncId && !!result.resume;
+
   const projectOf = (id: string) => projects.find((p) => p.id === id);
   const stepNo = step === "pick" ? 1 : step === "map" ? 2 : step === "project" ? 3 : 3;
   const footer = step === "done" ? (
     <>
       {result && onOpenProject && projectOf(result.projectId) && (
-        <Button variant="ghost" icon="arrowUpRight" onClick={() => { onOpenProject(result.projectId); onClose(); }}>Open project</Button>
+        <Button variant="ghost" icon="arrowUpRight" onClick={() => { onOpenProject(result.projectId); onClose(); }} disabled={importing}>Open project</Button>
       )}
-      <Button variant="primary" onClick={onClose}>Done</Button>
+      {more && (
+        <Button variant="primary" icon="arrowRight" loading={importing} onClick={() => void importRest()}>{importing ? "Importing…" : "Import the rest"}</Button>
+      )}
+      <Button variant={more ? "ghost" : "primary"} onClick={close} disabled={importing}>Done</Button>
     </>
   ) : (
     <>
@@ -568,10 +596,13 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
   );
 
   return (
-    <Sheet open={open} onClose={onClose} label="Import a Notion database" title="Import a Notion database" width={640} footer={footer}
+    <Sheet open={open} onClose={close} label="Import a Notion database" title="Import a Notion database" width={640} footer={footer}
       initialFocus={step === "pick" ? searchRef : undefined}>
       <div className="knt-wz">
-        <p className="sr-only" role="status">{step === "done" ? "Import finished" : `Step ${stepNo} of 3: ${STEP_TITLES[step]}`}</p>
+        <p className="sr-only" role="status">{importing ? "Importing…" : step === "done" ? "Import finished" : `Step ${stepNo} of 3: ${STEP_TITLES[step]}`}</p>
+        {holdNote && importing && (
+          <p className="knt-wz-hold" role="alert"><span className="kspin" aria-hidden="true" />Kanbo is still importing. This closes once it's done.</p>
+        )}
         {step !== "done" && (
           <ol className="knt-wz-steps" aria-label="Steps">
             {(["pick", "map", "project"] as const).map((s, i) => (
@@ -649,7 +680,7 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
             )}
             <div className="knt-keep">
               <Toggle checked={keep} onChange={setKeep} label="Keep it in sync"
-                description="Kanbo checks Notion every 10 minutes. When both sides change, the later edit wins." />
+                description="Kanbo checks Notion every 10 minutes. Each change goes across; if both sides change the same field, the later edit wins." />
               {keep && (
                 <div className="knt-dir">
                   <span className="knt-dir-label" id={`${ids}-dir`}>Changes flow</span>
@@ -676,6 +707,7 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
             {result.errors.length > 0 && (
               <ul className="knt-done-notes">{result.errors.map((e, i) => <li key={i}><Icon name="alert" size={14} sw={2} />{e}</li>)}</ul>
             )}
+            {importError && <p className="kset-err" role="alert">{importError}</p>}
           </section>
         )}
       </div>

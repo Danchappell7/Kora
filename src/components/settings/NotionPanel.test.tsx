@@ -140,6 +140,46 @@ describe("NotionPanel", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("a big one-off import: 1,000 first, then Import the rest carries on into the same project", async () => {
+    const open = vi.fn();
+    render(<NotionPanel workspaceId="ws-foundrise" workspaceName="Foundrise" role="owner" projects={PROJECTS} onOpenProject={open} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Import a database" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import a Notion database" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Support tickets/ }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Next" }));
+    fireEvent.change(await within(dialog).findByRole("combobox", { name: "Project" }), { target: { value: "p-infra" } });
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Keep it in sync" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import" }));
+    expect(await within(dialog).findByText("1000 tasks imported")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Choose Import the rest to carry on/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Done" })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import the rest" }));
+    expect(await within(dialog).findByText("1240 tasks imported")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Import the rest" })).toBeNull();
+    expect(within(dialog).queryByText(/Choose Import the rest/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open project" }));
+    expect(open).toHaveBeenCalledWith("p-infra");
+  });
+
+  it("an import that's running finishes before the wizard closes", async () => {
+    resetNotionDemo({ demoDelayMs: 40 });
+    render(<NotionPanel workspaceId="ws-foundrise" workspaceName="Foundrise" role="owner" projects={PROJECTS} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Import a database" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import a Notion database" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Hiring pipeline/ }, { timeout: 2000 }));
+    const next = await within(dialog).findByRole("button", { name: "Next" });
+    await waitFor(() => expect(next).toBeEnabled(), { timeout: 2000 });
+    fireEvent.click(next);
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Import" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Kanbo is still importing. This closes once it's done.");
+    expect(screen.getByRole("dialog", { name: "Import a Notion database" })).toBeInTheDocument();
+    expect(await within(dialog).findByText("9 tasks imported", undefined, { timeout: 2000 })).toBeInTheDocument();
+    expect(within(dialog).queryByText(/still importing/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("disconnecting asks first, then pauses the syncs", async () => {
     render(<NotionPanel workspaceId="ws-foundrise" workspaceName="Foundrise" role="owner" projects={PROJECTS} />);
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));

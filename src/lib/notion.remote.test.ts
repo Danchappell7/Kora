@@ -89,6 +89,15 @@ describe("syncs, import, links", () => {
     const r = await importNotionDatabase({ workspaceId: WS, databaseId: "d1", mapping: { title: "Name" }, projectId: "p1", keepInSync: true, direction: "two_way" });
     expect(r).toMatchObject({ projectId: "p1", syncId: "s1", created: 1000, partial: true });
     expect(invoke.mock.calls[0][1].body).toMatchObject({ action: "import", newProject: null, keepInSync: true });
+    expect(invoke.mock.calls[0][1].body).not.toHaveProperty("resume");
+  });
+  it("import the rest: the resume point goes back, and a new one comes in", async () => {
+    invoke.mockResolvedValue({ data: { ok: true, result: { projectId: "p1", syncId: null, created: 1000, skipped: 0, errors: [], partial: true, resume: "2026-03-14T09:30:00.000Z" } }, error: null });
+    const r = await importNotionDatabase({ workspaceId: WS, databaseId: "d1", mapping: { title: "Name" }, projectId: "p1", keepInSync: false, direction: "two_way", resume: "2026-03-01T00:00:00.000Z" });
+    expect(r).toMatchObject({ partial: true, resume: "2026-03-14T09:30:00.000Z", syncId: null });
+    expect(invoke.mock.calls[0][1].body).toMatchObject({ action: "import", projectId: "p1", keepInSync: false, resume: "2026-03-01T00:00:00.000Z" });
+    invoke.mockResolvedValue({ data: { ok: true, result: { projectId: "p1", created: 5, resume: "x".repeat(80) } }, error: null });
+    expect((await importNotionDatabase({ workspaceId: WS, databaseId: "d1", mapping: { title: "Name" }, projectId: "p1", keepInSync: false, direction: "two_way" })).resume).toBeNull();
   });
   it("sync now: a run that stopped throws its sentence", async () => {
     invoke.mockResolvedValue({ data: { ok: true, stats: { updated: 1 }, error: null, fatal: false }, error: null });

@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
-  canonNotionDate, canonTaskDate, checkMapping, dayOf, displayValue, firstParagraph, formatCursor, guessStatus, httpsUrl, iconOf,
-  pageMeta, parseCursor, plain, previewRow, pullPatch, pushProperties, readMapping, readPage, richText, schemaOf,
-  splitFirstParagraph, suggestMapping, summariseDatabase, tagColour, taskFromPage, withFirstParagraph,
+  baselineOf, canonNotionDate, canonTaskDate, checkMapping, dayOf, displayValue, fingerprint, firstParagraph, formatCursor, guessStatus, httpsUrl, iconOf,
+  nextBaseline, pageMeta, parseCursor, plain, planSync, previewRow, pullPatch, pushProperties, readBaseline, readMapping, readPage, richText,
+  sameBaseline, schemaOf, splitFirstParagraph, suggestMapping, summariseDatabase, tagColour, taskFromPage, withFirstParagraph,
   type MapContext, type NDatabase, type NPage, type SyncTask,
 } from "./notionMap.ts";
 import type { NotionFieldMapping } from "./notion.ts";
@@ -248,6 +248,86 @@ describe("pull (Notion → Kanbo) and push (Kanbo → Notion)", () => {
     const f1 = readPage(p, MAP);
     expect(pullPatch(f1, t, MAP, ctx).changed).toEqual([]);
     expect(pushProperties(t, f1, MAP, ctx).changed).toEqual([]);
+  });
+});
+
+describe("the per-field merge", () => {
+  // the task and its page as they were when the sync last settled them
+  const agreed = task({ title: "Launch post", status: "progress", due_date: "2026-10-09", assignee_id: ANA, tags: ["t-blog"], description: "Intro." });
+  const agreedPage = { title: "Launch post", status: "Drafting", date: { start: "2026-10-09" }, people: [person("n-ana", "ana@kanbo.test")], tags: ["Blog"], summary: "Intro." };
+  const base = baselineOf(agreed, MAP, ctx);
+  const plan = (t: SyncTask, p: Parameters<typeof page>[0], notionLater: boolean, twoWay = true, b = base) =>
+    planSync(t, readPage(page({ ...agreedPage, ...p }), MAP), MAP, ctx, b, { notionLater, twoWay });
+
+  it("the baseline: one short fingerprint per mapped field; both sides agreeing plan nothing", () => {
+    expect(Object.keys(base).sort()).toEqual(["assignee", "description", "due", "status", "tags", "title"]);
+    expect(Object.values(base).every((v) => typeof v === "string" && v.length <= 24)).toBe(true);
+    expect(plan(agreed, {}, true)).toMatchObject({ pull: [], push: [] });
+    expect(plan(agreed, {}, false)).toMatchObject({ pull: [], push: [] });
+    expect(baselineOf(task(), { title: "Name" }, ctx)).toEqual({ title: fingerprint("title", "Name", "Launch post") });
+  });
+  it("a change on one side goes the other way, whoever edited anything later", () => {
+    // Kanbo moved the status; the page was edited later, but not its status
+    expect(plan({ ...agreed, status: "review" }, { title: "Launch post" }, true)).toMatchObject({ pull: [], push: ["status"] });
+    // Notion moved the status; the task was edited later (priority, position…), but not its status
+    expect(plan(agreed, { status: "Published" }, false)).toMatchObject({ pull: ["status"], push: [] });
+  });
+  it("different fields on each side: each goes its own way", () => {
+    const p = plan({ ...agreed, title: "Kanbo title", due_date: "2026-10-20" }, { status: "Published", tags: ["Blog", "LinkedIn"] }, true);
+    expect(p.pull.sort()).toEqual(["status", "tags"]);
+    expect(p.push.sort()).toEqual(["due", "title"]);
+    const f = readPage(page({ ...agreedPage, status: "Published", tags: ["Blog", "LinkedIn"] }), MAP);
+    const t = { ...agreed, title: "Kanbo title", due_date: "2026-10-20" };
+    expect(pullPatch(f, t, MAP, ctx, p.pull).changed.sort()).toEqual(["status", "tags"]);
+    expect(Object.keys(pushProperties(t, f, MAP, ctx, p.push).properties).sort()).toEqual(["Name", "Publish date"]);
+  });
+  it("the same field on both sides: the later edit wins; a tie (not later) is Kanbo's", () => {
+    expect(plan({ ...agreed, title: "Kanbo" }, { title: "Notion" }, true)).toMatchObject({ pull: ["title"], push: [] });
+    expect(plan({ ...agreed, title: "Kanbo" }, { title: "Notion" }, false)).toMatchObject({ pull: [], push: ["title"] });
+    // both made the same change: nothing to do
+    expect(plan({ ...agreed, title: "Same" }, { title: "Same" }, true)).toMatchObject({ pull: [], push: [], same: expect.arrayContaining(["title"]) });
+  });
+  it("from Notion only: Kanbo's own changes stay (never pushed, never undone)", () => {
+    expect(plan({ ...agreed, title: "Kanbo" }, { status: "Published" }, true, false)).toMatchObject({ pull: ["status"], push: [] });
+    expect(plan({ ...agreed, title: "Kanbo" }, { title: "Notion" }, false, false)).toMatchObject({ pull: [], push: [] });
+    expect(plan({ ...agreed, title: "Kanbo" }, { title: "Notion" }, true, false)).toMatchObject({ pull: ["title"], push: [] });
+  });
+  it("no baseline yet (or a remapped field): last writer wins for fields that differ", () => {
+    expect(plan({ ...agreed, title: "Kanbo" }, {}, true, true, null)).toMatchObject({ pull: ["title"], push: [] });
+    expect(plan({ ...agreed, title: "Kanbo" }, {}, false, true, null)).toMatchObject({ pull: [], push: ["title"] });
+    const remapped = { ...MAP, description: { property: "Notes" } };
+    expect(fingerprint("description", "Summary", "Intro.")).not.toBe(fingerprint("description", "Notes", "Intro."));
+    expect(baselineOf(agreed, remapped, ctx).description).not.toBe(base.description);
+  });
+  it("what one side can't say takes no part; an empty Notion status is filled in from Kanbo", () => {
+    expect(plan({ ...agreed, status: "review" }, { status: "Parked" }, false)).toMatchObject({ pull: [], push: [] });   // an unmapped option
+    expect(plan({ ...agreed, assignee_id: BOB }, { people: [person("u9", "zed@x.test")] }, false).push).not.toContain("assignee");
+    expect(plan(agreed, { status: null }, true)).toMatchObject({ pull: [], push: ["status"] });
+    expect(plan(agreed, { status: null }, true, false)).toMatchObject({ pull: [], push: [] });
+  });
+  it("formatting differences aren't changes: tag case and order, spacing, an option that means the same status", () => {
+    expect(plan({ ...agreed, tags: ["t-blog"] }, { tags: ["blog"] }, true)).toMatchObject({ pull: [], push: [] });
+    expect(plan(agreed, { status: "Scheduled" }, true)).toMatchObject({ pull: [], push: [] });   // Scheduled also means In progress
+    expect(plan({ ...agreed, description: "Intro.\n\nKanbo-only notes." }, { summary: "Intro.\n\nNotion-only notes." }, true)).toMatchObject({ pull: [], push: [] });
+  });
+  it("the next baseline: agreed fields, what came in, what went out; what couldn't be written keeps its old value", () => {
+    const t = { ...agreed, title: "Kanbo title" };
+    const p = plan(t, { status: "Published" }, true);
+    const after = nextBaseline(base, p, p.pull, p.push);
+    expect(after.status).toBe(p.n.status);
+    expect(after.title).toBe(p.k.title);
+    expect(after.due).toBe(base.due);
+    const pushFailed = nextBaseline(base, p, p.pull, []);
+    expect(pushFailed.title).toBe(base.title);
+    // and the run after settles: nothing to do
+    const settled = { ...t, status: "done" as const };
+    expect(plan(settled, { title: "Kanbo title", status: "Published" }, true, true, after)).toMatchObject({ pull: [], push: [] });
+    expect(sameBaseline(after, nextBaseline(after, plan(settled, { title: "Kanbo title", status: "Published" }, true, true, after), [], []))).toBe(true);
+  });
+  it("a stored baseline is read defensively", () => {
+    expect(readBaseline(null)).toBeNull();
+    expect(readBaseline("x")).toBeNull();
+    expect(readBaseline({ title: "abc", status: 5, due: "x".repeat(40), junk: "y" })).toEqual({ title: "abc" });
   });
 });
 

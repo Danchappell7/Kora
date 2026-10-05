@@ -181,14 +181,20 @@ integrations page.
 3. **Choose a project**: an existing one, or a new one (named after the
    database, with an icon and colour). Leave **Keep it in sync** on to have
    later changes flow, both ways or from Notion only.
-4. **Import.** It says how many tasks it made. A database of more than 1,000
-   pages is brought in over a few runs (the sync carries on where the import
-   stopped), or by importing again when it isn't kept in sync.
+4. **Import.** It says how many tasks it made. A big database comes in
+   1,000 tasks at a time. Kept in sync, the sync brings in the rest over its
+   next runs. Imported once (not kept in sync), the last step offers
+   **Import the rest**, which carries on from where the import stopped (it
+   reads the oldest pages first), into the same project, as many times as it
+   takes. The wizard stays open until an import finishes.
 
 Importing the same database again into the same project skips pages it
-already brought in. Turning a one-off import into a sync later (import again
-with **Keep it in sync**) takes over the tasks it made instead of copying
-them.
+already brought in (only new tasks count towards the 1,000). Turning a
+one-off import into a sync later (import again with **Keep it in sync**)
+takes over the tasks it made instead of copying them, merging each field
+as below. A database is imported or synced by one person at a time: a
+second import of it (a double click, or two admins at once), or **Sync
+now** while it's being imported, is asked to try again in a minute.
 
 ### 5. Link pages to tasks
 
@@ -205,17 +211,31 @@ their title and icon when they're over an hour old.
   edit times are whole minutes). A page with no task becomes a task in the
   project.
 - **Two-way**: tasks changed in Kanbo since their last sync go to Notion.
-  Only the properties that differ are sent (title, status, dates, assignee,
+  Only the fields Kanbo changed are sent (title, status, dates, assignee,
   tags, description's first paragraph).
-- **Last writer wins.** When a task and its page both changed, the later edit
-  wins. A tie inside the same minute goes to Kanbo: a newer Kanbo change is
-  never overwritten. Kanbo never mistakes its own writes for someone's
-  change, in either direction.
+- **Field by field.** For each task, Kanbo remembers what every synced field
+  was when the two sides last agreed (a fingerprint, kept server-side in
+  `notion_link_state`). A field changed only in Notion comes into Kanbo; a
+  field changed only in Kanbo goes to Notion (or, from Notion only, stays
+  as it is in Kanbo); a field nobody changed is left alone. So a change to
+  the status in Kanbo survives someone editing a different property, or the
+  page's text, in Notion later, and a status changed in Notion survives
+  someone changing the priority or the order in Kanbo later.
+- **Same field, both sides: the later edit wins.** Kanbo compares the task's
+  last change with the page's last edit. Notion's edit times are whole
+  minutes, so a tie goes to Kanbo. Kanbo never mistakes its own writes for
+  someone's change, in either direction.
+- **Taking over**: a sync only takes over pages its database's importer
+  linked (a one-off import, or a removed sync of the same database). A page
+  someone linked to a task by hand, for context, is never taken over: the
+  task is left exactly as it is, and the page becomes its own task in the
+  synced project.
 - **What can't be said isn't forced.** A Kanbo status with no Notion option
   (say Blocked), an assignee with no Notion account, a Notion person who
   isn't a member, or a Notion option mapped to nothing: that field is left
   alone on the other side. A page's option that already means the task's
-  status is kept (several options can mean In progress).
+  status is kept (several options can mean In progress). An empty Notion
+  status is filled in from Kanbo the next time the task's status changes.
 - **Descriptions**: only the first paragraph is shared. The rest of the
   description in Kanbo, and the rest of the text in Notion, stay as they are.
 - **Archived pages**: a page archived or moved to the trash in Notion
@@ -244,13 +264,16 @@ their title and icon when they're over an hour old.
 - Everything people do runs as them: the function opens a transaction as the
   caller (`set local role authenticated` + their JWT claims, scoped to the
   workspace) and the database's own rules decide. The service role only
-  reads the secret and keeps `notion_links`, `notion_page_cache` and the
-  syncs' bookkeeping.
+  reads the secret and keeps `notion_links`, `notion_page_cache`,
+  `notion_link_state` (no one can read it from the app) and the syncs'
+  bookkeeping.
 - Kanbo only fetches a page's title and icon for pages linked in that
   workspace, and only shows icons that are emoji or `https` images.
 - Limits per person: 60 requests a minute; 30 links a minute; 60 chip
   refreshes a minute. Per workspace: connecting 10 times and importing 10
-  times per 10 minutes. **Sync now**: 5 per 5 minutes per sync.
+  times per 10 minutes. **Sync now**: 5 per 5 minutes per sync. Per
+  database: one import or sync run at a time (a lease that lets go when the
+  run ends, or after 3 minutes if it never does).
 
 ## If something's wrong
 
@@ -262,6 +285,7 @@ their title and icon when they're over an hour old.
 | A sync says "Kanbo can't see this Notion database any more…" | The database was unshared, moved or deleted | Share it again, then **Sync now** |
 | "Notion no longer accepts Kanbo's integration secret…" | The integration was deleted or its secret refreshed | **Replace** with the new secret |
 | "The person who set up this sync no longer has access…" | They left the workspace, became a guest or were suspended | An owner or admin chooses **Run as me** on the sync |
+| "This database is being imported or synced right now…" | Someone else's import (or a run) of the same database hasn't finished | Wait a minute and try again |
 | People don't come across | The integration can't read emails, or the Notion email differs from the Kanbo one | Tick the email capability (step 3.2) |
 | Nothing syncs on its own | The schedule isn't running | Steps 2c and 2d |
 
@@ -278,7 +302,7 @@ person's JWT. Body `{ "action": …, … }`; answers `200 { "ok": true, … }` o
 | `databases` | owner/admin | `workspaceId, query?` | `databases` |
 | `schema` | owner/admin | `workspaceId, databaseId` | `schema` |
 | `preview` | owner/admin | `workspaceId, databaseId` | `rows` (5) |
-| `import` | owner/admin | `workspaceId, databaseId, mapping, projectId \| newProject, keepInSync, direction` | `result` |
+| `import` | owner/admin | `workspaceId, databaseId, mapping, projectId \| newProject, keepInSync, direction, resume?` | `result` (`created, skipped, errors, partial, resume`) |
 | `sync_now` | owner/admin | `syncId` | `stats, error, fatal` |
 | `page` | members | `workspaceId, pageId, force?` | `page` (linked pages only) |
 | `link_page` | can edit the task | `taskId, url` | `link` |
@@ -291,8 +315,11 @@ Reasons: `not_connected`, `not_allowed`, `invalid_token`, `not_shared`,
 ## How it was tested
 
 - `supabase/functions/_shared/notionMap.test.ts`, `notionApi.test.ts`,
-  `notionHandler.test.ts` (vitest): reading and writing Notion properties,
-  the mapping checks, round trips that settle, pacing, retries and errors.
+  `notionHandler.test.ts`, `notionSync.test.ts` (vitest): reading and
+  writing Notion properties, the mapping checks, the per-field merge (each
+  side's change, both sides, ties, no baseline yet, what can't be said),
+  round trips that settle, the per-database lease, pacing, retries and
+  errors.
 - A PGlite replay of every migration with the real function code against an
   in-memory Notion (121 cases): who may connect / import / sync / link; the
   token never leaving the server; import into new and existing projects;
@@ -301,3 +328,15 @@ Reasons: `not_connected`, `not_allowed`, `invalid_token`, `not_shared`,
   deleted; take-over of one-off imports; big databases over several runs; a
   stale cursor; 429 and 502 from Notion; a revoked token; a sync whose
   person lost access; a link smuggled onto another workspace's task; limits.
+- A second replay of the review fixes (52 cases): a Kanbo change surviving a
+  later edit to an unmapped Notion property, and a Notion change surviving a
+  later Kanbo edit to priority / order / Today (in both time orders);
+  different fields on each side; an untouched page writing nothing; an
+  empty Notion status filled in; from-Notion-only syncs never undoing Kanbo;
+  a push refused with a 429 tried again without losing what came in; the
+  baseline table out of every app role's reach; hand-made links never taken
+  over (one, and two on one task, with no failed runs); a one-off import
+  taken over field by field; two imports of one database at once (one runs,
+  one waits, no copies); Sync now and the schedule during an import; a
+  stale lease expiring; a 1,050-page one-off import finishing with **Import
+  the rest** or by importing again; bad resume points refused.

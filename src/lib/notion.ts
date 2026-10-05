@@ -269,6 +269,7 @@ const DEMO_DBS: NotionDatabaseSummary[] = [
   { id: "c0a7e1d2-5b6f-4a3e-9c1d-000000000003", title: "Bug tracker", icon: "🐞", url: "https://www.notion.so/c0a7e1d25b6f4a3e9c1d000000000003", lastEditedTime: iso(60 * 26) },
   { id: "c0a7e1d2-5b6f-4a3e-9c1d-000000000004", title: "Hiring pipeline", icon: "👥", url: "https://www.notion.so/c0a7e1d25b6f4a3e9c1d000000000004", lastEditedTime: iso(60 * 72) },
   { id: "c0a7e1d2-5b6f-4a3e-9c1d-000000000005", title: "Meeting notes", icon: "📝", url: "https://www.notion.so/c0a7e1d25b6f4a3e9c1d000000000005", lastEditedTime: iso(60 * 24 * 9) },
+  { id: "c0a7e1d2-5b6f-4a3e-9c1d-000000000006", title: "Support tickets", icon: "🎫", url: "https://www.notion.so/c0a7e1d25b6f4a3e9c1d000000000006", lastEditedTime: iso(12) },
 ];
 const [CONTENT, ROADMAP, BUGS] = DEMO_DBS;
 const CONTENT_SCHEMA: NotionDatabaseSchema = {
@@ -292,6 +293,7 @@ const DEMO_SCHEMAS: Record<string, NotionDatabaseSchema> = {
   [BUGS.id]: simpleSchema(BUGS, [{ id: "s", name: "State", type: "select", options: ["New", "Fixing", "In review", "Fixed", "Won't fix"] }, { id: "a", name: "Assignee", type: "people" }, { id: "sev", name: "Severity", type: "select", options: ["P1", "P2", "P3"] }, { id: "d", name: "Details", type: "rich_text" }]),
   [DEMO_DBS[3].id]: simpleSchema(DEMO_DBS[3], [{ id: "s", name: "Stage", type: "status", options: ["Applied", "Interviewing", "Offer", "Hired"] }, { id: "r", name: "Role", type: "select", options: ["Engineering", "Design"] }, { id: "o", name: "Hiring manager", type: "people" }]),
   [DEMO_DBS[4].id]: simpleSchema(DEMO_DBS[4], [{ id: "d", name: "Date", type: "date" }, { id: "a", name: "Attendees", type: "people" }, { id: "t", name: "Type", type: "multi_select", options: ["1:1", "Planning", "Retro"] }]),
+  [DEMO_DBS[5].id]: simpleSchema(DEMO_DBS[5], [{ id: "s", name: "State", type: "status", options: ["Open", "Waiting on customer", "Solved"] }, { id: "a", name: "Agent", type: "people" }, { id: "p", name: "Priority", type: "select", options: ["Urgent", "High", "Normal"] }]),
 };
 const row = (pageId: string, values: Record<string, string | string[] | null>): NotionPreviewRow => ({ pageId, values });
 const CONTENT_ROWS: NotionPreviewRow[] = [
@@ -301,7 +303,10 @@ const CONTENT_ROWS: NotionPreviewRow[] = [
   row("p4", { Name: "Behind the design system", Status: "Scheduled", "Publish date": "2026-10-14", Owner: ["Sana Rao"], Channels: ["Blog", "Instagram"], Summary: "How the Paper & Navy palette came together.", "Word count": "1500" }),
   row("p5", { Name: "Hiring: senior engineer", Status: "Drafting", "Publish date": "2026-10-20", Owner: ["Daniel Okai"], Channels: ["LinkedIn"], Summary: "The role, the team and how we work.", "Word count": "600" }),
 ];
-const DEMO_COUNTS: Record<string, number> = { [CONTENT.id]: 14, [ROADMAP.id]: 23, [BUGS.id]: 41, [DEMO_DBS[3].id]: 9, [DEMO_DBS[4].id]: 37 };
+const DEMO_COUNTS: Record<string, number> = { [CONTENT.id]: 14, [ROADMAP.id]: 23, [BUGS.id]: 41, [DEMO_DBS[3].id]: 9, [DEMO_DBS[4].id]: 37, [DEMO_DBS[5].id]: 1240 };
+/** A one-off import makes at most this many tasks a request (= notionSync IMPORT_MAX_PAGES); "Import the rest" carries on. */
+const IMPORT_BATCH = 1000;
+const DEMO_RESUME = "2026-03-14T09:30:00.000Z";
 
 interface DemoSpace { status: NotionStatus; syncs: NotionSync[] }
 const demo = new Map<string, DemoSpace>();
@@ -481,10 +486,11 @@ export async function previewNotionDatabase(workspaceId: string, databaseId: str
     .map((x) => ({ pageId: String(x.pageId), values: x.values as NotionPreviewRow["values"] }));
 }
 
-/** The import's answer; `partial` when a big database will finish on later runs (or another import). */
-export interface NotionImportSummary extends NotionImportResult { partial?: boolean }
+/** The import's answer; `partial` when a big database will finish on later runs (kept in sync) or with
+ *  "Import the rest" (a one-off import: send `resume` back with the same project and fields). */
+export interface NotionImportSummary extends NotionImportResult { partial?: boolean; resume?: string | null }
 
-export async function importNotionDatabase(req: NotionImportRequest): Promise<NotionImportSummary> {
+export async function importNotionDatabase(req: NotionImportRequest & { resume?: string | null }): Promise<NotionImportSummary> {
   if (!req.projectId && !req.newProject?.name?.trim()) throw new NotionError("invalid", "Choose a project to import into.");
   if (!supabase) {
     await wait(DEMO_DELAY_MS * 3);
@@ -495,7 +501,16 @@ export async function importNotionDatabase(req: NotionImportRequest): Promise<No
     }
     const projectId = req.projectId ?? `p-notion-${++demoSeq}`;
     const db = DEMO_DBS.find((x) => x.id === req.databaseId);
-    const created = DEMO_COUNTS[req.databaseId] ?? 12;
+    const total = DEMO_COUNTS[req.databaseId] ?? 12;
+    // a big database: a one-off import brings in 1,000 at a time; kept in sync, the sync brings in the rest
+    if (!req.keepInSync && total > IMPORT_BATCH) {
+      const first = !req.resume;
+      return {
+        projectId, syncId: null, created: first ? IMPORT_BATCH : total - IMPORT_BATCH, skipped: 0, partial: first, resume: first ? DEMO_RESUME : null,
+        errors: first ? ["That's a big database: Kanbo brought in the first part. Choose Import the rest to carry on from where it stopped."] : [],
+      };
+    }
+    const created = req.keepInSync ? Math.min(total, IMPORT_BATCH) : total;
     let syncId: string | null = null;
     if (req.keepInSync) {
       syncId = `demo-sync-${++demoSeq}`;
@@ -508,17 +523,23 @@ export async function importNotionDatabase(req: NotionImportRequest): Promise<No
       space.status = { ...space.status, syncCount: space.syncs.length };
       tell(syncListeners, req.workspaceId);
     }
-    return { projectId, syncId, created, skipped: 0, errors: [], partial: false };
+    const partial = created < total;
+    return {
+      projectId, syncId, created, skipped: 0, partial, resume: null,
+      errors: partial ? ["That's a big database: Kanbo brought in the first part, and the sync brings in the rest over the next runs."] : [],
+    };
   }
   const d = await invoke<{ result?: unknown }>({
     action: "import", workspaceId: req.workspaceId, databaseId: req.databaseId, mapping: req.mapping, projectId: req.projectId,
     newProject: req.projectId ? null : req.newProject ?? null, keepInSync: req.keepInSync, direction: req.direction,
+    ...(req.resume ? { resume: req.resume } : {}),
   }, 90_000);
   const r = obj(d.result);
   if (!r || !str(r.projectId)) throw new NotionError("error", NOTION_COPY.failed);
   return {
     projectId: String(r.projectId), syncId: str(r.syncId), created: Number(r.created) || 0, skipped: Number(r.skipped) || 0,
     errors: Array.isArray(r.errors) ? r.errors.filter((x): x is string => typeof x === "string").slice(0, 20) : [], partial: r.partial === true,
+    resume: typeof r.resume === "string" && r.resume.length <= 40 ? r.resume : null,
   };
 }
 

@@ -7,8 +7,16 @@
 // or odd fields and caps what it keeps.
 //
 // The sync compares the two sides in Kanbo's terms, field by field:
-//   pullPatch(page, task)   what Kanbo should change to match the page
-//   pushProperties(task, page)   what Notion should change to match the task
+//   planSync(task, page, baseline)   which fields go which way (below)
+//   pullPatch(page, task, fields)   what Kanbo should change to match the page
+//   pushProperties(task, page, fields)   what Notion should change to match the task
+// planSync is a three-way merge per field. The baseline is a fingerprint of
+// each field's value as both sides last agreed it (notion_link_state). A
+// field only Kanbo changed goes to Notion; one only Notion changed comes to
+// Kanbo; one both changed goes the way of the later edit (a tie goes to
+// Kanbo); one neither changed is left alone. So an edit to anything else
+// (priority, position, an unmapped Notion property, the page body) never
+// carries a stale field across.
 // A field takes part only when it reads cleanly on both sides (a status
 // option with no Kanbo status, a person who isn't a member, a Kanbo status
 // with no Notion option… are left alone), so neither side is ever
@@ -538,23 +546,25 @@ function pageAssignee(people: PeopleValue[], current: string, ctx: MapContext): 
   return ids.includes(current) ? current : ids[0];
 }
 
-export function pullPatch(f: PageFields, t: SyncTask, m: NotionFieldMapping, ctx: MapContext): { patch: PullPatch; changed: string[] } {
+/** `only`: the fields to consider (planSync's pull list); every mapped field when left out. */
+export function pullPatch(f: PageFields, t: SyncTask, m: NotionFieldMapping, ctx: MapContext, only?: readonly SyncField[]): { patch: PullPatch; changed: string[] } {
   const patch: PullPatch = {};
-  if (f.title && f.title !== (oneLine(t.title, LIMITS.title) || "Untitled")) patch.title = f.title;
-  if (m.status && f.status) {
+  const want = (k: SyncField) => !only || only.includes(k);
+  if (want("title") && f.title && f.title !== (oneLine(t.title, LIMITS.title) || "Untitled")) patch.title = f.title;
+  if (want("status") && m.status && f.status) {
     const s = f.status.option ? m.status.values[f.status.option] : undefined;
     if (isKanboStatus(s) && s !== t.status) patch.status = s;
   }
-  if (m.due && f.date !== undefined) {
+  if (want("due") && m.due && f.date !== undefined) {
     const n = canonNotionDate(f.date), k = canonTaskDate(t);
     if (!sameDates(n, k)) { patch.due_date = n.due; patch.start_date = n.start; }
   }
-  if (m.assignee && f.people) {
+  if (want("assignee") && m.assignee && f.people) {
     const a = pageAssignee(f.people, t.assignee_id, ctx);
     if (a !== undefined && a !== t.assignee_id) patch.assignee_id = a;
   }
-  if (m.tags && f.tags && !sameSet(f.tags.map((x) => x.name), taskTagLabels(t, ctx))) patch.tags = f.tags;
-  if (m.description && f.description !== undefined) {
+  if (want("tags") && m.tags && f.tags && !sameSet(f.tags.map((x) => x.name), taskTagLabels(t, ctx))) patch.tags = f.tags;
+  if (want("description") && m.description && f.description !== undefined) {
     const np = firstParagraph(f.description), kp = firstParagraph(t.description);
     if (!sameText(np, kp)) patch.description = cap(withFirstParagraph(t.description, np), LIMITS.description);
   }
@@ -578,12 +588,13 @@ export function taskFromPage(f: PageFields, m: NotionFieldMapping, ctx: MapConte
 
 /** What Notion should change so the page matches the task: a PATCH /pages
  *  `properties` body (empty when nothing differs or nothing can be said). */
-export function pushProperties(t: SyncTask, f: PageFields, m: NotionFieldMapping, ctx: MapContext): { properties: Record<string, unknown>; changed: string[] } {
+export function pushProperties(t: SyncTask, f: PageFields, m: NotionFieldMapping, ctx: MapContext, only?: readonly SyncField[]): { properties: Record<string, unknown>; changed: SyncField[] } {
   const properties: Record<string, unknown> = {};
-  const changed: string[] = [];
+  const changed: SyncField[] = [];
+  const want = (k: SyncField) => !only || only.includes(k);
   const title = oneLine(t.title, LIMITS.title) || "Untitled";
-  if (title !== f.title) { properties[m.title] = { title: richText(title) }; changed.push("title"); }
-  if (m.status && f.status) {
+  if (want("title") && title !== f.title) { properties[m.title] = { title: richText(title) }; changed.push("title"); }
+  if (want("status") && m.status && f.status) {
     const now = f.status.option ? m.status.values[f.status.option] : undefined;
     // an option Kanbo has no status for is left alone; an empty status is filled in
     if (now !== t.status && !(f.status.option && now === undefined)) {
@@ -594,14 +605,14 @@ export function pushProperties(t: SyncTask, f: PageFields, m: NotionFieldMapping
       }
     }
   }
-  if (m.due && f.date !== undefined) {
+  if (want("due") && m.due && f.date !== undefined) {
     const k = canonTaskDate(t);
     if (!sameDates(k, canonNotionDate(f.date))) {
       properties[m.due.property] = { date: k.due ? (k.start ? { start: k.start, end: k.due } : { start: k.due, end: null }) : null };
       changed.push("due");
     }
   }
-  if (m.assignee && f.people) {
+  if (want("assignee") && m.assignee && f.people) {
     const n = pageAssignee(f.people, t.assignee_id, ctx);
     if (n !== undefined && n !== t.assignee_id) {
       if (!t.assignee_id) { properties[m.assignee.property] = { people: [] }; changed.push("assignee"); }
@@ -612,7 +623,7 @@ export function pushProperties(t: SyncTask, f: PageFields, m: NotionFieldMapping
       }
     }
   }
-  if (m.tags && f.tags) {
+  if (want("tags") && m.tags && f.tags) {
     const labels = taskTagLabels(t, ctx);
     if (!sameSet(labels, f.tags.map((x) => x.name))) {
       const seen = new Set<string>();
@@ -621,7 +632,7 @@ export function pushProperties(t: SyncTask, f: PageFields, m: NotionFieldMapping
       changed.push("tags");
     }
   }
-  if (m.description && f.description !== undefined) {
+  if (want("description") && m.description && f.description !== undefined) {
     const kp = firstParagraph(t.description), np = firstParagraph(f.description);
     if (!sameText(kp, np)) {
       properties[m.description.property] = { rich_text: richText(withFirstParagraph(f.description, kp)) };
@@ -630,6 +641,142 @@ export function pushProperties(t: SyncTask, f: PageFields, m: NotionFieldMapping
   }
   return { properties, changed };
 }
+
+/* ------------------------------------------------------------ the per-field merge */
+
+/** The fields a sync carries (the names pushProperties reports). */
+export type SyncField = "title" | "status" | "due" | "assignee" | "tags" | "description";
+export const SYNC_FIELDS: readonly SyncField[] = ["title", "status", "due", "assignee", "tags", "description"];
+/** Each field's value as both sides last agreed it, as a fingerprint
+ *  (notion_link_state.synced). A field with no entry has no agreed value yet. */
+export type Baseline = Partial<Record<SyncField, string>>;
+
+const textKey = (s: string) => s.replace(/\s+/g, " ").trim();
+const setKey = (names: string[]) => [...new Set(names.map(tagKey).filter(Boolean))].sort().join("\n");
+const datesKey = (d: Dates) => `${d.start ?? ""}/${d.due ?? ""}`;
+
+/** The Notion property behind a field (null: not mapped). */
+function propertyOf(field: SyncField, m: NotionFieldMapping): string | null {
+  switch (field) {
+    case "title": return m.title;
+    case "status": return m.status?.property ?? null;
+    case "due": return m.due?.property ?? null;
+    case "assignee": return m.assignee?.property ?? null;
+    case "tags": return m.tags?.property ?? null;
+    case "description": return m.description?.property ?? null;
+  }
+}
+
+/** Kanbo's side of every mapped field, in the one form both sides compare in. */
+export function kanboValues(t: SyncTask, m: NotionFieldMapping, ctx: MapContext): Partial<Record<SyncField, string>> {
+  const v: Partial<Record<SyncField, string>> = { title: oneLine(t.title, LIMITS.title) || "Untitled" };
+  if (m.status) v.status = t.status;
+  if (m.due) v.due = datesKey(canonTaskDate(t));
+  if (m.assignee) v.assignee = t.assignee_id;
+  if (m.tags) v.tags = setKey(taskTagLabels(t, ctx));
+  if (m.description) v.description = textKey(firstParagraph(t.description));
+  return v;
+}
+
+/** The page's side, in Kanbo's terms. A field is left out when the page can't
+ *  say it: its property is missing or of another kind, a status option means no
+ *  Kanbo status, or its people aren't members. An empty status is "". */
+export function notionValues(f: PageFields, t: SyncTask, m: NotionFieldMapping, ctx: MapContext): Partial<Record<SyncField, string>> {
+  const v: Partial<Record<SyncField, string>> = { title: f.title };
+  if (m.status && f.status) {
+    if (!f.status.option) v.status = "";
+    else { const s = m.status.values[f.status.option]; if (isKanboStatus(s)) v.status = s; }
+  }
+  if (m.due && f.date !== undefined) v.due = datesKey(canonNotionDate(f.date));
+  if (m.assignee && f.people) { const a = pageAssignee(f.people, t.assignee_id, ctx); if (a !== undefined) v.assignee = a; }
+  if (m.tags && f.tags) v.tags = setKey(f.tags.map((x) => x.name));
+  if (m.description && f.description !== undefined) v.description = textKey(firstParagraph(f.description));
+  return v;
+}
+
+/** A short, stable fingerprint of a field's value (cyrb53, 53 bits, base 36).
+ *  The property's name is part of it, so remapping a field starts it afresh. */
+export function fingerprint(field: SyncField, property: string, value: string): string {
+  const s = `${field}\u0000${property}\u0000${value}`;
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** The baseline for a task Kanbo has just made from a page (or that both sides now agree on). */
+export function baselineOf(t: SyncTask, m: NotionFieldMapping, ctx: MapContext): Baseline {
+  const b: Baseline = {};
+  const k = kanboValues(t, m, ctx);
+  for (const field of SYNC_FIELDS) {
+    const p = propertyOf(field, m), v = k[field];
+    if (p && v !== undefined) b[field] = fingerprint(field, p, v);
+  }
+  return b;
+}
+
+/** A stored baseline read defensively: known fields with short string values only. */
+export function readBaseline(raw: unknown): Baseline | null {
+  if (!isObj(raw)) return null;
+  const b: Baseline = {};
+  for (const field of SYNC_FIELDS) {
+    const v = raw[field];
+    if (typeof v === "string" && v.length > 0 && v.length <= 24) b[field] = v;
+  }
+  return b;
+}
+
+export interface SyncPlan {
+  /** Notion → Kanbo */
+  pull: SyncField[];
+  /** Kanbo → Notion (two-way only) */
+  push: SyncField[];
+  /** fields the two sides already agree on */
+  same: SyncField[];
+  /** each taking-part field's fingerprint on each side now */
+  k: Baseline;
+  n: Baseline;
+}
+
+/** Which way each field goes. `notionLater`: the page was edited after the
+ *  task's last change (Notion's whole-minute times make a tie Kanbo's). */
+export function planSync(t: SyncTask, f: PageFields, m: NotionFieldMapping, ctx: MapContext, base: Baseline | null,
+  o: { notionLater: boolean; twoWay: boolean }): SyncPlan {
+  const plan: SyncPlan = { pull: [], push: [], same: [], k: {}, n: {} };
+  const kv = kanboValues(t, m, ctx), nv = notionValues(f, t, m, ctx);
+  for (const field of SYNC_FIELDS) {
+    const p = propertyOf(field, m), a = kv[field], b = nv[field];
+    if (!p || a === undefined || b === undefined) continue;   // this field takes no part
+    const kf = fingerprint(field, p, a), nf = fingerprint(field, p, b);
+    plan.k[field] = kf;
+    plan.n[field] = nf;
+    if (a === b) { plan.same.push(field); continue; }
+    const was = base?.[field];
+    const kChanged = was === undefined || kf !== was, nChanged = was === undefined || nf !== was;
+    if (!kChanged && !nChanged) continue;
+    // an empty Notion status can't be brought into Kanbo: it's filled in instead
+    const toNotion = (field === "status" && b === "") || (kChanged && !nChanged) || (kChanged && nChanged && !o.notionLater);
+    if (!toNotion) plan.pull.push(field);
+    else if (o.twoWay) plan.push.push(field);
+  }
+  return plan;
+}
+
+/** The baseline after a run: agreed fields, what came in and what went out.
+ *  A field that couldn't be written keeps its old fingerprint. */
+export function nextBaseline(base: Baseline | null, plan: SyncPlan, pulled: readonly SyncField[], pushed: readonly SyncField[]): Baseline {
+  const out: Baseline = { ...(base ?? {}) };
+  for (const f of plan.same) out[f] = plan.k[f];
+  for (const f of pulled) if (plan.n[f]) out[f] = plan.n[f];
+  for (const f of pushed) if (plan.k[f]) out[f] = plan.k[f];
+  return out;
+}
+export const sameBaseline = (a: Baseline | null, b: Baseline) => !!a && SYNC_FIELDS.every((f) => a[f] === b[f]);
 
 /* ------------------------------------------------------------ the sync's place in the database */
 

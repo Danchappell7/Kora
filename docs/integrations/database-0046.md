@@ -14,7 +14,7 @@ sync and link. It doesn't need 0043 or 0045 and works before or after them.
 | Key scope | restrictive policy **"api key scope"** on 16 tables | Only narrows access, and only when the `api` function opens a team key's transaction. The app is unaffected. |
 | API limits | `api_rate_hit()`, `api_idempotency`, `api_idempotency_begin/finish()` | Service role only. |
 | Webhooks | `webhooks`, `webhook_outbox`, `webhook_deliveries`, management functions, capture triggers on tasks / comments / projects / members | Server-only tables. Workspace writers (never guests) manage the team's endpoints; anyone manages their personal ones. The signing secret is shown once. Nothing is captured while no endpoint listens. |
-| Notion | `workspace_integrations.notion_*`, `notion_status/connect/disconnect()`, `notion_syncs`, `notion_links`, `notion_page_cache` | The token is server-only (like the Slack URL). Owners/admins connect and set up syncs; members see the status and read syncs and links; members (not guests) link pages to tasks. |
+| Notion | `workspace_integrations.notion_*`, `notion_status/connect/disconnect()`, `notion_syncs`, `notion_links`, `notion_page_cache`, `notion_link_state` | The token and the sync's per-field memory (`notion_link_state`) are server-only (like the Slack URL). Owners/admins connect and set up syncs; members see the status and read syncs and links; members (not guests) link pages to tasks. |
 
 Until each feature's edge function is deployed, its Settings panel explains
 that it isn't switched on yet; the app keeps working as before.
@@ -49,7 +49,9 @@ select
   not has_table_privilege('authenticated', 'public.workspace_integrations', 'select')            as notion_token_server_only,
   (select relrowsecurity from pg_class where oid = 'public.notion_links'::regclass)
   and (select relrowsecurity from pg_class where oid = 'public.notion_syncs'::regclass)
-  and (select relrowsecurity from pg_class where oid = 'public.notion_page_cache'::regclass)    as notion_rls;
+  and (select relrowsecurity from pg_class where oid = 'public.notion_page_cache'::regclass)
+  and (select relrowsecurity from pg_class where oid = 'public.notion_link_state'::regclass)
+  and not has_table_privilege('authenticated', 'public.notion_link_state', 'select')            as notion_rls;
 ```
 
 ### Daily tidy-up (once)
