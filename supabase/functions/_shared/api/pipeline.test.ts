@@ -4,7 +4,7 @@
 // error mapping and the transaction scope every handler gets. (The real
 // handlers against the real migrations: scratchpad/pgtest-a1 in PGlite.)
 import { describe, expect, it, vi } from "vitest";
-import { ApiFail, ok } from "./core.ts";
+import { ApiFail, etagFor, ok } from "./core.ts";
 import { etagMatches, handleApiRequest, type ApiDeps } from "./pipeline.ts";
 import { coreRoutes } from "./routes.ts";
 import type { Route, RouteContext } from "./router.ts";
@@ -19,10 +19,13 @@ const KEYS: Record<string, ApiPrincipal> = {
 };
 const WRITE = "kanbo_sk_" + "w".repeat(43), READ = "kanbo_pk_" + "r".repeat(43), TEAM = "kanbo_sk_" + "t".repeat(43);
 
-function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: boolean } = {}) {
+function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: boolean; finishFailures?: number } = {}) {
   const scopes: UserScope[] = [];
-  const idem = new Map<string, { hash: string; status: number; response: unknown }>();
+  const idem = new Map<string, { hash: string; status: number; response: unknown; committed?: boolean; applied?: boolean }>();
   const serviceCalls: string[] = [];
+  /** statements run inside a user transaction (only the idempotency commit mark is allowed) */
+  const txCalls: { text: string; params: readonly unknown[]; scope: UserScope }[] = [];
+  let finishFailures = opts.finishFailures ?? 0;
   const service: Tx = {
     async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
       serviceCalls.push(text);
@@ -34,12 +37,13 @@ function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: b
         const row = idem.get(`${keyId}:${k}`);
         if (!row) { idem.set(`${keyId}:${k}`, { hash, status: 0, response: null }); return [{ b: { state: "new" } }] as T[]; }
         if (row.hash !== hash) return [{ b: { state: "mismatch" } }] as T[];
-        if (row.status === 0) return [{ b: JSON.stringify({ state: "in_progress" }) }] as T[];
+        if (row.status === 0) return [{ b: JSON.stringify({ state: row.applied ? "applied" : "in_progress" }) }] as T[];
         return [{ b: { state: "replay", status: row.status, response: row.response } }] as T[];
       }
       if (text.includes("api_idempotency_finish")) {
+        if (finishFailures > 0) { finishFailures--; throw new Error("connection reset"); }
         const [keyId, k, status, response] = params as [string, string, number, string];
-        if (status >= 500) idem.delete(`${keyId}:${k}`);
+        if (status >= 500) { if (!idem.get(`${keyId}:${k}`)?.committed) idem.delete(`${keyId}:${k}`); }
         else idem.set(`${keyId}:${k}`, { ...idem.get(`${keyId}:${k}`)!, status, response: JSON.parse(response) });
         return [] as T[];
       }
@@ -49,7 +53,16 @@ function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: b
   const db = {
     withUser: vi.fn(async <T,>(scope: UserScope, fn: (tx: Tx) => Promise<T>) => {
       scopes.push(scope);
-      return fn({ query: async () => { throw new Error("the fake routes don't query"); } });
+      return fn({
+        query: async <R,>(text: string, params: readonly unknown[] = []): Promise<R[]> => {
+          if (!text.includes("api_idempotency_commit")) throw new Error("the fake routes don't query");
+          txCalls.push({ text, params, scope });
+          const [keyId, k] = params as string[];
+          const row = idem.get(`${keyId}:${k}`);
+          if (row) row.committed = true;
+          return [];
+        },
+      });
     }),
   };
   const logs: unknown[][] = [];
@@ -57,6 +70,7 @@ function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: b
     db, service, appUrl: "https://www.kanbo.co.uk", apiBase: BASE, routes,
     verify: async (k) => { if (opts.verifyThrows) throw new Error("db down"); return KEYS[k] ?? null; },
     log: (...a) => logs.push(a),
+    sleep: async () => {},
   };
   const call = async (key: string | null, method: string, path: string, body?: string, headers: Record<string, string> = {}) => {
     const h: Record<string, string> = { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...headers };
@@ -65,7 +79,7 @@ function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: b
     const text = await res.text();
     return { res, status: res.status, text, json: text ? JSON.parse(text) : null };
   };
-  return { call, scopes, idem, logs, db, serviceCalls };
+  return { call, scopes, idem, logs, db, serviceCalls, txCalls };
 }
 
 let made = 0;
@@ -78,6 +92,10 @@ const routes: Route[] = [
   { method: "GET", path: "/dupe", handler: async () => { throw Object.assign(new Error("duplicate key value"), { code: "23505" }); } },
   { method: "GET", path: "/boom", handler: async () => { throw Object.assign(new Error("syntax error at or near \"selec\" in select * from secret_table"), { code: "42601" }); } },
   { method: "POST", path: "/boom", handler: async () => { throw new Error("kaput"); } },
+  // writes in a transaction as the user (like the real handlers)
+  { method: "POST", path: "/tx", handler: async (ctx) => ctx.db.withUser({ userId: ctx.principal.userId, workspaceId: ctx.principal.workspaceId }, async () => ok(ctx, { id: `tx-${++made}` }, 201)) },
+  // the work commits, then the connection drops before the handler sees it
+  { method: "POST", path: "/tx-lost", handler: async (ctx) => { await ctx.db.withUser({ userId: ctx.principal.userId }, async () => null); throw new Error("connection lost after COMMIT"); } },
 ];
 
 const isError = (j: { error?: { code?: string; status?: number; requestId?: string } }, status: number, code: string) =>
@@ -248,6 +266,48 @@ describe("idempotency", () => {
   });
 });
 
+describe("idempotency: committed work never runs twice", () => {
+  it("the handler's transaction marks the key committed as its last statement (POST with a key only)", async () => {
+    const { call, txCalls } = setup(routes);
+    const r = await call(TEAM, "POST", "/tx", "{}", { "Idempotency-Key": "c-1" });
+    expect(r.status).toBe(201);
+    expect(txCalls).toHaveLength(1);
+    expect(txCalls[0].text).toMatch(/select public\.api_idempotency_commit\(\$1::uuid, \$2\)/);
+    expect(txCalls[0].params).toEqual([KEYS[TEAM].keyId, "c-1"]);
+    expect(txCalls[0].scope).toMatchObject({ workspaceId: W });
+    await call(TEAM, "POST", "/tx", "{}");
+    await call(TEAM, "GET", "/echo", undefined, { "Idempotency-Key": "c-2" });
+    expect(txCalls).toHaveLength(1);
+  });
+  it("storing the answer is retried; when it never works the request still answers and it's logged", async () => {
+    const once = setup(routes, { finishFailures: 1 });
+    const a = await once.call(WRITE, "POST", "/tx", "{}", { "Idempotency-Key": "f-1" });
+    const b = await once.call(WRITE, "POST", "/tx", "{}", { "Idempotency-Key": "f-1" });
+    expect(b.json.id).toBe(a.json.id);
+    expect(b.res.headers.get("Idempotent-Replayed")).toBe("true");
+    expect(once.logs).toHaveLength(0);
+    const never = setup(routes, { finishFailures: 99 });
+    const c = await never.call(WRITE, "POST", "/tx", "{}", { "Idempotency-Key": "f-2" });
+    expect(c.status).toBe(201);
+    expect(never.serviceCalls.filter((t) => t.includes("api_idempotency_finish"))).toHaveLength(3);
+    expect(never.logs.some((l) => l[0] === "error" && /idempotent answer/.test(String(l[1])))).toBe(true);
+    const busy = await never.call(WRITE, "POST", "/tx", "{}", { "Idempotency-Key": "f-2" });
+    expect(busy.json.error.code).toBe("idempotency_in_progress");
+  });
+  it("a 5xx after the work committed keeps the key; 'applied' answers 409 conflict", async () => {
+    const { call, idem } = setup(routes);
+    const r = await call(WRITE, "POST", "/tx-lost", "{}", { "Idempotency-Key": "l-1" });
+    expect(r.status).toBe(500);
+    const [k] = [...idem.keys()];
+    expect(idem.get(k)).toMatchObject({ status: 0, committed: true });
+    idem.set(k, { ...idem.get(k)!, applied: true });
+    const again = await call(WRITE, "POST", "/tx-lost", "{}", { "Idempotency-Key": "l-1" });
+    expect(again.status).toBe(409);
+    expect(isError(again.json, 409, "conflict")).toBe(true);
+    expect(again.json.error.details).toEqual({ idempotency: "applied" });
+  });
+});
+
 describe("caching", () => {
   it("weak ETags; If-None-Match → 304; HEAD has no body", async () => {
     const { call } = setup(routes);
@@ -262,12 +322,16 @@ describe("caching", () => {
     expect(head.status).toBe(200);
     expect(head.text).toBe("");
     expect(head.res.headers.get("ETag")).toBe(etag);
+    // the ETag a write's If-Match is checked against is exactly GET's
+    expect(await etagFor({ hello: "there", n: 1 })).toBe(etag);
   });
   it("etagMatches", () => {
     expect(etagMatches('W/"abc"', 'W/"abc"')).toBe(true);
     expect(etagMatches('"abc"', 'W/"abc"')).toBe(true);
     expect(etagMatches("*", 'W/"abc"')).toBe(true);
     expect(etagMatches('W/"abd", W/"abe"', 'W/"abc"')).toBe(false);
+    expect(etagMatches('"x", W/"abc"', 'W/"abc"')).toBe(true);
+    expect(etagMatches("", 'W/"abc"')).toBe(false);
   });
 });
 

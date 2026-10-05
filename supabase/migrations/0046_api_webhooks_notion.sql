@@ -366,6 +366,9 @@ create table if not exists public.api_idempotency (
   created_at   timestamptz not null default now(),
   primary key (key_id, idem_key)
 );
+-- set by the request's own transaction as it commits (api_idempotency_commit):
+-- from then on the work is done, so a retry must never run it again
+alter table public.api_idempotency add column if not exists committed_at timestamptz;
 create index if not exists api_idempotency_created_idx on public.api_idempotency (created_at);
 alter table public.api_idempotency drop constraint if exists api_idempotency_shape;
 alter table public.api_idempotency add constraint api_idempotency_shape check (
@@ -379,8 +382,11 @@ revoke all on public.api_idempotency from anon, authenticated;
 --   'replay'      done before with the same request: {status, response}
 --   'mismatch'    the key was used for a different request (answer 422)
 --   'in_progress' the first request is still running (answer 409)
--- Older than 24h counts as never seen; a placeholder older than 2 minutes
--- (a crashed request) is taken over.
+--   'applied'     the first request's work was committed but its answer was
+--                 never stored (answer 409: don't run it again)
+-- Older than 24h counts as never seen. A placeholder whose work never
+-- committed is taken over after 10 minutes: longer than an edge function can
+-- run (400 s), so that request is gone and its transaction rolled back.
 create or replace function public.api_idempotency_begin(p_key_id uuid, p_idem_key text, p_request_hash text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare r public.api_idempotency;
@@ -388,7 +394,8 @@ begin
   if p_key_id is null or coalesce(length(p_idem_key), 0) not between 1 and 255 then raise exception 'invalid idempotency key'; end if;
   delete from public.api_idempotency i
    where i.key_id = p_key_id and i.idem_key = p_idem_key
-     and (i.created_at < now() - interval '24 hours' or (i.status = 0 and i.created_at < now() - interval '2 minutes'));
+     and (i.created_at < now() - interval '24 hours'
+          or (i.status = 0 and i.committed_at is null and i.created_at < now() - interval '10 minutes'));
   insert into public.api_idempotency (key_id, idem_key, request_hash)
   values (p_key_id, p_idem_key, p_request_hash)
   on conflict (key_id, idem_key) do nothing
@@ -396,17 +403,39 @@ begin
   if r.key_id is not null then return jsonb_build_object('state', 'new'); end if;
   select * into r from public.api_idempotency i where i.key_id = p_key_id and i.idem_key = p_idem_key;
   if r.request_hash is distinct from p_request_hash then return jsonb_build_object('state', 'mismatch'); end if;
-  if r.status = 0 then return jsonb_build_object('state', 'in_progress'); end if;
+  if r.status = 0 then
+    -- committed a while ago and still no answer: storing it failed for good
+    if r.committed_at is not null and r.committed_at < now() - interval '1 minute' then
+      return jsonb_build_object('state', 'applied');
+    end if;
+    return jsonb_build_object('state', 'in_progress');
+  end if;
   return jsonb_build_object('state', 'replay', 'status', r.status, 'response', r.response);
 end; $$;
 
--- Finish it: keep the answer for replays (a 5xx forgets the key, so the
--- caller may simply retry).
+-- Called INSIDE the request's own transaction (as the key's user), as its
+-- last statement: the placeholder is marked committed exactly when the work
+-- is. Only the key's own user can mark its placeholders, and marking one
+-- only ever stops a retry from running again.
+create or replace function public.api_idempotency_commit(p_key_id uuid, p_idem_key text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return; end if;
+  update public.api_idempotency i set committed_at = coalesce(i.committed_at, now())
+   where i.key_id = p_key_id and i.idem_key = p_idem_key and i.status = 0
+     and exists (select 1 from public.api_keys k where k.id = p_key_id and k.user_id = auth.uid());
+end; $$;
+
+-- Finish it: keep the answer for replays. A 5xx forgets the key so the
+-- caller may simply retry, unless its work was committed (the commit
+-- reached Postgres but its acknowledgement was lost): then the placeholder
+-- stays, and a retry is told it was applied rather than running twice.
 create or replace function public.api_idempotency_finish(p_key_id uuid, p_idem_key text, p_status integer, p_response jsonb)
 returns void language plpgsql security definer set search_path = public as $$
 begin
   if coalesce(p_status, 500) >= 500 then
-    delete from public.api_idempotency where key_id = p_key_id and idem_key = p_idem_key;
+    delete from public.api_idempotency
+     where key_id = p_key_id and idem_key = p_idem_key and committed_at is null;
   else
     update public.api_idempotency set status = p_status, response = p_response
      where key_id = p_key_id and idem_key = p_idem_key;
@@ -414,6 +443,8 @@ begin
 end; $$;
 revoke execute on function public.api_idempotency_begin(uuid, text, text) from public, anon, authenticated;
 revoke execute on function public.api_idempotency_finish(uuid, text, integer, jsonb) from public, anon, authenticated;
+revoke execute on function public.api_idempotency_commit(uuid, text) from public, anon;
+grant execute on function public.api_idempotency_commit(uuid, text) to authenticated;
 
 -- ---------- 5. webhooks ----------
 -- an https URL with a hostname (no IP literals, no user:password@, no

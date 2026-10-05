@@ -69,6 +69,16 @@ describe("OpenAPI document", () => {
     }
   });
 
+  it("single-resource writes take If-Match and document its 412", () => {
+    const want = ["patch /tasks/{id}", "delete /tasks/{id}", "post /tasks/{id}/complete", "patch /projects/{id}"];
+    for (const [p, m, op] of ops) {
+      const takes = (op.parameters ?? []).some((x) => x.in === "header" && x.name === "If-Match");
+      expect(takes, `${m} ${p}`).toBe(want.includes(`${m} ${p}`));
+      if (takes) expect(op.responses["412"], `${m} ${p}`).toBeTruthy();
+    }
+    expect(doc.info.description).toMatch(/If-Match/);
+  });
+
   it("every $ref resolves", () => {
     const refs = JSON.stringify(doc).match(/"#\/components\/schemas\/[A-Za-z]+"/g) ?? [];
     expect(refs.length).toBeGreaterThan(20);

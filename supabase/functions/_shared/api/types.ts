@@ -50,6 +50,7 @@ export type ApiErrorCode =
   | "conflict"
   | "idempotency_mismatch"   // Idempotency-Key reused for a different request (422)
   | "idempotency_in_progress"// the first request with this key is still running (409)
+  | "precondition_failed"    // If-Match: the resource changed since the caller read it (412)
   | "payload_too_large"
   | "unsupported_media_type"
   | "rate_limited"           // 429 with Retry-After

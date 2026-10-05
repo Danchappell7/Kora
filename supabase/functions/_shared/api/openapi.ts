@@ -113,15 +113,18 @@ const RATE_HEADERS = {
   "X-RateLimit-Remaining": { description: "Requests left in the current minute.", schema: { type: "integer" } },
   "X-Request-Id": { description: "Quote it if you contact support.", schema: { type: "string" } },
 };
-const GET_HEADERS = { ...RATE_HEADERS, ETag: { description: "Send it back as If-None-Match to get a 304 when nothing changed.", schema: { type: "string" } } };
+const GET_HEADERS = { ...RATE_HEADERS, ETag: { description: "Send it back as If-None-Match to get a 304 when nothing changed, or as If-Match on a write so it only goes ahead if nothing changed.", schema: { type: "string" } } };
+/** a write's answer: the new state's ETag, for the next If-Match */
+const WRITE_HEADERS = { ...RATE_HEADERS, ETag: { description: "The ETag of the new state (the same as GET's): send it as If-Match on your next write.", schema: { type: "string" } } };
 
-type ErrStatus = 400 | 401 | 403 | 404 | 409 | 413 | 415 | 422 | 429 | 500;
+type ErrStatus = 400 | 401 | 403 | 404 | 409 | 412 | 413 | 415 | 422 | 429 | 500;
 const ERRORS: Record<ErrStatus, { code: string; description: string; message: string; details?: unknown }> = {
   400: { code: "bad_request", description: "A query parameter or the body isn't usable.", message: "Some query parameters need attention.", details: { fields: { due_before: "Use a date like 2026-10-31." } } },
   401: { code: "unauthorized", description: "No key, or the key isn't valid (revoked, expired, or its owner can't use Kanbo).", message: "This API key isn't valid. It may have been revoked or have expired." },
   403: { code: "forbidden", description: "The key can't do this: a read-only key writing, a team key outside its workspace, or the person isn't allowed.", message: "This key is read-only. Make a read & write key (kanbo_sk_…) in Settings › Developers to change data." },
   404: { code: "not_found", description: "It doesn't exist, or the key's owner can't see it.", message: "Task not found." },
-  409: { code: "idempotency_in_progress", description: "A request with the same Idempotency-Key is still running.", message: "A request with this Idempotency-Key is still running. Try again in a moment." },
+  409: { code: "idempotency_in_progress", description: "A request with the same Idempotency-Key is still running (`idempotency_in_progress`: retry after Retry-After). `conflict` with `details.idempotency: \"applied\"`: it was carried out but its answer was lost, so look the result up instead of sending it again.", message: "A request with this Idempotency-Key is still running. Try again in a moment." },
+  412: { code: "precondition_failed", description: "If-Match: it has changed since you read it. GET it again, merge your change and retry with the new ETag.", message: "This task has changed since you read it (If-Match doesn't match its ETag). GET it again, merge your change and retry with the new ETag." },
   413: { code: "payload_too_large", description: "The body is over 64 KB.", message: "The body is over 64 KB." },
   415: { code: "unsupported_media_type", description: "The body isn't sent as application/json.", message: "Send JSON with the header Content-Type: application/json." },
   422: { code: "validation_failed", description: "A field isn't valid; `details.fields` says which and why.", message: "Some fields need attention.", details: { fields: { dueDate: "Use a date like 2026-10-31, or null." } } },
@@ -144,6 +147,7 @@ const P = {
   id: (what: string) => ({ name: "id", in: "path" as const, required: true, description: `The ${what}'s id.`, schema: uuid(), example: what === "project" ? PROJECT : TASK }),
   limit: { name: "limit", in: "query" as const, description: "Page size, 1–100 (default 50).", schema: { type: "integer", minimum: 1, maximum: 100, default: 50 }, example: 50 },
   cursor: { name: "cursor", in: "query" as const, description: "The nextCursor from the previous page (opaque; only valid with the same filters).", schema: { type: "string" } },
+  ifMatch: (what: string) => ({ name: "If-Match", in: "header" as const, description: `Optional. The ETag from GET /${what}s/{id} (or from your last write's answer): the write only goes ahead if the ${what} hasn't changed since, else 412. Use it when syncing so you never overwrite a change made in Kanbo.`, schema: { type: "string" }, example: 'W/"3f9a1c2b7d3e8a60"' }),
   idempotency: { name: "Idempotency-Key", in: "header" as const, description: "Any unique string (a UUID is ideal). Retrying with the same key within 24 hours returns the first answer instead of doing it twice.", schema: { type: "string", maxLength: 255 }, example: "0d6f3f2e-9b8a-4c1d-8e7f-6a5b4c3d2e1f" },
   workspace: (desc: string) => ({ name: "workspace", in: "query" as const, description: desc, schema: { type: "string" }, example: WS }),
   includeArchived: { name: "include_archived", in: "query" as const, description: "Include archived items (default false).", schema: { type: "boolean", default: false } },
@@ -201,8 +205,8 @@ const SCHEMAS: Record<string, unknown> = {
       createdAt: nullable("string", { format: "date-time" }),
       updatedAt: nullable("string", { format: "date-time", description: "Moves on every real change; use updated_since to sync." }),
       url: nullable("string", { format: "uri", description: "Opens the task in Kanbo." }),
-      subtaskIds: { type: "array", items: uuid(), description: "GET /tasks/{id} only." },
-      dependencyIds: { type: "array", items: uuid(), description: "GET /tasks/{id} only: tasks this one waits for." },
+      subtaskIds: { type: "array", items: uuid(), description: "One task's answers only (GET /tasks/{id} and writes to it), not lists." },
+      dependencyIds: { type: "array", items: uuid(), description: "One task's answers only: tasks this one waits for." },
     },
   },
   TaskCreate: {
@@ -346,7 +350,7 @@ const PATHS: OpenApiDoc["paths"] = {
       description: "You become its owner. In a team workspace you need to be an owner, admin or member (guests can't).",
       parameters: [P.idempotency],
       requestBody: { required: true, content: json(ref("ProjectCreate"), { name: "Q4 launch", workspaceId: WS, emoji: "🚀", status: "on_track" }) },
-      responses: { 201: ok("The new project (Location points at it).", ref("Project"), EX_PROJECT, { ...RATE_HEADERS, Location: { schema: { type: "string" } } }), ...errs(...WRITE_ERRORS, 404, 409) },
+      responses: { 201: ok("The new project (Location points at it).", ref("Project"), EX_PROJECT, { ...WRITE_HEADERS, Location: { schema: { type: "string" } } }), ...errs(...WRITE_ERRORS, 404, 409) },
     },
   },
   "/projects/{id}": {
@@ -357,10 +361,10 @@ const PATHS: OpenApiDoc["paths"] = {
     },
     patch: {
       operationId: "updateProject", summary: "Update a project", tags: ["Projects"], "x-kanbo-access": "write",
-      description: "Rename it, change its look, description or status, or archive / restore it.",
-      parameters: [P.id("project")],
+      description: "Rename it, change its look, description or status, or archive / restore it. Send If-Match with its ETag to make sure nobody changed it since you read it.",
+      parameters: [P.id("project"), P.ifMatch("project")],
       requestBody: { required: true, content: json(ref("ProjectUpdate"), { status: "at_risk" }) },
-      responses: { 200: ok("The updated project.", ref("Project"), { ...EX_PROJECT, status: "at_risk" }, RATE_HEADERS), ...errs(...WRITE_ERRORS, 404) },
+      responses: { 200: ok("The updated project.", ref("Project"), { ...EX_PROJECT, status: "at_risk" }, WRITE_HEADERS), ...errs(...WRITE_ERRORS, 404, 412) },
     },
   },
   "/sections": {
@@ -400,10 +404,10 @@ const PATHS: OpenApiDoc["paths"] = {
     },
     post: {
       operationId: "createTask", summary: "Create a task", tags: ["Tasks"], "x-kanbo-access": "write",
-      description: "A task lives in its project's workspace. Without a project it goes in your Personal list (personal keys). The assignee must be a member of that workspace. Send an Idempotency-Key so a retry never makes it twice.",
+      description: "A task lives in its project's workspace. Without a project it goes in your Personal list (personal keys). The assignee must be a member of that workspace. The project's \"When a task is created\" automations run, as in the app (they can set the priority, assignee or section and add tags). Send an Idempotency-Key so a retry never makes it twice.",
       parameters: [P.idempotency],
       requestBody: { required: true, content: json(ref("TaskCreate"), { title: "Write the launch blog post", projectId: PROJECT, assigneeId: PRIYA, dueDate: "2026-10-16", priority: "high", tags: ["writing", "Launch"] }) },
-      responses: { 201: ok("The new task (Location points at it).", ref("Task"), { ...EX_TASK, status: "todo", loggedHours: null }, { ...RATE_HEADERS, Location: { schema: { type: "string" } } }), ...errs(...WRITE_ERRORS, 409) },
+      responses: { 201: ok("The new task, as GET shows it (Location points at it).", ref("Task"), { ...EX_TASK, status: "todo", loggedHours: null, subtaskIds: [], dependencyIds: [] }, { ...WRITE_HEADERS, Location: { schema: { type: "string" } } }), ...errs(...WRITE_ERRORS, 409) },
     },
   },
   "/tasks/{id}": {
@@ -415,24 +419,24 @@ const PATHS: OpenApiDoc["paths"] = {
     },
     patch: {
       operationId: "updateTask", summary: "Update a task", tags: ["Tasks"], "x-kanbo-access": "write",
-      description: "Only the fields you send change. Guests can't edit tasks.",
-      parameters: [P.id("task")],
+      description: "Only the fields you send change. Guests can't edit tasks. A status change runs the project's \"status changed\" automations (and \"task completed\" ones when it becomes done), as in the app. Moving a task to another workspace takes its sub-tasks along; only the people who made all of them, or the workspace's owners and admins, may. Send If-Match with the task's ETag so an edit made in Kanbo since you read it is never overwritten (412 instead).",
+      parameters: [P.id("task"), P.ifMatch("task")],
       requestBody: { required: true, content: json(ref("TaskUpdate"), { status: "review", assigneeId: "me", dueDate: "2026-10-17" }) },
-      responses: { 200: ok("The updated task.", ref("Task"), { ...EX_TASK, status: "review", assigneeId: ME, dueDate: "2026-10-17" }, RATE_HEADERS), ...errs(...WRITE_ERRORS, 404) },
+      responses: { 200: ok("The updated task, as GET shows it.", ref("Task"), { ...EX_TASK_FULL, status: "review", assigneeId: ME, dueDate: "2026-10-17" }, WRITE_HEADERS), ...errs(...WRITE_ERRORS, 404, 412) },
     },
     delete: {
       operationId: "deleteTask", summary: "Archive or delete a task", tags: ["Tasks"], "x-kanbo-access": "write",
       description: "Archives the task and its sub-tasks (restore with PATCH {\"archived\": false}). With hard=true it's deleted for good, with its sub-tasks and comments: workspace owners and admins only (or you, for your personal tasks).",
-      parameters: [P.id("task"), { name: "hard", in: "query", description: "true deletes for good.", schema: { type: "boolean", default: false } }],
-      responses: { 204: { description: "Done. No body.", headers: RATE_HEADERS }, ...errs(400, 401, 403, 404, 429, 500) },
+      parameters: [P.id("task"), { name: "hard", in: "query", description: "true deletes for good.", schema: { type: "boolean", default: false } }, P.ifMatch("task")],
+      responses: { 204: { description: "Done. No body.", headers: RATE_HEADERS }, ...errs(400, 401, 403, 404, 412, 429, 500) },
     },
   },
   "/tasks/{id}/complete": {
     post: {
       operationId: "completeTask", summary: "Mark a task done", tags: ["Tasks"], "x-kanbo-access": "write",
-      description: "Sets status to done and completedAt to today. Calling it again changes nothing. (Recurring tasks: the next occurrence is created when someone completes it in the Kanbo app.)",
-      parameters: [P.id("task")],
-      responses: { 200: ok("The completed task.", ref("Task"), { ...EX_TASK, status: "done", completedAt: "2026-10-06" }, RATE_HEADERS), ...errs(401, 403, 404, 429, 500) },
+      description: "Sets status to done and completedAt to today, and runs the project's \"status changed\" and \"task completed\" automations, as in the app. Calling it again changes nothing. (Recurring tasks: the next occurrence is created when someone completes it in the Kanbo app.)",
+      parameters: [P.id("task"), P.ifMatch("task")],
+      responses: { 200: ok("The completed task, as GET shows it.", ref("Task"), { ...EX_TASK_FULL, status: "done", completedAt: "2026-10-06" }, WRITE_HEADERS), ...errs(401, 403, 404, 412, 429, 500) },
     },
   },
   "/tasks/{id}/comments": {
@@ -475,6 +479,10 @@ const INTRO = [
   "**Retries.** Send an `Idempotency-Key` header on POST requests: the same key within 24 hours returns the first answer (with `Idempotent-Replayed: true`) instead of doing it again.",
   "",
   "**Caching.** GET answers carry an `ETag`; send it back as `If-None-Match` and an unchanged answer is a bodyless 304.",
+  "",
+  "**Safe edits.** Writes to one task or project answer with its new `ETag`. Send the `ETag` you last saw as `If-Match` on a write and it only goes ahead if nothing changed since; otherwise you get `412 precondition_failed`, so a two-way sync never overwrites an edit made in Kanbo.",
+  "",
+  "**Automations.** A project's automations (\"When a task is created\", \"status changed\", \"task completed\") run for API changes too, exactly as in the app. A value a rule names that the task can't take (someone outside the workspace, another project's section) is skipped.",
   "",
   "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks.",
 ].join("\n");

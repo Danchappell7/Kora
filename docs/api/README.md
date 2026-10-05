@@ -113,8 +113,10 @@ Field names are camelCase; dates are `YYYY-MM-DD`, times are ISO 8601 UTC
 (`2026-10-05T09:30:00.000Z`); a missing value is `null`, never left out.
 Every resource has an `object` field (`"task"`, `"project"`, …) and a `url`
 that opens it in Kanbo. Tasks in someone's Personal list have
-`workspaceId: null` and `projectId: "p-personal"`. Webhook payloads use exactly
-the same shapes.
+`workspaceId: null` and `projectId: "p-personal"`. A write to one task answers
+with the task exactly as `GET /tasks/{id}` shows it (with `subtaskIds` and
+`dependencyIds`) and its new `ETag`. Webhook payloads use the same shapes
+(without `subtaskIds` / `dependencyIds`).
 
 ### Filtering tasks
 
@@ -163,6 +165,10 @@ one transaction share a time) and skip ids you already have. Deleted tasks
 don't appear in lists: use the `task.deleted` webhook to hear about them, or
 `include_archived=true` to see archived ones.
 
+When you write back, send the task's last `ETag` as `If-Match` (see
+[Safe edits](#safe-edits-if-match)) so you never overwrite something someone
+changed in Kanbo after you read it.
+
 ## Errors
 
 ```json
@@ -177,7 +183,8 @@ don't appear in lists: use the `task.deleted` webhook to hear about them, or
 | 403 | `forbidden` | Read-only key writing; team key outside its workspace; not allowed (e.g. a guest editing) |
 | 404 | `not_found` | Doesn't exist, or you can't see it |
 | 405 | `method_not_allowed` | Wrong method (see the `Allow` header) |
-| 409 | `idempotency_in_progress` / `conflict` | The first request with this Idempotency-Key is still running |
+| 409 | `idempotency_in_progress` / `conflict` | The first request with this Idempotency-Key is still running; or (`conflict`, `details.idempotency: "applied"`) it was carried out but its answer was lost |
+| 412 | `precondition_failed` | `If-Match` didn't match: it changed since you read it |
 | 413 | `payload_too_large` | Body over 64 KB |
 | 415 | `unsupported_media_type` | Send `Content-Type: application/json` |
 | 422 | `validation_failed` / `idempotency_mismatch` | A field isn't valid (`details.fields`); an Idempotency-Key reused for a different request |
@@ -206,13 +213,44 @@ Send `Idempotency-Key: <any unique string, a UUID is ideal>` on a POST. If the
 same key comes again within 24 hours (a retry after a timeout, say), Kanbo
 returns the first answer again, with `Idempotent-Replayed: true`, instead of
 creating a second task. The same key with a different body is a `422
-idempotency_mismatch`; while the first is still running, `409`. Keys are per
-API key. A failure on Kanbo's side (5xx) isn't remembered, so the retry runs.
+idempotency_mismatch`; while the first is still running, `409
+idempotency_in_progress` (wait for `Retry-After`). Keys are per API key.
+
+The work and the "this key is done" mark are saved in one transaction, so a
+request that went through is **never** run twice, whatever fails afterwards:
+
+- A failure on Kanbo's side (5xx) where nothing was saved isn't remembered,
+  so the retry runs.
+- In the rare case the work was saved but Kanbo couldn't keep its answer, a
+  retry gets `409 conflict` with `details.idempotency: "applied"`: look the
+  result up (for example `GET /tasks?updated_since=…`) instead of sending it
+  with a new key.
+- A request that never finished (its server stopped) holds the key for 10
+  minutes; after that the retry runs.
 
 ## Caching
 
 GET answers carry a weak `ETag`. Send it back as `If-None-Match` and you get a
 bodyless `304 Not Modified` if nothing changed.
+
+## Safe edits (If-Match)
+
+`PATCH /tasks/{id}`, `POST /tasks/{id}/complete`, `DELETE /tasks/{id}` and
+`PATCH /projects/{id}` take an optional `If-Match` header: the `ETag` from
+`GET`, or from your last write's answer (writes answer with the new one). The
+write only goes ahead if the task or project hasn't changed since; otherwise
+it's `412 precondition_failed` and nothing is written. GET it again, merge, and
+retry with the new `ETag`. `If-Match: *` just means "it must exist".
+
+```sh
+ETAG=$(curl -sI -H "Authorization: Bearer $KANBO_API_KEY" "$BASE/tasks/5e6f7a8b-…" | grep -i '^etag:' | cut -d' ' -f2- | tr -d '\r')
+curl -X PATCH "$BASE/tasks/5e6f7a8b-…" -H "Authorization: Bearer $KANBO_API_KEY" \
+  -H "Content-Type: application/json" -H "If-Match: $ETAG" -d '{"tags": ["design", "Launch"]}'
+```
+
+Any change to what `GET` shows counts (a new sub-task or comment count, a
+renamed tag), so a 412 now and then is normal for a busy task. Without
+`If-Match` a write simply goes ahead, as before.
 
 ## Webhooks
 
@@ -223,11 +261,21 @@ signature checks and retries.
 
 ## Good to know
 
+- A project's automations run for API changes exactly as in the app: "When a
+  task is created" rules on `POST /tasks` (sub-tasks too), "status changed"
+  rules whenever a `PATCH` changes the status, and "task completed" rules when
+  it becomes done (also `POST /tasks/{id}/complete`). Rules win over values in
+  the same request, as in the app. A value a rule names that the task can't
+  take (someone outside the workspace, another project's section, a tag from
+  elsewhere, an unknown tag name) is skipped, never guessed.
 - Completing a recurring task through the API marks it done; the next
   occurrence is created when someone completes it in the Kanbo app.
 - Moving a task to a project in another workspace takes its sub-tasks with
   it, clears the section and hands it to you if its assignee isn't in the new
-  workspace — the same as the app.
+  workspace, as the app does. Because the task, its sub-tasks and their
+  comments leave the workspace, only the people who made all of them, or that
+  workspace's owners and admins, may move it out (`403` otherwise). Moving
+  between projects of the same workspace is open to every member.
 - `tags` take tag ids, built-in tags (`design`, `eng`, `research`, `writing`,
   `ops`, `bug`) or labels; a new label is made in the task's workspace.
 - A comment posted through the API reaches the task's people (its creator,
@@ -267,4 +315,4 @@ id as `auth.uid()`), so row-level security decides exactly as it does in the
 app; a team key's transaction is also pinned to its workspace. The service
 role is used only to check keys, count requests and store idempotent answers.
 Tested with vitest and a PGlite replay of every migration answering real
-requests (154 attack and legit cases).
+requests (198 attack and legit cases).

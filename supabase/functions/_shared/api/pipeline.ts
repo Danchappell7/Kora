@@ -10,9 +10,13 @@
 //   6. POST / PATCH body: JSON object, ≤ 64 KB → 415 / 413 / 400
 //   7. POST + Idempotency-Key: replay the first answer for 24 hours
 //      (api_idempotency_begin / _finish); a different request with the same
-//      key → 422; the first still running → 409
+//      key → 422; the first still running → 409. The handler's transaction
+//      marks the key committed as its last statement (api_idempotency_commit,
+//      as the user), so work that committed is never run twice, even if its
+//      answer can't be stored: the retry then gets 409 "applied"
 //   8. the handler, which reads and writes ONLY as the key's user
-//      (core.ts asUser → db.withUser: RLS + the key's workspace scope)
+//      (core.ts asUser → db.withUser: RLS + the key's workspace scope);
+//      If-Match on writes is checked inside its transaction (412)
 //   9. errors → { error: { code, message, status, requestId, details? } };
 //      Postgres errors are mapped, never echoed; 5xx are logged with the id
 //  10. GET 200 → weak ETag; If-None-Match → 304
@@ -22,7 +26,7 @@
 // (supabase/functions/api/index.ts) only wires the database and env in.
 // ============================================================
 import { authenticate, hitRate, methodAllowed, rateHeaders, sha256Hex, type VerifyKey } from "./auth.ts";
-import { ApiFail, pgFailure } from "./core.ts";
+import { ApiFail, etagMatches, etagOfText, pgFailure } from "./core.ts";
 import { buildOpenApi } from "./openapi.ts";
 import { apiError, json, matchRoute, newRequestId, stripBase, type Method, type Route, type RouteContext } from "./router.ts";
 import { coreRoutes } from "./routes.ts";
@@ -44,7 +48,14 @@ export interface ApiDeps {
   routes?: readonly Route[];
   rate?: { windowSec?: number; max?: number };
   log?: (level: "error" | "warn", message: string, extra?: Record<string, unknown>) => void;
+  /** waits between attempts to store an idempotent answer (tests pass a no-op) */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+export { etagMatches };
+
+/** Pauses before each retry of api_idempotency_finish (3 tries in all, ~0.6 s). */
+const FINISH_BACKOFF_MS = [100, 500];
 
 const IDEMPOTENCY_KEY_RE = /^[\x21-\x7E](?:[\x20-\x7E]{0,253}[\x21-\x7E])?$/;
 const NO_CORS = "The Kanbo API doesn't answer browsers' cross-origin checks. Call it from a server or a script: an API key in a web page can be read by anyone.";
@@ -82,12 +93,6 @@ async function readCapped(req: Request, cap: number): Promise<string | null> {
   return new TextDecoder("utf-8", { fatal: true }).decode(all);
 }
 
-/** Does an If-None-Match header match this ETag (weak comparison)? */
-export function etagMatches(header: string, etag: string): boolean {
-  const bare = (t: string) => t.trim().replace(/^W\//, "");
-  return header.split(",").some((t) => t.trim() === "*" || bare(t) === bare(etag));
-}
-
 /** Same response, plus the request id and any extra headers (rate limits). */
 function decorate(res: Response, requestId: string, extra: Record<string, string>, stripBody = false): Response {
   const headers = new Headers(res.headers);
@@ -122,7 +127,7 @@ function hello(deps: ApiDeps) {
 async function withEtag(req: Request, res: Response, cacheControl: string): Promise<Response> {
   if (res.status !== 200) return res;
   const text = await res.text();
-  const etag = `W/"${(await sha256Hex(text)).slice(0, 16)}"`;
+  const etag = await etagOfText(text);
   const headers = new Headers(res.headers);
   headers.set("ETag", etag);
   headers.set("Cache-Control", cacheControl);
@@ -259,10 +264,23 @@ export async function handleApiRequest(req: Request, deps: ApiDeps): Promise<Res
       }
       if (state === "mismatch") return fail(422, "idempotency_mismatch", "This Idempotency-Key was already used for a different request. Use a new key for a new request.");
       if (state === "in_progress") return fail(409, "idempotency_in_progress", "A request with this Idempotency-Key is still running. Try again in a moment.", { headers: { "Retry-After": "2" } });
+      if (state === "applied") {
+        return fail(409, "conflict", "The request with this Idempotency-Key was carried out, but Kanbo couldn't keep its answer. Don't send it again: look the result up instead (for example GET /tasks?updated_since=…).",
+          { details: { idempotency: "applied" } });
+      }
       if (state !== "new") {
         log("error", `[api] ${requestId} idempotency answered ${String(state)}`);
         return fail(503, "internal", UNREACHABLE, { headers: { "Retry-After": "5" } });
       }
+      // the handler's writes and "this key's work is done" commit together
+      const keyId = principal.keyId, k = idemKey;
+      ctx.db = {
+        withUser: (scope, fn) => deps.db.withUser(scope, async (tx) => {
+          const out = await fn(tx);
+          if (!scope.readOnly) await tx.query(`select public.api_idempotency_commit($1::uuid, $2)`, [keyId, k]);
+          return out;
+        }),
+      };
     }
 
     // ---- the handler ----
@@ -279,11 +297,21 @@ export async function handleApiRequest(req: Request, deps: ApiDeps): Promise<Res
         const text = res.status === 204 ? "" : await res.clone().text();
         stored = text ? JSON.parse(text) : null;
       } catch { stored = null; }
-      try {
-        await deps.service.query(`select public.api_idempotency_finish($1::uuid, $2, $3::int, $4::jsonb)`,
-          [principal.keyId, idemKey, res.status, JSON.stringify({ body: stored, location: res.headers.get("location") })]);
-      } catch (e) {
-        log("warn", `[api] ${requestId} couldn't store the idempotent answer`, errInfo(e));
+      // a few tries: an answer that isn't stored leaves the key "running" (409),
+      // then "applied" (409) — never run twice, but the caller can't see the result
+      const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      const args = [principal.keyId, idemKey, res.status, JSON.stringify({ body: stored, location: res.headers.get("location") })];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await deps.service.query(`select public.api_idempotency_finish($1::uuid, $2, $3::int, $4::jsonb)`, args);
+          break;
+        } catch (e) {
+          if (attempt >= FINISH_BACKOFF_MS.length) {
+            log("error", `[api] ${requestId} couldn't store the idempotent answer`, errInfo(e));
+            break;
+          }
+          await sleep(FINISH_BACKOFF_MS[attempt]);
+        }
       }
     }
 

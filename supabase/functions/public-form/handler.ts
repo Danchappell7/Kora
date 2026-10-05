@@ -49,6 +49,7 @@
 // Anything else is skipped, never guessed.
 // ============================================================
 import { KEY_PREFIX, type Db } from "../_shared/limits.ts";
+import { planRules, type RulePlan, type RuleRow } from "../_shared/automationRules.ts";
 import {
   buildPublicSchema, checkSubmission, FAILURE_MESSAGES, FAILURE_STATUS, isHoneypotHit, isPublicToken,
   MAX_BODY_BYTES, PUBLIC_PRIORITIES, publicFieldsOf, RATE_LIMIT_MESSAGES, requestDescription, requestLine, taskReference,
@@ -210,28 +211,10 @@ async function findTarget(db: Db, token: string, log?: PublicFormDeps["log"]): P
 
 /* ---------------- the project's rules ---------------- */
 
-export interface RuleRow { id?: string; user_id: string; workspace_id: string | null; project_id: string; trigger?: string | null; actions: unknown; enabled?: boolean | null }
-/** What the rules ask for, unchecked: later rules win (priority, assignee,
- *  section), tags add up, each remembering whose rule asked for it. */
-export interface RulePlan { priority?: string; assigneeId?: string; sectionId?: string; tags: { value: string; author: string }[] }
-
-/** Fold rules (oldest first) the way the app's applyRules does at creation. */
-export function planRules(rules: readonly RuleRow[]): RulePlan {
-  const plan: RulePlan = { tags: [] };
-  for (const r of rules) {
-    if (r.enabled === false || (r.trigger || "task_created") !== "task_created" || !Array.isArray(r.actions)) continue;
-    for (const a of r.actions as unknown[]) {
-      if (!a || typeof a !== "object") continue;
-      const { type, value } = a as { type?: unknown; value?: unknown };
-      if (typeof value !== "string" || !value) continue;
-      if (type === "set_priority") plan.priority = value;
-      else if (type === "set_assignee") plan.assigneeId = value;
-      else if (type === "set_section") plan.sectionId = value;
-      else if (type === "add_tag") plan.tags.push({ value, author: r.user_id });
-    }
-  }
-  return plan;
-}
+// RuleRow / RulePlan / planRules live in ../_shared/automationRules.ts (the
+// public API runs the same rules); re-exported here for this file's callers.
+export { planRules };
+export type { RulePlan, RuleRow };
 
 /** The form's project's rules, oldest first: on a team form the team's, on a
  *  personal form only its creator's own (automation_rules.project_id is free

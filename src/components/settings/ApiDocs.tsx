@@ -228,6 +228,9 @@ export function ApiDocs({ baseUrl, keyHint, onClose }: ApiDocsProps) {
         <Guide title="Retries and caching">
           <p>Send an <code>Idempotency-Key</code> header on POST requests: retrying with the same key within 24 hours returns the first answer instead of doing it twice. GET answers carry an <code>ETag</code>; send it back as <code>If-None-Match</code> for a 304 when nothing changed.</p>
         </Guide>
+        <Guide title="Safe edits and automations">
+          <p>Send the <code>ETag</code> you last saw as <code>If-Match</code> when you change a task or project: if someone changed it in Kanbo since, you get a 412 and nothing is overwritten. A project's automations run for API changes too, as in the app.</p>
+        </Guide>
         <Guide title="Webhooks">
           <p>To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Every delivery is signed so you can check it came from Kanbo.</p>
         </Guide>

@@ -8,10 +8,11 @@
 //                for GETs and read keys) — the ONLY way handlers touch data
 //   ok / list    JSON answers with the request id
 //   Sql          a tiny parameter builder ($1, $2 … with explicit casts)
+//   etagFor      the weak ETag of a JSON answer (GET's ETag, If-Match checks)
 //
 // Pure module (no Deno globals): pipeline.test.ts / the PGlite harness.
 // ============================================================
-import { scopeFor } from "./auth.ts";
+import { scopeFor, sha256Hex } from "./auth.ts";
 import { json, type RouteContext } from "./router.ts";
 import type { ApiErrorCode, ApiList, ApiPrincipal, Tx } from "./types.ts";
 import type { FieldErrors } from "./validate.ts";
@@ -66,6 +67,26 @@ export function pgFailure(e: unknown): ApiFail | null {
     case "timeout": return new ApiFail(503, "internal", "That took too long. Narrow the request (filters, a smaller limit) and try again.", undefined, { "Retry-After": "5" });
     default: return null;
   }
+}
+
+/** The weak ETag of an answer's exact text: W/"<first 16 hex of its SHA-256>". */
+export async function etagOfText(text: string): Promise<string> {
+  return `W/"${(await sha256Hex(text)).slice(0, 16)}"`;
+}
+
+/** The ETag GET gives this body (json() sends JSON.stringify(body)). */
+export const etagFor = (body: unknown): Promise<string> => etagOfText(JSON.stringify(body));
+
+/** Does an If-None-Match / If-Match header match this ETag ("*", or any listed tag, weak comparison)? */
+export function etagMatches(header: string, etag: string): boolean {
+  const bare = (t: string) => t.trim().replace(/^W\//, "");
+  return header.split(",").some((t) => t.trim() === "*" || bare(t) === bare(etag));
+}
+
+/** If-Match on a write: the caller's copy (its ETag from GET) must still be current. */
+export function preconditionFailed(what: string): ApiFail {
+  return new ApiFail(412, "precondition_failed",
+    `This ${what} has changed since you read it (If-Match doesn't match its ETag). GET it again, merge your change and retry with the new ETag.`);
 }
 
 /** Run work as the key's user: RLS, the key's workspace scope, read-only for GETs and read keys. */

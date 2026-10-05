@@ -12,15 +12,22 @@
 // 404 for things they can't see, 403 for things they can see but not
 // change, 422 naming the field. RLS stays the last word either way.
 //
+// Like the app: project automation rules run on create / status change /
+// completion (automationRules.ts, each value checked), and moving a task
+// out of a workspace is for its makers or that workspace's owners and
+// admins. If-Match on a write is checked with the row locked (412).
+//
 // Pure module (no Deno globals): exercised by the PGlite harness
 // (scratchpad/pgtest-a1) against the real migrations.
 // ============================================================
+import { planRules, type RuleRow, type RuleTrigger } from "../automationRules.ts";
 import {
-  serialiseComment, serialiseMember, serialiseProject, serialiseSection, serialiseTask, serialiseWorkspace,
+  API_PRIORITIES, serialiseComment, serialiseMember, serialiseProject, serialiseSection, serialiseTask, serialiseWorkspace,
   type ApiMe,
 } from "./serialise.ts";
 import {
-  ApiFail, asUser, assertInScope, badQuery, BUILTIN_TAGS, forbidden, invalid, list, notFound, ok, OUTSIDE_WORKSPACE, Sql,
+  ApiFail, asUser, assertInScope, badQuery, BUILTIN_TAGS, etagFor, etagMatches, forbidden, invalid, list, notFound, ok,
+  OUTSIDE_WORKSPACE, preconditionFailed, Sql,
 } from "./core.ts";
 import {
   checkCommentCreate, checkProjectCreate, checkProjectPatch, checkSectionCreate, checkTaskCreate, checkTaskPatch,
@@ -32,6 +39,8 @@ import type { Tx } from "./types.ts";
 
 type Row = Record<string, unknown>;
 const s = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
+/** a text[] column as strings ([] when empty) */
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
 /* ------------------------------------------------------------ SQL pieces */
 
@@ -52,6 +61,8 @@ const COMMENT_COLS = `c.id::text as id, c.task_id::text as task_id, c.parent_id:
 
 const WRITER_ROLES = ["owner", "admin", "member"];
 const GUEST_READ_ONLY = "Guests can view this workspace but can't add or change things in it.";
+/** a built-in tag id ("design", …) — never an inherited key such as "constructor" */
+const isBuiltinTag = (id: string) => Object.prototype.hasOwnProperty.call(BUILTIN_TAGS, id);
 
 /* ------------------------------------------------------------ shared lookups */
 
@@ -92,7 +103,7 @@ async function tagMap(tx: Tx, rows: Row[]): Promise<Map<string, { label: string 
   const ids = new Set<string>();
   for (const r of rows) for (const t of (Array.isArray(r.tags) ? r.tags : [])) ids.add(String(t));
   const map = new Map<string, { label: string | null; color: string | null }>();
-  for (const id of ids) if (BUILTIN_TAGS[id]) map.set(id, BUILTIN_TAGS[id]);
+  for (const id of ids) if (isBuiltinTag(id)) map.set(id, BUILTIN_TAGS[id]);
   const uuids = [...ids].filter(isUuid);
   if (uuids.length) {
     const rs = await tx.query<{ id: string; label: string; color: string }>(
@@ -142,7 +153,7 @@ async function resolveTags(tx: Tx, items: string[], ws: string | null, me: strin
   const scope = `g.workspace_id is not distinct from $2::uuid and (g.workspace_id is not null or g.user_id = $3::uuid)`;
   for (const item of items) {
     let id: string | null = null;
-    if (BUILTIN_TAGS[item]) id = item;
+    if (isBuiltinTag(item)) id = item;
     else if (UUID_RE.test(item)) {
       const rs = await tx.query<{ id: string }>(`select g.id::text as id from public.tags g where g.id = $1::uuid and ${scope}`, [item.toLowerCase(), ws, me]);
       if (!rs[0]) throw invalid({ tags: `There's no tag ${item} in this ${ws ? "workspace" : "Personal list"}.` });
@@ -165,6 +176,69 @@ async function resolveTags(tx: Tx, items: string[], ws: string | null, me: strin
   }
   return out;
 }
+
+/* ------------------------------------------------------------ automation rules */
+
+/** What a project's rules do to a task, every value already checked. */
+interface RuleEffect { priority?: string; assigneeId?: string; sectionId?: string; addTags: string[] }
+
+/** Rule tag values → tag ids a task in `ws` may carry: built-in ids, this workspace's tags (your own
+ *  personal ones for a personal task) by id, or a label exactly one of those has. Never makes a tag. */
+async function ruleTags(tx: Tx, values: string[], ws: string | null, me: string): Promise<string[]> {
+  const out: string[] = [];
+  const scope = `g.workspace_id is not distinct from $1::uuid and (g.workspace_id is not null or g.user_id = $2::uuid)`;
+  for (const value of values.slice(0, 50)) {
+    let id: string | null = null;
+    if (isBuiltinTag(value)) id = value;
+    else if (UUID_RE.test(value)) {
+      const rs = await tx.query<{ id: string }>(`select g.id::text as id from public.tags g where g.id = $3::uuid and ${scope}`, [ws, me, value.toLowerCase()]);
+      id = rs[0]?.id ?? null;
+    } else {
+      // older rules stored the tag's name (the app's resolveTagId): only an unambiguous one counts
+      const want = value.trim().toLowerCase();
+      const rs = await tx.query<{ id: string }>(
+        `select g.id::text as id from public.tags g where lower(btrim(g.label)) = $3 and ${scope} limit 2`, [ws, me, want]);
+      const hits = [...Object.entries(BUILTIN_TAGS).filter(([, t]) => t.label.toLowerCase() === want).map(([k]) => k), ...rs.map((r) => r.id)];
+      if (hits.length === 1) id = hits[0];
+    }
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The project's enabled rules for these triggers, as the key's user sees them (RLS; a team key only its
+ * workspace's), oldest first: the rules of the task's own workspace, or your own for a personal task
+ * (project ids are free text, so a rule elsewhere naming this id never counts). Folded the app's way
+ * (later rules win, tags add up), then each value checked: a priority Kanbo knows, an assignee who can
+ * be on the task, a section of this project, a tag the task may carry. Anything else is skipped.
+ */
+async function ruleEffect(tx: Tx, triggers: RuleTrigger[], project: string, ws: string | null, me: string): Promise<RuleEffect> {
+  const out: RuleEffect = { addTags: [] };
+  const rules = await tx.query<RuleRow>(
+    `select r.user_id::text as user_id, r.workspace_id::text as workspace_id, r.project_id, r.trigger, r.actions, r.enabled
+       from public.automation_rules r
+      where r.project_id = $1 and r.enabled and r.trigger in (select jsonb_array_elements_text($2::jsonb))
+        and r.workspace_id is not distinct from $3::uuid and (r.workspace_id is not null or r.user_id = $4::uuid)
+      order by r.created_at, r.id limit 50`, [project, JSON.stringify(triggers), ws, me]);
+  if (!rules.length) return out;
+  const plan = planRules(rules, triggers);
+  if (plan.priority && (API_PRIORITIES as readonly string[]).includes(plan.priority)) out.priority = plan.priority;
+  if (plan.assigneeId) {
+    const who = plan.assigneeId.toLowerCase();
+    if (isUuid(who) && await canBeOnTask(tx, ws, who, me)) out.assigneeId = who;
+  }
+  if (plan.sectionId && isUuid(plan.sectionId)) {
+    const sec = await tx.query<{ id: string }>(`select s.id::text as id from public.sections s where s.id = $1::uuid and s.project_id = $2`,
+      [plan.sectionId.toLowerCase(), project]);
+    if (sec[0]) out.sectionId = sec[0].id;
+  }
+  out.addTags = await ruleTags(tx, plan.tags.map((t) => t.value), ws, me);
+  return out;
+}
+
+/** `base` plus the rules' tags, in order, once each. */
+const withTags = (base: string[], add: string[]) => [...new Set([...base, ...add])];
 
 /* ------------------------------------------------------------ pagination */
 
@@ -292,7 +366,8 @@ export async function createProject(ctx: RouteContext): Promise<Response> {
     return loadProject(tx, made[0].id);
   });
   if (!row) throw new ApiFail(500, "internal", "The project was made but couldn't be read back.");
-  return ok(ctx, serialiseProject(row, { appUrl: ctx.appUrl }), 201, { Location: `${ctx.apiBase}/projects/${row.id}` });
+  const out = serialiseProject(row, { appUrl: ctx.appUrl });
+  return ok(ctx, out, 201, { Location: `${ctx.apiBase}/projects/${row.id}`, ETag: await etagFor(out) });
 }
 
 export async function updateProject(ctx: RouteContext): Promise<Response> {
@@ -307,6 +382,13 @@ export async function updateProject(ctx: RouteContext): Promise<Response> {
          from public.projects p where p.id = $1::uuid`, [id]);
     if (!rs[0]) throw notFound("Project");
     if (!rs[0].can_edit) throw forbidden("You can see this project but can't change it.");
+    const ifMatch = ctx.req.headers.get("if-match");
+    if (ifMatch !== null) {
+      // held until this transaction ends: nobody changes it between the check and the write
+      await tx.query(`select 1 from public.projects p where p.id = $1::uuid for update`, [id]);
+      const now = await loadProject(tx, id);
+      if (!now || !etagMatches(ifMatch, await etagFor(serialiseProject(now, { appUrl: ctx.appUrl })))) throw preconditionFailed("project");
+    }
     const q = new Sql();
     const sets: string[] = [];
     if (v.name !== undefined) sets.push(`name = ${q.p(v.name)}`);
@@ -322,7 +404,8 @@ export async function updateProject(ctx: RouteContext): Promise<Response> {
     return loadProject(tx, id);
   });
   if (!row) throw notFound("Project");
-  return ok(ctx, serialiseProject(row, { appUrl: ctx.appUrl }));
+  const out = serialiseProject(row, { appUrl: ctx.appUrl });
+  return ok(ctx, out, 200, { ETag: await etagFor(out) });
 }
 
 /* ============================================================ sections */
@@ -411,24 +494,28 @@ export async function listTasks(ctx: RouteContext): Promise<Response> {
   return ok(ctx, list(page.map((r) => serialiseTask(r, { appUrl: ctx.appUrl, tags: rows.tags })), next));
 }
 
+/** A task exactly as GET /tasks/:id shows it (with subtaskIds / dependencyIds): its ETag is GET's. */
+async function fullTask(ctx: RouteContext, tx: Tx, id: string) {
+  const row = await loadTask(tx, id, `,
+      array(select c.id::text from public.tasks c where c.parent_id = t.id order by c.created_at, c.id) as subtask_ids,
+      array(select d.depends_on::text from public.task_dependencies d where d.task_id = t.id order by d.depends_on) as dependency_ids`);
+  if (!row) throw notFound("Task");
+  return (await serialiseTasks(ctx, tx, [row]))[0];
+}
+
 export async function getTask(ctx: RouteContext): Promise<Response> {
   const id = pathId(ctx, "Task");
   if (unknownParams(ctx.url.searchParams, []).length) throw badQuery({ query: "This endpoint takes no query parameters." });
-  const out = await asUser(ctx, async (tx) => {
-    const row = await loadTask(tx, id, `,
-      array(select c.id::text from public.tasks c where c.parent_id = t.id order by c.created_at, c.id) as subtask_ids,
-      array(select d.depends_on::text from public.task_dependencies d where d.task_id = t.id order by d.depends_on) as dependency_ids`);
-    if (!row) throw notFound("Task");
-    return (await serialiseTasks(ctx, tx, [row]))[0];
-  });
+  const out = await asUser(ctx, (tx) => fullTask(ctx, tx, id));
   return ok(ctx, out);
 }
 
-/** Read a task back after a write (inside the same transaction). */
-async function readBack(ctx: RouteContext, tx: Tx, id: string) {
-  const row = await loadTask(tx, id);
-  if (!row) throw notFound("Task");
-  return (await serialiseTasks(ctx, tx, [row]))[0];
+/** Read a task back after a write (inside the same transaction), as GET shows it. */
+const readBack = fullTask;
+
+/** A written task's answer: GET's shape, with the ETag a later If-Match needs. */
+async function taskAnswer(ctx: RouteContext, task: Awaited<ReturnType<typeof fullTask>>, status = 200, headers: Record<string, string> = {}) {
+  return ok(ctx, task, status, { ...headers, ETag: await etagFor(task) });
 }
 
 export async function createTask(ctx: RouteContext): Promise<Response> {
@@ -471,21 +558,24 @@ export async function createTask(ctx: RouteContext): Promise<Response> {
       const sec = await tx.query(`select 1 from public.sections s where s.id = $1::uuid and s.project_id = $2`, [v.sectionId, target]);
       if (!sec.length) throw invalid({ sectionId: "That section isn't in this task's project." });
     }
-    const tags = v.tags ? await resolveTags(tx, v.tags, ws, me) : [];
+    const asked = v.tags ? await resolveTags(tx, v.tags, ws, me) : [];
+    // the project's "When a task is created" rules, as the app runs them on a new task (later rules win)
+    const fx = await ruleEffect(tx, ["task_created"], target, ws, me);
+    const tags = withTags(asked, fx.addTags);
     const status = v.status ?? "todo";
     const q = new Sql();
     const made = await tx.query<{ id: string }>(
       `insert into public.tasks (user_id, title, description, status, priority, project_id, section_id, parent_id,
          assignee_id, workspace_id, due_date, due_time, start_date, completed_at, tags, effort_hours, position)
-       values (${q.p(me)}::uuid, ${q.p(v.title)}, ${q.p(v.description ?? "")}, ${q.p(status)}, ${q.p(v.priority ?? "medium")},
-         ${q.p(target)}, ${q.p(v.sectionId ?? null)}, ${q.p(v.parentId ?? null)}::uuid, ${q.p(assignee)}, ${q.p(ws)}::uuid,
+       values (${q.p(me)}::uuid, ${q.p(v.title)}, ${q.p(v.description ?? "")}, ${q.p(status)}, ${q.p(fx.priority ?? v.priority ?? "medium")},
+         ${q.p(target)}, ${q.p(fx.sectionId ?? v.sectionId ?? null)}, ${q.p(v.parentId ?? null)}::uuid, ${q.p(fx.assigneeId ?? assignee)}, ${q.p(ws)}::uuid,
          ${q.p(v.dueDate ?? null)}::date, ${q.p(v.dueTime ?? null)}, ${q.p(v.startDate ?? null)}::date,
          ${status === "done" ? "current_date" : "null"}, array(select jsonb_array_elements_text(${q.p(JSON.stringify(tags))}::jsonb)),
          ${q.p(v.effortHours ?? null)}::numeric, extract(epoch from clock_timestamp()) * 1000)
        returning id::text as id`, q.params);
     return readBack(ctx, tx, made[0].id);
   });
-  return ok(ctx, task, 201, { Location: `${ctx.apiBase}/tasks/${task.id}` });
+  return taskAnswer(ctx, task, 201, { Location: `${ctx.apiBase}/tasks/${task.id}` });
 }
 
 /** The task and every sub-task under it (recursive, cycle-safe). */
@@ -505,12 +595,28 @@ async function setArchived(tx: Tx, id: string, archived: boolean) {
   }
 }
 
-async function editableTask(tx: Tx, id: string): Promise<Row> {
-  const row = await loadTask(tx, id, ", public.can_edit_task(t.id) as can_edit");
+/**
+ * The task, when the key's user may change it (else 404 / 403). With If-Match, the row is locked
+ * until the transaction ends and the caller's ETag must still be GET's (else 412), so an edit made
+ * in the app since the caller read the task is never silently overwritten.
+ */
+async function editableTask(ctx: RouteContext, tx: Tx, id: string): Promise<Row> {
+  const read = () => loadTask(tx, id, ", public.can_edit_task(t.id) as can_edit");
+  let row = await read();
   if (!row) throw notFound("Task");
   if (row.can_edit !== true) throw forbidden("You can see this task but can't change it.");
+  const ifMatch = ctx.req.headers.get("if-match");
+  if (ifMatch !== null) {
+    await tx.query(`select 1 from public.tasks t where t.id = $1::uuid for update`, [id]);
+    if (!etagMatches(ifMatch, await etagFor(await fullTask(ctx, tx, id)))) throw preconditionFailed("task");
+    row = (await read()) ?? row; // as it is now that it's locked
+  }
   return row;
 }
+
+/** A status change's triggers: "status changed", then "task completed" when it completes the task. */
+const statusTriggers = (from: unknown, to: string): RuleTrigger[] =>
+  from === to ? [] : to === "done" ? ["status_changed", "task_completed"] : ["status_changed"];
 
 export async function updateTask(ctx: RouteContext): Promise<Response> {
   const id = pathId(ctx, "Task");
@@ -520,7 +626,7 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
   const p = ctx.principal;
   const me = p.userId;
   const task = await asUser(ctx, async (tx) => {
-    const cur = await editableTask(tx, id);
+    const cur = await editableTask(ctx, tx, id);
     const curWs = s(cur.workspace_id);
     const q = new Sql();
     const sets: string[] = [];
@@ -528,6 +634,11 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
     let project = String(cur.project_id);
     let projectChanged = false;
     let moved = false; // to another workspace (or to / from the Personal list)
+    // the columns the project's rules may change too: undefined = leave as it is
+    let section: string | null | undefined;
+    let assignee: string | undefined;
+    let priority: string | undefined;
+    let tags: string[] | undefined;
 
     // ---- project (and with it the workspace) ----
     if (v.projectId !== undefined) {
@@ -546,6 +657,15 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
         moved = ws !== curWs;
         if (moved) {
           if (cur.parent_id) throw invalid({ projectId: "A sub-task moves with its parent. Move the parent task instead." });
+          // Leaving a workspace takes the task, its sub-tasks and their comments away from everyone
+          // there: only for the people who made all of it, or that workspace's owners and admins.
+          if (curWs && !["owner", "admin"].includes(await wsRole(tx, curWs))) {
+            const others = await tx.query(`${treeSql("$1")} select 1 from public.tasks t
+              where t.id in (select id from d) and t.user_id is distinct from $2::uuid limit 1`, [id, me]);
+            if (others.length) {
+              throw forbidden("Only this workspace's owners and admins can move a task someone else made (or one with sub-tasks someone else made) to another workspace.");
+            }
+          }
           if (ws) requireWriter(await wsRole(tx, ws));
           else {
             const others = await tx.query(`${treeSql("$1")} select 1 from public.tasks t where t.id in (select id from d) and t.user_id <> $2::uuid limit 1`, [id, me]);
@@ -555,24 +675,24 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
         project = want;
         projectChanged = true;
         sets.push(`project_id = ${q.p(want)}`, `workspace_id = ${q.p(ws)}::uuid`);
-        if (v.sectionId === undefined) sets.push("section_id = null");
+        if (v.sectionId === undefined) section = null;
       }
     }
 
     // ---- section (in the task's project, after any move) ----
     if (v.sectionId !== undefined) {
-      if (v.sectionId === null) sets.push("section_id = null");
+      if (v.sectionId === null) section = null;
       else {
         const sec = await tx.query(`select 1 from public.sections s where s.id = $1::uuid and s.project_id = $2`, [v.sectionId, project]);
         if (!sec.length) throw invalid({ sectionId: "That section isn't in this task's project." });
-        sets.push(`section_id = ${q.p(v.sectionId)}`);
+        section = v.sectionId;
       }
     }
 
     // ---- people ----
-    if (v.assigneeId !== undefined) sets.push(`assignee_id = ${q.p(await resolveAssignee(tx, v.assigneeId, ws, me))}`);
+    if (v.assigneeId !== undefined) assignee = await resolveAssignee(tx, v.assigneeId, ws, me);
     else if (moved && cur.assignee_id && !(await canBeOnTask(tx, ws, String(cur.assignee_id), me))) {
-      sets.push(`assignee_id = ${q.p(me)}`); // as the app does: they can't see it there, so it comes to you
+      assignee = me; // as the app does: they can't see it there, so it comes to you
     }
     if (moved) {
       sets.push(`followers = array(select x from unnest(t.followers) x where ${visibleSql(q, "x", ws, me)})`);
@@ -582,7 +702,8 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
     // ---- fields ----
     if (v.title !== undefined) sets.push(`title = ${q.p(v.title)}`);
     if (v.description !== undefined) sets.push(`description = ${q.p(v.description)}`);
-    if (v.priority !== undefined) sets.push(`priority = ${q.p(v.priority)}`);
+    if (v.priority !== undefined) priority = v.priority;
+    const triggers = v.status !== undefined ? statusTriggers(cur.status, v.status) : [];
     if (v.status !== undefined && v.status !== cur.status) {
       sets.push(`status = ${q.p(v.status)}`);
       if (v.status === "done") sets.push("completed_at = current_date");
@@ -597,10 +718,20 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
     else if (v.dueDate === null) sets.push("due_time = null");
     if (v.startDate !== undefined) sets.push(`start_date = ${q.p(v.startDate)}::date`);
     if (v.effortHours !== undefined) sets.push(`effort_hours = ${q.p(v.effortHours)}::numeric`);
-    if (v.tags !== undefined) {
-      const tags = await resolveTags(tx, v.tags, ws, me);
-      sets.push(`tags = array(select jsonb_array_elements_text(${q.p(JSON.stringify(tags))}::jsonb))`);
+    if (v.tags !== undefined) tags = await resolveTags(tx, v.tags, ws, me);
+
+    // ---- the project's "status changed" / "task completed" rules (App.tsx onStatusChange) ----
+    if (triggers.length) {
+      const fx = await ruleEffect(tx, triggers, project, ws, me);
+      if (fx.priority !== undefined) priority = fx.priority;
+      if (fx.assigneeId !== undefined) assignee = fx.assigneeId;
+      if (fx.sectionId !== undefined) section = fx.sectionId;
+      if (fx.addTags.length) tags = withTags(tags ?? strings(cur.tags), fx.addTags);
     }
+    if (section !== undefined) sets.push(`section_id = ${q.p(section)}`);
+    if (assignee !== undefined) sets.push(`assignee_id = ${q.p(assignee)}`);
+    if (priority !== undefined) sets.push(`priority = ${q.p(priority)}`);
+    if (tags !== undefined) sets.push(`tags = array(select jsonb_array_elements_text(${q.p(JSON.stringify(tags))}::jsonb))`);
 
     if (sets.length) {
       const done = await tx.query(`update public.tasks t set ${sets.join(", ")} where t.id = ${q.p(id)}::uuid returning t.id`, q.params);
@@ -624,17 +755,28 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
     if (v.archived !== undefined && (cur.archived_at != null) !== v.archived) await setArchived(tx, id, v.archived);
     return readBack(ctx, tx, id);
   });
-  return ok(ctx, task);
+  return taskAnswer(ctx, task);
 }
 
 export async function completeTask(ctx: RouteContext): Promise<Response> {
   const id = pathId(ctx, "Task");
+  const me = ctx.principal.userId;
   const task = await asUser(ctx, async (tx) => {
-    await editableTask(tx, id);
-    await tx.query(`update public.tasks t set status = 'done', completed_at = current_date where t.id = $1::uuid and t.status <> 'done'`, [id]);
+    const cur = await editableTask(ctx, tx, id);
+    if (cur.status !== "done") {
+      // the project's "status changed" and "task completed" rules, as completing it in the app runs them
+      const fx = await ruleEffect(tx, statusTriggers(cur.status, "done"), String(cur.project_id), s(cur.workspace_id), me);
+      const q = new Sql();
+      const sets = ["status = 'done'", "completed_at = current_date"];
+      if (fx.priority !== undefined) sets.push(`priority = ${q.p(fx.priority)}`);
+      if (fx.assigneeId !== undefined) sets.push(`assignee_id = ${q.p(fx.assigneeId)}`);
+      if (fx.sectionId !== undefined) sets.push(`section_id = ${q.p(fx.sectionId)}`);
+      if (fx.addTags.length) sets.push(`tags = array(select jsonb_array_elements_text(${q.p(JSON.stringify(withTags(strings(cur.tags), fx.addTags)))}::jsonb))`);
+      await tx.query(`update public.tasks t set ${sets.join(", ")} where t.id = ${q.p(id)}::uuid and t.status <> 'done'`, q.params);
+    }
     return readBack(ctx, tx, id);
   });
-  return ok(ctx, task);
+  return taskAnswer(ctx, task);
 }
 
 export async function deleteTask(ctx: RouteContext): Promise<Response> {
@@ -644,7 +786,7 @@ export async function deleteTask(ctx: RouteContext): Promise<Response> {
   const hard = parseBool(ctx.url.searchParams.get("hard"));
   if (hard === null) throw badQuery({ hard: "Use true or false." });
   await asUser(ctx, async (tx) => {
-    const cur = await editableTask(tx, id);
+    const cur = await editableTask(ctx, tx, id);
     if (!hard) return setArchived(tx, id, true);
     const ws = s(cur.workspace_id);
     if (ws) {
