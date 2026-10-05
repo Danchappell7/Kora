@@ -563,6 +563,7 @@ function clearLocalOnSignOut() {
   offlineQueue.setUser(null);
   resetPlanState(); // their plans leave memory and this device's cache (unsaved writes stay theirs)
   planRefusals.clear();
+  landedBeforePlans = [];
   claimedFor = null;
   deadRetriedFor = null;
   sessionGen++;
@@ -677,7 +678,8 @@ async function deleteTaskRow(client: SupabaseClient, id: string): Promise<void> 
      into their own tasks where the row has none;
    - plans on teammates' tasks are written there by lib/planOverlay,
      and the caller's own plan writes on their tasks are mirrored
-     there too (updateTask), so a task handed to them keeps its plan;
+     there too once the row has them (updateTask, or the queue's
+     replay), so a task handed to them keeps its plan;
    - every write is shown at once, kept on the device until it lands
      (offline, or behind a queued create of its task), and upserted
      in batches of one shape (an upsert only touches the columns it
@@ -739,14 +741,16 @@ async function loadPlanRows(client: SupabaseClient, uid: string): Promise<TaskUs
   return out;
 }
 
-/** The caller's own plan, mirrored from a write to a task row (see updateTask).
- *  A change that hands the task to someone else leaves their plan alone (it's
- *  theirs, and stays theirs if they keep helping on it); one that hands it to
- *  them keeps only what it sets — the fields it clears were the last
- *  assignee's plan, not theirs. Runs before anything is awaited. */
-function mirrorOwnPlan(id: string, patch: Partial<Task>): void {
-  const uid = planUser();
-  if (!uid || planMode(uid) !== "server") return;
+/** The caller's own plan, mirrored from a write to a task row once that write
+ *  has landed (updateTask, or replayQueue for a queued one) — never from one
+ *  the server refused, so a change shown as not saved can't come back from
+ *  their plan on the next load. `uid` is who made the write: nothing is
+ *  mirrored into anyone else's plans. A change that hands the task to someone
+ *  else leaves their plan alone (it's theirs, and stays theirs if they keep
+ *  helping on it); one that hands it to them keeps only what it sets — the
+ *  fields it clears were the last assignee's plan, not theirs. */
+function mirrorOwnPlan(id: string, patch: Partial<Task>, uid: string | null): void {
+  if (!uid || planUser() !== uid || planMode(uid) !== "server") return;
   if ("assigneeId" in patch && patch.assigneeId !== uid) return;
   const taking = "assigneeId" in patch;
   const p: TaskUserStatePatch = {};
@@ -756,6 +760,18 @@ function mirrorOwnPlan(id: string, patch: Partial<Task>): void {
   if (typeof patch.aiScore === "number") p.aiScore = patch.aiScore;
   if (typeof patch.aiReason === "string") p.aiReason = patch.aiReason;
   if (Object.keys(p).length) writePlan(id, withPlanDay(planEntry(id), todayISO(), p));
+}
+/** Queued writes that landed before their author's plans were loaded (a
+ *  replay at start-up): mirrored as soon as the plans are (see bootstrap). */
+let landedBeforePlans: { uid: string; id: string; patch: Partial<Task> }[] = [];
+function mirrorLanded(id: string, patch: Partial<Task>, uid: string): void {
+  if (planUser() === null) { if (landedBeforePlans.length < 500) landedBeforePlans.push({ uid, id, patch }); return; }
+  mirrorOwnPlan(id, patch, uid);
+}
+function mirrorLandedBeforePlans(uid: string): void {
+  const early = landedBeforePlans;
+  landedBeforePlans = [];
+  for (const e of early) if (e.uid === uid) mirrorOwnPlan(e.id, e.patch, uid);
 }
 
 function schedulePlanFlush(delay = PLAN_DEBOUNCE_MS) {
@@ -1219,7 +1235,9 @@ async function replayQueue(client: SupabaseClient, remap?: RemapFn): Promise<num
         remap?.(m.task.id, saved.id, saved);
       } else if (m.kind === "update") {
         await updateTaskRow(client, m.taskId, m.patch);
-        offlineQueue.ack(m.id, m.patch);
+        // landed: the caller's own plan in it follows them now (one parked
+        // or discarded instead never gets this far)
+        if (offlineQueue.ack(m.id, m.patch)) mirrorLanded(m.taskId, m.patch, uid);
       } else {
         await deleteTaskRow(client, m.taskId);
         offlineQueue.ack(m.id);
@@ -1349,6 +1367,7 @@ export const store = {
       setReferenceData(snap.ref);
       // their plans as last loaded on this device, with any unsaved writes
       restorePlanState(uid);
+      mirrorLandedBeforePlans(uid);
       return { ...snap.boot, tasks: mergeOwnPlans(applyQueue(snap.boot.tasks), uid, todayISO()), defaultWorkspace: resolveDefaultWorkspace(uid, snap.boot.workspaces) };
     };
 
@@ -1509,6 +1528,7 @@ export const store = {
     const planLive = gen === sessionGen && offlineQueue.currentUser() === uid; // not signed out meanwhile
     if (planLive) {
       if (planRows) loadPlanState(uid, planRows); else restorePlanState(uid);
+      mirrorLandedBeforePlans(uid);
     }
 
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
@@ -1816,11 +1836,14 @@ export const store = {
 
   async updateTask(id: string, patch: Partial<Task>): Promise<void> {
     if (!supabase) return;
-    mirrorOwnPlan(id, patch); // your plan on your own task follows you too (0043)
     if (Object.keys(patchToRow(patch)).length === 0) return; // nothing that persists
+    // your plan on your own task follows you too (0043), once the row has it:
+    // whose plans those are is read now, before anything is awaited
+    const planner = planUser();
     // offline — or older queued edits to this task still waiting: queue behind
     // them, so a stale queued value can't be replayed over this newer one
-    // Queued before anything is awaited (see queueOwner).
+    // Queued before anything is awaited (see queueOwner). Its plan is
+    // mirrored when the replay lands it.
     if (isOffline() || offlineQueue.hasPending(id)) {
       offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid(""));
       if (!isOffline()) scheduleFlush();
@@ -1829,6 +1852,7 @@ export const store = {
     try {
       await updateTaskRow(supabase, id, patch);
       offlineQueue.supersede(id, Object.keys(patch)); // a parked older value must never come back over this
+      mirrorOwnPlan(id, patch, planner);
     } catch (e) {
       if (isNetworkError(e)) { offlineQueue.enqueueUpdate(id, patch, queueOwner() ?? await authUid("")); scheduleFlush(); return; } // dropped mid-flight — queue it
       throw e;

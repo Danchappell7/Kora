@@ -19,12 +19,12 @@ describe("TeamTemplatePicker", () => {
     const boxes = within(m).getAllByRole("checkbox");
     expect(boxes).toHaveLength(3);
     expect(boxes.every((b) => (b as HTMLInputElement).checked)).toBe(true);
-    expect(within(m).getByRole("checkbox", { name: /Campaigns\s*8 tasks/ })).toBeInTheDocument();
+    expect(within(m).getByRole("checkbox", { name: /Campaigns\s*4 tasks/ })).toBeInTheDocument();
     // a project's request form and rule are named on its row
-    expect(within(m).getByRole("checkbox", { name: /Creative requests\s*, Request form\s*6 tasks/ })).toBeInTheDocument();
-    expect(within(m).getByRole("checkbox", { name: /Content calendar\s*, Rule: new content starts in Ideas\s*7 tasks/ })).toBeInTheDocument();
+    expect(within(m).getByRole("checkbox", { name: /Creative requests\s*, Request form\s*3 tasks/ })).toBeInTheDocument();
+    expect(within(m).getByRole("checkbox", { name: /Content calendar\s*, Rule: new content starts in Ideas\s*3 tasks/ })).toBeInTheDocument();
     expect(within(m).getByRole("group", { name: "Projects to set up from Marketing" })).toBeInTheDocument();
-    expect(within(m).getByText("3 projects · 21 tasks")).toBeInTheDocument();
+    expect(within(m).getByText("3 projects · 10 tasks")).toBeInTheDocument();
   });
 
   it("“Start with this” picks the whole template, described by its name and contents", () => {
@@ -42,7 +42,7 @@ describe("TeamTemplatePicker", () => {
     const c = card("Product launch");
     expect(within(c).getByRole("group", { name: "Projects to add from Product launch" })).toBeInTheDocument();
     fireEvent.click(within(c).getByRole("checkbox", { name: /Launch plan/ }));
-    expect(within(c).getByText("2 projects · 13 tasks")).toBeInTheDocument();
+    expect(within(c).getByText("2 projects · 6 tasks")).toBeInTheDocument();
     fireEvent.click(within(c).getByRole("button", { name: "Start with this" }));
     expect(onPick).toHaveBeenLastCalledWith(findWorkspaceTemplate("launch"), ["release", "feedback"]);
     // tick it back: order follows the template, not the clicks
@@ -93,7 +93,7 @@ describe("TeamTemplatePicker", () => {
 
   it("summary line counts what's ticked", () => {
     const ops = findWorkspaceTemplate("operations")!;
-    expect(templateSummaryLine(ops)).toBe("3 projects · 21 tasks");
-    expect(templateSummaryLine(ops, ["routines"])).toBe("1 project · 8 tasks");
+    expect(templateSummaryLine(ops)).toBe("3 projects · 10 tasks");
+    expect(templateSummaryLine(ops, ["routines"])).toBe("1 project · 4 tasks");
   });
 });

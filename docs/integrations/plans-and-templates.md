@@ -9,9 +9,10 @@ My-tasks section and Kanbo's ranking for them — is saved per person in
 - **Teammates' tasks.** Planning a task someone else is assigned to saves your
   plan there (never on the task, which holds its assignee's plan). Before 0043
   this lived only on the device you planned it on.
-- **Your own tasks.** The task keeps your plan as it always has, and a copy goes
-  to `task_user_state` too, so a task handed to you keeps the plan you'd made on
-  it.
+- **Your own tasks.** The task keeps your plan as it always has, and once the
+  task has saved it a copy goes to `task_user_state` too, so a task handed to
+  you keeps the plan you'd made on it. A change the server refuses (shown as
+  not saved) is never copied, so it can't come back on the next load.
 - **A plan is for a day.** A slot or "on today" from an earlier day isn't shown
   as today's.
 - **Offline.** Changes show at once, wait on the device, and are saved when the
@@ -37,8 +38,10 @@ reported as an error. Demo mode always keeps them on the device.
 
 Four ready-made set-ups — Marketing, Operations, Product launch and Client
 services — each with three projects (their own emoji and colour), sections,
-starter tasks with due dates counted from the day they're used (a weekend moves
-to the Monday) and estimates, a sample request form and a rule. They're offered
-when a workspace is created and from Projects › New project › "From a team
-template". They use the same tables as everything else, so they need no
-migration, function or secret, and work in demo mode.
+10–11 starter tasks with due dates counted from the day they're used (a weekend
+moves to the Monday) and estimates, a sample request form and a rule. The
+starter tasks are all assigned to whoever uses the template, so it's a light
+start: no more than four are due in the first week, and no more than three
+repeat. They're offered when a workspace is created and from Projects › New
+project › "From a team template". They use the same tables as everything else,
+so they need no migration, function or secret, and work in demo mode.

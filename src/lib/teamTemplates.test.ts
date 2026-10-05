@@ -16,7 +16,7 @@ describe("team templates: the content", () => {
     expect(findWorkspaceTemplate("nope")).toBeUndefined();
   });
 
-  it.each(WORKSPACE_TEMPLATES.map((t) => [t.name, t] as const))("%s: 2–3 projects, each with its own emoji and spectrum hue, sections and 6–12 starter tasks", (_n, tpl) => {
+  it.each(WORKSPACE_TEMPLATES.map((t) => [t.name, t] as const))("%s: 2–3 projects, each with its own emoji and spectrum hue and sections, and 6–12 starter tasks in all", (_n, tpl) => {
     expect(SPECTRUM_KEYS.has(tpl.hue)).toBe(true);
     expect(tpl.summary.length).toBeGreaterThan(20);
     expect(tpl.summary.length).toBeLessThanOrEqual(140);
@@ -25,12 +25,15 @@ describe("team templates: the content", () => {
     expect(new Set(tpl.projects.map((p) => p.key)).size).toBe(tpl.projects.length);
     expect(new Set(tpl.projects.map((p) => p.hue)).size).toBe(tpl.projects.length); // a calm mosaic, never two the same
     expect(new Set(tpl.projects.map((p) => p.emoji)).size).toBe(tpl.projects.length);
+    const total = tpl.projects.reduce((n, p) => n + p.tasks.length, 0);
+    expect(total).toBeGreaterThanOrEqual(6);
+    expect(total).toBeLessThanOrEqual(12);
     for (const p of tpl.projects) {
       expect(SPECTRUM_KEYS.has(p.hue)).toBe(true);
       expect(p.emoji).toBeTruthy();
       expect(p.sections.length).toBeGreaterThanOrEqual(2);
-      expect(p.tasks.length).toBeGreaterThanOrEqual(6);
-      expect(p.tasks.length).toBeLessThanOrEqual(12);
+      expect(p.tasks.length).toBeGreaterThanOrEqual(2); // one project on its own is still a start
+      expect(p.tasks.length).toBeLessThanOrEqual(5);
       for (const task of p.tasks) {
         expect(p.sections, `${p.name}: ${task.title}`).toContain(task.section);
         expect(typeof task.dueInDays).toBe("number");
@@ -53,6 +56,22 @@ describe("team templates: the content", () => {
     }
   });
 
+  it.each(WORKSPACE_TEMPLATES.map((t) => [t.name, t] as const))("%s is a light start: a few tasks due in the first week (whatever day it's used), and a few that repeat", (_n, tpl) => {
+    // every starter task is assigned to whoever uses it: a new workspace
+    // mustn't open with a backlog that fills Today and trips the Radar
+    for (let d = 5; d <= 11; d++) {
+      const today = `2026-10-${String(d).padStart(2, "0")}`;
+      const weekOut = new Date(2026, 9, d + 7);
+      const cutoff = `${weekOut.getFullYear()}-${String(weekOut.getMonth() + 1).padStart(2, "0")}-${String(weekOut.getDate()).padStart(2, "0")}`;
+      const soon = buildWorkspaceFromTemplate(tpl, today).projects.flatMap((p) => p.tasks).filter((x) => x.dueDate! <= cutoff);
+      expect(soon.length, `${tpl.name} from ${today}`).toBeLessThanOrEqual(4);
+      expect(soon.reduce((h, x) => h + (x.effortHours ?? 0), 0), `${tpl.name} from ${today}`).toBeLessThanOrEqual(6);
+    }
+    const all = tpl.projects.flatMap((p) => p.tasks);
+    expect(all.filter((x) => x.recurrence && x.recurrence !== "none").length).toBeLessThanOrEqual(3);
+    expect(all.every((x) => (x.dueInDays ?? 0) >= 1)).toBe(true); // nothing due the day it's set up
+  });
+
   it("speaks British English", () => {
     const text = JSON.stringify(WORKSPACE_TEMPLATES);
     for (const us of [/\bprioritiz/i, /\borganiz/i, /\bcolor\b/i, /\bcenter\b/i, /\banalyz/i, /\bcatalog\b/i]) expect(text).not.toMatch(us);
@@ -60,8 +79,8 @@ describe("team templates: the content", () => {
 
   it("counts what a template (or some of its projects) sets up", () => {
     const m = findWorkspaceTemplate("marketing")!;
-    expect(templateStats(m)).toEqual({ projects: 3, tasks: 21, forms: 1, rules: 1 });
-    expect(templateStats(m, ["campaigns"])).toEqual({ projects: 1, tasks: 8, forms: 0, rules: 0 });
+    expect(templateStats(m)).toEqual({ projects: 3, tasks: 10, forms: 1, rules: 1 });
+    expect(templateStats(m, ["campaigns"])).toEqual({ projects: 1, tasks: 4, forms: 0, rules: 0 });
   });
 });
 
@@ -198,12 +217,12 @@ describe("applyWorkspacePlan", () => {
     expect(r.failed).toEqual([]);
     expect(r.projects.map((p) => p.name)).toEqual(["Client accounts", "Delivery", "Client requests"]);
     expect(r.sections).toHaveLength(3 + 4 + 4);
-    expect(r.tasks).toHaveLength(8 + 7 + 6);
+    expect(r.tasks).toHaveLength(4 + 4 + 3);
     expect(r.forms).toHaveLength(1);
     expect(r.rules).toHaveLength(1);
     // within each project: project → sections → tasks → form → rule
     const last = calls.slice(calls.indexOf("project:Client requests"));
-    expect(last).toEqual(["project:Client requests", "section:New", "section:Doing", "section:Waiting on client", "section:Done", "tasks:6", "form:Client request", "rule:New requests land in New"]);
+    expect(last).toEqual(["project:Client requests", "section:New", "section:Doing", "section:Waiting on client", "section:Done", "tasks:3", "form:Client request", "rule:New requests land in New"]);
     // the project carries the workspace, colour and description
     expect(deps.createProject).toHaveBeenCalledWith(expect.objectContaining({ name: "Client accounts", workspaceId: "ws-1", color: spectrumColor("lagoon"), description: expect.any(String) }));
     expect(deps.createForm).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p3", workspaceId: "ws-1", description: expect.stringContaining("Tell us") }));
@@ -234,7 +253,7 @@ describe("applyWorkspacePlan", () => {
     const r = await applyWorkspacePlan(plan(), { workspaceId: "ws-1", assigneeId: "me" }, deps);
     expect(r.failed).toEqual(["Delivery"]);
     expect(r.projects.map((p) => p.name)).toEqual(["Client accounts", "Client requests"]);
-    expect(r.tasks).toHaveLength(8 + 6);
+    expect(r.tasks).toHaveLength(4 + 3);
   });
 
   it("reports a failed section, keeps its tasks (unsectioned) and skips a rule that needed it", async () => {
@@ -242,20 +261,20 @@ describe("applyWorkspacePlan", () => {
     const r = await applyWorkspacePlan(plan(), { workspaceId: "ws-1", assigneeId: "me" }, deps);
     expect(r.failed).toEqual(["Client requests › New", "New requests land in New"]);
     expect(deps.createRule).not.toHaveBeenCalled();
-    expect(r.tasks.filter((x) => x.title === "Triage new requests")[0].sectionId).toBeUndefined();
+    expect(r.tasks.filter((x) => x.title === "Agree response times with each client")[0].sectionId).toBeUndefined();
   });
 
   it("reports the tasks a partial save left out, by title", async () => {
     const { deps } = fakeDeps({ tasks: "partial" });
     const r = await applyWorkspacePlan(plan(), { workspaceId: "ws-1", assigneeId: "me" }, deps);
-    expect(r.failed).toEqual(["Send the welcome pack and kickoff agenda", "Confirm the scope and acceptance criteria", "Triage new requests"]);
-    expect(r.tasks).toHaveLength(21 - 3);
+    expect(r.failed).toEqual(["Send the welcome pack and kickoff agenda", "Confirm the scope and acceptance criteria", "Agree response times with each client"]);
+    expect(r.tasks).toHaveLength(11 - 3);
   });
 
   it("reports every task when a save fails outright, and a form or rule that fails", async () => {
     const { deps } = fakeDeps({ tasks: "all", form: true, rule: true });
     const r = await applyWorkspacePlan(buildWorkspaceFromTemplate(findWorkspaceTemplate("clients")!, "2026-10-05", { projectKeys: ["requests"] }), { workspaceId: "ws-1", assigneeId: "me" }, deps);
-    expect(r.failed).toHaveLength(6 + 2);
+    expect(r.failed).toHaveLength(3 + 2);
     expect(r.failed).toContain("Client request");
     expect(r.failed).toContain("New requests land in New");
     expect(r.tasks).toEqual([]);

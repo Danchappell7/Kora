@@ -96,9 +96,10 @@ describe("store — plans that follow you (task_user_state)", () => {
   beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); });
   afterEach(() => { goOnline(); vi.useRealTimers(); vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
 
-  function server(fake: Fake, opts: { tasks?: Record<string, unknown>[]; plans?: Record<string, unknown>[]; planError?: { message: string; code?: string }; upsert?: (c: Call) => Result | undefined } = {}) {
+  function server(fake: Fake, opts: { tasks?: Record<string, unknown>[]; plans?: Record<string, unknown>[]; planError?: { message: string; code?: string }; upsert?: (c: Call) => Result | undefined; taskUpdate?: (c: Call) => Result | undefined } = {}) {
     fake.setHandler((c) => {
       if (c.table === "tasks" && c.op === "select") return { data: opts.tasks ?? [] };
+      if (c.table === "tasks" && c.op === "update") return opts.taskUpdate?.(c);
       if (c.table === "task_user_state" && c.op === "select") return opts.planError ? { error: opts.planError } : { data: opts.plans ?? [] };
       if (c.table === "task_user_state" && c.op === "upsert") return opts.upsert?.(c);
       return undefined;
@@ -225,6 +226,66 @@ describe("store — plans that follow you (task_user_state)", () => {
     expect(rows.find((r) => r.task_id === U(2))).toBeUndefined();
     expect(rows.find((r) => r.task_id === U(3))).toBeUndefined();
     expect(rows).toContainEqual({ task_id: U(4), user_id: "user-a", plan_today: true, plan_day: today, scheduled: null });
+  });
+
+  const RLS = { error: { message: "new row violates row-level security policy for table \"tasks\"", code: "42501" } };
+  const planRows = (fake: Fake) => upserts(fake).flatMap((c) => c.payload as Record<string, unknown>[]);
+
+  it("a row write the server refuses isn't mirrored: the change shown as not saved doesn't come back on reload", async () => {
+    // e.g. a member made a guest while their tab is open: they can still see
+    // the task (their plan row would be accepted) but no longer write it
+    const fake = makeFake();
+    const { store, plans } = await load(fake);
+    server(fake, { tasks: [taskRow(U(1))], taskUpdate: () => RLS });
+    await store.bootstrap({ id: "user-a" });
+    await expect(store.updateTask(U(1), { planToday: true, scheduled: 600 })).rejects.toMatchObject({ code: "42501" });
+    await flushTimers(store);
+    expect(planRows(fake)).toEqual([]);
+    expect(plans.pendingPlans()).toEqual([]);
+    // reload: the row still has no plan, and nothing of theirs fills one in
+    server(fake, { tasks: [taskRow(U(1))], plans: planRows(fake) });
+    const again = await store.bootstrap({ id: "user-a" });
+    expect(again.tasks[0]).toMatchObject({ planToday: false, scheduled: null });
+  });
+
+  it("a queued edit is mirrored when its replay lands; one the server keeps refusing is parked and never mirrored", async () => {
+    const fake = makeFake();
+    const { store, plans, queue, today } = await load(fake);
+    let refuse: string | null = null;
+    server(fake, { tasks: [taskRow(U(1)), taskRow(U(2))], taskUpdate: (c) => (c.filters.some(([, col, v]) => col === "id" && v === refuse) ? RLS : undefined) });
+    await store.bootstrap({ id: "user-a" });
+    goOffline();
+    await store.updateTask(U(1), { planToday: true, scheduled: 600 });
+    await store.updateTask(U(2), { planToday: true, scheduled: 660 });
+    await flushTimers(store);
+    expect(queue.size()).toBe(2);
+    expect(planRows(fake)).toEqual([]);   // only queued: nothing of it is mirrored yet
+    expect(plans.pendingPlans()).toEqual([]);
+    goOnline();
+    refuse = U(2);
+    for (let i = 0; i < 5 && queue.size(); i++) await store.flushQueue();
+    expect(queue.size()).toBe(0);
+    expect(queue.deadLetters().map((d) => (d.op.kind === "update" ? d.op.taskId : d.op.kind))).toEqual([U(2)]);
+    await flushTimers(store);
+    expect(planRows(fake)).toEqual([{ task_id: U(1), user_id: "user-a", plan_today: true, scheduled: 600, plan_day: today }]);
+    // reload: the parked edit's plan isn't filled back in
+    server(fake, { tasks: [taskRow(U(1), { plan_today: true, scheduled: 600 }), taskRow(U(2))], plans: planRows(fake) });
+    const again = new Map((await store.bootstrap({ id: "user-a" })).tasks.map((t) => [t.id, t]));
+    expect(again.get(U(2))).toMatchObject({ planToday: false, scheduled: null });
+  });
+
+  it("a queued edit that lands before the plans are loaded (a replay at start-up) is mirrored once they are", async () => {
+    const fake = makeFake();
+    const { store, plans, queue, today } = await load(fake);
+    server(fake, { tasks: [taskRow(U(1), { plan_today: true, scheduled: 540 })] });
+    queue.enqueueUpdate(U(1), { planToday: true, scheduled: 540 }, "user-a"); // left from last time
+    expect(plans.planUser()).toBeNull();
+    await store.flushQueue();
+    expect(queue.size()).toBe(0);
+    expect(fake.calls.filter((c) => c.table === "tasks" && c.op === "update")).toHaveLength(1);
+    await store.bootstrap({ id: "user-a" });
+    await flushTimers(store);
+    expect(planRows(fake)).toEqual([{ task_id: U(1), user_id: "user-a", plan_today: true, scheduled: 540, plan_day: today }]);
   });
 
   it("offline: kept on the device and shown, then saved when back online", async () => {
@@ -386,7 +447,7 @@ describe("store — team templates", () => {
     expect(r.failed).toEqual([]);
     expect(r.projects.map((p) => p.name)).toEqual(["Campaigns", "Content calendar", "Creative requests"]);
     expect(r.projects[0].description).toBe("Plan, launch and report on each campaign.");
-    expect(r.tasks).toHaveLength(21);
+    expect(r.tasks).toHaveLength(10);
     expect(r.tasks.every((t) => t.createdBy === "m-self" && t.workspaceId === "ws-foundrise")).toBe(true);
     expect(r.forms[0]).toMatchObject({ name: "Creative request", description: expect.stringContaining("Ask for a design") });
     expect(r.rules[0].actions[0]).toEqual({ type: "set_section", value: r.sections.find((s) => s.name === "Ideas")!.id });

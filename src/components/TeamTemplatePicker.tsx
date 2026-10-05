@@ -26,7 +26,7 @@ export interface TeamTemplatePickerProps {
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-/** "3 projects · 21 tasks" (each project's request form and rule are named on its row) */
+/** "3 projects · 10 tasks" (each project's request form and rule are named on its row) */
 export function templateSummaryLine(template: Pick<WorkspaceTemplate, "projects">, keys?: readonly string[]): string {
   const s = templateStats(template, keys);
   return `${plural(s.projects, "project")} · ${plural(s.tasks, "task")}`;

@@ -339,12 +339,14 @@ export function saveProjectTemplate(t: Omit<ProjectTemplate, "id">): ProjectTemp
 /* ============================================================
    Team (workspace) templates.                              [f10-templates-plans]
    Four ready-made set-ups — Marketing, Operations, Product launch, Client
-   services — each three projects (emoji + spectrum hue), sections, 6–9
-   starter tasks per project with relative due dates and estimates, and one
-   sample request form and one rule each. Shown by <TeamTemplatePicker> (New
-   workspace, and Projects › New project › "From a team template").
-   Everything here is pure except applyWorkspacePlan, which is handed the
-   create calls to make (the store's, or the app's own).
+   services — each three projects (emoji + spectrum hue) with sections, 6–12
+   starter tasks in all (three to five a project) with relative due dates and
+   estimates, and one sample request form and one rule each. Every starter task
+   is assigned to whoever uses the template, so it's a light start: only a few
+   are due in the first week and only a few repeat. Shown by
+   <TeamTemplatePicker> (New workspace, and Projects › New project › "From a
+   team template"). Everything here is pure except applyWorkspacePlan, which
+   is handed the create calls to make (the store's, or the app's own).
    ============================================================ */
 
 const t = (section: string, title: string, dueInDays: number, effortHours: number, more: Partial<TemplateTask> = {}): TemplateTask =>
@@ -361,13 +363,9 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "Plan, launch and report on each campaign.",
         sections: ["Brief", "Create", "Live", "Report"],
         tasks: [
-          t("Brief", "Write the brief for the next campaign", 2, 2, { priority: "high", focusMin: 60, description: "**Objective**\n\n**Audience**\n\n**Key message**\n\n**Budget**\n\n**Success looks like**" }),
-          t("Brief", "Agree channels, budget and KPIs", 4, 1, { focusMin: 45 }),
-          t("Create", "Draft copy for every channel", 9, 4, { focusMin: 90 }),
-          t("Create", "Produce visuals and video cuts", 11, 6, { focusMin: 120 }),
-          t("Create", "Set up tracking links and the results dashboard", 12, 1.5, { focusMin: 60 }),
+          t("Brief", "Write the brief for the next campaign", 3, 2, { priority: "high", focusMin: 60, description: "**Objective**\n\n**Audience**\n\n**Key message**\n\n**Budget**\n\n**Success looks like**" }),
+          t("Create", "Draft copy and visuals for every channel", 10, 4, { focusMin: 90 }),
           t("Live", "Launch the campaign", 14, 1, { priority: "urgent" }),
-          t("Live", "Mid-campaign check: move budget to what's working", 21, 1, { focusMin: 45 }),
           t("Report", "Write up results and lessons", 30, 2, { focusMin: 60 }),
         ],
       },
@@ -376,13 +374,9 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "What we publish, when, and how it did.",
         sections: ["Ideas", "Writing", "Scheduled", "Published"],
         tasks: [
-          t("Ideas", "Plan next month's themes", 3, 1.5, { focusMin: 60 }),
-          t("Ideas", "Collect questions from sales and support", 5, 0.5),
-          t("Writing", "Draft this week's blog post", 4, 3, { focusMin: 90, recurrence: "weekly" }),
-          t("Writing", "Write the newsletter", 6, 2, { focusMin: 60, recurrence: "biweekly" }),
+          t("Ideas", "Plan next month's themes", 8, 1.5, { focusMin: 60 }),
+          t("Writing", "Write the first newsletter", 12, 2, { focusMin: 60 }),
           t("Scheduled", "Schedule the week's social posts", 7, 1, { focusMin: 45, recurrence: "weekly" }),
-          t("Scheduled", "Refresh evergreen posts with new links", 14, 1.5),
-          t("Published", "Share the month's best performers with the team", 28, 0.5, { recurrence: "monthly" }),
         ],
         rule: { name: "New content starts in Ideas", trigger: "task_created", actions: [{ type: "set_section", value: "Ideas" }] },
       },
@@ -392,11 +386,8 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         sections: ["New", "In progress", "Review", "Delivered"],
         tasks: [
           t("New", "Agree how requests are prioritised", 2, 1, { priority: "high", description: "**Same day**: broken or wrong on a live page\n**This week**: needed for a launch\n**Next sprint**: everything else" }),
-          t("New", "Share the request form with the team", 3, 0.5),
-          t("Review", "Review open requests together", 3, 0.5, { recurrence: "weekly" }),
-          t("New", "Write a one-page brand guide", 7, 3, { focusMin: 90 }),
-          t("In progress", "Refresh the brand templates (slides, social, email)", 10, 5, { focusMin: 120 }),
-          t("Delivered", "File delivered work in the shared drive", 14, 0.5),
+          t("New", "Share the request form with the team", 4, 0.5),
+          t("In progress", "Write a one-page brand guide", 15, 3, { focusMin: 90 }),
         ],
         form: { name: "Creative request", description: "Ask for a design, copy or a video. Say what it's for and when you need it.", fields: ["description", "priority", "dueDate"] },
       },
@@ -411,14 +402,10 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "The weekly, monthly and quarterly jobs nobody should have to remember.",
         sections: ["This week", "This month", "This quarter"],
         tasks: [
-          t("This week", "Weekly operations check-in", 1, 0.5, { recurrence: "weekly" }),
-          t("This week", "Reconcile expenses and receipts", 4, 1, { focusMin: 45, recurrence: "weekly" }),
-          t("This month", "Back up the shared drives and test a restore", 7, 1, { recurrence: "monthly" }),
+          t("This week", "Weekly operations check-in", 2, 0.5, { recurrence: "weekly" }),
           t("This month", "Run payroll", 10, 1.5, { priority: "high", focusMin: 60, recurrence: "monthly" }),
-          t("This month", "Review software subscriptions and seats", 14, 1, { focusMin: 45, recurrence: "monthly" }),
-          t("This quarter", "Review supplier contracts due for renewal", 30, 3, { focusMin: 90 }),
-          t("This quarter", "Update the risk register", 45, 2, { focusMin: 60 }),
-          t("This quarter", "Plan next quarter's budget", 60, 4, { priority: "high", focusMin: 120 }),
+          t("This month", "Review software subscriptions and seats", 16, 1, { focusMin: 45 }),
+          t("This quarter", "Plan next quarter's budget", 45, 4, { priority: "high", focusMin: 120 }),
         ],
       },
       {
@@ -426,12 +413,8 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "From job description to a new starter's first month.",
         sections: ["Hiring", "Before day one", "First weeks"],
         tasks: [
-          t("Hiring", "Write the job description and scorecard", 3, 2, { priority: "high", focusMin: 60 }),
-          t("Hiring", "Post the role and share it with the team", 5, 1),
-          t("Hiring", "Shortlist candidates and book first interviews", 12, 3, { focusMin: 60 }),
+          t("Hiring", "Write the job description and scorecard", 5, 2, { priority: "high", focusMin: 60 }),
           t("Before day one", "Order equipment and set up accounts", 20, 1.5),
-          t("Before day one", "Send the welcome email and first-week plan", 21, 1),
-          t("First weeks", "Pair the new starter with a buddy", 24, 0.5),
           t("First weeks", "Hold the 30-day check-in", 51, 0.5),
         ],
       },
@@ -440,12 +423,9 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "Anything broken, missing or needed, in one place.",
         sections: ["New", "Doing", "Waiting", "Done"],
         tasks: [
-          t("New", "Triage new requests", 1, 0.5, { recurrence: "weekly" }),
-          t("New", "List every tool, its owner and renewal date", 5, 2, { priority: "high", focusMin: 60 }),
-          t("New", "Write the new-laptop checklist", 7, 1),
-          t("Waiting", "Chase the broadband contract renewal", 9, 0.5),
-          t("Doing", "Turn on two-step sign-in for every account", 10, 3, { priority: "high", focusMin: 90 }),
-          t("Doing", "Check the first-aid kit and fire safety log", 14, 0.5, { recurrence: "monthly" }),
+          t("New", "Triage new requests", 3, 0.5, { recurrence: "weekly" }),
+          t("New", "List every tool, its owner and renewal date", 9, 2, { priority: "high", focusMin: 60 }),
+          t("Doing", "Turn on two-step sign-in for every account", 14, 3, { priority: "high", focusMin: 90 }),
         ],
         form: { name: "IT or office request", description: "Something broken, missing or needed? Tell us what's up and how urgent it is.", fields: ["description", "priority"] },
         rule: { name: "New requests land in New", trigger: "task_created", actions: [{ type: "set_section", value: "New" }] },
@@ -461,14 +441,10 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "Goals, messages, assets and the day itself.",
         sections: ["Plan", "Build", "Launch", "After launch"],
         tasks: [
-          t("Plan", "Set launch goals and success metrics", 2, 2, { priority: "high", focusMin: 60, description: "**Goal**\n\n**How we'll measure it**\n- " }),
-          t("Plan", "Agree the launch date and owners", 4, 1, { priority: "high" }),
-          t("Plan", "Write positioning and key messages", 7, 3, { focusMin: 90 }),
-          t("Build", "Lock the release scope", 10, 1.5, { priority: "high" }),
-          t("Build", "Prepare launch assets (screenshots, video, copy)", 14, 6, { focusMin: 120 }),
-          t("Build", "Brief support and sales", 17, 2, { focusMin: 60 }),
-          t("Launch", "Publish the announcement and update the website", 21, 2, { priority: "urgent" }),
-          t("Launch", "Send the launch email to customers", 21, 1, { priority: "high" }),
+          t("Plan", "Set launch goals, the date and owners", 3, 2, { priority: "high", focusMin: 60, description: "**Goal**\n\n**How we'll measure it**\n- \n\n**Launch date**\n\n**Owners**\n- " }),
+          t("Plan", "Write positioning and key messages", 8, 3, { focusMin: 90 }),
+          t("Build", "Prepare launch assets (screenshots, video, copy)", 14, 4, { focusMin: 120 }),
+          t("Launch", "Publish the announcement and email customers", 21, 2, { priority: "urgent" }),
           t("After launch", "Run the launch retrospective", 30, 1.5, { focusMin: 60, description: "**What went well**\n\n**What didn't**\n\n**Next time**\n- " }),
         ],
       },
@@ -477,13 +453,9 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "Everything that has to be true before we press go.",
         sections: ["Engineering", "Quality", "Go / no-go"],
         tasks: [
-          t("Engineering", "Freeze features and cut the release branch", 12, 1, { priority: "high" }),
-          t("Engineering", "Write the rollback plan", 13, 2, { priority: "high", focusMin: 60 }),
-          t("Quality", "Run the full regression pass", 15, 6, { focusMin: 120 }),
-          t("Quality", "Check accessibility on every new screen", 16, 3, { focusMin: 90 }),
-          t("Quality", "Load-test the busiest flows", 16, 3, { focusMin: 90 }),
+          t("Engineering", "Freeze features and write the rollback plan", 12, 2, { priority: "high", focusMin: 60 }),
+          t("Quality", "Run the regression and accessibility checks", 16, 5, { focusMin: 120 }),
           t("Go / no-go", "Hold the go / no-go meeting", 19, 1, { priority: "urgent", focusMin: 45 }),
-          t("Go / no-go", "Watch error rates for the first 48 hours", 22, 2, { priority: "high" }),
         ],
       },
       {
@@ -491,12 +463,9 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "What customers tell us after launch, and what we do about it.",
         sections: ["Triage", "Fixing", "Shipped"],
         tasks: [
-          t("Triage", "Agree severity levels and response times", 18, 1, { priority: "high", description: "**P1**: broken for everyone, fix now\n**P2**: a key flow is broken\n**P3**: there's a workaround\n**P4**: cosmetic" }),
-          t("Triage", "Triage feedback every morning of launch week", 21, 0.5, { recurrence: "weekdays" }),
-          t("Fixing", "Fix the top three launch issues", 25, 6, { priority: "high", focusMin: 120 }),
-          t("Triage", "Tag feedback by theme for the roadmap", 28, 2, { focusMin: 60 }),
+          t("Triage", "Agree severity levels and response times", 17, 1, { priority: "high", description: "**P1**: broken for everyone, fix now\n**P2**: a key flow is broken\n**P3**: there's a workaround\n**P4**: cosmetic" }),
+          t("Fixing", "Fix the top three launch issues", 25, 4, { priority: "high", focusMin: 120 }),
           t("Shipped", "Tell customers what we fixed", 30, 1),
-          t("Shipped", "Reply to everyone who reported a bug", 32, 1),
         ],
         form: { name: "Report a problem or idea", description: "Found a bug or have an idea? Tell us what happened and where.", fields: ["description", "priority"] },
         rule: { name: "New reports start in Triage", trigger: "task_created", actions: [{ type: "set_section", value: "Triage" }] },
@@ -514,11 +483,7 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         tasks: [
           t("Onboarding", "Send the welcome pack and kickoff agenda", 1, 1, { priority: "high" }),
           t("Onboarding", "Hold the kickoff call", 3, 1.5, { priority: "high", focusMin: 60, description: "**Goals**\n\n**Contacts**\n\n**Ways of working**\n\n**Next steps**" }),
-          t("Onboarding", "Set up the shared folder and reporting", 5, 1),
-          t("Active", "Log time and expenses for invoicing", 5, 0.5, { recurrence: "weekly" }),
-          t("Active", "Send the weekly status email", 7, 0.5, { recurrence: "weekly" }),
-          t("Renewals", "Flag renewals due in the next 90 days", 14, 1, { recurrence: "monthly" }),
-          t("Active", "Hold the monthly account review", 28, 1.5, { focusMin: 60, recurrence: "monthly" }),
+          t("Active", "Send the weekly status email", 9, 0.5, { recurrence: "weekly" }),
           t("Renewals", "Prepare the quarterly business review", 60, 4, { focusMin: 120 }),
         ],
       },
@@ -527,13 +492,10 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "Each piece of client work from scope to sign-off.",
         sections: ["Scoping", "In progress", "Client review", "Delivered"],
         tasks: [
-          t("Scoping", "Confirm the scope and acceptance criteria", 3, 2, { priority: "high", focusMin: 60 }),
-          t("Scoping", "Draft the timeline and milestones", 4, 1.5, { focusMin: 60 }),
-          t("In progress", "Deliver the first draft", 12, 8, { priority: "high", focusMin: 120 }),
-          t("Client review", "Gather feedback in one round", 15, 1),
-          t("In progress", "Make the agreed changes", 19, 4, { focusMin: 90 }),
-          t("Client review", "Get written sign-off", 21, 0.5, { priority: "high" }),
-          t("Delivered", "Invoice and send the wrap-up note", 22, 1),
+          t("Scoping", "Confirm the scope and acceptance criteria", 8, 2, { priority: "high", focusMin: 60 }),
+          t("In progress", "Deliver the first draft", 15, 6, { priority: "high", focusMin: 120 }),
+          t("Client review", "Get written sign-off", 22, 0.5, { priority: "high" }),
+          t("Delivered", "Invoice and send the wrap-up note", 23, 1),
         ],
       },
       {
@@ -541,12 +503,9 @@ export const WORKSPACE_TEMPLATES: readonly WorkspaceTemplate[] = Object.freeze([
         description: "Changes, reports and questions from clients, in one queue.",
         sections: ["New", "Doing", "Waiting on client", "Done"],
         tasks: [
-          t("New", "Triage new requests", 1, 0.25, { recurrence: "weekdays", focusMin: 15 }),
-          t("New", "Agree response times with each client", 2, 1, { priority: "high", description: "**Urgent**: the same working day\n**Normal**: within two working days\n**Small changes**: batched each week" }),
-          t("Doing", "Share the request form with each client", 3, 0.5),
-          t("Waiting on client", "Chase answers that are holding up work", 4, 0.5, { recurrence: "weekly" }),
-          t("Doing", "Write saved replies for common questions", 7, 1.5),
-          t("Done", "Review the month's requests for patterns", 30, 1, { recurrence: "monthly" }),
+          t("New", "Agree response times with each client", 4, 1, { priority: "high", description: "**Urgent**: the same working day\n**Normal**: within two working days\n**Small changes**: batched each week" }),
+          t("Doing", "Share the request form with each client", 9, 0.5),
+          t("Waiting on client", "Chase answers that are holding up work", 11, 0.5, { recurrence: "weekly" }),
         ],
         form: { name: "Client request", description: "Need a change, a report or some help? Tell us what you need and by when.", fields: ["description", "priority", "dueDate"] },
         rule: { name: "New requests land in New", trigger: "task_created", actions: [{ type: "set_section", value: "New" }] },
