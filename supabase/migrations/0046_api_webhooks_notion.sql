@@ -33,7 +33,8 @@
 --   6. Notion: workspace_integrations.notion_token (service-only, like the
 --      Slack URL), notion_status / notion_connect / notion_disconnect (owners
 --      and admins manage; members see status), notion_syncs, notion_links,
---      notion_page_cache (members read; writes via functions / service role).
+--      notion_page_cache (members read; writes via functions / service role),
+--      notion_link_state (the sync's per-field memory; service only).
 --
 -- Needs 0042 (works with or without 0043; creates workspace_integrations if
 -- it's missing, with 0043's shape). Idempotent: safe to run more than once
@@ -1314,6 +1315,29 @@ alter table public.notion_page_cache add constraint notion_page_cache_shape chec
   and (icon is null or length(icon) <= 1000)
   and (url is null or (length(url) <= 1000 and url ~ '^https://')));
 
+-- The sync's memory of each link it keeps: per field, a fingerprint (a short
+-- hash) of the value both sides last agreed on, so a run can tell which side
+-- changed which field and never carries a stale field across. Server-only:
+-- RLS on with no policies and no grants (the notion function's service
+-- connection reads and writes it); a link's state goes with the link.
+create table if not exists public.notion_link_state (
+  link_id    uuid primary key references public.notion_links (id) on delete cascade,
+  synced     jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+alter table public.notion_link_state drop constraint if exists notion_link_state_shape;
+alter table public.notion_link_state add constraint notion_link_state_shape check (
+  jsonb_typeof(synced) = 'object' and pg_column_size(synced) <= 1024);
+alter table public.notion_link_state enable row level security;
+revoke all on public.notion_link_state from public, anon, authenticated;
+do $nls$
+declare pol record;
+begin
+  for pol in select policyname from pg_policies where schemaname = 'public' and tablename = 'notion_link_state' loop
+    execute format('drop policy %I on public.notion_link_state', pol.policyname);
+  end loop;
+end $nls$;
+
 -- members of the workspace read; nobody writes from the app (the notion
 -- function and the definer functions below do)
 do $nt$
@@ -1574,5 +1598,7 @@ insert into public.schema_migrations (version) values ('0046') on conflict (vers
 --   not has_table_privilege('authenticated', 'public.workspace_integrations', 'select')            as notion_token_server_only,
 --   (select relrowsecurity from pg_class where oid = 'public.notion_links'::regclass)
 --   and (select relrowsecurity from pg_class where oid = 'public.notion_syncs'::regclass)
---   and (select relrowsecurity from pg_class where oid = 'public.notion_page_cache'::regclass)    as notion_rls;
+--   and (select relrowsecurity from pg_class where oid = 'public.notion_page_cache'::regclass)
+--   and (select relrowsecurity from pg_class where oid = 'public.notion_link_state'::regclass)
+--   and not has_table_privilege('authenticated', 'public.notion_link_state', 'select')            as notion_rls;
 -- ============================================================

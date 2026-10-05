@@ -14,7 +14,7 @@ sync and link. It doesn't need 0043 or 0045 and works before or after them.
 | Key scope | restrictive policy **"api key scope"** on 16 tables | Only narrows access, and only when the `api` function opens a team key's transaction. The app is unaffected. |
 | API limits | `api_rate_hit()`, `api_idempotency`, `api_idempotency_begin/finish()`, `api_idempotency_commit()` | Service role only, except `api_idempotency_commit`: the `api` function calls it inside the request's own transaction, as the key's user, so a retried POST can never run twice. It only marks that user's own keys' placeholders. |
 | Webhooks | `webhooks`, `webhook_outbox`, `webhook_deliveries`, management functions, capture triggers on tasks / comments / projects / members | Server-only tables. Workspace writers (never guests) see the team's endpoints; the person who added one, or an owner/admin, manages it, and everyone else sees its URL masked. The signing secret is shown once. "Send again" is 10 a minute per endpoint (never for test pings). The dispatcher's claims share sending slots fairly (2 per endpoint, 4 per person, 4 per workspace). Nothing is captured while no endpoint listens. |
-| Notion | `workspace_integrations.notion_*`, `notion_status/connect/disconnect()`, `notion_syncs`, `notion_links`, `notion_page_cache` | The token is server-only (like the Slack URL). Owners/admins connect and set up syncs; members see the status and read syncs and links; members (not guests) link pages to tasks. |
+| Notion | `workspace_integrations.notion_*`, `notion_status/connect/disconnect()`, `notion_syncs`, `notion_links`, `notion_page_cache`, `notion_link_state` | The token and the sync's per-field memory (`notion_link_state`) are server-only (like the Slack URL). Owners/admins connect and set up syncs; members see the status and read syncs and links; members (not guests) link pages to tasks. |
 
 Until each feature's edge function is deployed, its Settings panel explains
 that it isn't switched on yet; the app keeps working as before.
@@ -50,7 +50,9 @@ select
   not has_table_privilege('authenticated', 'public.workspace_integrations', 'select')            as notion_token_server_only,
   (select relrowsecurity from pg_class where oid = 'public.notion_links'::regclass)
   and (select relrowsecurity from pg_class where oid = 'public.notion_syncs'::regclass)
-  and (select relrowsecurity from pg_class where oid = 'public.notion_page_cache'::regclass)    as notion_rls;
+  and (select relrowsecurity from pg_class where oid = 'public.notion_page_cache'::regclass)
+  and (select relrowsecurity from pg_class where oid = 'public.notion_link_state'::regclass)
+  and not has_table_privilege('authenticated', 'public.notion_link_state', 'select')            as notion_rls;
 ```
 
 ### Daily tidy-up (once)

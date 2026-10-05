@@ -1,0 +1,51 @@
+/* ============================================================
+   KANBO — Notion page chips in TaskDetail.                  [0046 · a3]
+   Quiet 32px chips that wrap; the remove button reveals on hover and on
+   keyboard focus (always shown on touch). Motion off under reduced motion.
+   ============================================================ */
+.knl-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+.knl-chip {
+  position: relative; display: inline-flex; align-items: center; max-width: 100%; min-width: 0; min-height: 32px;
+  border-radius: var(--r-md, 8px); background: var(--surface-raised, var(--surface)); box-shadow: inset 0 0 0 1px var(--hairline-strong);
+  transition: box-shadow var(--d-1, 90ms) var(--ease, ease);
+}
+.knl-chip:hover { box-shadow: inset 0 0 0 1px var(--ink-4, var(--hairline-strong)); }
+.knl-link {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 4px 10px;
+  border-radius: var(--r-md, 8px); color: var(--ink); text-decoration: none; font: 600 13px/18px var(--font-ui, var(--font-display));
+}
+.knl-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.knl-ico { display: inline-grid; place-items: center; width: 16px; height: 16px; flex-shrink: 0; font-size: 13px; line-height: 1; border-radius: 3px; object-fit: cover; }
+.knl-title { min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knl-meta { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
+.knl-chip[data-archived] .knl-title { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4, currentColor); }
+.knl-chip .knl-del { margin: 0 4px 0 -6px; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease, ease); }
+.knl-chip:hover .knl-del, .knl-del:focus-visible { opacity: 1; }
+/* (its own rule: a browser without :has() drops only this one) */
+.knl-chip:has(:focus-visible) .knl-del { opacity: 1; }
+
+.knl-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; }
+.knl-input {
+  flex: 1 1 240px; min-width: 0; height: var(--h-md, 32px); padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); color: var(--ink);
+  font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.knl-input::placeholder { color: var(--ink-4); opacity: 1; }
+.knl-input[aria-invalid="true"] { border-color: var(--signal, var(--prio-urgent)); }
+.knl-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.knl-hint, .knl-err { flex-basis: 100%; margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.knl-err { color: var(--signal, var(--prio-urgent)); }
+.knl-note { margin: 6px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.knl-note:empty { margin: 0; }
+
+@media (pointer: coarse) {
+  .knl-chip .knl-del { opacity: 1; }
+  .knl-link { min-height: 44px; }
+}
+@media (max-width: 859px) {
+  .knl-input { font-size: 16px; height: var(--h-lg, 40px); }   /* 16px stops iOS zooming in */
+  .knl-title { max-width: 200px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .knl-chip, .knl-chip .knl-del { transition: none; }
+}

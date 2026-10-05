@@ -1,0 +1,155 @@
+/* ============================================================
+   KANBO — Notion: the Settings panel and the Import wizard.   [0046 · a3]
+   Rows are SetGroup / SetRow (SettingsModal's kset-* look); this adds the
+   connect form, the how-to steps, sync rows, the wizard's steps, preview
+   table and field mapping. Tokens with fallbacks; no backdrop-filter;
+   motion is 160ms and off under prefers-reduced-motion.
+   ============================================================ */
+
+* + .knt { margin-top: 28px; }
+.knt > .kset-intro:first-child { margin-top: 0; }
+.knt-checking { display: inline-flex; align-items: center; gap: 6px; }
+.knt-quiet { color: var(--ink-3); font-weight: 500; }
+
+/* ---- connect / replace ---- */
+.knt-form { display: grid; gap: 16px; padding: 4px 16px 16px; }
+.knt-token { font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; letter-spacing: 0; padding-right: 64px; }
+.knt-token::placeholder { font-family: var(--font-ui, var(--font-display)); }
+.knt-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.knt-help { border-radius: var(--r-md, 8px); background: var(--fill-1); }
+.knt-help > summary {
+  display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: var(--r-md, 8px);
+  list-style: none; cursor: pointer; user-select: none; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2);
+  transition: color var(--d-1, 90ms) var(--ease, ease);
+}
+.knt-help > summary::-webkit-details-marker { display: none; }
+.knt-help > summary:hover { color: var(--ink); }
+.knt-help > summary > svg { flex-shrink: 0; color: var(--ink-3); transition: transform var(--d-2, 160ms) var(--ease, ease); }
+.knt-help[open] > summary > svg { transform: rotate(90deg); }
+.knt-help > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.knt-steps { display: grid; gap: 6px; margin: 0; padding: 0 16px 12px 34px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.knt-steps strong { font-weight: 600; color: var(--ink); }
+.knt-steps code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--surface, transparent); }
+.knt-steps a { font-weight: 600; color: var(--accent-text, var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
+.knt-steps a:hover { text-decoration-thickness: 2px; }
+
+/* ---- messages (role="status" regions stay rendered while empty) ---- */
+.knt-msg { display: flex; align-items: flex-start; gap: 6px; margin: -4px 16px 12px 48px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); text-wrap: pretty; }
+.knt-msg > svg { flex-shrink: 0; margin-top: 1px; }
+.knt-msg[data-tone="signal"] { font-weight: 500; color: var(--signal, var(--prio-urgent)); }
+.knt .kbtn.knt-off { color: var(--signal, var(--prio-urgent)); }
+.knt-import { margin: -6px -8px -6px 0; }
+
+/* ---- a sync ---- */
+.knt-sync + .knt-sync { border-top: 1px solid var(--hairline); }
+.knt-sync-title { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+.knt-sync-db { overflow-wrap: anywhere; }
+.knt-sync-arrow { flex-shrink: 0; color: var(--ink-3); }
+.knt-sync-project { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; color: var(--ink-2); overflow-wrap: anywhere; }
+.knt-sync-desc { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.knt-sync-err { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); text-wrap: pretty; }
+.knt-sync-err > svg { flex-shrink: 0; margin-top: 1px; }
+.knt-sync-acts { flex-wrap: wrap; justify-content: flex-end; }
+.knt-sync .kset-panel { margin-top: 0; }
+
+/* ---- the wizard ---- */
+.knt-wz { display: grid; gap: 16px; min-width: 0; }
+.knt-wz section { display: grid; gap: 12px; min-width: 0; }
+.knt-wz-steps { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.knt-wz-steps li { display: inline-flex; align-items: center; gap: 6px; }
+.knt-wz-steps li[data-state="now"] { color: var(--ink); font-weight: 600; }
+.knt-wz-steps li[data-state="done"] { color: var(--ink-2); }
+.knt-wz-dot {
+  display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--hairline-strong); font-variant-numeric: tabular-nums;
+}
+.knt-wz-steps li[data-state="now"] .knt-wz-dot { background: var(--accent-fill, var(--accent)); color: var(--on-accent, #fff); box-shadow: none; }
+.knt-wz-steps li[data-state="done"] .knt-wz-dot { color: var(--ok, var(--st-done)); }
+.knt-wz-count { margin-right: auto; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.knt-wz-h { display: flex; align-items: center; gap: 8px; margin: 0; font: 600 15px/22px var(--font-ui, var(--font-display)); color: var(--ink); overflow-wrap: anywhere; }
+.knt-wz-h:focus { outline: none; }
+.knt-wz-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.knt-wz-p { margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.knt-wz-hold { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 12px; border-radius: var(--r-md, 8px); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline-strong); font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--ink); text-wrap: pretty; }
+.knt-wz-empty { margin: 0; padding: 16px; border-radius: var(--r-md, 8px); background: var(--fill-1); font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.knt-search { position: relative; }
+.knt-search > svg { position: absolute; left: 12px; top: 12px; color: var(--ink-3); pointer-events: none; }
+.knt-search .kset-input { padding-left: 36px; }
+.knt-ico { display: inline-grid; place-items: center; width: 20px; height: 20px; flex-shrink: 0; font-size: 15px; line-height: 1; border-radius: 4px; object-fit: cover; }
+
+.knt-dbs { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+.knt-db {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 8px 12px; border: 0; border-radius: var(--r-md, 8px);
+  background: transparent; color: var(--ink); text-align: left; cursor: pointer; font: 500 13px/20px var(--font-ui, var(--font-display));
+  transition: background-color var(--d-1, 90ms) var(--ease, ease);
+}
+.knt-db:hover { background: var(--fill-1); }
+.knt-db:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.knt-db-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knt-db > .knt-quiet { flex-shrink: 0; font-size: 12px; }
+.knt-db > svg { flex-shrink: 0; color: var(--ink-3); }
+
+/* preview: five pages, scrolling sideways inside its own box */
+.knt-preview { max-width: 100%; overflow-x: auto; border-radius: var(--r-md, 8px); box-shadow: inset 0 0 0 1px var(--hairline-strong); }
+.knt-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.knt-preview table { width: max-content; min-width: 100%; border-collapse: collapse; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.knt-preview th { position: sticky; top: 0; padding: 8px 12px; text-align: left; font-weight: 600; color: var(--ink-3); background: var(--fill-1); white-space: nowrap; }
+.knt-preview td { max-width: 220px; padding: 8px 12px; border-top: 1px solid var(--hairline); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knt-preview td:first-child { color: var(--ink); font-weight: 600; }
+
+/* which field feeds what */
+.knt-map { display: grid; gap: 2px; }
+.knt-map-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; min-height: 48px; padding: 6px 0; border-top: 1px solid var(--hairline); }
+.knt-map-row:first-child { border-top: 0; }
+.knt-map-label { display: grid; gap: 2px; flex: 1 1 200px; min-width: 0; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.knt-map-label > .knt-quiet { font-size: 12px; line-height: 16px; }
+.knt-map-fixed { min-width: 200px; padding: 0 10px; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.knt-select {
+  height: var(--h-md, 32px); min-width: 200px; max-width: 100%; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.knt-select[data-size="sm"] { min-width: 150px; height: 28px; }
+.knt-select:disabled { opacity: 0.45; cursor: not-allowed; }
+.knt-values { display: grid; gap: 6px; margin: 0 0 8px; padding: 10px 12px; border-radius: var(--r-md, 8px); background: var(--fill-1); }
+.knt-value { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.knt-value > label { flex: 1 1 140px; min-width: 0; }
+.knt-opt { display: inline-block; max-width: 100%; padding: 1px 8px; border-radius: 999px; background: var(--surface-raised, var(--surface)); box-shadow: inset 0 0 0 1px var(--hairline-strong);
+  font: 600 12px/18px var(--font-ui, var(--font-display)); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* where the tasks go */
+.knt-choice { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.knt-radio { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); cursor: pointer; }
+.knt-radio input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.knt-radio:has(input:disabled) { color: var(--ink-3); cursor: not-allowed; }
+.knt-newp .kset-field > label { display: block; margin: 0 0 6px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.knt-keep { display: grid; gap: 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.knt-dir { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.knt-dir-label { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+
+/* done */
+.knt-done { justify-items: start; }
+.knt-done-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in oklch, var(--ok, var(--st-done)) 14%, transparent); color: var(--ok, var(--st-done)); }
+.knt-done-notes { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.knt-done-notes li { display: flex; align-items: flex-start; gap: 6px; text-wrap: pretty; }
+.knt-done-notes svg { flex-shrink: 0; margin-top: 1px; color: var(--warn, var(--signal, var(--prio-urgent))); }
+
+@keyframes kntIn { from { opacity: 0.35; translate: 0 4px; } }
+.knt-in { animation: kntIn var(--d-2, 160ms) var(--ease, ease); }
+
+@media (max-width: 859px) {
+  .knt-form { padding: 4px 12px 12px; }
+  .knt-token, .knt-select, .knt-search .kset-input { font-size: 16px; }   /* 16px stops iOS zooming in */
+  .knt-select { height: var(--h-lg, 40px); min-width: 0; width: 100%; }
+  .knt-map-fixed { min-width: 0; padding: 0; }
+  .knt-acts > .kbtn { flex: 1 1 auto; }
+  .knt-msg { margin-left: 16px; }
+  .knt-sync-acts { margin-left: 0; justify-content: flex-start; }
+}
+@media (pointer: coarse) {
+  .knt-help > summary { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .knt-in { animation: none; }
+  .knt-help > summary, .knt-help > summary > svg, .knt-db { transition: none; }
+}
