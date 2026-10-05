@@ -19,7 +19,7 @@ const KEYS: Record<string, ApiPrincipal> = {
 };
 const WRITE = "kanbo_sk_" + "w".repeat(43), READ = "kanbo_pk_" + "r".repeat(43), TEAM = "kanbo_sk_" + "t".repeat(43);
 
-function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: boolean; finishFailures?: number } = {}) {
+function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: boolean | Error; finishFailures?: number } = {}) {
   const scopes: UserScope[] = [];
   const idem = new Map<string, { hash: string; status: number; response: unknown; committed?: boolean; applied?: boolean }>();
   const serviceCalls: string[] = [];
@@ -68,7 +68,7 @@ function setup(routes?: Route[], opts: { rateAllowed?: boolean; verifyThrows?: b
   const logs: unknown[][] = [];
   const deps: ApiDeps = {
     db, service, appUrl: "https://www.kanbo.co.uk", apiBase: BASE, routes,
-    verify: async (k) => { if (opts.verifyThrows) throw new Error("db down"); return KEYS[k] ?? null; },
+    verify: async (k) => { if (opts.verifyThrows) throw opts.verifyThrows instanceof Error ? opts.verifyThrows : new Error("db down"); return KEYS[k] ?? null; },
     log: (...a) => logs.push(a),
     sleep: async () => {},
   };
@@ -117,6 +117,19 @@ describe("who is calling", () => {
     expect(r.status).toBe(503);
     expect(r.res.headers.get("Retry-After")).toBe("5");
     expect(logs.length).toBe(1);
+  });
+  it("503 for a team key while the \"api key scope\" policies are missing (fails closed, says so in the log)", async () => {
+    const raised = Object.assign(new Error("api key scope incomplete: run 0046_api_webhooks_notion.sql again"), { code: "P0001" });
+    const { call, logs, db } = setup(routes, { verifyThrows: raised });
+    const r = await call(TEAM, "GET", "/echo");
+    expect(r.status).toBe(503);
+    expect(isError(r.json, 503, "internal")).toBe(true);
+    expect(r.json.error.message).toMatch(/^Team keys are paused/);
+    expect(r.json.error.message).not.toMatch(/scope|policy|0046|P0001/);
+    expect(r.res.headers.get("Retry-After")).toBe("300");
+    expect(db.withUser).not.toHaveBeenCalled();
+    expect(logs.length).toBe(1);
+    expect(String(logs[0][1])).toMatch(/api key scope.*0046/);
   });
   it("429 over the rate limit, with Retry-After and the X-RateLimit headers", async () => {
     const { call, db } = setup(routes, { rateAllowed: false });

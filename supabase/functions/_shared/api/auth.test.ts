@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   accessOfKey, API_KEY_RE, API_RATE, authenticate, bearerToken, hitRate, looksLikeApiKey, methodAllowed, rateHeaders,
-  rateKey, rowToPrincipal, rpcVerifier, scopeFor, sha256Hex, sqlVerifier,
+  isScopeMissing, rateKey, rowToPrincipal, rpcVerifier, SCOPE_MISSING, scopeFor, sha256Hex, sqlVerifier,
 } from "./auth.ts";
 import type { ApiPrincipal, Tx } from "./types.ts";
 
@@ -117,6 +117,17 @@ describe("verifiers", () => {
     expect(await empty(READ_KEY)).toBeNull();
     const broken = rpcVerifier("https://abc.supabase.co", "k", (async () => new Response("x", { status: 500 })) as unknown as typeof fetch);
     await expect(broken(READ_KEY)).rejects.toThrow(/500/);
+  });
+  it("team keys switched off (the scope policies are missing) is told apart from a database failure", async () => {
+    const raised = Object.assign(new Error("api key scope incomplete: run 0046_api_webhooks_notion.sql again"), { code: "P0001" });
+    const sql = sqlVerifier({ query: async () => { throw raised; } });
+    const err = await sql(WRITE_KEY).catch((e) => e);
+    expect(isScopeMissing(err)).toBe(true);
+    expect(isScopeMissing(new Error("connection refused"))).toBe(false);
+    expect(isScopeMissing(null)).toBe(false);
+    const rpc = rpcVerifier("https://abc.supabase.co", "k", (async () => new Response(JSON.stringify({ code: "P0001", message: raised.message }), { status: 400 })) as unknown as typeof fetch);
+    expect(isScopeMissing(await rpc(WRITE_KEY).catch((e) => e))).toBe(true);
+    expect(SCOPE_MISSING).toBe("api key scope incomplete");
   });
 });
 

@@ -8,7 +8,8 @@
 // SHA-256. Verification is public.verify_api_key(key) — service role only —
 // which also refuses revoked / expired keys, keys whose owner is suspended
 // or unapproved, and workspace keys whose creator is no longer an owner or
-// admin there. Run it on the privileged connection (db.ts createApiDb().service)
+// admin there. It raises SCOPE_MISSING for a workspace key while any
+// "api key scope" policy is missing (the pipeline answers 503). Run it on the privileged connection (db.ts createApiDb().service)
 // or through PostgREST with the service key (rpcVerifier).
 //
 // After authentication, EVERYTHING the request reads or writes runs through
@@ -69,6 +70,14 @@ export function rowToPrincipal(row: unknown): ApiPrincipal | null {
 /** Looks a key up; null when it isn't valid. */
 export type VerifyKey = (key: string) => Promise<ApiPrincipal | null>;
 
+/** What verify_api_key() raises for a team key while the "api key scope" policies are missing. */
+export const SCOPE_MISSING = "api key scope incomplete";
+
+/** Did verification fail because team keys are switched off (the scope policies are missing)? */
+export function isScopeMissing(e: unknown): boolean {
+  return String((e as { message?: unknown })?.message ?? "").includes(SCOPE_MISSING);
+}
+
 /** Verify on the privileged Postgres connection (db.ts createApiDb().service). */
 export function sqlVerifier(service: Tx): VerifyKey {
   return async (key) => {
@@ -88,7 +97,10 @@ export function rpcVerifier(supabaseUrl: string, serviceKey: string, fetchImpl: 
       headers: { "Content-Type": "application/json", apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
       body: JSON.stringify({ p_key: key }),
     });
-    if (!res.ok) throw new Error(`verify_api_key failed (${res.status})`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`verify_api_key failed (${res.status})${text.includes(SCOPE_MISSING) ? `: ${SCOPE_MISSING}` : ""}`);
+    }
     const rows = await res.json();
     return rowToPrincipal(Array.isArray(rows) ? rows[0] : rows);
   };

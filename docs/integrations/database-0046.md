@@ -11,7 +11,7 @@ sync and link. It doesn't need 0043 or 0045 and works before or after them.
 |---|---|---|
 | Task change time | `tasks.updated_at` + trigger | Set by the server on every real change (a no-op save keeps it; nobody can set it by hand). Existing tasks read as the time 0046 first ran. |
 | API keys | `api_keys`, `create_api_key()`, `list_api_keys()`, `revoke_api_key()`, `verify_api_key()` | The key is made in the database and shown **once**; only its SHA-256 is stored. People read their own keys (never the hash). Team keys: owners/admins only. `verify_api_key` is service-role only. A suspended or unapproved person's keys stop at once; a team key stops if its creator is no longer an owner/admin there. |
-| Key scope | restrictive policy **"api key scope"** on 16 tables | Only narrows access, and only when the `api` function opens a team key's transaction. The app is unaffected. |
+| Key scope | restrictive policy **"api key scope"** on 16 tables, `api_scope_restore()`, `api_scope_intact()` | Only narrows access, and only when the `api` function opens a team key's transaction. The app is unaffected. Fails closed: `verify_api_key` refuses team keys while any policy is missing, and the `api` function also filters by the key's workspace itself. |
 | API limits | `api_rate_hit()`, `api_idempotency`, `api_idempotency_begin/finish()`, `api_idempotency_commit()` | Service role only, except `api_idempotency_commit`: the `api` function calls it inside the request's own transaction, as the key's user, so a retried POST can never run twice. It only marks that user's own keys' placeholders. |
 | Webhooks | `webhooks`, `webhook_outbox`, `webhook_deliveries`, management functions, capture triggers on tasks / comments / projects / members | Server-only tables. Workspace writers (never guests) see the team's endpoints; the person who added one, or an owner/admin, manages it, and everyone else sees its URL masked. The signing secret is shown once. "Send again" is 10 a minute per endpoint (never for test pings). The dispatcher's claims share sending slots fairly (2 per endpoint, 4 per person, 4 per workspace). Nothing is captured while no endpoint listens. |
 | Notion | `workspace_integrations.notion_*`, `notion_status/connect/disconnect()`, `notion_syncs`, `notion_links`, `notion_page_cache`, `notion_link_state` | The token and the sync's per-field memory (`notion_link_state`) are server-only (like the Slack URL). Owners/admins connect and set up syncs; members see the status and read syncs and links; members (not guests) link pages to tasks. |
@@ -39,8 +39,7 @@ select
   and has_column_privilege('authenticated', 'public.api_keys', 'prefix', 'select')
   and not has_table_privilege('authenticated', 'public.api_keys', 'insert')                     as key_hashes_hidden,
   not has_function_privilege('authenticated', 'public.verify_api_key(text)', 'execute')          as verify_service_only,
-  (select count(*) from pg_policies where schemaname = 'public' and policyname = 'api key scope'
-    and permissive = 'RESTRICTIVE') >= 10                                                        as api_key_scope,
+  public.api_scope_intact()                                                                      as api_key_scope,
   not has_table_privilege('authenticated', 'public.webhooks', 'select')
   and not has_table_privilege('authenticated', 'public.webhook_outbox', 'select')
   and not has_table_privilege('authenticated', 'public.webhook_deliveries', 'select')            as webhooks_server_only,
@@ -84,14 +83,21 @@ just on the one-minute schedule.
 
 ## If 0041 or 0042 is ever run again
 
-Both drop and recreate every policy on the content tables, which removes the
-"api key scope" policies. Run 0046 again straight afterwards (the
-`api_key_scope` check above turns `false` until you do).
+Both drop and recreate every policy on the content tables. Once 0046 is in,
+they put the "api key scope" policies back themselves at the end
+(`api_scope_restore()`), so nothing more is needed. If anything else ever
+removes one, team keys answer 503 ("Team keys are paused…") until 0046 is run
+again; personal keys and the app carry on, and the `api_key_scope` check
+above says `false` meanwhile.
 
 ## How it was tested
 
 A PGlite replay of every migration (0046 applied four times, with and
-without pgcrypto, and alongside 0045): 215 attack and legit cases. Members
+without pgcrypto, and alongside 0045): 215 attack and legit cases, plus 65
+for the key scope failing closed (0041 / 0042 run again; a policy missing,
+permissive or for reads only, or row security off; every policy gone with
+verification bypassed, where the handlers alone still keep a team key in its
+workspace). Members
 reading key hashes, webhook secrets or the Notion token; guests making write
 keys or webhooks; using one workspace's key on another; read keys writing;
 suspended people's keys; SSRF-shaped URLs; and the full delivery / retry /

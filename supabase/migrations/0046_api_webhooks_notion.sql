@@ -19,6 +19,9 @@
 --      content table then refuses rows from any other workspace (and personal
 --      rows). Unset (the app, realtime, every other function) it allows
 --      everything, so the app is unaffected. It can only ever narrow access.
+--      It fails closed: the api function also filters every read by the
+--      key's workspace itself, and verify_api_key() refuses team keys while
+--      any of these policies is missing (api_scope_intact()).
 --   4. Rate limits + idempotency for the API: api_rate_hit() on 0042's
 --      rate_limits; api_idempotency stores Idempotency-Key replays for 24h.
 --   5. Webhooks: webhooks (signing secret service-only), webhook_outbox
@@ -39,9 +42,10 @@
 -- Needs 0042 (works with or without 0043; creates workspace_integrations if
 -- it's missing, with 0043's shape). Idempotent: safe to run more than once
 -- (re-running keeps every key, webhook, delivery, token, sync and link).
--- If 0041 or 0042 is ever run again (they drop and recreate every policy on
--- the content tables), run this file again straight afterwards so the
--- "api key scope" policies come back.
+-- 0041 and 0042 drop and recreate every policy on the content tables when
+-- they run; they put the "api key scope" policies back themselves
+-- (api_scope_restore()). If anything else ever removes them, team keys stop
+-- (503) until this file is run again; personal keys and the app carry on.
 -- ============================================================
 
 -- ---------- 0. preflight ----------
@@ -283,6 +287,12 @@ begin
   if left(p_key, 9) <> want then return; end if;
   if not public.user_can_act(k.user_id) then return; end if;
   if k.workspace_id is not null and public.user_ws_role(k.user_id, k.workspace_id) not in ('owner', 'admin') then return; end if;
+  -- a team key never runs unscoped: while any "api key scope" policy is
+  -- missing, team keys are refused (the api function answers 503) until
+  -- this file runs again
+  if k.workspace_id is not null and not public.api_scope_intact() then
+    raise exception 'api key scope incomplete: run 0046_api_webhooks_notion.sql again';
+  end if;
   if k.last_used_at is null or k.last_used_at < now() - interval '1 minute' then
     update public.api_keys a set last_used_at = now() where a.id = k.id;
   end if;
@@ -316,25 +326,55 @@ $$;
 grant execute on function public.api_scope_ok(uuid) to public;
 grant execute on function public.api_scope_ok_task(uuid) to public;
 
-do $scope$
-declare t text;
+-- The tables the scope covers and each one's check (one list: the policies,
+-- api_scope_restore() and api_scope_intact() all read it).
+create or replace function public.api_scope_tables()
+returns table (table_name text, check_sql text) language sql immutable set search_path = pg_catalog as $$
+  select t, 'public.api_scope_ok(workspace_id)'
+    from unnest(array['tasks','projects','sections','tags','custom_field_defs','goals','portfolios',
+                      'status_updates','automation_rules','forms','workspace_members']) as t
+  union all
+  select t, 'public.api_scope_ok_task(task_id)'
+    from unnest(array['comments','task_dependencies','subtasks','task_events']) as t
+  union all
+  select 'workspaces', 'public.api_scope_ok(id)';
+$$;
+revoke execute on function public.api_scope_tables() from public, anon, authenticated;
+
+-- (Re)creates every "api key scope" policy: run below, and by 0041 / 0042
+-- when either is run again (they drop every policy on these tables first).
+-- Returns how many tables it covered (a missing table is skipped).
+create or replace function public.api_scope_restore()
+returns integer language plpgsql set search_path = public as $$
+declare r record; n integer := 0;
 begin
-  foreach t in array array['tasks','projects','sections','tags','custom_field_defs','goals','portfolios',
-                           'status_updates','automation_rules','forms','workspace_members'] loop
-    if to_regclass('public.' || t) is not null then
-      execute format('drop policy if exists "api key scope" on public.%I', t);
-      execute format('create policy "api key scope" on public.%I as restrictive for all using (public.api_scope_ok(workspace_id)) with check (public.api_scope_ok(workspace_id))', t);
-    end if;
+  for r in select s.table_name, s.check_sql from public.api_scope_tables() s loop
+    if to_regclass('public.' || r.table_name) is null then continue; end if;
+    execute format('drop policy if exists "api key scope" on public.%I', r.table_name);
+    execute format('create policy "api key scope" on public.%I as restrictive for all using (%s) with check (%s)',
+                   r.table_name, r.check_sql, r.check_sql);
+    n := n + 1;
   end loop;
-  foreach t in array array['comments','task_dependencies','subtasks','task_events'] loop
-    if to_regclass('public.' || t) is not null then
-      execute format('drop policy if exists "api key scope" on public.%I', t);
-      execute format('create policy "api key scope" on public.%I as restrictive for all using (public.api_scope_ok_task(task_id)) with check (public.api_scope_ok_task(task_id))', t);
-    end if;
-  end loop;
-  drop policy if exists "api key scope" on public.workspaces;
-  create policy "api key scope" on public.workspaces as restrictive for all
-    using (public.api_scope_ok(id)) with check (public.api_scope_ok(id));
+  return n;
+end; $$;
+revoke execute on function public.api_scope_restore() from public, anon, authenticated;
+
+-- Is every one there (restrictive, for all commands, row security on)?
+-- verify_api_key() refuses team keys while it isn't, so the api function
+-- never runs a team key unscoped.
+create or replace function public.api_scope_intact()
+returns boolean language sql stable set search_path = pg_catalog, public as $$
+  select coalesce(bool_and(c.relrowsecurity and exists (
+           select 1 from pg_catalog.pg_policy p
+            where p.polrelid = c.oid and p.polname = 'api key scope' and not p.polpermissive and p.polcmd = '*')), false)
+    from public.api_scope_tables() s
+    join pg_catalog.pg_class c on c.oid = to_regclass('public.' || s.table_name);
+$$;
+revoke execute on function public.api_scope_intact() from public, anon, authenticated;
+
+do $scope$
+begin
+  perform public.api_scope_restore();
 end $scope$;
 
 -- ---------- 4. API rate limits + idempotency (service role only) ----------
@@ -1555,6 +1595,7 @@ begin
   grant execute on function public.api_housekeeping() to service_role;
   grant execute on function public.user_can_act(uuid) to service_role;
   grant execute on function public.user_ws_role(uuid, uuid) to service_role;
+  grant execute on function public.api_scope_intact() to service_role;
 exception when undefined_object then null; end $svc$;
 
 -- ---------- 8. realtime: syncs and links stream to members ----------
@@ -1587,8 +1628,7 @@ insert into public.schema_migrations (version) values ('0046') on conflict (vers
 --   and has_column_privilege('authenticated', 'public.api_keys', 'prefix', 'select')
 --   and not has_table_privilege('authenticated', 'public.api_keys', 'insert')                     as key_hashes_hidden,
 --   not has_function_privilege('authenticated', 'public.verify_api_key(text)', 'execute')          as verify_service_only,
---   (select count(*) from pg_policies where schemaname = 'public' and policyname = 'api key scope'
---     and permissive = 'RESTRICTIVE') >= 10                                                        as api_key_scope,
+--   public.api_scope_intact()                                                                      as api_key_scope,
 --   not has_table_privilege('authenticated', 'public.webhooks', 'select')
 --   and not has_table_privilege('authenticated', 'public.webhook_outbox', 'select')
 --   and not has_table_privilege('authenticated', 'public.webhook_deliveries', 'select')            as webhooks_server_only,

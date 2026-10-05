@@ -8,6 +8,11 @@
 // helpers the policies use) — never a SECURITY DEFINER function that
 // would see past the key's scope.
 //
+// A team key's workspace is also filtered for explicitly (keyWorkspace):
+// every row a handler reads by id or lists must be in it, so the key stays
+// inside its workspace even if the restrictive policies were ever missing
+// (verify_api_key also refuses team keys then). Personal keys: no filter.
+//
 // The checks here come on top of RLS so callers get clear answers:
 // 404 for things they can't see, 403 for things they can see but not
 // change, 422 naming the field. RLS stays the last word either way.
@@ -26,7 +31,7 @@ import {
   type ApiMe,
 } from "./serialise.ts";
 import {
-  ApiFail, asUser, assertInScope, badQuery, BUILTIN_TAGS, etagFor, etagMatches, forbidden, invalid, list, notFound, ok,
+  ApiFail, asUser, assertInScope, badQuery, BUILTIN_TAGS, etagFor, etagMatches, forbidden, invalid, keyWorkspace, list, notFound, ok,
   OUTSIDE_WORKSPACE, preconditionFailed, Sql,
 } from "./core.ts";
 import {
@@ -88,18 +93,28 @@ async function workspaceVisible(tx: Tx, ws: string): Promise<boolean> {
   return rs[0]?.ok === true;
 }
 
-async function loadProject(tx: Tx, id: string): Promise<Row | null> {
-  const rs = await tx.query(`select ${PROJECT_COLS} from public.projects p where p.id = $1::uuid`, [id]);
+/** SQL: `col` is in the key's workspace ($n holds keyWorkspace(): null = a personal key, no filter). */
+const inKeyWs = (col: string, n: number) => `($${n}::uuid is null or ${col} = $${n}::uuid)`;
+
+/** A project the key can reach (RLS, and a team key's own workspace), or null. */
+async function loadProject(tx: Tx, id: string, kws: string | null): Promise<Row | null> {
+  const rs = await tx.query(`select ${PROJECT_COLS} from public.projects p where p.id = $1::uuid and ${inKeyWs("p.workspace_id", 2)}`, [id, kws]);
   return rs[0] ?? null;
 }
 
-async function loadTask(tx: Tx, id: string, extras = ""): Promise<Row | null> {
-  const rs = await tx.query(`select ${TASK_COLS}${extras} from public.tasks t where t.id = $1::uuid`, [id]);
+/** A task the key can reach (RLS, and a team key's own workspace), or null. `extras` may use $2 (kws). */
+async function loadTask(tx: Tx, id: string, kws: string | null, extras = ""): Promise<Row | null> {
+  const rs = await tx.query(`select ${TASK_COLS}${extras} from public.tasks t where t.id = $1::uuid and ${inKeyWs("t.workspace_id", 2)}`, [id, kws]);
   return rs[0] ?? null;
+}
+
+/** Is there a task with this id the key can reach? */
+async function taskVisible(tx: Tx, id: string, kws: string | null): Promise<boolean> {
+  return (await tx.query(`select 1 from public.tasks t where t.id = $1::uuid and ${inKeyWs("t.workspace_id", 2)}`, [id, kws])).length > 0;
 }
 
 /** tag id → label / colour for the tags these tasks carry (built-ins + the tags table, as the user sees it). */
-async function tagMap(tx: Tx, rows: Row[]): Promise<Map<string, { label: string | null; color: string | null }>> {
+async function tagMap(tx: Tx, rows: Row[], kws: string | null): Promise<Map<string, { label: string | null; color: string | null }>> {
   const ids = new Set<string>();
   for (const r of rows) for (const t of (Array.isArray(r.tags) ? r.tags : [])) ids.add(String(t));
   const map = new Map<string, { label: string | null; color: string | null }>();
@@ -108,14 +123,14 @@ async function tagMap(tx: Tx, rows: Row[]): Promise<Map<string, { label: string 
   if (uuids.length) {
     const rs = await tx.query<{ id: string; label: string; color: string }>(
       `select g.id::text as id, g.label, g.color from public.tags g
-        where g.id in (select (jsonb_array_elements_text($1::jsonb))::uuid)`, [JSON.stringify(uuids)]);
+        where g.id in (select (jsonb_array_elements_text($1::jsonb))::uuid) and ${inKeyWs("g.workspace_id", 2)}`, [JSON.stringify(uuids), kws]);
     for (const r of rs) map.set(r.id, { label: r.label, color: r.color });
   }
   return map;
 }
 
 async function serialiseTasks(ctx: RouteContext, tx: Tx, rows: Row[]) {
-  const tags = await tagMap(tx, rows);
+  const tags = await tagMap(tx, rows, keyWorkspace(ctx.principal));
   return rows.map((r) => serialiseTask(r, { appUrl: ctx.appUrl, tags }));
 }
 
@@ -286,7 +301,7 @@ export async function listWorkspaces(ctx: RouteContext): Promise<Response> {
   if (unknownParams(ctx.url.searchParams, []).length) throw badQuery({ query: "This endpoint takes no query parameters." });
   const rows = await asUser(ctx, (tx) => tx.query(
     `select w.id::text as id, w.name, w.logo_url, w.owner_id::text as owner_id, w.created_at, public.ws_role(w.id) as role
-       from public.workspaces w order by w.created_at, w.id limit 500`));
+       from public.workspaces w where ${inKeyWs("w.id", 1)} order by w.created_at, w.id limit 500`, [keyWorkspace(ctx.principal)]));
   return ok(ctx, list(rows.filter((r) => r.role !== "none").map(serialiseWorkspace), null));
 }
 
@@ -329,6 +344,8 @@ export async function listProjects(ctx: RouteContext): Promise<Response> {
     const where: string[] = ["true"];
     if (v.workspace === "personal") where.push("p.workspace_id is null");
     else if (v.workspace) where.push(`p.workspace_id = ${q.p(v.workspace)}::uuid`);
+    const kws = keyWorkspace(ctx.principal);
+    if (kws) where.push(`p.workspace_id = ${q.p(kws)}::uuid`);
     if (!v.includeArchived) where.push("p.archived_at is null");
     const sql = `select ${PROJECT_COLS}, ${cursorKeySql("p.created_at")} as _ck from public.projects p
       where ${where.join(" and ")}${after(q, cur, "p.created_at", "p.id", "asc")}
@@ -341,7 +358,7 @@ export async function listProjects(ctx: RouteContext): Promise<Response> {
 
 export async function getProject(ctx: RouteContext): Promise<Response> {
   const id = pathId(ctx, "Project");
-  const row = await asUser(ctx, (tx) => loadProject(tx, id));
+  const row = await asUser(ctx, (tx) => loadProject(tx, id, keyWorkspace(ctx.principal)));
   if (!row) throw notFound("Project");
   return ok(ctx, serialiseProject(row, { appUrl: ctx.appUrl }));
 }
@@ -363,7 +380,7 @@ export async function createProject(ctx: RouteContext): Promise<Response> {
        values (${me}::uuid, ${me}::uuid, ${q.p(v.name)}, ${q.p(ws)}::uuid, coalesce(${q.p(v.emoji ?? null)}, '📁'),
                coalesce(${q.p(v.color ?? null)}, 'oklch(0.74 0.14 230)'), ${q.p(v.description ?? null)}, ${q.p(v.status ?? null)})
        returning id::text as id`, q.params);
-    return loadProject(tx, made[0].id);
+    return loadProject(tx, made[0].id, keyWorkspace(p));
   });
   if (!row) throw new ApiFail(500, "internal", "The project was made but couldn't be read back.");
   const out = serialiseProject(row, { appUrl: ctx.appUrl });
@@ -375,18 +392,19 @@ export async function updateProject(ctx: RouteContext): Promise<Response> {
   const c = checkProjectPatch(ctx.body ?? {});
   if (!c.ok) throw invalid(c.fields);
   const v = c.value;
+  const kws = keyWorkspace(ctx.principal);
   const row = await asUser(ctx, async (tx) => {
     const rs = await tx.query<{ can_edit: boolean }>(
       `select case when p.workspace_id is null then p.user_id = auth.uid() and public.can_act()
                    else public.can_write(p.workspace_id) end as can_edit
-         from public.projects p where p.id = $1::uuid`, [id]);
+         from public.projects p where p.id = $1::uuid and ${inKeyWs("p.workspace_id", 2)}`, [id, kws]);
     if (!rs[0]) throw notFound("Project");
     if (!rs[0].can_edit) throw forbidden("You can see this project but can't change it.");
     const ifMatch = ctx.req.headers.get("if-match");
     if (ifMatch !== null) {
       // held until this transaction ends: nobody changes it between the check and the write
       await tx.query(`select 1 from public.projects p where p.id = $1::uuid for update`, [id]);
-      const now = await loadProject(tx, id);
+      const now = await loadProject(tx, id, kws);
       if (!now || !etagMatches(ifMatch, await etagFor(serialiseProject(now, { appUrl: ctx.appUrl })))) throw preconditionFailed("project");
     }
     const q = new Sql();
@@ -398,10 +416,11 @@ export async function updateProject(ctx: RouteContext): Promise<Response> {
     if (v.status !== undefined) sets.push(`status = ${q.p(v.status)}`);
     if (v.archived !== undefined) sets.push(v.archived ? "archived_at = coalesce(archived_at, now())" : "archived_at = null");
     if (sets.length) {
-      const done = await tx.query(`update public.projects set ${sets.join(", ")} where id = ${q.p(id)}::uuid returning id`, q.params);
+      const done = await tx.query(`update public.projects p set ${sets.join(", ")}
+        where p.id = ${q.p(id)}::uuid and ${inKeyWs("p.workspace_id", q.params.length + 1)} returning p.id`, [...q.params, kws]);
       if (!done.length) throw forbidden("You can see this project but can't change it.");
     }
-    return loadProject(tx, id);
+    return loadProject(tx, id, kws);
   });
   if (!row) throw notFound("Project");
   const out = serialiseProject(row, { appUrl: ctx.appUrl });
@@ -418,11 +437,12 @@ export async function listSections(ctx: RouteContext): Promise<Response> {
   if (!project) throw badQuery({ project: "Say which project: ?project=<id>." });
   if (!isUuid(project)) throw badQuery({ project: "Use a project id." });
   const pid = project.toLowerCase();
+  const kws = keyWorkspace(ctx.principal);
   const rows = await asUser(ctx, async (tx) => {
-    if (!(await loadProject(tx, pid))) throw notFound("Project");
+    if (!(await loadProject(tx, pid, kws))) throw notFound("Project");
     // a project has a handful of sections: all of them, in board order
-    return tx.query(`select ${SECTION_COLS} from public.sections s where s.project_id = $1
-      order by s.position nulls last, s.created_at, s.id limit 500`, [pid]);
+    return tx.query(`select ${SECTION_COLS} from public.sections s where s.project_id = $1 and ${inKeyWs("s.workspace_id", 2)}
+      order by s.position nulls last, s.created_at, s.id limit 500`, [pid, kws]);
   });
   return ok(ctx, list(rows.map(serialiseSection), null));
 }
@@ -432,7 +452,7 @@ export async function createSection(ctx: RouteContext): Promise<Response> {
   if (!c.ok) throw invalid(c.fields);
   const v = c.value;
   const row = await asUser(ctx, async (tx) => {
-    const proj = await loadProject(tx, v.projectId);
+    const proj = await loadProject(tx, v.projectId, keyWorkspace(ctx.principal));
     if (!proj) throw invalid({ projectId: "There's no project with that id (or you can't see it)." });
     const ws = s(proj.workspace_id);
     assertInScope(ctx.principal, ws);
@@ -466,6 +486,8 @@ export async function listTasks(ctx: RouteContext): Promise<Response> {
     const where: string[] = ["true"];
     if (v.workspace === "personal") where.push("t.workspace_id is null");
     else if (v.workspace) where.push(`t.workspace_id = ${q.p(v.workspace)}::uuid`);
+    const kws = keyWorkspace(p);
+    if (kws) where.push(`t.workspace_id = ${q.p(kws)}::uuid`);
     if (v.project) where.push(`t.project_id = ${q.p(v.project)}`);
     if (v.section) where.push(`t.section_id = ${q.p(v.section)}`);
     if (v.assignee === "none") where.push(`t.assignee_id = ''`);
@@ -487,7 +509,7 @@ export async function listTasks(ctx: RouteContext): Promise<Response> {
       from public.tasks t where ${where.join(" and ")}${keyset}
       order by ${order} limit ${q.p(v.limit + 1)}::int`;
     const rs = await tx.query(sql, q.params);
-    const tags = await tagMap(tx, rs.slice(0, v.limit));
+    const tags = await tagMap(tx, rs.slice(0, v.limit), kws);
     return { rs, tags };
   });
   const { page, next } = pageOf(rows.rs, v.limit, mode, fp);
@@ -496,8 +518,8 @@ export async function listTasks(ctx: RouteContext): Promise<Response> {
 
 /** A task exactly as GET /tasks/:id shows it (with subtaskIds / dependencyIds): its ETag is GET's. */
 async function fullTask(ctx: RouteContext, tx: Tx, id: string) {
-  const row = await loadTask(tx, id, `,
-      array(select c.id::text from public.tasks c where c.parent_id = t.id order by c.created_at, c.id) as subtask_ids,
+  const row = await loadTask(tx, id, keyWorkspace(ctx.principal), `,
+      array(select c.id::text from public.tasks c where c.parent_id = t.id and ${inKeyWs("c.workspace_id", 2)} order by c.created_at, c.id) as subtask_ids,
       array(select d.depends_on::text from public.task_dependencies d where d.task_id = t.id order by d.depends_on) as dependency_ids`);
   if (!row) throw notFound("Task");
   return (await serialiseTasks(ctx, tx, [row]))[0];
@@ -528,7 +550,7 @@ export async function createTask(ctx: RouteContext): Promise<Response> {
     // the parent, if it's a sub-task
     let parent: Row | null = null;
     if (v.parentId) {
-      parent = (await loadTask(tx, v.parentId)) ?? null;
+      parent = (await loadTask(tx, v.parentId, keyWorkspace(p))) ?? null;
       if (!parent) throw invalid({ parentId: "There's no task with that id (or you can't see it)." });
     }
     // where it lives: the project (or the parent's project, or the Personal list)
@@ -540,7 +562,7 @@ export async function createTask(ctx: RouteContext): Promise<Response> {
     }
     let ws: string | null = null;
     if (target !== PERSONAL_PROJECT_ID) {
-      const proj = isUuid(target) ? await loadProject(tx, target) : null;
+      const proj = isUuid(target) ? await loadProject(tx, target, keyWorkspace(p)) : null;
       if (!proj) throw invalid({ projectId: "There's no project with that id (or you can't see it)." });
       ws = s(proj.workspace_id);
     }
@@ -584,14 +606,16 @@ const treeSql = (rootParam: string) => `with recursive d(id) as (
     union
     select c.id from public.tasks c join d on c.parent_id = d.id)`;
 
-async function setArchived(tx: Tx, id: string, archived: boolean) {
+async function setArchived(tx: Tx, id: string, archived: boolean, kws: string | null) {
   if (archived) {
     // the app's rule: archiving a task archives its sub-tasks with it (same moment)
-    await tx.query(`${treeSql("$1")} update public.tasks t set archived_at = now() where t.id in (select id from d) and t.archived_at is null`, [id]);
+    await tx.query(`${treeSql("$1")} update public.tasks t set archived_at = now()
+      where t.id in (select id from d) and t.archived_at is null and ${inKeyWs("t.workspace_id", 2)}`, [id, kws]);
   } else {
     // restoring brings back the sub-tasks that were archived with it
     await tx.query(`${treeSql("$1")} update public.tasks t set archived_at = null
-      where t.id in (select id from d) and t.archived_at = (select r.archived_at from public.tasks r where r.id = $1::uuid)`, [id]);
+      where t.id in (select id from d) and t.archived_at = (select r.archived_at from public.tasks r where r.id = $1::uuid)
+        and ${inKeyWs("t.workspace_id", 2)}`, [id, kws]);
   }
 }
 
@@ -601,7 +625,7 @@ async function setArchived(tx: Tx, id: string, archived: boolean) {
  * in the app since the caller read the task is never silently overwritten.
  */
 async function editableTask(ctx: RouteContext, tx: Tx, id: string): Promise<Row> {
-  const read = () => loadTask(tx, id, ", public.can_edit_task(t.id) as can_edit");
+  const read = () => loadTask(tx, id, keyWorkspace(ctx.principal), ", public.can_edit_task(t.id) as can_edit");
   let row = await read();
   if (!row) throw notFound("Task");
   if (row.can_edit !== true) throw forbidden("You can see this task but can't change it.");
@@ -649,7 +673,7 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
           if (s(cur.user_id) !== me) throw forbidden("Only the person who made a task can move it to their Personal list.");
           ws = null;
         } else {
-          const proj = await loadProject(tx, want);
+          const proj = await loadProject(tx, want, keyWorkspace(p));
           if (!proj) throw invalid({ projectId: "There's no project with that id (or you can't see it)." });
           ws = s(proj.workspace_id);
         }
@@ -733,8 +757,10 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
     if (priority !== undefined) sets.push(`priority = ${q.p(priority)}`);
     if (tags !== undefined) sets.push(`tags = array(select jsonb_array_elements_text(${q.p(JSON.stringify(tags))}::jsonb))`);
 
+    const kws = keyWorkspace(p);
     if (sets.length) {
-      const done = await tx.query(`update public.tasks t set ${sets.join(", ")} where t.id = ${q.p(id)}::uuid returning t.id`, q.params);
+      const done = await tx.query(`update public.tasks t set ${sets.join(", ")}
+        where t.id = ${q.p(id)}::uuid and ${inKeyWs("t.workspace_id", q.params.length + 1)} returning t.id`, [...q.params, kws]);
       if (!done.length) throw forbidden("You can see this task but can't change it.");
     }
     if (projectChanged) {
@@ -750,9 +776,9 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
           select c.id from public.tasks c where c.parent_id = ${root}::uuid
           union select c.id from public.tasks c join d on c.parent_id = d.id)
         update public.tasks t set project_id = ${m.p(project)}, workspace_id = ${m.p(ws)}::uuid, section_id = null${people}
-        where t.id in (select id from d)`, m.params);
+        where t.id in (select id from d) and ${inKeyWs("t.workspace_id", m.params.length + 1)}`, [...m.params, kws]);
     }
-    if (v.archived !== undefined && (cur.archived_at != null) !== v.archived) await setArchived(tx, id, v.archived);
+    if (v.archived !== undefined && (cur.archived_at != null) !== v.archived) await setArchived(tx, id, v.archived, kws);
     return readBack(ctx, tx, id);
   });
   return taskAnswer(ctx, task);
@@ -787,7 +813,7 @@ export async function deleteTask(ctx: RouteContext): Promise<Response> {
   if (hard === null) throw badQuery({ hard: "Use true or false." });
   await asUser(ctx, async (tx) => {
     const cur = await editableTask(ctx, tx, id);
-    if (!hard) return setArchived(tx, id, true);
+    if (!hard) return setArchived(tx, id, true, keyWorkspace(ctx.principal));
     const ws = s(cur.workspace_id);
     if (ws) {
       const role = await wsRole(tx, ws);
@@ -812,7 +838,7 @@ export async function listComments(ctx: RouteContext): Promise<Response> {
   const fp = await queryFingerprint({ r: "comments", id });
   const cur = await readCursor(pq.value.cursor, "k", fp);
   const rows = await asUser(ctx, async (tx) => {
-    if (!(await tx.query(`select 1 from public.tasks t where t.id = $1::uuid`, [id])).length) throw notFound("Task");
+    if (!(await taskVisible(tx, id, keyWorkspace(ctx.principal)))) throw notFound("Task");
     const q = new Sql();
     return tx.query(`select ${COMMENT_COLS}, ${cursorKeySql("c.created_at")} as _ck from public.comments c
       where c.task_id = ${q.p(id)}::uuid${after(q, cur, "c.created_at", "c.id", "asc")}
@@ -828,7 +854,7 @@ export async function createComment(ctx: RouteContext): Promise<Response> {
   if (!c.ok) throw invalid(c.fields);
   const v = c.value;
   const row = await asUser(ctx, async (tx) => {
-    if (!(await tx.query(`select 1 from public.tasks t where t.id = $1::uuid`, [id])).length) throw notFound("Task");
+    if (!(await taskVisible(tx, id, keyWorkspace(ctx.principal)))) throw notFound("Task");
     if (v.parentId) {
       const par = await tx.query(`select 1 from public.comments c where c.id = $1::uuid and c.task_id = $2::uuid`, [v.parentId, id]);
       if (!par.length) throw invalid({ parentId: "That comment isn't on this task." });

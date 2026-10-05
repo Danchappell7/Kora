@@ -40,6 +40,15 @@
 // merged with their page the same way, and only the fields Kanbo changed
 // are PATCHed. A page archived or in the trash archives its task.
 //
+// NEVER OVER A PERSON'S EDIT. A field coming in from Notion is planned
+// against the task as it is in that same transaction: a batch locks the
+// tasks its pages are linked to (FOR UPDATE) before reading them, and the
+// push re-reads and locks each task after fetching its page (never across a
+// Notion request). Every write is also conditional on the task's updated_at
+// being the one read; if it isn't (changed meanwhile), nothing is written
+// and the link's last_synced_at and baseline stay as they were, so the next
+// run merges again with the person's edit.
+//
 // ONE AT A TIME. A lease per (workspace, database) in rate_limits
 // ('kanbo:notion:lease:…', 3 minutes, released at the end) means an import
 // and a sync run of the same database never overlap, so nothing is
@@ -179,9 +188,18 @@ async function tagIds(tx: Tx, userId: string, ws: string, ctx: Ctx, values: TagV
   return out.slice(0, LIMITS.tags);
 }
 
-/** A pulled patch → one UPDATE (as the person). Returns the new updated_at, or null when RLS refused. */
-async function applyPatch(tx: Tx, userId: string, ws: string, ctx: Ctx, task: SyncTask, p: PullPatch): Promise<string | null> {
-  const params: unknown[] = [task.id, ws];
+/** What a pulled patch did: the task's new updated_at, or why nothing was written. */
+type PatchOutcome = { ok: true; at: string } | { ok: false; why: "changed" | "refused" };
+
+/**
+ * A pulled patch → one UPDATE (as the person), only while the task is exactly as it was read
+ * (`readAt`, its updated_at as text): a Kanbo edit made since then is never overwritten with values
+ * planned from the older copy (tags included: those Kanbo can't name are kept from that copy).
+ * "changed": edited (or archived, or moved) meanwhile: the caller leaves the link alone so the next
+ * run merges again. "refused": RLS said no.
+ */
+async function applyPatch(tx: Tx, userId: string, ws: string, ctx: Ctx, task: SyncTask, readAt: string, p: PullPatch): Promise<PatchOutcome> {
+  const params: unknown[] = [task.id, ws, readAt];
   const sets: string[] = [];
   const add = (col: string, v: unknown, cast = "") => { params.push(v); sets.push(`${col} = $${params.length}${cast}`); };
   if (p.title !== undefined) add("title", p.title);
@@ -201,10 +219,22 @@ async function applyPatch(tx: Tx, userId: string, ws: string, ctx: Ctx, task: Sy
     add("tags", J([...ids, ...keep].slice(0, LIMITS.tags)));
     sets[sets.length - 1] = `tags = array(select jsonb_array_elements_text($${params.length}::jsonb))`;
   }
-  if (!sets.length) return null;
+  if (!sets.length) return { ok: true, at: readAt };
   const r = await tx.query<{ u: string }>(
-    `update public.tasks set ${sets.join(", ")} where id = $1::uuid and workspace_id = $2::uuid and archived_at is null returning updated_at::text as u`, params);
-  return r[0]?.u ?? null;
+    `update public.tasks set ${sets.join(", ")}
+      where id = $1::uuid and workspace_id = $2::uuid and archived_at is null and updated_at = $3::timestamptz
+      returning updated_at::text as u`, params);
+  if (r[0]) return { ok: true, at: r[0].u };
+  const now = await tx.query<{ u: string }>(`select updated_at::text as u from public.tasks where id = $1::uuid`, [task.id]);
+  return { ok: false, why: now[0] && now[0].u !== readAt ? "changed" : "refused" };
+}
+
+/** The task as it is now, locked until the transaction ends (null: gone, archived, moved, or not the person's to change). */
+async function lockTask(tx: Tx, taskId: string, ws: string): Promise<Pick<LinkTaskRow, "t_id" | "title" | "description" | "status" | "due_date" | "start_date"
+  | "assignee_id" | "tags" | "archived" | "t_ws" | "t_project" | "updated_at" | "updated_us"> | null> {
+  const r = await tx.query<LinkTaskRow>(
+    `select ${TASK_COLS} from public.tasks t where t.id = $1::uuid and t.workspace_id = $2::uuid and t.archived_at is null for update of t`, [taskId, ws]);
+  return r[0] ?? null;
 }
 
 /** Archive a task and its sub-tasks (the app's rule), as the person. */
@@ -313,9 +343,10 @@ const canAsk = (run: Run, reserveMs = 3000) => run.api.calls < run.maxRequests &
 /** Settle a linked task with its page on Kanbo's side, as the person: plan
  *  the merge, apply the fields that come in. Returns the link's bookkeeping
  *  (s: the task's updated_at to remember, null = keep the old one because
- *  fields wait to go to Notion), or null when RLS refused the write. */
-async function settleIn(tx: Tx, run: Run, row: LinkTaskRow, page: NPage, f: PageFields, base: Baseline | null):
-  Promise<{ s: string | null; base: Baseline } | null> {
+ *  fields wait to go to Notion), or why nothing was written ("changed": the
+ *  task was edited since `row` was read; "refused": RLS said no). */
+type Settled = { kind: "ok"; s: string | null; base: Baseline } | { kind: "changed" | "refused" };
+async function settleIn(tx: Tx, run: Run, row: LinkTaskRow, page: NPage, f: PageFields, base: Baseline | null): Promise<Settled> {
   const task = asTask(row);
   const plan = planSync(task, f, run.mapping, run.ctx, base, {
     notionLater: ms(page.last_edited_time) * 1000 > Number(row.updated_us), twoWay: run.direction === "two_way",
@@ -324,13 +355,13 @@ async function settleIn(tx: Tx, run: Run, row: LinkTaskRow, page: NPage, f: Page
   if (plan.pull.length) {
     const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx, plan.pull);
     if (changed.length) {
-      const u = await applyPatch(tx, run.scope.userId, run.scope.workspaceId, run.ctx, task, patch);
-      if (!u) return null;
-      at = u;
+      const out = await applyPatch(tx, run.scope.userId, run.scope.workspaceId, run.ctx, task, row.updated_at, patch);
+      if (!out.ok) return { kind: out.why };
+      at = out.at;
       run.stats.updated++;
     }
   }
-  return { s: plan.push.length ? null : at, base: nextBaseline(base, plan, plan.pull, []) };
+  return { kind: "ok", s: plan.push.length ? null : at, base: nextBaseline(base, plan, plan.pull, []) };
 }
 
 /** One query response: create the new pages' tasks, merge the changed ones. */
@@ -369,6 +400,15 @@ async function pullBatch(run: Run, pages: NPage[]) {
     let plain = new Map<string, LinkTaskRow>();
     let known = new Set<string>();
     if (run.syncId) {
+      // lock the tasks these pages are linked to (by this sync, or by this database's importer) until
+      // the batch commits: each is merged with the copy read below, and no edit lands in between
+      await tx.query(
+        `select t.id from public.tasks t
+          where t.workspace_id = $1::uuid and t.archived_at is null
+            and t.id in (select l.task_id from public.notion_links l
+                          where l.workspace_id = $1::uuid and l.notion_page_id in (select jsonb_array_elements_text($2::jsonb))
+                            and (l.sync_id = $3::uuid or (l.sync_id is null and l.notion_database_id = public.notion_norm_id($4))))
+          order by t.id for update of t`, [ws, J(ids), run.syncId, run.databaseId]);
       rows = await tx.query<LinkTaskRow>(
         `select ${LINK_COLS}, ${TASK_COLS}, (l.last_synced_at is null or t.updated_at > l.last_synced_at) as k_changed
            from public.notion_links l left join public.tasks t on t.id = l.task_id
@@ -413,7 +453,7 @@ async function pullBatch(run: Run, pages: NPage[]) {
           takenTasks.add(own.t_id);
           // take the importer's link over, merged with the baseline the import left
           const r = await settleIn(tx, run, own, page, f, bases.get(own.link_id) ?? null);
-          if (!r) { run.stats.skipped++; continue; }
+          if (r.kind !== "ok") { run.stats.skipped++; continue; }   // its plain link stays; the next run tries again
           adopted.push({ id: own.link_id, s: r.s, e: page.last_edited_time, task: own.t_id });
           adoptedBases.set(own.link_id, r.base);
           cached.push(page);
@@ -433,7 +473,12 @@ async function pullBatch(run: Run, pages: NPage[]) {
       if (!row.k_changed && !notionNewer) continue;   // nobody touched either side since the last sync (our own write coming back)
       const base = bases.get(row.link_id) ?? null;
       const r = await settleIn(tx, run, row, page, f, base);
-      if (!r) { run.stats.skipped++; note(run, `Kanbo couldn't update “${oneLine(row.title, 60)}”.`); continue; }
+      if (r.kind !== "ok") {
+        // "changed" (edited in Kanbo since it was read): link and baseline stay as they were, so the next run merges again
+        run.stats.skipped++;
+        if (r.kind === "refused") note(run, `Kanbo couldn't update “${oneLine(row.title, 60)}”.`);
+        continue;
+      }
       linkTouches.push({ id: row.link_id, s: r.s, e: page.last_edited_time });
       if (!sameBaseline(base, r.base)) baseSaves.push({ id: row.link_id, b: r.base });
       cached.push(page);
@@ -568,7 +613,9 @@ async function pullAll(run: Run, cursor: SyncCursor, opts: { maxNew?: number; by
   return { cursor: { since, next }, done: false };
 }
 
-/** Kanbo → Notion: the linked tasks changed since their last sync, merged with their page field by field. */
+/** Kanbo → Notion: the linked tasks changed since their last sync, merged with their page field by field.
+ *  Each task is read again (and locked) after its page is fetched, so the merge, what comes in and what
+ *  goes out are all planned from the task as it is then, never from the copy read before the request. */
 async function pushChanged(run: Run, limit: number) {
   const { deps, scope } = run;
   const ws = scope.workspaceId;
@@ -598,9 +645,10 @@ async function pushChanged(run: Run, limit: number) {
     run.ctx.notionUserByEmail = map;
   };
 
-  for (const row of rows) {
+  for (const read of rows) {
     if (!canAsk(run, 4000)) break;
-    const task = asTask(row);
+    let row = read;
+    let task = asTask(row);
     let page = run.seen.get(row.notion_page_id);
     try {
       if (!page) page = await run.api.page(row.notion_page_id);
@@ -621,23 +669,50 @@ async function pushChanged(run: Run, limit: number) {
     }
     const f = readPage(page, run.mapping);
     const base = bases.get(row.link_id) ?? null;
-    const plan = planSync(task, f, run.mapping, run.ctx, base, { notionLater: ms(page.last_edited_time) * 1000 > Number(row.updated_us), twoWay: true });
-    let at: string = row.updated_at;
-    let pulled: SyncField[] = [];
+    const p = page;
+    // The task may have been edited while its page was fetched: lock it, read it again and plan the
+    // merge from that copy, in the transaction that writes what comes in (no Notion request inside it).
+    const settled = await deps.db.withUser(scope, async (tx) => {
+      const now = await lockTask(tx, read.t_id!, ws);
+      if (!now) return { kind: "gone" as const };
+      const cur: LinkTaskRow = { ...read, ...now };
+      const t = asTask(cur);
+      const plan = planSync(t, f, run.mapping, run.ctx, base, { notionLater: ms(p.last_edited_time) * 1000 > Number(cur.updated_us), twoWay: true });
+      let at = cur.updated_at;
+      let pulled: SyncField[] = [];
+      let refused = false;
+      // fields Notion changed since the last sync (that this run's query didn't bring in) come in
+      if (plan.pull.length) {
+        const { patch, changed } = pullPatch(f, t, run.mapping, run.ctx, plan.pull);
+        if (!changed.length) pulled = plan.pull;
+        else {
+          const out = await applyPatch(tx, scope.userId, ws, run.ctx, t, cur.updated_at, patch);
+          if (out.ok) { at = out.at; pulled = plan.pull; run.stats.updated++; }
+          else if (out.why === "changed") return { kind: "changed" as const };
+          else refused = true;
+        }
+      }
+      return { kind: "ok" as const, cur, plan, at, pulled, refused };
+    });
+    // edited again under us (the lock makes this a backstop): the link and its baseline stay as they
+    // were, so the next run merges again
+    if (settled.kind === "changed") { run.stats.skipped++; continue; }
+    // archived, moved or deleted meanwhile (or not the person's to change): not fetched again until it changes
+    if (settled.kind === "gone") {
+      run.stats.skipped++;
+      await touchLinks(deps.db.service, [{ id: row.link_id, s: row.updated_at, e: null }]);
+      continue;
+    }
+    row = settled.cur;
+    task = asTask(row);
+    const plan = settled.plan;
+    const at: string = settled.at;
+    const pulled: SyncField[] = settled.pulled;
+    if (settled.refused) note(run, `Kanbo couldn't update “${oneLine(task.title, 60)}”.`);
     let pushed: SyncField[] = [];
     let edited: string | null = page.last_edited_time;
     let retry = false;              // Notion stopped us part-way: last_synced_at stays, so the next run tries again
     let stopRun: unknown = null;    // a 429 or a revoked token stops the run, after this task's bookkeeping
-    // fields Notion changed since the last sync (that this run's query didn't bring in) come in
-    if (plan.pull.length) {
-      const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx, plan.pull);
-      if (!changed.length) pulled = plan.pull;
-      else {
-        const u = await deps.db.withUser(scope, (tx) => applyPatch(tx, scope.userId, ws, run.ctx, task, patch));
-        if (u) { at = u; pulled = plan.pull; run.stats.updated++; }
-        else note(run, `Kanbo couldn't update “${oneLine(task.title, 60)}”.`);
-      }
-    }
     // fields Kanbo changed go out: only those
     if (plan.push.length) {
       let ready = true;

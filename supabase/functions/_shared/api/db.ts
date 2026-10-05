@@ -15,7 +15,8 @@
 //     key's user and every RLS policy applies exactly as in the app), and
 //     kanbo.api_workspace = the workspace key's workspace (the restrictive
 //     "api key scope" policies then refuse every other workspace and every
-//     personal row). Read keys and GETs run BEGIN READ ONLY.
+//     personal row; the handlers also filter by it themselves, core.ts
+//     keyWorkspace). Read keys and GETs run BEGIN READ ONLY.
 //     Inside it, query tables only: SECURITY DEFINER functions bypass the
 //     api key scope (the can_* helpers in policies are fine).
 //

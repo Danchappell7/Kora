@@ -225,6 +225,13 @@ their title and icon when they're over an hour old.
   last change with the page's last edit. Notion's edit times are whole
   minutes, so a tie goes to Kanbo. Kanbo never mistakes its own writes for
   someone's change, in either direction.
+- **Edits made while a sync runs are never lost.** What comes in from Notion
+  is planned against the task as it is at that moment: the sync locks the
+  tasks it is merging for the split second it writes them, reads each task
+  again after fetching its page (it never holds a lock while it waits for
+  Notion), and only writes if the task hasn't changed since it read it. A
+  task someone is editing at that moment is simply merged again on the next
+  run, with their edit in it.
 - **Taking over**: a sync only takes over pages its database's importer
   linked (a one-off import, or a removed sync of the same database). A page
   someone linked to a task by hand, for context, is never taken over: the
@@ -340,3 +347,10 @@ Reasons: `not_connected`, `not_allowed`, `invalid_token`, `not_shared`,
   one waits, no copies); Sync now and the schedule during an import; a
   stale lease expiring; a 1,050-page one-off import finishing with **Import
   the rest** or by importing again; bad resume points refused.
+- A third replay for edits made during a run (24 cases): a due date changed
+  in Kanbo while its page is fetched (Notion changed it too) is kept and sent
+  to Notion; a different field changed meanwhile goes out while Notion's
+  change comes in; a tag added meanwhile survives Notion's tag change; a task
+  archived meanwhile is left alone; the batch locks before it reads; and a
+  change landing between a read and its write is never written over (no
+  note, link and baseline untouched, merged on the next run).

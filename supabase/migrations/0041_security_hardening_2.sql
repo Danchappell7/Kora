@@ -301,3 +301,14 @@ do $$ begin
 exception when undefined_function then null; end $$;
 revoke execute on function public.before_user_delete() from public, anon, authenticated;
 revoke execute on function public.ensure_profile_for_new_user() from public, anon, authenticated;
+
+-- ---------- 8. 0046's API key scope survives a re-run of this file ----------
+-- Section 4 drops every policy on the content tables, 0046's restrictive
+-- "api key scope" ones too (they keep team API keys inside their workspace).
+-- When 0046 is in, put them back.
+do $apiscope$
+begin
+  if to_regprocedure('public.api_scope_restore()') is not null then
+    perform public.api_scope_restore();
+  end if;
+end $apiscope$;

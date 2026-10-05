@@ -60,7 +60,9 @@ curl -X POST "$BASE/tasks/5e6f7a8b-…/comments" -H "Authorization: Bearer $KANB
   and every workspace you're in.
 - **Team key** (workspace owners and admins only): acts as you, but only
   inside that one workspace. Anything else answers 403 / 404. It stops
-  working if you stop being an owner or admin there.
+  working if you stop being an owner or admin there. Should the database
+  rules that keep it there ever be missing (during maintenance), team keys
+  answer 503 until they're back; personal keys carry on.
 - Optional expiry (7 days to a year). Revoke a key at any time in
   Settings › Developers; it stops working at once. Owners and admins can see
   and revoke every team key in their workspace.
@@ -189,7 +191,7 @@ changed in Kanbo after you read it.
 | 415 | `unsupported_media_type` | Send `Content-Type: application/json` |
 | 422 | `validation_failed` / `idempotency_mismatch` | A field isn't valid (`details.fields`); an Idempotency-Key reused for a different request |
 | 429 | `rate_limited` | Over the rate limit; wait `Retry-After` seconds |
-| 500 / 503 | `internal` | Kanbo's side; retry. Quote the `requestId` to support |
+| 500 / 503 | `internal` | Kanbo's side; retry after `Retry-After` (a 503 for a team key can mean team keys are paused during maintenance). Quote the `requestId` to support |
 
 Messages are written for people, so you can show them as they are. Fields
 you can't set (`id`, `updatedAt`, `createdBy`…) and unknown fields are refused
@@ -315,7 +317,12 @@ errors), `routes.ts` / `handlers.ts` (the endpoints), `validate.ts` (every
 input) and `openapi.ts` (the document). Every read and write runs in a
 transaction **as the key's owner** (`SET LOCAL ROLE authenticated` with their
 id as `auth.uid()`), so row-level security decides exactly as it does in the
-app; a team key's transaction is also pinned to its workspace. The service
+app; a team key's transaction is also pinned to its workspace (restrictive
+"api key scope" policies), every handler filters by that workspace itself
+as well, and team keys are refused (503) whenever a policy is missing, so a
+team key never runs unscoped. The service
 role is used only to check keys, count requests and store idempotent answers.
 Tested with vitest and a PGlite replay of every migration answering real
-requests (198 attack and legit cases).
+requests (198 attack and legit cases), plus a replay of the key scope failing
+closed: 0041 / 0042 run again, a policy missing, and every policy gone with
+verification bypassed (65 cases).

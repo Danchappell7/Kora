@@ -769,6 +769,17 @@ revoke all on public.ai_usage from anon, authenticated;
 -- internal helpers are not public endpoints
 revoke execute on function public.access_request_before_insert() from public, anon, authenticated;
 
+-- ---------- 0046's API key scope survives a re-run of this file ----------
+-- Sections 7 and 7b drop every policy on tags, subtasks and dependencies,
+-- 0046's restrictive "api key scope" ones too (they keep team API keys
+-- inside their workspace). When 0046 is in, put them back.
+do $apiscope$
+begin
+  if to_regprocedure('public.api_scope_restore()') is not null then
+    perform public.api_scope_restore();
+  end if;
+end $apiscope$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0042') on conflict (version) do nothing;
 

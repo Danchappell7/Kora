@@ -3,7 +3,8 @@
 //
 //   1. request id; path under /v1 (else 404); OPTIONS → 405 (no CORS)
 //   2. GET /openapi.json and GET / are public; everything else needs a key
-//   3. authenticate (verify_api_key, service role) → 401
+//   3. authenticate (verify_api_key, service role) → 401; 503 when it can't
+//      check, or (team keys) while the "api key scope" policies are missing
 //   4. rate limit per key (120 a minute) → 429 + Retry-After; X-RateLimit-*
 //      on every answer from here on
 //   5. route → 404 / 405 (+ Allow); read-only key writing → 403
@@ -25,7 +26,7 @@
 // the PGlite harness drives it against the real migrations. The Deno entry
 // (supabase/functions/api/index.ts) only wires the database and env in.
 // ============================================================
-import { authenticate, hitRate, methodAllowed, rateHeaders, sha256Hex, type VerifyKey } from "./auth.ts";
+import { authenticate, hitRate, isScopeMissing, methodAllowed, rateHeaders, sha256Hex, type VerifyKey } from "./auth.ts";
 import { ApiFail, etagMatches, etagOfText, pgFailure } from "./core.ts";
 import { buildOpenApi } from "./openapi.ts";
 import { apiError, json, matchRoute, newRequestId, stripBase, type Method, type Route, type RouteContext } from "./router.ts";
@@ -60,6 +61,7 @@ const FINISH_BACKOFF_MS = [100, 500];
 const IDEMPOTENCY_KEY_RE = /^[\x21-\x7E](?:[\x20-\x7E]{0,253}[\x21-\x7E])?$/;
 const NO_CORS = "The Kanbo API doesn't answer browsers' cross-origin checks. Call it from a server or a script: an API key in a web page can be read by anyone.";
 const UNREACHABLE = "Kanbo's API can't reach its database right now. Try again in a moment.";
+const TEAM_KEYS_PAUSED = "Team keys are paused while Kanbo's database is being updated. Personal keys still work. Try again in a few minutes.";
 const INTERNAL = "Something went wrong on Kanbo's side. Try again; if it keeps happening, send the request id to Kanbo support.";
 
 const defaultLog: NonNullable<ApiDeps["log"]> = (level, message, extra) => {
@@ -186,6 +188,11 @@ export async function handleApiRequest(req: Request, deps: ApiDeps): Promise<Res
     try {
       auth = await authenticate(req.headers, deps.verify);
     } catch (e) {
+      if (isScopeMissing(e)) {
+        // fail closed: a team key never runs without the policies that keep it in its workspace
+        log("error", `[api] ${requestId} team key refused: the "api key scope" policies are missing. Run migration 0046 again.`);
+        return fail(503, "internal", TEAM_KEYS_PAUSED, { headers: { "Retry-After": "300" } });
+      }
       log("error", `[api] ${requestId} key verification failed`, errInfo(e));
       return fail(503, "internal", UNREACHABLE, { headers: { "Retry-After": "5" } });
     }

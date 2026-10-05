@@ -14,7 +14,9 @@
 //     connection; EVERY read and write for a key runs in db.withUser(): a
 //     transaction as the key's user (SET LOCAL ROLE authenticated +
 //     request.jwt.claims), so RLS applies exactly as in the app, and a team
-//     key's transaction is pinned to its workspace (kanbo.api_workspace).
+//     key's transaction is pinned to its workspace (kanbo.api_workspace; the
+//     handlers filter by it too, and verify_api_key refuses team keys while
+//     the "api key scope" policies are missing: 503, fails closed).
 //   • SUPABASE_URL — the API's own base address for Location headers and the
 //     OpenAPI document's server.
 //   • APP_URL (already set for reminders) — the app's address for `url` fields.

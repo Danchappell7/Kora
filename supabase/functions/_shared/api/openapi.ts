@@ -129,7 +129,7 @@ const ERRORS: Record<ErrStatus, { code: string; description: string; message: st
   415: { code: "unsupported_media_type", description: "The body isn't sent as application/json.", message: "Send JSON with the header Content-Type: application/json." },
   422: { code: "validation_failed", description: "A field isn't valid; `details.fields` says which and why.", message: "Some fields need attention.", details: { fields: { dueDate: "Use a date like 2026-10-31, or null." } } },
   429: { code: "rate_limited", description: "Over 120 requests in a minute for this key. Wait for Retry-After seconds.", message: "Too many requests: a key can make 120 a minute. Try again in 12 seconds." },
-  500: { code: "internal", description: "Something went wrong on Kanbo's side (503 when the database is briefly unreachable).", message: "Something went wrong on Kanbo's side. Try again; if it keeps happening, send the request id to Kanbo support." },
+  500: { code: "internal", description: "Something went wrong on Kanbo's side (503 when the database is briefly unreachable, or for team keys while Kanbo's database is being updated; wait for Retry-After).", message: "Something went wrong on Kanbo's side. Try again; if it keeps happening, send the request id to Kanbo support." },
 };
 const err = (status: ErrStatus) => {
   const e = ERRORS[status];

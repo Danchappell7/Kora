@@ -107,6 +107,15 @@ export function assertInScope(p: ApiPrincipal, workspaceId: string | null): void
   if (p.workspaceId && workspaceId !== p.workspaceId) throw forbidden(OUTSIDE_WORKSPACE);
 }
 
+/**
+ * The workspace every row a key reads must be in: a team key's own (lower case), or null for a
+ * personal key (no extra filter). The handlers add it to their own queries as a second layer, so
+ * a team key stays inside its workspace even if the "api key scope" policies were ever missing.
+ */
+export function keyWorkspace(p: ApiPrincipal): string | null {
+  return p.workspaceId ? p.workspaceId.toLowerCase() : null;
+}
+
 /** Parameters for one statement: `q.p(value)` → "$n". */
 export class Sql {
   readonly params: unknown[] = [];

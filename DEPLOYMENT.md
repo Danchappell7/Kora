@@ -573,8 +573,9 @@ REST API), [docs/api/webhooks.md](docs/api/webhooks.md),
 1. **Run 0046** in the SQL editor
    (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>):
    the whole of `supabase/migrations/0046_api_webhooks_notion.sql`. It needs
-   0042, is safe to re-run, and must be run **again after 0041 or 0042** is
-   ever re-run (they drop its "api key scope" policies). Check it with the
+   0042 and is safe to re-run. 0041 and 0042 put its "api key scope"
+   policies back themselves if they're ever re-run; if anything else removes
+   one, team keys answer 503 until 0046 is run again. Check it with the
    query in database-0046.md (every column `true`).
 2. **Deploy the three functions** (no new secrets: `SUPABASE_DB_URL`,
    `CRON_SECRET` and `APP_URL` are already there). `api` and
