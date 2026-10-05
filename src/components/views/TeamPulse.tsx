@@ -17,6 +17,8 @@ import { buildPulse, periodStart, plainText, pulseFactsForAi, pulseMarkdown, pul
 import { computeRisks, loadTone, readCapacities } from "../../lib/radar";
 import { addDays, fmtDayMonth, localDay } from "./reportingUtils";
 import { RadarPanel } from "./RadarPanel";
+import { SlackPostButton } from "../integrations";
+import { risksSlackText } from "../../lib/slack";
 
 function useOptionalToast() { try { return useToast(); } catch { return null; } }
 
@@ -54,11 +56,13 @@ const rowsFor = (text: string) =>
 type Person = { id: string; name: string; role?: string; guest?: boolean };
 type WriteUp = { status: "loading" } | { status: "ready"; text: string; ai: boolean; note?: string };
 
-export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople }: {
+export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople }: {
   tasks: Task[];
   members: WorkspaceMember[];
   currentUserId: string;
   workspaceName: string;
+  /** the team workspace: Post to Slack shows once it has a channel connected (never for guests) */
+  workspaceId?: string | null;
   readOnly: boolean;
   loadEvents: (sinceISO: string) => Promise<WorkspaceEvent[]>;
   onOpen: (id: string) => void;
@@ -217,6 +221,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
             options={[{ value: "day", label: `Since ${sinceWords(periodStart("day", todayISO), todayISO)}` }, { value: "week", label: "This week" }]} />
           <span className="kpulse-bar-end">
             <Button size="sm" variant="secondary" icon="copy" onClick={() => void copy(pulseMarkdown(facts), "slack")} disabled={loading}>Copy for Slack</Button>
+            {/* renders nothing until this workspace has a Slack channel (and never for guests) */}
+            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => pulseMarkdown(facts)} disabled={loading} />}
             <Button size="sm" variant="hero" icon="kanbo" onClick={() => void startWriteUp()} disabled={loading}>Write it up</Button>
           </span>
         </div>
@@ -240,7 +246,10 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
 
         <aside className="kpulse-radar" aria-label="Radar">
           <RadarPanel risks={risks} members={people} readOnly={readOnly} tasks={tasks} loading={loading} currentUserId={currentUserId}
-            onOpen={onOpen} onNudge={onNudge} onPatch={onPatch} onOpenWorkload={onOpenWorkload} />
+            onOpen={onOpen} onNudge={onNudge} onPatch={onPatch} onOpenWorkload={onOpenWorkload}
+            action={!readOnly && !loading && risks.length > 0
+              ? <SlackPostButton workspaceId={workspaceId} kind="risks" variant="ghost" getText={() => risksSlackText(risks)} />
+              : undefined} />
         </aside>
 
         {!loading && facts.people.length === 0 ? (
@@ -278,6 +287,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, readOn
       <Sheet open={!!writeUp} onClose={closeWriteUp} label="Write it up" title="Write it up" width={640}
         footer={writeUp?.status === "ready" ? (
           <>
+            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => draft} variant="secondary" size="md" disabled={!draft.trim()} />}
             <Button variant="secondary" onClick={() => void copy(draft, "plain")}>Copy</Button>
             <Button variant="primary" icon="copy" onClick={() => void copy(draft, "slack")}>Copy for Slack</Button>
           </>
@@ -472,8 +482,9 @@ const PULSE_CSS = `
   .kpt-row > .kpt-load { grid-area: load; }
   .kpt-row > [data-label]:not(.kpt-load)::before { content: attr(data-label); display: block; margin-bottom: 4px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
   .kpulse-bar { padding-block: 8px; }
-  .kpulse-bar-end { margin-left: 0; width: 100%; }
+  .kpulse-bar-end { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .kpulse-bar-end .kbtn { flex: 1; }
+  .kpulse-bar-end > .kslk-post { flex: 1 1 auto; }
 }
 @media (max-width: 859px) { .kpulse-grid { padding: 0 16px 32px; } .kpulse[data-personal] { padding: 0 16px; } }
 `;

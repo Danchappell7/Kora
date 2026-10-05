@@ -54,8 +54,13 @@ If `plan_state_realtime` is `false`, turn realtime on for `task_user_state` in
 Database › Publications › `supabase_realtime` (plans still save and load; they
 just don't stream between your devices until then).
 
-The edge functions, secrets and cron job for each feature are in their own
-pages: `slack.md`, `calendar-feed.md`, `push.md`, `public-forms.md`.
+Run **0044** straight after it (`database-0044.md`). The edge functions,
+secrets and cron job for each feature are in their own pages: `slack.md`,
+`calendar-feed.md`, `push.md`, `public-forms.md`; DEPLOYMENT.md step 11 has
+them all in order, with one command that deploys every function. Running the
+SQL alone switches nothing on that needs a function: the calendar feed panel
+says "Not switched on yet" until `ics-feed` answers, and a public form's page
+says so until `public-form` is deployed, so nobody is handed a dead link.
 
 ## Tested
 

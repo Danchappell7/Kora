@@ -59,7 +59,9 @@ import { computeRisks } from "./lib/radar";
 import { shutdownDone } from "./lib/rituals";
 import { momentumCounts } from "./lib/brief";
 import type { AskAction, AskContext } from "./lib/askTypes";
-import { findProjectTemplate, projectTemplateTasks } from "./lib/templates";
+import { findProjectTemplate, projectTemplateTasks, buildWorkspaceFromTemplate, applyWorkspacePlan, appliedPlanMessage } from "./lib/templates";
+import { listenForPushMessages } from "./lib/push";
+import { takeNewTaskShortcut } from "./lib/install";
 import { resolveTagId } from "./components/views/reportingUtils";
 import type { InsightsNavProps } from "./components/views/InsightsSummary";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
@@ -70,7 +72,7 @@ import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName } from "./data/types";
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
@@ -287,10 +289,11 @@ export default function App() {
   const [banner, setBanner] = useState<AppBanner | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState<string | null>(() => { try { return localStorage.getItem("kanbo-banner-dismissed"); } catch { return null; } });
   // the address this page opened at, read once (the URL effects below rewrite it)
-  const bootUrlRef = useRef<{ route: Route; task: string | null; q: string | null } | null>(null);
+  const bootUrlRef = useRef<{ route: Route; task: string | null; q: string | null; newTask: boolean } | null>(null);
   if (!bootUrlRef.current) {
     const params = new URLSearchParams(window.location.search);
-    bootUrlRef.current = { route: routeOf(window.location.pathname, window.location.search) ?? { view: "plan" }, task: params.get("task"), q: params.get("q") };
+    // newTask: the installed app's "New task" shortcut (/today?new=1)
+    bootUrlRef.current = { route: routeOf(window.location.pathname, window.location.search) ?? { view: "plan" }, task: params.get("task"), q: params.get("q"), newTask: params.get("new") === "1" };
   }
   const [route, setRouteRaw] = useState<Route>(() => bootUrlRef.current!.route);
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
@@ -1244,6 +1247,28 @@ export default function App() {
     else toastInfo("That task doesn't exist any more, or you don't have access to it.");
   }, [tasks, toastInfo]);
 
+  // the installed app's "New task" shortcut (/today?new=1): quick capture, once tasks are
+  // loaded (openCapture keeps guests out, as the keyboard shortcut does)
+  const newTaskShortcutDone = useRef(false);
+  useEffect(() => {
+    if (newTaskShortcutDone.current || tasks === null) return;
+    newTaskShortcutDone.current = true;
+    // (takes ?new off the address if it's still there; the boot read covers a rewritten one)
+    const asked = takeNewTaskShortcut() || !!bootUrlRef.current?.newTask;
+    if (asked) openCaptureRef.current();
+  }, [tasks]);
+
+  // a push notification clicked while Kanbo is open routes here, in place: a task opens
+  // like the ?task= deep link, anything else (Today) is a route
+  useEffect(() => listenForPushMessages((path) => {
+    const u = new URL(path, window.location.origin);
+    const tid = u.searchParams.get("task");
+    if (!tid) { goRef.current(routeOf(u.pathname, u.search) ?? { view: "plan" }); return; }
+    const t = (tasksRef.current ?? []).find((x) => x.id === tid);
+    if (t) { setWorkspace(t.workspaceId ?? null); setDetailId(tid); }
+    else toastInfoRef.current("That task doesn't exist any more, or you don't have access to it.");
+  }), []);
+
   // load connected calendars on sign-in, and handle the OAuth round-trip return
   useEffect(() => {
     if (!store.configured || !authUserId) return;
@@ -1885,8 +1910,9 @@ export default function App() {
 
   /* ---- personal plan state: the assignee-only write guard ----
      A task's plan fields (its slot, "on today", My-tasks section, Kanbo's order)
-     belong to its assignee. Anyone else planning it keeps their plan on their own
-     device (lib/planOverlay) and only the task's own fields are saved. */
+     belong to its assignee. Anyone else planning it keeps their own plan (lib/planOverlay:
+     their task_user_state row once 0043 is live, so it follows them to every device;
+     this device's storage before that and in demo) and only the task's own fields are saved. */
   const writeOverlay = useCallback((task: Task, personal: Partial<Pick<Task, PersonalKey>>) => {
     const me = userIdRef.current;
     const plan: { scheduled?: number | null; planToday?: boolean } = {};
@@ -2773,21 +2799,73 @@ export default function App() {
     toastSuccess("Tags merged");
   }, [denyGuest, editableTasks, updateTasks, applyTags, deferTmp, saveFailed, toastSuccess]);
 
-  /* ---- workspaces & people ---- */
-  const createWorkspace = useCallback((name: string) => {
-    const me = getMember(userIdRef.current);
-    store.createWorkspace(name, { id: userIdRef.current, email: me?.email || "", name: me?.name || "You" })
-      .then((w) => {
-        if (w.id) noteCreated(w.id); // a reload already under way doesn't know about it yet
-        setWorkspaces((ws) => [...ws, w]);
-        setWsMembers((m) => [...m, { id: "owner-" + w.id, workspaceId: w.id!, userId: userIdRef.current, email: me?.email || "", name: me?.name || "You", role: "owner", status: "active" }]);
-        setReferenceData({ workspaces: [...workspacesRef.current, w] });
-        setWorkspace(w.id);
-        setRoute({ view: "team" });
-      })
-      .catch((e) => { reportError(e, { op: "createWorkspace" }); toastError("Couldn't create the workspace: " + (e?.message || e)); });
+  /* ---- team templates ---- */
+  /** Set up a team template's projects (sections, starter tasks assigned to you, a request
+   *  form and a rule each) in a workspace, through the same creates as everything else.
+   *  Says how it went in one toast, and resolves with what was created (null if it failed). */
+  const applyTeamTemplate = useCallback(async (template: WorkspaceTemplate, projectKeys: string[] | undefined, workspaceId: string | null) => {
+    const me = userIdRef.current;
+    const plan = buildWorkspaceFromTemplate(template, toLocalISO(KANBO_TODAY), { projectKeys });
+    let r: Awaited<ReturnType<typeof applyWorkspacePlan>>;
+    try {
+      r = await applyWorkspacePlan(plan, { workspaceId, assigneeId: me }, store.templateDeps(me));
+    } catch (e) {
+      reportError(e, { op: "applyTeamTemplate" });
+      toastError(`Couldn't set up ${plan.name}. Check your connection and try again.`);
+      return null;
+    }
+    // a reload already under way doesn't know about any of this yet: keep the projects,
+    // and hold the starter tasks for a while (as for any task created here)
+    r.projects.forEach((p) => noteCreated(p.id));
+    const until = Date.now() + 30000;
+    const made = new Set(r.tasks.map((t) => t.id));
+    pendingTasksRef.current = [...r.tasks.map((t) => ({ id: t.id, task: t, until })), ...pendingTasksRef.current.filter((p) => !made.has(p.id))];
+    applyProjects([...projectsRef.current.filter((x) => !r.projects.some((p) => p.id === x.id)), ...r.projects]);
+    setSections((cur) => [...cur.filter((x) => !r.sections.some((y) => y.id === x.id)), ...r.sections]);
+    setTasks((ts) => ts && [...r.tasks.filter((t) => !ts.some((x) => x.id === t.id)), ...ts]);
+    setForms((cur) => [...cur.filter((x) => !r.forms.some((y) => y.id === x.id)), ...r.forms]);
+    setAutomationRules((cur) => [...cur.filter((x) => !r.rules.some((y) => y.id === x.id)), ...r.rules]);
+    // sections, forms and rules aren't held through an older snapshot: ask for a fresh one
+    requestReloadRef.current?.();
+    const m = appliedPlanMessage(plan, r);
+    (m.tone === "success" ? toastSuccess : m.tone === "error" ? toastError : toastInfo)(m.text);
+    return r;
+  }, [noteCreated, applyProjects, toastSuccess, toastError, toastInfo]);
+
+  /** Projects › New project › "From a team template": the template's projects in the
+   *  current workspace (never for guests), then the first one opens. */
+  const createFromTeamTemplate = useCallback(async (template: WorkspaceTemplate, projectKeys?: string[]) => {
+    const wsId = workspaceRef.current;
+    if (denyGuest([wsId])) return;
+    const r = await applyTeamTemplate(template, projectKeys, wsId);
+    if (r?.projects.length && workspaceRef.current === wsId) setRoute({ view: "project", projectId: r.projects[0].id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toastError]);
+  }, [denyGuest, applyTeamTemplate]);
+
+  /* ---- workspaces & people ---- */
+  /** A new workspace; `start` sets it up from a team template once it exists. Resolves when
+   *  everything is done (the dialog shows progress until then). */
+  const createWorkspace = useCallback(async (name: string, start?: { template: WorkspaceTemplate; projectKeys?: string[] }) => {
+    const me = getMember(userIdRef.current);
+    let w: Workspace;
+    try {
+      w = await store.createWorkspace(name, { id: userIdRef.current, email: me?.email || "", name: me?.name || "You" });
+    } catch (e) {
+      reportError(e, { op: "createWorkspace" });
+      toastError("Couldn't create the workspace: " + ((e as Error)?.message || e));
+      return;
+    }
+    if (w.id) noteCreated(w.id); // a reload already under way doesn't know about it yet
+    setWorkspaces((ws) => [...ws, w]);
+    setWsMembers((m) => [...m, { id: "owner-" + w.id, workspaceId: w.id!, userId: userIdRef.current, email: me?.email || "", name: me?.name || "You", role: "owner", status: "active" }]);
+    setReferenceData({ workspaces: [...workspacesRef.current, w] });
+    setWorkspace(w.id);
+    if (!start || !w.id) { setRoute({ view: "team" }); return; }
+    // you own it, so the template's projects are yours to create; then show them
+    const r = await applyTeamTemplate(start.template, start.projectKeys, w.id);
+    setRoute(r?.projects.length ? { view: "projects" } : { view: "team" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toastError, noteCreated, applyTeamTemplate]);
 
   const updateWorkspace = useCallback((workspaceId: string, name: string, logoUrl: string | null) => {
     const before = workspacesRef.current;
@@ -3315,6 +3393,8 @@ export default function App() {
   const formsProps = (projectId?: string): React.ComponentProps<typeof FormsView> => ({
     forms: projectId ? wsForms.filter((f) => f.projectId === projectId) : wsForms, projects: wsProjects, members: assignees,
     onCreate: createForm, onUpdate: updateForm, onDelete: deleteForm, onSubmit: submitForm, ...(projectId ? { projectId } : {}),
+    // a form's public link was switched or regenerated: the panel has already saved it
+    onPublicChange: (id, p) => setForms((fs) => fs.map((x) => (x.id === id ? { ...x, ...p } : x))),
   });
   const aiStatus = aiOn ? (facts: unknown) => store.aiStatus(facts) : undefined;
   const risksByProject: Record<string, number> = {};
@@ -3457,7 +3537,7 @@ export default function App() {
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={risksByProject} />;
-      case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} readOnly={activeReadOnly}
+      case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} workspaceId={workspace} readOnly={activeReadOnly}
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
         onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
         onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
@@ -3652,7 +3732,9 @@ export default function App() {
       {focusOpen && <FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} />}
       <NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length} />
-      <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects} />
+      <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects}
+        // guests never create from a template (createFromTeamTemplate refuses them too)
+        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
         onGoToday={() => setRoute({ view: "plan" })} />
@@ -3681,6 +3763,8 @@ export default function App() {
           onConnect: (provider) => { void connectCalendar(provider as CalProvider); },
           onDisconnect: (provider) => { void disconnectCalendar(provider as CalProvider); },
         }}
+        // Slack for the active team workspace: owners/admins manage it, everyone sees if it's connected
+        slack={{ workspaceId: workspace, workspaceName: activeWsName, role: myRole ?? null }}
         billing={{ enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling }}
         // (Settings closes itself first, so the import dialog isn't underneath)
         onImport={activeReadOnly ? undefined : () => openImport()} />

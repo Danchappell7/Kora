@@ -57,7 +57,8 @@ describe("TodayView: the brief", () => {
     const { props } = renderToday([deck, task({ id: "b", dueDate: today() })], { riskCount: 2, onOpenRisks: vi.fn() });
     const brief = screen.getByRole("region", { name: "Your day in brief" });
     const head = within(brief).getByRole("heading", { level: 2 });
-    expect(head.textContent).toBe("Morning, Daniel. One big thing today: launch deck.");
+    // Mondays open with "New week." (lib/brief's monday variant)
+    expect(head.textContent).toBe(`Morning, Daniel. ${new Date().getDay() === 1 ? "New week. " : ""}One big thing today: launch deck.`);
     expect(within(brief).getByText(/Kanbo/, { selector: ".kbrief-who" })).toBeInTheDocument();
     expect(within(brief).getByText("09:00")).toBeInTheDocument();                                     // when it was written
     expect(within(brief).getByRole("button", { name: /free$/ })).toBeInTheDocument();

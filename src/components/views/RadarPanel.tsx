@@ -4,7 +4,7 @@
    Check in (an @mention comment), Open chain, Rebalance (Workload with
    that person's week open), Set a firm date, Assign. Guests only open.
    ============================================================ */
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Avatar, Button, DateChip, EmptyState, Icon } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useToast } from "../Toast";
@@ -36,9 +36,11 @@ export interface RadarPanelProps {
   loading?: boolean;
   /** you can't nudge yourself: those fixes are left off your own risks */
   currentUserId?: string;
+  /** a control at the end of the header (Pulse: Post to Slack) */
+  action?: ReactNode;
 }
 
-export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch, onOpenWorkload, tasks = [], loading, currentUserId }: RadarPanelProps) {
+export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch, onOpenWorkload, tasks = [], loading, currentUserId, action }: RadarPanelProps) {
   const toast = useOptionalToast();
   const headId = "kradar-" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // what was just done about each risk ("Nudged Sana"), until the list moves on. A change to a
@@ -94,6 +96,7 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
           </>}
         </h2>
         <span className="kradar-sub">Ranked by impact on this week</span>
+        {action && <span className="kradar-act">{action}</span>}
       </header>
       {loading ? (
         <div className="kradar-list" aria-hidden="true">
@@ -305,7 +308,11 @@ function AssignFix({ label, variant, task, members, onPick }: {
 
 const RADAR_CSS = `
 .kradar { display: flex; flex-direction: column; min-width: 0; }
-.kradar-head { display: flex; align-items: center; gap: 8px; min-height: 48px; }
+.kradar-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 48px; }
+/* an action (Post to Slack) sits at the end; the subtitle then follows the title */
+.kradar-act { margin-left: auto; display: inline-flex; }
+.kradar-act:empty { display: none; }
+.kradar-head:has(.kradar-act:not(:empty)) .kradar-sub { margin-left: 0; }
 .kradar-title { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; font: 600 14px/20px var(--font-ui, var(--font-display)); letter-spacing: 0; color: var(--ink); }
 .kradar-count { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kradar-sub { margin-left: auto; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-align: right; }

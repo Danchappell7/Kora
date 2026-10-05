@@ -10,6 +10,7 @@ import { getProject, getMember, TAGS, PRIORITY_META } from "../../data/data";
 import type { Project, Section, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey, TagDef, Priority } from "../../data/types";
 import { resolveTagId, useStableOrder } from "./reportingUtils";
 import { DraftInput } from "../project/DraftInput";
+import { PublicLinkPanel } from "../integrations";
 import "../project/projects.css";
 
 const PRIORITIES: Priority[] = ["low", "medium", "high", "urgent"];
@@ -228,7 +229,7 @@ const FORM_FIELDS: { key: FormFieldKey; label: string }[] = [
 /** `assigneeId` is "" when the form asks for an assignee and the submitter
  *  chose "Unassigned", and undefined when the form doesn't ask. */
 export interface FormValues { title: string; description?: string; priority?: string; dueDate?: string; assigneeId?: string }
-export function FormsView({ forms, projects, members, onCreate, onUpdate, onDelete, onSubmit, projectId, readOnly = false }: {
+export function FormsView({ forms, projects, members, onCreate, onUpdate, onDelete, onSubmit, onPublicChange, projectId, readOnly = false }: {
   forms: FormDef[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -237,6 +238,8 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
   onDelete: (id: string) => void;
   /** file the request. Return false if it wasn't taken (the words stay in the form). */
   onSubmit: (projectId: string, values: FormValues) => boolean | void;
+  /** a form's public link was switched on/off or regenerated (already saved): update the list */
+  onPublicChange?: (id: string, patch: { publicEnabled: boolean; publicToken: string | null }) => void;
   /** inside a project: show only its forms, and new forms land in it */
   projectId?: string;
   /** guests: see which forms there are and what they ask for; no filling in, building, renaming or deleting */
@@ -328,6 +331,8 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                           })}
                         </div>
                       )}
+                      {/* anyone with the link can submit (guests only see the link while it's on) */}
+                      <PublicLinkPanel form={f} canEdit={!readOnly} projectName={proj?.name} onChange={(p) => onPublicChange?.(f.id, p)} />
                       {filling && !readOnly && (
                         <form className="kpj-form-fill" aria-label={`Fill in ${f.name}`} onSubmit={(e) => { e.preventDefault(); submit(f); }}>
                           {/* eslint-disable-next-line jsx-a11y/no-autofocus */}

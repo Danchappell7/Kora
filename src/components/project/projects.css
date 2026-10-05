@@ -300,6 +300,9 @@ select.kpj-field { cursor: pointer; }
 .kpj-history > li:first-child { border-top: 0; padding-top: 8px; }
 .kpj-history-meta { display: flex; align-items: center; gap: 8px; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); }
 .kpj-history-meta .kpj-mono { font-size: 11px; }
+.kpj-history-meta { flex-wrap: wrap; }
+.kpj-history-act { margin-left: auto; display: inline-flex; }
+.kpj-history-act:empty { display: none; }
 .kpj-history-text { margin: 0; font: 400 15px/24px var(--kpj-font); color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 .kpj-about { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 0 24px; margin: 0; }
 .kpj-about > dt { padding: 14px 0; font: 600 12px/20px var(--kpj-font); color: var(--ink-3); border-top: 1px solid var(--hairline); }
@@ -508,3 +511,4 @@ select.kpj-field { cursor: pointer; }
 .kpj-choice-extra { padding-left: 56px; }
 @media (max-width: 859px) { .kpj-choice-extra { padding-left: 28px; } }
 @media (prefers-reduced-motion: reduce) { .kpj-choice, .kpj-np-emoji-btn { transition: none; } }
+.kpj-team-step:focus { outline: none; }

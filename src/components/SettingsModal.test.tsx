@@ -297,12 +297,41 @@ describe("Settings sheet", () => {
     renderSettings({ calendar: { connections: [{ provider: "google", accountEmail: "ada@acme.co.uk" }], onConnect, onDisconnect, syncing: true } });
     goTo("Calendar");
     const panel = screen.getByRole("tabpanel", { name: /Calendar/ });
-    expect(within(panel).getByRole("status")).toHaveTextContent("Syncing");
+    expect(within(panel).getAllByRole("status").some((el) => /Syncing/.test(el.textContent ?? ""))).toBe(true);
     expect(within(panel).getByText(/ada@acme\.co\.uk/)).toBeInTheDocument();
     fireEvent.click(within(panel).getByRole("button", { name: "Disconnect Google Calendar" }));
     expect(onDisconnect).toHaveBeenCalledWith("google");
     fireEvent.click(within(panel).getByRole("button", { name: "Connect Microsoft Outlook" }));
     expect(onConnect).toHaveBeenCalledWith("microsoft");
+  });
+
+  it("Calendar & integrations: the calendar feed always, and Slack for the active workspace", async () => {
+    renderSettings({ slack: { workspaceId: null, workspaceName: "Personal", role: null } });
+    goTo("Calendar");
+    const panel = screen.getByRole("tabpanel", { name: /Calendar/ });
+    // no calendar connections prop: the Month hint, and the feed is still offered
+    expect(within(panel).getByText("Connect a calendar from Month")).toBeInTheDocument();
+    expect(within(panel).getByRole("heading", { name: "Add Kanbo to your calendar" })).toBeInTheDocument();
+    // Personal: Slack explains it's for team workspaces
+    expect(within(panel).getByText("Slack is for team workspaces")).toBeInTheDocument();
+    cleanup();
+    renderSettings({ calendar: { connections: [], onConnect: vi.fn(), onDisconnect: vi.fn(), syncing: false } });
+    goTo("Calendar");
+    const again = screen.getByRole("tabpanel", { name: /Calendar/ });
+    expect(within(again).getByRole("heading", { name: "Calendars" })).toBeInTheDocument();
+    expect(within(again).getByRole("heading", { name: "Add Kanbo to your calendar" })).toBeInTheDocument();
+    // no slack prop (an older host): no Slack group at all
+    expect(within(again).queryByRole("heading", { name: "Slack" })).toBeNull();
+  });
+
+  it("Notifications: push (a demo stand-in here) and the Kanbo app group under the table", () => {
+    renderSettings({ notifyPrefs: {}, onSaveNotifyPrefs: vi.fn() });
+    goTo("Notifications");
+    const panel = screen.getByRole("tabpanel", { name: /Notifications/ });
+    expect(within(panel).getByRole("heading", { name: "Push notifications" })).toBeInTheDocument();
+    expect(within(panel).getByRole("heading", { name: "Kanbo app" })).toBeInTheDocument();
+    // push can be offered, so the morning reminder isn't "email only" any more
+    expect(within(panel).getByText("Your morning summary of what's due.")).toBeInTheDocument();
   });
 
   it("says Kanbo is free while billing is off, and sends guests to their admin", () => {

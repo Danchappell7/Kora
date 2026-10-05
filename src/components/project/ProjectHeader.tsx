@@ -20,6 +20,7 @@ import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, status
 import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
 import { ComposerPanel, ComposerPopover, POP_STYLE, focusInPageComposer, useHasInPageComposer, useInPageComposer, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
 import { DraftInput } from "./DraftInput";
+import { SlackPostButton } from "../integrations";
 import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
 import "./projects.css";
 
@@ -361,7 +362,7 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
           <section aria-label="Update history">
             <h2 className="kpj-panel-title">History <span className="kpj-count">{history.length}</span></h2>
             <ol className="kpj-history">
-              {history.slice(0, shown).map((u) => {
+              {history.slice(0, shown).map((u, i) => {
                 const meta = STATUS_KIND_META[u.status];
                 const age = relDay(u.createdAt);
                 return (
@@ -370,6 +371,14 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
                       <Pill tone={STATUS_TONE[u.status] ?? "neutral"}>{meta?.label ?? u.status}</Pill>
                       <span className="kpj-mono" title={new Date(u.createdAt).toLocaleString("en-GB")}>{fmtShortDay(u.createdAt, KANBO_TODAY)}</span>
                       {age.days < 14 && <span>· {age.label}</span>}
+                      {/* the latest update can go to the team's Slack channel (the button renders
+                          nothing in Personal, before Slack is connected, or for guests) */}
+                      {i === 0 && !readOnly && (
+                        <span className="kpj-history-act">
+                          <SlackPostButton workspaceId={project.workspaceId ?? null} kind="status" projectId={project.id} status={u.status}
+                            getText={() => u.summary} label="Share to Slack" variant="ghost" />
+                        </span>
+                      )}
                     </div>
                     <p className="kpj-history-text">{u.summary}</p>
                   </li>

@@ -16,6 +16,7 @@ import { navItems, placeOf, type NavItem } from "../lib/nav";
 import { canDeleteProject, canArchiveProject } from "../lib/permissions";
 import { getMember } from "../data/data";
 import { BREAK_MIN, type FocusTimer } from "../hooks/useFocusTimer";
+import { InstallPrompt } from "./integrations";
 
 /* Sidebar-only rules, kept beside the component so the column's layout
    lives in one place. Tokens that are new in Paper & Navy are read with a
@@ -778,6 +779,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
       </div>
 
       <div className="ksb-foot">
+        {/* the one-time "Install Kanbo" card: nothing unless the browser offers an
+            install and it hasn't been dismissed on this device */}
+        <InstallPrompt variant="nudge" />
         {/* billing */}
         {BILLING_ENABLED && subscription && (
           <button type="button" className="ksb-bill" data-trial={subscription.status === "trialing" || undefined}

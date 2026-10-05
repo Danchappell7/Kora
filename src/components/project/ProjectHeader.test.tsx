@@ -6,6 +6,7 @@ import { getUserProjectTemplates } from "../../lib/templates";
 import { refreshClock, toLocalISO } from "../../data/data";
 import { ProjectActions, ProjectNotice, ProjectPanels, ProjectTitleAddon } from "./ProjectHeader";
 import { clearStatusDrafts } from "./StatusComposer";
+import * as slack from "../../lib/slack";
 
 const P: Project = { id: "p-a", name: "Alpha", emoji: "🚀", color: "oklch(0.74 0.14 230)", workspaceId: "ws", ownerId: "m-self", contributorIds: ["m-1"] };
 const ago = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
@@ -366,6 +367,25 @@ describe("ProjectPanels", () => {
     const fields = screen.getAllByRole("textbox", { name: "Update" });
     expect(fields).toHaveLength(1);                                     // the header popover's
     expect(fields[0]).toHaveValue("My careful update about the launch");
+  });
+
+  it("Updates: the latest update can go to the team's Slack once it's connected (never for guests)", async () => {
+    slack.resetSlackState({ demoDelayMs: 0 });
+    try {
+      const { unmount } = render(<ProjectPanels {...base()} />);
+      await act(async () => { await slack.getSlackStatus("ws"); });
+      expect(screen.queryByRole("button", { name: "Share to Slack" })).toBeNull();     // not connected yet
+      unmount();
+      await slack.connectSlack("ws", "https://hooks.slack.com/services/T0001/B0001/abcdefghijklmnopqrstuvwx", "#launch");
+      const again = render(<ProjectPanels {...base()} />);
+      const share = await screen.findByRole("button", { name: "Share to Slack" });
+      expect(screen.getAllByRole("button", { name: "Share to Slack" })).toHaveLength(1);
+      expect(within(screen.getByRole("list")).getAllByRole("listitem")[0]).toContainElement(share);
+      again.unmount();
+      render(<ProjectPanels {...base({ readOnly: true })} />);
+      await act(async () => { await slack.getSlackStatus("ws"); });
+      expect(screen.queryByRole("button", { name: "Share to Slack" })).toBeNull();
+    } finally { slack.resetSlackState(); }
   });
 
   it("Updates: guests read the history without a composer", () => {

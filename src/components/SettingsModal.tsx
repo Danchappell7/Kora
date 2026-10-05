@@ -2,6 +2,9 @@
    KANBO — Settings: one sectioned sheet.
    Profile · Appearance · Notifications · Calendar & integrations ·
    Workspace (admins) · Billing · Tags · Shortcuts · Data · Account.
+   Calendar & integrations also carries the private calendar feed (f7) and
+   Slack for team workspaces (f6); Notifications carries push and the
+   installable app (f8).
    Desktop: 880 × min(760, viewport − 48) with a 200px section list on
    the left (a vertical tablist: ↑/↓/Home/End move and select) and a
    scrolling pane on the right. Phones: full screen; the sections are a
@@ -16,7 +19,7 @@ import { useState, useEffect, useRef, useId, type ReactNode, type KeyboardEvent 
 import { createPortal } from "react-dom";
 import { Icon, Collapse, avatarDisc, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
-import type { IconName, CalendarConnection, CalProvider, Subscription, TagDef } from "../data/types";
+import type { IconName, CalendarConnection, CalProvider, Role, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useAuth } from "../auth/AuthProvider";
@@ -27,6 +30,8 @@ import { PASSWORD_MIN, passwordIssue, friendlyPasswordError, friendlySignOutErro
 import { SHORTCUTS, type Shortcut } from "../lib/nav";
 import { TagManagerPanel } from "./TagManagerModal";
 import { BillingPanel } from "./Billing";
+import { CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
+import { disablePushEverywhere, isPushDemo, pushAvailability } from "../lib/push";
 
 const PRONOUN_SUGGESTIONS = ["she/her", "he/him", "they/them", "she/they", "he/they", "ze/zir"];
 
@@ -36,6 +41,9 @@ export interface ProfileDraft {
   pronouns: string;
   avatarUrl: string | null;
 }
+
+/** Settings › Calendar & integrations › Calendars (Google / Outlook connections) */
+type CalendarSettings = { connections: CalendarConnection[]; onConnect: (provider: string) => void; onDisconnect: (id: string) => void; syncing: boolean };
 
 export type ThemeChoice = "light" | "dark" | "system";
 export type SettingsSection = "profile" | "appearance" | "notifications" | "calendar" | "workspace" | "billing" | "tags" | "shortcuts" | "data" | "account";
@@ -52,6 +60,9 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   { key: "comment", label: "Comments on my tasks", hint: "New comments on tasks you own or follow." },
   { key: "due", label: "Due-date reminders", hint: "Sent by email only." },
 ];
+/** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */
+const notifHint = (r: { key: string; hint: string }): string =>
+  r.key === "due" && (isPushDemo() || pushAvailability() !== "unconfigured") ? "Your morning summary of what's due." : r.hint;
 
 const CAL_PROVIDERS: { id: CalProvider; label: string; short: string }[] = [
   { id: "google", label: "Google Calendar", short: "Google Calendar" },
@@ -87,7 +98,7 @@ const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
 
 export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance, theme, onChangeTheme,
-  section, onSection, renderWorkspace, tagsPanel, calendar, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut }: {
+  section, onSection, renderWorkspace, tagsPanel, calendar, slack, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -119,7 +130,10 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     onCreate?: (label: string, color: string) => void;
   };
   /** Settings › Calendar & integrations */
-  calendar?: { connections: CalendarConnection[]; onConnect: (provider: string) => void; onDisconnect: (id: string) => void; syncing: boolean };
+  calendar?: CalendarSettings;
+  /** Settings › Calendar & integrations › Slack: the active workspace (null = Personal) and your
+   *  role there. Owners and admins manage it; everyone else sees whether it's connected. */
+  slack?: { workspaceId: string | null; workspaceName?: string; role?: Role | null };
   /** Settings › Billing */
   billing?: { enabled: boolean; subscription: Subscription | null; onUpgrade: () => void; onManageBilling: () => void };
   /** Settings › Data › Import tasks… (Settings closes first, so the import dialog isn't underneath) */
@@ -490,6 +504,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
     const unused = uploadsRef.current;
     uploadsRef.current = [];
     await removeAvatarObjects(unused, uid);
+    // every device's push subscription goes too, while this session can still delete them,
+    // so a closed laptop stops getting notifications now (never throws; ~6 s at worst)
+    await disablePushEverywhere();
     try {
       // scope "global" revokes every refresh token for this account, so
       // other browsers and phones are signed out when their session next
@@ -691,9 +708,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
               <tr key={r.key}>
                 <th scope="row">
                   <span className="kset-row-label">{r.label}</span>
-                  <span className="kset-row-desc">{r.hint}</span>
+                  <span className="kset-row-desc">{notifHint(r)}</span>
                 </th>
-                {/* due reminders are email-only (sent by the daily job) */}
+                {/* due reminders come from the daily job (email, and push below once it's on), never in-app */}
                 <td>{r.key === "due"
                   ? <span className="kset-na"><span aria-hidden="true">–</span><span className="sr-only">Not available in the app</span></span>
                   : <PrefCheck checked={prefOn(r.key)} onChange={() => togglePref(r.key)} label={`${r.label} in-app`} disabled={!onSaveNotifyPrefs} />}</td>
@@ -703,10 +720,27 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
           </tbody>
         </table>
       </div>
+      {/* push on this device and per kind (renders nothing until push is configured;
+          a local stand-in in demo mode), then the installable app next to it: on
+          iPhone, push needs the Home Screen app */}
+      <PushSettingsPanel notifyPrefs={notifyPrefs} onSaveNotifyPrefs={onSaveNotifyPrefs} />
+      <div className="kpush-app"><SetGroup title="Kanbo app"><InstallPrompt variant="settings" /></SetGroup></div>
     </>
   );
 
-  const calendarSection = () => calendar ? (
+  const calendarSection = () => (
+    <>
+      {calendar ? calendarGroup(calendar) : (
+        <EmptyState size="sm" art="calendar" title="Connect a calendar from Month" body="Open Today › Month and choose Connect calendar to see your meetings alongside your tasks." />
+      )}
+      {/* your private feed of planned tasks, for Google, Outlook or Apple Calendar */}
+      <CalendarFeedPanel />
+      {/* Slack is per team workspace; the panel explains itself in Personal */}
+      {slack && <SlackSettingsPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null} />}
+    </>
+  );
+
+  const calendarGroup = (calendar: CalendarSettings) => (
     <>
       <Group title="Calendars" action={calendar.syncing ? <span className="kset-sync" role="status"><span className="kspin" aria-hidden="true" />Syncing…</span> : undefined}>
         {CAL_PROVIDERS.map((p, i) => {
@@ -723,8 +757,6 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       </Group>
       <p className="kset-note">Kanbo only reads your events, to show your meetings on Today and Month. Nothing is written back to your calendar.</p>
     </>
-  ) : (
-    <EmptyState size="sm" art="calendar" title="Connect a calendar from Month" body="Open Today › Month and choose Connect calendar to see your meetings alongside your tasks." />
   );
 
   const workspaceSection = () => (

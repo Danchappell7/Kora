@@ -9,6 +9,7 @@ import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { isTaskId } from "./lib/taskOps";
 import { pushUndo, clearUndo } from "./lib/undoStack";
 import { toLocalISO, KANBO_TODAY } from "./data/data";
+import { WORKSPACE_TEMPLATES } from "./lib/templates";
 
 const renderApp = () => render(
   <ToastProvider>
@@ -531,6 +532,76 @@ describe("App (demo mode)", () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(10));
     const plan = (await section.mock.results[0].value).id;
     expect(create.mock.calls.find((c) => c[0].title === "Define launch goals and success metrics")![0]).toMatchObject({ sectionId: plan, status: "todo", workspaceId: "ws-foundrise" });
+  });
+
+  it("a new workspace started from a team template gets its projects, starter tasks, form and rule, assigned to you", async () => {
+    const batch = track(vi.spyOn(store, "createTasksBatch"));
+    const form = track(vi.spyOn(store, "createForm"));
+    const rule = track(vi.spyOn(store, "createRule"));
+    await boot();
+    fireEvent.click(screen.getByRole("button", { name: /^Switch workspace/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "New workspace…" }));
+    const named = await screen.findByRole("dialog", { name: "New workspace" });
+    fireEvent.change(within(named).getByRole("textbox", { name: "Workspace name" }), { target: { value: "Acme" } });
+    fireEvent.click(within(named).getByRole("button", { name: "Next" }));
+    const setup = await screen.findByRole("dialog", { name: "Set up Acme" });
+    const card = within(setup).getByRole("heading", { name: "Marketing" }).closest("li")!;
+    fireEvent.click(within(card).getByRole("button", { name: /Start with this/ }));
+    expect(await screen.findByText(/^Marketing is ready: 3 projects and \d+ starter tasks\.$/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Set up Acme" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /^Switch workspace, current: Acme/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+    expect(screen.getAllByText("Campaigns").length).toBeGreaterThan(0);
+    const tasks = batch.mock.calls.flatMap((c) => c[0]);
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.every((t) => t.assigneeId === tasks[0].assigneeId && t.workspaceId === tasks[0].workspaceId)).toBe(true);
+    expect(form).toHaveBeenCalled();
+    expect(rule).toHaveBeenCalled();
+  });
+
+  it("Projects › New project › From a team template adds its projects here and opens the first", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: "new project" } });
+    fireEvent.click(screen.getByRole("option", { name: /New project/ }));
+    const dialog = await screen.findByRole("dialog", { name: "New project" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "From a team template" }));
+    const gallery = await screen.findByRole("dialog", { name: "From a team template" });
+    const card = within(gallery).getByRole("heading", { name: "Operations" }).closest("li")!;
+    fireEvent.click(within(card).getByRole("button", { name: /Start with this/ }));
+    expect(await screen.findByText(/^Operations is ready: 3 projects and \d+ starter tasks\.$/)).toBeInTheDocument();
+    const first = WORKSPACE_TEMPLATES.find((t) => t.id === "operations")!.projects[0].name;
+    expect(await screen.findByRole("heading", { level: 1, name: first })).toBeInTheDocument();
+    // still in the workspace it was started from
+    expect(screen.getByRole("button", { name: /^Switch workspace, current: Foundrise/ })).toBeInTheDocument();
+  });
+
+  it("a push notification clicked while Kanbo is open opens its task in place, or routes to Today", async () => {
+    const worker = new EventTarget();
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: worker });
+    try {
+      at("/tasks");
+      await boot();
+      const answered: unknown[] = [];
+      const click = (url: string) => act(async () => {
+        const port = { postMessage: (m: unknown) => answered.push(m) } as unknown as MessagePort;
+        worker.dispatchEvent(new MessageEvent("message", { data: { type: "kanbo:navigate", url }, ports: [port] }));
+      });
+      await click("/?task=t-1");
+      expect(await screen.findByRole("dialog", { name: `Task: ${DECK}` })).toBeInTheDocument();
+      await click("/today");
+      expect(await screen.findByRole("heading", { level: 1, name: "Today" })).toBeInTheDocument();
+      expect(answered).toEqual([{ ok: true }, { ok: true }]);   // the worker needn't load the page itself
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).serviceWorker;
+    }
+  });
+
+  it("the installed app's New task shortcut (/today?new=1) opens quick capture and takes ?new off the address", async () => {
+    at("/today?new=1");
+    await boot();
+    expect(await screen.findByRole("dialog", { name: "Quick capture" })).toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/today"));
   });
 
   it("changes the queue gave up on are shown, with Retry and Discard", async () => {

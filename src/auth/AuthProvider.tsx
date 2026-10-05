@@ -19,6 +19,7 @@ import {
 import { claimLocalData, parkLocalData, clearLocalUserData, forgetStoredSession, isAuthStorageKey, pageNav } from "./localData";
 import { UnsyncedSignOutDialog } from "./UnsyncedSignOutDialog";
 import { clearTaskDrafts } from "../components/taskDetailHelpers";
+import { disablePush, watchPushSession } from "../lib/push";
 
 type PasswordReason = "invite" | "recovery";
 /** (a click event is accepted too, so `onClick={auth.signOut}` keeps working) */
@@ -172,10 +173,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { alive = false; sub.subscription.unsubscribe(); window.removeEventListener("storage", onStorage); };
   }, [adopt, setPasswordReason]);
 
+  // The push sign-out guard, for the life of the page: when nobody is signed in (or
+  // someone else signs in) this browser's push subscription is dropped, so the next
+  // person at a shared desk never sees the last person's notifications. Push is only
+  // offered while it runs. A no-op in demo mode.
+  useEffect(() => watchPushSession(), []);
+
   useEffect(() => { setUserContext(user ? { id: user.id, email: user.email } : null); }, [user]);
 
   const finishSignOut = useCallback(async () => {
     if (supabase) {
+      // this device's push row goes while the session can still delete it (never
+      // throws; ~6 s at worst, usually milliseconds). Every sign-out comes through here.
+      await disablePush();
       let failed = false;
       try {
         // this device only: supabase-js defaults to "global", which would also

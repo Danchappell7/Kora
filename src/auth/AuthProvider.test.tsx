@@ -20,10 +20,14 @@ const h = vi.hoisted(() => {
   };
   const flush = vi.fn(async (): Promise<number> => 0);
   const invoke = vi.fn(async (): Promise<{ data: unknown; error: unknown }> => ({ data: {}, error: null }));
-  return { auth, listeners, state, flush, invoke };
+  const stopPush = vi.fn();
+  const watchPush = vi.fn(() => stopPush);
+  const disablePush = vi.fn(async () => {});
+  return { auth, listeners, state, flush, invoke, stopPush, watchPush, disablePush };
 });
 vi.mock("../lib/supabase", () => ({ isSupabaseConfigured: true, supabase: { auth: h.auth, functions: { invoke: h.invoke } } }));
 vi.mock("../data/store", () => ({ store: { flushQueue: h.flush } }));
+vi.mock("../lib/push", () => ({ watchPushSession: h.watchPush, disablePush: h.disablePush }));
 
 type Mod = typeof import("./AuthProvider");
 async function boot(url: string) {
@@ -173,6 +177,17 @@ describe("sign-out on a shared device", () => {
     fireEvent.click(screen.getByText("sign out"));
     await waitFor(() => expect(h.auth.signOut).toHaveBeenCalled());
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("runs the push sign-out guard for the life of the page, and drops this device's push before signing out", async () => {
+    signedIn();
+    await boot("/");
+    await waitFor(() => expect(text("user")).toBe("u1"));
+    expect(h.watchPush).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("sign out"));
+    await waitFor(() => expect(h.auth.signOut).toHaveBeenCalled());
+    expect(h.disablePush).toHaveBeenCalledTimes(1);
+    expect(h.disablePush.mock.invocationCallOrder[0]).toBeLessThan(h.auth.signOut.mock.invocationCallOrder[0]);
   });
 
   it("signs out of this device only, and forgets unsent comments and unsaved task text", async () => {

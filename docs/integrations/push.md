@@ -181,6 +181,10 @@ Once the app is wired as below (the Push section doesn't appear until it is):
 
 ## Wiring into the app (integrator)
 
+Done on the `features` integration: every call in the table below is in place
+(and tested), so the Push section appears as soon as `VITE_VAPID_PUBLIC_KEY`
+is in the build. The table stays as the map of where each call lives.
+
 This package can't edit `AuthProvider`, `App`, `Sidebar` or `SettingsModal`,
 so these calls are the integrator's. Until the `watchPushSession()` one is in,
 the Push section stays hidden (`pushAvailability()` says "unconfigured");

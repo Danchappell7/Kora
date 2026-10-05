@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getUserProjectTemplates } from "../lib/templates";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { NewProjectModal } from "./NewProjectModal";
-import { getProjectTemplates } from "../lib/templates";
+import { getProjectTemplates, WORKSPACE_TEMPLATES } from "../lib/templates";
 
 beforeEach(() => { localStorage.clear(); });
 
@@ -80,5 +80,36 @@ describe("NewProjectModal", () => {
     expect(screen.getByRole("radio", { name: "Cobalt" })).toHaveAttribute("aria-checked", "true");
     fireEvent.keyDown(screen.getByRole("radio", { name: "Cobalt" }), { key: "ArrowRight" });
     expect(screen.getByRole("radio", { name: "Iris" })).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+describe("NewProjectModal › From a team template", () => {
+  it("is offered only when the host can apply one", () => {
+    render(<NewProjectModal open onClose={vi.fn()} onCreate={vi.fn()} workspaceId="ws-1" />);
+    expect(screen.queryByRole("button", { name: "From a team template" })).toBeNull();
+  });
+
+  it("opens the gallery, applies the chosen template (just the ticked projects), then closes; Back returns to the form", async () => {
+    let finish!: () => void;
+    const onApplyTemplate = vi.fn(() => new Promise<void>((r) => { finish = r; }));
+    const onClose = vi.fn();
+    render(<NewProjectModal open onClose={onClose} onCreate={vi.fn()} workspaceId="ws-1" onApplyTemplate={onApplyTemplate} />);
+    fireEvent.click(screen.getByRole("button", { name: "From a team template" }));
+    const sheet = screen.getByRole("dialog", { name: "From a team template" });
+    expect(within(sheet).getByRole("list", { name: "Team templates" })).toBeInTheDocument();
+    // Back: the form again
+    fireEvent.click(within(sheet).getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("textbox", { name: "Project name" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "From a team template" }));
+    const first = WORKSPACE_TEMPLATES[0];
+    const card = screen.getByRole("heading", { name: first.name }).closest("li")!;
+    // untick the first project, then start
+    fireEvent.click(within(card).getAllByRole("checkbox")[0]);
+    fireEvent.click(within(card).getByRole("button", { name: /Start with this/ }));
+    expect(onApplyTemplate).toHaveBeenCalledWith(first, first.projects.slice(1).map((p) => p.key));
+    expect(within(card).getByRole("button", { name: /Setting up/ })).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { finish(); });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

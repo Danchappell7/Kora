@@ -6,6 +6,7 @@ import type { FocusTimer } from "../hooks/useFocusTimer";
 import type { Project, Task, Workspace, Role, SavedSearch } from "../data/types";
 import type { Route } from "../app-types";
 import { WORKSPACES as DEMO_WORKSPACES, PROJECTS as DEMO_PROJECTS } from "../data/data";
+import { listenForInstallPrompt, __resetInstallForTests } from "../lib/install";
 
 const focus = { running: false, setRunning: vi.fn(), seconds: 0, endSession: () => 0, focusMinToday: 0 } as unknown as FocusTimer;
 const workspaces: Workspace[] = [
@@ -437,5 +438,21 @@ describe("Sidebar row-action styles", () => {
     expect(css).toMatch(/\.kproj-item:has\(:focus-visible\) \.kproj-acts\s*\{[^}]*opacity:\s*1/);
     // :has() never shares a selector list with :hover (an unsupported selector drops the whole rule)
     for (const rule of css.match(/[^{}]+\{/g) ?? []) if (/:hover/.test(rule)) expect(rule).not.toMatch(/:has\(/);
+  });
+});
+
+describe("Sidebar › Install Kanbo nudge", () => {
+  afterEach(() => { __resetInstallForTests(); });
+
+  it("shows once the browser offers an install, above the focus pill, and Not now puts it away for good", () => {
+    listenForInstallPrompt();
+    renderSidebar();
+    expect(screen.queryByRole("group", { name: "Install Kanbo" })).toBeNull();
+    const offer = Object.assign(new Event("beforeinstallprompt", { cancelable: true }), { prompt: vi.fn(async () => {}), userChoice: Promise.resolve({ outcome: "dismissed" }) });
+    act(() => { window.dispatchEvent(offer); });
+    const nudge = screen.getByRole("group", { name: "Install Kanbo" });
+    expect(nudge.closest(".ksb-foot")?.firstElementChild).toBe(nudge);
+    fireEvent.click(within(nudge).getByRole("button", { name: "Not now" }));
+    expect(screen.queryByRole("group", { name: "Install Kanbo" })).toBeNull();
   });
 });

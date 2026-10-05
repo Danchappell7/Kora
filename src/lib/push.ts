@@ -517,8 +517,10 @@ export function listenForPushMessages(onNavigate: (path: string) => void): () =>
       void refreshPushSubscription();
     }
   };
-  navigator.serviceWorker.addEventListener("message", onMessage);
-  return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  // (the same container on the way out, whatever happens to navigator meanwhile)
+  const container = navigator.serviceWorker;
+  container.addEventListener("message", onMessage);
+  return () => container.removeEventListener("message", onMessage);
 }
 
 /** Tests only. */

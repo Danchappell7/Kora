@@ -7,7 +7,8 @@ it in one go.
 
 - **Supabase project:** `htnchiljplrnjkwimgla`
 - **App:** <https://www.kanbo.co.uk>
-- **Time needed:** about 45 minutes, plus a quick test the next morning (step 5).
+- **Time needed:** about 45 minutes, plus a quick test the next morning (step 5),
+  and about 20 minutes for the integrations (step 11).
 
 Everything below fails safe. If a step hasn't been done yet, that feature
 stays switched off; nothing else breaks. For example, until migration 0042 has
@@ -462,6 +463,103 @@ from SQL. Step 10 tests those.
    `https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/<function-name>/logs`
    (for example `…/functions/invite-member/logs`).
 
+### Step 11: Integrations (database updates 0043 and 0044)
+
+Slack, the calendar feed, push notifications and the installable app, public
+request forms, team templates and plans that follow you. Each one stays
+switched off (or says it isn't switched on yet) until its part below is done,
+so you can do them in any order and nothing else breaks meanwhile. Team
+templates need nothing.
+
+The details, checks and troubleshooting for each are in
+`docs/integrations/`: [database-0043.md](docs/integrations/database-0043.md),
+[database-0044.md](docs/integrations/database-0044.md),
+[slack.md](docs/integrations/slack.md),
+[calendar-feed.md](docs/integrations/calendar-feed.md),
+[push.md](docs/integrations/push.md),
+[public-forms.md](docs/integrations/public-forms.md) and
+[plans-and-templates.md](docs/integrations/plans-and-templates.md).
+
+**11a. Run 0043, then 0044.** In a new SQL editor tab
+(<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>), paste
+the whole of `supabase/migrations/0043_integrations_push_forms_plans.sql` and
+press **Run**, then the same for `0044_push_device_cap.sql`. Both are safe to
+re-run. Check them with the queries in database-0043.md and database-0044.md
+(every column `true`).
+
+**11b. Push keys (once).** Make a VAPID key pair and give it to the edge
+functions, without the private key ever appearing on screen. This writes the
+pair to `~/.kanbo-vapid.env` (readable only by you; never put it in the
+`kora-app` folder), sets the three secrets, and copies the **public** key to
+the clipboard for 11c. Run it again later and it reuses the same pair.
+
+```bash
+read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && N="$(command -v node || echo "$HOME/.kora-tools/node-v20.18.1-darwin-arm64/bin/node")" && F="$HOME/.kanbo-vapid.env" && { [ -f "$F" ] || KANBO_VAPID_FILE="$F" "$N" -e 'const c=require("crypto"),fs=require("fs"),f=process.env.KANBO_VAPID_FILE;const j=c.generateKeyPairSync("ec",{namedCurve:"prime256v1"}).privateKey.export({format:"jwk"});const pub=Buffer.concat([Buffer.from([4]),Buffer.from(j.x,"base64url"),Buffer.from(j.y,"base64url")]).toString("base64url");fs.writeFileSync(f,"VAPID_PUBLIC_KEY="+pub+"\nVAPID_PRIVATE_KEY="+j.d+"\nVAPID_SUBJECT=mailto:hello@kanbo.co.uk\n",{mode:0o600,flag:"wx"});console.log("Made a new key pair (kept in "+f+")")'; } && supabase secrets set --env-file "$F" --project-ref htnchiljplrnjkwimgla && grep '^VAPID_PUBLIC_KEY=' "$F" | cut -d= -f2- | tr -d '\n' | pbcopy && echo "Push keys set. The PUBLIC key is on your clipboard."; unset SUPABASE_ACCESS_TOKEN
+```
+
+**11c. The public key in Vercel.** At
+<https://vercel.com/danchappell7-gmailcoms-projects/kora/settings/environment-variables>
+add `VITE_VAPID_PUBLIC_KEY`, paste the public key from 11b as its value, tick
+Production and Preview, and **Save**. The next deploy builds it in. (To copy
+it again: `grep '^VAPID_PUBLIC_KEY=' ~/.kanbo-vapid.env | cut -d= -f2- | tr -d '\n' | pbcopy`.)
+
+**11d. Deploy the functions.** Four are new and two changed. `slack-post` and
+`notify` keep the JWT check; `slack-standup` (pg_cron), `ics-feed` (calendar
+apps), `public-form` (signed-out visitors) and `daily-reminders` (pg_cron)
+run without it, as `supabase/config.toml` records. From the project folder,
+once the new code is in it:
+
+```bash
+read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && { [ -f supabase/functions/slack-post/index.ts ] || { echo "The new code isn't in this folder yet."; false; }; } && R=htnchiljplrnjkwimgla && supabase functions deploy slack-post --project-ref $R --use-api && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy slack-standup --no-verify-jwt --project-ref $R --use-api && supabase functions deploy ics-feed --no-verify-jwt --project-ref $R --use-api && supabase functions deploy public-form --no-verify-jwt --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && echo "All six functions deployed."; unset SUPABASE_ACCESS_TOKEN
+```
+
+Then check they answer: `ics-feed` should say `204`, `public-form`
+`{"ok":true}` and `slack-standup` `401` (strangers can't trigger it):
+
+```bash
+curl -s -o /dev/null -w "ics-feed: %{http_code}\n" "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/ics-feed?ping=1"; curl -s -w "  (public-form)\n" "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/public-form?ping"; curl -s -o /dev/null -w "slack-standup: %{http_code}\n" -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-standup"
+```
+
+**11e. Schedule the daily Slack stand-up.** It reuses step 5's scheduler and
+Vault secret. In the SQL editor:
+
+```sql
+do $check$ begin
+  if not exists (select 1 from pg_extension where extname = 'pg_cron') or not exists (select 1 from pg_extension where extname = 'pg_net') then
+    raise exception 'Switch on pg_cron and pg_net first (step 5a)';
+  end if;
+  if not exists (select 1 from vault.secrets where name = 'kanbo_cron_secret') then
+    raise exception 'Store the cron secret in the Vault first (step 5c)';
+  end if;
+end $check$;
+
+select cron.unschedule(jobid) from cron.job where jobname = 'kanbo-slack-standup';
+
+select cron.schedule(
+  'kanbo-slack-standup',
+  '*/15 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-standup',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'kanbo_cron_secret')
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 60000
+  );
+  $$
+);
+```
+
+The function works in UK time itself and only posts on weekdays, at each
+workspace's chosen time. Check it after 15 minutes with the query in slack.md
+(step 2c): the latest `status` should be `succeeded`.
+
+**11f. Connect a Slack channel.** Each team workspace's owner or admin makes an
+Incoming Webhook at <https://api.slack.com/apps> and pastes it in **Settings ›
+Calendar & integrations › Slack** (slack.md, step 3, has the clicks).
+
 ---
 
 ## Reference
@@ -473,9 +571,11 @@ This matches `supabase/config.toml`. Deploy the "no" rows with
 
 | Function | Gateway JWT check | Who calls it |
 |---|---|---|
-| `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify` | yes | the signed-in app |
+| `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify`, `slack-post` | yes | the signed-in app |
 | `request-access`, `reset-password` | no | signed-out forms (throttled per email and per network) |
-| `daily-reminders` | no | pg_cron with `x-cron-secret` (anyone else gets 401) |
+| `daily-reminders`, `slack-standup` | no | pg_cron with `x-cron-secret` (anyone else gets 401) |
+| `ics-feed` | no | calendar apps, with the person's private feed token |
+| `public-form` | no | signed-out visitors to a public request form (token, honeypot and limits) |
 | `calendar` | no | Google/Microsoft redirect back without a JWT. Every other action checks the user itself |
 | `stripe-webhook` | no | Stripe, checked by signature |
 | `metrics` | no | an external dashboard with `METRICS_TOKEN` |
@@ -495,6 +595,7 @@ The app redeploys automatically on every push to `main`.
 | `VITE_BILLING_ENABLED` | leave unset to keep billing off |
 | `VITE_DISABLE_SIGNUP` | set to `true` for invite-only |
 | `VITE_ENABLE_GOOGLE` | set only once the Google provider is configured in Supabase |
+| `VITE_VAPID_PUBLIC_KEY` | the **public** VAPID key (step 11b). Push stays hidden without it |
 
 ### Billing (Stripe), when you switch it on
 

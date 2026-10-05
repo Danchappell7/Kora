@@ -36,6 +36,11 @@ const h = vi.hoisted(() => {
 
 vi.mock("../lib/supabase", () => ({ supabase: h.client, isSupabaseConfigured: true }));
 vi.mock("../auth/AuthProvider", () => ({ useAuth: () => h.auth }));
+// "Sign out of all devices" drops every device's push subscription first, while signed in
+vi.mock("../lib/push", async (importActual) => ({
+  ...(await importActual<typeof import("../lib/push")>()),
+  disablePushEverywhere: vi.fn(async () => { h.calls.push("push:everywhere"); }),
+}));
 
 const photo = (name: string) => `${h.BASE}/${h.UID}/${name}`;
 const path = (name: string) => `${h.UID}/${name}`;
@@ -94,7 +99,7 @@ describe("Sign out of all devices", () => {
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     fireEvent.click(screen.getByRole("button", { name: /sign out everywhere/i }));
     await waitFor(() => expect(h.auth.signOut).toHaveBeenCalledTimes(1));
-    expect(h.calls).toEqual([`remove:${path("avatar-2.gif")}`, "signOut:global", "auth.signOut"]);
+    expect(h.calls).toEqual([`remove:${path("avatar-2.gif")}`, "push:everywhere", "signOut:global", "auth.signOut"]);
   });
 
   it("puts the saved photo back in the preview if signing out fails", async () => {

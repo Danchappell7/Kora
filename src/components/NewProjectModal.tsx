@@ -1,15 +1,19 @@
 /* ============================================================
-   KANBO — create-project dialog
+   KANBO — create-project dialog. "From a team template" swaps the
+   sheet for the team template gallery (TeamTemplatePicker): a
+   template's projects, each with sections, starter tasks, a request
+   form and a rule, added to this workspace. Back returns to the form.
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Button, Sheet, spectrumColor } from "./primitives";
 import { getProjectTemplates, storeProjectTemplate, type ProjectTemplate } from "../lib/templates";
+import { TeamTemplatePicker } from "./TeamTemplatePicker";
 import { IdentityFields, IdentityPreview, freshSpectrum } from "./project/IdentityPicker";
 import type { NewProject } from "../data/store";
-import type { Project } from "../data/types";
+import type { Project, WorkspaceTemplate } from "../data/types";
 import "./project/projects.css";
 
-export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects }: {
+export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate }: {
   open: boolean;
   onClose: () => void;
   /** templateId: the template it was started from, if any — a built-in one
@@ -18,6 +22,9 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   workspaceId: string | null;
   /** the workspace's projects: a new one starts in a hue none of them wears yet */
   projects?: Pick<Project, "id" | "color">[];
+  /** "From a team template" (omit to hide it): adds the template's projects (all, or
+   *  `keys`); the sheet shows progress until it resolves, then closes */
+  onApplyTemplate?: (template: WorkspaceTemplate, keys?: string[]) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
@@ -26,7 +33,16 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   const [templateId, setTemplateId] = useState("");
   // "Save as template" answers in place: saved, or this device's storage refused it
   const [saved, setSaved] = useState<null | "saved" | "failed">(null);
+  const [mode, setMode] = useState<"blank" | "team">("blank");
+  const [applying, setApplying] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const teamRef = useRef<HTMLDivElement>(null);
+  const teamButtonRef = useRef<HTMLButtonElement>(null);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  // every opening starts on the form (reset while rendering, so the gallery never flashes)
+  const [wasOpen, setWasOpen] = useState(open);
+  if (wasOpen !== open) { setWasOpen(open); if (open) { setMode("blank"); setApplying(false); } }
 
   useEffect(() => {
     if (!open) return;
@@ -49,6 +65,31 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   const builtins = templates.filter((t) => t.id.startsWith("builtin-"));
   const mine = templates.filter((t) => !t.id.startsWith("builtin-"));
 
+  // switching between the form and the gallery keeps focus inside the sheet
+  const switchTo = (to: "blank" | "team") => {
+    setMode(to);
+    window.setTimeout(() => (to === "team" ? teamRef.current : teamButtonRef.current ?? inputRef.current)?.focus({ preventScroll: true }), 30);
+  };
+
+  const applyTeam = async (template: WorkspaceTemplate, keys?: string[]) => {
+    if (!onApplyTemplate || applying) return;
+    setApplying(true);
+    try { await onApplyTemplate(template, keys); }
+    finally { if (alive.current) setApplying(false); }
+    onClose();
+  };
+
+  if (mode === "team" && onApplyTemplate) {
+    return (
+      <Sheet open={open} onClose={onClose} label="From a team template" title="From a team template" width={720}
+        footer={<Button variant="ghost" icon="arrowLeft" onClick={() => switchTo("blank")} disabled={applying}>Back</Button>}>
+        <div ref={teamRef} tabIndex={-1} className="kpj-team-step" aria-label="Team templates for this workspace">
+          <TeamTemplatePicker mode="project" busy={applying} onPick={(t, keys) => { void applyTeam(t, keys); }} onStartEmpty={() => switchTo("blank")} />
+        </div>
+      </Sheet>
+    );
+  }
+
   return (
     <Sheet open={open} onClose={onClose} label="New project" title="New project" width={480} initialFocus={inputRef}
       footer={(
@@ -62,6 +103,11 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
         </>
       )}>
       <div className="kpj-dialog">
+        {onApplyTemplate && (
+          <Button ref={teamButtonRef} variant="ghost" size="sm" icon="layers" onClick={() => switchTo("team")} style={{ alignSelf: "flex-start" }}>
+            From a team template
+          </Button>
+        )}
         {templates.length > 0 && (
           <select className="kpj-field" value={templateId} aria-label="Start from template"
             onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); setTemplateId(t ? t.id : ""); if (t) { setName(t.name); setEmoji(t.emoji); setColor(t.color); } }}>

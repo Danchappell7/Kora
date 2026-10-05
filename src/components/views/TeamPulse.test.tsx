@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import { render, screen, fireEvent, act, within, cleanup } from "@testing-library/react";
 import { TeamPulse } from "./TeamPulse";
-import { dayOffset } from "../../data/data";
+import { dayOffset, refreshClock } from "../../data/data";
 import type { Task, WorkspaceMember, WorkspaceEvent } from "../../data/types";
+import * as slack from "../../lib/slack";
 
 const WS = "ws-foundrise";
 let n = 0;
@@ -38,6 +39,14 @@ function pulse(extra: Partial<Parameters<typeof TeamPulse>[0]> = {}) {
 }
 const ready = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
 
+// Pulse reads the day: on a Monday it looks back to Friday and "this week" has only
+// just begun. Pin the clock to a Wednesday so these expectations hold every day.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 7, 10, 0, 0));
+  refreshClock();
+});
+afterAll(() => { vi.useRealTimers(); refreshClock(); });
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 
 describe("TeamPulse", () => {
@@ -330,5 +339,31 @@ describe("TeamPulse", () => {
     await ready();
     expect(screen.getByRole("row", { name: /Maya Lin/ })).toBeInTheDocument();
     expect(screen.getByRole("row", { name: /Sana Rao/ })).toBeInTheDocument();
+  });
+});
+
+describe("TeamPulse › Post to Slack", () => {
+  const HOOK = "https://hooks.slack.com/services/T0001/B0001/abcdefghijklmnopqrstuvwx";
+  beforeEach(() => { slack.resetSlackState({ demoDelayMs: 0 }); });
+  afterAll(() => { slack.resetSlackState(); });
+
+  it("isn't there until the workspace has a Slack channel", async () => {
+    pulse({ workspaceId: WS });
+    await act(async () => { await slack.getSlackStatus(WS); });
+    expect(screen.queryByRole("button", { name: /Post to Slack/ })).toBeNull();
+  });
+
+  it("posts the stand-up from the bar and the risks from the Radar once connected; never for guests", async () => {
+    await slack.connectSlack(WS, HOOK, "#team");
+    const { unmount } = pulse({ workspaceId: WS });
+    await ready();
+    const radar = screen.getByRole("complementary", { name: "Radar" });
+    expect(await within(radar).findByRole("button", { name: "Post to Slack, #team" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Post to Slack, #team" })).toHaveLength(2);
+    unmount();
+    pulse({ workspaceId: WS, readOnly: true });
+    await ready();
+    await act(async () => { await slack.getSlackStatus(WS); });
+    expect(screen.queryByRole("button", { name: /Post to Slack/ })).toBeNull();
   });
 });
