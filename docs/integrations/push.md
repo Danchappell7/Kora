@@ -20,6 +20,9 @@ switched on in a build that wouldn't switch it off again at sign-out.
 
 - Database update **0043** run (`database-0043.md`): it creates
   `push_subscriptions` and `save_push_subscription()`.
+- Database update **0044** run straight after it (`database-0044.md`): device
+  rows can then only be saved through `save_push_subscription()`, and nobody
+  keeps more than 20.
 - The Supabase CLI logged in, and the Vercel CLI (or the Vercel dashboard).
 
 ## Owner steps
@@ -149,7 +152,9 @@ Kanbo only contacts the real push services (`fcm.googleapis.com`,
 `*.notify.windows.com`, https only, no redirects); a subscription pointing
 anywhere else is deleted without being contacted. Subscriptions the browser has
 dropped (404/410) are deleted on the next send. Each person keeps at most 20
-devices (the newest).
+devices (the newest; with 0044 the database enforces it). The morning reminder
+reads each person's devices on their own, so one person's rows can never
+crowd anyone else out.
 
 ## Signing out and shared computers
 

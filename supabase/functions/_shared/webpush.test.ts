@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDecipheriv, createECDH, createPublicKey, generateKeyPairSync, hkdfSync, verify as nodeVerify } from "node:crypto";
 import {
   assignmentEventKey, b64urlDecode, b64urlEncode, dueDigestPush, PUSH_EVENT_WINDOW_SEC, pushOnceKeys, encodePushMessage, encryptPayload, importEcdhKeyPair, isAllowedPushEndpoint,
-  MAX_PAYLOAD_BYTES, pushToUser, safePushPath, sendWebPush, taskEventPush, TEST_PUSH, vapidAuthHeader, vapidFromEnv,
+  MAX_PAYLOAD_BYTES, pushDueDigest, pushToUser, safePushPath, sendWebPush, taskEventPush, TEST_PUSH, vapidAuthHeader, vapidFromEnv,
   vapidKeysMatch, VAPID_MAX_TTL_SEC, type PushMessage, type VapidKeys,
 } from "./webpush.ts";
 
@@ -246,6 +246,9 @@ type Row = Record<string, unknown>;
 class FakeDb {
   rows: Row[] = [];
   missing = false;
+  /** PostgREST's max-rows (1000 on Supabase): no read returns more */
+  maxRows = 1000;
+  failUpdate = false;
   log: string[] = [];
   from(t: string) { return new Q(this, t); }
 }
@@ -253,19 +256,21 @@ class Q implements PromiseLike<{ data: unknown; error: unknown }> {
   private op: "select" | "update" | "delete" = "select";
   private f: ((r: Row) => boolean)[] = [];
   private patch: Row = {};
+  private n = Infinity;
   constructor(private db: FakeDb, private t: string) {}
   select() { return this; }
-  update(p: Row) { this.op = "update"; this.patch = p; return this; }
+  update(p: Row) { if (this.db.failUpdate) throw new Error("db down"); this.op = "update"; this.patch = p; return this; }
   delete() { this.op = "delete"; return this; }
   eq(k: string, v: unknown) { this.f.push((r) => r[k] === v); return this; }
   order() { return this; }
-  limit() { return this; }
+  limit(n: number) { this.n = n; return this; }
   then<A, B>(ok?: ((v: { data: unknown; error: unknown }) => A | PromiseLike<A>) | null, bad?: ((e: unknown) => B | PromiseLike<B>) | null) {
     return Promise.resolve(this.run()).then(ok, bad);
   }
   private run() {
     if (this.db.missing) return { data: null, error: { code: "PGRST205", message: "Could not find the table 'public.push_subscriptions' in the schema cache" } };
-    const hit = this.db.rows.filter((r) => this.f.every((fn) => fn(r)));
+    let hit = this.db.rows.filter((r) => this.f.every((fn) => fn(r)));
+    if (this.op === "select") hit = hit.slice(0, Math.min(this.n, this.db.maxRows));
     this.db.log.push(`${this.op} ${this.t} ${hit.map((r) => r.id).join(",")}`);
     if (this.op === "update") hit.forEach((r) => Object.assign(r, this.patch));
     if (this.op === "delete") this.db.rows = this.db.rows.filter((r) => !hit.includes(r));
@@ -388,6 +393,68 @@ describe("pushToUser", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(db.rows).toHaveLength(1);
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("pushDueDigest (daily-reminders' morning push)", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const today = "2026-10-05";
+  const due = [{ title: "Brief", due_date: today }, { title: "Invoice", due_date: "2026-10-01" }];
+  const slot = (ok = true) => ({ claim: vi.fn(async () => ok), unclaim: vi.fn(async () => {}) });
+  const status = (s: number) => vi.fn(async () => new Response("", { status: s })) as unknown as typeof globalThis.fetch;
+
+  it("reads each person's devices on their own, so 1,500 rows from one person can't crowd anyone else out", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const v = vapidKeys();
+    const db = new FakeDb();
+    // someone inserted 1,500 junk https rows for themselves (past the 20-device cap)
+    for (let i = 0; i < 1500; i++) db.rows.push({ id: `j${i}`, user_id: "spam", ...browserSub(`https://junk.example/${i}`) });
+    db.rows.push({ id: "a", user_id: "ana", ...browserSub("https://fcm.googleapis.com/fcm/send/ana") });
+    db.rows.push({ id: "b", user_id: "bob", ...browserSub("https://web.push.apple.com/bob") });
+    // a single shared read is capped at max-rows, and would hold no ana or bob at all
+    expect(db.rows.slice(0, db.maxRows).some((r) => r.user_id === "ana" || r.user_id === "bob")).toBe(false);
+    const fetch = status(201);
+    const out: Record<string, string> = {};
+    for (const user of ["spam", "ana", "bob"]) out[user] = await pushDueDigest(db, user, due, today, v, slot(), { fetch });
+    expect(out).toEqual({ spam: "not-delivered", ana: "sent", bob: "sent" });
+    const hosts = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => new URL(String(c[0])).host);
+    expect(hosts.sort()).toEqual(["fcm.googleapis.com", "web.push.apple.com"]); // junk is never contacted
+    // the spammer's read stopped at 20 rows, and those 20 junk rows were deleted
+    expect(db.rows.filter((r) => r.user_id === "spam")).toHaveLength(1480);
+  });
+
+  it("takes the day's slot only when the person has a device, and frees it when nothing was delivered", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const v = vapidKeys();
+    const none = new FakeDb();
+    const s0 = slot();
+    expect(await pushDueDigest(none, "ana", due, today, v, s0, { fetch: status(201) })).toBe("no-device");
+    expect(s0.claim).not.toHaveBeenCalled(); // no device: no write at all
+
+    const db = new FakeDb();
+    db.rows = [{ id: "1", user_id: "ana", ...browserSub("https://fcm.googleapis.com/fcm/send/a") }];
+    const never = status(201);
+    const s1 = slot(false);
+    expect(await pushDueDigest(db, "ana", due, today, v, s1, { fetch: never })).toBe("already");
+    expect(never).not.toHaveBeenCalled();
+    expect(s1.unclaim).not.toHaveBeenCalled();
+
+    const s2 = slot();
+    expect(await pushDueDigest(db, "ana", due, today, v, s2, { fetch: status(503) })).toBe("not-delivered");
+    expect(s2.claim).toHaveBeenCalledTimes(1);
+    expect(s2.unclaim).toHaveBeenCalledTimes(1); // a re-run today may try again
+
+    const s3 = slot();
+    const ok = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) => new Response("", { status: 201 }));
+    expect(await pushDueDigest(db, "ana", due, today, v, s3, { fetch: ok as unknown as typeof globalThis.fetch })).toBe("sent");
+    expect(s3.unclaim).not.toHaveBeenCalled();
+    expect((ok.mock.calls[0][1]?.headers as Record<string, string>).TTL).toBe(String(12 * 3600));
+
+    db.failUpdate = true; // delivered, then the database fell over
+    const s4 = slot();
+    expect(await pushDueDigest(db, "ana", due, today, v, s4, { fetch: status(201) })).toBe("not-delivered");
+    expect(s4.unclaim).toHaveBeenCalledTimes(1);
   });
 });
 

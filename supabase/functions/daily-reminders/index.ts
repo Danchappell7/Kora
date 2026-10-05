@@ -28,7 +28,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
-import { dueDigestPush, pushToUser, vapidFromEnv } from "../_shared/webpush.ts";
+import { pushDueDigest, vapidFromEnv } from "../_shared/webpush.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -105,15 +105,14 @@ Deno.serve(async (req) => {
     (byAssignee.get(a) ?? byAssignee.set(a, []).get(a)!).push(t);
   }
 
-  // who has push switched on anywhere (one batched read; none before 0043)
-  const pushUsers = new Set<string>();
-  if (vapid) {
-    const ids = [...byAssignee.keys()];
-    for (let i = 0; i < ids.length; i += 200) {
-      const { data, error } = await supa.from("push_subscriptions").select("user_id").in("user_id", ids.slice(i, i + 200));
-      if (error) { console.warn("[push] subscriptions unavailable:", error.message); break; }
-      for (const r of data ?? []) if (r.user_id) pushUsers.add(r.user_id);
-    }
+  // push runs only once 0043's table answers (one probe, not a failed read per
+  // person). Devices are then read per person, never in one shared batch: a
+  // batch is capped at the API's row limit, so one person with many rows
+  // could push everyone after them out of it.
+  let pushOn = !!vapid;
+  if (pushOn) {
+    const { error } = await supa.from("push_subscriptions").select("id").limit(1);
+    if (error) { console.warn("[push] subscriptions unavailable:", error.message); pushOn = false; }
   }
 
   let sent = 0, skipped = 0, failed = 0, already = 0, pushed = 0;
@@ -124,20 +123,16 @@ Deno.serve(async (req) => {
     const prefs = (prof?.notify_prefs ?? {}) as Record<string, boolean>;
     if (prof?.suspended || prof?.approved === false) { skipped++; continue; }
 
-    // push: one per person per day, to every device they switched on
-    if (vapid && pushUsers.has(userId) && prefs["due_push"] !== false) {
+    // push: one per person per day, to every device they switched on (their
+    // 20 newest). The day's slot is taken only once they have a device, and
+    // freed again if nothing reached one, so a re-run today may try again.
+    if (vapid && pushOn && prefs["due_push"] !== false) {
       const pushKey = `${KEY_PREFIX}digest-push:${userId}:${today}`;
-      if ((await hit(supa, pushKey, { windowSec: 36 * 3600 })).allowed) {
-        try {
-          const r = await pushToUser(supa, userId, dueDigestPush(list, today), vapid, { ttl: 12 * 3600 });
-          pushed += r.sent > 0 ? 1 : 0;
-          // nothing reached a device (none switched on, or all failed): a re-run today may try again
-          if (r.sent === 0) await release(supa, pushKey);
-        } catch (e) {
-          console.error("push", String((e as Error)?.message ?? e));
-          await release(supa, pushKey);
-        }
-      }
+      const outcome = await pushDueDigest(supa, userId, list, today, vapid, {
+        claim: async () => (await hit(supa, pushKey, { windowSec: 36 * 3600 })).allowed,
+        unclaim: () => release(supa, pushKey),
+      });
+      if (outcome === "sent") pushed++;
     }
 
     if (!resendKey || prefs["due_email"] === false) { skipped++; continue; }

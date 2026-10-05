@@ -522,3 +522,38 @@ export async function pushToUser(
   }));
   return out;
 }
+
+/* ---------- daily-reminders' morning digest ---------- */
+
+/** What happened to one person's morning digest push. */
+export type DigestPushOutcome = "sent" | "no-device" | "already" | "not-delivered";
+
+/**
+ * The morning digest push for one person, at most once a day. Their devices
+ * are read for them alone (pushToUser: at most 20, newest first), so however
+ * many rows anyone else has, nobody is crowded out of a shared read.
+ * `claim` takes the day's slot and is asked only once the person has a
+ * device, so someone without push costs one small read and no write.
+ * `unclaim` frees the slot when nothing reached a device (or it threw), so a
+ * re-run today may try again.
+ */
+export async function pushDueDigest(
+  db: Db, userId: string, tasks: { title: string | null; due_date: string }[], today: string, vapid: VapidKeys,
+  slot: { claim: () => Promise<boolean>; unclaim: () => Promise<void> },
+  opts: SendOptions = {},
+): Promise<DigestPushOutcome> {
+  let claimed = false;
+  try {
+    const r = await pushToUser(db, userId, dueDigestPush(tasks, today), vapid, {
+      ttl: 12 * 3600, ...opts, // a phone that's off still gets it this morning
+      allow: async () => (claimed = await slot.claim()),
+    });
+    if (r.sent > 0) return "sent";
+    if (r.total === 0) return "no-device";
+    if (r.skipped) return "already";
+  } catch (e) {
+    console.error("[webpush] digest:", String((e as Error)?.message ?? e));
+  }
+  if (claimed) await slot.unclaim().catch(() => {});
+  return "not-delivered";
+}
