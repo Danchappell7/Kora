@@ -13,7 +13,7 @@ sync and link. It doesn't need 0043 or 0045 and works before or after them.
 | API keys | `api_keys`, `create_api_key()`, `list_api_keys()`, `revoke_api_key()`, `verify_api_key()` | The key is made in the database and shown **once**; only its SHA-256 is stored. People read their own keys (never the hash). Team keys: owners/admins only. `verify_api_key` is service-role only. A suspended or unapproved person's keys stop at once; a team key stops if its creator is no longer an owner/admin there. |
 | Key scope | restrictive policy **"api key scope"** on 16 tables | Only narrows access, and only when the `api` function opens a team key's transaction. The app is unaffected. |
 | API limits | `api_rate_hit()`, `api_idempotency`, `api_idempotency_begin/finish()` | Service role only. |
-| Webhooks | `webhooks`, `webhook_outbox`, `webhook_deliveries`, management functions, capture triggers on tasks / comments / projects / members | Server-only tables. Workspace writers (never guests) manage the team's endpoints; anyone manages their personal ones. The signing secret is shown once. Nothing is captured while no endpoint listens. |
+| Webhooks | `webhooks`, `webhook_outbox`, `webhook_deliveries`, management functions, capture triggers on tasks / comments / projects / members | Server-only tables. Workspace writers (never guests) see the team's endpoints; the person who added one, or an owner/admin, manages it, and everyone else sees its URL masked. The signing secret is shown once. "Send again" is 10 a minute per endpoint (never for test pings). The dispatcher's claims share sending slots fairly (2 per endpoint, 4 per person, 4 per workspace). Nothing is captured while no endpoint listens. |
 | Notion | `workspace_integrations.notion_*`, `notion_status/connect/disconnect()`, `notion_syncs`, `notion_links`, `notion_page_cache` | The token is server-only (like the Slack URL). Owners/admins connect and set up syncs; members see the status and read syncs and links; members (not guests) link pages to tasks. |
 
 Until each feature's edge function is deployed, its Settings panel explains
@@ -46,6 +46,7 @@ select
   and not has_table_privilege('authenticated', 'public.webhook_deliveries', 'select')            as webhooks_server_only,
   (select count(*) from pg_trigger where tgname in ('trg_webhook_task','trg_webhook_comment',
     'trg_webhook_project','trg_webhook_member')) = 4                                            as webhook_triggers,
+  not has_function_privilege('authenticated', 'public.webhook_url_masked(text)', 'execute')     as webhook_urls_masked,
   not has_table_privilege('authenticated', 'public.workspace_integrations', 'select')            as notion_token_server_only,
   (select relrowsecurity from pg_class where oid = 'public.notion_links'::regclass)
   and (select relrowsecurity from pg_class where oid = 'public.notion_syncs'::regclass)

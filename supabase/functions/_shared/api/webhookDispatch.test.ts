@@ -199,21 +199,41 @@ describe("sending to the checked address", () => {
 });
 
 /* ---- the whole loop against a fake database ---- */
-function fakeService(rows: ClaimedDelivery[][], opts: { creatorsOk?: Record<string, boolean>; customTags?: { id: string; label: string; color: string }[]; recordState?: string } = {}) {
-  const batches = [...rows];
-  const log = { recorded: [] as unknown[][], switchedOff: [] as unknown[][], sql: [] as string[] };
+const ME = "bbbbbbbb-0000-4000-8000-000000000002";
+type FakeTag = { id: string; label: string; color: string; ws: string | null; uid: string };
+/**
+ * pool: what's due, handed out in order, at most the claim's limit at a time
+ * (or `claim` decides). hooks: each endpoint's workspace and creator (default:
+ * workspace W, added by ME). customTags: who may see each tag, as the SQL does.
+ */
+function fakeService(pool: ClaimedDelivery[], opts: {
+  creatorsOk?: Record<string, boolean>; hooks?: Record<string, { ws: string | null; uid: string }>; customTags?: FakeTag[];
+  recordState?: string; claim?: (limit: number) => ClaimedDelivery[];
+} = {}) {
+  const due = [...pool];
+  const log = { recorded: [] as unknown[][], switchedOff: [] as unknown[][], sql: [] as string[], claimLimits: [] as number[], tagQueries: [] as unknown[] };
   const service: Tx = {
     async query<R>(sql: string, params: readonly unknown[] = []): Promise<R[]> {
       log.sql.push(sql);
       if (sql === DISPATCH_SQL.claimOutbox) return [{ n: 0 }] as R[];
-      if (sql === DISPATCH_SQL.claimDeliveries) return (batches.shift() ?? []) as R[];
+      if (sql === DISPATCH_SQL.claimDeliveries) {
+        const limit = Number(params[0]);
+        log.claimLimits.push(limit);
+        return (opts.claim ? opts.claim(limit) : due.splice(0, limit)) as R[];
+      }
       if (sql === DISPATCH_SQL.creators) {
         const ids = JSON.parse(params[0] as string) as string[];
-        return ids.map((id) => ({ id, allowed: opts.creatorsOk?.[id] ?? true })) as R[];
+        return ids.map((id) => {
+          const h = opts.hooks?.[id] ?? { ws: W, uid: ME };
+          return { id, created_by: h.uid, workspace_id: h.ws, allowed: opts.creatorsOk?.[id] ?? true };
+        }) as R[];
       }
       if (sql === DISPATCH_SQL.tags) {
-        const ids = JSON.parse(params[0] as string) as string[];
-        return (opts.customTags ?? []).filter((t) => ids.includes(t.id)) as R[];
+        const groups = JSON.parse(params[0] as string) as { key: string; ws: string | null; uid: string; ids: string[] }[];
+        log.tagQueries.push(groups);
+        return groups.flatMap((g) => (opts.customTags ?? [])
+          .filter((t) => g.ids.includes(t.id) && (g.ws ? t.ws === g.ws : t.ws === null && t.uid === g.uid))
+          .map((t) => ({ key: g.key, id: t.id, label: t.label, color: t.color }))) as R[];
       }
       if (sql === DISPATCH_SQL.switchOff) { log.switchedOff.push([...params]); return [] as R[]; }
       if (sql === DISPATCH_SQL.record) {
@@ -226,12 +246,14 @@ function fakeService(rows: ClaimedDelivery[][], opts: { creatorsOk?: Record<stri
   };
   return { service, log };
 }
+const did = (i: number) => `${String(i).padStart(8, "0")}-d7e3-4f30-96e8-2a7008b6045c`;
+const LAUNCH = "7f6e5d4c-0000-4000-8000-000000000001";
 
 describe("runDispatch", () => {
   const publicDns = async () => ["93.184.216.34", "2606:4700::1"];
 
   it("signs and sends the API's JSON, records the status and timing", async () => {
-    const { service, log } = fakeService([[claimed()]], { customTags: [{ id: "7f6e5d4c-0000-4000-8000-000000000001", label: "Launch", color: "oklch(0.7 0.1 30)" }] });
+    const { service, log } = fakeService([claimed()], { customTags: [{ id: LAUNCH, label: "Launch", color: "oklch(0.7 0.1 30)", ws: W, uid: ME }] });
     const sent: { target: SendTarget; headers: Record<string, string>; body: string }[] = [];
     let clock = 1_760_000_000_000;
     const stats = await runDispatch({
@@ -255,19 +277,46 @@ describe("runDispatch", () => {
     expect(env.data).toMatchObject({ object: "task", title: "Ship it", assigneeId: null, url: `https://www.kanbo.co.uk/?task=${TASK.id}` });
     expect(env.data.tags).toEqual([
       { id: "design", label: "Design", color: "oklch(0.74 0.16 305)" },
-      { id: "7f6e5d4c-0000-4000-8000-000000000001", label: "Launch", color: "oklch(0.7 0.1 30)" },
+      { id: LAUNCH, label: "Launch", color: "oklch(0.7 0.1 30)" },
       { id: "t-gone", label: null, color: null },
     ]);
     expect(body).not.toContain("secret ranking");
     expect(body).not.toContain("followers");
     expect(body).not.toContain(SECRET);
     expect(log.recorded).toEqual([["1aefcd04-d7e3-4f30-96e8-2a7008b6045c", 200, null, 7]]);
-    expect(stats).toMatchObject({ attempted: 1, delivered: 1, retrying: 0, rounds: 1 });
+    expect(stats).toMatchObject({ attempted: 1, delivered: 1, retrying: 0 });
+  });
+
+  it("tag labels come only from each endpoint's own scope: its workspace, or its creator's personal tags", async () => {
+    const X = "22222222-0000-4000-8000-000000000002";
+    const EVE = "dddddddd-0000-4000-8000-000000000004";
+    const PERSONAL_HOOK = "e0e0e0e0-0938-4900-a8e7-9cbbb564a762";
+    const tW = "aaaaaaaa-1111-4000-8000-000000000001", tX = "aaaaaaaa-2222-4000-8000-000000000002";
+    const tMine = "aaaaaaaa-3333-4000-8000-000000000003", tAnaLegacy = "aaaaaaaa-4444-4000-8000-000000000004";
+    const customTags: FakeTag[] = [
+      { id: tW, label: "Team W", color: "c1", ws: W, uid: EVE },
+      { id: tX, label: "Secret: Acme acquisition", color: "c2", ws: X, uid: EVE },
+      { id: tMine, label: "Mine", color: "c3", ws: null, uid: ME },
+      { id: tAnaLegacy, label: "Ana's own", color: "c4", ws: null, uid: "aaaaaaaa-0000-4000-8000-000000000001" },
+    ];
+    const allTags = ["design", tW, tX, tMine, tAnaLegacy];
+    const teamRow = claimed({ delivery_id: did(1), payload: { task: { ...TASK, tags: allTags } } });
+    const personalRow = claimed({ delivery_id: did(2), webhook_id: PERSONAL_HOOK, workspace_id: null, payload: { task: { ...TASK, workspace_id: null, tags: allTags } } });
+    const { service, log } = fakeService([teamRow, personalRow], { customTags, hooks: { [PERSONAL_HOOK]: { ws: null, uid: ME } } });
+    const bodies = new Map<string, string>();
+    await runDispatch({ service, resolve: publicDns, send: async (_t, h, b) => { bodies.set(h["Kanbo-Delivery"], b); return { status: 200, reason: "" }; } });
+    const labels = (id: string) => Object.fromEntries(JSON.parse(bodies.get(id)!).data.tags.map((t: { id: string; label: string | null }) => [t.id, t.label]));
+    expect(labels(did(1))).toEqual({ design: "Design", [tW]: "Team W", [tX]: null, [tMine]: null, [tAnaLegacy]: null });
+    expect(labels(did(2))).toEqual({ design: "Design", [tW]: null, [tX]: null, [tMine]: "Mine", [tAnaLegacy]: null });
+    // the lookup names each scope (workspace + creator), and only real tag ids
+    const asked = log.tagQueries.flat() as { ws: string | null; uid: string; ids: string[] }[];
+    expect(asked.map((g) => [g.ws, g.uid]).sort()).toEqual([[W, ME], [null, ME]].sort());
+    expect(asked.every((g) => !g.ids.includes("design"))).toBe(true);
   });
 
   it("an endpoint whose creator lost access is switched off and sent nothing", async () => {
     const other = "dddddddd-0000-4000-8000-000000000004";
-    const { service, log } = fakeService([[claimed(), claimed({ delivery_id: "2aefcd04-d7e3-4f30-96e8-2a7008b6045c", webhook_id: other })]], { creatorsOk: { [other]: false } });
+    const { service, log } = fakeService([claimed(), claimed({ delivery_id: "2aefcd04-d7e3-4f30-96e8-2a7008b6045c", webhook_id: other })], { creatorsOk: { [other]: false } });
     const sentTo: string[] = [];
     const stats = await runDispatch({ service, resolve: publicDns, send: async (_t, h) => { sentTo.push(h["Kanbo-Delivery"]); return { status: 202, reason: "" }; } });
     expect(sentTo).toEqual(["1aefcd04-d7e3-4f30-96e8-2a7008b6045c"]);
@@ -278,15 +327,23 @@ describe("runDispatch", () => {
   });
 
   it("if the access check itself fails, nothing in the batch is sent (fail closed)", async () => {
-    const { service } = fakeService([[claimed()]]);
+    const { service } = fakeService([claimed()]);
     const broken: Tx = { query: async (sql, params) => { if (sql === DISPATCH_SQL.creators) throw new Error("db down"); return service.query(sql, params); } };
     let sends = 0;
     await runDispatch({ service: broken, resolve: publicDns, send: async () => { sends++; return { status: 200, reason: "" }; } });
     expect(sends).toBe(0);
   });
 
+  it("a claim that fails is logged and ends the run (nothing thrown)", async () => {
+    const lines: string[] = [];
+    const broken: Tx = { query: async (sql) => { if (sql === DISPATCH_SQL.claimDeliveries) throw new Error("connection reset"); return [{ n: 0 }] as never[]; } };
+    const stats = await runDispatch({ service: broken, resolve: publicDns, log: (l) => lines.push(l), send: async () => ({ status: 200, reason: "" }) });
+    expect(stats.attempted).toBe(0);
+    expect(lines.some((l) => /claim failed: connection reset/.test(l))).toBe(true);
+  });
+
   it("a private address is never called: recorded as a failure (status 0) with a reason", async () => {
-    const { service, log } = fakeService([[claimed()]]);
+    const { service, log } = fakeService([claimed()]);
     let sends = 0;
     await runDispatch({ service, resolve: async () => ["93.184.216.34", "10.1.2.3"], send: async () => { sends++; return { status: 200, reason: "" }; } });
     expect(sends).toBe(0);
@@ -296,7 +353,7 @@ describe("runDispatch", () => {
   });
 
   it("tries the second address only when the first refused the connection; 3xx and timeouts aren't sent twice", async () => {
-    let { service, log } = fakeService([[claimed()]]);
+    let { service, log } = fakeService([claimed()]);
     const tried: string[] = [];
     await runDispatch({
       service, resolve: publicDns,
@@ -305,13 +362,13 @@ describe("runDispatch", () => {
     expect(tried).toEqual(["93.184.216.34", "2606:4700::1"]);
     expect(log.recorded[0][1]).toBe(200);
 
-    ({ service, log } = fakeService([[claimed()]]));
+    ({ service, log } = fakeService([claimed()]));
     tried.length = 0;
     await runDispatch({ service, resolve: publicDns, send: async (t) => { tried.push(t.address); throw new DeliveryError("No answer within 10 seconds.", "timeout"); } });
     expect(tried).toHaveLength(1);
     expect(log.recorded[0].slice(0, 3)).toEqual(["1aefcd04-d7e3-4f30-96e8-2a7008b6045c", 0, "No answer within 10 seconds."]);
 
-    ({ service, log } = fakeService([[claimed()]]));
+    ({ service, log } = fakeService([claimed()]));
     await runDispatch({ service, resolve: publicDns, send: async () => ({ status: 308, reason: "Permanent Redirect" }) });
     expect(log.recorded[0].slice(1, 3)).toEqual([308, "Redirects aren't followed (HTTP 308). Use the final address."]);
   });
@@ -319,7 +376,7 @@ describe("runDispatch", () => {
   it("a ping carries the endpoint's own details; an unknown event is recorded, not thrown", async () => {
     const ping = claimed({ event: "ping", payload: { webhook: { id: HOOK, url: "https://hooks.example.com/kanbo?team=w", events: ["task.created"] } } });
     const odd = claimed({ delivery_id: "3aefcd04-d7e3-4f30-96e8-2a7008b6045c", event: "user.deleted" });
-    const { service, log } = fakeService([[ping, odd]]);
+    const { service, log } = fakeService([ping, odd]);
     const bodies: string[] = [];
     await runDispatch({ service, resolve: publicDns, send: async (_t, _h, b) => { bodies.push(b); return { status: 200, reason: "" }; } });
     expect(bodies).toHaveLength(1);
@@ -327,9 +384,8 @@ describe("runDispatch", () => {
     expect(log.recorded.find((r) => r[0] === odd.delivery_id)?.slice(1, 3)).toEqual([0, "Kanbo couldn't build this event."]);
   });
 
-  it("keeps going round while full batches come back, sends at most `concurrency` at once, and stops at the deadline", async () => {
-    const batch = (n: number, off: number) => Array.from({ length: n }, (_, i) => claimed({ delivery_id: `${String(off + i).padStart(8, "0")}-d7e3-4f30-96e8-2a7008b6045c` }));
-    const { service, log } = fakeService([batch(4, 0), batch(4, 10), batch(2, 20)]);
+  it("claims only as many as there are free senders, sends at most `concurrency` at once, and drains what's due", async () => {
+    const { service, log } = fakeService(Array.from({ length: 10 }, (_, i) => claimed({ delivery_id: did(i) })));
     let inFlight = 0, peak = 0;
     const stats = await runDispatch({
       service, resolve: publicDns,
@@ -338,11 +394,53 @@ describe("runDispatch", () => {
     expect(stats.attempted).toBe(10);
     expect(log.recorded).toHaveLength(10);
     expect(peak).toBe(2);
+    expect(Math.max(...log.claimLimits)).toBeLessThanOrEqual(2); // never more than the free senders (and never more than batch)
+    expect(log.claimLimits.at(-1)).toBeGreaterThan(0);
+  });
 
+  it("a slow endpoint holds up only its own sender: the others keep claiming and sending", async () => {
+    const SLOW = "5105105a-0000-4000-8000-000000000000";
+    const slow = claimed({ delivery_id: did(0), webhook_id: SLOW, url: "https://slow.example.com/x" });
+    const fast = Array.from({ length: 12 }, (_, i) => claimed({ delivery_id: did(i + 1) }));
+    // the slow one is claimed alone; the rest only become due afterwards (a batch that waited for it would never see them)
+    let first = true;
+    const { service } = fakeService([], { claim: (limit) => (first ? (first = false, [slow]) : fast.splice(0, limit)) });
+    const order: string[] = [];
+    let releaseSlow!: () => void;
+    const slowDone = new Promise<void>((r) => { releaseSlow = r; });
+    const stats = await runDispatch({
+      service, resolve: publicDns,
+      send: async (t, h) => {
+        if (t.host === "slow.example.com") { await slowDone; order.push("slow"); return { status: 200, reason: "" }; }
+        order.push(h["Kanbo-Delivery"]);
+        if (order.length === 12) releaseSlow(); // every fast one went out while the slow one was still waiting
+        return { status: 200, reason: "" };
+      },
+    }, { concurrency: 2 });
+    expect(stats.attempted).toBe(13);
+    expect(order.at(-1)).toBe("slow");
+  });
+
+  it("an empty claim while its own deliveries are in flight waits for one to finish, then looks again", async () => {
+    // the database's fair share: one at a time for this endpoint (the second only once the first is recorded)
+    const items = [claimed({ delivery_id: did(1) }), claimed({ delivery_id: did(2) })];
+    let busy = false;
+    const { service, log } = fakeService([], {
+      claim: (limit) => (busy || !items.length ? [] : (busy = true, items.splice(0, Math.min(1, limit)))),
+    });
+    const recorded = service.query.bind(service);
+    const tx: Tx = { query: async (sql, params) => { const r = await recorded(sql, params); if (sql === DISPATCH_SQL.record) busy = false; return r as never[]; } };
+    const stats = await runDispatch({ service: tx, resolve: publicDns, send: async () => { await new Promise((r) => setTimeout(r, 5)); return { status: 200, reason: "" }; } }, { concurrency: 3 });
+    expect(stats.attempted).toBe(2);
+    expect(log.recorded.map((r) => r[0])).toEqual([did(1), did(2)]);
+  });
+
+  it("stops claiming at the deadline (what's in flight still finishes)", async () => {
     let clock = 0;
-    const late = fakeService([batch(4, 0), batch(4, 10)]);
-    const s2 = await runDispatch({ service: late.service, resolve: publicDns, now: () => (clock += 30_000), send: async () => ({ status: 200, reason: "" }) }, { batch: 4, deadlineMs: 40_000 });
+    const { service, log } = fakeService(Array.from({ length: 8 }, (_, i) => claimed({ delivery_id: did(i) })));
+    const s2 = await runDispatch({ service, resolve: publicDns, now: () => (clock += 30_000), send: async () => ({ status: 200, reason: "" }) }, { batch: 4, deadlineMs: 40_000 });
     expect(s2.rounds).toBe(1);
+    expect(log.recorded.length).toBe(s2.attempted);
   });
 
   it("the built-in tag labels match the app's", () => {

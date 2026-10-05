@@ -13,7 +13,10 @@
 // checked to be public — connecting to exactly that address so a second DNS
 // answer can't swap in a private one — and record the result (retries 1m, 5m,
 // 30m, 2h, 6h; 20 failures in a row switch the endpoint off with an Inbox
-// notice). Everything here runs on the privileged connection: it is the
+// notice). Each free sender claims more at once, and the database shares the
+// sending slots out fairly (2 per endpoint, 4 per person, 4 per workspace),
+// so one slow or flooded tenant can't hold up anyone else's webhooks.
+// Everything here runs on the privileged connection: it is the
 // dispatcher's own bookkeeping, never work done on behalf of an API key.
 //
 // Answers at once (202) and keeps working in the background

@@ -3,8 +3,9 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  isPublicAddress, isWebhookUrlShapeOk, MAX_CONSECUTIVE_FAILURES, parseIPv4, parseIPv6, parseSignatureHeader, RETRY_SCHEDULE_MIN, safeEqual,
-  signatureHeader, verifySignature, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS, webhookRoutes,
+  isPublicAddress, isWebhookUrlShapeOk, maskWebhookUrl, MAX_CONSECUTIVE_FAILURES, parseIPv4, parseIPv6, parseSignatureHeader,
+  REDELIVERIES_PER_MINUTE, RETRY_SCHEDULE_MIN, safeEqual, signatureHeader, TESTS_PER_MINUTE, verifySignature, WEBHOOK_EVENT_INFO,
+  WEBHOOK_EVENTS, webhookRoutes,
 } from "./webhooks.ts";
 
 const migration = readFileSync(new URL("../../../migrations/0046_api_webhooks_notion.sql", import.meta.url), "utf8");
@@ -48,6 +49,28 @@ describe("the URL rule matches public.webhook_url_ok", () => {
       "https://metadata.google.internal/x", "https://printer.local/x", "https://intranet/x", "https://a.example.com/x y",
       "javascript:alert(1)", "https://a.example.com/" + "a".repeat(2000), "https://0x7f000001/", "https://x.example.com#frag"]) {
       expect(isWebhookUrlShapeOk(u)).toBe(false);
+    }
+  });
+});
+
+describe("masked addresses (for people who can't manage an endpoint)", () => {
+  it("scheme + host, then … and the path's last 4 characters; never the secret part of a catch hook", () => {
+    expect(maskWebhookUrl("https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/")).toBe("https://hooks.zapier.com/…x2kd");
+    expect(maskWebhookUrl("https://hook.eu1.make.com/7x4k2p9qv1m8hz3c")).toBe("https://hook.eu1.make.com/…hz3c");
+    expect(maskWebhookUrl("https://api.example.co.uk:8443/kanbo/events?token=s3cr3t-value")).toBe("https://api.example.co.uk:8443/…alue");
+    expect(maskWebhookUrl("https://hooks.example.com?key=abcdefgh")).toBe("https://hooks.example.com/…efgh");
+    expect(maskWebhookUrl("https://hooks.example.com/k")).toBe("https://hooks.example.com/…");          // too short to show any
+    expect(maskWebhookUrl("https://hooks.example.com/kanbo12")).toBe("https://hooks.example.com/…");
+    expect(maskWebhookUrl("https://hooks.example.com/kanbo123")).toBe("https://hooks.example.com/…o123");
+    expect(maskWebhookUrl("https://hooks.example.com/")).toBe("https://hooks.example.com/");            // nothing to hide
+    expect(maskWebhookUrl("https://hooks.example.com")).toBe("https://hooks.example.com/");
+    expect(maskWebhookUrl("not a url")).toBe("https://…");
+    expect(maskWebhookUrl("https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/")).not.toContain("1234567");
+  });
+  it("masking twice changes nothing", () => {
+    for (const u of ["https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/", "https://hooks.example.com/k", "https://hooks.example.com/",
+      "https://api.example.com/a/b/cdef/gh"]) {
+      expect(maskWebhookUrl(maskWebhookUrl(u))).toBe(maskWebhookUrl(u));
     }
   });
 });
@@ -107,5 +130,12 @@ describe("constants match the 0046 SQL", () => {
   });
   it("switch-off threshold = 20", () => {
     expect(migration).toContain(`w.failure_count >= ${MAX_CONSECUTIVE_FAILURES}`);
+  });
+  it("test and send-again limits = send_test_webhook / redeliver_webhook_delivery", () => {
+    expect(migration).toContain(`interval '1 minute') >= ${TESTS_PER_MINUTE} then`);
+    expect(migration).toContain(`api_rate_hit('kanbo:api:redeliver:' || w.id::text, 60, ${REDELIVERIES_PER_MINUTE})`);
+  });
+  it("webhook_json masks the URL for anyone who can't manage it (webhook_url_masked)", () => {
+    expect(migration).toMatch(/'url', case when c\.manage then w\.url else public\.webhook_url_masked\(w\.url\) end/);
   });
 });

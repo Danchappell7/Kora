@@ -7,12 +7,20 @@
 //
 //   1. webhook_claim_outbox(500)        fan new events out to the endpoints
 //                                        listening (SKIP LOCKED, marks them processed)
-//   2. webhook_claim_deliveries(20, 90) lease what's due (attempt already +1,
-//                                        url + secret included)
-//   3. per delivery (5 at a time):
+//   2. webhook_claim_deliveries(n, 90)  lease what's due, n = senders free right
+//                                        now (attempt already +1, url + secret
+//                                        included). The database hands out fair
+//                                        shares: at most 2 in flight per endpoint,
+//                                        4 per person and 4 per workspace, least
+//                                        busy first — so one tenant's slow or
+//                                        flooded endpoints only ever slow down
+//                                        themselves.
+//   3. per delivery (5 senders; each claims more as soon as it's free):
 //        • the endpoint's creator must still have access (else it's switched off)
 //        • serialiseEvent → the same JSON as the REST API, ≤ 256 KB (long
-//          descriptions trimmed first, "truncated": true)
+//          descriptions trimmed first, "truncated": true); custom tag labels
+//          come only from the endpoint's own workspace (or, for a personal
+//          endpoint, its creator's own tags)
 //        • the URL rule again, never our own Supabase host, DNS (A + AAAA):
 //          EVERY address must be public (isPublicAddress)
 //        • POST over HTTPS to one of THOSE addresses (TLS still checks the
@@ -21,7 +29,7 @@
 //   4. webhook_record_result(id, status|0, error, ms)  → delivered, or retry
 //      after 1m, 5m, 30m, 2h, 6h; 20 failures in a row switch the endpoint
 //      off and tell its creator in their Inbox (all in SQL).
-//   …repeated until nothing is due or ~40 s have passed.
+//   …until nothing is due that this run may take, or ~40 s have passed.
 //
 // Never logged: secrets, signatures, full URLs (host only), payloads.
 // ============================================================
@@ -50,13 +58,27 @@ export const DISPATCH_SQL = {
   claimOutbox: "select public.webhook_claim_outbox($1::int) as n",
   claimDeliveries: "select * from public.webhook_claim_deliveries($1::int, $2::int)",
   record: "select public.webhook_record_result($1::uuid, $2::int, $3::text, $4::int) as r",
-  /** custom tag labels for the tasks in a batch ($1 = jsonb array of tag ids) */
+  /**
+   * Custom tag labels, looked up for each endpoint's own scope only ($1 = jsonb
+   * [{key, ws, uid, ids}], ws/uid = the endpoint's workspace and creator): a team
+   * endpoint gets that workspace's tags (while its creator is an owner, admin or
+   * member there), a personal endpoint its creator's own personal tags. Any
+   * other id in a task's tags (another workspace's, someone's personal tag)
+   * stays unlabelled — this runs on the privileged connection, so it must never
+   * reveal a tag the endpoint's creator couldn't read.
+   */
   tags:
-    "select t.id::text as id, t.label, t.color from public.tags t " +
-    "where t.id::text = any (array(select jsonb_array_elements_text($1::jsonb)))",
-  /** may each endpoint's creator still see what it sends? ($1 = jsonb array of webhook ids) */
+    "select s.key, t.id::text as id, t.label, t.color " +
+    "from jsonb_to_recordset($1::jsonb) as s(key text, ws uuid, uid uuid, ids jsonb) " +
+    "cross join lateral (select distinct e::uuid as id from jsonb_array_elements_text(s.ids) e " +
+    "where e ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') i " +
+    "join public.tags t on t.id = i.id " +
+    "where (s.ws is not null and t.workspace_id = s.ws and public.user_ws_role(s.uid, s.ws) in ('owner', 'admin', 'member')) " +
+    "or (s.ws is null and t.workspace_id is null and t.user_id = s.uid and public.user_can_act(s.uid))",
+  /** may each endpoint's creator still see what it sends? and whose / which workspace's is it? ($1 = jsonb array of webhook ids) */
   creators:
-    "select w.id::text as id, case when w.workspace_id is null then public.user_can_act(w.created_by) " +
+    "select w.id::text as id, w.created_by::text as created_by, w.workspace_id::text as workspace_id, " +
+    "case when w.workspace_id is null then public.user_can_act(w.created_by) " +
     "else public.user_ws_role(w.created_by, w.workspace_id) in ('owner', 'admin', 'member') end as allowed " +
     "from public.webhooks w where w.id::text = any (array(select jsonb_array_elements_text($1::jsonb)))",
   /** switch an endpoint off because its creator lost access, and give up on its queue */
@@ -374,11 +396,12 @@ export interface DispatchDeps {
 export interface DispatchOptions {
   /** stop claiming new work after this long (ms) */
   deadlineMs?: number;
-  /** deliveries claimed per round */
+  /** most deliveries claimed at once (never more than there are free senders) */
   batch?: number;
   /** sent at once */
   concurrency?: number;
   leaseSeconds?: number;
+  /** most claims in one run */
   maxRounds?: number;
   timeoutMs?: number;
 }
@@ -391,47 +414,71 @@ export interface DispatchStats {
   failed: number;
   disabled: number;
   skipped: number;
+  /** claims made */
   rounds: number;
   ms: number;
 }
 
 const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return "endpoint"; } };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function pool<T>(items: readonly T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const item = items[next++];
-      try { await fn(item); } catch { /* one delivery's problem stays its own */ }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(size, items.length)) }, worker));
-}
+type TagMap = Map<string, { label: string | null; color: string | null }>;
+/** Whose an endpoint is: its workspace (null = personal) and the person who added it. */
+interface HookScope { ws: string | null; uid: string }
+const scopeKey = (s: HookScope) => (s.ws ? `ws:${s.ws}` : `me:${s.uid}`);
+const builtinTags = (): TagMap => new Map(Object.entries(BUILTIN_TAG_LABELS));
 
-/** Tag ids of the tasks in these deliveries → their labels (built-in + custom). */
-async function tagMap(service: Tx, rows: readonly ClaimedDelivery[]): Promise<Map<string, { label: string | null; color: string | null }>> {
-  const map = new Map<string, { label: string | null; color: string | null }>();
-  for (const [id, t] of Object.entries(BUILTIN_TAG_LABELS)) map.set(id, t);
-  const ids = new Set<string>();
+/**
+ * Tag ids in these deliveries' tasks → labels, per endpoint scope: the
+ * built-ins, plus custom tags from that scope only (DISPATCH_SQL.tags). Returns
+ * the map to use for each delivery.
+ */
+async function tagMaps(service: Tx, rows: readonly ClaimedDelivery[], scopes: ReadonlyMap<string, HookScope>): Promise<(row: ClaimedDelivery) => TagMap> {
+  const groups = new Map<string, { key: string; ws: string | null; uid: string; ids: Set<string> }>();
   for (const r of rows) {
+    const scope = scopes.get(String(r.webhook_id));
     const task = (r.payload as { task?: { tags?: unknown } } | null)?.task;
-    if (Array.isArray(task?.tags)) for (const t of task.tags) if (typeof t === "string" && !map.has(t) && t.length <= 64) ids.add(t);
+    if (!scope || !Array.isArray(task?.tags)) continue;
+    const key = scopeKey(scope);
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { key, ws: scope.ws, uid: scope.uid, ids: new Set() }));
+    for (const t of task.tags) if (typeof t === "string" && UUID_RE.test(t)) g.ids.add(t);
   }
-  if (!ids.size) return map;
-  try {
-    const got = await service.query<{ id: string; label: string | null; color: string | null }>(DISPATCH_SQL.tags, [JSON.stringify([...ids].slice(0, 2000))]);
-    for (const g of got) map.set(String(g.id), { label: g.label ?? null, color: g.color ?? null });
-  } catch { /* labels are a nicety: ids still go out */ }
-  return map;
+  const maps = new Map<string, TagMap>();
+  const wanted = [...groups.values()].filter((g) => g.ids.size).map((g) => ({ key: g.key, ws: g.ws, uid: g.uid, ids: [...g.ids].slice(0, 2000) }));
+  if (wanted.length) {
+    try {
+      const got = await service.query<{ key: string; id: string; label: string | null; color: string | null }>(DISPATCH_SQL.tags, [JSON.stringify(wanted)]);
+      for (const g of got) {
+        let m = maps.get(String(g.key));
+        if (!m) maps.set(String(g.key), (m = builtinTags()));
+        m.set(String(g.id), { label: g.label ?? null, color: g.color ?? null });
+      }
+    } catch { /* labels are a nicety: ids still go out */ }
+  }
+  const plain = builtinTags();
+  return (row) => {
+    const scope = scopes.get(String(row.webhook_id));
+    return (scope && maps.get(scopeKey(scope))) || plain;
+  };
 }
 
-/** Endpoints whose creator can no longer see what they send (removed, made a guest, suspended). */
-async function lostAccess(service: Tx, rows: readonly ClaimedDelivery[]): Promise<Set<string>> {
+/**
+ * Each endpoint's scope, and the endpoints whose creator can no longer see
+ * what they send (removed, made a guest, suspended).
+ */
+async function checkCreators(service: Tx, rows: readonly ClaimedDelivery[]): Promise<{ gone: Set<string>; scopes: Map<string, HookScope> }> {
   const ids = [...new Set(rows.map((r) => String(r.webhook_id)))];
-  if (!ids.length) return new Set();
-  const got = await service.query<{ id: string; allowed: boolean | null }>(DISPATCH_SQL.creators, [JSON.stringify(ids)]);
-  const allowed = new Map(got.map((g) => [String(g.id), g.allowed === true]));
-  return new Set(ids.filter((id) => allowed.get(id) !== true));
+  const scopes = new Map<string, HookScope>();
+  if (!ids.length) return { gone: new Set(), scopes };
+  const got = await service.query<{ id: string; created_by: string | null; workspace_id: string | null; allowed: boolean | null }>(DISPATCH_SQL.creators, [JSON.stringify(ids)]);
+  const allowed = new Set<string>();
+  for (const g of got) {
+    if (g.allowed !== true || !g.created_by) continue;
+    allowed.add(String(g.id));
+    scopes.set(String(g.id), { ws: g.workspace_id ? String(g.workspace_id) : null, uid: String(g.created_by) });
+  }
+  return { gone: new Set(ids.filter((id) => !allowed.has(id))), scopes };
 }
 
 /** Claim → send → record until nothing is due or the deadline passes. */
@@ -439,10 +486,10 @@ export async function runDispatch(deps: DispatchDeps, opts: DispatchOptions = {}
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? (() => {});
   const deadline = opts.deadlineMs ?? 40_000;
-  const batch = opts.batch ?? 20;
-  const concurrency = opts.concurrency ?? 5;
+  const batch = Math.max(1, opts.batch ?? 20);
+  const concurrency = Math.max(1, opts.concurrency ?? 5);
   const lease = opts.leaseSeconds ?? 90;
-  const maxRounds = opts.maxRounds ?? 50;
+  const maxRounds = opts.maxRounds ?? 500;
   const timeoutMs = opts.timeoutMs ?? DELIVERY_TIMEOUT_MS;
   const start = now();
   const stats: DispatchStats = { queued: 0, attempted: 0, delivered: 0, retrying: 0, failed: 0, disabled: 0, skipped: 0, rounds: 0, ms: 0 };
@@ -464,7 +511,7 @@ export async function runDispatch(deps: DispatchDeps, opts: DispatchOptions = {}
     }
   };
 
-  const deliver = async (row: ClaimedDelivery, tags: Map<string, { label: string | null; color: string | null }>) => {
+  const deliver = async (row: ClaimedDelivery, tags: TagMap) => {
     stats.attempted++;
     let env: WebhookEnvelope;
     try {
@@ -514,40 +561,74 @@ export async function runDispatch(deps: DispatchDeps, opts: DispatchOptions = {}
     log(`[webhooks] ${row.event} to ${dest.host}: ${result.status} in ${ms}ms`);
   };
 
-  while (stats.rounds < maxRounds && now() - start < deadline) {
+  // A pipeline rather than batches: a sender that's free claims more at once
+  // (only as many as there are free senders, so nothing leased waits here),
+  // and a slow endpoint holds up only the sender it's on. Fair shares across
+  // endpoints, people and workspaces come from webhook_claim_deliveries.
+  const queue: { row: ClaimedDelivery; tags: TagMap }[] = [];
+  let inFlight = 0;
+  let stopped = false; // the deadline, the round limit or a database problem: claim nothing more
+  let claiming: Promise<number> | null = null;
+  let wakers: (() => void)[] = [];
+  const finished = () => { const w = wakers; wakers = []; for (const f of w) f(); };
+  const nextFinish = () => new Promise<void>((resolve) => { wakers.push(resolve); });
+
+  /** One claim: new events fanned out, then up to one delivery per free sender. Returns how many were claimed. */
+  const claim = async (): Promise<number> => {
+    if (stats.rounds >= maxRounds || now() - start >= deadline) { stopped = true; return 0; }
     try {
       const q = await deps.service.query<{ n: number | string }>(DISPATCH_SQL.claimOutbox, [500]);
       stats.queued += Number(q[0]?.n ?? 0) || 0;
     } catch (e) {
       log(`[webhooks] fan-out failed: ${clean(String((e as Error)?.message ?? e), 160)}`);
     }
-    const rows = await deps.service.query<ClaimedDelivery>(DISPATCH_SQL.claimDeliveries, [batch, lease]);
-    stats.rounds++;
-    if (!rows.length) break;
-    // endpoints whose creator lost access: switched off, nothing sent
-    let gone = new Set<string>();
-    try { gone = await lostAccess(deps.service, rows); } catch (e) {
-      log(`[webhooks] access check failed, holding this batch: ${clean(String((e as Error)?.message ?? e), 160)}`);
-      break; // fail closed: the leases expire and the next run tries again
+    let rows: ClaimedDelivery[];
+    try {
+      rows = await deps.service.query<ClaimedDelivery>(DISPATCH_SQL.claimDeliveries, [Math.min(batch, Math.max(1, concurrency - inFlight)), lease]);
+    } catch (e) {
+      log(`[webhooks] claim failed: ${clean(String((e as Error)?.message ?? e), 160)}`);
+      stopped = true;
+      return 0;
     }
-    for (const id of gone) {
+    stats.rounds++;
+    if (!rows.length) return 0;
+    // endpoints whose creator lost access: switched off, nothing sent
+    let access: Awaited<ReturnType<typeof checkCreators>>;
+    try { access = await checkCreators(deps.service, rows); } catch (e) {
+      log(`[webhooks] access check failed, holding this batch: ${clean(String((e as Error)?.message ?? e), 160)}`);
+      stopped = true; // fail closed: the leases expire and the next run tries again
+      return 0;
+    }
+    for (const id of access.gone) {
       try {
         await deps.service.query(DISPATCH_SQL.switchOff, [id, CREATOR_GONE_REASON, CREATOR_GONE_ERROR]);
         stats.disabled++;
       } catch { /* the next run tries again; nothing was sent */ }
     }
-    const sendable = rows.filter((r) => !gone.has(String(r.webhook_id)));
+    const sendable = rows.filter((r) => !access.gone.has(String(r.webhook_id)));
     stats.skipped += rows.length - sendable.length;
-    const tags = await tagMap(deps.service, sendable);
-    await pool(sendable, concurrency, (r) => deliver(r, tags));
-    if (rows.length < batch) {
-      // a short batch: anything new that arrived meanwhile is picked up by one more pass
-      const more = await deps.service.query<{ n: number | string }>(DISPATCH_SQL.claimOutbox, [500]).catch(() => [{ n: 0 }]);
-      const n = Number(more[0]?.n ?? 0) || 0;
-      stats.queued += n;
-      if (!n) break;
+    const tagsFor = await tagMaps(deps.service, sendable, access.scopes);
+    for (const r of sendable) queue.push({ row: r, tags: tagsFor(r) });
+    return rows.length;
+  };
+
+  const sender = async (): Promise<void> => {
+    for (;;) {
+      const item = queue.shift();
+      if (item) {
+        inFlight++;
+        try { await deliver(item.row, item.tags); } catch { /* one delivery's problem stays its own */ } finally { inFlight--; finished(); }
+        continue;
+      }
+      if (stopped) return;
+      if (!claiming) claiming = claim().finally(() => { claiming = null; });
+      const got = await claiming;
+      if (queue.length || got > 0) continue;   // something to send (or only switched-off endpoints: look again)
+      if (stopped || inFlight === 0) return;   // nothing due that this run may take, and nothing of ours in flight
+      await nextFinish();                       // a delivery finishing frees a share: look again then
     }
-  }
+  };
+  await Promise.all(Array.from({ length: concurrency }, sender));
   stats.ms = Math.round(now() - start);
   return stats;
 }

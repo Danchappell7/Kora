@@ -4,6 +4,8 @@
    workspace where you can edit), show the signing secret ONCE, send a
    test, recent deliveries (event, status, response time, attempts, next
    retry, redeliver), switch on/off, rotate the secret, edit, delete.
+   Someone who can't manage an endpoint sees its address masked
+   (hooks.zapier.com/…x2kd): catch-hook URLs work as passwords.
    Data: lib/webhooks (the 0046 definer functions; demo: in-memory fakes).
 
    Built from SettingsModal's kset-* rows (SetGroup / SetRow), so it reads
@@ -20,7 +22,8 @@ import { isSupabaseConfigured } from "../../lib/supabase";
 import {
   agoText, createWebhook, deleteWebhook, eventsSummary, isWebhookUrlShapeOk, listWebhookDeliveries, listWebhooks, MAX_CONSECUTIVE_FAILURES,
   PERSONAL_WEBHOOK_EVENTS as PERSONAL_EVENTS, redeliverWebhookDelivery, RETRY_SCHEDULE_MIN, rotateWebhookSecret, sendTestWebhook,
-  shortWebhookUrl, soonText, updateWebhook, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS, WEBHOOK_LIMITS, webhookErrorText, webhookFailure, webhookHealth,
+  setWebhookDemoRoles, shortWebhookUrl, soonText, updateWebhook, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS, WEBHOOK_LIMITS, webhookErrorText,
+  webhookFailure, webhookHealth,
 } from "../../lib/webhooks";
 import type { DevWorkspace } from "./DevelopersPanel";
 import "./webhooks.css";
@@ -55,6 +58,9 @@ function withCode(text: string): ReactNode {
 
 export function WebhooksPanel({ workspaces, currentWorkspaceId }: WebhooksPanelProps) {
   const ids = "kwh" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  // demo mode: the fake applies the same who-manages-what rules as the server.
+  // Synced while rendering (idempotent) so the first list already uses it.
+  if (!isSupabaseConfigured) setWebhookDemoRoles(workspaces);
   const writable = useMemo(() => workspaces.filter((w) => w.role !== "guest"), [workspaces]);
   const guestIn = useMemo(() => workspaces.filter((w) => w.role === "guest"), [workspaces]);
   const initial = currentWorkspaceId && writable.some((w) => w.id === currentWorkspaceId) ? currentWorkspaceId : PERSONAL;
@@ -445,7 +451,7 @@ function EndpointRow({ rowId, hook, personal, scopeName, expanded, onExpand, onC
       <div className="kset-row kwh-row">
         <span className="kset-row-icon"><Icon name="zap" size={16} sw={1.75} /></span>
         <div className="kset-row-text">
-          <span className="kset-row-label kwh-url" title={hook.url}>{shortWebhookUrl(hook.url)}</span>
+          <span className="kset-row-label kwh-url" title={hook.canManage ? hook.url : undefined}>{shortWebhookUrl(hook.url)}</span>
           <span className="kset-row-desc">
             {hook.description ? <>{hook.description} · </> : null}
             {eventsSummary(hook.events, personal)}
@@ -564,7 +570,7 @@ function EndpointDetails({ hook, personal, scopeName, host, onChange, onSecret, 
   const redeliver = (d: WebhookDelivery) => run("redeliver", async () => {
     await redeliverWebhookDelivery(d.id);
     if (!alive.current) return;
-    setNote({ tone: "ok", text: `Sending that ${d.event === "ping" ? "test" : WEBHOOK_EVENT_INFO[d.event as WebhookEvent]?.label.toLowerCase() ?? "event"} again now.` });
+    setNote({ tone: "ok", text: `Sending that ${WEBHOOK_EVENT_INFO[d.event as WebhookEvent]?.label.toLowerCase() ?? "event"} again now.` });
     setDeliveries((list) => list?.map((x) => (x.id === d.id ? { ...x, state: "pending", attempt: 0, error: null, nextAttemptAt: new Date().toISOString() } : x)) ?? list);
     checkSoon();
   });
@@ -599,7 +605,9 @@ function EndpointDetails({ hook, personal, scopeName, host, onChange, onSecret, 
       ) : (
         <p className="kwh-readonly">
           <Icon name="lock" size={14} sw={2} />
-          <span>Added by {hook.createdByName ?? "someone else"}. Only they, or a workspace owner or admin, can change it.</span>
+          <span>
+            Added by {hook.createdByName ?? "someone else"}. Only they, or a workspace owner or admin, can change it or see its full address.
+          </span>
         </p>
       )}
 
@@ -645,7 +653,10 @@ function EndpointDetails({ hook, personal, scopeName, host, onChange, onSecret, 
         <p className="kwh-dl-empty">Nothing sent yet.{hook.canManage ? " Send a test to see what a delivery looks like." : ""}</p>
       ) : (
         <ul className="kwh-dl" aria-labelledby={`${ids}-dl`}>
-          {deliveries!.map((d) => <DeliveryItem key={d.id} d={d} canRedeliver={hook.canManage && (hook.active || d.event === "ping")} busy={busy === "redeliver"} onRedeliver={() => void redeliver(d)} />)}
+          {deliveries!.map((d) => (
+            // a test isn't sent again (Send test makes a new one); nothing goes to a switched-off endpoint
+            <DeliveryItem key={d.id} d={d} canRedeliver={hook.canManage && hook.active && d.event !== "ping"} busy={busy === "redeliver"} onRedeliver={() => void redeliver(d)} />
+          ))}
         </ul>
       )}
     </div>

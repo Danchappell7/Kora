@@ -13,9 +13,14 @@
      rpc send_test_webhook(p_id) → { outbox_id }      (5 a minute)
      rpc list_webhook_deliveries(p_id, p_limit ≤ 100) → delivery JSON[]
      rpc redeliver_webhook_delivery(p_delivery) → { id, state: 'pending' }
+       (not a ping; 10 a minute per endpoint, shared with the API)
      errors: 'not authorized' | 'not allowed' | 'invalid url' | 'invalid events' |
              'invalid description' | 'too many webhooks' (20 a workspace, 10 personal) |
-             'too many tests' | 'webhook not found' | 'delivery not found' | 'already delivered'
+             'too many tests' | 'too many redeliveries (retry after N s)' |
+             'test events can't be sent again' | 'webhook not found' |
+             'delivery not found' | 'already delivered'
+     url: the full address only when can_manage; otherwise masked
+          (https://hooks.zapier.com/…x2kd): catch-hook URLs work as passwords.
 
    Package a2: the async functions call those RPCs as the signed-in person
    (or, in demo mode, an in-memory fake with realistic endpoints and
@@ -23,13 +28,15 @@
    ============================================================ */
 import type { CreatedWebhook, NewWebhookInput, Webhook, WebhookDelivery, WebhookDeliveryEvent, WebhookDeliveryState, WebhookEvent, WebhookFailure, WebhookPatch } from "../data/types";
 import {
-  isWebhookUrlShapeOk, MAX_CONSECUTIVE_FAILURES, RETRY_SCHEDULE_MIN, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS,
+  isWebhookUrlShapeOk, maskWebhookUrl, MAX_CONSECUTIVE_FAILURES, REDELIVERIES_PER_MINUTE, RETRY_SCHEDULE_MIN, TESTS_PER_MINUTE, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS,
 } from "../../supabase/functions/_shared/api/webhooks.ts";
 import { supabase } from "./supabase";
 
-export { isWebhookUrlShapeOk, MAX_CONSECUTIVE_FAILURES, RETRY_SCHEDULE_MIN, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS };
+export { isWebhookUrlShapeOk, maskWebhookUrl, MAX_CONSECUTIVE_FAILURES, RETRY_SCHEDULE_MIN, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS };
 
-export const WEBHOOK_LIMITS = { perWorkspace: 20, personal: 10, description: 200, url: 2000, testsPerMinute: 5 } as const;
+export const WEBHOOK_LIMITS = {
+  perWorkspace: 20, personal: 10, description: 200, url: 2000, testsPerMinute: TESTS_PER_MINUTE, redeliveriesPerMinute: REDELIVERIES_PER_MINUTE,
+} as const;
 
 const EVENTS = new Set<string>(WEBHOOK_EVENTS);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
@@ -43,10 +50,12 @@ export function parseWebhook(raw: unknown): Webhook | null {
   const id = str(r.id), url = str(r.url), createdBy = str(g("created_by", "createdBy"));
   if (!id || !url || !createdBy) return null;
   const events = (Array.isArray(r.events) ? r.events : []).filter((e): e is WebhookEvent => typeof e === "string" && EVENTS.has(e));
+  const canManage = g("can_manage", "canManage") === true;
   return {
     id,
     workspaceId: str(g("workspace_id", "workspaceId")),
-    url,
+    // the server already masks it for people who can't manage it; never show more than that
+    url: canManage ? url : maskWebhookUrl(url),
     description: str(r.description),
     events,
     active: r.active === true,
@@ -60,7 +69,7 @@ export function parseWebhook(raw: unknown): Webhook | null {
     disabledReason: str(g("disabled_reason", "disabledReason")),
     createdAt: str(g("created_at", "createdAt")) ?? "",
     updatedAt: str(g("updated_at", "updatedAt")) ?? "",
-    canManage: g("can_manage", "canManage") === true,
+    canManage,
   };
 }
 
@@ -132,6 +141,8 @@ export function webhookErrorText(e: unknown): string {
   const msg = String((e as { message?: unknown })?.message ?? "");
   if (/invalid description/i.test(msg)) return `Keep the description to ${WEBHOOK_LIMITS.description} characters.`;
   if (/already delivered/i.test(msg)) return "That delivery already arrived.";
+  if (/too many redeliveries/i.test(msg)) return `That's ${WEBHOOK_LIMITS.redeliveriesPerMinute} sent again in a minute for this endpoint. Try again shortly.`;
+  if (/test events can.t be sent again/i.test(msg)) return "Test events aren't sent again. Use Send test for a new one.";
   return WEBHOOK_COPY[webhookFailure(e)];
 }
 
@@ -225,6 +236,7 @@ const SECRET_RE = /^whsec_[A-Za-z0-9_-]{43}$/;
 
 /** "hooks.zapier.com/hooks/catch/…/bq9x2kd" — short enough for a row, the host always whole. */
 export function shortWebhookUrl(url: string, max = 52): string {
+  if (url.includes("…")) return url.replace(/^https:\/\//, ""); // masked already ("hooks.zapier.com/…x2kd")
   let host = url, rest = "";
   try { const u = new URL(url); host = u.host; rest = (u.pathname === "/" ? "" : u.pathname) + u.search; } catch { /* show as given */ }
   const full = host + rest;
@@ -285,8 +297,10 @@ export function eventsSummary(events: readonly WebhookEvent[], personal: boolean
 
 /* ------------------------------------------------------------ demo (no Supabase) */
 
-interface DemoHook { hook: Webhook; secret: string; deliveries: WebhookDelivery[]; tests: number[] }
+interface DemoHook { hook: Webhook; secret: string; deliveries: WebhookDelivery[]; tests: number[]; resends: number[] }
 const demoScopes = new Map<string, DemoHook[]>();
+type DemoRole = "owner" | "admin" | "member" | "guest";
+const demoRoles = new Map<string, DemoRole>();
 let DEMO_DELAY_MS = 350;
 let DEMO_ARRIVE_MS = 1200;
 let demoOutbox = 4800;
@@ -329,7 +343,7 @@ function demoSeed(scope: string | null): DemoHook[] {
   const have = demoScopes.get(key);
   if (have) return have;
   const out: DemoHook[] = [];
-  const add = (hook: Webhook, deliveries: (h: Webhook) => WebhookDelivery[]) => out.push({ hook, secret: demoSecret(), deliveries: deliveries(hook), tests: [] });
+  const add = (hook: Webhook, deliveries: (h: Webhook) => WebhookDelivery[]) => out.push({ hook, secret: demoSecret(), deliveries: deliveries(hook), tests: [], resends: [] });
   if (!scope) {
     add(demoHook(null, { url: "https://hooks.zapier.com/hooks/catch/1234567/pr7k3nx/", description: "My finished tasks into Notion", events: ["task.completed"], lastStatus: 200, lastDeliveryAt: minutesAgo(52) }, 60 * 24 * 21), (h) => [
       demoDelivery(h, { event: "task.completed", state: "delivered", durationMs: 312 }, 52),
@@ -373,11 +387,21 @@ function demoSeed(scope: string | null): DemoHook[] {
   return out;
 }
 
-const copyHook = (d: DemoHook): Webhook => ({ ...d.hook, events: [...d.hook.events] });
-function demoFind(id: string): DemoHook {
+/** The server's rule (webhook_can_manage): your own, or any in a workspace you own or administer. */
+function demoCanManage(h: Webhook): boolean {
+  if (h.workspaceId === null || h.createdBy === DEMO_ME) return true;
+  const role = demoRoles.get(h.workspaceId) ?? "owner";
+  return role === "owner" || role === "admin";
+}
+/** As webhook_json() shows it to you: masked URL unless you can manage it. */
+const copyHook = (d: DemoHook): Webhook => {
+  const canManage = demoCanManage(d.hook);
+  return { ...d.hook, events: [...d.hook.events], canManage, url: canManage ? d.hook.url : maskWebhookUrl(d.hook.url) };
+};
+function demoFind(id: string, manage = true): DemoHook {
   for (const list of demoScopes.values()) {
     const d = list.find((x) => x.hook.id === id);
-    if (d) return d;
+    if (d && (!manage || demoCanManage(d.hook))) return d;
   }
   throw new Error("webhook not found");
 }
@@ -399,7 +423,7 @@ async function demoCreate(input: { workspaceId: string | null; url: string; even
   const list = demoSeed(input.workspaceId);
   if (list.length >= (input.workspaceId ? WEBHOOK_LIMITS.perWorkspace : WEBHOOK_LIMITS.personal)) throw new Error("too many webhooks");
   const hook = demoHook(input.workspaceId, { url: input.url, events: [...input.events].sort(), description: input.description }, 0);
-  const d: DemoHook = { hook, secret: demoSecret(), deliveries: [], tests: [] };
+  const d: DemoHook = { hook, secret: demoSecret(), deliveries: [], tests: [], resends: [] };
   list.push(d);
   return { ...copyHook(d), secret: d.secret };
 }
@@ -423,7 +447,7 @@ async function demoUpdate(id: string, p: { url?: string; events?: WebhookEvent[]
 async function demoDelete(id: string): Promise<void> {
   await wait(DEMO_DELAY_MS);
   for (const list of demoScopes.values()) {
-    const i = list.findIndex((x) => x.hook.id === id);
+    const i = list.findIndex((x) => x.hook.id === id && demoCanManage(x.hook));
     if (i >= 0) { list.splice(i, 1); return; }
   }
   throw new Error("webhook not found");
@@ -448,7 +472,7 @@ async function demoTest(id: string): Promise<void> {
 }
 async function demoDeliveries(id: string, limit: number): Promise<WebhookDelivery[]> {
   await wait(DEMO_DELAY_MS / 2);
-  const d = demoFind(id);
+  const d = demoFind(id, false);
   return [...d.deliveries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit).map((x) => ({ ...x }));
 }
 async function demoRedeliver(deliveryId: string): Promise<void> {
@@ -457,7 +481,13 @@ async function demoRedeliver(deliveryId: string): Promise<void> {
     for (const d of list) {
       const del = d.deliveries.find((x) => x.id === deliveryId);
       if (!del) continue;
+      if (!demoCanManage(d.hook)) throw new Error("delivery not found");
       if (del.state === "delivered") throw new Error("already delivered");
+      if (del.event === "ping") throw new Error("test events can't be sent again");
+      const now = Date.now();
+      d.resends = d.resends.filter((t) => now - t < 60_000);
+      if (d.resends.length >= WEBHOOK_LIMITS.redeliveriesPerMinute) throw new Error("too many redeliveries (retry after 60 s)");
+      d.resends.push(now);
       Object.assign(del, { state: "pending", attempt: 0, nextAttemptAt: new Date().toISOString(), error: null, updatedAt: new Date().toISOString() });
       demoArrive(d, del);
       return;
@@ -466,9 +496,22 @@ async function demoRedeliver(deliveryId: string): Promise<void> {
   throw new Error("delivery not found");
 }
 
+/**
+ * Demo mode only: your role in each team workspace, so the fake follows the
+ * server's rules (members manage only their own endpoints and see the
+ * others' addresses masked). A workspace not given counts as yours to run.
+ */
+export function setWebhookDemoRoles(workspaces: readonly { id: string; role: string }[]): void {
+  demoRoles.clear();
+  for (const w of workspaces) {
+    if (w.role === "owner" || w.role === "admin" || w.role === "member" || w.role === "guest") demoRoles.set(w.id, w.role);
+  }
+}
+
 /** Tests only: forget the demo endpoints; optionally shorten the pretend network delay and arrival time. */
 export function resetWebhookDemo(opts: { delayMs?: number; arriveMs?: number } = {}): void {
   demoScopes.clear();
+  demoRoles.clear();
   DEMO_DELAY_MS = opts.delayMs ?? 350;
   DEMO_ARRIVE_MS = opts.arriveMs ?? 1200;
 }

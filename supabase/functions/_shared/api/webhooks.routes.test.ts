@@ -24,6 +24,7 @@ const hookJson = (id: string, ws: string | null, extra: Record<string, unknown> 
   disabled_at: null, disabled_reason: null, created_at: "2026-10-05T18:04:26.295+00:00", updated_at: "2026-10-05T18:04:26.295+00:00",
   can_manage: true, ...extra,
 });
+const PING = "2bbbbbbb-d7e3-4f30-96e8-2a7008b6045c";
 const deliveryJson = { id: DEL, webhook_id: HOOK_W, outbox_id: 4, event: "task.created", state: "failed", attempt: 6, status_code: 0,
   error: "timeout", duration_ms: 10000, next_attempt_at: null, delivered_at: null, created_at: "2026-10-05T18:04:26.351+00:00", updated_at: "2026-10-05T18:04:26.368+00:00" };
 
@@ -55,7 +56,7 @@ function fakeDb(opts: { hooks?: Record<string, unknown>[]; fail?: Partial<Record
             case "remove": return [{ ok: true }] as R[];
             case "rotate": return [{ result: { id: params[0], secret: SECRET } }] as R[];
             case "test": return [{ result: { outbox_id: 4813 } }] as R[];
-            case "deliveries": return [{ list: [deliveryJson] }] as R[];
+            case "deliveries": return [{ list: [deliveryJson, { ...deliveryJson, id: PING, event: "ping" }] }] as R[];
             case "redeliver": return [{ result: { id: params[0], state: "pending" } }] as R[];
             default: throw new Error(`unexpected SQL: ${sql}`);
           }
@@ -280,6 +281,22 @@ describe("changing one endpoint", () => {
     r = await call(personalWrite, "POST", `/webhooks/${HOOK_W}/deliveries/eeeeeeee-0000-4000-8000-00000000000e/redeliver`);
     expect(r.res!.status).toBe(404);
     expect(r.db.calls.map((c) => c.sql)).not.toContain(WEBHOOK_SQL.redeliver);
+    // a test ping isn't sent again (Send test makes a new one, 5 a minute)
+    r = await call(personalWrite, "POST", `/webhooks/${HOOK_W}/deliveries/${PING}/redeliver`);
+    expect(r.res!.status).toBe(409);
+    expect(r.json.error.message).toMatch(/test event isn't sent again/);
+    expect(r.db.calls.map((c) => c.sql)).not.toContain(WEBHOOK_SQL.redeliver);
+  });
+  it("someone who can't manage an endpoint gets its URL masked, even if a full one slipped through", async () => {
+    const db = fakeDb({ hooks: [hookJson(HOOK_W, W, { can_manage: false, url: "https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/" }),
+      hookJson(HOOK_P, null, { url: "https://hooks.zapier.com/hooks/catch/1234567/pr7k3nx/" })] });
+    let r = await call(personalRead, "GET", "/webhooks", undefined, db);
+    const byId = Object.fromEntries(r.json.data.map((w: { id: string; url: string }) => [w.id, w.url]));
+    expect(byId[HOOK_W]).toBe("https://hooks.zapier.com/…x2kd");
+    expect(byId[HOOK_P]).toBe("https://hooks.zapier.com/hooks/catch/1234567/pr7k3nx/");
+    r = await call(personalRead, "GET", `/webhooks/${HOOK_W}`, undefined, db);
+    expect(r.json).toMatchObject({ url: "https://hooks.zapier.com/…x2kd", canManage: false });
+    expect(JSON.stringify(r.json)).not.toContain("1234567");
   });
 });
 
@@ -292,6 +309,8 @@ describe("the database's refusals become JSON errors", () => {
     ["test", "too many tests", 429, "rate_limited"],
     ["remove", "webhook not found", 404, "not_found"],
     ["redeliver", "already delivered", 409, "conflict"],
+    ["redeliver", "test events can't be sent again", 409, "conflict"],
+    ["redeliver", "too many redeliveries (retry after 37 s)", 429, "rate_limited"],
     ["create", "duplicate key value violates unique constraint \"webhooks_pkey\" DETAIL: Key (secret)=(whsec_x)", 500, "internal"],
   ];
   it.each(cases)("%s: %s → %d", async (k, message, status, code) => {
@@ -307,7 +326,7 @@ describe("the database's refusals become JSON errors", () => {
       expect(r.json.error.code).toBe(code);
       expect(r.json.error.requestId).toBe("req_0123456789abcdef");
       expect(JSON.stringify(r.json)).not.toContain("whsec_x");
-      if (status === 429) expect(r.res!.headers.get("retry-after")).toBe("60");
+      if (status === 429) expect(r.res!.headers.get("retry-after")).toBe(/retry after (\d+)/.exec(message)?.[1] ?? "60");
     } finally { console.error = orig; }
   });
   it("a read-only transaction refusing a write is a 403", async () => {

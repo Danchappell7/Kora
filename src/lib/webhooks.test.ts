@@ -2,8 +2,8 @@
    shown once, tests, retries, switch-off and the error sentences. */
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  createWebhook, deleteWebhook, listWebhookDeliveries, listWebhooks, redeliverWebhookDelivery, resetWebhookDemo, rotateWebhookSecret,
-  sendTestWebhook, shortWebhookUrl, updateWebhook, WEBHOOK_COPY, webhookErrorText, webhookHealth,
+  createWebhook, deleteWebhook, listWebhookDeliveries, listWebhooks, parseWebhook, redeliverWebhookDelivery, resetWebhookDemo, rotateWebhookSecret,
+  sendTestWebhook, setWebhookDemoRoles, shortWebhookUrl, updateWebhook, WEBHOOK_COPY, webhookErrorText, webhookHealth,
 } from "./webhooks";
 
 const WS = "11111111-0000-4000-8000-000000000001";
@@ -79,6 +79,37 @@ describe("demo endpoints", () => {
     await expect(redeliverWebhookDelivery(done.id)).rejects.toThrow(/already delivered/);
   });
 
+  it("a test ping isn't sent again; ten sends-again a minute per endpoint at most", async () => {
+    resetWebhookDemo({ delayMs: 0, arriveMs: 60_000 }); // nothing arrives during this test, so each one can be sent again
+    const w = await createWebhook({ workspaceId: WS, url: "https://a.example.com/x", events: ["task.created"] });
+    await sendTestWebhook(w.id);
+    const [ping] = await listWebhookDeliveries(w.id);
+    await expect(redeliverWebhookDelivery(ping.id)).rejects.toThrow(/test events can't be sent again/);
+    const [, failing] = await listWebhooks(WS);
+    const failed = (await listWebhookDeliveries(failing.id)).find((d) => d.state === "failed")!;
+    for (let i = 0; i < 10; i++) await redeliverWebhookDelivery(failed.id);
+    const e = await redeliverWebhookDelivery(failed.id).catch((x) => x);
+    expect(String(e.message)).toMatch(/too many redeliveries/);
+    expect(webhookErrorText(e)).toBe("That's 10 sent again in a minute for this endpoint. Try again shortly.");
+  });
+
+  it("a member sees teammates' endpoints masked and can't change them; their own stay whole", async () => {
+    setWebhookDemoRoles([{ id: WS, role: "member" }]);
+    const team = await listWebhooks(WS);
+    const [priya, mine, ana] = team;
+    expect(priya).toMatchObject({ url: "https://hooks.zapier.com/…x2kd", canManage: false, createdByName: "Priya Shah" });
+    expect(ana).toMatchObject({ url: "https://hook.eu1.make.com/…hz3c", canManage: false });
+    expect(mine).toMatchObject({ url: "https://api.northwind-studio.co.uk/kanbo/events?client=foundrise", canManage: true });
+    expect(JSON.stringify(team)).not.toContain("bq9x2kd/");
+    await expect(updateWebhook(priya.id, { active: false })).rejects.toThrow(/not found/);
+    await expect(deleteWebhook(priya.id)).rejects.toThrow(/not found/);
+    await expect(rotateWebhookSecret(priya.id)).rejects.toThrow(/not found/);
+    await expect(sendTestWebhook(priya.id)).rejects.toThrow(/not found/);
+    expect((await listWebhookDeliveries(priya.id)).length).toBeGreaterThan(0); // members still see how deliveries went
+    setWebhookDemoRoles([{ id: WS, role: "admin" }]);
+    expect((await listWebhooks(WS))[0]).toMatchObject({ url: "https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/", canManage: true });
+  });
+
   it("rotating gives a new secret; deleting removes it", async () => {
     const w = await createWebhook({ workspaceId: null, url: "https://a.example.com/x", events: ["task.created"] });
     const s2 = await rotateWebhookSecret(w.id);
@@ -98,7 +129,16 @@ describe("helpers", () => {
     expect(webhookErrorText(new TypeError("Failed to fetch"))).toBe(WEBHOOK_COPY.network);
     expect(webhookErrorText({ code: "PGRST202", message: "Could not find the function public.list_webhooks" })).toBe(WEBHOOK_COPY.unavailable);
   });
+  it("a webhook the reader can't manage is never shown with its full address", () => {
+    const raw = { id: "c924fcff-0938-4900-a8e7-9cbbb564a762", workspace_id: WS, url: "https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/",
+      events: ["task.created"], created_by: "00000000-0000-4000-8000-0000000a11ce", can_manage: false };
+    expect(parseWebhook(raw)?.url).toBe("https://hooks.zapier.com/…x2kd");
+    expect(parseWebhook({ ...raw, can_manage: true })?.url).toBe(raw.url);
+    expect(parseWebhook({ ...raw, url: "https://hooks.zapier.com/…x2kd" })?.url).toBe("https://hooks.zapier.com/…x2kd");
+    expect(webhookErrorText(new Error("test events can't be sent again"))).toMatch(/Send test/);
+  });
   it("short URLs keep the host whole", () => {
+    expect(shortWebhookUrl("https://hooks.zapier.com/…x2kd")).toBe("hooks.zapier.com/…x2kd");
     expect(shortWebhookUrl("https://hooks.zapier.com/hooks/catch/1234567/bq9x2kd/")).toBe("hooks.zapier.com/hooks/catch/1234567/bq9x2kd/");
     const long = shortWebhookUrl("https://api.northwind-studio.co.uk/kanbo/events/with/a/very/long/path/that/goes/on?client=foundrise", 52);
     expect(long.startsWith("api.northwind-studio.co.uk/")).toBe(true);

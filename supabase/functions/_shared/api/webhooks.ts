@@ -62,6 +62,10 @@ export const DELIVERY_TIMEOUT_MS = 10_000;
 export const MAX_PAYLOAD_BYTES = 256 * 1024;
 /** How old a signature's timestamp may be when verified. */
 export const SIGNATURE_TOLERANCE_SEC = 300;
+/** Test pings per endpoint per minute (send_test_webhook). */
+export const TESTS_PER_MINUTE = 5;
+/** "Send again" per endpoint per minute, the app and the API together (redeliver_webhook_delivery). */
+export const REDELIVERIES_PER_MINUTE = 10;
 
 const hex = (buf: ArrayBuffer) => Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 
@@ -122,6 +126,23 @@ export function isWebhookUrlShapeOk(url: string): boolean {
   if (/^[0-9.]+$/.test(host) || host.startsWith("0x")) return false;
   if (/(^|\.)(localhost|local|localdomain|internal|intranet|lan|home|corp|private|test|invalid|example|onion|arpa)$/.test(host)) return false;
   return true;
+}
+
+/**
+ * An endpoint's address as people who can't manage it see it: scheme and
+ * host, then "…" and the path's last 4 characters
+ * (https://hooks.zapier.com/…x2kd). Catch-hook URLs are often the only thing
+ * a receiver checks, so the full address is only for the people who manage
+ * the endpoint. Same rule as public.webhook_url_masked(); an address that's
+ * already masked comes back as it is.
+ */
+export function maskWebhookUrl(url: string): string {
+  const m = /^https:\/\/([^/?#]+)([/?][^#]*)?$/.exec(typeof url === "string" ? url : "");
+  if (!m) return "https://…";
+  const rest = (m[2] ?? "").replace(/\/+$/, "");
+  if (!rest) return `https://${m[1]}/`;
+  if (rest.startsWith("/…") && rest.length <= 6) return `https://${m[1]}${rest}`; // already masked
+  return rest.length <= 8 ? `https://${m[1]}/…` : `https://${m[1]}/…${rest.slice(-4)}`;
 }
 
 /* ============================================================ SSRF guard   [a2]
@@ -238,6 +259,7 @@ export interface ApiWebhook {
   id: string;
   /** null = personal (your personal tasks and projects) */
   workspaceId: string | null;
+  /** the full address only when canManage; otherwise masked (https://host/…x2kd) */
   url: string;
   description: string | null;
   events: WebhookEventType[];
@@ -290,14 +312,15 @@ const n = (v: unknown): number | null => {
 };
 const asRow = (v: unknown): Row => (v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {});
 
-/** webhook_json() → ApiWebhook (+ secret when present). */
+/** webhook_json() → ApiWebhook (+ secret when present). The URL stays masked for anyone who can't manage it. */
 export function serialiseWebhook(raw: unknown): ApiWebhook | ApiCreatedWebhook {
   const r = asRow(raw);
+  const manage = r.can_manage === true;
   const out: ApiWebhook = {
     object: "webhook",
     id: String(r.id ?? ""),
     workspaceId: s(r.workspace_id),
-    url: String(r.url ?? ""),
+    url: manage ? String(r.url ?? "") : maskWebhookUrl(String(r.url ?? "")),
     description: s(r.description),
     events: (Array.isArray(r.events) ? r.events : []).filter((e): e is WebhookEventType => typeof e === "string" && KNOWN_EVENTS.has(e)),
     active: r.active === true,
@@ -311,7 +334,7 @@ export function serialiseWebhook(raw: unknown): ApiWebhook | ApiCreatedWebhook {
     disabledReason: s(r.disabled_reason),
     createdAt: isoTime(r.created_at),
     updatedAt: isoTime(r.updated_at),
-    canManage: r.can_manage === true,
+    canManage: manage,
   };
   return typeof r.secret === "string" ? { ...out, secret: r.secret } : out;
 }
@@ -392,13 +415,19 @@ export function webhookErrorResponse(e: unknown, ctx: Pick<RouteContext, "reques
   if (/invalid events/i.test(msg)) return r(422, "validation_failed", "Some fields aren't right. See details.fields.", { fields: { events: EVENTS_RULE } });
   if (/invalid description/i.test(msg)) return r(422, "validation_failed", "Some fields aren't right. See details.fields.", { fields: { description: DESCRIPTION_RULE } });
   if (/too many webhooks/i.test(msg)) return r(409, "conflict", "That's the limit: 20 endpoints a workspace and 10 personal ones. Delete one you no longer use first.");
-  if (/too many tests/i.test(msg)) return r(429, "rate_limited", "That's 5 test events in a minute for this endpoint. Try again shortly.", undefined, { "Retry-After": "60" });
+  if (/too many tests/i.test(msg)) return r(429, "rate_limited", `That's ${TESTS_PER_MINUTE} test events in a minute for this endpoint. Try again shortly.`, undefined, { "Retry-After": "60" });
+  if (/too many redeliveries/i.test(msg)) {
+    const wait = Math.min(60, Math.max(1, Number(/retry after (\d+)/i.exec(msg)?.[1] ?? 60) || 60));
+    return r(429, "rate_limited", `That's ${REDELIVERIES_PER_MINUTE} deliveries sent again in a minute for this endpoint. Try again shortly.`, undefined, { "Retry-After": String(wait) });
+  }
+  if (/test events can.t be sent again/i.test(msg)) return r(409, "conflict", TEST_NOT_AGAIN);
   if (code === "25006") return r(403, "forbidden", "This key is read-only.");
   if (code === "42501" || /permission denied|row-level security/i.test(msg)) return r(403, "forbidden", "This key can't do that.");
   console.error(`[api] webhooks ${ctx.requestId}: ${code || "error"} ${msg.slice(0, 200)}`);
   return r(500, "internal", "Something went wrong on Kanbo's side. Try again, and quote the request id if it keeps happening.");
 }
 
+const TEST_NOT_AGAIN = "A test event isn't sent again. Send a new one with POST /webhooks/:id/test.";
 const URL_RULE = "Use a public https:// address with a hostname (no IP addresses, no user:password@, no internal names), up to 2000 characters.";
 const EVENTS_RULE = `Choose 1 to ${WEBHOOK_EVENTS.length} of: ${WEBHOOK_EVENTS.join(", ")}.`;
 const DESCRIPTION_RULE = "Up to 200 characters, or null.";
@@ -631,9 +660,9 @@ async function redeliverRoute(ctx: RouteContext): Promise<Response> {
     if (!did) return fail(ctx, 404, "not_found", "There's no delivery with that id among this endpoint's last 100.");
     const rows = await tx.query<{ list: unknown }>(WEBHOOK_SQL.deliveries, [id, DELIVERIES_MAX]);
     const list = Array.isArray(rows[0]?.list) ? (rows[0].list as unknown[]) : [];
-    if (!list.some((d) => asRow(d).id === did)) {
-      return fail(ctx, 404, "not_found", "There's no delivery with that id among this endpoint's last 100.");
-    }
+    const found = list.map(asRow).find((d) => d.id === did);
+    if (!found) return fail(ctx, 404, "not_found", "There's no delivery with that id among this endpoint's last 100.");
+    if (found.event === "ping") return fail(ctx, 409, "conflict", TEST_NOT_AGAIN);
     await tx.query(WEBHOOK_SQL.redeliver, [did]);
     return ok(ctx, { object: "webhook_delivery", id: did, webhookId: id, state: "pending", queued: true }, 202);
   });
@@ -679,7 +708,7 @@ const E = {
   404: errorRef("No such endpoint (or the key can't reach it)", "not_found", 404, "There's no webhook with that id that this key can reach."),
   409: errorRef("Limit reached", "conflict", 409, "That's the limit: 20 endpoints a workspace and 10 personal ones. Delete one you no longer use first."),
   422: { description: "Validation failed", content: { "application/json": { schema: ERROR_SCHEMA, example: { error: { code: "validation_failed", message: "Some fields aren't right. See details.fields.", status: 422, details: { fields: { url: URL_RULE } } } } } } },
-  429: errorRef("Too many requests (or too many test events)", "rate_limited", 429, "That's 5 test events in a minute for this endpoint. Try again shortly."),
+  429: errorRef("Too many requests (or too many test events)", "rate_limited", 429, `That's ${TESTS_PER_MINUTE} test events in a minute for this endpoint. Try again shortly.`),
 };
 
 const WEBHOOK_EXAMPLE: ApiWebhook = {
@@ -700,7 +729,11 @@ const WEBHOOK_SCHEMA = {
   properties: {
     object: { const: "webhook" }, id: { type: "string", format: "uuid" },
     workspaceId: { type: ["string", "null"], format: "uuid", description: "null = personal (your personal tasks and projects)" },
-    url: { type: "string", format: "uri" }, description: { type: ["string", "null"], maxLength: 200 },
+    url: {
+      type: "string",
+      description: "The endpoint's address. In full only when `canManage` is true; anyone else sees it masked, e.g. `https://hooks.zapier.com/…x2kd` (catch-hook addresses often work as a password).",
+    },
+    description: { type: ["string", "null"], maxLength: 200 },
     events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, active: { type: "boolean" },
     createdBy: { type: ["string", "null"] }, createdByName: { type: ["string", "null"] },
     failureCount: { type: "integer", description: `Failed attempts in a row; ${MAX_CONSECUTIVE_FAILURES} switch the endpoint off` },
@@ -722,7 +755,7 @@ export const webhookOpenApiPaths: OpenApiDoc["paths"] = {
   "/webhooks": {
     get: {
       operationId: "listWebhooks", summary: "List webhook endpoints", tags: ["Webhooks"], "x-kanbo-access": "read",
-      description: "Without `workspace`: a personal key lists your personal endpoints and those of every workspace where you can edit; a workspace key lists its workspace's. Signing secrets are never listed.",
+      description: "Without `workspace`: a personal key lists your personal endpoints and those of every workspace where you can edit; a workspace key lists its workspace's. Signing secrets are never listed, and an endpoint you can't manage (`canManage: false`) shows its `url` masked.",
       parameters: [{ name: "workspace", in: "query", description: "A workspace id, or `personal`", schema: { type: "string" }, example: "personal" }],
       responses: { 200: jsonOk("The endpoints", listSchema(WEBHOOK_SCHEMA), listOf([WEBHOOK_EXAMPLE])), 400: E[400], 401: E[401], 403: E[403], 429: E[429] },
     },
@@ -773,7 +806,7 @@ export const webhookOpenApiPaths: OpenApiDoc["paths"] = {
   "/webhooks/{id}/test": {
     post: {
       operationId: "testWebhook", summary: "Send a test event", tags: ["Webhooks"], "x-kanbo-access": "write", parameters: [idParamSpec],
-      description: "Queues a signed `ping` event to this endpoint only (also while it's switched off). It arrives within seconds. A failed ping isn't retried and doesn't count towards switching the endpoint off. At most 5 a minute per endpoint.",
+      description: `Queues a signed \`ping\` event to this endpoint only (also while it's switched off). It arrives within seconds. A failed ping isn't retried and doesn't count towards switching the endpoint off. At most ${TESTS_PER_MINUTE} a minute per endpoint.`,
       responses: { 202: jsonOk("Queued", { type: "object" }, { object: "webhook_test", webhookId: WEBHOOK_EXAMPLE.id, eventId: "evt_4813", type: "ping", queued: true }), 401: E[401], 403: E[403], 404: E[404], 429: E[429] },
     },
   },
@@ -788,9 +821,13 @@ export const webhookOpenApiPaths: OpenApiDoc["paths"] = {
   "/webhooks/{id}/deliveries/{deliveryId}/redeliver": {
     post: {
       operationId: "redeliverWebhookDelivery", summary: "Send a delivery again now", tags: ["Webhooks"], "x-kanbo-access": "write",
-      description: "Puts a failed (or waiting) delivery back in the queue with a fresh set of retries. One of the endpoint's 100 most recent deliveries.",
+      description: `Puts a failed (or waiting) delivery back in the queue with a fresh set of retries. One of the endpoint's 100 most recent deliveries, and not a test \`ping\` (send a new test instead). At most ${REDELIVERIES_PER_MINUTE} a minute per endpoint, counted together with Settings' **Send again**; if it fails again it counts towards switching the endpoint off.`,
       parameters: [idParamSpec, { name: "deliveryId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-      responses: { 202: jsonOk("Queued", { type: "object" }, { object: "webhook_delivery", id: DELIVERY_EXAMPLE.id, webhookId: WEBHOOK_EXAMPLE.id, state: "pending", queued: true }), 401: E[401], 403: E[403], 404: E[404], 409: errorRef("Already delivered", "conflict", 409, "That delivery already arrived, so there's nothing to send again."), 429: E[429] },
+      responses: {
+        202: jsonOk("Queued", { type: "object" }, { object: "webhook_delivery", id: DELIVERY_EXAMPLE.id, webhookId: WEBHOOK_EXAMPLE.id, state: "pending", queued: true }), 401: E[401], 403: E[403], 404: E[404],
+        409: errorRef("Already delivered, or a test event", "conflict", 409, "That delivery already arrived, so there's nothing to send again."),
+        429: errorRef("Too many requests, or too many sent again for this endpoint (see Retry-After)", "rate_limited", 429, `That's ${REDELIVERIES_PER_MINUTE} deliveries sent again in a minute for this endpoint. Try again shortly.`),
+      },
     },
   },
 };

@@ -7,7 +7,7 @@ import { agoText, eventsSummary, listWebhooks, resetWebhookDemo, soonText } from
 import type { DevWorkspace } from "./DevelopersPanel";
 
 const WS: DevWorkspace[] = [
-  { id: "11111111-0000-4000-8000-000000000001", name: "Foundrise", role: "member" },
+  { id: "11111111-0000-4000-8000-000000000001", name: "Foundrise", role: "admin" },
   { id: "22222222-0000-4000-8000-000000000002", name: "Client: Northwind", role: "guest" },
 ];
 const group = () => screen.getByRole("region", { name: "Webhooks" });
@@ -29,6 +29,24 @@ describe("WebhooksPanel", () => {
     // each switch is named for its endpoint and says whether it's on
     expect(screen.getByRole("switch", { name: "Send events to hook.eu1.make.com" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "Send events to hooks.zapier.com" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("a member sees teammates' endpoints with the address masked and nothing to change", async () => {
+    const asMember: DevWorkspace[] = [{ ...WS[0], role: "member" }];
+    render(<WebhooksPanel workspaces={asMember} currentWorkspaceId={WS[0].id} />);
+    const masked = await within(group()).findByText("hooks.zapier.com/…x2kd");
+    expect(masked).not.toHaveAttribute("title");
+    expect(within(group()).queryByText(/bq9x2kd/)).toBeNull();
+    expect(within(group()).getByText("hook.eu1.make.com/…hz3c")).toBeInTheDocument();
+    // their own endpoint: full address (also on hover), and a switch
+    expect(within(group()).getByText(/^api\.northwind-studio\.co\.uk\//)).toHaveAttribute("title", "https://api.northwind-studio.co.uk/kanbo/events?client=foundrise");
+    expect(screen.queryByRole("switch", { name: "Send events to hooks.zapier.com" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Send events to api.northwind-studio.co.uk" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show details for hooks.zapier.com" }));
+    expect(await screen.findByText(/Only they, or a workspace owner or admin, can change it or see its full address/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send test" })).toBeNull();
+    const list = await screen.findByRole("list", { name: "Recent deliveries" });
+    expect(within(list).queryByRole("button", { name: /again/ })).toBeNull();
   });
 
   it("a guest-only current workspace falls back to Personal", async () => {

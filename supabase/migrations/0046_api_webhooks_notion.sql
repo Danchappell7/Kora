@@ -25,8 +25,11 @@
 --      (AFTER triggers on tasks, comments, projects, workspace_members — they
 --      cost one indexed EXISTS when nobody listens), webhook_deliveries
 --      (retries 1m, 5m, 30m, 2h, 6h; off after 20 failures in a row with an
---      Inbox notice to the creator). Management only through definer
---      functions: workspace writers, or the person for personal webhooks.
+--      Inbox notice to the creator; claims share sending slots fairly per
+--      endpoint, person and workspace). Management only through definer
+--      functions: workspace writers, or the person for personal webhooks;
+--      the URL in full only for those who manage it (masked for the rest);
+--      "send again" 10 a minute per endpoint, never for test pings.
 --   6. Notion: workspace_integrations.notion_token (service-only, like the
 --      Slack URL), notion_status / notion_connect / notion_disconnect (owners
 --      and admins manage; members see status), notion_syncs, notion_links,
@@ -511,6 +514,9 @@ create table if not exists public.webhook_deliveries (
 );
 create index if not exists webhook_deliveries_due_idx on public.webhook_deliveries (next_attempt_at) where state = 'pending';
 create index if not exists webhook_deliveries_hook_idx on public.webhook_deliveries (webhook_id, created_at desc);
+-- fair claims: each endpoint's oldest due deliveries, and what's being sent right now
+create index if not exists webhook_deliveries_hook_due_idx on public.webhook_deliveries (webhook_id, next_attempt_at, id) where state = 'pending';
+create index if not exists webhook_deliveries_leased_idx on public.webhook_deliveries (lease_until) where state = 'pending' and lease_until is not null;
 alter table public.webhook_deliveries drop constraint if exists webhook_deliveries_shape;
 alter table public.webhook_deliveries add constraint webhook_deliveries_shape check (
   state in ('pending', 'delivered', 'failed') and attempt >= 0
@@ -555,17 +561,38 @@ $$;
 revoke execute on function public.webhook_can_see(public.webhooks) from public, anon, authenticated;
 revoke execute on function public.webhook_can_manage(public.webhooks) from public, anon, authenticated;
 
--- a webhook as JSON (never the secret)
+-- An endpoint's address for people who can't manage it: scheme + host, then
+-- "…" and the path's last 4 characters (https://hooks.zapier.com/…x2kd).
+-- Catch-hook URLs (Zapier, Make…) are often the only credential the receiver
+-- checks, so the full address is for the people who manage the endpoint,
+-- like the Slack incoming-webhook URL in 0043. Same rule as maskWebhookUrl().
+create or replace function public.webhook_url_masked(p_url text)
+returns text language plpgsql immutable set search_path = pg_catalog as $$
+declare m text[]; rest text;
+begin
+  m := regexp_match(coalesce(p_url, ''), '^https://([^/?#]+)([/?][^#]*)?$');
+  if m is null then return 'https://…'; end if;
+  rest := rtrim(coalesce(m[2], ''), '/');
+  if rest = '' then return 'https://' || m[1] || '/'; end if;           -- nothing past the host to hide
+  if length(rest) <= 8 then return 'https://' || m[1] || '/…'; end if;  -- too short to show any of it
+  return 'https://' || m[1] || '/…' || right(rest, 4);
+end; $$;
+revoke execute on function public.webhook_url_masked(text) from public, anon, authenticated;
+
+-- a webhook as JSON (never the secret; the full URL only for people who can manage it)
 create or replace function public.webhook_json(w public.webhooks)
 returns jsonb language sql security definer stable set search_path = public as $$
   select jsonb_build_object(
-    'id', w.id, 'workspace_id', w.workspace_id, 'url', w.url, 'description', w.description,
+    'id', w.id, 'workspace_id', w.workspace_id,
+    'url', case when c.manage then w.url else public.webhook_url_masked(w.url) end,
+    'description', w.description,
     'events', to_jsonb(w.events), 'active', w.active,
     'created_by', w.created_by, 'created_by_name', public.kanbo_person_name(w.created_by),
     'failure_count', w.failure_count, 'last_status', w.last_status, 'last_error', w.last_error,
     'last_delivery_at', w.last_delivery_at, 'disabled_at', w.disabled_at, 'disabled_reason', w.disabled_reason,
     'created_at', w.created_at, 'updated_at', w.updated_at,
-    'can_manage', public.webhook_can_manage(w));
+    'can_manage', c.manage)
+    from (select coalesce(public.webhook_can_manage(w), false) as manage) c;
 $$;
 revoke execute on function public.webhook_json(public.webhooks) from public, anon, authenticated;
 
@@ -729,15 +756,22 @@ begin
 end; $$;
 
 -- Send one delivery again now (a failed one, or a pending one without waiting).
+-- Not a test ping (that's send_test_webhook, 5 a minute), and at most 10 a
+-- minute per endpoint — the app and the API share the count — so "send
+-- again" can't be used to hammer an address. A redelivered event that fails
+-- counts towards switching the endpoint off like any other.
 create or replace function public.redeliver_webhook_delivery(p_delivery uuid)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare d public.webhook_deliveries; w public.webhooks;
+declare d public.webhook_deliveries; w public.webhooks; rl record;
 begin
   if auth.uid() is null then raise exception 'not authorized'; end if;
   select * into d from public.webhook_deliveries where id = p_delivery for update;
   select * into w from public.webhooks where id = d.webhook_id;
   if d.id is null or w.id is null or not public.webhook_can_manage(w) then raise exception 'delivery not found'; end if;
   if d.state = 'delivered' then raise exception 'already delivered'; end if;
+  if d.event = 'ping' then raise exception 'test events can''t be sent again'; end if;
+  select * into rl from public.api_rate_hit('kanbo:api:redeliver:' || w.id::text, 60, 10);
+  if not rl.allowed then raise exception 'too many redeliveries (retry after % s)', rl.retry_after; end if;
   update public.webhook_deliveries set state = 'pending', attempt = 0, next_attempt_at = now(), lease_until = null,
          error = null, updated_at = now()
    where id = p_delivery;
@@ -975,21 +1009,59 @@ end; $$;
 -- 2) Take up to p_limit due deliveries (each gets a lease, so two
 -- dispatchers never send the same one; the attempt counter goes up now).
 -- Returns everything needed to sign and send — including the secret.
+-- Fair shares, across every dispatcher at once (a lease = being sent now):
+-- at most 2 deliveries in flight per endpoint, 4 per person who added
+-- endpoints and 4 per workspace; among what's left, whoever has least in
+-- flight goes first, then the oldest. So one tenant with slow or busy
+-- endpoints, however much it queues, can't hold every sending slot.
+-- Claims take a lock in turn so those counts are exact.
 create or replace function public.webhook_claim_deliveries(p_limit integer default 25, p_lease_seconds integer default 90)
 returns table (delivery_id uuid, attempt integer, event text, outbox_id bigint, workspace_id uuid,
                occurred_at timestamptz, payload jsonb, webhook_id uuid, url text, secret text)
 language plpgsql security definer set search_path = public as $$
 #variable_conflict use_column
 begin
+  perform pg_advisory_xact_lock(hashtext('kanbo:webhook-claim'));
   return query
-  with due as (
-    select d.id from public.webhook_deliveries d
-      join public.webhooks w on w.id = d.webhook_id
-     where d.state = 'pending' and d.next_attempt_at <= now()
-       and (d.lease_until is null or d.lease_until < now())
-       and (w.active or d.event = 'ping')
-     order by d.next_attempt_at, d.id
+  with busy as (            -- being sent right now, per endpoint
+    select d.webhook_id, count(*)::integer as n
+      from public.webhook_deliveries d
+     where d.state = 'pending' and d.lease_until is not null and d.lease_until >= now()
+     group by d.webhook_id
+  ), hooks as (
+    select w.id, w.active, w.created_by, w.workspace_id, coalesce(b.n, 0) as hook_busy,
+           sum(coalesce(b.n, 0)) over (partition by w.created_by)::integer as creator_busy,
+           sum(coalesce(b.n, 0)) over (partition by w.workspace_id)::integer as ws_busy
+      from public.webhooks w
+      left join busy b on b.webhook_id = w.id
+  ), cand as (              -- each endpoint's two oldest due deliveries
+    select x.id, x.next_attempt_at, h.created_by, h.workspace_id, h.hook_busy, h.creator_busy, h.ws_busy,
+           row_number() over (partition by h.id order by x.next_attempt_at, x.id) as rn
+      from hooks h
+      cross join lateral (
+        select d.id, d.next_attempt_at from public.webhook_deliveries d
+         where d.webhook_id = h.id and d.state = 'pending' and d.next_attempt_at <= now()
+           and (d.lease_until is null or d.lease_until < now())
+           and (h.active or d.event = 'ping')
+         order by d.next_attempt_at, d.id
+         limit 2
+      ) x
+     where h.hook_busy < 2
+  ), ranked as (
+    select c.id, c.next_attempt_at, c.rn + c.hook_busy as hook_load,
+           c.creator_busy + row_number() over (partition by c.created_by order by c.rn, c.next_attempt_at, c.id) as creator_load,
+           case when c.workspace_id is null then 0
+                else c.ws_busy + row_number() over (partition by c.workspace_id order by c.rn, c.next_attempt_at, c.id) end as ws_load
+      from cand c
+  ), picked as (
+    select r.id from ranked r
+     where r.hook_load <= 2 and r.creator_load <= 4 and r.ws_load <= 4
+     order by greatest(r.creator_load, r.ws_load), r.next_attempt_at, r.id
      limit greatest(1, least(coalesce(p_limit, 25), 200))
+  ), due as (
+    select d.id from public.webhook_deliveries d
+     where d.id in (select p.id from picked p) and d.state = 'pending'
+       and (d.lease_until is null or d.lease_until < now())
      for update of d skip locked
   ), upd as (
     update public.webhook_deliveries d
@@ -1467,6 +1539,7 @@ insert into public.schema_migrations (version) values ('0046') on conflict (vers
 --   and not has_table_privilege('authenticated', 'public.webhook_deliveries', 'select')            as webhooks_server_only,
 --   (select count(*) from pg_trigger where tgname in ('trg_webhook_task','trg_webhook_comment',
 --     'trg_webhook_project','trg_webhook_member')) = 4                                            as webhook_triggers,
+--   not has_function_privilege('authenticated', 'public.webhook_url_masked(text)', 'execute')     as webhook_urls_masked,
 --   not has_table_privilege('authenticated', 'public.workspace_integrations', 'select')            as notion_token_server_only,
 --   (select relrowsecurity from pg_class where oid = 'public.notion_links'::regclass)
 --   and (select relrowsecurity from pg_class where oid = 'public.notion_syncs'::regclass)

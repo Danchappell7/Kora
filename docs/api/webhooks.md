@@ -64,6 +64,12 @@ The body is an **envelope**:
 Dates are `YYYY-MM-DD`, times ISO 8601 in UTC, and every field is present
 (`null` rather than missing).
 
+A task's custom tags carry their `label` and `color` when the tag belongs to
+the event's workspace (for a personal endpoint: your own personal tags). A tag
+from anywhere else (another workspace, or someone's personal tag that ended up
+on a team task) is sent as `{"id": …, "label": null, "color": null}`, so an
+endpoint never learns the name of a tag its owner couldn't see.
+
 Events can arrive out of order, and very rarely more than once. Use `id` to
 ignore repeats and `createdAt` / `data.updatedAt` to keep the newest.
 
@@ -183,10 +189,13 @@ While an endpoint is switched off, nothing new is queued for it.
 only to that endpoint, even while it's switched off; they're never retried and
 don't count towards switching it off. At most 5 a minute per endpoint.
 
-**Send again**: any failed (or waiting) delivery can be sent again now from
-the endpoint's recent deliveries, or with
+**Send again**: any failed (or waiting) event can be sent again now from the
+endpoint's recent deliveries, or with
 `POST /v1/webhooks/:id/deliveries/:deliveryId/redeliver`. It gets a fresh set
-of retries.
+of retries, and if it fails again it counts towards switching the endpoint
+off like any other delivery. At most **10 a minute per endpoint** (Settings
+and the API share the count). A test event can't be sent again: send a new
+test instead.
 
 Kanbo keeps 14 days of delivery history.
 
@@ -572,10 +581,14 @@ Base address: `https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1`
 | `POST /webhooks/:id/rotate-secret` | New secret, shown once; the old one stops at once. | write |
 | `POST /webhooks/:id/test` | Queue a `ping` (202). 5 a minute. | write |
 | `GET /webhooks/:id/deliveries?limit=1–100` | Recent deliveries, newest first. | read |
-| `POST /webhooks/:id/deliveries/:deliveryId/redeliver` | Send one again now (one of the last 100) (202). | write |
+| `POST /webhooks/:id/deliveries/:deliveryId/redeliver` | Send one again now (one of the last 100, not a `ping`) (202). 10 a minute per endpoint. | write |
 
 Only the person who added an endpoint, or a workspace owner or admin, can
-change, test, rotate or delete it (`canManage` says whether you can).
+change, test, rotate or delete it (`canManage` says whether you can). Everyone
+else who can see a team endpoint gets its `url` **masked**: the host and the
+path's last four characters, e.g. `https://hooks.zapier.com/…x2kd`. Catch-hook
+addresses (Zapier, Make and the like) often work as a password, so the full
+address is only for the people who manage it.
 
 ```bash
 # add a team endpoint; copy "secret" from the answer, it's shown only now
@@ -641,7 +654,8 @@ Errors use the API's usual shape, e.g.
 `{"error":{"code":"validation_failed","message":"…","status":422,"details":{"fields":{"url":"…"}}}}`.
 `403 forbidden` for a read-only key, a workspace key outside its workspace, or
 a guest; `404` for an endpoint the key can't reach; `409 conflict` at the
-limit; `429` for too many tests (with `Retry-After`).
+limit, for a delivery that already arrived, or for sending a test event again;
+`429` for too many tests or too many sent again (with `Retry-After`).
 
 ## Security
 
@@ -658,7 +672,19 @@ limit; `429` for too many tests (with `Retry-After`).
 - **Secrets** are kept on Kanbo's server only and shown once. Kanbo's logs
   carry the event, host, status and timing — never secrets, signatures, paths
   or bodies.
-- An endpoint only ever hears what the person who added it can see. If they
+- **Addresses** are shown in full only to the people who can manage the
+  endpoint; teammates who can see it get it masked
+  (`https://hooks.zapier.com/…x2kd`), in Settings and in the API alike.
+- **Fair shares.** Deliveries are handed out so that no one can crowd anyone
+  else out: at most 2 are being sent at once to any one endpoint, 4 for any
+  one person's endpoints and 4 for any one workspace's, and whoever has least
+  in flight goes first. A slow or very busy endpoint only slows itself down.
+- **No hammering.** Test events are limited to 5 a minute and "send again" to
+  10 a minute per endpoint; test events can't be sent again, and every other
+  failure counts towards switching the endpoint off.
+- An endpoint only ever hears what the person who added it can see (custom
+  tag names included: only the event's own workspace's, or for a personal
+  endpoint their own). If they
   leave the workspace, become a guest, or their account is suspended, their
   endpoints are **switched off** ("the person who added it no longer has
   access") and nothing more is sent. A workspace owner or admin can delete it
@@ -679,6 +705,8 @@ limit; `429` for too many tests (with `Retry-After`).
 | Retries | 1 m, 5 m, 30 m, 2 h, 6 h |
 | Switch-off | 20 failures in a row |
 | Test events | 5 a minute per endpoint |
+| Send again | 10 a minute per endpoint (Settings and the API together); not for test events |
+| Sent at once | 2 per endpoint, 4 per person's endpoints, 4 per workspace |
 | History | 14 days |
 
 ---
@@ -755,6 +783,13 @@ select start_time, status, return_message from cron.job_run_details
 select (select count(*) from public.webhook_outbox where processed_at is null) as events_waiting,
        (select count(*) from public.webhook_deliveries where state = 'pending' and next_attempt_at < now() - interval '2 minutes') as overdue;
 
+-- overdue, per endpoint: one busy or slow endpoint backs up only itself
+-- (fair shares: 2 at once per endpoint, 4 per person, 4 per workspace)
+select substring(w.url from '^https://([^/:?#]+)') as host, w.workspace_id, count(*) as overdue
+  from public.webhook_deliveries d join public.webhooks w on w.id = d.webhook_id
+ where d.state = 'pending' and d.next_attempt_at < now() - interval '2 minutes'
+ group by 1, 2 order by 3 desc limit 10;
+
 -- the last hour, per endpoint host
 select substring(w.url from '^https://([^/:?#]+)') as host, d.state, count(*), round(avg(d.duration_ms)) as avg_ms
   from public.webhook_deliveries d join public.webhooks w on w.id = d.webhook_id
@@ -766,7 +801,8 @@ To run it by hand and see the counts (`{"wait": true}` waits for the run):
 ```bash
 curl -s -X POST https://htnchiljplrnjkwimgla.supabase.co/functions/v1/webhook-dispatch \
   -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{"wait":true}'
-# → {"ok":true,"queued":2,"attempted":2,"delivered":2,"retrying":0,"failed":0,"disabled":0,"skipped":0,"rounds":1,"ms":640}
+# → {"ok":true,"queued":2,"attempted":2,"delivered":2,"retrying":0,"failed":0,"disabled":0,"skipped":0,"rounds":2,"ms":640}
+# (rounds = claims made: each free sender claims more as soon as it's free)
 ```
 
 Logs: <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/functions/webhook-dispatch/logs>.
