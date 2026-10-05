@@ -16,14 +16,19 @@
 // logo, which of description / priority / due date it asks for) and files
 // ONE task through it. Nothing else is readable or writable: the token is
 // looked up with the service role, and every value written comes from the
-// form's row (project, workspace, creator) or the whitelisted, capped,
-// re-validated submission.
+// form's row (project, workspace, creator), the project's own checked rules
+// (below), or the whitelisted, capped, re-validated submission.
 //
 // Abuse limits (rate_limits from 0042, failing open without it):
 //   reads   120 per IP per 10 minutes
-//   sends    30 per IP per 10 minutes (an office or event Wi-Fi is one
-//             address, and the QR code invites a queue), 100 per form per
-//             hour, 3 per email address per 10 minutes
+//   sends    30 per IP per 10 minutes, across every form (an office or
+//             event Wi-Fi is one address, and the QR code invites a queue)
+//            20 per IP per form per hour: one network can never use more
+//             than a fifth of a form's allowance
+//             3 per email address per 10 minutes
+//           100 per form per hour, counted LAST and only for a request
+//             that's then filed (a failed save gives its slot back), so a
+//             request the narrower limits refuse costs the form nothing
 //   a filled honeypot ("website") gets a normal-looking reference and
 //   nothing is stored. IPs, emails and tokens are hashed in keys.
 //   A form whose hourly allowance is used up says so in its own words
@@ -34,19 +39,31 @@
 // free text, so it's checked here, with the service role, every time), and
 // only its creator is ever assigned or told: the same audience the app's
 // own notify_assignee / is_task_audience allow.
+//
+// The project's rules: a request runs the project's enabled "When a task is
+// created" rules, as a form filled in inside the app does (App.tsx applyRules:
+// set priority, set assignee, set section, add tag; later rules win). Each
+// value is checked here first: an assignee only if they could be given the
+// request anyway (see chooseAssignee), a section only if it's in the form's
+// project, a tag only if it's built in, the team's, or the rule author's own.
+// Anything else is skipped, never guessed.
 // ============================================================
 import { KEY_PREFIX, type Db } from "../_shared/limits.ts";
 import {
   buildPublicSchema, checkSubmission, FAILURE_MESSAGES, FAILURE_STATUS, isHoneypotHit, isPublicToken,
-  MAX_BODY_BYTES, publicFieldsOf, RATE_LIMIT_MESSAGES, requestDescription, requestLine, taskReference,
-  type PublicFailure, type PublicFieldKey, type RateLimitScope, type SubmissionKey,
+  MAX_BODY_BYTES, PUBLIC_PRIORITIES, publicFieldsOf, RATE_LIMIT_MESSAGES, requestDescription, requestLine, taskReference,
+  type CleanSubmission, type PublicFailure, type PublicFieldKey, type RateLimitScope, type SubmissionKey,
 } from "../_shared/publicForm.ts";
 
 export const PUBLIC_FORM_LIMITS = {
   getPerIp: { windowSec: 600, max: 120 },
+  /** burst, across all forms: a room on one Wi-Fi queueing at a QR code */
   postPerIp: { windowSec: 600, max: 30 },
-  postPerForm: { windowSec: 3600, max: 100 },
+  /** sustained, per form: one network never takes more than a fifth of postPerForm */
+  postPerIpPerForm: { windowSec: 3600, max: 20 },
   postPerEmail: { windowSec: 600, max: 3 },
+  /** the owner's Inbox flood guard: counted last, only for requests that are filed */
+  postPerForm: { windowSec: 3600, max: 100 },
 } as const;
 
 export interface PublicFormRequest {
@@ -71,6 +88,8 @@ export interface PublicFormDeps {
   db: Db;
   /** rate limiter: hit(db, key, window) from _shared/limits.ts */
   hit: (key: string, opts: { windowSec: number; max?: number }) => Promise<{ allowed: boolean; retryAfter: number }>;
+  /** give one hit back: refund(db, key) from _shared/limits.ts (the form's slot, when the task didn't save) */
+  refund?: (key: string) => Promise<void>;
   /** hashKey from _shared/limits.ts (non-reversible key parts) */
   hash: (value: string) => Promise<string>;
   /** a random v4 uuid: the new task's id (so its reference is known before it's saved), and the honeypot's fake one */
@@ -83,6 +102,16 @@ export interface PublicFormDeps {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PERSONAL = { id: "p-personal", name: "Personal", emoji: "📥", color: "oklch(0.62 0.154 270)" };
 const WRITER_ROLES = new Set(["owner", "admin", "member"]);
+/** The app's built-in tags (src/data/data.ts BUILTIN_TAGS: id → label; drift-tested). */
+export const BUILTIN_TAG_LABELS: Readonly<Record<string, string>> = {
+  design: "Design", eng: "Engineering", research: "Research", writing: "Writing", ops: "Ops", bug: "Bug",
+};
+/** How many of a project's rules, and of a team's tags, a request reads at most. */
+const MAX_RULES = 50;
+const MAX_TAGS = 500;
+const isBuiltinTag = (v: string) => Object.prototype.hasOwnProperty.call(BUILTIN_TAG_LABELS, v);
+/** ids compare case-blind (uuid columns come back lower-case; free-text ones may not) */
+const idOf = (v: string | null | undefined) => (v ? String(v).toLowerCase() : null);
 
 function fail(reason: Exclude<PublicFailure, "network">, message?: string, extra: Record<string, unknown> = {}): PublicFormResponse {
   return { status: FAILURE_STATUS[reason], body: { reason, error: message ?? FAILURE_MESSAGES[reason], ...extra } };
@@ -153,7 +182,6 @@ async function findTarget(db: Db, token: string, log?: PublicFormDeps["log"]): P
     return { ok: false, reason: "disabled" };
   }
   // a form only ever files into its own team: a project and form that disagree take nothing
-  const idOf = (v: string | null | undefined) => (v ? String(v).toLowerCase() : null);
   if (idOf(project.workspace_id) !== idOf(f.workspace_id)) return { ok: false, reason: "disabled" };
   // ...and a personal form only into its creator's own projects. forms.project_id is
   // free text: without this, a form could point at anyone's personal project and
@@ -180,15 +208,104 @@ async function findTarget(db: Db, token: string, log?: PublicFormDeps["log"]): P
   return { ok: true, target: { form: f, project, workspace, fields: publicFieldsOf(f.fields) } };
 }
 
+/* ---------------- the project's rules ---------------- */
+
+export interface RuleRow { id?: string; user_id: string; workspace_id: string | null; project_id: string; trigger?: string | null; actions: unknown; enabled?: boolean | null }
+/** What the rules ask for, unchecked: later rules win (priority, assignee,
+ *  section), tags add up, each remembering whose rule asked for it. */
+export interface RulePlan { priority?: string; assigneeId?: string; sectionId?: string; tags: { value: string; author: string }[] }
+
+/** Fold rules (oldest first) the way the app's applyRules does at creation. */
+export function planRules(rules: readonly RuleRow[]): RulePlan {
+  const plan: RulePlan = { tags: [] };
+  for (const r of rules) {
+    if (r.enabled === false || (r.trigger || "task_created") !== "task_created" || !Array.isArray(r.actions)) continue;
+    for (const a of r.actions as unknown[]) {
+      if (!a || typeof a !== "object") continue;
+      const { type, value } = a as { type?: unknown; value?: unknown };
+      if (typeof value !== "string" || !value) continue;
+      if (type === "set_priority") plan.priority = value;
+      else if (type === "set_assignee") plan.assigneeId = value;
+      else if (type === "set_section") plan.sectionId = value;
+      else if (type === "add_tag") plan.tags.push({ value, author: r.user_id });
+    }
+  }
+  return plan;
+}
+
+/** The form's project's rules, oldest first: on a team form the team's, on a
+ *  personal form only its creator's own (automation_rules.project_id is free
+ *  text, so a rule elsewhere naming this project id never counts). */
+async function projectRules(db: Db, t: Target, log?: PublicFormDeps["log"]): Promise<RuleRow[]> {
+  let q = db.from("automation_rules").select("id, user_id, workspace_id, project_id, trigger, actions, enabled")
+    .eq("project_id", t.form.project_id).eq("enabled", true);
+  q = t.form.workspace_id ? q.eq("workspace_id", t.form.workspace_id) : q.is("workspace_id", null).eq("user_id", t.form.user_id);
+  const { data, error } = await q.order("created_at", { ascending: true }).limit(MAX_RULES);
+  // no rules table, or a hiccup: file the request as it is rather than lose it
+  if (error) { log?.("public-form: rules lookup failed", dbError(error)); return []; }
+  return (data ?? []) as RuleRow[];
+}
+
+/** The rules' section, when it's one of the form's project's own. */
+async function ruleSection(db: Db, t: Target, sectionId: string | undefined, log?: PublicFormDeps["log"]): Promise<string | null> {
+  if (!sectionId || !UUID.test(sectionId)) return null;
+  const { data, error } = await db.from("sections").select("id, user_id, workspace_id, project_id").eq("id", sectionId).maybeSingle();
+  if (error) { log?.("public-form: section lookup failed", dbError(error)); return null; }
+  const sec = data as { id: string; user_id: string; workspace_id: string | null; project_id: string } | null;
+  if (!sec || sec.project_id !== t.form.project_id) return null;
+  if (idOf(sec.workspace_id) !== idOf(t.form.workspace_id)) return null;
+  if (!t.form.workspace_id && idOf(sec.user_id) !== idOf(t.form.user_id)) return null;
+  return sec.id;
+}
+
+/** The rules' tags as the ids a task stores: built-in ones, the team's (on a
+ *  team form), and the rule author's own personal tags; a name (older rules
+ *  stored the tag's name) when exactly one of those has it, like resolveTagId. */
+async function ruleTags(db: Db, t: Target, wanted: RulePlan["tags"], log?: PublicFormDeps["log"]): Promise<string[]> {
+  if (!wanted.length) return [];
+  type TagRow = { id: string; label: string | null; user_id: string; workspace_id: string | null };
+  let scoped: TagRow[] = [];
+  if (wanted.some((w) => !isBuiltinTag(w.value))) {
+    const authors = [...new Set(wanted.map((w) => w.author).filter((a) => UUID.test(a)))];
+    const reads: Promise<{ data: unknown; error: unknown }>[] = [];
+    if (t.form.workspace_id) reads.push(db.from("tags").select("id, label, user_id, workspace_id").eq("workspace_id", t.form.workspace_id).limit(MAX_TAGS));
+    if (authors.length) reads.push(db.from("tags").select("id, label, user_id, workspace_id").is("workspace_id", null).in("user_id", authors).limit(MAX_TAGS));
+    for (const { data, error } of await Promise.all(reads)) {
+      if (error) { log?.("public-form: tags lookup failed", dbError(error)); continue; }
+      scoped = scoped.concat((data ?? []) as TagRow[]);
+    }
+  }
+  const out: string[] = [];
+  for (const { value, author } of wanted) {
+    // the tags this rule's author could have picked in the app
+    const mine = scoped.filter((g) => (g.workspace_id ? true : g.user_id === author));
+    let id: string | null = null;
+    if (isBuiltinTag(value)) id = value;
+    else if (mine.some((g) => g.id === value)) id = value;
+    else {
+      const want = value.trim().toLowerCase();
+      const hits = [
+        ...Object.entries(BUILTIN_TAG_LABELS).filter(([, label]) => label.toLowerCase() === want).map(([k]) => k),
+        ...mine.filter((g) => String(g.label ?? "").trim().toLowerCase() === want).map((g) => g.id),
+      ];
+      if (hits.length === 1) id = hits[0];
+    }
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 /** Who gets the request, and whether they want an Inbox item. Only someone who
  *  could see the task in the app (is_task_audience): on a personal form that's
- *  its creator, nobody else, whatever the project row says. On a team form:
- *  the project's owner if they're an active writer in good standing, else the
- *  form's creator on the same terms, else the team's owner (always in the team). */
-async function chooseAssignee(db: Db, t: Target, log?: PublicFormDeps["log"]): Promise<{ id: string; notify: boolean }> {
+ *  its creator, nobody else, whatever the project row or a rule says. On a team
+ *  form: the rules' assignee if they're an active writer in good standing, else
+ *  the project's owner on the same terms, else the form's creator, else the
+ *  team's owner (always in the team). */
+async function chooseAssignee(db: Db, t: Target, preferred?: string, log?: PublicFormDeps["log"]): Promise<{ id: string; notify: boolean }> {
   const ws = t.workspace;
+  // a rule's assignee goes first, on exactly the same terms as everyone else
   const candidates = ws
-    ? [...new Set([t.project.owner_id, t.form.user_id, ws.owner_id].filter((x): x is string => typeof x === "string" && UUID.test(x)))]
+    ? [...new Set([preferred?.toLowerCase(), t.project.owner_id, t.form.user_id, ws.owner_id].filter((x): x is string => typeof x === "string" && UUID.test(x)))]
     : [t.form.user_id];
   const fallback = ws ? ws.owner_id : t.form.user_id;
   const profiles = await profilesOf(db, candidates, log);
@@ -241,6 +358,9 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
   try { raw = JSON.parse(req.body || "{}"); } catch { return fail("invalid", "That request couldn't be read. Try again."); }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail("invalid", "That request couldn't be read. Try again.");
 
+  // Limits, narrowest first, so a request one of them refuses costs nobody
+  // else anything: this network (burst, any form), then this network on this
+  // form, then this email address, and only then the form's shared allowance.
   if (ipKey) {
     const h = await deps.hit(`${KEY_PREFIX}pf:ip:${ipKey}`, PUBLIC_FORM_LIMITS.postPerIp);
     if (!h.allowed) return limited(h.retryAfter);
@@ -260,18 +380,45 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
   }
   const s = checked.value;
 
-  const perForm = await deps.hit(`${KEY_PREFIX}pf:form:${await deps.hash(token)}`, PUBLIC_FORM_LIMITS.postPerForm);
-  if (!perForm.allowed) return limited(perForm.retryAfter, "form");
+  if (ipKey) {
+    const h = await deps.hit(`${KEY_PREFIX}pf:ipform:${await deps.hash(`${req.ip}|${token}`)}`, PUBLIC_FORM_LIMITS.postPerIpPerForm);
+    if (!h.allowed) return limited(h.retryAfter);
+  }
   const perEmail = await deps.hit(`${KEY_PREFIX}pf:email:${await deps.hash(s.email)}`, PUBLIC_FORM_LIMITS.postPerEmail);
   if (!perEmail.allowed) return limited(perEmail.retryAfter);
 
-  const assignee = await chooseAssignee(db, t, log);
-  const now = deps.now?.() ?? Date.now();
   // the id is chosen here so the reference the requester is given is in the
   // task itself (its description), where the team's search finds it
   const newId = deps.randomId();
   if (!UUID.test(newId)) return fail("unavailable", "Your request wasn't saved. Try again in a few minutes.");
   const reference = taskReference(newId);
+
+  // the form's shared allowance, last: only a request that's about to be filed
+  // uses it (a failed save gives it back below)
+  const formKey = `${KEY_PREFIX}pf:form:${await deps.hash(token)}`;
+  const perForm = await deps.hit(formKey, PUBLIC_FORM_LIMITS.postPerForm);
+  if (!perForm.allowed) return limited(perForm.retryAfter, "form");
+  try {
+    return await fileRequest(deps, t, s, newId, reference, formKey);
+  } catch (e) {
+    // nothing was filed (the wrapper answers 503): the form gets its slot back
+    await deps.refund?.(formKey);
+    throw e;
+  }
+}
+
+/** Write the task (through the project's checked rules) and its Inbox item. */
+async function fileRequest(deps: PublicFormDeps, t: Target, s: CleanSubmission, newId: string, reference: string, formKey: string): Promise<PublicFormResponse> {
+  const { db, log } = deps;
+  // the project's "When a task is created" rules, each value checked
+  const plan = planRules(await projectRules(db, t, log));
+  const [assignee, sectionId, tags] = await Promise.all([
+    chooseAssignee(db, t, plan.assigneeId, log),
+    ruleSection(db, t, plan.sectionId, log),
+    ruleTags(db, t, plan.tags, log),
+  ]);
+  const rulePriority = (PUBLIC_PRIORITIES as readonly string[]).includes(plan.priority ?? "") ? plan.priority : undefined;
+  const now = deps.now?.() ?? Date.now();
   const row: Record<string, unknown> = {
     id: newId,
     user_id: t.form.user_id,
@@ -280,10 +427,11 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
     title: s.title,
     description: requestDescription(t.form.name, s, reference),
     status: "todo",
-    priority: s.priority ?? "medium",
+    // a rule's priority wins over the requester's, as it does in the app
+    priority: rulePriority ?? s.priority ?? "medium",
     assignee_id: assignee.id,
     due_date: s.dueDate ?? null,
-    tags: [],
+    tags,
     focus_min: 30,
     dur: 30,
     ai_score: 50,
@@ -291,10 +439,13 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
     scheduled: null,
     position: now,
   };
+  if (sectionId) row.section_id = sectionId;
   const { data: created, error: insErr } = await db.from("tasks").insert(row).select("id").single();
   const taskId = (created as { id?: string } | null)?.id;
   if (insErr || !taskId) {
     log?.("public-form: task insert failed", dbError(insErr));
+    // nothing was filed: the form gets its slot back
+    await deps.refund?.(formKey);
     return fail("unavailable", "Your request wasn't saved. Try again in a few minutes.");
   }
 

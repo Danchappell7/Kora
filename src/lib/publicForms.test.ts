@@ -11,7 +11,8 @@ import {
 import { isRequestTask, requestSource } from "./inboxTriage";
 import { identityColour, requestDescription, SPECTRUM_HUES, stableHash as sharedHash } from "../../supabase/functions/_shared/publicForm.ts";
 import { projectSpectrum, SPECTRUM, stableHash } from "./projectIdentity";
-import { DEMO_FORMS, PROJECTS, WORKSPACES } from "../data/data";
+import { BUILTIN_TAGS, DEMO_FORMS, PROJECTS, WORKSPACES } from "../data/data";
+import { BUILTIN_TAG_LABELS } from "../../supabase/functions/public-form/handler.ts";
 import { EMPTY_QUERY, taskMatchesQuery } from "./searchQuery";
 import type { Task } from "../data/types";
 
@@ -65,6 +66,12 @@ describe("the demo form", () => {
     expect(await setFormPublic("form-launch", false)).toEqual({ publicEnabled: false, publicToken: DEMO_PUBLIC_TOKEN });
     expect(await regenerateFormLink("form-launch")).toBe(DEMO_PUBLIC_TOKEN);
     expect(await publicLinksStatus({ checkPage: true })).toEqual({ links: "demo", page: "demo" });
+  });
+});
+
+describe("the project's rules on a public request", () => {
+  it("the function knows the app's built-in tags (ids and names)", () => {
+    expect(BUILTIN_TAG_LABELS).toEqual(Object.fromEntries(Object.entries(BUILTIN_TAGS).map(([id, t]) => [id, t.label])));
   });
 });
 

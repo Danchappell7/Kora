@@ -4,7 +4,8 @@
 // The page at https://www.kanbo.co.uk/f/<token> (src/public/PublicFormPage)
 // talks to this function. People without an account read the form and file
 // one request through it; the request becomes a task in the form's project,
-// assigned to the project's owner, with an Inbox item for them.
+// run through the project's "When a task is created" rules, assigned to the
+// project's owner unless a rule says otherwise, with an Inbox item for them.
 //
 //   GET  /functions/v1/public-form?t=<token>   → { form } | 404 | 410 | 429
 //   POST /functions/v1/public-form?t=<token>   → { ok, reference } | 400 | 404 | 410 | 429 | 503
@@ -21,7 +22,7 @@
 //          No secrets beyond the built-in SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { clientIp, hashKey, hit, sweep } from "../_shared/limits.ts";
+import { clientIp, hashKey, hit, refund, sweep } from "../_shared/limits.ts";
 import { FAILURE_MESSAGES, MAX_BODY_BYTES } from "../_shared/publicForm.ts";
 import { handlePublicForm } from "./handler.ts";
 
@@ -83,6 +84,7 @@ Deno.serve(async (req) => {
       {
         db: admin,
         hit: (key, opts) => hit(admin, key, opts),
+        refund: (key) => refund(admin, key),
         hash: hashKey,
         randomId: () => crypto.randomUUID(),
         // codes and messages only: never names, emails or tokens

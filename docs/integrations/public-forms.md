@@ -51,11 +51,16 @@ the existing catch-all rewrite and rendered before sign-in.
    `Request via <form name> (public link).` then `From: <name> <email>` and
    `Reference: KB-…` (the reference the requester was given, so searching for
    it finds the task). The project owner has an Inbox item "New request: …".
-5. Switch the link off and reload the public page: "This form isn't taking
+5. The project's rules: in **Projects › Rules**, add a rule for this project,
+   "When a task is created → Set section" (or Add tag, or Set assignee to a teammate) and send
+   another request. The new task lands in that section, with that tag, for
+   that teammate (and their Inbox), just as a form filled in inside Kanbo
+   would. Delete the test rule afterwards.
+6. Switch the link off and reload the public page: "This form isn't taking
    requests". Switch it on again: the same link works again.
-6. **Regenerate link** › confirm: the old link now says "We couldn't find this
+7. **Regenerate link** › confirm: the old link now says "We couldn't find this
    form"; the new one works.
-7. `https://www.kanbo.co.uk/f/demo` always shows the preview (demo data, nothing
+8. `https://www.kanbo.co.uk/f/demo` always shows the preview (demo data, nothing
    is sent).
 
 From a terminal (replace `TOKEN` with the part of the link after `/f/`):
@@ -90,18 +95,35 @@ curl -s -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/public-fo
 - **Honeypot.** A hidden "website" field people never see. If it's filled in,
   the function answers with a normal-looking reference and stores nothing.
 - **Rate limits** (in `rate_limits`; IPs, emails and tokens are hashed):
-  reads 120 per IP per 10 minutes; sends 30 per IP per 10 minutes (an office
-  or event Wi-Fi is one address, and a QR code on a poster invites a queue),
-  100 per form per hour, 3 per email address per 10 minutes. Regenerating the
-  link starts the form's hourly allowance afresh.
+  reads 120 per IP per 10 minutes. Sends are checked narrowest first:
+  30 per IP per 10 minutes across every form (an office or event Wi-Fi is
+  one address, and a QR code on a poster invites a queue); 20 per IP per form
+  per hour, so one network can never use more than a fifth of a form's hour;
+  3 per email address per 10 minutes; and last, 100 per form per hour. The
+  form's allowance only counts a request that is actually filed: one the
+  narrower limits refuse, a bad submission or the honeypot costs it nothing,
+  and a task that fails to save gives its slot back. Regenerating the link
+  starts the form's hourly allowance afresh.
 - **Whose project.** A team form only files into a project of its own team,
   and a personal form only into its creator's own projects (`forms.project_id`
   is free text, so the function checks it every time with the service role).
   Anything else answers `410` and shows nothing about the project.
-- **Who gets the task.** On a team form: the project's owner if they're an
-  active owner, admin or member in good standing; otherwise the form's creator
-  on the same terms; otherwise the team's owner. On a personal form: always its
-  creator. The Inbox item respects their "assigned" notification setting.
+- **The project's rules.** A request runs the project's enabled "When a task
+  is created" rules, just as a form filled in inside Kanbo does (set priority,
+  set assignee, set section, add tag; rules apply oldest first, so a later one
+  wins, and a rule's priority wins over the requester's). Every value is
+  checked first and skipped if it doesn't fit: an assignee only if they could
+  be given the request anyway (below), a section only if it belongs to the
+  form's project, a tag only if it's built in, the team's, or the rule
+  author's own (by id, or by name for older rules when exactly one tag has
+  it). On a personal form only its creator's own rules count. If the rules
+  can't be read, the request is still filed, without them.
+- **Who gets the task.** On a team form: the rules' assignee if they're an
+  active owner, admin or member in good standing; otherwise the project's
+  owner on the same terms; otherwise the form's creator; otherwise the team's
+  owner. On a personal form: always its creator, whatever a rule says. The
+  Inbox item goes to whoever gets it and respects their "assigned"
+  notification setting.
 
 To clear the limits while testing:
 

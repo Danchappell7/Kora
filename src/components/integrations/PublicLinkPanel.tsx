@@ -248,7 +248,7 @@ export function PublicLinkPanel({ form, canEdit, projectName, onChange }: Public
           label="Anyone with the link can submit"
           description={pending
             ? "Available once the form has finished saving."
-            : "People outside your team can send requests here without an account. Each one becomes a task for the project's owner."}
+            : "People outside your team can send requests here without an account. Each one becomes a task for the project's owner, and runs the project's rules."}
         />
       ) : (
         <div className="kpubl-row">
