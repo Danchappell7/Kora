@@ -75,8 +75,8 @@ describe("API keys", () => {
     expect(apiBaseUrl("https://htnchiljplrnjkwimgla.supabase.co/")).toBe("https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1");
     expect(apiBaseUrl("")).toContain("YOUR-PROJECT");
   });
-  it("the async calls are stubs until a1 builds them", async () => {
-    await expect(listApiKeys()).rejects.toThrow(/not built yet/);
+  it("the async calls are built (demo mode here: realistic fake keys)", async () => {
+    await expect(listApiKeys()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ name: "Zapier", access: "read" })]));
   });
 });
 

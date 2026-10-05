@@ -38,6 +38,12 @@ export interface RouteContext {
   appUrl: string;
   /** the API's own base, e.g. https://<ref>.supabase.co/functions/v1/api/v1 */
   apiBase: string;
+  /**
+   * POST / PATCH: the JSON body, already read (≤ 64 KB), parsed and checked
+   * to be an object by the pipeline ({} when the request had no body).
+   * `req` is a fresh copy, so `await ctx.req.json()` also still works.
+   */
+  body?: Record<string, unknown>;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<Response>;
