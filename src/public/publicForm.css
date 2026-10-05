@@ -1,0 +1,243 @@
+/* ============================================================
+   KANBO — the public request form page (/f/<token>).        [f9-public-forms]
+   A white card on the tinted frame in Paper, a raised card on Canvas Navy
+   in the dark; full-bleed on phones. Paper & Navy tokens (with fallbacks),
+   Manrope for the UI, Sora for the one title, JetBrains Mono for the
+   reference. Controls are 40px (the touch height) with 16px text on
+   phones so iOS doesn't zoom. No gradient, no glass; one fade, which
+   reduced motion turns off.
+   ============================================================ */
+
+.kpub {
+  --kpub-pad: 32px;
+  --kpub-font: var(--font-ui, var(--font-display, system-ui, sans-serif));
+  --kpub-on-signal: var(--surface-raised, #fff);
+  display: flex; flex-direction: column; min-height: 0;
+  overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--bg-deep, var(--bg));
+  color: var(--ink); font-family: var(--kpub-font);
+}
+.kpub-main { flex: 1 0 auto; width: 100%; max-width: 728px; margin: 0 auto; padding: 40px 24px 24px; }
+
+/* ---- the "this is a preview" strip (/f/demo) ---- */
+.kpub-preview {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0 0 16px; padding: 10px 14px;
+  border-radius: var(--r-md, 8px); background: var(--accent-dim, oklch(0.54 0.215 288 / 0.1));
+  font: 500 13px/20px var(--kpub-font); color: var(--ink-2); text-wrap: pretty;
+}
+.kpub-preview > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-text, var(--accent)); }
+.kpub-preview strong { font-weight: 600; color: var(--ink); }
+
+/* ---- the card ---- */
+.kpub-card {
+  position: relative; overflow: hidden; border-radius: var(--r-lg, 12px);
+  background: var(--surface); box-shadow: var(--e2, 0 0 0 1px var(--hairline));
+}
+.kpub .kpcover-wrap.kpub-cover { --kpc-h: 120px; }
+.kpub-head { padding: 0 var(--kpub-pad) 4px; }
+.kpub-crumbs {
+  display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 20px; margin: 12px 0 0;
+  font: 500 13px/20px var(--kpub-font); color: var(--ink-3);
+}
+.kpub-logo { width: 20px; height: 20px; border-radius: 5px; object-fit: cover; flex-shrink: 0; box-shadow: inset 0 0 0 1px var(--hairline); background: var(--surface-2); }
+/* one line: a long team or project name ends in an ellipsis rather than wrapping */
+.kpub-team, .kpub-project { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kpub-team { flex-shrink: 0; max-width: 55%; font-weight: 600; color: var(--ink-2); }
+.kpub-dot { flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
+.kpub-title {
+  margin: 8px 0 0; font: 500 var(--t-display, 28px)/var(--lh-display, 36px) var(--font-head, var(--kpub-font));
+  letter-spacing: -0.02em; color: var(--ink); text-wrap: balance; overflow-wrap: anywhere;
+}
+.kpub-title:focus { outline: none; }
+.kpub-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r-xs, 4px); }
+.kpub-intro {
+  max-width: 60ch; margin: 8px 0 0; font: 400 var(--t-body, 15px)/var(--lh-body, 24px) var(--kpub-font);
+  color: var(--ink-2); white-space: pre-line; overflow-wrap: anywhere; text-wrap: pretty;
+}
+
+/* ---- the form ---- */
+.kpub-form { display: grid; gap: 24px; padding: 24px var(--kpub-pad) var(--kpub-pad); }
+.kpub-group { display: grid; gap: 20px; min-width: 0; margin: 0; padding: 20px 0 0; border: 0; border-top: 1px solid var(--hairline); }
+.kpub-group:disabled { opacity: 1; }
+.kpub-legend {
+  float: left; width: 100%; margin: 0 0 -4px; padding: 0;
+  font: 600 var(--t-meta, 12px)/var(--lh-meta, 16px) var(--kpub-font); color: var(--ink-3);
+}
+.kpub-field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.kpub-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.kpub-label { padding: 0; font: 600 var(--t-ui, 13px)/var(--lh-ui, 20px) var(--kpub-font); color: var(--ink); }
+.kpub-optional { font-weight: 500; color: var(--ink-3); }
+.kpub-hint { margin: -2px 0 2px; font: 500 var(--t-meta, 12px)/var(--lh-meta, 16px) var(--kpub-font); color: var(--ink-3); text-wrap: pretty; }
+.kpub-count { flex-shrink: 0; font: 500 var(--t-data, 11px)/var(--lh-data, 16px) var(--font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.kpub-count[data-full] { color: var(--signal, var(--prio-urgent)); }
+
+.kpub-input {
+  box-sizing: border-box; display: block; width: 100%; min-width: 0; height: var(--h-lg, 40px); margin: 0; padding: 0 12px;
+  border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong));
+  background: var(--field-bg, var(--surface)); color: var(--ink);
+  font: 500 15px/24px var(--kpub-font);
+  transition: border-color var(--d-1, 90ms) var(--ease, ease), box-shadow var(--d-1, 90ms) var(--ease, ease);
+}
+.kpub-input:hover:not(:disabled):not(:focus) { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.kpub-input:focus { border-color: var(--accent-line, var(--accent)); }
+.kpub-input[aria-invalid="true"] { border-color: color-mix(in oklch, var(--signal, var(--prio-urgent)) 70%, transparent); }
+.kpub-input:disabled { opacity: 0.7; cursor: progress; }
+.kpub-textarea { height: auto; min-height: 128px; padding: 8px 12px; resize: vertical; font-weight: 400; }
+.kpub-date { max-width: 100%; padding-right: 8px; font-variant-numeric: tabular-nums; }
+.kpub-date::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.7; }
+.kpub-date::-webkit-date-and-time-value { text-align: left; }
+
+.kpub-err {
+  display: flex; align-items: flex-start; gap: 6px; margin: 2px 0 0;
+  font: 500 var(--t-ui, 13px)/var(--lh-ui, 20px) var(--kpub-font); color: var(--signal, var(--prio-urgent)); text-wrap: pretty;
+}
+.kpub-err > svg { flex-shrink: 0; margin-top: 3px; }
+
+.kpub-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px 16px; }
+.kpub-row > .kpub-prio { flex: 1 1 360px; }
+.kpub-row > .kpub-due { flex: 0 1 220px; }
+.kpub-row-even > .kpub-field { flex: 1 1 220px; }
+
+/* ---- priority: four radios that look like one segmented control ---- */
+/* a floated legend is laid out like any other child (so the grid gap spaces it) */
+.kpub-prio > .kpub-label { float: left; width: 100%; }
+.kpub-seg {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 2px;
+  border-radius: var(--r-md, 8px); background: var(--surface-2, var(--fill-1));
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.kpub-seg-opt {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
+  height: calc(var(--h-lg, 40px) - 4px); padding: 0 8px; border-radius: var(--r-sm, 6px); cursor: pointer;
+  font: 600 var(--t-ui, 13px)/1 var(--kpub-font); color: var(--ink-2); white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--d-1, 90ms) var(--ease, ease), color var(--d-1, 90ms) var(--ease, ease), box-shadow var(--d-1, 90ms) var(--ease, ease);
+}
+.kpub-seg-opt > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.kpub-seg-opt > span { overflow: hidden; text-overflow: ellipsis; }
+.kpub-seg-opt:hover { background: var(--fill-1); color: var(--ink); }
+.kpub-seg-opt[data-checked] {
+  background: var(--surface-raised, var(--surface)); color: var(--ink);
+  box-shadow: 0 0 0 1px var(--accent-line, var(--accent)), var(--e1-drop, none);
+}
+.kpub-seg-opt:has(> input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kpub-group:disabled .kpub-seg-opt { cursor: progress; }
+.kpub-prio-mark { flex-shrink: 0; }
+.kpub-prio-mark[data-priority="low"] { color: var(--prio-low, var(--ink-3)); }
+.kpub-prio-mark[data-priority="medium"] { color: var(--prio-medium, var(--ink-2)); }
+.kpub-prio-mark[data-priority="high"] { color: var(--prio-high, var(--ink-2)); }
+.kpub-prio-mark[data-priority="urgent"] { color: var(--signal, var(--prio-urgent)); }
+
+/* ---- honeypot: off-screen, out of the tab order, hidden from assistive tech ---- */
+.kpub-hp { position: absolute !important; left: -10000px; top: auto; width: 1px; height: 1px; overflow: hidden; }
+
+/* ---- send ---- */
+.kpub-submit { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding-top: 4px; }
+.kpub-submit > .kbtn { min-width: 168px; }
+.kpub-privacy {
+  flex: 1 1 240px; margin: 0; font: 500 var(--t-meta, 12px)/var(--lh-meta, 16px) var(--kpub-font); color: var(--ink-3); text-wrap: pretty;
+}
+.kpub-privacy a, .kpub-legal a { color: var(--accent-text, var(--accent)); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.kpub-privacy a:hover, .kpub-legal a:hover { text-decoration-thickness: 2px; }
+
+/* a send that didn't go: what happened, and that their answers are safe */
+.kpub-banner {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 12px 14px; border-radius: var(--r-md, 8px);
+  background: var(--signal-tint, color-mix(in oklch, var(--prio-urgent) 8%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--signal, var(--prio-urgent)) 28%, transparent);
+  font: 500 var(--t-ui, 13px)/var(--lh-ui, 20px) var(--kpub-font); color: var(--ink); text-wrap: pretty;
+}
+.kpub-banner > svg { flex-shrink: 0; margin-top: 2px; color: var(--signal, var(--prio-urgent)); }
+.kpub-banner:focus { outline: none; }
+.kpub-banner:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- thank you ---- */
+.kpub-done { display: grid; justify-items: start; gap: 0; padding: 20px var(--kpub-pad) var(--kpub-pad); animation: kpubIn var(--d-3, 240ms) var(--ease, ease) both; }
+.kpub-done-mark {
+  display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
+  color: var(--ok, var(--st-done)); background: color-mix(in oklch, var(--ok, var(--st-done)) 14%, transparent);
+}
+.kpub-done > .kpub-title { margin-top: 16px; }
+.kpub-done-body { max-width: 60ch; margin: 8px 0 0; font: 400 var(--t-body, 15px)/var(--lh-body, 24px) var(--kpub-font); color: var(--ink-2); text-wrap: pretty; overflow-wrap: anywhere; }
+.kpub-ref {
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 20px; padding: 6px 6px 6px 14px;
+  border-radius: var(--r-md, 8px); background: var(--surface-2, var(--fill-1)); box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.kpub-ref-label { font: 600 var(--t-meta, 12px)/var(--lh-meta, 16px) var(--kpub-font); color: var(--ink-3); }
+.kpub-ref-code {
+  font: 600 15px/24px var(--font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em; color: var(--ink); user-select: all; -webkit-user-select: all;
+}
+.kpub-note { margin: 8px 0 0; font: 500 var(--t-meta, 12px)/var(--lh-meta, 16px) var(--kpub-font); color: var(--ink-3); }
+.kpub-done-act { margin-top: 24px; }
+@keyframes kpubIn { from { opacity: 0.2; translate: 0 6px; } }
+
+/* ---- loading ---- */
+.kpub-cover-skel { display: block; height: 120px; border-radius: 0; }
+.kpub-tile-skel { display: block; width: 64px; height: 64px; margin-top: -32px; border-radius: 16px; box-shadow: 0 0 0 4px var(--surface); }
+.kpub-card[data-loading] .kpub-head { display: grid; gap: 12px; padding-bottom: var(--kpub-pad); }
+.kpub-line { display: block; height: 14px; border-radius: var(--r-xs, 4px); }
+.kpub-line-lg { height: 28px; margin: 4px 0; }
+
+/* ---- not found, switched off, too many, offline ---- */
+.kpub-problem { display: grid; justify-items: center; padding: 48px 24px; text-align: center; }
+.kpub-problem-mark {
+  display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%;
+  color: var(--ink-3); background: var(--fill-2, var(--surface-2));
+}
+.kpub-problem-mark[data-tone="signal"] { color: var(--signal, var(--prio-urgent)); background: var(--signal-tint, var(--fill-2)); }
+.kpub-problem-title {
+  margin: 16px 0 0; font: 600 var(--t-title, 20px)/var(--lh-title, 28px) var(--font-head, var(--kpub-font));
+  letter-spacing: -0.012em; color: var(--ink); text-wrap: balance;
+}
+.kpub-problem-title:focus { outline: none; }
+.kpub-problem-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r-xs, 4px); }
+.kpub-problem-body { max-width: 400px; margin: 8px 0 0; font: 400 var(--t-body, 15px)/var(--lh-body, 24px) var(--kpub-font); color: var(--ink-2); text-wrap: pretty; }
+.kpub-problem-act { margin-top: 24px; }
+
+/* ---- footer ---- */
+.kpub-foot {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 20px;
+  padding: 8px 24px calc(32px + env(safe-area-inset-bottom, 0px));
+  font: 500 var(--t-meta, 12px)/var(--lh-meta, 16px) var(--kpub-font); color: var(--ink-3);
+}
+.kpub-brand {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 8px; margin: 0 -8px;
+  border-radius: var(--r-sm, 6px); color: var(--ink-3); text-decoration: none;
+  transition: color var(--d-1, 90ms) var(--ease, ease), background var(--d-1, 90ms) var(--ease, ease);
+}
+.kpub-brand strong { font-weight: 600; color: var(--ink-2); }
+.kpub-brand:hover { color: var(--ink-2); background: var(--fill-1); }
+.kpub-brand-mark { display: inline-flex; }
+.kpub-legal { display: inline-flex; gap: 16px; }
+.kpub-legal a { color: var(--ink-3); }
+.kpub-legal a:hover { color: var(--ink-2); }
+
+/* ---- phones: the card is the page ---- */
+@media (max-width: 599px) {
+  .kpub { --kpub-pad: 16px; background: var(--surface); }
+  .kpub-main { padding: 0; }
+  .kpub-preview { margin: 0; border-radius: 0; padding: 10px 16px; }
+  .kpub-card { border-radius: 0; box-shadow: none; }
+  .kpub .kpcover-wrap.kpub-cover { --kpc-h: 104px; }
+  .kpub-cover-skel { height: 104px; }
+  .kpub-title { font-size: 22px; line-height: 30px; }
+  /* 16px stops iOS zooming into a field on focus */
+  .kpub-input { font-size: 16px; }
+  .kpub-row > .kpub-due { flex: 1 1 100%; }
+  .kpub-seg-opt { gap: 4px; padding: 0 4px; }
+  .kpub-submit > .kbtn { flex: 1 1 100%; }
+  .kpub-problem { padding: 40px 16px; }
+  .kpub-foot { padding-top: 16px; border-top: 1px solid var(--hairline); }
+}
+@media (max-width: 359px) {
+  .kpub-seg { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (pointer: coarse) {
+  .kpub-seg-opt { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kpub-done { animation: none !important; }
+  .kpub-input, .kpub-seg-opt, .kpub-brand { transition: none; }
+}

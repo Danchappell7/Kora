@@ -2,7 +2,7 @@
 // Unit tests for the Edge Functions' throttle + AI metering helpers, run
 // against a tiny in-memory stand-in for the supabase-js query builder.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientIp, countAiCall, dayIn, hashKey, hit, KEY_PREFIX, recentlyHit, release, sweep } from "./limits.ts";
+import { clientIp, countAiCall, dayIn, hashKey, hit, KEY_PREFIX, recentlyHit, refund, release, sweep } from "./limits.ts";
 
 type Row = Record<string, unknown>;
 
@@ -173,6 +173,42 @@ describe("hit (fixed-window throttle)", () => {
     expect(await recentlyHit(db, "flag", 600, T0 + 601_000)).toBe(false);
     db.missing.add("rate_limits");
     expect(await recentlyHit(db, "flag", 600, T0)).toBe(false);
+  });
+});
+
+describe("refund (give one hit back)", () => {
+  it("gives back exactly one hit, leaving everyone else's counted", async () => {
+    const db = new FakeDb();
+    const w = { windowSec: 3600, max: 3 };
+    for (let i = 0; i < 3; i++) await hit(db, "kanbo:pf:form:x", { ...w, now: T0 });
+    expect((await hit(db, "kanbo:pf:form:x", { ...w, now: T0 })).allowed).toBe(false);
+    await refund(db, "kanbo:pf:form:x");
+    expect(db.rows("rate_limits")[0].count).toBe(2);
+    expect((await hit(db, "kanbo:pf:form:x", { ...w, now: T0 + 1000 })).allowed).toBe(true);
+    expect((await hit(db, "kanbo:pf:form:x", { ...w, now: T0 + 2000 })).allowed).toBe(false);
+  });
+
+  it("never goes below zero, and does nothing for an unknown key or a missing table", async () => {
+    const db = new FakeDb();
+    db.rows("rate_limits").push({ key: "k", last_at: new Date(T0).toISOString(), count: 0 });
+    await refund(db, "k");
+    await refund(db, "nobody");
+    expect(db.rows("rate_limits")).toEqual([{ key: "k", last_at: new Date(T0).toISOString(), count: 0 }]);
+    db.missing.add("rate_limits");
+    await expect(refund(db, "k")).resolves.toBeUndefined();
+    await expect(refund({ from() { throw new Error("network down"); } }, "k")).resolves.toBeUndefined();
+  });
+
+  it("can't lose a simultaneous hit (compare-and-swap)", async () => {
+    const db = new FakeDb();
+    db.rows("rate_limits").push({ key: "k", last_at: new Date(T0).toISOString(), count: 5 });
+    let raced = false;
+    db.beforeExec = (table, op) => {
+      // another request counts a hit between our read and our write
+      if (table === "rate_limits" && op === "update" && !raced) { raced = true; db.rows("rate_limits")[0].count = 6; }
+    };
+    await refund(db, "k");
+    expect(db.rows("rate_limits")[0].count).toBe(5);
   });
 });
 

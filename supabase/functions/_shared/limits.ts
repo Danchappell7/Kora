@@ -140,6 +140,27 @@ export async function release(db: Db, key: string): Promise<void> {
 }
 
 /**
+ * Give back ONE hit on a shared key whose work didn't happen (say a form's
+ * hourly allowance, when the task then failed to save), leaving everyone
+ * else's hits counted — unlike release(), which forgets the whole key.
+ * Compare-and-swap like hit(); never below zero; best effort, never throws.
+ */
+export async function refund(db: Db, key: string): Promise<void> {
+  try {
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+      if (attempt > 0) await backoff(attempt);
+      const cur = await db.from("rate_limits").select("*").eq("key", key).maybeSingle();
+      if (cur.error || !cur.data) return;
+      const count = Number(cur.data.count ?? 0);
+      if (!(count > 0)) return;
+      const res = await db.from("rate_limits").update({ count: count - 1 })
+        .eq("key", key).eq("last_at", cur.data.last_at).eq("count", count).select("key");
+      if (res.error || (res.data && res.data.length)) return;
+    }
+  } catch { /* best effort */ }
+}
+
+/**
  * Occasional housekeeping: drop our keys that haven't been touched for a week
  * (every window we use is ≤ 1 day). Runs on ~2% of calls; never throws.
  */
