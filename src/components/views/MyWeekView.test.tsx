@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { MyWeekView } from "./MyWeekView";
 import { ToastProvider } from "../Toast";
@@ -267,5 +268,23 @@ describe("MyWeekView — moving work between days", () => {
     renderWeek([task({ id: "d", status: "done", completedAt: dayOffset(0) })]);
     expect(screen.getByText("1 done")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /^Completed over the last seven days/ })).toBeInTheDocument();
+  });
+});
+
+describe("MyWeekView — the keyboard keeps its place", () => {
+  it("after “Move to…”, focus follows the chip to its new day", async () => {
+    function Host() {
+      const [tasks, setTasks] = useState<Task[]>([task({ id: "a", title: "Loose end" })]);
+      return <ToastProvider><MyWeekView tasks={tasks} onOpen={vi.fn()} currentUserId="me"
+        onPatch={(id, patch) => setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)))} /></ToastProvider>;
+    }
+    render(<Host />);
+    fireEvent.click(screen.getByRole("button", { name: "Move “Loose end” to another day" }));
+    const menu = await screen.findByRole("menu", { name: "Move “Loose end” to" });
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /^Today/ }));
+    await act(() => new Promise((r) => requestAnimationFrame(() => r(undefined))));
+    const open = document.querySelector(`[data-day="${dayOffset(0)}"] [data-task-id="a"] .kweek-chip-open`);
+    expect(open).not.toBeNull();
+    expect(document.activeElement).toBe(open);
   });
 });

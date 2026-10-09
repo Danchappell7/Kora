@@ -156,7 +156,9 @@ describe("PlanView: drag to plan from anywhere", () => {
     });
     const targets = listDropTargets(["today-slot", "today-rail"]);
     expect(targets.map((t) => `${t.kind}:${t.label}`)).toEqual(["today-slot:Today's plan", "today-rail:Today, no time"]);
-    expect(dropOnTarget({ taskIds: ["m"], source: "list", originId: "m" }, { kind: "today-slot", id: `${localDayKey()}T14:30` })).toBe(true);
+    let took = false;
+    act(() => { took = dropOnTarget({ taskIds: ["m"], source: "list", originId: "m" }, { kind: "today-slot", id: `${localDayKey()}T14:30` }); });
+    expect(took).toBe(true);
     expect(onUpdate).toHaveBeenCalledWith("m", { scheduled: 14 * 60 + 30 });
   });
 

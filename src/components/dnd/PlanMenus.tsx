@@ -203,7 +203,7 @@ export function ScheduleMenu({
   };
 
   const optId = (m: number | null) => `${uid}-o-${m ?? "any"}`;
-  const keys = withDuration ? "↑↓ time · ←→ length · ⏎" : days?.length ? "↑↓ time · ←→ day · ⏎" : "↑↓ time · ⇧ hour · ⏎";
+  const keys = withDuration ? "↑↓ time · ←→ length" : days?.length ? "↑↓ time · ←→ day" : "↑↓ time · ⇧↑↓ hour";
   const chosen = describe(minute);
   return (
     <Popover open={open} anchorRef={anchorRef} onClose={onClose} role="dialog" label={`Schedule “${title}”`} minWidth={288} initialFocus={listRef}>
@@ -248,7 +248,7 @@ export function ScheduleMenu({
         )}
         <div className="ksch-foot">
           <span className="ksch-keys" aria-hidden="true">{keys}</span>
-          <Button size="sm" onClick={() => pick()} disabled={minute == null && !allowNoTime}
+          <Button size="sm" variant="primary" kbd="⏎" onClick={() => pick()} disabled={minute == null && !allowNoTime}
             aria-label={`${pickLabel}: ${minute == null ? "any time" : chosen.range}`}>{pickLabel}</Button>
         </div>
       </div>

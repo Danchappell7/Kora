@@ -264,10 +264,12 @@ function bumpReg() { regVersion++; regSubs.forEach((f) => f()); }
 const hasDom = () => typeof window !== "undefined" && typeof document !== "undefined";
 
 /* ---------- the kit's own CSS (once, on the first source or drag) ---------- */
+/** the ghost's widest (its CSS max-width) */
+const GHOST_MAX = 260;
 const KIT_CSS = `
 [data-kdnd-source] { -webkit-touch-callout: none; }
 html[data-kdnd-active], html[data-kdnd-active] * { cursor: grabbing !important; -webkit-user-select: none !important; user-select: none !important; }
-.kdnd-ghost { position: fixed; z-index: 2000; pointer-events: none; box-sizing: border-box; min-width: 120px; max-width: 260px; padding: 7px 12px 7px 14px;
+.kdnd-ghost { position: fixed; z-index: 2000; pointer-events: none; box-sizing: border-box; min-width: 120px; max-width: ${GHOST_MAX}px; padding: 7px 12px 7px 14px;
   border-radius: var(--r-md, 8px); background: var(--surface-raised); box-shadow: var(--e2); transform: rotate(-1.5deg);
   animation: kdndLift var(--d-2, 160ms) var(--ease, ease) both; }
 .kdnd-ghost::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: var(--r-md, 8px) 0 0 var(--r-md, 8px); background: var(--kdnd-edge, var(--accent)); }
@@ -318,8 +320,7 @@ function topElementAt(x: number, y: number): Element | null | undefined {
   return typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : undefined;
 }
 
-function hitTest(x: number, y: number): Entry | null {
-  const top = topElementAt(x, y);
+function hitTest(x: number, y: number, top: Element | null | undefined = topElementAt(x, y)): Entry | null {
   if (top === null) return null; // off the page
   let best: Entry | null = null, bestArea = Infinity;
   for (const en of entries) {
@@ -352,41 +353,40 @@ function dropEvent(en: Entry, point: DragPoint | null): TaskDropEvent {
 function retarget() {
   if (!live) return;
   const { x, y } = live.point;
-  const next = hitTest(x, y);
+  const top = topElementAt(x, y);
+  const next = hitTest(x, y, top);
   const prev = live.over;
   if (next !== prev) {
     live.over = next;
     try { prev?.o.onLeave?.(); } catch (e) { console.error(e); }
   }
   if (next?.o.onOver) { try { next.o.onOver(dropEvent(next, live.point)); } catch (e) { console.error(e); } }
-  springAt(x, y);
+  springAt(top);
   emit(next !== prev);
 }
 
 /* ---------- spring-loading ---------- */
-let spring: { el: Element; timer: number; fired: boolean } | null = null;
+let spring: { el: Element; timer: number } | null = null;
 function clearSpring() {
   if (!spring) return;
   window.clearTimeout(spring.timer);
   spring.el.removeAttribute("data-kdnd-spring-armed");
   spring = null;
 }
-function springAt(x: number, y: number) {
-  const top = topElementAt(x, y);
+function springAt(top: Element | null | undefined) {
   const el = top ? top.closest("[data-kdnd-spring]") : null;
   if (el === spring?.el) return;
   clearSpring();
   if (!el) return;
   el.setAttribute("data-kdnd-spring-armed", "true");
-  const s = {
-    el, fired: false,
+  // (once it has fired it stays the spring under the pointer, so it fires once per visit)
+  spring = {
+    el,
     timer: window.setTimeout(() => {
       el.removeAttribute("data-kdnd-spring-armed");
-      s.fired = true;
       if (live && el.isConnected) (el as HTMLElement).click();
     }, SPRING_MS),
   };
-  spring = s;
 }
 
 /* ---------- auto-scroll ---------- */
@@ -420,7 +420,7 @@ function autoScroll() {
     // the page itself only when the app lets it scroll (Kanbo's shell doesn't: its panes do)
     const o = el === root ? (scrollable(document.body).y || /auto|scroll/.test(window.getComputedStyle(el).overflowY) ? { y: true, x: false } : { y: false, x: false }) : scrollable(el);
     if (!o.y && !o.x) continue;
-    const r = el === root ? new DOMRect(0, 0, window.innerWidth, window.innerHeight) : el.getBoundingClientRect();
+    const r = el === root ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight } : el.getBoundingClientRect();
     if (x < r.left || x > r.right || y < r.top - DND_AUTOSCROLL_EDGE_PX || y > r.bottom + DND_AUTOSCROLL_EDGE_PX) continue;
     if (o.y && el.scrollHeight > el.clientHeight + 1) {
       const dy = edgeSpeed(y, r.top, r.bottom);
@@ -439,6 +439,8 @@ function autoScroll() {
 /* ---------- the drag's own listeners ---------- */
 function onMove(e: PointerEvent) {
   if (!live || e.pointerId !== live.pointerId) return;
+  // the button was let go where this page couldn't hear it (another window): nothing lands
+  if (e.isTrusted && !live.touch && e.pointerType === "mouse" && e.buttons === 0) { finish(null, null); return; }
   live.point = { x: e.clientX, y: e.clientY };
   retarget();
 }
@@ -746,8 +748,9 @@ export function DragLayer({ getTaskTitle }: DragLayerProps): ReactElement | null
   const ghost = createElement("div", {
     key: "ghost", className: "kdnd-ghost", "aria-hidden": "true", "data-multi": n > 1 ? "" : undefined,
     style: {
-      // on touch it floats above the finger, which would hide it
-      left: s.point.x / zoom + (touch ? -24 : 14), top: s.point.y / zoom + (touch ? -64 : 12),
+      // on touch it floats above the finger, which would hide it; never off the side of a phone
+      left: Math.max(8, Math.min(s.point.x / zoom + (touch ? -24 : 14), window.innerWidth / zoom - GHOST_MAX - 8)),
+      top: Math.max(8, s.point.y / zoom + (touch ? -64 : 12)),
       ...(edge ? { "--kdnd-edge": edge } : null),
     },
   },

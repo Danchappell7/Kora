@@ -176,6 +176,10 @@ describe("dnd: picking up and putting down", () => {
     press(screen.getByTestId("src-a"), 10, 10);
     on("pointermove", 30, 10);
     expect(document.querySelector(".kdnd-ghost b")?.textContent).toBe("Write the brief");
+    expect((document.querySelector(".kdnd-ghost") as HTMLElement).style.left).toBe("44px");
+    // near the right edge it stays on screen (jsdom's window is 1024 wide; the ghost is at most 260)
+    on("pointermove", window.innerWidth - 4, 10);
+    expect((document.querySelector(".kdnd-ghost") as HTMLElement).style.left).toBe(`${window.innerWidth - 268}px`);
     act(() => { fireEvent.keyDown(window, { key: "Escape" }); });
     expect(screen.getByRole("status").textContent).toBe("Cancelled. Write the brief didn't move.");
   });

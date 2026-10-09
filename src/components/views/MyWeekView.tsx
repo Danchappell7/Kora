@@ -65,13 +65,15 @@ const WEEK_CSS = `
 .kweek-day[data-can="true"] { box-shadow: inset 0 0 0 1px var(--hairline-strong); }
 .kweek-day[data-drop="true"] { background: color-mix(in oklch, var(--accent) 8%, var(--bg-deep)); box-shadow: inset 0 0 0 1.5px var(--kw-accent-line); }
 /* the day's time strip: its left edge, there while a task is in the air; over it, the time it would get */
-.kweek-times { position: absolute; z-index: 2; left: 0; top: 36px; bottom: 8px; width: 16px; border-radius: 0 6px 6px 0; opacity: 0; pointer-events: none;
-  transition: opacity var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease); }
-.kweek-times[data-open="true"] { opacity: 1; pointer-events: auto; background: color-mix(in oklch, var(--accent) 7%, transparent);
-  box-shadow: inset -1px 0 0 var(--kw-accent-line); }
+.kweek-times { position: absolute; z-index: 2; left: 0; top: 36px; bottom: 8px; width: 8px; border-radius: 0 6px 6px 0; opacity: 0; pointer-events: none;
+  transition: opacity var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease), width var(--d-1, 90ms) var(--ease); }
+.kweek-times[data-open="true"] { opacity: 1; pointer-events: auto; background: color-mix(in oklch, var(--accent) 6%, transparent); }
+/* the day under the pointer: its strip opens out; over the strip, the day's chips step back so the hours read */
+.kweek-times[data-open="true"][data-near="true"] { width: 18px; background: color-mix(in oklch, var(--accent) 10%, transparent); box-shadow: inset -1px 0 0 var(--kw-accent-line); }
 .kweek-times[data-over="true"] { background: var(--kw-accent-tint); }
-.kweek-times > i { position: absolute; left: 4px; right: 3px; height: 1px; background: var(--hairline-strong); }
-.kweek-times > i > b { position: absolute; left: 14px; top: -8px; padding: 0 3px; border-radius: 3px; display: none; white-space: nowrap;
+.kweek-day[data-timing="true"] .kweek-day-list { opacity: 0.3; }
+.kweek-times > i { position: absolute; left: 3px; right: 3px; height: 1px; background: var(--hairline-strong); }
+.kweek-times > i > b { position: absolute; left: 18px; top: -8px; padding: 0 3px; border-radius: 3px; display: none; white-space: nowrap;
   background: var(--bg-deep); font: 500 10px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
 .kweek-times[data-over="true"] > i > b { display: block; }
 .kweek-mark { position: absolute; z-index: 3; left: 0; right: 6px; height: 0; border-top: 1.5px dashed var(--accent); pointer-events: none; }
@@ -90,7 +92,7 @@ const WEEK_CSS = `
 .kweek-day[data-today="true"] .kweek-day-name::after { content: ""; position: absolute; left: 0; right: 0; bottom: -5px; height: 2px; border-radius: 2px; background: var(--accent); }
 .kweek-day[data-weekend="true"]:not([data-today="true"]) .kweek-day-name { color: var(--ink-3); }
 .kweek-day[data-past="true"] .kweek-day-name { color: var(--ink-3); }
-.kweek-day-list { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.kweek-day-list { display: flex; flex-direction: column; gap: 6px; flex: 1; transition: opacity var(--d-1, 90ms) var(--ease); }
 .kweek-empty { flex: 1; display: grid; place-items: center; min-height: 64px; border-radius: var(--r-sm, 6px); font: 500 12px/16px var(--kw-ui); color: var(--ink-4); }
 .kweek-day[data-drop="true"] .kweek-empty { color: var(--accent-text, var(--accent)); }
 
@@ -148,7 +150,7 @@ const WEEK_CSS = `
   .kweek-more.kibtn { opacity: 1; width: 32px; height: 32px; top: 50%; translate: 0 -50%; box-shadow: none; }
 }
 @media (hover: none) { .kweek-chip { padding-right: 32px; } .kweek-more.kibtn { opacity: 1; box-shadow: none; } }
-@media (prefers-reduced-motion: reduce) { .kweek-day, .kweek-chip, .kweek-more.kibtn, .kweek-menu-item, .kweek-times, .kweek-nodate { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .kweek-day, .kweek-chip, .kweek-more.kibtn, .kweek-menu-item, .kweek-times, .kweek-nodate, .kweek-day-list { transition: none; } }
 `;
 
 /** A seven-day completions sparkline: a gradient area under a hairline of ink. */
@@ -295,7 +297,8 @@ function DayColumn({ date, iso, isToday, isPast, weekend, label, items, chip, ca
   const over = day.isOver || slot.isOver;
   return (
     <section {...day.bind} className="kweek-day" data-day={iso} data-today={isToday || undefined} data-past={isPast || undefined}
-      data-weekend={weekend || undefined} data-drop={over || undefined} data-can={(day.canDrop && !over) || undefined} aria-labelledby={nameId}>
+      data-weekend={weekend || undefined} data-drop={over || undefined} data-can={(day.canDrop && !over) || undefined}
+      data-timing={slot.isOver || undefined} aria-labelledby={nameId}>
       <h3 className="kweek-day-head" id={nameId} aria-label={`${FULL_DAYS[date.getDay()]} ${dayMonth(date)}${isToday ? ", today" : ""}`}>
         <span className="kweek-day-name">{weekdayShort(date)}</span>
         <span className="kweek-day-date">{date.getDate()}</span>
@@ -306,7 +309,7 @@ function DayColumn({ date, iso, isToday, isPast, weekend, label, items, chip, ca
         {items.length === 0 && <div className="kweek-empty" aria-hidden="true">{over ? "Drop here" : day.canDrop ? "" : "—"}</div>}
       </div>
       {canMove && (
-        <div {...slot.bind} className="kweek-times" aria-hidden="true" data-open={slot.canDrop || undefined} data-over={slot.isOver || undefined}>
+        <div {...slot.bind} className="kweek-times" aria-hidden="true" data-open={slot.canDrop || undefined} data-near={over || undefined} data-over={slot.isOver || undefined}>
           {STRIP_HOURS.map((h) => (
             <i key={h} style={{ top: `${stripY(h * 60) * 100}%` }}><b>{hhmm(h * 60)}</b></i>
           ))}
@@ -429,7 +432,13 @@ export function MyWeekView({ tasks, onOpen, onPatch, currentUserId, readOnly }: 
       : `Moved ${what} to ${whereLabel(date)}`;
     if (toast) toast.action(msg, "Undo", () => changes.forEach((c) => onPatch(c.t.id, undoPatch(c.t, c.patch))), { ms: 10000 });
   }, [onPatch, toast, todayIso]); // eslint-disable-line react-hooks/exhaustive-deps
-  const moveTo = useCallback((id: string, iso: string) => applyWeek([id], iso, undefined), [applyWeek]);
+  // a keyboard move: focus follows the chip to its new day (its old node is gone)
+  const refocus = (id: string) => requestAnimationFrame(() => {
+    const chip = Array.from(document.querySelectorAll<HTMLElement>(".kweek [data-task-id]")).find((c) => c.dataset.taskId === id);
+    const el = chip?.querySelector<HTMLElement>(".kweek-chip-open");
+    if (el && (!document.activeElement || document.activeElement === document.body)) el.focus();
+  });
+  const moveTo = useCallback((id: string, iso: string) => { applyWeek([id], iso, undefined); refocus(id); }, [applyWeek]);
 
   const pullToToday = () => {
     const moving = myOverdue.map((t) => ({ id: t.id, dueDate: t.dueDate }));
@@ -528,7 +537,7 @@ export function MyWeekView({ tasks, onOpen, onPatch, currentUserId, readOnly }: 
             value={{ date: schedule.dueDate?.slice(0, 10) && targets.some((t) => t.iso === schedule.dueDate?.slice(0, 10)) ? schedule.dueDate.slice(0, 10) : todayIso, minute: minuteOf(schedule.dueTime) }}
             allowNoTime from={WEEK_SLOT_FROM} to={WEEK_SLOT_TO} step={WEEK_SLOT_STEP} busy={busyOn} today={todayIso}
             nowMin={new Date().getHours() * 60 + new Date().getMinutes()} pickLabel="Schedule"
-            onPick={(v) => { if (v.date) applyWeek([schedule.id], v.date, v.minute); }} />
+            onPick={(v) => { if (v.date) { applyWeek([schedule.id], v.date, v.minute); refocus(schedule.id); } }} />
         </Suspense>
       )}
       {elsewhere && (

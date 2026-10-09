@@ -1563,8 +1563,15 @@ export function PlanView({
       dropAt(e.payload, e.point ? canvasStart(e.payload, e.point, lengthOf(e.payload)) : typeof minute === "number" ? snapTo(minute) : null, e.via);
     },
   });
-  const railRefObj = useMemo(() => ({ kind: "today-rail" as const, id: day, data: { date: day }, label: "Today, no time" }), [day]);
-  const railT = useTaskDropTarget({ target: railRefObj, accepts: acceptsDrag, disabled: readOnly, onDrop: (e) => dropOnRail(e.payload) });
+  // (a block on its way back says where it's going; anything else joins today's list)
+  const [railBack, setRailBack] = useState(false);
+  const railLabel = railBack ? "Back to Unplanned" : "Today, no time";
+  const railRefObj = useMemo(() => ({ kind: "today-rail" as const, id: day, data: { date: day }, label: railLabel }), [day, railLabel]);
+  const railT = useTaskDropTarget({
+    target: railRefObj, accepts: acceptsDrag, disabled: readOnly, onDrop: (e) => dropOnRail(e.payload),
+    onOver: (e) => { const back = itemsOf(e.payload).some(isPlaced); setRailBack((b) => (b === back ? b : back)); },
+    onLeave: () => setRailBack(false),
+  });
   const beamLabel = preview?.on === "beam" ? fmtTimeRange(preview.start, preview.start + preview.dur) : "Today's plan";
   const beamRefObj = useMemo(() => ({ kind: "today-slot" as const, id: `${day}@beam`, data: { date: day, listed: false }, label: beamLabel }), [day, beamLabel]);
   const beamT = useTaskDropTarget({
