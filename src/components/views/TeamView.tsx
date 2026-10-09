@@ -16,6 +16,7 @@ import { uiZoom } from "../../lib/appearance";
 import { inviteEmailNotice, type InviteEmailResult, type InvitedMember } from "../../data/store";
 import { capacityOf, loadForWeek, loadTone, readCapacities } from "../../lib/radar";
 import { round1, startOfWeekMon } from "./reportingUtils";
+import { usePersonDropTarget } from "../../lib/dropActions";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -202,8 +203,11 @@ interface Load { hours: number; capacity: number }
 
 /* One person: identity, what they're working on, their week and open count.
    The whole row opens their profile; pending invites add Resend and Copy link
-   for owners and admins. Hoisted so it keeps its identity across renders. */
-function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite }: {
+   for owners and admins. Hoisted so it keeps its identity across renders.
+   0048: an active person's row takes dropped tasks (lib/dnd → reassign, with
+   a toast and Undo via onDropTasks); the keyboard way is the task's own
+   "Assign to…" menu, which lists these rows as targets. */
+function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, onDropTasks }: {
   m: WorkspaceMember;
   name: string;
   isSelf: boolean;
@@ -212,8 +216,11 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite }: 
   load?: Load;
   onSelect: () => void;
   invite?: { canResend: boolean; resend?: ResendState; copied?: "ok" | "failed"; onResend: () => void; onCopy: () => void };
+  /** tasks dropped on this person: reassign them (none: the row takes no drops) */
+  onDropTasks?: (taskIds: string[], userId: string) => void;
 }) {
   const pending = m.status !== "active";
+  const drop = usePersonDropTarget({ userId: m.userId ?? "", name }, { readOnly: pending || !m.userId || !onDropTasks, onDrop: (ids, uid) => onDropTasks?.(ids, uid) });
   const resend = invite?.resend;
   const resendError = resend && typeof resend === "object" && "error" in resend ? resend.error : null;
   const resendInfo = resend && typeof resend === "object" && "info" in resend ? resend : null;
@@ -229,7 +236,7 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite }: 
   const tone = load ? loadTone(load.hours, load.capacity) : "ink";
   const hours = load ? `${round1(load.hours)}h / ${round1(load.capacity)}h` : "";
   return (
-    <li className="kppl-row" data-pending={pending || undefined}>
+    <li className="kppl-row" data-pending={pending || undefined} {...drop.bind} data-drop-ready={drop.canDrop && !drop.isOver ? "" : undefined}>
       <button type="button" className="kppl-main" onClick={onSelect} aria-haspopup="dialog">
         {m.userId && getMember(m.userId) ? <Avatar id={m.userId} size={32} /> : <span className="kppl-ghost" aria-hidden="true"><Icon name="user" size={16} sw={1.75} /></span>}
         <span className="kppl-id">
@@ -527,7 +534,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -555,6 +562,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   /** company email domains that sign up without waiting (Admin › approved domains), for the
    *  invite dialog's note. Only an app admin can read them; without it the note is general. */
   approvedDomains?: string[];
+  /** 0048: tasks dropped on a person's row (lib/dnd): reassign them (lib/dropActions reassignTasks).
+   *  Without it, or for guests, the rows take no drops. */
+  onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
   /** The workspace settings moved to Settings › Workspace (WorkspaceSettingsPanel);
       these are still accepted so older hosts compile, and are ignored. */
   onUpdateWorkspace?: (workspaceId: string, name: string, logoUrl: string | null) => void;
@@ -771,7 +781,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
             <ul className="kppl-list">
               {shownActive.map((m) => (
                 <PersonRow key={m.id} m={m} name={memberName(m)} isSelf={m.userId === currentUserId} openN={openCount(m)}
-                  working={m.userId ? working.get(m.userId) : undefined} load={loadOf(m)} onSelect={() => setSelectedId(m.id)} />
+                  working={m.userId ? working.get(m.userId) : undefined} load={loadOf(m)} onSelect={() => setSelectedId(m.id)}
+                  onDropTasks={role && role !== "guest" ? onDropTasksOnPerson : undefined} />
               ))}
             </ul>
           )}
@@ -885,6 +896,9 @@ const PEOPLE_CSS = `
 .kppl-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; }
 .kppl-row { position: relative; display: flex; flex-wrap: wrap; align-items: center; border-radius: var(--r-sm, 6px); transition: background var(--d-1, 90ms) var(--ease); }
 .kppl-row:hover { background: var(--fill-1); }
+/* a task dragged over a person: the row lights up to take it (every row that would take it shows a faint edge) */
+.kppl-row[data-kdnd-over] { background: var(--bg-selected, var(--accent-dim)); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.kppl-row[data-drop-ready] { box-shadow: inset 0 0 0 1px var(--accent-line, var(--hairline-strong)); }
 .kppl-main { flex: 1 1 520px; min-width: 0; display: grid; grid-template-columns: 32px minmax(180px, 1.1fr) minmax(0, 1.4fr) 176px 64px; align-items: center; gap: 0 16px;
   min-height: 56px; padding: 8px 12px; border: 0; border-radius: var(--r-sm, 6px); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
 /* pending invites keep the members' columns, so the note lines up with "Working on:" above;

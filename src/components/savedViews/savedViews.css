@@ -1,0 +1,107 @@
+/* ============================================================
+   KANBO — saved views: the Save / Edit view sheet and the All views
+   list. Paper & Navy tokens only; both themes; phone width.
+   ============================================================ */
+
+/* ---------- the sidebar's Views group (inside the Sidebar's .ksb; its rows are
+   .knav[data-nested] and reveal ⋯ like the old saved lists' ×) ---------- */
+.ksb .kview-emoji { display: inline-grid; place-items: center; flex-shrink: 0; height: 16px; line-height: 1; }
+.ksb .kview-row > .knav .kview-shared { flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
+/* (more specific than the Sidebar's .ksb .ksaved-del:hover, which reads in the signal colour) */
+.ksb .ksaved-row > .kview-more:hover { color: var(--ink); background: var(--fill-2); }
+.ksb .ksaved-row > .kview-more[aria-expanded="true"] { opacity: 1; color: var(--ink); }
+.ksb .kview-row[data-dragging] > .knav { background: var(--surface-raised); color: var(--ink); box-shadow: var(--e2, var(--shadow-lg)); cursor: grabbing; }
+.ksb .kview-row[data-dragging] > .ksaved-del { visibility: hidden; }
+.ksb .kviews[data-reordering] { -webkit-user-select: none; user-select: none; }
+.ksb .kviews[data-reordering] .knav { cursor: grabbing; }
+.ksb .kview-row > .kview-rename { flex: 1; min-width: 0; height: 28px; margin: 0 2px 0 24px; padding: 0 8px; font-size: 13px; }
+
+/* ---------- the sheet ---------- */
+.ksv { display: flex; flex-direction: column; gap: 20px; padding-top: 4px; font-family: var(--font-ui); }
+.ksv-name { display: flex; align-items: center; gap: 8px; }
+.ksv-name > .kfield { flex: 1 1 auto; width: 100%; }
+.ksv-emoji {
+  display: grid; place-items: center; flex-shrink: 0; width: var(--h-lg, 40px); height: var(--h-lg, 40px); padding: 0;
+  border: 1px solid var(--field-border); border-radius: var(--r-md); background: var(--field-bg); color: var(--ink-3);
+  font-size: 19px; line-height: 1; cursor: pointer;
+  transition: border-color var(--d-1) var(--ease), background-color var(--d-1) var(--ease);
+}
+.ksv-emoji:hover:not(:disabled) { border-color: var(--field-border-hover); }
+.ksv-emoji[aria-expanded="true"] { border-color: var(--accent); background: var(--bg-selected); }
+.ksv-emoji:disabled { cursor: default; opacity: 0.6; }
+.ksv-count { margin: 6px 0 0; font: 500 12px/16px var(--font-ui); color: var(--ink-3); text-align: right; }
+.ksv-count[data-tone="signal"] { color: var(--signal); }
+
+.ksv-label { margin: 0 0 8px; font: 600 12px/16px var(--font-ui); color: var(--ink-3); }
+.ksv-where { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font: 600 14px/20px var(--font-ui); color: var(--ink); }
+.ksv-where > svg { flex-shrink: 0; color: var(--icon-quiet); }
+.ksv-parts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ksv-parts > li {
+  display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border-radius: var(--r-sm);
+  background: var(--fill-1); color: var(--ink-2); font: 500 12px/16px var(--font-ui);
+}
+.ksv-quiet { margin: 0; font: 500 13px/20px var(--font-ui); color: var(--ink-3); }
+
+.ksv-toggles { display: grid; gap: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+.ksv-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--fill-1); color: var(--ink-2); font: 500 13px/20px var(--font-ui); text-wrap: pretty;
+}
+.ksv-note > svg { flex-shrink: 0; margin-top: 2px; color: var(--icon-quiet); }
+.ksv-error {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--signal-tint); color: var(--signal); font: 500 13px/20px var(--font-ui);
+}
+.ksv-error > svg { flex-shrink: 0; margin-top: 2px; }
+.ksv-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-right: auto; font: 500 13px/20px var(--font-ui); color: var(--ink-2); }
+
+/* the icon picker: "No icon" above the emoji grid */
+.ksv-picker { display: grid; gap: 4px; }
+.ksv-picker-none {
+  display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--ink-2); font: 500 13px/20px var(--font-ui); cursor: pointer; text-align: left;
+}
+.ksv-picker-none:hover, .ksv-picker-none:focus-visible { background: var(--fill-1); }
+.ksv-picker-none[aria-pressed="true"] { color: var(--accent-text); }
+
+/* the toolbar's Save view menu (update the applied view, or save a new one) */
+.ksv-split { display: inline-flex; }
+
+/* ---------- All views (from the sidebar) ---------- */
+.kav { display: grid; gap: 2px; min-width: 260px; max-width: 340px; font-family: var(--font-ui); }
+.kav-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px; }
+.kav-head > h2 { flex: 1; margin: 0; font: 600 13px/20px var(--font-ui); color: var(--ink); }
+.kav-group { margin: 0; padding: 8px 8px 2px; font: 600 12px/16px var(--font-ui); color: var(--ink-3); }
+.kav-row { display: flex; align-items: center; gap: 2px; border-radius: var(--r-sm); }
+.kav-row:hover { background: var(--fill-1); }
+.kav-open {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 6px 0 8px;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--ink); cursor: pointer; text-align: left;
+  font: 500 13px/20px var(--font-ui);
+}
+.kav-open > svg { flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
+.kav-open > .kview-emoji { display: inline-grid; place-items: center; flex-shrink: 0; height: 16px; line-height: 1; }
+.kav-open[aria-current="page"] { font-weight: 600; }
+.kav-open[aria-current="page"] .knav-ico { color: var(--accent-text); }
+.kav-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kav-open[data-hidden="true"] .kav-name { color: var(--ink-3); }
+.kav-n { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kav-act {
+  display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--r-xs);
+  background: transparent; color: var(--ink-3); cursor: pointer;
+}
+.kav-act:hover { color: var(--ink); background: var(--fill-2); }
+.kav-act[aria-pressed="true"] { color: var(--accent-text); }
+.kav-act:disabled { opacity: 0.4; cursor: default; }
+.kav-empty { margin: 0; padding: 8px 8px 10px; font: 500 13px/20px var(--font-ui); color: var(--ink-3); text-wrap: pretty; }
+.kav-foot { margin: 4px 0 0; padding: 8px 8px 4px; border-top: 1px solid var(--hairline); font: 500 12px/16px var(--font-ui); color: var(--ink-3); text-wrap: pretty; }
+
+@media (max-width: 860px) {
+  .kav { min-width: min(320px, calc(100vw - 32px)); max-width: calc(100vw - 32px); }
+  .kav-open { height: 40px; font-size: 14px; }
+  .kav-act { width: 36px; height: 36px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ksv-emoji { transition: none; }
+}

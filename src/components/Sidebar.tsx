@@ -2,17 +2,24 @@
    KANBO — Sidebar: workspace switcher, the five places (nav.ts),
    pinned and recent projects, the Focus pill and the account row.
    232px on --bg-deep; one scrolling column over a fixed footer.
+   0048: the Views group under My tasks (pinned saved views with live
+   counts; drag, or ⌥↑ / ⌥↓, or the ⋯ menu's Move up / down to reorder;
+   right-click or ⋯ to rename, edit, share, unpin, hide or delete with
+   Undo) and project rows that take dropped tasks (lib/dropActions).
    ============================================================ */
-import { useState, useMemo, useEffect, useRef, useId } from "react";
+import { useState, useMemo, useEffect, useRef, useId, Suspense } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectTile, SectionLabel, projectIdentity } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { MenuItem, MenuSeparator } from "./Topbar";
 import { trialDaysLeft, BILLING_ENABLED } from "../lib/billing";
 import { useToast } from "./Toast";
-import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch, Role } from "../data/types";
+import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch, Role, SavedView } from "../data/types";
 import type { Route } from "../app-types";
 import { navItems, placeOf, type NavItem } from "../lib/nav";
+import { isViewActive, useViewerMarks, viewRoute } from "../lib/views";
+import { useProjectDropTarget } from "../lib/dropActions";
+import { chunk, lazyComponent, prefetch } from "../lib/lazyLoad";
 import { canDeleteProject, canArchiveProject } from "../lib/permissions";
 import { getMember } from "../data/data";
 import { BREAK_MIN, type FocusTimer } from "../hooks/useFocusTimer";
@@ -115,6 +122,11 @@ main[tabindex="-1"]:focus { outline: none; }
 /* …and a long name ends before it rather than under it */
 .ksb .ksaved-row:hover > .knav { padding-right: 30px; }
 .ksb .ksaved-row:has(:focus-visible) > .knav { padding-right: 30px; }
+
+/* a task dragged over a project row: the row lights up to take it; while any
+   drag is in the air, every row that would take it shows a faint edge */
+.ksb .kproj-item[data-kdnd-over] > .kproj { background: var(--bg-selected, var(--accent-dim)); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.ksb .kproj-item[data-drop-ready] > .kproj { box-shadow: inset 0 0 0 1px var(--accent-line, var(--hairline-strong)); }
 
 /* projects */
 .ksb-projects { margin-top: 4px; }
@@ -243,7 +255,7 @@ main[tabindex="-1"]:focus { outline: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ksb-ws-chev, .ksb-all > svg { transition: none !important; }
+  .ksb-ws-chev, .ksb-all > svg, .ksb .knav, .ksb .kproj { transition: none !important; }
   .ksb-all:hover > svg { translate: none; }
 }
 `;
@@ -252,6 +264,65 @@ main[tabindex="-1"]:focus { outline: none; }
 const MAX_PROJECTS = 8;
 /** Saved views nested under My tasks; the rest are a "More…" away. */
 const MAX_SAVED = 3;
+/* The Views group is its own chunk: its list arrives with the (lazy) saved-views data anyway. */
+const sidebarViewsChunk = chunk(() => import("./savedViews/SidebarViews"));
+const LazySidebarViews = lazyComponent(sidebarViewsChunk, (m) => m.SidebarViews, "SidebarViews");
+/** Fetch the Views group, its menu, editor and All views ahead of need (an idle warm-up; tests). */
+export function warmSavedViewUi(): Promise<void> {
+  return sidebarViewsChunk().then((m) => m.warmSidebarViewSheets());
+}
+
+/* ---------------- a project row (a drop target for tasks) ---------------- */
+
+function ProjectRow({ p, active, count, isPinned, archivable, deletable, onOpen, onTogglePin, onArchive, onDelete, onDropTasks }: {
+  p: Project;
+  active: boolean;
+  count: number;
+  isPinned: boolean;
+  archivable: boolean;
+  deletable: boolean;
+  onOpen: () => void;
+  onTogglePin: () => void;
+  onArchive: () => void;
+  onDelete: () => void;
+  /** null: this person can't move tasks here (guests, or no handler) */
+  onDropTasks: ((taskIds: string[], projectId: string) => void) | null;
+}) {
+  const drop = useProjectDropTarget(p, { readOnly: !onDropTasks, onDrop: (ids, pid) => onDropTasks?.(ids, pid) });
+  // room the name leaves for the action group when it's revealed
+  const reserve = (1 + (archivable ? 1 : 0) + (deletable ? 1 : 0)) * 25 + 8;
+  return (
+    <div role="listitem" className="kproj-item" style={{ "--kacts": `${reserve}px` } as CSSProperties} {...drop.bind}
+      data-drop-ready={drop.canDrop && !drop.isOver ? "" : undefined}>
+      <button type="button" onClick={onOpen} {...prefetchProps({ view: "project", projectId: p.id })} className="kproj kp" style={projectIdentity(p).style} data-active={active || undefined} aria-current={active ? "page" : undefined}>
+        <ProjectTile project={p} size={20} />
+        <span className="truncate kproj-name">{p.name}</span>
+        {isPinned && <span className="kproj-pinmark" aria-hidden="true"><StarGlyph filled size={11} /></span>}
+        {isPinned && <span className="sr-only">, pinned</span>}
+        {count > 0 && <span className="kproj-n">{count}<span className="sr-only"> open {count === 1 ? "task" : "tasks"}</span></span>}
+      </button>
+      <div className="kproj-acts">
+        <button type="button" className="kproj-act" data-on={isPinned} aria-pressed={isPinned}
+          aria-label={`Pin project ${p.name}`} title={isPinned ? "Unpin" : "Pin to top"}
+          onClick={(e) => { e.stopPropagation(); onTogglePin(); }}>
+          <StarGlyph filled={isPinned} />
+        </button>
+        {archivable && (
+          <button type="button" className="kproj-act" data-kind="archive" aria-label={`Archive project ${p.name}`} title="Archive project"
+            onClick={(e) => { e.stopPropagation(); onArchive(); }}>
+            <Icon name="archive" size={14} sw={1.75} />
+          </button>
+        )}
+        {deletable && (
+          <button type="button" className="kproj-act" data-kind="delete" aria-label={`Delete project ${p.name}`} title="Delete project"
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}>
+            <Icon name="trash" size={14} sw={1.75} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function StarGlyph({ filled, size = 14 }: { filled?: boolean; size?: number }) {
   return (
@@ -356,7 +427,8 @@ function FocusPill({ focus, onOpen, taskTitle }: { focus: FocusTimer; onOpen: ()
 /** A place's icon: nav.ts names them; Projects wears the Kanbo mark. */
 const PLACE_ICON: Partial<Record<NavItem["id"], IconName>> = { projects: "kanbo" };
 
-export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole, guardRoute = true, theme, onToggleTheme, teamBadge, onOpenSearch, onOpenShortcuts }: {
+export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole, guardRoute = true, theme, onToggleTheme, teamBadge, onOpenSearch, onOpenShortcuts,
+  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -404,6 +476,21 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onOpenSearch?: () => void;
   /** the account menu's "Keyboard shortcuts" (Settings › Shortcuts) */
   onOpenShortcuts?: () => void;
+  /** 0048: this workspace's saved views (lib/views useSavedViews(...).views). When given, the Views
+   *  group replaces the old saved searches: the pinned ones (not hidden by you) under My tasks. */
+  views?: SavedView[];
+  /** live counts by view id (lib/views viewCounts over every task you can see; null = not a task
+   *  list). Without it they're counted here over `tasks` (this workspace only). */
+  viewCounts?: Record<string, number | null | undefined>;
+  /** open a view (default: go to lib/views viewRoute(view)) */
+  onOpenView?: (view: SavedView) => void;
+  /** "Edit view…" (default: the sidebar's own SavedViewEditor sheet) */
+  onEditView?: (view: SavedView) => void;
+  /** the views in their new order (default: lib/views reorderSavedViews) */
+  onReorderViews?: (ids: string[]) => void | Promise<unknown>;
+  /** tasks dropped on a project row (lib/dnd): move them (lib/dropActions moveTasksToProject).
+   *  Without it, or for guests, the rows take no drops. */
+  onDropTasksOnProject?: (taskIds: string[], projectId: string) => void;
 }) {
   const toast = useToast();
   const uid = useId();
@@ -569,17 +656,28 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
       },
     });
   };
-  const savedAll = savedSearches.filter((s) => !hiddenSaved.has(s.id));
+  const savedAll = views !== undefined ? [] : savedSearches.filter((s) => !hiddenSaved.has(s.id));
   const savedShown = savedAll.slice(0, MAX_SAVED);
   const savedActive = route.view === "search" && !!route.list && savedShown.some((s) => s.id === route.list);
   const openSearch = onOpenSearch ?? (() => setRoute({ view: "search" }));
 
+  /* ---------------- 0048 saved views ---------------- */
+  const viewsMode = views !== undefined;
+  // fetch the group's code alongside the views themselves (both arrive just after first paint)
+  useEffect(() => { if (viewsMode) prefetch(sidebarViewsChunk); }, [viewsMode]);
+  const marks = useViewerMarks();
+  // the open view is the current page when its row is in the group (pinned, not hidden by you)
+  const activeView = viewsMode ? views.find((v) => v.pinned && !marks.hiddenIds.has(v.id) && isViewActive(v, route)) : undefined;
+  const shareName = (v: Pick<SavedView, "workspaceId">) => workspaces.find((w) => (w.id ?? null) === (v.workspaceId ?? null))?.name ?? activeWs.name;
+
   const items = navItems(ctx);
   // the most specific row is the current page: an open saved view rather than
   // My tasks, an open project's own row rather than Projects
+  const projectViewActive = activeView?.kind === "project";
   const projectActive = !!activeProjectId && listedProjects.some((p) => p.id === activeProjectId);
   const isActive = (n: NavItem) => (n.id === "insights" ? place === "team" : n.id === place)
-    && !(n.id === "tasks" && savedActive) && !(n.id === "projects" && projectActive);
+    && !(n.id === "tasks" && (savedActive || (!!activeView && !projectViewActive)))
+    && !(n.id === "projects" && (projectActive || projectViewActive));
   const navRow = (n: NavItem) => {
     const active = isActive(n);
     let trailing: JSX.Element | null = null;
@@ -636,6 +734,14 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     </>
   );
 
+  const viewRows = viewsMode ? (views.length === 0 ? null : (
+    <Suspense fallback={null}>
+      <LazySidebarViews views={views} counts={viewCounts} tasks={tasks} route={route} currentUserId={currentUserId} myRole={myRole ?? null}
+        shareName={shareName} workspaceName={activeWs.name} onOpen={onOpenView ?? ((v) => setRoute(viewRoute(v)))}
+        onEditView={onEditView} onReorderViews={onReorderViews} />
+    </Suspense>
+  )) : savedRows;
+
   const openTaskTitle = focus.taskId ? tasks.find((t) => t.id === focus.taskId)?.title : undefined;
   const displayName = currentUser?.name || "You";
   const hasAcctMenu = !!(onOpenSettings || onOpenShortcuts || onSignOut);
@@ -689,7 +795,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         {/* places */}
         <nav aria-label="Main" className="ksb-nav" data-tour="places">
           {items.filter((n) => n.group === "me").map((n) => (
-            n.id === "tasks" ? <div key={n.id} style={{ display: "contents" }}>{navRow(n)}{savedRows}</div> : navRow(n)
+            n.id === "tasks" ? <div key={n.id} style={{ display: "contents" }}>{navRow(n)}{viewRows}</div> : navRow(n)
           ))}
           {ctx.personal ? <div aria-hidden="true" style={{ height: 12 }} /> : <SectionLabel>Team</SectionLabel>}
           {items.filter((n) => n.group === "team").map(navRow)}
@@ -707,45 +813,13 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             </p>
           ) : (
             <div role="list" aria-labelledby={projectsLabelId} className="kproj-list">
-              {listedProjects.map((p) => {
-                const active = activeProjectId === p.id;
-                const count = projectOpen.get(p.id) ?? 0;
-                const deletable = canDelete(p);
-                const archivable = !!onArchiveProject && canArchive(p);
-                const isPinned = pinned.has(p.id);
-                // room the name leaves for the action group when it's revealed
-                const reserve = (1 + (archivable ? 1 : 0) + (deletable ? 1 : 0)) * 25 + 8;
-                return (
-                  <div key={p.id} role="listitem" className="kproj-item" style={{ "--kacts": `${reserve}px` } as CSSProperties}>
-                    <button type="button" onClick={() => setRoute({ view: "project", projectId: p.id })} {...prefetchProps({ view: "project", projectId: p.id })} className="kproj kp" style={projectIdentity(p).style} data-active={active || undefined} aria-current={active ? "page" : undefined}>
-                      <ProjectTile project={p} size={20} />
-                      <span className="truncate kproj-name">{p.name}</span>
-                      {isPinned && <span className="kproj-pinmark" aria-hidden="true"><StarGlyph filled size={11} /></span>}
-                      {isPinned && <span className="sr-only">, pinned</span>}
-                      {count > 0 && <span className="kproj-n">{count}<span className="sr-only"> open {count === 1 ? "task" : "tasks"}</span></span>}
-                    </button>
-                    <div className="kproj-acts">
-                      <button type="button" className="kproj-act" data-on={isPinned} aria-pressed={isPinned}
-                        aria-label={`Pin project ${p.name}`} title={isPinned ? "Unpin" : "Pin to top"}
-                        onClick={(e) => { e.stopPropagation(); togglePin(p.id); }}>
-                        <StarGlyph filled={isPinned} />
-                      </button>
-                      {archivable && (
-                        <button type="button" className="kproj-act" data-kind="archive" aria-label={`Archive project ${p.name}`} title="Archive project"
-                          onClick={(e) => { e.stopPropagation(); onArchiveProject!(p.id); }}>
-                          <Icon name="archive" size={14} sw={1.75} />
-                        </button>
-                      )}
-                      {deletable && (
-                        <button type="button" className="kproj-act" data-kind="delete" aria-label={`Delete project ${p.name}`} title="Delete project"
-                          onClick={(e) => { e.stopPropagation(); onDeleteProject(p.id); }}>
-                          <Icon name="trash" size={14} sw={1.75} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {listedProjects.map((p) => (
+                <ProjectRow key={p.id} p={p} active={activeProjectId === p.id && !projectViewActive} count={projectOpen.get(p.id) ?? 0}
+                  isPinned={pinned.has(p.id)} archivable={!!onArchiveProject && canArchive(p)} deletable={canDelete(p)}
+                  onOpen={() => setRoute({ view: "project", projectId: p.id })} onTogglePin={() => togglePin(p.id)}
+                  onArchive={() => onArchiveProject?.(p.id)} onDelete={() => onDeleteProject(p.id)}
+                  onDropTasks={!guest && onDropTasksOnProject ? onDropTasksOnProject : null} />
+              ))}
             </div>
           )}
           {visibleProjects.length > 0 && (
