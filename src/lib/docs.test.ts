@@ -79,6 +79,15 @@ describe("demo docs", () => {
     expect(top.title).toBe("Two");
     expect(top.body).toEqual(d.body);
     expect(await getDocVersion("nope")).toBeNull();
+    // a checkpoint (a restore, keep mine) is a version of its own: "Two" stays in the list
+    const s3 = await saveProjectDoc({ id: d.id, projectId: d.projectId, title: "Restored", body: [], baseUpdatedAt: (await getProjectDoc(d.id))!.updatedAt, checkpoint: true });
+    expect(s3.status).toBe("saved");
+    const withRestore = await listDocVersions(d.id);
+    expect(withRestore.map((v) => v.title).slice(0, 2)).toEqual(["Restored", "Two"]);
+    expect(withRestore).toHaveLength(6);
+    // and the next ordinary save folds into it as usual
+    await saveProjectDoc({ id: d.id, projectId: d.projectId, title: "Restored, then typed", body: [], baseUpdatedAt: s3.doc.updatedAt });
+    expect((await listDocVersions(d.id)).map((v) => v.title).slice(0, 2)).toEqual(["Restored, then typed", "Two"]);
   });
 
   it("icon, order and archive don't count as an edit (updatedAt stays)", async () => {

@@ -7,7 +7,10 @@
    status); paste of plain text / Markdown; arrow keys between blocks;
    autosave after 2 s idle and on blur (Saving… / Saved); the conflict
    banner ("Sana edited this — Reload / Keep mine"); version history
-   drawer with restore. Read-only for guests. No new dependencies.
+   drawer with restore. Changes that couldn't be saved when the doc
+   closed (offline, a refusal, a conflict left open) are kept in this
+   tab (docDrafts) and offered back when it opens again. Read-only for
+   guests. No new dependencies.
 
    How it works: each text block is its own contenteditable element
    (BlockText) holding spans (lib/docBlocks); the editor owns the block
@@ -38,6 +41,7 @@ import {
 import { blocksToMarkdown, docErrorText, getProjectDoc, markdownToBlocks, saveProjectDoc, subscribeProjectDocs } from "../../lib/docs";
 import { copyText } from "../rituals/shared";
 import { caretOnEdgeLine, caretRect, getSelectionOffsets, readSpans, renderSpans, setSelectionOffsets } from "./docDom";
+import { draftWhen, forgetDocDraft, keepDocDraft, peekDocDraft, takeDocDraft, type DocDraft } from "./docDrafts";
 import { createDocSaver, type DocSaver } from "./docSaver";
 import { DocBlocksView, TaskChip } from "./DocView";
 import { VersionHistory } from "./VersionHistory";
@@ -72,6 +76,10 @@ export interface DocEditorHandle {
   content(): { title: string; body: DocBlock[] };
   /** unsaved changes (or a save in flight) */
   readonly pending: boolean;
+  /** Saving… / Saved / offline / conflict / error */
+  readonly state: DocSaveState;
+  /** the doc was deleted (or its project went to the bin) while it was open */
+  readonly gone: boolean;
 }
 
 /* ------------------------------------------------------------ small helpers */
@@ -216,6 +224,20 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     return me ? [...others, me] : others;
   }, [members, currentUserId]);
 
+  /* ---- changes kept in this tab (docDrafts) ---- */
+  // what this editor kept (forget removes only that), and changes kept when the doc last closed, offered back
+  const keptId = useRef<string | null>(null);
+  const closedRef = useRef(false);
+  const [recovered, setRecovered] = useState<DocDraft | null>(null);
+  const recoveredRef = useRef<DocDraft | null>(null);
+  // an offer nobody answered goes back for next time (unless newer unsaved changes took its place)
+  const putBack = useCallback(() => {
+    const r = recoveredRef.current;
+    if (r && !peekDocDraft(currentUserId, doc.id)) keepDocDraft(currentUserId, doc.id, r);
+  }, [currentUserId, doc.id]);
+  const putBackRef = useRef(putBack);
+  putBackRef.current = putBack;
+
   /* ---- autosave ---- */
   const cb = useRef({ onSaved, onSaveState });
   cb.current = { onSaved, onSaveState };
@@ -231,11 +253,38 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
       onConflict: (theirs) => setConflict(theirs),
       onGone: () => setGone(true),
       onError: (_why, e) => setFailure(docErrorText(e)),
+      keep: (d) => { keptId.current = keepDocDraft(currentUserId, doc.id, d); },
+      forget: () => {
+        if (keptId.current) { forgetDocDraft(currentUserId, doc.id, keptId.current); keptId.current = null; }
+        if (closedRef.current) putBackRef.current();
+      },
     });
   }
   const saver = saverRef.current;
-  // (StrictMode mounts twice: the second mount revives what the first unmount put away)
-  useEffect(() => { saver.revive(); return () => { void saver.flush(); saver.dispose(); }; }, [saver]);
+  // closing never drops words: what's unsaved still goes (the saver finishes its queue after this), and
+  // what can't be saved is kept. (StrictMode mounts twice: the second mount revives what the first put away.)
+  useEffect(() => {
+    closedRef.current = false;
+    saver.revive();
+    return () => {
+      closedRef.current = true;
+      void saver.flush();
+      saver.dispose();
+      putBackRef.current();
+    };
+  }, [saver]);
+  // changes kept when this doc last closed unsaved: offer them back (not ones this editor kept itself)
+  useEffect(() => {
+    if (!editable) return;
+    const stored = peekDocDraft(currentUserId, doc.id);
+    if (!stored || stored.id === keptId.current) return;
+    const d = takeDocDraft(currentUserId, doc.id);
+    if (!d || recoveredRef.current) return; // (StrictMode's second run: it's the one on offer)
+    if (docKey(d.title, d.body) === docKey(contentRef.current.title, contentRef.current.blocks)) return; // it reached the server after all
+    recoveredRef.current = d;
+    setRecovered(d);
+  }, [editable, currentUserId, doc.id]);
+
   // leaving the page with unsaved words: save what we can, and let the browser ask
   useEffect(() => {
     const onLeave = (e: BeforeUnloadEvent) => {
@@ -255,18 +304,20 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     let live = true;
     const off = subscribeProjectDocs(doc.projectId, (c) => {
       if (!live || c.docId !== doc.id) return;
-      if (c.type === "DELETE") { setGone(true); saver.hold(); return; }
+      if (c.type === "DELETE") { setGone(true); saver.markGone(); return; }
       if (c.updatedBy === currentUserId || (c.updatedAt && new Date(c.updatedAt).getTime() === new Date(saver.base).getTime())) return;
       if (saver.saving) return; // its answer will say
       getProjectDoc(doc.id).then((theirs) => {
         if (!live || !theirs) return;
         if (new Date(theirs.updatedAt).getTime() === new Date(saver.base).getTime()) return;
         if (!saver.dirty) {
-          // nothing unsaved here: take their copy quietly, keeping the caret where it was
+          // nothing unsaved here: take their copy quietly, keeping the caret where it was. Undo starts
+          // again from their copy (stepping back past it would save over their words, unannounced).
           const caret = lastCaret.current;
           const next = { title: theirs.title, blocks: ensureEditable(theirs.body) };
           contentRef.current = next;
           setContent(next);
+          history.current = { past: [], future: [], lastKind: "", lastBlock: "", lastAt: 0 };
           saver.adopt(theirs.updatedAt);
           if (caret && next.blocks.some((b) => b.id === caret.id) && document.activeElement && rootRef.current?.contains(document.activeElement)) pendingCaret.current = caret;
           announce(`Updated with ${theirs.updatedByName ?? nameOf(theirs.updatedBy ?? "") ?? "someone"}'s changes.`);
@@ -1063,7 +1114,29 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     if (!conflict) return;
     const at = conflict.updatedAt;
     setConflict(null);
-    void saver.keepMine(at).then(() => announce("Saved your version. Theirs is in Version history."));
+    // (a version of its own: the other copy stays in Version history, even when it was you in another tab)
+    void saver.keepMine(at).then(() => { if (saver.state === "saved") announce("Saved your version. The other one is in Version history."); });
+  };
+
+  /* ---- changes kept when the doc last closed ---- */
+  const settleRecovered = () => {
+    const r = recoveredRef.current;
+    recoveredRef.current = null;
+    setRecovered(null);
+    if (r) forgetDocDraft(currentUserId, doc.id, r.id);
+    return r;
+  };
+  const restoreRecovered = () => {
+    const r = settleRecovered();
+    if (!r) return;
+    // like restoring a version: an edit you can undo, saved as a version of its own (what's here now stays in the history)
+    commit({ title: r.title, blocks: ensureEditable(r.body) }, { kind: "edit", caret: null });
+    saver.checkpoint();
+    void saver.flush();
+    announce("Put your unsaved changes back.");
+  };
+  const discardRecovered = () => {
+    if (settleRecovered()) announce("Discarded those changes.");
   };
 
   /* ---- what the host can ask ---- */
@@ -1074,11 +1147,21 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     markdown: markdownNow,
     content: () => ({ title: contentRef.current.title, body: contentRef.current.blocks }),
     get pending() { return saver.dirty || saver.saving; },
+    get state() { return saver.state; },
+    get gone() { return saver.gone; },
   }));
 
-  const restoreVersion = (v: { title: string; body: DocBlock[]; savedAt: string }) => {
+  // A restore is an edit you can undo, saved as a version of its own (p_checkpoint), so the version that
+  // holds what the doc said before stays in the list. What's on screen goes first: a save under way (and
+  // anything typed during it) lands before the restore does.
+  const restoreVersion = async (v: { title: string; body: DocBlock[]; savedAt: string }) => {
+    if (saver.saving) {
+      await saver.flush();
+      if (closedRef.current) return; // (the doc closed meanwhile)
+    } else void saver.flush();
     const next = { title: v.title, blocks: ensureEditable(v.body) };
     commit(next, { kind: "edit", caret: null });
+    saver.checkpoint();
     void saver.flush();
     const when = new Date(v.savedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
     announce(`Restored the version from ${when}.`);
@@ -1096,6 +1179,8 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   /* ================================ render ================================ */
 
   const conflictName = conflict ? (conflict.updatedBy === currentUserId ? "You" : conflict.updatedByName ?? nameOf(conflict.updatedBy ?? "") ?? "Someone") : "";
+  // (the doc moved on since those changes were made: restoring puts them over the copy here now)
+  const recoveredStale = !!recovered && new Date(recovered.base).getTime() !== new Date(saver.base).getTime();
   const showOwnIndicator = !onSaveState;
   const firstEmpty = blocks.length === 1 && isBlockEmpty(blocks[0]) && blocks[0].type === "p";
 
@@ -1138,6 +1223,19 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
           <p><b>This doc was deleted</b>, or its project went to the recycle bin. Your changes can't be saved here; copy anything you need.</p>
           <span className="kdoc-banner-acts">
             <Button size="sm" icon="copy" onClick={() => void copyText(markdownNow()).then((ok) => announce(ok ? "Copied the doc as Markdown." : "Couldn't copy."))}>Copy as Markdown</Button>
+          </span>
+        </div>
+      )}
+      {recovered && !gone && (
+        <div className="kdoc-banner" data-tone="warn" role="alert">
+          <Icon name="alert" size={16} sw={1.9} />
+          <p><b>Changes you made {draftWhen(recovered.at)} weren't saved.</b>{" "}
+            {recoveredStale
+              ? "This doc has been edited since. Restore puts your changes back; the version here now stays in Version history."
+              : "They're kept in this tab. Restore them, or discard them."}</p>
+          <span className="kdoc-banner-acts">
+            <Button size="sm" variant="ghost" onClick={discardRecovered}>Discard</Button>
+            <Button size="sm" variant="primary" onClick={restoreRecovered}>Restore</Button>
           </span>
         </div>
       )}
@@ -1351,7 +1449,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
       </Popover>
 
       <VersionHistory open={historyOpen} onClose={() => setHistoryOpen(false)} docId={doc.id} members={members} nameOf={nameOf}
-        tasks={taskById} canRestore={editable && !gone} onRestore={restoreVersion} />
+        tasks={taskById} canRestore={editable && !gone} onRestore={(v) => void restoreVersion(v)} />
 
       <p className="sr-only" role="status" aria-live="polite">{notice}</p>
     </div>

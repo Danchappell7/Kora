@@ -57,7 +57,8 @@
 --      updated_at: a stale save gets the server's copy back as a conflict),
 --      set_project_doc_props() and delete_project_doc(). Versions are cut
 --      every 10 minutes of one person's editing (or when someone else
---      saves); the last 50 are kept. @mentions notify once each (Inbox kind
+--      saves, or the save is a checkpoint: a restore or "keep mine"); the
+--      last 50 are kept. @mentions notify once each (Inbox kind
 --      'doc_mention', pref 'mention').
 --   5. activity.meta (jsonb): what an Inbox item points at beyond its task
 --      ({ approval_id, event, status } · { doc_id, project_id }).
@@ -1315,12 +1316,16 @@ revoke execute on function public.project_doc_json(public.project_docs) from pub
 --   p_icon null keeps the icon ('' clears it). p_mentions: every person the doc
 --   @mentions now (null = unchanged); people newly mentioned (who can see the
 --   project) get one Inbox notice each.
+--   p_checkpoint: this save is a version of its own, never folded into your
+--            last one (a restore from Version history, keep mine): the version
+--            that held what the doc said just before stays in the history.
 -- Answers { status: 'saved' | 'conflict', doc }.
 -- Errors: 'not authorized' · 'invalid doc' · 'invalid body' · 'doc too large' ·
 --         'invalid title' · 'project not found' · 'doc not found' · 'not allowed' · 'too many docs'
+drop function if exists public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[]);   -- (before p_checkpoint)
 create or replace function public.save_project_doc(p_doc uuid, p_project uuid, p_title text, p_body jsonb,
                                                    p_base_updated_at timestamptz default null, p_icon text default null,
-                                                   p_mentions uuid[] default null)
+                                                   p_mentions uuid[] default null, p_checkpoint boolean default false)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   me      uuid := auth.uid();
@@ -1372,13 +1377,18 @@ begin
     returning * into d;
   end if;
 
-  -- versions: one per 10 minutes of the same person's editing; the last 50
+  -- versions: one per 10 minutes of the same person's editing; the last 50.
+  -- A checkpoint always starts a new one (the newest version always holds
+  -- what the doc said before this save: every save writes it). A new one is
+  -- stamped with the doc's updated_at, which always moves on, so it sorts
+  -- after every earlier version even when two saves share a millisecond.
   select v.id, v.saved_by, v.saved_at into lastv from public.project_doc_versions v
    where v.doc_id = d.id order by v.saved_at desc, v.id desc limit 1;
-  if lastv.id is not null and lastv.saved_by = me and lastv.saved_at > now() - interval '10 minutes' then
+  if not coalesce(p_checkpoint, false)
+     and lastv.id is not null and lastv.saved_by = me and lastv.saved_at > now() - interval '10 minutes' then
     update public.project_doc_versions set title = d.title, body = d.body where id = lastv.id;
   else
-    insert into public.project_doc_versions (doc_id, title, body, saved_by, saved_at) values (d.id, d.title, d.body, me, ts);
+    insert into public.project_doc_versions (doc_id, title, body, saved_by, saved_at) values (d.id, d.title, d.body, me, d.updated_at);
     delete from public.project_doc_versions
      where id in (select v.id from public.project_doc_versions v where v.doc_id = d.id
                    order by v.saved_at desc, v.id desc offset 50);
@@ -1437,10 +1447,10 @@ begin
   return true;
 end; $$;
 
-revoke execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[]) from public, anon;
+revoke execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean) from public, anon;
 revoke execute on function public.set_project_doc_props(uuid, text, double precision, boolean) from public, anon;
 revoke execute on function public.delete_project_doc(uuid) from public, anon;
-grant execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[]) to authenticated;
+grant execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean) to authenticated;
 grant execute on function public.set_project_doc_props(uuid, text, double precision, boolean) to authenticated;
 grant execute on function public.delete_project_doc(uuid) to authenticated;
 

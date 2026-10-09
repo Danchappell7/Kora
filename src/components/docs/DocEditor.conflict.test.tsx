@@ -42,7 +42,7 @@ function setup() {
   return { ...utils, ref, block, type };
 }
 
-beforeEach(() => { save.mockReset(); get.mockReset(); listeners.length = 0; });
+beforeEach(() => { save.mockReset(); get.mockReset(); listeners.length = 0; sessionStorage.clear(); });
 
 describe("someone else saved first", () => {
   it("names them; Keep mine saves again on their updatedAt", async () => {
@@ -60,7 +60,8 @@ describe("someone else saved first", () => {
     expect(save).toHaveBeenCalledTimes(1);
     fireEvent.click(within(banner).getByRole("button", { name: "Keep mine" }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
-    expect(save.mock.calls[1][0]).toMatchObject({ baseUpdatedAt: theirs.updatedAt, body: [{ id: "a", type: "p", spans: [{ text: "mine, more" }] }] });
+    // a version of its own: theirs stays in Version history even if it was you, in another tab
+    expect(save.mock.calls[1][0]).toMatchObject({ baseUpdatedAt: theirs.updatedAt, body: [{ id: "a", type: "p", spans: [{ text: "mine, more" }] }], checkpoint: true });
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
@@ -89,6 +90,28 @@ describe("someone else saved first", () => {
     get.mockClear();
     await act(async () => { listeners.forEach((l) => l({ type: "UPDATE", docId: "d1", updatedAt: "2026-10-09T10:00:00.000Z", updatedBy: "m-self" })); });
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it("…after which undo starts again from their copy: stepping back past it would save over their words", async () => {
+    save.mockImplementation(async (i: DocSaveInput) => ({ status: "saved", doc: { ...base, title: i.title, body: i.body, updatedAt: "2026-10-09T09:01:00.000Z" } }));
+    const s = setup();
+    s.type("mine");
+    await act(async () => { await s.ref.current!.flush(); });
+    expect(save).toHaveBeenCalledTimes(1);
+    get.mockResolvedValue(theirs);
+    await act(async () => { listeners.forEach((l) => l({ type: "UPDATE", docId: "d1", updatedAt: theirs.updatedAt, updatedBy: "m-3" })); });
+    await waitFor(() => expect(s.block().textContent).toBe("their words"));
+    act(() => s.block().focus());
+    fireEvent.keyDown(s.block(), { key: "z", metaKey: true, ctrlKey: true });
+    expect(s.block().textContent).toBe("their words");
+    expect(s.container.querySelector(".kdoc-editor > p[role='status']")).toHaveTextContent("Nothing to undo.");
+    await act(async () => { await s.ref.current!.flush(); });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    // what I write next saves on their copy, as usual
+    s.type("their words, and mine");
+    await act(async () => { await s.ref.current!.flush(); });
+    expect(save.mock.calls[1][0]).toMatchObject({ baseUpdatedAt: theirs.updatedAt });
   });
 
   it("…and while you have unsaved words: the banner, before any save is lost", async () => {

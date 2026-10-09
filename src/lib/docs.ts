@@ -9,7 +9,7 @@
        Versions: project_doc_versions?doc_id=eq.<id>&select=id,doc_id,title,saved_by,saved_at
               &order=saved_at.desc (one version's body: select=* &id=eq.<id>)
      rpc save_project_doc(p_doc, p_project, p_title, p_body jsonb (the block array),
-                          p_base_updated_at?, p_icon?, p_mentions uuid[]?)
+                          p_base_updated_at?, p_icon?, p_mentions uuid[]?, p_checkpoint?)
          → { status: 'saved' | 'conflict', doc }
          new doc: p_doc = a fresh uuid, p_base_updated_at null.
          save: p_base_updated_at = the updatedAt you last loaded/saved (milliseconds are
@@ -18,6 +18,8 @@
          p_mentions: everyone the doc @mentions now (newly mentioned people get one
          Inbox notice: kind 'doc_mention', meta { doc_id, project_id }).
          A version is cut per 10 minutes of one person's editing; the last 50 are kept.
+         p_checkpoint: this save is a version of its own, never folded into your last
+         one (a restore, keep mine), so what the doc said just before stays in history.
      rpc set_project_doc_props(p_doc, p_icon?, p_position?, p_archived?) → doc JSON
          (doesn't change updated_at, so an open editor never conflicts over it)
      rpc delete_project_doc(p_doc) → true
@@ -179,7 +181,7 @@ export const DOC_COPY: Readonly<Record<DocFailure, string>> = {
   too_many: `That's ${DOC_LIMITS.perProject} docs, the most a project can hold. Archive or delete one you no longer need first.`,
   invalid: "Something in this doc couldn't be saved. Check the title (200 characters at most) and try again.",
   unavailable: "Docs aren't switched on yet. The workspace owner needs to run the latest database update.",
-  network: "You're offline. Your changes are kept here and will save when you're back online.",
+  network: "You're offline. Check your connection and try again.",
   error: "Something went wrong. Try again.",
 };
 
@@ -298,14 +300,20 @@ export async function getProjectDoc(docId: string): Promise<ProjectDoc | null> {
   return parseProjectDoc({ ...row, can_edit: canEdit });
 }
 
+/** A save; `checkpoint` makes it a version of its own (a restore, keep mine): what the doc said just
+ *  before stays in Version history instead of being folded into your last version. */
+export type DocSaveRequest = DocSaveInput & { checkpoint?: boolean };
+
 /** Create (new id, null base) or save a doc. 'conflict' brings back the copy someone else saved. */
-export async function saveProjectDoc(input: DocSaveInput): Promise<DocSaveResult> {
+export async function saveProjectDoc(input: DocSaveRequest): Promise<DocSaveResult> {
   checkInput(input);
   const mentions = input.mentions == null ? null : [...new Set(input.mentions)].slice(0, DOC_LIMITS.mentions);
   if (!supabase) return demo().save({ ...input, mentions });
   const r = parseDocSaveResult(await rpc("save_project_doc", {
     p_doc: input.id, p_project: input.projectId, p_title: (input.title ?? "").trim(), p_body: input.body,
     p_base_updated_at: input.baseUpdatedAt ?? null, p_icon: input.icon ?? null, p_mentions: mentions,
+    // (only when it's one: an ordinary save sends exactly the arguments it always has)
+    ...(input.checkpoint ? { p_checkpoint: true } : {}),
   }));
   if (!r) throw new Error("error");
   return r;
@@ -390,7 +398,8 @@ export function subscribeProjectDocs(projectId: string, onChange: (change: DocCh
    Three docs on the demo launch project (a brief with @mentions and Make-task
    lines, last week's meeting notes, a decision log), each with a few versions.
    Same rules as the server: optimistic concurrency on updatedAt, a version per
-   10 minutes of one person's editing (the last 50), 200 docs a project. */
+   10 minutes of one person's editing (a checkpoint always starts one; the
+   last 50), 200 docs a project. */
 
 type Listener = (c: DocChange) => void;
 interface DemoState {
@@ -417,10 +426,10 @@ function demo() {
   const stamp = (prev?: string) => new Date(Math.max(Date.now(), prev ? new Date(prev).getTime() + 1 : 0)).toISOString();
   const named = (d: ProjectDoc): ProjectDoc => ({ ...clone(d), createdByName: nameOf(d.createdBy), updatedByName: nameOf(d.updatedBy), canEdit: true });
   const item = (d: ProjectDoc): ProjectDocListItem => parseProjectDocListItem(d)!;
-  const cutVersion = (d: ProjectDoc, me: string) => {
+  const cutVersion = (d: ProjectDoc, me: string, checkpoint = false) => {
     const list = st.versions.get(d.id) ?? [];
     const last = list[0];
-    if (last && last.savedBy === me && Date.now() - new Date(last.savedAt).getTime() < 10 * 60000) {
+    if (!checkpoint && last && last.savedBy === me && Date.now() - new Date(last.savedAt).getTime() < 10 * 60000) {
       list[0] = { ...last, title: d.title, body: clone(d.body) };
     } else {
       list.unshift({ id: `dv-${++demoSeq}-${Date.now().toString(36)}`, docId: d.id, title: d.title, body: clone(d.body), savedBy: me, savedAt: d.updatedAt });
@@ -436,7 +445,7 @@ function demo() {
     list: (projectId: string) => beat([...st.docs.values()].filter((d) => d.projectId === projectId)
       .sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || a.createdAt.localeCompare(b.createdAt)).map(item)),
     get: (id: string) => beat(st.docs.has(id) ? named(st.docs.get(id)!) : null),
-    save: (input: DocSaveInput): Promise<DocSaveResult> => {
+    save: (input: DocSaveRequest): Promise<DocSaveResult> => {
       const me = demoMe();
       const cur = st.docs.get(input.id);
       const title = (input.title ?? "").trim();
@@ -465,7 +474,7 @@ function demo() {
       }
       if (input.mentions) d.mentions = [...input.mentions];
       st.docs.set(d.id, d);
-      cutVersion(d, me);
+      cutVersion(d, me, !!input.checkpoint);
       tell(d.projectId, { type: cur ? "UPDATE" : "INSERT", docId: d.id, updatedAt: d.updatedAt, updatedBy: me, item: item(d) });
       return beat({ status: "saved" as const, doc: named(d) });
     },

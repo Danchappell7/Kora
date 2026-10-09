@@ -79,6 +79,10 @@ describe("docs over PostgREST", () => {
     expect(await saveProjectDoc({ id: DOC.id, projectId: DOC.project_id, title: "Mine", body: [], baseUpdatedAt: "2026-01-01T00:00:00Z", icon: "", mentions: null }))
       .toMatchObject({ status: "conflict", doc: { title: "Theirs" } });
     expect(rpc).toHaveBeenLastCalledWith("save_project_doc", expect.objectContaining({ p_icon: "", p_mentions: null }));
+    // an ordinary save never sends p_checkpoint; a restore / keep mine does
+    expect(rpc.mock.calls.every((c) => !("p_checkpoint" in (c[1] as object)))).toBe(true);
+    await saveProjectDoc({ id: DOC.id, projectId: DOC.project_id, title: "Old", body: [], baseUpdatedAt: DOC.updated_at, checkpoint: true });
+    expect(rpc).toHaveBeenLastCalledWith("save_project_doc", expect.objectContaining({ p_doc: DOC.id, p_checkpoint: true }));
   });
 
   it("an answer it can't read is an error, never a silent success", async () => {

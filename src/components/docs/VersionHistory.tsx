@@ -2,8 +2,9 @@
    KANBO — a doc's version history (a right-hand sheet).      [0047, w5]
    The last 50 versions, newest first (one per ten minutes of one
    person's editing; someone else saving starts a new one). Pick one to
-   read it; Restore puts its title and contents back as a new edit, so
-   nothing is lost — the version you had stays in the list.
+   read it; Restore puts its title and contents back as a new edit, saved
+   as a version of its own (save_project_doc's p_checkpoint), so nothing
+   is lost — the version you had stays in the list, and ⌘Z undoes it.
    ============================================================ */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { DocBlock, Member, ProjectDocVersion, Task } from "../../data/types";

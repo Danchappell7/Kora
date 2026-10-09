@@ -6,7 +6,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DocBlock, ProjectDoc, Task } from "../../data/types";
 import { MEMBERS, TASKS } from "../../data/data";
-import { getProjectDoc, resetDemoDocs, saveProjectDoc } from "../../lib/docs";
+import { getDocVersion, getProjectDoc, listDocVersions, resetDemoDocs, saveProjectDoc } from "../../lib/docs";
 import { DocEditor, type DocEditorHandle } from "./DocEditor";
 import { getSelectionOffsets, setSelectionOffsets } from "./docDom";
 
@@ -42,7 +42,9 @@ function typeInto(el: HTMLElement, text: string, data = text.slice(-1)) {
 const caretAt = (el: HTMLElement, start: number, end = start) => { act(() => el.focus()); setSelectionOffsets(el, start, end); };
 const types = (rows: HTMLElement[]) => rows.map((r) => r.dataset.type);
 
-beforeEach(() => { resetDemoDocs(); });
+beforeEach(() => { resetDemoDocs(); sessionStorage.clear(); });
+/** a doc's versions, newest first, as the text of their first block */
+const versionTexts = async (docId: string) => Promise.all((await listDocVersions(docId)).map(async (v) => (await getDocVersion(v.id))!.body![0]?.spans?.[0]?.text ?? ""));
 afterEach(() => { vi.useRealTimers(); });
 
 describe("typing and saving", () => {
@@ -347,7 +349,7 @@ describe("checklists, callouts and the block menu", () => {
 });
 
 describe("someone else saved", () => {
-  it("the same person in another tab: says so, and Keep mine saves over the other copy", async () => {
+  it("the same person in another tab: says so; Keep mine saves over the other copy, which stays in Version history", async () => {
     const doc = await makeDoc([P("a", "start")]);
     const { blockEls, ref } = setup(doc);
     // Sana saves first (another browser), from the same base
@@ -359,6 +361,8 @@ describe("someone else saved", () => {
     fireEvent.click(within(banner).getByRole("button", { name: "Keep mine" }));
     await waitFor(async () => expect((await getProjectDoc(doc.id))!.body[0].spans).toEqual([{ text: "mine" }]));
     expect(screen.queryByText(/somewhere else/)).toBeNull();
+    // (same person, within ten minutes: without a version of its own, "theirs" would have been folded away)
+    expect(await versionTexts(doc.id)).toEqual(["mine", "theirs"]);
   });
 
   it("Reload shows their version instead", async () => {
@@ -392,6 +396,8 @@ describe("version history", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Restore this version" }));
     await waitFor(() => expect(blockEls()[0].textContent).toBe("first draft"));
     await waitFor(async () => expect((await getProjectDoc(doc.id))!.title).toBe("Draft"));
+    // the words it replaced are still in the list (a restore never folds into your last version)
+    expect(await versionTexts(doc.id)).toEqual(["first draft", "final words", "first draft"]);
   });
 });
 
