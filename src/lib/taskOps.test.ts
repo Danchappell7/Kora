@@ -68,24 +68,25 @@ describe("statusTransition", () => {
 
 describe("buildRecurrence", () => {
   const weekly = task({
-    id: "r1", title: "Payroll check", recurrence: "weekly", dueDate: "2026-09-28", startDate: "2026-09-26", status: "done",
-    completedAt: "2026-09-28", loggedHours: 2, reactions: { "👍": ["me"] }, comments: 3, planToday: true, scheduled: 540,
+    // (dates well in the future: buildRecurrence rolls a series that's fallen behind forward past today)
+    id: "r1", title: "Payroll check", recurrence: "weekly", dueDate: "2030-09-30", startDate: "2030-09-28", status: "done",
+    completedAt: "2030-09-30", loggedHours: 2, reactions: { "👍": ["me"] }, comments: 3, planToday: true, scheduled: 540,
   });
-  const kids = [task({ id: "k1", parentId: "r1", status: "done", dueDate: "2026-09-27" }), task({ id: "k2", parentId: "r1", archivedAt: "2026-09-01" })];
+  const kids = [task({ id: "k1", parentId: "r1", status: "done", dueDate: "2030-09-29" }), task({ id: "k2", parentId: "r1", archivedAt: "2030-09-01" })];
 
   it("spawns the next occurrence with dates shifted and history reset", () => {
     let n = 0;
     const rows = buildRecurrence(weekly, [weekly, ...kids], () => `n${++n}`)!;
     const [next, child] = rows;
-    expect(next.dueDate).toBe("2026-10-05");
-    expect(next.startDate).toBe("2026-10-03");
+    expect(next.dueDate).toBe("2030-10-07");
+    expect(next.startDate).toBe("2030-10-05");
     expect(next).toMatchObject({ status: "todo", completedAt: undefined, loggedHours: undefined, reactions: {}, comments: 0, planToday: false, scheduled: null });
     // live sub-tasks come along as to-do; archived ones don't
     expect(rows).toHaveLength(2);
-    expect(child).toMatchObject({ parentId: next.id, status: "todo", dueDate: "2026-10-04" });
+    expect(child).toMatchObject({ parentId: next.id, status: "todo", dueDate: "2030-10-06" });
   });
   it("is idempotent: no second occurrence when an open one is already due on or after the next date", () => {
-    const existing = task({ id: "r2", title: "Payroll check", recurrence: "weekly", dueDate: "2026-10-05" });
+    const existing = task({ id: "r2", title: "Payroll check", recurrence: "weekly", dueDate: "2030-10-07" });
     expect(buildRecurrence(weekly, [weekly, existing])).toBeNull();
     // a done or earlier one doesn't count
     expect(buildRecurrence(weekly, [weekly, { ...existing, status: "done" }])).not.toBeNull();

@@ -11,6 +11,7 @@ import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { downloadAccountsCsv } from "../../admin/accountsCsv";
+import { SystemStatus } from "../admin";
 
 /* Early-access requests — review, approve (with email), decline. */
 type ReqTab = "pending" | "approved" | "declined" | "all";
@@ -939,6 +940,8 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
       </div>
 
       <Ribbon items={ribbon} />
+      {/* 0047: health check, this build, error reporting and the uptime runs (defaults to the running build) */}
+      <SystemStatus />
 
       <AccessRequestsPanel />
 

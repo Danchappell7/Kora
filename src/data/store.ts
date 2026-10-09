@@ -10,6 +10,7 @@ import { supabase, isSupabaseConfigured } from "../lib/supabase";
 import { offlineQueue, LEGACY_QUEUE_KEY, type QueuedMutation } from "../lib/offlineQueue";
 import { reportError } from "../lib/monitoring";
 import { parseActivityMeta } from "../lib/activityMeta";
+import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
@@ -1395,7 +1396,10 @@ export const store = {
       if (!demoInboxSeeded) {
         demoInboxSeeded = true;
         const logged = new Set(demoActivity.map((a) => a.id));
-        demoActivity = [...demoActivity, ...seedCopy(DEMO_ACTIVITY).filter((a) => !logged.has(a.id))].sort(newestFirst);
+        // 0047: approvals waiting on you (and a decision on yours), and Sana's @mention in the launch brief (a doc: no task)
+        const docMention: Activity = { id: "a-demo-doc-1", taskId: null, taskTitle: "Launch brief", kind: "doc_mention", detail: "Sana Rao",
+          createdAt: new Date(Date.now() - 125 * 60_000).toISOString(), meta: { docId: "doc-launch-brief", projectId: "p-launch" } };
+        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention].filter((a) => !logged.has(a.id))].sort(newestFirst);
       }
       return {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
@@ -2311,7 +2315,7 @@ export const store = {
   async listTaskEvents(taskId: string): Promise<TaskEvent[]> {
     if (!supabase) {
       // the seeded history (a date that slipped twice, who moved what)
-      return seedCopy(DEMO_TASK_EVENTS).filter((e) => e.taskId === taskId).sort(newestFirst)
+      return [...seedCopy(DEMO_TASK_EVENTS).filter((e) => e.taskId === taskId), ...demoApprovalEvents(taskId)].sort(newestFirst)
         .map((e) => ({ id: e.id, actorName: e.actorName, field: e.field, oldValue: e.oldValue, newValue: e.newValue, createdAt: e.createdAt }));
     }
     try {

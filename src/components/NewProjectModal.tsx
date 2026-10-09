@@ -3,6 +3,7 @@
    sheet for the team template gallery (TeamTemplatePicker): a
    template's projects, each with sections, starter tasks, a request
    form and a rule, added to this workspace. Back returns to the form.
+   "Plan it with Kanbo" hands over to the AI project planner (App).
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Button, Sheet, spectrumColor } from "./primitives";
@@ -13,7 +14,7 @@ import type { NewProject } from "../data/store";
 import type { Project, WorkspaceTemplate } from "../data/types";
 import "./project/projects.css";
 
-export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate }: {
+export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate, onPlanWithKanbo }: {
   open: boolean;
   onClose: () => void;
   /** templateId: the template it was started from, if any — a built-in one
@@ -25,6 +26,8 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   /** "From a team template" (omit to hide it): adds the template's projects (all, or
    *  `keys`); the sheet shows progress until it resolves, then closes */
   onApplyTemplate?: (template: WorkspaceTemplate, keys?: string[]) => Promise<void>;
+  /** "Plan it with Kanbo" (omit to hide it): this sheet closes and the planner opens, with the name typed so far as its goal */
+  onPlanWithKanbo?: (typedName: string) => void;
 }) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
@@ -103,10 +106,19 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
         </>
       )}>
       <div className="kpj-dialog">
-        {onApplyTemplate && (
-          <Button ref={teamButtonRef} variant="ghost" size="sm" icon="layers" onClick={() => switchTo("team")} style={{ alignSelf: "flex-start" }}>
-            From a team template
-          </Button>
+        {(onApplyTemplate || onPlanWithKanbo) && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignSelf: "flex-start" }}>
+            {onApplyTemplate && (
+              <Button ref={teamButtonRef} variant="ghost" size="sm" icon="layers" onClick={() => switchTo("team")}>
+                From a team template
+              </Button>
+            )}
+            {onPlanWithKanbo && (
+              <Button variant="ghost" size="sm" icon="kanbo" onClick={() => { const typed = trimmed; onClose(); onPlanWithKanbo(typed); }}>
+                Plan it with Kanbo
+              </Button>
+            )}
+          </div>
         )}
         {templates.length > 0 && (
           <select className="kpj-field" value={templateId} aria-label="Start from template"

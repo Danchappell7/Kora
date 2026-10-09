@@ -3,7 +3,7 @@
    (real addresses, Back/Forward), the page header, and the wiring
    between every view and the store.
    ============================================================ */
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 import { Icon, GlobalTipStyles, AppBg, Button, IconButton, type TabItem } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
@@ -63,6 +63,12 @@ import { findProjectTemplate, projectTemplateTasks, buildWorkspaceFromTemplate, 
 import { listenForPushMessages } from "./lib/push";
 import { takeNewTaskShortcut } from "./lib/install";
 import { resolveTagId } from "./components/views/reportingUtils";
+import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
+import { approvalFailure, listApprovalSummaries, listMyApprovals, subscribeApprovals, waitingOnApproval } from "./lib/approvals";
+import { restoreDeletedItems } from "./lib/trash";
+import { docMentionInWorkspace, docMentionRoute } from "./lib/docs";
+import type { DocMakeTask } from "./components/docs/DocEditor";
+import type { HistoryLogProps } from "./components/bin/HistoryLog";
 import type { InsightsNavProps } from "./components/views/InsightsSummary";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { QuickCapture } from "./components/QuickCapture";
@@ -72,13 +78,21 @@ import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { ProfileDraft } from "./components/SettingsModal";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate } from "./data/types";
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
   unseenCreates, reloadProjects, reloadWorkspaces,
   cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, readFilters, type Limiter,
 } from "./lib/taskOps";
+
+// 0047 screens load on demand, as Developers and Notion do: none of them is in the first download.
+// A chunk that can't be fetched: History shows nothing; the bin, Docs and the planner show their
+// ErrorBoundary's inline "couldn't load" (never a blank app)
+const RecycleBin = lazy(() => import("./components/bin/RecycleBin").then((m) => ({ default: m.RecycleBin })));
+const HistoryLog = lazy<React.ComponentType<HistoryLogProps>>(() => import("./components/bin/HistoryLog").then((m) => ({ default: m.HistoryLog }), () => ({ default: () => null })));
+const DocsTab = lazy(() => import("./components/docs/DocsTab").then((m) => ({ default: m.DocsTab })));
+const PlannerHost = lazy(() => import("./components/planner/PlannerHost").then((m) => ({ default: m.PlannerHost })));
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const GUEST_MSG = "Guests can view and comment — ask a workspace admin for member access";
@@ -325,6 +339,11 @@ export default function App() {
   const [newTaskProjectId, setNewTaskProjectId] = useState<string | undefined>(undefined);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
+  // 0047: the AI project planner (a new project, or tasks added to one)
+  const [planner, setPlanner] = useState<{ mode: "new" | "append"; projectId?: string; goal?: string } | null>(null);
+  // 0047 approvals: the row/card chips for this workspace, and what waits on you / on others for you
+  const [approvalSummaries, setApprovalSummaries] = useState<Record<string, ApprovalSummary>>({});
+  const [myApprovals, setMyApprovals] = useState<MyApprovals>({ toReview: [], requested: [] });
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const focus = useFocusTimer();
@@ -562,6 +581,37 @@ export default function App() {
     if (openProjectId && isTaskView(route.tab)) saveProjectPrefs(openProjectId, { view: route.tab });
   }, [openProjectId, route.tab, saveProjectPrefs]);
 
+  /* ---- 0047 approvals: chips on rows and cards, the Inbox group, Waiting on approval ---- */
+  // Approvals need a team task, so Personal has none. A failure keeps what's on screen
+  // (before 0047 the lib answers {} / nothing waiting).
+  const approvalsReady = !!tasks;
+  const approvalsSeqRef = useRef(0);
+  const refreshApprovalSummaries = useCallback(() => {
+    const ws = workspaceRef.current, seq = ++approvalsSeqRef.current;
+    if (!ws) { setApprovalSummaries({}); return; }
+    listApprovalSummaries(ws).then((m) => { if (seq === approvalsSeqRef.current && workspaceRef.current === ws) setApprovalSummaries(m); }, (e) => reportError(e, { op: "listApprovalSummaries" }));
+  }, []);
+  const refreshMyApprovals = useCallback(() => {
+    // before 0047 nothing waits on anyone: not an error worth reporting
+    listMyApprovals().then(setMyApprovals, (e) => { if (approvalFailure(e) !== "unavailable") reportError(e, { op: "listMyApprovals" }); });
+  }, []);
+  useEffect(() => {
+    if (!approvalsReady) return;
+    refreshApprovalSummaries();
+    refreshMyApprovals();
+  }, [approvalsReady, workspace, currentUserId, refreshApprovalSummaries, refreshMyApprovals]);
+  useEffect(() => {
+    if (!approvalsReady) return;
+    let timer: number | undefined;
+    // a burst of changes (a request names several reviewers) refreshes once
+    const unsub = subscribeApprovals(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => { refreshApprovalSummaries(); refreshMyApprovals(); }, 500);
+    });
+    return () => { window.clearTimeout(timer); unsub(); };
+  }, [approvalsReady, refreshApprovalSummaries, refreshMyApprovals]);
+  const onApprovalsChange = useCallback(() => { refreshApprovalSummaries(); refreshMyApprovals(); }, [refreshApprovalSummaries, refreshMyApprovals]);
+
   /* ---- inbox: scoped to the active workspace; the badge is the server's read_at ---- */
   const scopedActivity = useMemo(() => {
     if (!tasks) return [] as Activity[];
@@ -569,10 +619,12 @@ export default function App() {
     // activity never leaks into a team inbox (or vice versa). Unresolvable
     // (deleted-task) items are dropped. Integration notices (a webhook switched
     // off) have no task: they're about your own setup, so every inbox shows them.
+    // A doc @mention (0047) has no task either: it belongs to its project's workspace.
     const wsOfTask = new Map(tasks.map((t) => [t.id, t.workspaceId ?? null]));
     return activity.filter((a) => (a.kind === "integration" && a.taskId == null)
-      || (a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace));
-  }, [tasks, activity, workspace]);
+      || (a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace)
+      || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace)));
+  }, [tasks, activity, workspace, projects]);
   const scopedActivityRef = useRef<Activity[]>([]); scopedActivityRef.current = scopedActivity;
   // unread = not read on the server (any device), and not your own actions
   const inboxCount = scopedActivity.filter((a) => !a.readAt && !SELF_KINDS.has(a.kind)).length;
@@ -1587,13 +1639,37 @@ export default function App() {
       putBack(rows);
       if (!alreadySent) return;
       // The delete already went out (the page was closed or backgrounded). Rows whose
-      // delete failed are still on the server — they're simply back. The rest are
-      // saved again as copies, with their checklist and blocked-by links.
-      sent.then((failed) => {
+      // delete failed are still on the server — they're simply back. The rest come back
+      // from the recycle bin (0047) with their ids, comments, files and history; before
+      // 0047 (or in demo mode) they're saved again as copies, with their checklist and
+      // blocked-by links.
+      sent.then(async (failed) => {
         const kept = new Set([...failed, ...descendantsOf(failed, rows).map((d) => d.id)]);
-        const gone = rows.filter((r) => !kept.has(r.id)).map((r) => ({ ...r, comments: 0 }));
-        if (!gone.length) return;
-        const goneIds = new Set(gone.map((r) => r.id));
+        const goneRows = rows.filter((r) => !kept.has(r.id));
+        if (!goneRows.length) return;
+        const goneRowIds = new Set(goneRows.map((r) => r.id));
+        // the bin keeps one entry per deleted root (sub-tasks ride with their parent)
+        const goneRoots = goneRows.filter((r) => !r.parentId || !goneRowIds.has(r.parentId));
+        const sids = (await Promise.all(goneRoots.map((r) => (createsRef.current.get(r.id) ?? Promise.resolve(r.id)).catch(() => null))))
+          .filter((x): x is string => !!x);
+        const bin = await restoreDeletedItems(sids);
+        if (bin.status !== "unavailable") {
+          // putBack(rows) already put them on screen with their ids and comment counts
+          clearWrite([...goneRowIds]);
+          const back = new Set([...bin.restored, ...descendantsOf(bin.restored, goneRows).map((d) => d.id)]);
+          const notBack = goneRows.filter((r) => !back.has(r.id));
+          if (notBack.length) {
+            const nb = new Set(notBack.map((r) => r.id));
+            setTasks((ts) => ts && ts.filter((x) => !nb.has(x.id)));
+            toastAction(notBack.length === 1 ? `Couldn't bring back “${notBack[0].title}”. It's in the recycle bin.` : `Couldn't bring back ${plural(notBack.length, "task")}. They're in the recycle bin.`,
+              "Open recycle bin", () => setRoute({ view: "bin" }), UNDO_MS);
+          }
+          if (bin.notes.length) toastInfo(bin.notes.join(" "));
+          return;
+        }
+        // before 0047, or demo: restore as copies
+        const gone = goneRows.map((r) => ({ ...r, comments: 0 }));
+        const goneIds = goneRowIds;
         setTasks((ts) => ts && ts.map((x) => (goneIds.has(x.id) ? { ...x, comments: 0 } : x))); // their comments didn't come back
         gone.forEach((r) => { pendingTasksRef.current = [{ id: r.id, task: r, until: null }, ...pendingTasksRef.current.filter((p) => p.id !== r.id)]; });
         const created = new Map<string, Promise<string | null>>();
@@ -1617,7 +1693,7 @@ export default function App() {
           : `Restored ${plural(gone.length, "task")} as copies — they have new links, and their comments, attachments and history couldn't be recovered.`);
       });
     }, UNDO_MS);
-  }, [noteDelete, dropPending, clearWrite, serverDelete, log, toastAction, toastInfo, toastError, startCreate, copyChecklist]);
+  }, [noteDelete, dropPending, clearWrite, serverDelete, log, toastAction, toastInfo, toastError, startCreate, copyChecklist, setRoute]);
   removeTasksRef.current = removeTasks;
 
   // A pending delete must not be lost when the page is closed, reloaded or frozen.
@@ -2456,9 +2532,24 @@ export default function App() {
     setTasks((ts) => ts && ts.filter((t) => !ids.has(t.id)));
     noteDelete([...ids]); dropPending(ids);
     const failed = await serverDelete(affected);
-    if (failed.length) toastError(`Deleted “${proj.name}”, but ${plural(failed.length, "task")} couldn't be deleted — refresh to see ${failed.length === 1 ? "it" : "them"}.`);
-    else toastSuccess(`Deleted “${proj.name}”${affected.length ? ` and ${plural(affected.length, "task")}` : ""}`);
-  }, [denyGuest, canDeleteProject, deferTmp, applyProjects, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError]);
+    if (failed.length) { toastError(`Deleted “${proj.name}”, but ${plural(failed.length, "task")} couldn't be deleted — refresh to see ${failed.length === 1 ? "it" : "them"}.`); return; }
+    const deleted = `Deleted “${proj.name}”${affected.length ? ` and ${plural(affected.length, "task")}` : ""}`;
+    // 0047: the project (with its tasks, sections and docs) waits in the recycle bin, so Undo
+    // brings it all back. Demo mode has no bin (it would answer "unavailable"): no Undo there.
+    if (!store.configured) { toastSuccess(deleted); return; }
+    toastAction(`${deleted}. It's in the recycle bin for 30 days.`, "Undo", () => {
+      void restoreDeletedItems([id]).then((r) => {
+        if (r.status === "restored") {
+          clearWrite([...ids]);
+          applyProjects([...projectsRef.current.filter((p) => p.id !== id), proj]);
+          setTasks((ts) => ts && [...affected.filter((a) => !ts.some((t) => t.id === a.id)), ...ts]);
+          toastInfo(`Restored “${proj.name}”.`);
+        } else if (r.status !== "unavailable") {
+          toastAction(`Couldn't restore “${proj.name}”.`, "Open recycle bin", () => setRoute({ view: "bin" }));
+        }
+      });
+    }, {});
+  }, [denyGuest, canDeleteProject, deferTmp, applyProjects, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
 
   // ---- sections (ordered groupings within a project) ----
   const sectionWs = (s: Section | undefined) => (s ? s.workspaceId ?? projectWs(s.projectId) : null);
@@ -2860,6 +2951,38 @@ export default function App() {
     if (r?.projects.length && workspaceRef.current === wsId) setRoute({ view: "project", projectId: r.projects[0].id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [denyGuest, applyTeamTemplate]);
+
+  /* ---- 0047: plan a project with Kanbo (the AI planner; on-device when AI is off) ---- */
+  /** New mode plans a project in the workspace you're in; append adds tasks to `projectId`. Never for guests. */
+  const openPlanner = useCallback((p: { mode: "new" | "append"; projectId?: string; goal?: string }) => {
+    const wsId = p.mode === "append" && p.projectId ? projectWs(p.projectId) : workspaceRef.current;
+    if (denyGuest([wsId])) return;
+    setPlanner(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [denyGuest]);
+  /** What the planner made (it never calls this after a full rollback): keep it through any
+   *  reload already under way, show it, say how it went, and open the project. */
+  const onPlanCreated = useCallback((r: AppliedProjectPlan, message: { tone: "success" | "info" | "error"; text: string }) => {
+    if (r.project && !projectsRef.current.some((x) => x.id === r.project!.id)) {
+      noteCreated(r.project.id);
+      applyProjects([...projectsRef.current.filter((x) => x.id !== r.project!.id), r.project]);
+    }
+    const until = Date.now() + 30000;
+    pendingTasksRef.current = [...r.tasks.map((t) => ({ id: t.id, task: t, until })), ...pendingTasksRef.current.filter((p) => !r.tasks.some((t) => t.id === p.id))];
+    // (sections left by an earlier failed try that this run reused are in r.sections too: merge by id)
+    setSections((cur) => [...cur.filter((x) => !r.sections.some((y) => y.id === x.id)), ...r.sections]);
+    setTasks((ts) => ts && [...r.tasks.filter((t) => !ts.some((x) => x.id === t.id)), ...ts]);
+    requestReloadRef.current?.();
+    (message.tone === "success" ? toastSuccess : message.tone === "error" ? toastError : toastInfo)(message.text);
+    if (r.project) setRoute({ view: "project", projectId: r.project.id });
+  }, [noteCreated, applyProjects, toastSuccess, toastError, toastInfo, setRoute]);
+
+  /* ---- 0047 docs: "Make task" from a doc line, in the doc's project; resolves to the saved id (null: not made) ---- */
+  const makeDocTask: DocMakeTask = useCallback(async ({ title, projectId }) => {
+    if (denyGuest([projectWs(projectId)])) return null;
+    return persistTask(unplanIfTheirs(applyAutomation(buildNewTask({ title, projectId, planToday: false }))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [denyGuest, persistTask, unplanIfTheirs, applyAutomation, buildNewTask]);
 
   /* ---- workspaces & people ---- */
   /** A new workspace; `start` sets it up from a team template once it exists. Resolves when
@@ -3355,6 +3478,16 @@ export default function App() {
     const active = wsMembers.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === workspace).map((m) => ({ id: m.userId!, name: personName(m) }));
     return active.length > 0 ? active : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   })();
+  // the same people as Member[] (doc @mentions, the approvals group): guests are "external"
+  const wsPeople: Member[] = (() => {
+    const here = wsMembers.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === workspace).map((m): Member => {
+      const known = getMember(m.userId!);
+      return { id: m.userId!, name: known?.name || personName(m), email: m.email, type: m.role === "guest" ? "external" : known?.type === "self" ? "self" : "team", color: known?.color ?? SELF_COLOR };
+    });
+    if (here.length) return here;
+    const me = getMember(currentUserId);
+    return [me ?? { id: currentUserId, name: "You", email: "", type: "self", color: SELF_COLOR }];
+  })();
   // Search spans every workspace, so its people filter does too
   const everyone = (() => {
     const names = new Map<string, string>([[currentUserId, getMember(currentUserId)?.name || "You"]]);
@@ -3400,6 +3533,8 @@ export default function App() {
   };
   const projectHref = (tab: string) => (openProject ? pathOf({ view: "project", projectId: openProject.id, tab }) : undefined);
   const extraTabs: TabItem[] = openProject ? [
+    // 0047: the project's docs (guests read them too)
+    { id: "docs", label: "Docs", secondary: true, href: projectHref("docs") },
     { id: "updates", label: "Updates", count: projUpdates.length || undefined, secondary: true, href: projectHref("updates") },
     { id: "requests", label: "Requests", count: projForms.length || undefined, secondary: true, href: projectHref("requests") },
     ...(activeReadOnly ? [] : [{ id: "rules", label: "Rules", count: projRules.length || undefined, secondary: true, href: projectHref("rules") }]),
@@ -3465,10 +3600,13 @@ export default function App() {
                 onDuplicate={activeReadOnly ? undefined : duplicateProject}
                 onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}
                 onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)}
-                onEditIdentity={activeReadOnly ? undefined : (patch) => updateProject(openProject.id, patch)} />
+                onEditIdentity={activeReadOnly ? undefined : (patch) => updateProject(openProject.id, patch)}
+                onPlanTasks={activeReadOnly || openProject.id.startsWith("tmp-") ? undefined : () => openPlanner({ mode: "append", projectId: openProject.id })} />
             ),
           };
         }
+        // 0047: Projects › Recycle bin (the page draws no title of its own)
+        if (route.view === "bin") return { title: "Recycle bin", meta: activeWsName, actions: <Button variant="ghost" size="sm" icon="arrowLeft" onClick={() => setRoute({ view: "projects" })}>All projects</Button> };
         const tabs = tabsFor("projects", navCtx);
         const counts: Record<string, number> = { automations: wsRules.length, forms: wsForms.length };
         return {
@@ -3511,7 +3649,8 @@ export default function App() {
   // (a task's activity belongs to the workspace its task lives in, as in the Inbox itself)
   const wsTaskIds = new Set(tasks.filter((t) => (t.workspaceId ?? null) === workspace).map((t) => t.id));
   const inboxArchived = archivedRev >= 0 ? [...archivedHereRef.current.values()].map((p) => p.item)
-    .filter((a) => (a.kind === "integration" && !a.taskId) || (!!a.taskId && wsTaskIds.has(a.taskId))).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
+    .filter((a) => (a.kind === "integration" && !a.taskId) || (!!a.taskId && wsTaskIds.has(a.taskId)) || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace)))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
   // Workload and Radar: guests' work shows, but they carry no team capacity
   const loadMembers = assignees.map((a) => ({ ...a, guest: wsMembers.some((m) => m.userId === a.id && (m.workspaceId ?? null) === workspace && m.role === "guest") || undefined }));
 
@@ -3553,13 +3692,25 @@ export default function App() {
         onComplete={(taskId) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); }}
         // "Webhook to … switched off" opens Settings › Developers, where it's switched back on
         // (hidden while you're a guest here: the notice says where to go)
-        onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")} />;
+        onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")}
+        // 0047: "Approvals for you" first (this workspace's), and doc @mentions open their doc
+        approvals={{ toReview: myApprovals.toReview.filter((a) => (a.workspaceId ?? null) === workspace), projects, members: wsPeople, onDecided: onApprovalsChange }}
+        onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} warnings={calWarnings} syncing={calSyncing} readOnly={activeReadOnly}
         scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
+        onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
         onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={risksByProject} />;
+      // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)
+      case "bin": return (
+        <Suspense fallback={null}>
+          <RecycleBin key={wsKey} workspaceId={workspace} workspaceName={activeWsName} role={workspace ? (myRole ?? null) : null} currentUserId={currentUserId}
+            members={wsPeople} projects={wsProjects} onRestored={(rs) => clearWrite(rs.map((r) => r.itemId))}
+            onOpenProject={(id) => setRoute({ view: "project", projectId: id })} />
+        </Suspense>
+      );
       case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} workspaceId={workspace} readOnly={activeReadOnly}
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
         onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
@@ -3596,7 +3747,14 @@ export default function App() {
           {...(inProject ? {
             // a project: its views as tabs, then Updates · Requests · Rules · About, and its notice line
             tab: projectTab, onTab: goProjectTab, extraTabs,
-            renderExtra: (tab: string) => (
+            renderExtra: (tab: string) => tab === "docs" ? (
+              <Suspense fallback={null}>
+                <DocsTab project={openProject!} members={wsPeople} tasks={scoped} currentUserId={currentUserId} readOnly={activeReadOnly}
+                  docId={route.docId ?? null}
+                  onOpenDoc={(docId) => setRoute({ view: "project", projectId: openProject!.id, tab: "docs", ...(docId ? { docId } : {}) }, { keepPanel: true })}
+                  onMakeTask={makeDocTask} onOpenTask={setDetailId} />
+              </Suspense>
+            ) : (
               <ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={assignees}
                 canManage={canManageProject(openProject!)} readOnly={activeReadOnly} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus}
@@ -3610,6 +3768,8 @@ export default function App() {
             savedViews: savedSearches.map((s) => ({ id: s.id, name: s.name, count: savedSearchCounts[s.id] ?? 0 })),
             onOpenSavedView: (id: string) => setRoute({ view: "search", list: id }), onSaveView: saveMyTasksView,
             onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
+            // 0047: Waiting on › "Waiting on approval" (your open requests)
+            waitingApproval: waitingOnApproval(myApprovals, allTasks),
           } satisfies Partial<React.ComponentProps<typeof TasksPage>>)} />;
       }
       default: return null;
@@ -3694,7 +3854,10 @@ export default function App() {
           {/* a page that fails offers Today, and Today itself offers My tasks (never the page that just failed) */}
           <ErrorBoundary key={`${route.view}:${route.projectId ?? ""}`} inline name="view"
             onHome={() => setRoute(route.view === "plan" ? { view: "tasks" } : { view: "plan" })} homeLabel={route.view === "plan" ? "Go to My tasks" : "Go to Today"}>
-            <RenderView render={renderMain} />
+            {/* 0047: every row and card reads its approval chip from here */}
+            <ApprovalSummariesProvider summaries={approvalSummaries}>
+              <RenderView render={renderMain} />
+            </ApprovalSummariesProvider>
           </ErrorBoundary>
         </div>
         {isMobile && (
@@ -3728,6 +3891,7 @@ export default function App() {
           else if (s.id === "paste-notes") openExtract();
           else if (s.id === "import") openImport();
           else if (s.id === "new-project") setNewProjectOpen(true);
+          else if (s.id === "plan-project") openPlanner({ mode: "new" });
           else if (s.id === "plan") setRoute({ view: "plan" });
           else if (s.id === "prioritize") autoPrioritize();
           else if (s.id === "focus") openFocus(true);
@@ -3747,7 +3911,7 @@ export default function App() {
 
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
-          <TaskDetail taskId={detailId} ai={aiOn} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
+          <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
             readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />
         </ErrorBoundary>
       )}
@@ -3757,11 +3921,30 @@ export default function App() {
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length} />
       <NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects}
         // guests never create from a template (createFromTeamTemplate refuses them too)
-        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate} />
+        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate}
+        onPlanWithKanbo={activeReadOnly ? undefined : (typed) => openPlanner({ mode: "new", goal: typed || undefined })} />
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       <OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
         onGoToday={() => setRoute({ view: "plan" })} />
       <NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} />
+      {/* 0047: plan a project with Kanbo (loaded the first time it's opened) */}
+      {planner && (() => {
+        const planProject = planner.mode === "append" ? projects.find((p) => p.id === planner.projectId) ?? null : null;
+        const planWs = planProject ? planProject.workspaceId ?? null : workspace;
+        return (
+          <ErrorBoundary inline floating name="planner" onHome={() => setPlanner(null)} homeLabel="Close">
+            <Suspense fallback={null}>
+              <PlannerHost open mode={planProject ? "append" : "new"} workspaceId={planWs}
+                workspaceName={workspaces.find((w) => w.id === planWs)?.name || "Personal"}
+                project={planProject} sections={planProject ? sections.filter((x) => x.projectId === planProject.id) : []}
+                wsMembers={wsMembers} tasks={allTasks} currentUserId={currentUserId}
+                // demo mode says "demo mode" rather than "Kanbo AI isn't available"
+                aiEnabled={aiOn && store.configured} initialGoal={planner.goal} store={store}
+                onClose={() => setPlanner(null)} onCreated={onPlanCreated} />
+            </Suspense>
+          </ErrorBoundary>
+        );
+      })()}
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome}
         canSkip={!!((profile?.firstName?.trim()) || (profile?.lastName?.trim()))}
         onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "" })}
@@ -3776,8 +3959,16 @@ export default function App() {
         theme={theme} onChangeTheme={setTheme}
         section={settingsSection} onSection={setSettingsSection} isAdmin={canWorkspaceSettings} isGuest={activeReadOnly}
         renderWorkspace={canWorkspaceSettings ? () => (
-          <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
-            onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
+          <>
+            <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
+              onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
+            {/* 0047: Settings › Workspace › History (who did what here; owners and admins see everyone's) */}
+            {workspace && (
+              <Suspense fallback={null}>
+                <HistoryLog workspaceId={workspace} workspaceName={activeWsName} members={wsPeople} currentUserId={currentUserId} canSeeAll={myRole === "owner" || myRole === "admin"} />
+              </Suspense>
+            )}
+          </>
         ) : undefined}
         onGoPeople={workspace !== null ? () => setRoute({ view: "team" }) : undefined}
         tagsPanel={{ tags, taskCounts: tagCounts, onUpdate: updateTag, onDelete: deleteTag, onMerge: mergeTags, onCreate: createTag }}

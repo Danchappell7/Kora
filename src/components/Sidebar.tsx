@@ -152,6 +152,7 @@ main[tabindex="-1"]:focus { outline: none; }
   transition: background-color var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
 }
 .ksb-quiet:hover { background: var(--fill-1); color: var(--ink-2); }
+.ksb-quiet[aria-current="page"] { background: var(--fill-1); color: var(--ink); font-weight: 600; }
 .ksb-quiet > svg { flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
 .ksb-all { margin-top: 2px; padding-left: 12px; color: var(--accent-text, var(--accent)); }
 .ksb-all:hover { color: var(--accent-text, var(--accent)); }
@@ -775,6 +776,12 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
               ))}</Collapse>
             </div>
           )}
+
+          {/* 0047: deleted tasks and projects wait here for 30 days */}
+          <button type="button" className="ksb-quiet" onClick={() => setRoute({ view: "bin" })} aria-current={route.view === "bin" ? "page" : undefined}>
+            <Icon name="trash" size={14} sw={1.75} />
+            <span style={{ flex: 1 }}>Recycle bin</span>
+          </button>
         </div>
       </div>
 

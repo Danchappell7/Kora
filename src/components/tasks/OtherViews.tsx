@@ -28,6 +28,7 @@ import {
   wipKeyFor, loadWipLimits, parseWipLimit, chunk, type BarSpan,
 } from "./otherViewsLogic";
 import "./taskViews.css";
+import { TaskApprovalBadge } from "../approvals/ApprovalSummaries";
 
 export type BoardGroup = "status" | "priority" | "project" | "assignee";
 
@@ -274,6 +275,7 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
         </span>
         {p.subTotal > 0 && <span className="ktv-m ktv-mono" title={`${p.subDone} of ${p.subTotal} sub-tasks done`}><Icon name="layers" size={12} />{p.subDone}/{p.subTotal}</span>}
         {p.blocked && <span className="ktv-m ktv-m-signal" role="img" aria-label="Blocked" title="Blocked"><Icon name="lock" size={12} /></span>}
+        <TaskApprovalBadge taskId={task.id} />
         <span className="ktv-card-end">
           {onPatch ? (
             <span style={{ display: "inline-flex" }} onClick={stop}>

@@ -1607,7 +1607,10 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     await s.logActivity({ taskId: "t-2", taskTitle: "Ship onboarding", kind: "created", detail: "Task created" }, "m-self");
     await s.bootstrap({ id: "m-self" });
     let feed = await s.listActivity();
-    expect(feed.map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
+    // 0047: the approvals waiting on you and a doc @mention ride along with every demo seed
+    const extra = new Set(["a-demo-ap-1", "a-demo-ap-2", "a-demo-ap-3", "a-demo-doc-1"]);
+    expect(feed.filter((a) => !extra.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
+    expect(feed.filter((a) => extra.has(a.id)).map((a) => a.kind).sort()).toEqual(["approval", "approval", "approval", "doc_mention"]);
     expect(feed[0].kind).toBe("created");                  // logged just now, kept
     await s.clearInbox(["a-new"]);
     await s.bootstrap({ id: "m-self" });                   // a reload doesn't bring it back
@@ -1628,9 +1631,12 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     expect((await s.listWorkspaceEventsSince("ws-foundrise", since, 1)).map((e) => e.id)).toEqual(["e-2"]);
     expect((await s.listWorkspaceEventsSince("ws-foundrise", ago(96))).map((e) => e.id)).toEqual(["e-2", "e-1", "e-old"]);
     // a task's own history (the task panel's "Moved 2×") comes from the same seed
-    const slips = await s.listTaskEvents("t-1");
+    const all = await s.listTaskEvents("t-1");
+    const slips = all.filter((e) => e.field !== "approval");
     expect(slips.map((e) => e.id)).toEqual(["e-2", "e-1", "e-old"]);
     expect(slips[0]).toEqual({ id: "e-2", actorName: "Maya Lin", field: "status", oldValue: "progress", newValue: "done", createdAt: expect.any(String) });
+    // 0047: the demo launch deck's approval request (you asked; Maya approved) is in its history too, newest first
+    expect(all.filter((e) => e.field === "approval").map((e) => e.newValue)).toEqual(["approved", "requested"]);
   });
 
   it("the AI modes are unavailable, so every caller uses its on-device rules", async () => {

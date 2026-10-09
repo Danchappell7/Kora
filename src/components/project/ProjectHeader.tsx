@@ -144,7 +144,7 @@ interface MenuItem { id: string; label: string; icon: IconName; run: () => void;
 
 /** The page header's actions: Draft update (Kanbo writes it) · Post update (an empty field) ·
  *  ⋯ Project actions. Both buttons open the same composer, on the project's one shared draft. */
-export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity }: {
+export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity, onPlanTasks }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -159,6 +159,8 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   onSaveTemplate?: (id: string) => void;
   /** "Edit identity": saves the project's icon and colour together */
   onEditIdentity?: (patch: { emoji: string; color: string }) => void;
+  /** 0047: "Add tasks with Kanbo" (the AI planner, adding to this project) */
+  onPlanTasks?: () => void;
 }): JSX.Element {
   const canPost = !readOnly && !!onPostStatus;
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -194,6 +196,7 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   };
   const run = (fn: () => void) => () => { setMenuOpen(false); fn(); };
   const items: MenuItem[] = [
+    ...(!readOnly && onPlanTasks ? [{ id: "plan", label: "Add tasks with Kanbo", icon: "kanbo" as IconName, run: run(onPlanTasks) }] : []),
     ...(!readOnly && onEditIdentity ? [{ id: "identity", label: "Edit identity", icon: "palette" as IconName, run: run(() => setIdentityOpen(true)) }] : []),
     { id: "about", label: "Details", icon: "notes", run: run(() => onTab("about")) },
     ...(!readOnly ? [{ id: "rules", label: "Rules", icon: "zap" as IconName, run: run(() => onTab("rules")) }] : []),

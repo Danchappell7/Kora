@@ -28,6 +28,7 @@ import { ACCENTS, accentSwatch, type Appearance, type Density, type TextSize } f
 import { AVATAR_ACCEPT, avatarObjectPath, prepareAvatarFile, removeAvatarObjects } from "../lib/avatarUpload";
 import { PASSWORD_MIN, passwordIssue, friendlyPasswordError, friendlySignOutError } from "../lib/accountSecurity";
 import { SHORTCUTS, type Shortcut } from "../lib/nav";
+import { APPROVAL_NOTIFY_ROW } from "../lib/approvals";
 import { TagManagerPanel } from "./TagManagerModal";
 import { BillingPanel } from "./Billing";
 import { CalendarAccountsPanel, CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
@@ -88,6 +89,8 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   { key: "assigned", label: "Assigned to me", hint: "Someone gives you a task." },
   { key: "mention", label: "Mentions", hint: "Someone @mentions you in a comment." },
   { key: "comment", label: "Comments on my tasks", hint: "New comments on tasks you own or follow." },
+  // 0047: in-app pref "approval" (the database checks it), email "approval_email" (the notify function)
+  APPROVAL_NOTIFY_ROW,
   { key: "due", label: "Due-date reminders", hint: "Sent by email only." },
 ];
 /** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */
@@ -114,7 +117,7 @@ const M_KEYS = SECTIONS.findIndex((s) => s.id === "shortcuts");
 /** where an uncontrolled sheet opens: the preferences people reach for most
  *  (the avatar in the sidebar can ask for "profile" instead) */
 const DEFAULT_SECTION: SettingsSection = "appearance";
-const SHORTCUT_GROUPS: Shortcut["group"][] = ["General", "Create", "Navigate", "Lists", "Today", "Inbox"];
+const SHORTCUT_GROUPS: Shortcut["group"][] = ["General", "Create", "Navigate", "Lists", "Today", "Inbox", "Docs"];
 
 const DELETE_WORD = "DELETE";
 // Set in user_metadata once a Google-only account adds a password: Supabase

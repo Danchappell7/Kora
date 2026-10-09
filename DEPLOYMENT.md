@@ -596,6 +596,52 @@ REST API), [docs/api/webhooks.md](docs/api/webhooks.md),
    `curl -H "Authorization: Bearer <key>" https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1/me`
    answers `{"object":"user",…}`.
 
+### Step 13: Recycle bin, history, approvals, docs, the AI planner and health (database update 0047)
+
+Deleted tasks and projects now wait 30 days in **Projects › Recycle bin**;
+owners and admins see **Settings › Workspace › History**; tasks can ask for
+**approval**; every project has **Docs**; and "Plan it with Kanbo" drafts a
+project. Until step 13a has run, those screens say they aren't switched on
+yet and everything else works as before. The details are in
+[docs/integrations/database-0047.md](docs/integrations/database-0047.md).
+
+1. **Run 0047** (needs 0043 and 0046; safe to re-run). Copy it from Terminal
+   with `pbcopy < ~/Downloads/kora-app/supabase/migrations/0047_bin_history_approvals_docs.sql`,
+   paste it into the SQL editor
+   (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>) and
+   press **Run**. Check it with the VERIFY query in database-0047.md (every
+   column `true`). It also makes `sign_in_hints()` for the Google sign-in hint,
+   so there's nothing extra to paste for that.
+2. **Deploy five functions** (no new secrets). `ai-assist` (the planner) and
+   `notify` (approval emails and push) keep the gateway's JWT check; `health`,
+   `api` and `webhook-dispatch` run without it. `api` and `webhook-dispatch`
+   must go out with 0047: they now know the `approval.requested` /
+   `approval.decided` webhook events, and an older dispatcher can't send them.
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && R=htnchiljplrnjkwimgla && supabase functions deploy ai-assist --project-ref $R --use-api && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy health --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && echo "All five functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   ```
+
+   Check: <https://htnchiljplrnjkwimgla.supabase.co/functions/v1/health>
+   answers `"ok":true` with `"schema":"0047"`.
+3. **Uptime monitor.** `.github/workflows/uptime.yml` starts running every 10
+   minutes as soon as this release is on `main`, and GitHub emails whoever last
+   changed it when a check fails three times in a row. Deploy `health` (13.2)
+   first, or set the repository variable `UPTIME_SKIP_HEALTH=true` until it's
+   deployed. The heartbeat issue is opt-in (`UPTIME_HEARTBEAT_ISSUE=true`).
+4. **Sign in with Google comes only after Step 7e** (Confirm email ON). The app
+   keeps the button hidden while Supabase reports Confirm email off, even with
+   `VITE_ENABLE_GOOGLE=true` and the provider set: otherwise a stranger who
+   signed up with a colleague's address first would keep a password into the
+   account that colleague later fills through Google. Look through
+   Authentication › Users for unrecognised company addresses made while it was
+   off. Steps: [docs/integrations/google-sign-in.md](docs/integrations/google-sign-in.md).
+   (`supabase/sql/sign_in_hints.sql` is the same SQL as 0047 section 14, kept
+   to put just that function back if ever needed.)
+5. **Error monitoring.** Set `VITE_SENTRY_DSN` (and optionally
+   `VITE_SENTRY_TRACES_RATE`) on Vercel; see the table below. People are
+   identified to Sentry only by a salted hash of their id.
+
 ---
 
 ## Reference
@@ -609,6 +655,7 @@ This matches `supabase/config.toml`. Deploy the "no" rows with
 |---|---|---|
 | `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify`, `slack-post` | yes | the signed-in app |
 | `notion` | yes | the signed-in app; pg_cron every 10 minutes with the anon key (Vault `kanbo_anon_key`) and `x-cron-secret` |
+| `health` | no | GitHub Actions uptime (every 10 min) and /admin › System status; answers ok/timings only, no data (needs 0047) |
 | `api` | no | scripts and tools with a Kanbo API key (`kanbo_sk_…` / `kanbo_pk_…`), checked against its SHA-256; every query runs as the key's user under RLS |
 | `webhook-dispatch` | no | pg_cron every minute, and the database right after a change, with `x-cron-secret` (anyone else gets 401) |
 | `request-access`, `reset-password` | no | signed-out forms (throttled per email and per network) |
@@ -629,11 +676,13 @@ The app redeploys automatically on every push to `main`.
 |---|---|
 | `VITE_SUPABASE_URL` | `https://htnchiljplrnjkwimgla.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | the project's anon key |
-| `VITE_SENTRY_DSN` | optional, for error monitoring |
-| `VITE_APP_ENV` | `production` |
+| `VITE_SENTRY_DSN` | optional, for error monitoring (Sentry › kanbo-web › Client Keys) |
+| `VITE_SENTRY_TRACES_RATE` | optional, 0–1: how many page loads are timed (default 0.1 in production, 0.5 in previews; 0 = off) |
+| `VITE_APP_ENV` | optional. Leave unset (it falls back to Vercel's environment), or set `production` for **Production only**: set for every environment, previews would report to Sentry as production |
 | `VITE_BILLING_ENABLED` | leave unset to keep billing off |
 | `VITE_DISABLE_SIGNUP` | set to `true` for invite-only |
-| `VITE_ENABLE_GOOGLE` | set only once the Google provider is configured in Supabase |
+| `VITE_ENABLE_GOOGLE` | `true` once the Google provider is configured in Supabase **and** Step 7e (Confirm email) is done; the button stays hidden until Supabase reports both |
+| `VITE_GOOGLE_HD` | optional: a company domain for Google's account chooser (`yourcompany.co.uk`), or `off`. Unset = the one auto-approved domain, from `sign_in_hints()` (0047) |
 | `VITE_VAPID_PUBLIC_KEY` | the **public** VAPID key (step 11b). Push stays hidden without it |
 
 ### Billing (Stripe), when you switch it on

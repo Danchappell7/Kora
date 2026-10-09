@@ -41,12 +41,14 @@ export interface Suggestion {
 
 /** The action ids App handles. Kept: new-task, quick-capture, new-project,
  *  prioritize, focus, board, manage-tags, toggle-theme, settings. New:
- *  paste-notes, plan, shutdown, shortcuts, import. */
+ *  paste-notes, plan, shutdown, shortcuts, import; plan-project (0047: the AI
+ *  project planner; works on-device when Kanbo AI is off). */
 const ACTIONS: Suggestion[] = [
   { id: "new-task", icon: "plus", label: "New task", hint: "C" },
   { id: "quick-capture", icon: "zap", label: "Quick capture", hint: "Q" },
   { id: "paste-notes", icon: "notes", label: "Paste notes → tasks", hint: "" },
   { id: "new-project", icon: "folder", label: "New project", hint: "" },
+  { id: "plan-project", icon: "kanbo", label: "Plan a project…", hint: "", ai: true },
   { id: "plan", icon: "calendarPlus", label: "Plan my day", hint: "" },
   { id: "prioritize", icon: "kanbo", label: "Prioritise my tasks", hint: "", accent: true, ai: true },
   { id: "focus", icon: "play", label: "Start focus", hint: "F" },
@@ -59,7 +61,7 @@ const ACTIONS: Suggestion[] = [
   { id: "board", icon: "board", label: "Switch to board view", hint: "" },
 ];
 /** actions that create or change work: not for guests */
-const WRITES = new Set(["new-task", "quick-capture", "paste-notes", "new-project", "prioritize", "shutdown", "import"]);
+const WRITES = new Set(["new-task", "quick-capture", "paste-notes", "new-project", "plan-project", "prioritize", "shutdown", "import"]);
 
 /** Words that make the text read as a question or an instruction for Kanbo. */
 const ASK_VERBS = /^(move|assign|plan|what|who|when|which|show|list|summarise|summarize|mark|set|reschedule|push|how)\b/i;
@@ -286,7 +288,7 @@ export function CommandPalette({
       const due = t.dueDate && t.status !== "done" ? fmtDay(t.dueDate, today) : undefined;
       return { kind: "task", id: t.id, label: t.title, status: t.status, where, due, overdue: !!t.dueDate && t.dueDate < today && t.status !== "done" };
     };
-    const actions = ACTIONS.filter((a) => !(a.id === "new-project" && !canCreateProject) && !(guest && WRITES.has(a.id)));
+    const actions = ACTIONS.filter((a) => !((a.id === "new-project" || a.id === "plan-project") && !canCreateProject) && !(guest && WRITES.has(a.id)));
     const targets = GO_TARGETS.filter((g) => !(guest && g.route.view === "automations"));
     const crumbOf = (g: GoTarget): string | undefined => { const place = titleOf(g.route); return place !== g.label ? place : undefined; };
 

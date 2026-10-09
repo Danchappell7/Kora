@@ -295,7 +295,7 @@ export const GO_TARGETS: GoTarget[] = [
 /** One row of Settings › Shortcuts. `keys`: keys pressed in turn are separated
  *  by a space ("G D"); a chord is one token ("⌘K", "⇧J"); alternatives are
  *  joined with " / " ("J / K"). ⌘ reads as Ctrl on Windows and Linux. */
-export interface Shortcut { keys: string; label: string; group: "Navigate" | "Create" | "Lists" | "Today" | "Inbox" | "General" }
+export interface Shortcut { keys: string; label: string; group: "Navigate" | "Create" | "Lists" | "Today" | "Inbox" | "Docs" | "General" }
 
 export const SHORTCUTS: Shortcut[] = [
   { keys: "⌘K", label: "Search or ask Kanbo", group: "General" },
@@ -341,6 +341,17 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "D", label: "Schedule", group: "Inbox" },
   { keys: "H", label: "Snooze", group: "Inbox" },
   { keys: "E", label: "Done", group: "Inbox" },
+  { keys: "A", label: "Approve (Approvals for you)", group: "Inbox" },
+  { keys: "C", label: "Request changes (Approvals for you)", group: "Inbox" },
+  { keys: "/", label: "Insert a block", group: "Docs" },
+  { keys: "@", label: "Mention someone", group: "Docs" },
+  { keys: "⌘B / ⌘I / ⌘E", label: "Bold / italic / code", group: "Docs" },
+  { keys: "⌘K", label: "Add a link", group: "Docs" },
+  { keys: "⌘/", label: "Block actions", group: "Docs" },
+  { keys: "Esc", label: "Select blocks", group: "Docs" },
+  { keys: "⌘⇧↑ / ⌘⇧↓", label: "Move a block up / down", group: "Docs" },
+  { keys: "⌘D", label: "Duplicate a block", group: "Docs" },
+  { keys: "⌘↵", label: "Tick a to-do, or open its task", group: "Docs" },
 ];
 
 /** The page's name, for the header and the tab title. A project's page is

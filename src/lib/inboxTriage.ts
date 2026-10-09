@@ -60,6 +60,11 @@ export function groupOf(a: Activity, ctx: { me?: string; task?: Task }): TriageG
   // task isn't loaded yet still does
   if (a.kind === "mention") return ctx.task && (ctx.task.status === "done" || ctx.task.archivedAt) ? "fyi" : "reply";
   if (a.kind === "assigned") return "newToYou";
+  // 0047: a doc @mention is new work for you; "changes requested" on your approval request
+  // sends the task back to you. Other approval notices (a request already decided, or a
+  // reviewer's approval) are FYI: open requests waiting on you show in "Approvals for you".
+  if (a.kind === "doc_mention") return "newToYou";
+  if (a.kind === "approval") return a.meta?.event === "changes_requested" ? "newToYou" : "fyi";
   if (a.kind === "created" && isRequestTask(ctx.task) && (!ctx.me || ctx.task?.assigneeId === ctx.me)) return "newToYou";
   return "fyi";
 }

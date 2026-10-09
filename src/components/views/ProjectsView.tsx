@@ -87,7 +87,7 @@ interface Row {
   atRisk: boolean;
 }
 
-export function ProjectsView({ projects, tasks, statusUpdates, members: _members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject }: {
+export function ProjectsView({ projects, tasks, statusUpdates, members: _members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject }: {
   projects: Project[];
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -96,6 +96,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   canCreate: boolean;
   onOpenProject: (id: string) => void;
   onNewProject: () => void;
+  /** 0047: "Plan it with Kanbo" in the empty state (the AI project planner) */
+  onPlanProject?: () => void;
   onPostUpdate?: (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void;
   aiStatus?: (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
   risksByProject?: Record<string, number>;
@@ -201,7 +203,12 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
         <div className="kpj-wrap">
           <EmptyState art="layers" title="No projects yet"
             body={canCreate ? "Projects keep a piece of work's tasks, updates and people together." : "When your team starts a project, you'll find it here."}
-            action={canCreate ? <Button variant="primary" icon="plus" onClick={onNewProject}>New project</Button> : undefined} />
+            action={canCreate ? (
+              <>
+                <Button variant="primary" icon="plus" onClick={onNewProject}>New project</Button>
+                {onPlanProject && <Button variant="secondary" icon="kanbo" onClick={onPlanProject}>Plan it with Kanbo</Button>}
+              </>
+            ) : undefined} />
         </div>
       </div>
     );

@@ -11,7 +11,10 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Icon, EmptyArt, EmptyState, Avatar, Button, DateChip, Kbd, ProjectTile, SectionLabel } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { timeAgo, getProject, getMember, MEMBERS, todayISO, toLocalISO } from "../../data/data";
-import type { Task, Activity, ActivityKind, IconName } from "../../data/types";
+import type { Task, Activity, ActivityKind, IconName, ApprovalWithTask, Member, Project } from "../../data/types";
+import { ApprovalsInboxGroup } from "../approvals/ApprovalsInboxGroup";
+import { approvalInboxLine, shownInApprovalsGroup } from "../../lib/approvals";
+import { docMentionRoute } from "../../lib/docs";
 import { triage, requestSource, isRequestTask, TRIAGE_GROUPS, type TriageGroup } from "../../lib/inboxTriage";
 import { dayLabel } from "../../lib/rituals";
 import { prefersReducedMotion, useOptionalToast } from "../rituals/shared";
@@ -28,7 +31,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   assigned:  { icon: "user",    verb: "assigned you" },
   mention:   { icon: "message", verb: "mentioned you in" },
   integration: { icon: "zap",   verb: "" },
-  // 0047: placeholders until w4 (approvals: meta.event picks the words) and w5 (doc mentions: no task) render them
+  // 0047: approvals (meta.event picks the words: approvalInboxLine) and doc mentions (no task: they open the doc)
   approval:    { icon: "check", verb: "asked for your approval on" },
   doc_mention: { icon: "notes", verb: "mentioned you in" },
 };
@@ -62,7 +65,8 @@ const REPLY_WORDS = new Set([
    comment row, so a teammate's comment never reads "You commented on…" with
    their name quoted as if it were the comment. */
 function actorOf(a: Activity): string | null {
-  if (a.kind === "assigned" || a.kind === "mention") return a.detail?.trim() || "Someone";
+  if (a.kind === "assigned" || a.kind === "mention" || a.kind === "doc_mention") return a.detail?.trim() || "Someone";
+  if (a.kind === "approval") return a.detail?.trim() || "Someone";
   if (a.kind !== "comment") return null;
   const d = (a.detail || "").trim();
   if (!d || d === "Someone" || EMAIL_RE.test(d)) return d || "Someone";
@@ -82,6 +86,7 @@ const ACTOR_VERB: Partial<Record<ActivityKind, string>> = {
   assigned: "assigned you",
   mention: "mentioned you in",
   comment: "commented on",
+  doc_mention: "mentioned you in",
 };
 
 /* Work that arrived through a request form reads "New request: {title}",
@@ -343,12 +348,17 @@ export interface InboxViewProps {
   onNewCount?: (n: number) => void;
   /** an integration notice (no task, e.g. "Webhook to … switched off"): open where it's fixed (Settings › Developers) */
   onOpenIntegration?: (a: Activity) => void;
+  /** 0047 "Approvals for you": requests waiting on your decision (lib/approvals listMyApprovals().toReview),
+   *  shown first; their request notices aren't repeated in the triage groups */
+  approvals?: { toReview: ApprovalWithTask[]; projects: Project[]; members: Member[]; onDecided?: () => void };
+  /** 0047: a doc mention (no task) opens its doc (/p/:projectId/docs/:docId) */
+  onOpenDoc?: (a: Activity) => void;
 }
 
 export function InboxView({
   activity, tasks, onOpen, onArchive, onClearAll,
   currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
-  loading, loadError, onRetry, onNewCount, onOpenIntegration,
+  loading, loadError, onRetry, onNewCount, onOpenIntegration, approvals, onOpenDoc,
 }: InboxViewProps) {
   const entrance = useEntrance();
   const toast = useOptionalToast();
@@ -455,7 +465,10 @@ export function InboxView({
   /* ---------- what's on screen ---------- */
   const now = Date.now();
   const isSnoozed = (id: string) => (snz.until[id] ?? 0) > now;
-  const visible = activity.filter((a) => !isSnoozed(a.id));
+  // a request still waiting in "Approvals for you" shows there (with its buttons), not twice
+  const toReview = approvals?.toReview ?? [];
+  const reviewCount = toReview.filter((r) => r.status === "pending" && r.canDecide !== false).length;
+  const visible = activity.filter((a) => !isSnoozed(a.id) && !shownInApprovalsGroup(a, toReview));
   const snoozedItems = activity.filter((a) => isSnoozed(a.id)).sort((x, y) => snz.until[x.id] - snz.until[y.id]);
   const snoozedCount = snoozedItems.length;
   const archivedItems = useMemo(() => {
@@ -473,7 +486,9 @@ export function InboxView({
     : [];
   const ordered = segment === "inbox" ? sections.flatMap((s) => s.items) : segment === "snoozed" ? snoozedItems : archivedItems;
   // new on this visit and still here: the dots, and the number App shows beside them
-  const newCount = visible.reduce((n, a) => (unread.has(a.id) || backAt(a.id) > 0 ? n + 1 : n), 0);
+  // (+ a request's own unread notice, which shows as its row in "Approvals for you" rather than here)
+  const inGroupNew = activity.reduce((n, a) => (!isSnoozed(a.id) && unread.has(a.id) && shownInApprovalsGroup(a, toReview) ? n + 1 : n), 0);
+  const newCount = visible.reduce((n, a) => (unread.has(a.id) || backAt(a.id) > 0 ? n + 1 : n), 0) + inGroupNew;
   useEffect(() => { onNewCount?.(newCount); }, [newCount, onNewCount]);
   const fyiShown = segment === "inbox" ? groups.fyi : [];
 
@@ -493,7 +508,7 @@ export function InboxView({
      page that opens on an empty (or not yet loaded) feed never uses it up.
      Never under reduced motion. */
   const settled = !loading && !loadError;
-  const zero = segment === "inbox" && settled && visible.length === 0;
+  const zero = segment === "inbox" && settled && visible.length === 0 && reviewCount === 0;
   const [hadItems, setHadItems] = useState(false);
   if (!hadItems && settled && visible.length > 0) setHadItems(true);
   const cleared = zero && hadItems;
@@ -524,6 +539,12 @@ export function InboxView({
     });
   };
   const openItem = (a: Activity) => {
+    if (a.kind === "doc_mention") {
+      if (!onOpenDoc || !docMentionRoute(a)) return;
+      forget([a.id]);
+      onOpenDoc(a);
+      return;
+    }
     if (a.kind === "integration" && !a.taskId) {
       if (!onOpenIntegration) return;
       forget([a.id]);
@@ -738,9 +759,14 @@ export function InboxView({
     const acts = actsFor(a, title);
     const snoozedUntil = segment === "snoozed" ? snz.until[a.id] : undefined;
     const integ = a.kind === "integration" && !a.taskId;
-    const openable = !!task || (integ && !!onOpenIntegration);
-    const excerpt = !actor && !via && a.detail && (a.kind === "comment" || a.kind === "status" || integ)
+    const docRoute = docMentionRoute(a);
+    const isDoc = a.kind === "doc_mention";
+    const openable = !!task || (integ && !!onOpenIntegration) || (!!docRoute && !!onOpenDoc);
+    const apv = a.kind === "approval" ? approvalInboxLine(a) : null;
+    const excerpt = apv?.quote ? `“${apv.quote}”`
+      : !actor && !via && a.detail && (a.kind === "comment" || a.kind === "status" || integ)
       ? (a.kind === "comment" ? `“${a.detail}”` : a.detail) : null;
+    const docProj = docRoute ? getProject(docRoute.projectId) : undefined;
     // the row's description: where it's from, its marks, its date (when it has
     // one) and its age; never the empty "Schedule" chip
     const subId = `kinbox-sub-${a.id}`;
@@ -750,8 +776,8 @@ export function InboxView({
       ? <span id={`${subId}-ctx`} className="truncate">via {via}</span>
       : excerpt
         ? <span id={`${subId}-ctx`} className="kinbox-excerpt truncate">{excerpt}</span>
-        : proj
-          ? <span id={`${subId}-ctx`} className="kinbox-proj"><ProjectTile project={proj} size={16} /><span className="truncate">{proj.name}</span></span>
+        : proj ?? docProj
+          ? <span id={`${subId}-ctx`} className="kinbox-proj"><ProjectTile project={(proj ?? docProj)!} size={16} /><span className="truncate">{(proj ?? docProj)!.name}{isDoc ? " · Docs" : ""}</span></span>
           : null;
     const describedBy = [
       ctx && `${subId}-ctx`,
@@ -791,7 +817,7 @@ export function InboxView({
     const style = { "--acts-w": `${Math.max(64, acts.length * 30)}px` } as CSSProperties;
     return (
       <div key={a.id} role="listitem" className="kinbox-row" data-unread={isUnread || undefined} data-cursor={isCursor || undefined}
-        data-open={composing ? true : undefined} data-gone={task || integ ? undefined : true} style={style}
+        data-open={composing ? true : undefined} data-gone={task || integ || (isDoc && openable) ? undefined : true} style={style}
         ref={(el) => { if (el) rowEls.current.set(a.id, el); else rowEls.current.delete(a.id); }}
         onFocus={() => { if (cursorOn !== a.id) setCursor(a.id); }}>
         <ActorMark actor={actor} kind={a.kind} request={!!via} members={members} />
@@ -799,7 +825,7 @@ export function InboxView({
           <button type="button" className="kinbox-main" aria-describedby={describedBy}
             ref={(el) => { if (el) rowRefs.current.set(a.id, el); else rowRefs.current.delete(a.id); }}
             onClick={() => openItem(a)} aria-disabled={openable ? undefined : true}
-            title={openable || integ ? undefined : "This task has been archived or is no longer available"}>
+            title={openable || integ ? undefined : isDoc ? "This doc is no longer available" : "This task has been archived or is no longer available"}>
             {isUnread && <span className="sr-only">Unread: </span>}
             {/* two lines before clipping, so "who did what" survives a phone-width row */}
             <span className="kinbox-say">
@@ -807,6 +833,10 @@ export function InboxView({
                 ? <strong>{a.taskTitle || "An integration needs you"}</strong>
                 : via
                 ? <>New request: <strong>{title}</strong></>
+                : apv
+                ? <><strong>{apv.actor}</strong> {apv.verb} <strong>{title}</strong></>
+                : isDoc
+                ? <><strong>{actor}</strong> {ACTOR_VERB.doc_mention} <strong>{a.taskTitle || "a doc"}</strong></>
                 : actor
                   ? <><strong>{actor}</strong> {ACTOR_VERB[a.kind]} <strong>{title}</strong></>
                   : <>You {meta.verb} <strong>{title}</strong></>}
@@ -860,6 +890,7 @@ export function InboxView({
     const run = (fn: () => void) => () => { setMore(null); fn(); };
     const items: { key: string; icon: IconName; label: string; kbd?: string; fn: () => void }[] = [];
     if (task) items.push({ key: "open", icon: "arrowUpRight", label: "Open task", kbd: "↵", fn: () => openItem(a) });
+    else if (a.kind === "doc_mention" && onOpenDoc && docMentionRoute(a)) items.push({ key: "open", icon: "arrowUpRight", label: "Open doc", kbd: "↵", fn: () => openItem(a) });
     if (canReply(a)) items.push({ key: "reply", icon: "message", label: "Reply", kbd: "R", fn: () => startReply(a) });
     if (canToday(a)) items.push({ key: "today", icon: "sun", label: "Add to Today", kbd: "A", fn: () => acceptToday(a) });
     if (canSchedule(a)) items.push({ key: "schedule", icon: "calendar", label: "Schedule…", kbd: "D", fn: () => schedule(a) });
@@ -924,6 +955,12 @@ export function InboxView({
       <button type="button" className="kinbox-link" onClick={() => unsnooze()}>Bring back now</button>
     </p>
   );
+
+  // "Approvals for you" leads the Inbox, above the triage groups and above loading / error states
+  const approvalsGroup = segment === "inbox" && approvals && toReview.length > 0 ? (
+    <ApprovalsInboxGroup approvals={toReview} projects={approvals.projects} members={approvals.members} currentUserId={currentUserId ?? ""}
+      onOpenTask={onOpen} onDecided={() => approvals.onDecided?.()} />
+  ) : null;
 
   let body: JSX.Element;
   if (segment === "inbox" && !visible.length && loading) {
@@ -1031,7 +1068,7 @@ export function InboxView({
         </div>
         <span className="kinbox-sweep" data-play={sweep || undefined} aria-hidden="true" />
       </div>
-      <div className="kinbox-wrap kinbox-list">{body}</div>
+      <div className="kinbox-wrap kinbox-list">{approvalsGroup}{body}</div>
       {menuOpenFor && (
         <SnoozeMenu key={menuOpenFor.id} anchor={menuOpenFor.anchor}
           itemTitle={activity.find((a) => a.id === menuOpenFor.id)?.taskTitle || "this update"}

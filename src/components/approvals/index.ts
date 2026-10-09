@@ -2,3 +2,4 @@
 export { ApprovalPanel, type ApprovalPanelProps } from "./ApprovalPanel";
 export { ApprovalBadge, type ApprovalBadgeProps } from "./ApprovalBadge";
 export { ApprovalsInboxGroup, type ApprovalsInboxGroupProps } from "./ApprovalsInboxGroup";
+export { ApprovalSummariesProvider, TaskApprovalBadge } from "./ApprovalSummaries";

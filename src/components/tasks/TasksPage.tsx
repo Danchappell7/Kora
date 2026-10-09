@@ -75,7 +75,7 @@ function PopSection({ title, note, children }: { title: string; note?: string; c
 }
 
 export function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts,
-  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId }: {
+  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId, waitingApproval }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -144,6 +144,9 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   loading?: boolean;
   /** the task open in the task panel (App's detail id): its row or card stays marked */
   activeTaskId?: string;
+  /** 0047 Waiting on › "Waiting on approval": your open requests' tasks (lib/approvals waitingOnApproval),
+   *  each with its line ("1 of 2 approved · waiting on Sana") */
+  waitingApproval?: { label: string; items: Task[]; notes: Map<string, string> };
 }) {
   const isMy = filterScope === "my";
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -230,6 +233,12 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const me = currentUserId ?? "";
   const source = showArchived ? archivedTasks : tasks;
   const waiting = useMemo(() => (isMy ? bucketWaiting(allTasks, me) : null), [isMy, allTasks, me]);
+  // Waiting on: your open approval requests lead as their own group (and a filter chip shows only them);
+  // a task that's waiting on approval isn't repeated under the person who has it
+  const approvalItems = isMy ? (waitingApproval?.items ?? []).filter((t) => !t.archivedAt) : [];
+  const approvalIds = new Set(approvalItems.map((t) => t.id));
+  const [waitOnly, setWaitOnly] = useState<"all" | "approval">("all");
+  const waitFilter = approvalItems.length ? waitOnly : "all";
   const done = useMemo(() => (isMy ? bucketDone(allTasks.filter((t) => !t.archivedAt), me || "\u0000", 30) : null), [isMy, allTasks, me]);
   const [showOlder, setShowOlder] = useState(false);
 
@@ -241,7 +250,9 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   if (!isMy) {
     shownTasks = source.filter((t) => passes(t));
   } else if (myTab === "waiting") {
-    listGroups = keep(waiting?.groups ?? []).map((g) => ({ ...g, addable: false }));
+    const approvalGroup: TaskBucket[] = approvalItems.length ? [{ key: "approval", label: waitingApproval?.label ?? "Waiting on approval", items: approvalItems }] : [];
+    const people = (waiting?.groups ?? []).map((g) => ({ ...g, items: g.items.filter((t) => !approvalIds.has(t.id)) }));
+    listGroups = keep(waitFilter === "approval" ? approvalGroup : [...approvalGroup, ...people]).map((g) => ({ ...g, addable: false }));
     shownTasks = listGroups.flatMap((g) => g.items);
   } else if (myTab === "done") {
     const all = [...(done?.groups ?? []), ...(showOlder ? done?.older ?? [] : [])];
@@ -259,7 +270,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     }
   }
   const openCount = isMy ? tasks.filter((t) => t.status !== "done").length : 0;
-  const waitingCount = waiting ? waiting.groups.reduce((n, g) => n + g.items.length, 0) : 0;
+  const waitingCount = (waiting ? waiting.groups.reduce((n, g) => n + g.items.filter((t) => !approvalIds.has(t.id)).length, 0) : 0) + approvalItems.length;
 
   /* ---------------- the toolbar row ---------------- */
   // The row folds its tools (the title field moves into Filter, labels become icons)
@@ -588,6 +599,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const nudged = useRef(new Set<string>());
   const [, bump] = useState(0);
   const waitingMeta = (t: Task): ReactNode => {
+    const note = approvalIds.has(t.id) ? waitingApproval?.notes.get(t.id) : undefined;
+    if (note) return <span className="ktv-with">{note}</span>;
     const r = waiting?.reasons.get(t.id);
     if (!r) return null;
     return r.kind === "with"
@@ -595,6 +608,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
       : <span className="ktv-with" title={`Waiting on “${r.blocker}” (${firstNameOf(r.personId)})`}>needs <b>“{r.blocker}”</b></span>;
   };
   const waitingAction = (t: Task): ReactNode => {
+    if (approvalIds.has(t.id)) return null; // the reviewers were told when you asked
     const r = waiting?.reasons.get(t.id);
     if (!r || !onNudge || readOnly) return null;
     const target = r.kind === "needs" && r.blockerId ? r.blockerId : t.id;
@@ -689,6 +703,17 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         {!compactBar && saveControl}
         {tools}
       </div>
+      {isMy && myTab === "waiting" && approvalItems.length > 0 && (
+        <div className="ktv-pills" role="group" aria-label="Show">
+          <div className="ktv-chips">
+            <Chip on={waitFilter === "all"} onClick={() => setWaitOnly("all")}>Everything</Chip>
+            <Chip on={waitFilter === "approval"} onClick={() => setWaitOnly(waitFilter === "approval" ? "all" : "approval")}
+              label={`Waiting on approval: ${approvalItems.length} ${approvalItems.length === 1 ? "task" : "tasks"}`}>
+              <span>Waiting on approval</span><span className="ktv-mono" aria-hidden="true">{approvalItems.length}</span>
+            </Chip>
+          </div>
+        </div>
+      )}
       {pills.length > 0 && !extraActive && (
         <div className="ktv-pills" role="group" aria-label="Active filters">
           {pills.map((p) => (

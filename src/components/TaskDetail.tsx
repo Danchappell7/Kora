@@ -31,7 +31,7 @@ import {
 import { timelineStartPatch } from "./tasks/otherViewsLogic";
 import type {
   Task, TagDef, Comment, Activity, WorkspaceMember, Recurrence, Status, Priority, IconName, Project,
-  CustomFieldDef, CustomValue, Section, Attachment, EnergyKind,
+  CustomFieldDef, CustomValue, Section, Attachment, EnergyKind, Member,
 } from "../data/types";
 import {
   resolveMentions, dependencyCandidates, wouldCreateCycle, activityLine, isTextEntry,
@@ -39,10 +39,13 @@ import {
   consequenceOf, slipNote, dueMoves, eventText, buildTimeline, shortDay, dayLabel, ago, fmtHours, parseHours,
   type MentionCandidate, type UnsavedField, type HistoryEvent,
 } from "./taskDetailHelpers";
+import { subscribeApprovals } from "../lib/approvals";
 
 // 0046: Notion pages on a task, loaded when a task first opens (it renders nothing until it knows there's something to show)
 // (if its code can't be fetched, the task simply shows no Notion section)
 const NotionLinkChip = lazy(() => import("./NotionLinkChip").then((m) => ({ default: m.NotionLinkChip }), () => ({ default: () => null })));
+// 0047: Approval on team tasks, loaded with the first task opened (if its code can't be fetched, no section)
+const ApprovalPanel = lazy(() => import("./approvals/ApprovalPanel").then((m) => ({ default: m.ApprovalPanel }), () => ({ default: () => null })));
 
 const REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅", "🚀"];
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
@@ -832,6 +835,8 @@ export interface TaskDetailProps {
   /** Settings › "Use Kanbo AI". Off: nothing in the panel calls the AI service ("Break it
    *  down" isn't offered). Default: the saved setting. */
   ai?: boolean;
+  /** 0047: after an approval request, decision or cancel here (App refreshes the row badges and the Inbox group) */
+  onApprovalsChange?: () => void;
 }
 
 /** A task opened from inside the panel (a sub-task, a blocker, the parent)
@@ -901,7 +906,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai, onApprovalsChange }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -976,6 +981,11 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const descBase = useRef(task.description ?? "");
   const descFocused = useRef(false);
   const [files, setFiles] = useState<Attachment[]>([]);
+  // 0047: realtime says this task's approvals (or someone's review) changed → the panel reloads.
+  // Reviewer rows arrive without a task id, so those bump it too (cheap: one small read).
+  const [approvalTick, setApprovalTick] = useState(0);
+  const [approvalHistoryTick, setApprovalHistoryTick] = useState(0);
+  useEffect(() => subscribeApprovals((c) => { if (c.taskId === null || c.taskId === task.id) setApprovalTick((n) => n + 1); }), [task.id]);
   const filesLoadedAt = useRef(0);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1018,6 +1028,16 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     document.addEventListener("visibilitychange", onVis);
     return () => { cancelled = true; window.clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
   }, [taskId]);
+
+  // an approval asked, decided or cancelled (here or by someone else): its history entry joins the timeline
+  useEffect(() => {
+    if (!approvalTick && !approvalHistoryTick) return;
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      store.listTaskEvents(taskId).then((es) => { if (!cancelled && (es.length || store.configured)) setEvents(es); }).catch(reportError);
+    }, 300);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [taskId, approvalTick, approvalHistoryTick]);
 
   // drilling into another task removes the row you clicked — park focus on the
   // panel rather than letting it fall to the page behind. Docked, the list
@@ -1212,6 +1232,12 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     ? activeMembers.map((m) => ({ id: m.userId!, name: m.name || m.email }))
     : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   const nameOf = (id: string) => assignable.find((p) => p.id === id)?.name ?? getMember(id)?.name;
+  // 0047 Approval: the reviewer picker's people (this workspace's active members, you included), guests labelled
+  const approvalPeople: Member[] = activeMembers.map((m) => {
+    const known = getMember(m.userId!);
+    return { id: m.userId!, name: known?.name || m.name || m.email, email: m.email, type: m.role === "guest" ? "external" : known?.type === "self" ? "self" : "team", color: known?.color ?? "var(--accent)" };
+  });
+  const approvalGuests = activeMembers.filter((m) => m.role === "guest").map((m) => m.userId!);
   const assigneeName = nameOf(task.assigneeId) || "Unassigned";
   const projectTaskCount = tasks.filter((t) => t.projectId === task.projectId).length;
   const ids = {
@@ -1709,8 +1735,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const otherFiles = files.filter((a) => !isImg(a));
 
   /* ---------- activity ---------- */
-  const eventIcon = (field: string): IconName => field === "due" ? "calendar" : field === "assignee" ? "user" : field === "priority" ? "flag" : field === "status" ? "circle" : "dot";
-  const activityIcon = (a: Activity): IconName => a.kind === "mention" ? "message" : a.kind === "assigned" ? "user" : a.kind === "completed" ? "check" : a.kind === "created" ? "plus" : a.kind === "reopened" ? "refresh" : a.kind === "deleted" ? "trash" : "bell";
+  const eventIcon = (field: string): IconName => field === "due" ? "calendar" : field === "assignee" ? "user" : field === "priority" ? "flag" : field === "status" ? "circle" : field === "approval" ? "check" : "dot";
+  const activityIcon = (a: Activity): IconName => a.kind === "mention" ? "message" : a.kind === "assigned" ? "user" : a.kind === "completed" ? "check" : a.kind === "created" ? "plus" : a.kind === "reopened" ? "refresh" : a.kind === "deleted" ? "trash" : a.kind === "approval" ? "check" : "bell";
   const stamp = (at: string) => {
     const d = new Date(at);
     return <time className="ktd-time" dateTime={at} title={Number.isNaN(d.getTime()) ? undefined : d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}>{ago(at)}</time>;
@@ -2160,6 +2186,14 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         <Suspense fallback={null}>
           <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly} />
         </Suspense>
+
+        {/* ================= approval: team tasks only (guests review their own row; they can't ask) ================= */}
+        {taskWs && (
+          <Suspense fallback={null}>
+            <ApprovalPanel task={task} members={approvalPeople} guestIds={approvalGuests} currentUserId={currentUserId} readOnly={readOnly}
+              attachments={files} refreshKey={approvalTick} onChange={() => { setApprovalHistoryTick((n) => n + 1); onApprovalsChange?.(); }} />
+          </Suspense>
+        )}
 
         {/* ================= activity: comments, history and notifications, oldest first ================= */}
         {timeline.length > 0 && (

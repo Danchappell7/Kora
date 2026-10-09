@@ -29,6 +29,7 @@ import type { Task, Subtask, IconName, Priority, Section, CustomFieldDef, Projec
 import type { GroupBy } from "../../app-types";
 import { useEntrance } from "../../hooks/useEntrance";
 import "./taskViews.css";
+import { TaskApprovalBadge } from "../approvals/ApprovalSummaries";
 
 // small chips showing a task's filled custom-field values (max 3)
 export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
@@ -529,6 +530,7 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
                   <Icon name="lock" size={12} />
                 </span>
               )}
+              <TaskApprovalBadge taskId={task.id} />
               {task.recurrence && task.recurrence !== "none" && <span className="ktv-m" role="img" aria-label={`Repeats ${task.recurrence}`} title={`Repeats ${task.recurrence}`}><Icon name="refresh" size={12} /></span>}
               {task.comments > 0 && <span className="ktv-m" title={`${task.comments} comment${task.comments === 1 ? "" : "s"}`}><Icon name="message" size={12} /><span className="ktv-mono">{task.comments}</span></span>}
               {tags.slice(0, 2).map((id) => <span key={id} className="ktv-tag"><i style={{ background: projectPaint(TAGS[id].color).solid }} />{TAGS[id].label}</span>)}
