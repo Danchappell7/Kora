@@ -6,17 +6,30 @@
    to match its highlight. Choosing a property yourself takes over from
    the token (it comes out of the title), so the two never disagree.
    Dates use the DateChip (no native date or time inputs).
+   Templates (lib/templates, the library): type "/" in the title (or
+   "/template") for a fuzzy list of them, or press Template. Applying one
+   fills the form (title with its {placeholders} selected, description,
+   priority, focus time, tags, due date) and shows what else it makes —
+   its sub-tasks, dated from the task's due date and given to people by
+   role, and its checklist — all created with the task. Remove takes it
+   off again, keeping anything typed since.
    ============================================================ */
-import { useState, useEffect, useRef, useMemo, useId } from "react";
+import { useState, useEffect, useRef, useMemo, useId, useCallback } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Icon, Collapse, Button, DateChip, PriorityGlyph, ProjectDot, Sheet } from "./primitives";
+import { Icon, Collapse, Button, DateChip, PriorityGlyph, ProjectDot, Sheet, Kbd } from "./primitives";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { TagPicker } from "./TagPicker";
 import { TokenField, TokenChips, PersonMark, CAPTURE_CSS } from "./QuickCapture";
 import { PRIORITY_META, energyOf, nextDueDate, seriesAnchorDay, todayISO, KANBO_TODAY } from "../data/data";
 import { parseTask, parseDateText, stripTokens, dayLabel, fmtMinutes, type NlpKind } from "../lib/nlp";
-import { getTemplates, isBuiltinTemplateId, type TaskTemplate } from "../lib/templates";
-import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status } from "../data/types";
+import {
+  planTemplate, resolveTemplateTags, templatePlaceholders, templateQueryOf, type AppliedTemplatePlan,
+} from "../lib/templatePlan";
+import { TemplatePicker } from "./templates/TemplatePicker";
+import { TemplateChooser } from "./templates/TemplateChooser";
+import { TemplateTile } from "./templates/parts";
+import { useLibraryTemplates } from "./templates/useLibraryTemplates";
+import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status, LibraryTemplate } from "../data/types";
 
 const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? "t-new-" + crypto.randomUUID() : "t-new-" + Date.now());
 /** what the form held when it was last dismissed without Create/Cancel —
@@ -38,10 +51,35 @@ const OWNS: Record<"due" | "start" | "priority" | "project" | "person" | "focus"
 /** tokens a property row (or the tag picker) shows; the rest are chips under the title */
 const HAS_ROW: NlpKind[] = ["date", "time", "start", "priority", "project", "person", "duration", "repeat", "tag"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** the fields a template fills (and Remove puts back) */
+interface TemplateFields { title: string; description: string; descOpen: boolean; priority: Priority; focusMin: number; tags: string[]; dueDate: string; dueTime: string }
+interface AppliedTemplate { tpl: LibraryTemplate; before: TemplateFields; set: TemplateFields }
+const BLANK_FIELDS: TemplateFields = { title: "", description: "", descOpen: false, priority: "medium", focusMin: 30, tags: [], dueDate: "", dueTime: "" };
+/** the fields with the template's still-untouched values put back as they were before it */
+function withoutTemplate(cur: TemplateFields, a: AppliedTemplate): TemplateFields {
+  const keep = <K extends keyof TemplateFields>(k: K): TemplateFields[K] => (cur[k] === a.set[k] ? a.before[k] : cur[k]);
+  const added = a.set.tags.filter((t) => !a.before.tags.includes(t));
+  return {
+    title: keep("title"), description: keep("description"), descOpen: cur.description === a.set.description ? a.before.descOpen : cur.descOpen,
+    priority: keep("priority"), focusMin: keep("focusMin"), tags: cur.tags.filter((t) => !added.includes(t)),
+    dueDate: keep("dueDate"), dueTime: cur.dueDate === a.set.dueDate ? a.before.dueTime : cur.dueTime,
+  };
+}
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+/** a template's sub-task as a full new task under `parent` (when the host has no template path) */
+function subtaskOf(s: Partial<Task> & { title: string }, parent: Task, position: number): Task {
+  return {
+    id: newId(), title: s.title, description: "", status: "todo", priority: s.priority ?? "medium",
+    projectId: parent.projectId, assigneeId: s.assigneeId ?? parent.assigneeId, parentId: parent.id,
+    tags: [], dependencies: [], subtasks: [], comments: 0, focusMin: 30, dur: 30, aiScore: 50,
+    scheduled: null, planToday: false, recurrence: "none", position,
+    ...(s.dueDate ? { dueDate: s.dueDate } : {}),
+  };
+}
 /** "9 Oct" — the repeat preview's short dates */
 const shortDay = (iso: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso); return m ? `${+m[3]} ${MONTHS[+m[2] - 1]}` : iso; };
 
-export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId, tagUsage }: {
+export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId, tagUsage, templates: templatesProp, onApplyTemplate, initialTemplate, onBrowseTemplates, workspaceId }: {
   open: boolean;
   onClose: () => void;
   onCreate: (t: Task) => void;
@@ -55,6 +93,19 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   defaultProjectId?: string;
   /** how many tasks carry a tag, so deleting one from here says how many lose it */
   tagUsage?: (id: string) => number;
+  /** the template library (lib/templates listLibraryTemplates). Omitted: the modal loads it itself when first needed. */
+  templates?: readonly LibraryTemplate[];
+  /** Create from a template: `plan.task` is the task as the form has it (a full Task), `plan.subtasks` its
+   *  sub-tasks (dated, assigned by role; the host links them with parentId: lib/templates templateTasks),
+   *  `plan.checklist` its checklist items. Omitted: the task and its sub-tasks go through onCreate one by
+   *  one (parentId set) and the checklist is written into the description. */
+  onApplyTemplate?: (plan: AppliedTemplatePlan, template: LibraryTemplate) => void;
+  /** open with this template applied (the library's "Use template") */
+  initialTemplate?: LibraryTemplate | null;
+  /** "Browse all templates" in the Template menu (opens the library) */
+  onBrowseTemplates?: () => void;
+  /** whose library to load when `templates` isn't given (default: the default project's workspace) */
+  workspaceId?: string | null;
 }) {
   // Default to the project you're in (defaultProjectId); otherwise the neutral
   // "Personal" bucket rather than auto-picking a real project.
@@ -73,8 +124,13 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const [tags, setTags] = useState<string[]>([]);
   const [description, setDescription] = useState("");
   const [descOpen, setDescOpen] = useState(false);
-  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
-  const [templateId, setTemplateId] = useState("");
+  // the template applied, and the fields as they were just before (Remove puts back what's untouched)
+  const [applied, setApplied] = useState<AppliedTemplate | null>(null);
+  const [pickerDismissed, setPickerDismissed] = useState(false);
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [showSubs, setShowSubs] = useState(false);
+  const [wantLibrary, setWantLibrary] = useState(false);
+  const templateBtn = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const projectRef = useRef<HTMLSelectElement>(null);
   const focusDescOnMount = useRef(false);
@@ -140,12 +196,13 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const resetDraft = () => {
     setTitle(""); setProjectId(defaultProject);
     setPriority("medium"); setAssigneeId(currentUserId); setDueDate(""); setDueTime(""); setStartDate(""); setRecurrence("none"); setFocusMin(30); setTags([]);
-    setDescription(""); setDescOpen(false); setTemplateId(""); setMissingProject(null);
+    setDescription(""); setDescOpen(false); setMissingProject(null);
+    setApplied(null); setPickerDismissed(false); setChooserOpen(false); setShowSubs(false);
   };
   /** the form as a saved draft, or null when there's nothing worth keeping */
   const snapshot = (): SavedDraft | null => (title.trim() || description.trim()) ? {
     title, description, projectId, projectName: projects.find((p) => p.id === projectId)?.name ?? missingProject ?? "",
-    priority, assigneeId, dueDate, dueTime, startDate, recurrence, focusMin, tags, templateId,
+    priority, assigneeId, dueDate, dueTime, startDate, recurrence, focusMin, tags, templateId: applied?.tpl.id ?? "",
   } : null;
 
   // Reset the form only when the modal OPENS. Props like defaultProject can
@@ -165,7 +222,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     if (!open || was) return;
     startFresh.current = false;
     resetDraft();
-    setTemplates(getTemplates());
+    if (initialTemplate) applyTemplate(initialTemplate, { fresh: true });
     window.setTimeout(() => inputRef.current?.focus(), 30);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultProject, currentUserId]);
@@ -195,7 +252,19 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
       ...(parsed.effortHours ? { effortHours: parsed.effortHours } : {}),
       scheduled: null, planToday: true, aiScore: 50, recurrence: effRecurrence,
     };
-    onCreate(t);
+    const plan = applied ? templatePlanFor(applied.tpl, t.dueDate ?? null, t.assigneeId) : null;
+    if (applied && plan) {
+      const full: AppliedTemplatePlan = { task: t, subtasks: plan.subtasks, checklist: plan.checklist };
+      if (onApplyTemplate) onApplyTemplate(full, applied.tpl);
+      else {
+        // no template path: the task, then its sub-tasks (each waits for it), the checklist in its notes
+        const list = plan.checklist.length ? `**Checklist**\n${plan.checklist.map((c) => `- ${c}`).join("\n")}` : "";
+        const parent = list ? { ...t, description: t.description ? `${t.description}\n\n${list}` : list } : t;
+        onCreate(parent);
+        const stamp = Date.now();
+        plan.subtasks.forEach((s, i) => onCreate(subtaskOf(s, parent, stamp + i + 1)));
+      }
+    } else onCreate(t);
     startFresh.current = true;
     onClose();
   };
@@ -216,7 +285,8 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     setAssigneeId(peopleIn(pid).some((p) => p.id === d.assigneeId) ? d.assigneeId : currentUserId);
     setPriority(d.priority); setDueDate(d.dueDate); setDueTime(d.dueTime); setStartDate(d.startDate); setRecurrence(d.recurrence); setFocusMin(d.focusMin);
     setTags(d.tags.filter((id) => !!allTags[id]));
-    setTemplateId(templates.some((t) => t.id === d.templateId) ? d.templateId : "");
+    const tpl = d.templateId ? library.find((t) => t.id === d.templateId) : undefined;
+    setApplied(tpl ? { tpl, before: BLANK_FIELDS, set: { title: d.title, description: d.description, descOpen: !!d.description.trim(), priority: d.priority, focusMin: d.focusMin, tags: d.tags, dueDate: d.dueDate, dueTime: d.dueTime } } : null);
     window.setTimeout(() => {
       if (!here) { projectRef.current?.focus(); return; }
       const el = inputRef.current;
@@ -239,33 +309,72 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   // deleting a tag (workspace-wide) also drops it from this draft
   const deleteTag = (id: string) => { setTags((ts) => ts.filter((x) => x !== id)); onDeleteTag(id); };
 
-  // Apply a template's settings. What the user has already chosen or typed is
-  // never thrown away: title/description are only filled when empty or still
-  // showing the previous template's text, and tags they picked themselves stay
-  // (only the previous template's tags are swapped out). "Blank task" undoes it.
-  const applyTemplate = (id: string) => {
-    const prev = templates.find((x) => x.id === templateId);
-    const next = templates.find((x) => x.id === id);
-    const untouched = (cur: string, was: string | undefined) => !cur.trim() || (was !== undefined && cur === was);
-    const ownTags = tags.filter((t) => !prev?.tags.includes(t));
-    setTemplateId(next ? next.id : "");
-    if (!next) {
-      if (prev) {
-        if (untouched(title, prev.title)) setTitle("");
-        if (untouched(description, prev.description)) { setDescription(""); setDescOpen(false); }
-        setPriority("medium"); setTags(ownTags); setFocusMin(30); setRecurrence("none");
-      }
-      return;
-    }
-    const nextTitle = untouched(title, prev?.title) ? next.title : title;
-    setTitle(nextTitle);
-    if (untouched(description, prev?.description)) setDescription(next.description);
-    if (next.description) setDescOpen(true);
-    setPriority(next.priority); setFocusMin(next.focusMin); setRecurrence(next.recurrence);
-    // skip template tags deleted since it was saved
-    setTags([...new Set([...ownTags, ...next.tags.filter((tid) => !!allTags[tid])])]);
-    window.setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(nextTitle.length, nextTitle.length); } }, 0);
+  /* ---- templates ---- */
+  // the library: the host's, or loaded here the first time it's wanted ("/", the Template button)
+  const libWs = workspaceId !== undefined ? workspaceId : wsOf(defaultProject);
+  const lib = useLibraryTemplates(libWs, open && !templatesProp && (wantLibrary || !!savedDraft?.templateId));
+  const library = templatesProp ?? lib.templates;
+  const libLoading = !templatesProp && lib.status !== "ready" && lib.status !== "error";
+  const pickerQuery = applied ? null : templateQueryOf(title);
+  const pickerOpen = open && pickerQuery !== null && !pickerDismissed;
+  useEffect(() => { if (pickerQuery === null && pickerDismissed) setPickerDismissed(false); }, [pickerQuery, pickerDismissed]);
+  useEffect(() => { if (pickerOpen && !wantLibrary) setWantLibrary(true); }, [pickerOpen, wantLibrary]);
+
+  const fieldsNow = (): TemplateFields => ({ title, description, descOpen, priority, focusMin, tags, dueDate, dueTime });
+  const setFields = (f: TemplateFields) => {
+    setTitle(f.title); setDescription(f.description); setDescOpen(f.descOpen); setPriority(f.priority);
+    setFocusMin(f.focusMin); setTags(f.tags); setDueDate(f.dueDate); setDueTime(f.dueTime);
   };
+  const focusTitle = (text: string) => window.setTimeout(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    // the first {placeholder} is selected, ready to type over
+    const ph = templatePlaceholders(text)[0];
+    if (ph) el.setSelectionRange(ph.start, ph.end); else el.setSelectionRange(text.length, text.length);
+  }, 0);
+
+  // Apply a template. What's already chosen or typed is never thrown away: the
+  // title and description are only filled when empty (or a "/" search), tags
+  // join the ones picked, and a due date chosen by hand stays (the sub-tasks
+  // follow it). A template replacing another starts from before the first.
+  const applyTemplate = (tpl: LibraryTemplate, opts: { fresh?: boolean } = {}) => {
+    const cur = opts.fresh ? BLANK_FIELDS : fieldsNow();
+    const prior = opts.fresh ? null : applied;
+    const undone = prior ? withoutTemplate(cur, prior) : cur;
+    const base = templateQueryOf(undone.title) !== null ? { ...undone, title: "" } : undone;
+    const pid = opts.fresh ? defaultProject : targetProject;
+    const plan = planTemplate(tpl, {
+      today: new Date(KANBO_TODAY), currentUserId, projectId: pid,
+      projectOwnerId: projects.find((p) => p.id === pid)?.ownerId, workspaceId: wsOf(pid), tags: allTags,
+    });
+    const desc = base.description.trim() ? base.description : (tpl.body.description ?? "");
+    const next: TemplateFields = {
+      title: base.title.trim() ? base.title : tpl.body.title,
+      description: desc, descOpen: base.descOpen || !!desc.trim(),
+      priority: plan.task.priority ?? "medium", focusMin: plan.task.focusMin ?? 30,
+      tags: [...new Set([...base.tags, ...resolveTemplateTags(tpl.body.tags, allTags)])],
+      dueDate: base.dueDate || plan.task.dueDate || "", dueTime: base.dueDate ? base.dueTime : "",
+    };
+    setFields(next);
+    setApplied({ tpl, before: base, set: next });
+    setPickerDismissed(false); setShowSubs(false);
+    focusTitle(next.title);
+  };
+  const removeTemplate = () => {
+    if (!applied) return;
+    const back = withoutTemplate(fieldsNow(), applied);
+    setFields(back);
+    setApplied(null); setShowSubs(false);
+    window.setTimeout(() => templateBtn.current?.focus(), 0);
+  };
+  const closePicker = useCallback(() => setPickerDismissed(true), []);
+  /** what the template makes with the form as it is: dated from the task's due date, people by role in its project */
+  const templatePlanFor = (tpl: LibraryTemplate, due: string | null, who: string) => planTemplate(tpl, {
+    today: new Date(KANBO_TODAY), currentUserId, projectId: targetProject,
+    projectOwnerId: projects.find((p) => p.id === targetProject)?.ownerId, workspaceId: wsOf(targetProject),
+    dueDate: due, assigneeId: who, tags: allTags,
+  });
 
   /** a property was chosen by hand: it takes over from any token typed for it */
   const takeOver = (kinds: NlpKind[]) => { if (typed(kinds)) setTitle(stripTokens(title, parsed.spans, kinds)); };
@@ -278,8 +387,6 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   const pickFocus = (m: number) => { takeOver(OWNS.focus); setFocusMin(m); };
 
   const showDesc = descOpen || !!description;
-  const builtinTemplates = templates.filter((t) => isBuiltinTemplateId(t.id));
-  const userTemplates = templates.filter((t) => !isBuiltinTemplateId(t.id));
   const project = projects.find((p) => p.id === targetProject);
   const assignee = people.find((p) => p.id === effAssignee);
   const focusOpts = [...new Set([...FOCUS_STEPS, effFocus])].sort((a, b) => a - b);
@@ -300,6 +407,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     parsed.assigneeId && assignee ? `For ${assignee.name}` : null,
     parsed.focusMin ? `${fmtMinutes(parsed.focusMin)} of focus` : null,
   ].filter(Boolean).join(" · ");
+
+  // what the applied template adds, as it stands (it follows the due date, project and assignee)
+  const preview = applied ? templatePlanFor(applied.tpl, effDue || null, effAssignee) : null;
+  const whoIs = (id: string) => (!id ? "Unassigned" : id === currentUserId ? "You" : people.find((p) => p.id === id)?.name
+    ?? members.find((m) => m.userId === id)?.name ?? "Project owner");
 
   const onTitleKey = (e: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing && !e.metaKey && !e.ctrlKey) { e.preventDefault(); submit(); }
@@ -326,34 +438,74 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
             <button type="button" className="knt-link" onClick={discardDraft} aria-label={`Discard draft “${draftName}”`}>Discard</button>
           </div>
         )}
-        {templates.length > 0 && (
-          <label className="knt-template">
-            <Icon name="layers" size={14} sw={1.75} />
-            <span>Template</span>
-            <select className="knt-select" value={templateId} onChange={(e) => applyTemplate(e.target.value)} aria-label="Start from template">
-              <option value="">Blank task</option>
-              {userTemplates.length > 0 ? (
-                <>
-                  <optgroup label="Your templates">
-                    {userTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </optgroup>
-                  <optgroup label="Kanbo templates">
-                    {builtinTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </optgroup>
-                </>
-              ) : builtinTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          </label>
+        {applied ? (
+          <div className="ktpl-applied" role="group" aria-label={`Template: ${applied.tpl.name}`}>
+            <TemplateTile template={applied.tpl} size={20} />
+            <span className="ktpl-applied-text">
+              <span className="ktpl-applied-name">From “{applied.tpl.name}”</span>
+              {preview && (preview.subtasks.length > 0 || preview.checklist.length > 0) && (
+                <span className="ktpl-applied-meta">
+                  {[preview.subtasks.length ? `+ ${plural(preview.subtasks.length, "sub-task")}` : "", preview.checklist.length ? plural(preview.checklist.length, "checklist item") : ""].filter(Boolean).join(" · ")}
+                </span>
+              )}
+            </span>
+            {preview && (preview.subtasks.length > 0 || preview.checklist.length > 0) && (
+              <button type="button" className="knt-link" aria-expanded={showSubs} aria-controls={idOf("tplsubs")} onClick={() => setShowSubs((v) => !v)}>
+                {showSubs ? "Hide" : "Show"}<span className="sr-only"> what “{applied.tpl.name}” adds</span>
+              </button>
+            )}
+            <button type="button" className="knt-link" onClick={removeTemplate} aria-label={`Remove template “${applied.tpl.name}”`}>Remove</button>
+          </div>
+        ) : (
+          <div className="knt-template">
+            <button ref={templateBtn} type="button" className="knt-tplbtn" aria-haspopup="dialog" aria-expanded={chooserOpen}
+              onClick={() => { setWantLibrary(true); setChooserOpen((v) => !v); }}>
+              <Icon name="layers" size={14} sw={1.75} /><span>Template</span><Icon name="chevronDown" size={14} sw={1.75} />
+            </button>
+            <span className="knt-template-hint" aria-hidden="true">or type <Kbd>/</Kbd> in the title</span>
+          </div>
+        )}
+        <TemplateChooser open={chooserOpen} anchorRef={templateBtn} onClose={() => setChooserOpen(false)} templates={library}
+          loading={libLoading} currentUserId={currentUserId} onPick={(t) => applyTemplate(t)} onBrowse={onBrowseTemplates} />
+        {applied && preview && (
+          <Collapse open={showSubs}>
+            <div id={idOf("tplsubs")} className="ktpl-applied-list">
+              {preview.subtasks.length > 0 && (
+                <ol className="ktpl-pv-subs" aria-label="Sub-tasks it adds">
+                  {preview.subtasks.map((s, i) => (
+                    <li key={i}>
+                      <span className="ktpl-ring" aria-hidden="true" />
+                      <span className="ktpl-pv-subtitle">{s.title}</span>
+                      <span className="ktpl-pv-when mono">{s.dueDate ? dayLabel(s.dueDate) : "No date"}</span>
+                      <span className="ktpl-pv-role" data-role={s.assigneeId ? undefined : "unassigned"}>
+                        <Icon name="user" size={12} sw={2} />{whoIs(s.assigneeId ?? "")}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {preview.checklist.length > 0 && (
+                <ul className="ktpl-pv-check" aria-label="Checklist it adds">
+                  {preview.checklist.map((c, i) => <li key={i}><span className="ktpl-box" aria-hidden="true" />{c}</li>)}
+                </ul>
+              )}
+            </div>
+          </Collapse>
         )}
 
         <div className="knt-title">
           {/* wraps rather than scrolling sideways, so every token stays in view (a phone
               shows the whole sentence); it's still one line of text: ⏎ creates, and a
               pasted line break becomes a space */}
-          <TokenField ref={inputRef} multiline maxHeight={112} value={title} onValueChange={(v) => setTitle(v.replace(/[ \t]*[\r\n]+[ \t]*/g, " "))}
-            spans={parsed.spans} label="Task title" focusRing="none" onKeyDown={onTitleKey}
+          <TokenField ref={inputRef} id={idOf("title")} multiline maxHeight={112} value={title} onValueChange={(v) => setTitle(v.replace(/[ \t]*[\r\n]+[ \t]*/g, " "))}
+            spans={pickerOpen ? [] : parsed.spans} label="Task title" focusRing="none" onKeyDown={onTitleKey} describedBy={idOf("title-hint")}
             placeholder="Task title — try “Email Sana fri 3pm #launch !high”" />
         </div>
+        <span id={idOf("title-hint")} className="sr-only">Type a slash to start from a template.</span>
+        {pickerOpen && (
+          <TemplatePicker query={pickerQuery ?? ""} templates={library} inputId={idOf("title")} loading={libLoading}
+            currentUserId={currentUserId} onPick={(t) => applyTemplate(t)} onClose={closePicker} />
+        )}
         <TokenChips parsed={parsed} projects={projects} members={people} tags={allTags} skip={HAS_ROW} />
         <p className="sr-only" aria-live="polite">{heard}</p>
 
@@ -469,10 +621,20 @@ const NEW_TASK_CSS = `
 .knt-link[data-tone="accent"] { color: var(--accent-text, var(--accent)); }
 .knt-link[data-tone="accent"]:hover { color: var(--accent-text, var(--accent)); background: var(--accent-tint, var(--accent-dim)); }
 
-.knt-template { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; margin: 0 0 12px;
+/* "Template ▾" (or "/" in the title) — and, once one's applied, its strip (templates.css) */
+.knt-template { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; min-width: 0;
   font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
-.knt-template > svg { color: var(--icon-quiet, var(--ink-4)); }
-.knt-template .knt-select { height: 28px; font-size: 12px; color: var(--ink-2); }
+.knt-tplbtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; margin-left: -8px; padding: 0 8px; border: 0;
+  border-radius: var(--r-sm, 6px); background: transparent; cursor: pointer;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2);
+  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease); }
+.knt-tplbtn:hover, .knt-tplbtn[aria-expanded="true"] { background: var(--fill-1); color: var(--ink); }
+.knt-tplbtn > svg { color: var(--icon-quiet, var(--ink-4)); }
+.knt-template-hint { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+@media (hover: none) { .knt-template-hint { display: none; } }
+.knt .ktpl-applied { margin: 0 0 12px; }
+.knt .ktpl-applied-list { margin: -4px 0 12px; }
+.knt .ktpl-pick { margin-top: 8px; }
 
 /* the title: an 18px field that reads tokens as you type */
 .knt-title { display: flex; align-items: stretch; min-height: 48px; padding: 9px 12px; box-sizing: border-box;
@@ -536,6 +698,7 @@ const NEW_TASK_CSS = `
 .knt-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; min-width: 0; }
 
 @media (max-width: 859px) {
+  .knt-tplbtn { height: 40px; }
   .knt-props { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
   .knt-prop { grid-template-columns: 96px minmax(0, 1fr); }
   .knt-prop-k, .knt-select, .knt-props .kdate { height: 40px; }

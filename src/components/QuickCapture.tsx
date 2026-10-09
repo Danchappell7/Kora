@@ -7,6 +7,10 @@
    ⏎ adds · ⇧⏎ adds and keeps the sheet open for the next one.
    Paste several lines and it offers to create them all (indented
    lines become sub-tasks), or to hand them to Kanbo as meeting notes.
+   Start with "/" (or "/template") for the template picker: the chosen
+   template's title takes the field (its first {placeholder} selected),
+   what's typed after it still reads as tokens ("fri", "#launch"), and ⏎
+   makes the task with the template's sub-tasks and checklist.
    ============================================================ */
 import {
   forwardRef, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
@@ -18,7 +22,11 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { getMember, todayISO, KANBO_TODAY, TAGS } from "../data/data";
 import { parseTask, parseDateText, segments, splitLines, stripTokens, fmtMinutes, dayLabel, type NlpSpan, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { IMPORT_LIMIT, type ImportRow } from "../lib/importTasks";
-import type { Task, Status, TagDef } from "../data/types";
+import { planTemplate, resolveTemplateTags, templatePlaceholders, templateQueryOf, type AppliedTemplatePlan } from "../lib/templatePlan";
+import { TemplatePicker } from "./templates/TemplatePicker";
+import { TemplateTile } from "./templates/parts";
+import { useLibraryTemplates } from "./templates/useLibraryTemplates";
+import type { Task, Status, TagDef, LibraryTemplate } from "../data/types";
 
 /* ============================== TokenField ============================== */
 
@@ -183,10 +191,11 @@ export function PersonMark({ id, name }: { id: string; name: string }) {
 type Due = { date?: string; time?: string } | null;
 interface Picks { due?: Due; assigneeId?: string; projectId?: string }
 
-export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate, onPasteNotes, onImportRows, onOpenImport, tags, initialText }: {
+export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate, onPasteNotes, onImportRows, onOpenImport, tags, initialText, templates: templatesProp, onApplyTemplate, workspaceId, currentUserId = "m-self" }: {
   open: boolean;
   onClose: () => void;
-  projects: { id: string; name: string; color?: string }[];
+  /** ownerId / workspaceId let a template give sub-tasks to the project's owner */
+  projects: { id: string; name: string; color?: string; ownerId?: string | null; workspaceId?: string | null }[];
   members: { id: string; name: string }[];
   defaultProjectId?: string;
   onCreate: (partial: Partial<Task> & { title: string }) => void;
@@ -200,11 +209,25 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   tags?: Record<string, TagDef>;
   /** text to open with (e.g. a ⌘K query turned into a task) */
   initialText?: string;
+  /** the template library (lib/templates listLibraryTemplates); omitted: loaded here when "/" is first typed */
+  templates?: readonly LibraryTemplate[];
+  /** Create from a template: `plan.task` is what was typed, with the template's values where nothing was;
+   *  `plan.subtasks` dated and given to people by role (link them with lib/templates templateTasks);
+   *  `plan.checklist` its items. Omitted: onImportRows (sub-tasks under the task), else onCreate (the task alone);
+   *  either way the checklist goes into the description. */
+  onApplyTemplate?: (plan: AppliedTemplatePlan, template: LibraryTemplate) => void;
+  /** whose template library to load (default: the default project's workspace) */
+  workspaceId?: string | null;
+  /** "you", for a template's roles (default "m-self": the app reads it as whoever's signed in) */
+  currentUserId?: string;
 }) {
   const [text, setText] = useState("");
   const [picks, setPicks] = useState<Picks>({});
   const [added, setAdded] = useState<string | null>(null);
   const [menu, setMenu] = useState<"project" | "person" | null>(null);
+  const [tpl, setTpl] = useState<LibraryTemplate | null>(null);
+  const [pickerDismissed, setPickerDismissed] = useState(false);
+  const [wantLibrary, setWantLibrary] = useState(false);
   const fieldRef = useRef<FieldEl>(null);
   const projectBtn = useRef<HTMLButtonElement>(null);
   const personBtn = useRef<HTMLButtonElement>(null);
@@ -213,7 +236,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
 
   useEffect(() => {
     if (!open) return;
-    setText(initialText ?? ""); setPicks({}); setAdded(null); setMenu(null);
+    setText(initialText ?? ""); setPicks({}); setAdded(null); setMenu(null); setTpl(null); setPickerDismissed(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   useEffect(() => {
@@ -259,6 +282,69 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   const project = projs.find((p) => p.id === projectId);
   const assignee = assigneeId ? members.find((m) => m.id === assigneeId) : undefined;
 
+  /* ---- templates ("/" in the field) ---- */
+  const libWs = workspaceId !== undefined ? workspaceId : (projs.find((p) => p.id === defaultProjectId)?.workspaceId ?? null);
+  const lib = useLibraryTemplates(libWs, open && !templatesProp && wantLibrary);
+  const library = templatesProp ?? lib.templates;
+  const libLoading = !templatesProp && lib.status !== "ready" && lib.status !== "error";
+  const pickerQuery = !multi && !tpl ? templateQueryOf(text) : null;
+  const pickerOpen = open && pickerQuery !== null && !pickerDismissed;
+  useEffect(() => { if (pickerQuery === null && pickerDismissed) setPickerDismissed(false); }, [pickerQuery, pickerDismissed]);
+  useEffect(() => { if (pickerOpen && !wantLibrary) setWantLibrary(true); }, [pickerOpen, wantLibrary]);
+  // a pasted list is read line by line: a template is for one task
+  useEffect(() => { if (multi && tpl) setTpl(null); }, [multi, tpl]);
+  // the workspace the task lands in, for a template's roles (Personal: everything's yours)
+  const tplWs = project && project.workspaceId !== undefined ? project.workspaceId : (workspaceId ?? null);
+  const tplSubs = tpl?.body.subtasks?.length ?? 0;
+  const fieldId = `kcap-${uid.replace(/[^a-zA-Z0-9_-]/g, "")}-field`;
+
+  const pickTemplate = (t: LibraryTemplate) => {
+    setTpl(t); setPickerDismissed(false); setAdded(null);
+    const next = t.body.title;
+    setText(next);
+    window.setTimeout(() => {
+      const el = fieldRef.current;
+      if (!el) return;
+      el.focus();
+      // the first {placeholder} is selected, ready to type over
+      const ph = templatePlaceholders(next)[0];
+      if (ph) el.setSelectionRange(ph.start, ph.end); else el.setSelectionRange(next.length, next.length);
+    }, 0);
+  };
+  const removeTemplate = () => {
+    if (tpl && text === tpl.body.title) setText("");
+    setTpl(null);
+    refocus();
+  };
+  /** the task from a template: what was typed wins, the template fills the rest */
+  const createFromTemplate = (t: LibraryTemplate, partial: Partial<Task> & { title: string }) => {
+    const plan = planTemplate(t, {
+      today: new Date(KANBO_TODAY), currentUserId, projectId: projectId ?? "", projectOwnerId: project?.ownerId ?? null,
+      workspaceId: tplWs, assigneeId: assigneeId ?? currentUserId, tags: tagDict,
+      // a date typed or picked moves the sub-tasks with it; a date taken off means none
+      ...(due.date ? { dueDate: due.date } : picks.due === null && !dateTyped ? { dueDate: null } : {}),
+    });
+    const task: Partial<Task> & { title: string } = {
+      ...plan.task, ...partial,
+      priority: parsed.priority ?? plan.task.priority,
+      focusMin: parsed.focusMin ?? plan.task.focusMin, dur: parsed.focusMin ?? plan.task.dur,
+      tags: [...new Set([...(partial.tags ?? []), ...(plan.task.tags ?? [])])],
+    };
+    const dueDate = partial.dueDate ?? plan.task.dueDate;
+    if (dueDate) task.dueDate = dueDate; else delete task.dueDate;
+    if (!projectId) delete task.projectId; // the host picks one, as for any capture
+    const withList = <T extends Partial<Task>>(x: T): T => (plan.checklist.length
+      ? { ...x, description: [x.description, `**Checklist**\n${plan.checklist.map((c) => `- ${c}`).join("\n")}`].filter(Boolean).join("\n\n") }
+      : x);
+    if (onApplyTemplate) onApplyTemplate({ task, subtasks: plan.subtasks, checklist: plan.checklist }, t);
+    else if (onImportRows) {
+      onImportRows([
+        withList(task) as ImportRow,
+        ...plan.subtasks.map((st): ImportRow => ({ ...st, projectId: projectId || undefined, parentIndex: 0 })),
+      ]);
+    } else onCreate(withList(task));
+  };
+
   const rows = useMemo<ImportRow[]>(() => {
     if (!multi || tooMany) return [];
     const stack: { depth: number; index: number }[] = [];
@@ -287,7 +373,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   const subCount = rows.filter((r) => r.parentIndex !== undefined).length;
   const createLabel = `Create ${rows.length} tasks${subCount ? ` (${subCount} sub-task${subCount === 1 ? "" : "s"})` : ""}`;
 
-  const reset = () => { setText(""); setPicks({}); setMenu(null); };
+  const reset = () => { setText(""); setPicks({}); setMenu(null); setTpl(null); setPickerDismissed(false); };
   const refocus = () => window.setTimeout(() => fieldRef.current?.focus(), 0);
 
   const submit = (keepOpen: boolean) => {
@@ -307,7 +393,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
     if (parsed.tags?.length) partial.tags = parsed.tags;
     if (parsed.energy) partial.energy = parsed.energy;
     if (parsed.planToday) partial.planToday = true;
-    onCreate(partial);
+    if (tpl) createFromTemplate(tpl, partial); else onCreate(partial);
     if (keepOpen) { reset(); setAdded(title); refocus(); } else onClose();
   };
   const createRows = (keepOpen: boolean) => {
@@ -343,7 +429,8 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
     ? `${lineCount} lines is more than Quick capture adds at once.${onOpenImport ? " Open them in Import instead." : ""}`
     : multi
     ? `${createLabel}.`
-    : [due.date ? `Due ${dayLabel(due.date)}${due.time ? ` at ${due.time}` : ""}` : null, ...facts.map((f) => f.words),
+    : [tpl ? `From the template ${tpl.name}${tplSubs ? `, with ${tplSubs} sub-task${tplSubs === 1 ? "" : "s"}` : ""}` : null,
+      due.date ? `Due ${dayLabel(due.date)}${due.time ? ` at ${due.time}` : ""}` : null, ...facts.map((f) => f.words),
       project ? `In ${project.name}` : null, assignee ? `For ${assignee.name}` : null].filter(Boolean).join(" · ");
 
   const tipId = `${uid}-tip`;
@@ -383,9 +470,13 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
           {project && !multi && <span className="kcap-head-where"><ProjectDot color={project.color ?? ""} size={8} />{project.name}</span>}
           <IconButton icon="x" label="Close" size="sm" onClick={onClose} />
         </div>
-        <TokenField ref={fieldRef} multiline value={text} onValueChange={(v) => { setText(v); if (added) setAdded(null); }}
-          spans={spans} label="Quick capture a task" className="kcap-input" describedBy={multi ? undefined : tipId} focusRing="none"
-          placeholder={"Add a task — “call Sana fri 3pm ~30m”"} onKeyDown={onKeyDown} />
+        <TokenField ref={fieldRef} id={fieldId} multiline value={text} onValueChange={(v) => { setText(v); if (added) setAdded(null); }}
+          spans={pickerOpen ? [] : spans} label="Quick capture a task" className="kcap-input" describedBy={multi ? undefined : tipId} focusRing="none"
+          placeholder={"Add a task — “call Sana fri 3pm ~30m”, or / for a template"} onKeyDown={onKeyDown} />
+        {pickerOpen && (
+          <TemplatePicker query={pickerQuery ?? ""} templates={library} inputId={fieldId} loading={libLoading} currentUserId={currentUserId}
+            onPick={pickTemplate} onClose={() => setPickerDismissed(true)} />
+        )}
         <p className="sr-only" aria-live="polite">{summary}</p>
 
         {tooMany ? (
@@ -426,6 +517,15 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
           </div>
         ) : (
           <div className="kcap-chips" role="group" aria-label="Task details">
+            {tpl && (
+              <span className="kcap-chip ktpl-capchip" data-kind="template">
+                <TemplateTile template={tpl} size={16} />
+                <span className="kcap-chip-text">{tpl.name}{tplSubs ? <span className="kcap-chip-sub">+ {tplSubs} sub-task{tplSubs === 1 ? "" : "s"}</span> : null}</span>
+                <button type="button" className="ktpl-capchip-x" aria-label={`Remove template “${tpl.name}”`} onClick={removeTemplate}>
+                  <Icon name="x" size={12} sw={2} />
+                </button>
+              </span>
+            )}
             <DateChip value={due.date} time={due.time} withTime size="md" label="Due date" placeholder="Date"
               parse={(s) => parseDateText(s)} onChange={pickDue} />
             {facts.map((f) => <span key={f.key} className="kcap-chip" data-kind={f.kind}>{f.icon}<span className="kcap-chip-text">{f.text}</span></span>)}
