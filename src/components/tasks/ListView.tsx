@@ -361,6 +361,10 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   });
   const kitOnRow = kitOn && !kitGrip;
   const onRowPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    // the row's own DOM only: its status / priority / assignee menus and the due chip's date picker are
+    // portals (React children of the row, so their presses bubble here), and pressing one of their items
+    // must never start a swipe, a long press or a drag (which would then swallow the click meant for it)
+    if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
     sw.bind.onPointerDown?.(e);
     if (kitOnRow) kit.bind.onPointerDown?.(e);
   };

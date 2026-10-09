@@ -51,6 +51,27 @@ describe("ListView rows as drag-to-plan sources (desktop)", () => {
     expect(document.querySelector(".kph-grip")).toBeNull();
   });
 
+  it("a press in one of the row's menus or its date picker (portals) never starts a drag", () => {
+    const a = mk({ title: "Menu row", dueDate: "2026-10-12" });
+    render(<ListView {...base([a], { onPatch: vi.fn(), sort: "title" })} />);
+    const row = screen.getByRole("group", { name: "Menu row" });
+    expect(row).toHaveAttribute("data-kdnd-source", a.id);
+    fireEvent.click(within(row).getByRole("button", { name: /^Priority: .*Change priority/ }));
+    const item = within(screen.getByRole("menu", { name: "Priority for “Menu row”" })).getAllByRole("menuitemradio")[0];
+    expect(row.contains(item)).toBe(false);
+    down(item, 10, 10, { pointerType: "mouse" });
+    expect(pressed).not.toHaveBeenCalled();
+    fireEvent.click(item);
+    fireEvent.click(within(row).getByRole("button", { name: /^Due date for “Menu row”/ }));
+    const picker = screen.getByRole("dialog", { name: "Due date for “Menu row”" });
+    down(picker.querySelector<HTMLElement>("[data-iso]")!, 10, 10, { pointerType: "mouse" });
+    down(within(within(picker).getByRole("group", { name: "Quick dates" })).getAllByRole("button")[0], 10, 10, { pointerType: "mouse" });
+    expect(pressed).not.toHaveBeenCalled();
+    // the row's own DOM still picks it up
+    down(within(row).getByRole("button", { name: "Menu row" }), 10, 10, { pointerType: "mouse" });
+    expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
   it("a selected row carries the whole selection, in the order it's on screen", () => {
     const a = mk({ title: "Alpha", position: 1 }), b = mk({ title: "Bravo", position: 2 }), c = mk({ title: "Charlie", position: 3 });
     render(<ListView {...base([a, b, c], { onPatch: vi.fn(), onBulkPatch: vi.fn(), sort: "title" })} />);

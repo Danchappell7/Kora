@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useRef } from "react";
+import { createPortal } from "react-dom";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import {
   swipeDecision, swipeResist, swipeVelocity, haptic, useSwipeRow,
@@ -194,6 +195,18 @@ describe("useSwipeRow", () => {
     expect(row.dataset.open).toBeUndefined();
   });
 
+  it("a reveal button used straight after the swipe ends its aftermath: the app's next click is a real one", () => {
+    const onClick = vi.fn();
+    render(<Row onSwipeLeft={() => {}} onClick={onClick} />);
+    const row = screen.getByTestId("row");
+    swipeBy(row, -200);
+    // (well inside the swallow window) the tray's Pick: it closes the reveal, then clicks into the row
+    fireEvent.click(screen.getByRole("button", { name: "Tomorrow" }));
+    expect(row.dataset.open).toBeUndefined();
+    fireEvent.click(row);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
   it("an open reveal can be pushed shut, but a nudge leaves it open", () => {
     render(<Row onSwipeLeft={() => {}} />);
     const row = screen.getByTestId("row");
@@ -282,6 +295,34 @@ describe("useSwipeRow", () => {
     down(screen.getByText("title"), 10, 10);
     act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 50); });
     expect(onLongPress).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores presses from a portal the row renders (a menu or picker on document.body)", () => {
+    const onSwipeRight = vi.fn(), onLongPress = vi.fn();
+    function P() {
+      const sw = useSwipeRow({ onSwipeRight, onLongPress });
+      return (
+        <div data-testid="p" {...sw.bind} data-offset={sw.offset}>
+          <span>title</span>
+          {createPortal(<button type="button">In a menu</button>, document.body)}
+        </div>
+      );
+    }
+    render(<P />);
+    const row = screen.getByTestId("p");
+    const item = screen.getByRole("button", { name: "In a menu" });
+    expect(row.contains(item)).toBe(false);
+    swipeBy(item, 200);
+    expect(onSwipeRight).not.toHaveBeenCalled();
+    expect(row.dataset.offset).toBe("0");
+    down(item, 10, 10);
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 50); });
+    up(item, 10, 10);
+    expect(onLongPress).not.toHaveBeenCalled();
+    // the row's own content still works
+    act(() => { vi.advanceTimersByTime(600); });
+    swipeBy(screen.getByText("title"), 200);
+    expect(onSwipeRight).toHaveBeenCalledTimes(1);
   });
 
   it("a cancelled pointer (the browser took it for a scroll) puts the row back", () => {

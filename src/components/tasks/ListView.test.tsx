@@ -3,7 +3,7 @@ import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { ToastProvider } from "../Toast";
 import { ListView, dropPosition, planDrop, dueDateForBucket } from "./ListView";
-import { KANBO_TODAY, toLocalISO } from "../../data/data";
+import { KANBO_TODAY, refreshClock, toLocalISO } from "../../data/data";
 import type { Task, Project } from "../../data/types";
 import type { GroupBy } from "../../app-types";
 import { LONG_PRESS_MS } from "../../lib/gestures";
@@ -436,8 +436,11 @@ describe("ListView on phones: swipe and long press", () => {
     return () => { window.matchMedia = orig; };
   };
   let restore = () => {};
-  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-09T10:00:00+01:00")); restore = phone(); clearUndo(); });
-  afterEach(() => { restore(); vi.useRealTimers(); });
+  // Friday 9 Oct 2026 (the tray's labels below are that week's). KANBO_TODAY is read from the real clock
+  // when data.ts loads, so it's moved too, and put back after
+  const NOW = new Date("2026-10-09T10:00:00+01:00");
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); refreshClock(NOW); restore = phone(); clearUndo(); });
+  afterEach(() => { restore(); vi.useRealTimers(); refreshClock(new Date()); });
   const longPress = (el: Element) => { down(el, 100, 20); act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 20); }); up(el, 100, 20); };
   const openSheet = (title: string) => {
     longPress(within(screen.getByRole("group", { name: title })).getByRole("button", { name: title }));
@@ -684,6 +687,53 @@ describe("ListView on phones: swipe and long press", () => {
     act(() => { vi.advanceTimersByTime(600); });
     longPress(within(two).getByRole("button", { name: "Two" }));
     expect(screen.getByText("2 selected")).toBeInTheDocument();
+  });
+
+  it("presses in the row's menus (portals) are never a swipe or a long press", () => {
+    const t = mk({ title: "Menu row" });
+    const props = base([t], { onPatch: vi.fn() });
+    const { container } = render(<ListView {...props} />);
+    const row = screen.getByRole("group", { name: "Menu row" });
+    fireEvent.click(within(row).getByRole("button", { name: /^Priority: .*Change priority/ }));
+    const item = within(screen.getByRole("menu", { name: "Priority for “Menu row”" })).getAllByRole("menuitemradio")[0];
+    expect(row.contains(item)).toBe(false);
+    // a sideways drag across the open menu doesn't complete the task behind it
+    swipeBy(item, 200);
+    expect(props.onToggle).not.toHaveBeenCalled();
+    expect(row.style.transform).toBe("");
+    expect(container.querySelector(".ktv-swipe")).toBeNull();
+    act(() => { vi.advanceTimersByTime(600); });
+    // nor does a long press on one of its items open the quick actions on top
+    longPress(item);
+    expect(screen.queryByRole("dialog", { name: /^Actions for/ })).toBeNull();
+    // the row itself still swipes
+    fireEvent.click(item);
+    act(() => { vi.advanceTimersByTime(600); });
+    swipeBy(row, 200);
+    expect(props.onToggle).toHaveBeenCalledWith(t.id);
+  });
+
+  it("the tray's Pick opens the date picker, and touches in it are never a swipe or a long press", () => {
+    const t = mk({ title: "Pick row", dueDate: iso(2) });
+    const props = base([t], { onPatch: vi.fn() });
+    render(<ToastProvider><ListView {...props} /></ToastProvider>);
+    const row = screen.getByRole("group", { name: "Pick row" });
+    swipeBy(row, -200);
+    // tapped straight after the swipe: the click that swipe swallows isn't the one that opens the picker
+    fireEvent.click(within(screen.getByRole("group", { name: "Reschedule “Pick row”" })).getByRole("button", { name: "Pick a due date" }));
+    act(() => { vi.advanceTimersByTime(50); });
+    const picker = screen.getByRole("dialog", { name: "Due date for “Pick row”" });
+    const day = picker.querySelector<HTMLElement>("[data-iso]")!;
+    expect(row.contains(day)).toBe(false);
+    // a sideways drag across the month grid doesn't complete the task
+    swipeBy(day, 180);
+    expect(props.onToggle).not.toHaveBeenCalled();
+    expect(row.style.transform).toBe("");
+    act(() => { vi.advanceTimersByTime(600); });
+    // a long press in its text field (to paste, say) doesn't open the quick actions
+    longPress(within(picker).getByRole("textbox", { name: /^Type a due date/ }));
+    expect(screen.queryByRole("dialog", { name: /^Actions for/ })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Due date for “Pick row”" })).toBeInTheDocument();
   });
 
   it("guests get neither: no tray, no sheet", () => {

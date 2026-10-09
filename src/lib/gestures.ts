@@ -18,7 +18,10 @@
    Pointer events, no dependency. The row carries `touch-action: pan-y
    pinch-zoom` (bind.style), so the browser keeps vertical scrolling and
    pinch to itself and hands a sideways finger to us; when it starts a
-   scroll it cancels the pointer and the row stays put.
+   scroll it cancels the pointer and the row stays put. Only a press on
+   the bound element's own DOM starts a gesture: a menu or date picker
+   the row opens is a portal (a React child, so its events bubble here)
+   and is never swiped or long-pressed through.
    Kept small: ListView (the shell's lists) imports it.
    ============================================================ */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -184,6 +187,9 @@ export function useSwipeRow(opts: SwipeRowOptions): SwipeRow {
   };
 
   const reset = useCallback(() => {
+    // an explicit close (a tray button, a touch elsewhere) ends the gesture's aftermath: the next click is a
+    // real one, e.g. the tray's Pick opening the row's own date picker a moment after the swipe
+    swallowUntil.current = 0;
     const s = g.current;
     if (s?.timer) window.clearTimeout(s.timer);
     g.current = null;
@@ -217,6 +223,10 @@ export function useSwipeRow(opts: SwipeRowOptions): SwipeRow {
 
   const onPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
     const cur = o.current;
+    // only a press on the bound element's own DOM: React events from a portal (a menu or date picker the
+    // row opened, rendered on document.body but a React child of the row) bubble here too, and a swipe
+    // across an open picker mustn't complete the task behind it, nor a long press in it open the sheet
+    if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
     if (cur.disabled || e.pointerType !== "touch" || e.isPrimary === false) return;
     if (!cur.onSwipeLeft && !cur.onSwipeRight && !cur.onLongPress && !openRef.current) return;
     el.current = e.currentTarget;
