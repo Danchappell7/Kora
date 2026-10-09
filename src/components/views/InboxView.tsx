@@ -34,6 +34,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   // 0047: approvals (meta.event picks the words: approvalInboxLine) and doc mentions (no task: they open the doc)
   approval:    { icon: "check", verb: "asked for your approval on" },
   doc_mention: { icon: "notes", verb: "mentioned you in" },
+  kudos:       { icon: "sparkles", verb: "sent you kudos for" },   // 0048 placeholder (u4 / u10 finish the row)
 };
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -1004,8 +1005,8 @@ export function InboxView({
   } else if (segment === "inbox") {
     body = (
       <>
-        {sections.map((s) => (
-          <section key={s.id} className="kinbox-group" aria-label={s.label}>
+        {sections.map((s, i) => (
+          <section key={s.id} className="kinbox-group" aria-label={s.label} data-tour={i === 0 ? "inbox-triage" : undefined}>
             <SectionLabel count={s.items.length}
               action={s.id === "fyi" && s.items.length > 1
                 ? (confirm === "fyi" ? confirmRow("fyi")

@@ -19,7 +19,7 @@ import { useState, useEffect, useRef, useId, lazy, Suspense, type ReactNode, typ
 import { createPortal } from "react-dom";
 import { Icon, Collapse, avatarDisc, Button, IconButton, Toggle, EmptyState, Segmented, Kbd, type SegmentedOption } from "./primitives";
 import { memberInitials } from "../data/data";
-import type { IconName, CalendarConnection, CalendarWarning, CalProvider, ExtCalendar, Project, Role, Subscription, TagDef } from "../data/types";
+import type { IconName, CalendarConnection, CalendarWarning, CalProvider, ExtCalendar, NotifyPrefs, Project, Role, Subscription, TagDef } from "../data/types";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useAuth } from "../auth/AuthProvider";
@@ -140,8 +140,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onSave: (p: ProfileDraft) => Promise<void>;
   onExport: () => void;
   onDeleteAccount: () => Promise<void>;
-  notifyPrefs?: Record<string, boolean>;
-  onSaveNotifyPrefs?: (prefs: Record<string, boolean>) => void;
+  notifyPrefs?: NotifyPrefs;
+  onSaveNotifyPrefs?: (prefs: NotifyPrefs) => void;
   appearance?: Appearance;
   onChangeAppearance?: (a: Appearance) => void;
   /** light, dark, or follow the device ("system"); the choice shows only when both are given */

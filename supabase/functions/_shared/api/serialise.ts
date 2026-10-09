@@ -151,7 +151,8 @@ export interface ApiMe {
 export type WebhookEventType =
   | "task.created" | "task.updated" | "task.completed" | "task.deleted"
   | "comment.created" | "project.created" | "project.updated" | "member.joined"
-  | "approval.requested" | "approval.decided";
+  | "approval.requested" | "approval.decided"
+  | "kudos.given";
 export type WebhookDeliveryType = WebhookEventType | "ping";
 
 /** What a webhook endpoint receives (the POST body). */
@@ -219,6 +220,25 @@ export type ApiApprovalEvent = ApiApproval & {
   /** null for approval.requested */
   decision: ApiApprovalDecision | null;
 };
+
+/** kudos.given's data (0048): someone thanked a teammate for a finished team task. */
+export interface ApiKudosEvent {
+  object: "kudos";
+  id: string;
+  taskId: string;
+  workspaceId: string;
+  /** who gave it, and their name */
+  fromUserId: string;
+  fromName: string | null;
+  /** who it's for, and their name */
+  toUserId: string;
+  toName: string | null;
+  emoji: string;
+  /** an optional short note (≤ 140 characters) */
+  note: string | null;
+  createdAt: string | null;
+  task: { id: string; title: string | null; projectId: string | null; workspaceId: string | null; status: ApiStatus | null; url: string | null };
+}
 
 /** ping's data. */
 export interface ApiPing { webhookId: string; url: string | null; events: string[]; message: string }
@@ -447,6 +467,34 @@ export function serialiseApproval(row: Row, reviewers: unknown, ctx?: SerialiseC
   };
 }
 
+/** The outbox payload of kudos.given ({ kudos, from_name, to_name, task }) → its data. */
+export function serialiseKudosEvent(p: Row, ctx?: SerialiseCtx): ApiKudosEvent {
+  const asRow = (v: unknown): Row => (v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {});
+  const k = asRow(p.kudos), t = asRow(p.task);
+  const tid = nonEmpty(t.id) ?? nonEmpty(k.task_id);
+  return {
+    object: "kudos",
+    id: String(k.id ?? ""),
+    taskId: str(k.task_id) ?? "",
+    workspaceId: str(k.workspace_id) ?? "",
+    fromUserId: str(k.from_user) ?? "",
+    fromName: nonEmpty(p.from_name),
+    toUserId: str(k.to_user) ?? "",
+    toName: nonEmpty(p.to_name),
+    emoji: str(k.emoji) ?? "🎉",
+    note: nonEmpty(k.note),
+    createdAt: isoTime(k.created_at),
+    task: {
+      id: tid ?? "",
+      title: nonEmpty(t.title),
+      projectId: nonEmpty(t.project_id),
+      workspaceId: nonEmpty(t.workspace_id),
+      status: typeof t.status === "string" && (API_STATUSES as readonly string[]).includes(t.status) ? t.status as ApiStatus : null,
+      url: tid ? taskUrl(tid, ctx) : null,
+    },
+  };
+}
+
 /** The outbox payload of an approval event ({ approval, reviewers, task, decision? }) → its data. */
 export function serialiseApprovalEvent(p: Row, ctx?: SerialiseCtx): ApiApprovalEvent {
   const asRow = (v: unknown): Row => (v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {});
@@ -533,6 +581,8 @@ export function serialiseEvent(o: OutboxEvent, ctx?: SerialiseCtx): WebhookEnvel
       return { ...base, data: { ...serialiseApprovalEvent(p, ctx), decision: null } };
     case "approval.decided":
       return { ...base, data: serialiseApprovalEvent(p, ctx) };
+    case "kudos.given":
+      return { ...base, data: serialiseKudosEvent(p, ctx) };
     case "ping": {
       const w = asRow(p.webhook);
       const data: ApiPing = {

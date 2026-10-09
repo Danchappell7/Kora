@@ -357,6 +357,25 @@ const SCHEMAS: Record<string, unknown> = {
       },
     }],
   },
+  // webhook data only (kudos.given, 0048)
+  KudosEvent: {
+    type: "object",
+    description: "The `data` of kudos.given webhook events: someone thanked a teammate for a finished team task.",
+    required: ["object", "id", "taskId", "workspaceId", "fromUserId", "fromName", "toUserId", "toName", "emoji", "note", "createdAt", "task"],
+    properties: {
+      object: { const: "kudos" }, id: uuid(), taskId: uuid(), workspaceId: uuid("Kudos are for team tasks only."),
+      fromUserId: uuid(), fromName: nullable("string"), toUserId: uuid(), toName: nullable("string"),
+      emoji: { type: "string", enum: ["🎉", "👏", "🙌", "💪", "⭐", "🚀", "❤️", "🔥", "💯", "🏆"] },
+      note: nullable("string", { maxLength: 140 }), createdAt: nullable("string", { format: "date-time" }),
+      task: {
+        type: "object", required: ["id", "title", "projectId", "workspaceId", "status", "url"],
+        properties: {
+          id: uuid(), title: nullable("string"), projectId: nullable("string"), workspaceId: nullable("string", { format: "uuid" }),
+          status: { type: ["string", "null"], enum: ["todo", "progress", "review", "blocked", "done", null] }, url: nullable("string", { format: "uri" }),
+        },
+      },
+    },
+  },
   TaskList: listSchema("Task"), ProjectList: listSchema("Project"), SectionList: listSchema("Section"),
   CommentList: listSchema("Comment"), MemberList: listSchema("Member"), WorkspaceList: listSchema("Workspace"),
 };
@@ -532,7 +551,7 @@ const INTRO = [
   "",
   "**Automations.** A project's automations (\"When a task is created\", \"status changed\", \"task completed\") run for API changes too, exactly as in the app. A value a rule names that the task can't take (someone outside the workspace, another project's section) is skipped.",
   "",
-  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn or its task moved out of the workspace: then `task` is the task as it was in this workspace).",
+  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn or its task moved out of the workspace: then `task` is the task as it was in this workspace). `kudos.given` (team workspaces) carries a `KudosEvent`: who thanked whom for which finished task, with the emoji and optional note.",
 ].join("\n");
 
 /** The document, with `serverUrl` (…/functions/v1/api/v1) as its only server. */

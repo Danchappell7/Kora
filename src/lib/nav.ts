@@ -189,8 +189,11 @@ export function pathOf(route: Route): string {
   switch (route.view) {
     case "tasks": {
       const tab = isOneOf(TASKS_TABS, route.tab) ? `/${route.tab}` : "";
-      const due = isOneOf(DUE_FOCUS, route.list) ? `?due=${route.list}` : "";
-      return `/tasks${tab}${due}`;
+      const q = new URLSearchParams();
+      if (isOneOf(DUE_FOCUS, route.list)) q.set("due", route.list);
+      if (route.savedViewId) q.set("view", route.savedViewId);
+      const qs = q.toString();
+      return `/tasks${tab}${qs ? `?${qs}` : ""}`;
     }
     case "search":
       return route.list ? `/search/list/${encodeURIComponent(route.list)}` : "/search";
@@ -198,7 +201,8 @@ export function pathOf(route: Route): string {
       if (!route.projectId) return "/projects";
       const tab = isOneOf(PROJECT_TABS, route.tab) ? `/${route.tab}` : "";
       const doc = route.tab === "docs" && route.docId ? `/${encodeURIComponent(route.docId)}` : "";
-      return `/p/${encodeURIComponent(route.projectId)}${tab}${doc}`;
+      const view = route.savedViewId && route.tab !== "docs" ? `?view=${encodeURIComponent(route.savedViewId)}` : "";
+      return `/p/${encodeURIComponent(route.projectId)}${tab}${doc}${view}`;
     }
     default:
       return VIEW_PATH[route.view] ?? "/today";
@@ -210,18 +214,22 @@ export function pathOf(route: Route): string {
 export function routeOf(pathname: string, search = ""): Route | null {
   const path = clean(pathname);
   if (RESERVED.has(path)) return null;
+  const params = new URLSearchParams(search);
+  const savedViewId = params.get("view") || undefined;   // 0048: a saved view applied (My tasks, a project)
   const fixed = PATHS[path];
   if (fixed) {
     if (fixed.view !== "tasks") return { ...fixed };
-    const due = new URLSearchParams(search).get("due");
-    return isOneOf(DUE_FOCUS, due) ? { ...fixed, list: due } : { ...fixed };
+    const due = params.get("due");
+    const r: Route = isOneOf(DUE_FOCUS, due) ? { ...fixed, list: due } : { ...fixed };
+    return savedViewId ? { ...r, savedViewId } : r;
   }
   const seg = path.split("/").slice(1);
   if (seg[0] === "p") {
     if (!seg[1]) return { view: "projects" };
     const route: Route = { view: "project", projectId: decode(seg[1]) };
     if (seg[2] === "docs" && seg[3]) return { ...route, tab: "docs", docId: decode(seg[3]) };
-    return isOneOf(PROJECT_TABS, seg[2]) ? { ...route, tab: seg[2] } : route;
+    const r: Route = isOneOf(PROJECT_TABS, seg[2]) ? { ...route, tab: seg[2] } : route;
+    return savedViewId && r.tab !== "docs" ? { ...r, savedViewId } : r;
   }
   if (seg[0] === "search") {
     return seg[1] === "list" && seg[2] ? { view: "search", list: decode(seg[2]) } : { view: "search" };
@@ -239,7 +247,7 @@ export function canonicalPath(pathname: string, search = ""): string | null {
   if (!route) return null;
   const [path, own = ""] = pathOf(route).split("?");
   const params = new URLSearchParams(own);
-  new URLSearchParams(search).forEach((v, k) => { if (k !== "due") params.append(k, v); });
+  new URLSearchParams(search).forEach((v, k) => { if (k !== "due" && k !== "view") params.append(k, v); });
   const qs = params.toString();
   return qs ? `${path}?${qs}` : path;
 }

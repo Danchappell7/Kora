@@ -19,13 +19,13 @@ import {
   deniedMessage, disablePush, enablePush, isPushDemo, isPushOnHere, onPushChange, pushAvailability, pushPrefKey,
   PUSH_KINDS, sendTestPush, unsupportedMessage,
 } from "../../lib/push";
-import type { PushAvailability } from "../../data/types";
+import type { NotifyPrefs, PushAvailability } from "../../data/types";
 import "./push.css";
 
 export interface PushSettingsPanelProps {
-  notifyPrefs: Record<string, boolean>;
+  notifyPrefs: NotifyPrefs;
   /** saves the whole prefs object (SettingsModal's onSaveNotifyPrefs) */
-  onSaveNotifyPrefs?: (prefs: Record<string, boolean>) => void;
+  onSaveNotifyPrefs?: (prefs: NotifyPrefs) => void;
 }
 
 type Busy = "check" | "enable" | "disable" | "test" | null;

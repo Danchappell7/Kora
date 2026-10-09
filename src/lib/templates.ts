@@ -8,7 +8,7 @@
    reads also drop stored "builtin-" rows, de-duplicate by id and quietly
    write the cleaned list back.)
    ============================================================ */
-import type { Priority, Recurrence, Task, WorkspaceTemplate, WorkspacePlan, Project, Section, FormDef, FormFieldKey, AutomationRule, AutomationAction, AutomationTrigger, PlannedTask, TemplateProject, TemplateTask } from "../data/types";
+import type { Priority, Recurrence, Task, WorkspaceTemplate, WorkspacePlan, Project, Section, FormDef, FormFieldKey, AutomationRule, AutomationAction, AutomationTrigger, PlannedTask, TemplateProject, TemplateTask, LibraryTemplate, LibraryTemplateInput, LibraryTemplatePatch, TaskTemplateBody } from "../data/types";
 import { toLocalISO } from "../data/data";
 import { spectrumColor } from "./projectIdentity";
 
@@ -701,4 +701,52 @@ export function appliedPlanMessage(plan: Pick<WorkspacePlan, "name">, r: Pick<Ap
   const shown = r.failed.slice(0, 3).map((x) => `“${x}”`).join(", ");
   const more = r.failed.length > 3 ? ` and ${r.failed.length - 3} more` : "";
   return { tone: "info", text: `${plan.name} is set up with ${projects} and ${tasks}, but ${shown}${more} couldn't be added. You can add ${r.failed.length === 1 ? "it" : "them"} by hand.` };
+}
+
+/* ======================================================================
+   The team template library (public.task_templates, 0048).  [0048 contract → u9]
+   Personal or shared with the workspace (the same rules as saved views:
+   your own + the workspace's shared ones; writers share; owners/admins
+   manage shared ones; guests use shared ones read-only). Eight built-ins
+   (LIBRARY_BUILTINS: Client onboarding, Bug report, Weekly report, Hiring
+   loop, Content piece, Event checklist, Expense claim, Contract review).
+   The per-browser templates above (kanbo-templates) move up once
+   (adoptLocalTemplates) and keep working offline / in demo mode.
+   Apply = the task + its sub-tasks with dates relative to the day it's
+   applied, assignees by role (me / the project's owner / unassigned), the
+   checklist as checklist items. In QuickCapture / NewTaskModal: type
+   "/template" or "/" to pick (fuzzy), or the New task split menu.
+   ====================================================================== */
+export { parseLibraryTemplate, parseTemplateBody, templateFailure, TEMPLATE_LIMITS } from "./templateRows";
+
+export const TEMPLATE_COLUMNS = "id,workspace_id,user_id,name,emoji,body,shared,created_at,updated_at";
+
+/** the 8 built-ins (ids "builtin-lib-…"; not stored; British English) */
+export const LIBRARY_BUILTINS: readonly LibraryTemplate[] = [];
+
+const notBuiltU9 = (fn: string) => Promise.reject(new Error(`${fn}: not built yet (package u9)`));
+
+/** Your templates + the workspace's shared ones + the built-ins. Demo: in memory. */
+export function listLibraryTemplates(_workspaceId: string | null): Promise<LibraryTemplate[]> { return notBuiltU9("listLibraryTemplates"); }
+export function createLibraryTemplate(_input: LibraryTemplateInput): Promise<LibraryTemplate> { return notBuiltU9("createLibraryTemplate"); }
+export function updateLibraryTemplate(_id: string, _patch: LibraryTemplatePatch): Promise<LibraryTemplate> { return notBuiltU9("updateLibraryTemplate"); }
+export function deleteLibraryTemplate(_id: string): Promise<void> { return notBuiltU9("deleteLibraryTemplate"); }
+/** Copy this browser's old templates (kanbo-templates) into the library once; how many moved. */
+export function adoptLocalTemplates(): Promise<number> { return notBuiltU9("adoptLocalTemplates"); }
+
+/** "Save as template" from a task: its shape (title, description, priority, estimate, tags), its sub-tasks
+ *  with their due dates as offsets from the task's, its checklist. */
+export function templateFromTask(task: Task, _subtasks: Task[], _opts: { today: Date }): TaskTemplateBody {
+  return { title: task.title };
+}
+
+/** Fuzzy match for the "/" picker (name and title; best first). */
+export function matchTemplates(_query: string, templates: readonly LibraryTemplate[]): LibraryTemplate[] {
+  return [...templates];
+}
+
+/** What applying makes (pure): the task and its sub-tasks, dated from `today`, assignees resolved by role. */
+export interface AppliedTemplatePlan { task: Partial<Task> & { title: string }; subtasks: (Partial<Task> & { title: string })[]; checklist: string[] }
+export function planTemplate(tpl: Pick<LibraryTemplate, "body">, _ctx: { today: Date; currentUserId: string; projectId: string; projectOwnerId?: string | null; workspaceId: string | null }): AppliedTemplatePlan {
+  return { task: { title: tpl.body.title }, subtasks: [], checklist: [] };
 }

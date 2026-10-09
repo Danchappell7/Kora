@@ -30,7 +30,11 @@ export interface Profile {
   approved?: boolean;          // early-access gate (undefined when unknown → treated as allowed)
   suspended?: boolean;         // admin-suspended account → blocked at the gate
   isAdmin?: boolean;           // platform admin flag (profiles.is_admin); the gate lets admins through
-  notifyPrefs?: Record<string, boolean>;  // notification toggles, e.g. { assigned: true, mention_email: false }
+  /** notification prefs (profiles.notify_prefs): per-kind toggles, e.g. { assigned: true, mention_email: false },
+   *  and since 0048 delivery / digest_time / quiet_hours / timezone (see NotifyPrefs) */
+  notifyPrefs?: NotifyPrefs;
+  /** 0048 profiles.onboarding: the tour, the "Get set up" checklist, the sample project, gentle-nudge settings */
+  onboarding?: OnboardingState;
 }
 
 export interface AccessRequest {
@@ -86,6 +90,8 @@ export interface Project {
   ownerId?: string | null;       // exactly one owner (defaults to creator)
   contributorIds?: string[];     // additional people working on the project
   archivedAt?: string | null;    // soft-archive: hidden but kept + restorable
+  /** 0048 projects.board_settings: the board's WIP limits and "show project covers" (writers set it) */
+  boardSettings?: BoardSettings;
 }
 
 export interface TagDef {
@@ -145,6 +151,8 @@ export interface Task {
   effortHours?: number;            // estimate for workload planning
   loggedHours?: number;            // actual time logged
   createdBy?: string;              // tasks.user_id (the creator); mapped by rowToTask
+  /** 0048 tasks.cover_attachment_id: one of the task's own image files, shown as its board-card cover */
+  coverAttachmentId?: string | null;
 }
 
 export type CustomValue = string | number | boolean | string[] | null;
@@ -255,8 +263,9 @@ export interface Attachment {
 
 /** "integration": a notice about one of your integrations, with no task (0046: a webhook switched off after 20 failures)
  *  "approval": an approval request for you, or a decision on yours (0047; meta says which)
- *  "doc_mention": someone @mentioned you in a project doc (0047; no task — meta.docId / meta.projectId) */
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention";
+ *  "doc_mention": someone @mentioned you in a project doc (0047; no task — meta.docId / meta.projectId)
+ *  "kudos": someone thanked you for a finished task (0048; detail = their name; meta.kudosId / emoji / note) */
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention" | "kudos";
 
 /** activity.meta (0047): what an Inbox item points at beyond its task. Parsed by lib/activityMeta. */
 export interface ActivityMeta {
@@ -272,6 +281,10 @@ export interface ActivityMeta {
   /** doc mentions */
   docId?: string;
   projectId?: string;
+  /** kudos (0048) */
+  kudosId?: string;
+  emoji?: string;
+  note?: string | null;
 }
 
 export interface Activity {
@@ -634,7 +647,8 @@ export type ApiKeyFailure = "not_allowed" | "too_many" | "invalid" | "not_found"
 export type WebhookEvent =
   | "task.created" | "task.updated" | "task.completed" | "task.deleted"
   | "comment.created" | "project.created" | "project.updated" | "member.joined"
-  | "approval.requested" | "approval.decided";
+  | "approval.requested" | "approval.decided"
+  | "kudos.given";
 /** what a delivery carried: an event, or a test ping */
 export type WebhookDeliveryEvent = WebhookEvent | "ping";
 export interface Webhook {
@@ -1228,3 +1242,314 @@ export type PlannerFailure = "ai_unavailable" | "daily_limit" | "not_allowed" | 
 /* ---------- uptime (health edge function; /admin › System status) ---------- */
 
 export type { HealthCheck, HealthCheckName, HealthReport } from "../../supabase/functions/_shared/health.ts";
+
+/* ======================================================================
+   0048 — the UX wave (first run, search, calmer notifications, shared
+   views, board covers, templates, presence, momentum). [architect: final]
+   ====================================================================== */
+
+/* ---------- notification prefs (profiles.notify_prefs) ---------- */
+
+/** realtime: push/email as things happen (bundled per task within 2 minutes);
+ *  digest: one email a day at digest_time, push only for mentions and approvals */
+export type NotifyDelivery = "realtime" | "digest";
+/** No push or email inside quiet hours (held to their end); the Inbox still updates.
+ *  "HH:MM" 24 h in the person's timezone; end ≤ start spans midnight. days: ISO weekdays
+ *  (Mon = 1 … Sun = 7) on which quiet hours START; missing = every day. */
+export interface QuietHours { start: string; end: string; days?: number[] }
+export type NotifyPrefValue = boolean | string | number | QuietHours | null;
+/** profiles.notify_prefs. Keys (all optional; unset = the default):
+ *  "<kind>" in-app on/off · "<kind>_email" · "<kind>_push" (kinds: assigned, mention, comment, approval, kudos;
+ *  plus due_email / due_push) — booleans, default on;
+ *  "delivery": NotifyDelivery (default "realtime") · "digest_time": "HH:MM" (default "08:00") ·
+ *  "quiet_hours": QuietHours | null · "timezone": IANA name (default "Europe/London") ·
+ *  "bundle": false = never bundle (default on). Read them through lib/notifyPrefs readNotifyPrefs. */
+export type NotifyPrefs = Record<string, NotifyPrefValue | undefined>;
+/** A thread (task) snoozed in the Inbox (public.notification_snoozes; your own rows). */
+export interface NotificationSnooze { taskId: string; until: string; createdAt: string }
+
+/* ---------- first run (profiles.onboarding) ---------- */
+
+/** who the tour and checklist are for: owner = workspace owners/admins and Personal */
+export type TourRole = "owner" | "member" | "guest";
+export interface OnboardingTourState {
+  /** the step to resume at (lib/onboarding TOUR step ids); null = not started / finished */
+  step: string | null;
+  done: boolean;
+  skipped?: boolean;
+  /** which role's tour it was */
+  role?: TourRole;
+  updatedAt?: string;
+}
+export type SetupItemId =
+  | "invite_team" | "connect_calendar" | "add_domain" | "connect_slack"          // owners / admins
+  | "plan_day" | "complete_task" | "install_app" | "set_notifications";         // everyone else
+export interface OnboardingChecklistState {
+  /** item → when it was ticked (ISO). Items also tick themselves from what the app sees (SetupSignals). */
+  done?: Partial<Record<SetupItemId, string>>;
+  dismissedAt?: string | null;
+}
+/** The "Kanbo tour" sample project (made on request in Personal; removable in one click). */
+export interface OnboardingSample { projectId: string; taskIds: string[]; docId?: string | null; createdAt: string }
+/** Gentle nudges (U10): the streak chip and the wins recap can be hidden; days off don't break a streak. */
+export interface MomentumPrefs { streakHidden?: boolean; recapHidden?: boolean; daysOff?: string[] }
+/** profiles.onboarding. ONE top-level key per feature, merged one level deep by
+ *  merge_onboarding(patch) (null removes a key): tour / checklist (U1), sample (U1), momentum (U10). */
+export interface OnboardingState {
+  v?: 1;
+  tour?: OnboardingTourState;
+  checklist?: OnboardingChecklistState;
+  sample?: OnboardingSample;
+  momentum?: MomentumPrefs;
+}
+export type OnboardingPatch = { [K in keyof OnboardingState]?: OnboardingState[K] | null };
+
+/* ---------- universal search (search_all) ---------- */
+
+export type SearchHitKind = "task" | "comment" | "doc" | "project" | "person";
+/** search_all's filters, camelCase (lib/searchApi maps them to the RPC's snake_case). All optional. */
+export interface SearchFilters {
+  /** default: every kind */
+  kinds?: SearchHitKind[];
+  /** a workspace id · null = Personal only · undefined = everywhere you are */
+  workspaceId?: string | null;
+  /** tasks, comments (their task's), docs, and that project itself */
+  projectId?: string;
+  /** tasks assigned to (or shared with) this person */
+  assigneeId?: string;
+  statuses?: Status[];
+  /** open tasks only */
+  excludeDone?: boolean;
+  /** "YYYY-MM-DD", inclusive (worked out in the person's timezone by the NL parser) */
+  dueFrom?: string;
+  dueTo?: string;
+  /** comments by this person */
+  authorId?: string;
+  /** archived tasks / projects / docs (and those in archived projects) too */
+  includeArchived?: boolean;
+}
+/** One result. snippet: an excerpt with matches between U+E000 and U+E001 (lib/searchApi
+ *  splitHighlights → text runs; never render it as HTML). */
+export interface SearchHit {
+  kind: SearchHitKind;
+  id: string;
+  /** task title · the comment's task's title · doc title · project name · person's name */
+  title: string;
+  snippet: string | null;
+  rank: number;
+  /** task: itself · comment: its task */
+  taskId: string | null;
+  projectId: string | null;
+  workspaceId: string | null;
+  updatedAt: string | null;
+  /** server (search_all) or the local/offline/demo fallback */
+  source: "server" | "local";
+  task?: { status: Status; priority: Priority; dueDate: string | null; assigneeId: string | null; parentId: string | null; archived: boolean };
+  comment?: { authorId: string | null; authorName: string; taskStatus: Status | null };
+  doc?: { icon: string | null; projectName: string | null; updatedBy: string | null; archived: boolean };
+  project?: { emoji: string | null; color: string | null; status: string | null; ownerId: string | null; archived: boolean };
+  person?: { email: string; role: Role | null; title: string | null; avatarUrl: string | null };
+}
+export type SearchChipKind = "assignee" | "author" | "project" | "status" | "due" | "kind" | "archived" | "open";
+/** A filter the natural-language parser found ("Maya's", "overdue", "in Launch"), shown as a removable chip. */
+export interface SearchChip {
+  id: string;
+  kind: SearchChipKind;
+  /** "Maya", "Overdue", "In Launch", "Docs" */
+  label: string;
+  /** what this chip contributes; the parsed filters are every chip's patch merged */
+  patch: SearchFilters;
+  /** the words of the input it came from */
+  source: string;
+}
+export interface ParsedSearch {
+  input: string;
+  /** what's left to search for once the filter words are taken out */
+  text: string;
+  filters: SearchFilters;
+  chips: SearchChip[];
+}
+export type SearchFailure = "not_allowed" | "invalid" | "unavailable" | "network" | "error";
+
+/* ---------- saved views (public.saved_views) ---------- */
+
+/** where a view opens */
+export type SavedViewKind = "my_tasks" | "project" | "search";
+export type SavedViewType = "list" | "board" | "calendar" | "timeline";
+/** saved_views.query (≤ 8 KB). v = 1. */
+export interface SavedViewQuery {
+  v: 1;
+  /** kind "project": the project */
+  projectId?: string;
+  viewType?: SavedViewType;
+  /** My tasks: the list / bucket / smart list id ("today", "overdue", "waiting"…) */
+  list?: string;
+  /** list filters in lib/searchQuery's Query shape (text, status, priority, assignee, projectId, tag, due,
+   *  includeArchived; "all" or missing = no filter). Old saved searches arrive as exactly this. */
+  filters?: Record<string, string | boolean>;
+  /** kind "search": the words and the structured filters */
+  search?: { text: string; filters: SearchFilters };
+  groupBy?: string;
+  sort?: string;
+  sortDir?: "asc" | "desc";
+}
+export interface SavedView {
+  id: string;
+  /** null = personal */
+  workspaceId: string | null;
+  /** who made it (stays theirs when an owner/admin edits a shared one) */
+  userId: string;
+  name: string;
+  emoji: string | null;
+  kind: SavedViewKind;
+  query: SavedViewQuery;
+  /** in the sidebar's Views group (for a shared view: for everyone) */
+  pinned: boolean;
+  position: number | null;
+  shared: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface SavedViewInput {
+  workspaceId: string | null;
+  name: string;
+  emoji?: string | null;
+  kind: SavedViewKind;
+  query: SavedViewQuery;
+  pinned?: boolean;
+  position?: number | null;
+  /** writers only (never guests, never Personal) */
+  shared?: boolean;
+}
+export type SavedViewPatch = Partial<Pick<SavedView, "name" | "emoji" | "query" | "pinned" | "position" | "shared">>;
+export type SavedViewFailure = "not_allowed" | "too_many" | "invalid" | "not_found" | "unavailable" | "network" | "error";
+
+/* ---------- template library (public.task_templates) ---------- */
+
+/** who a template's sub-task goes to when it's applied */
+export type TemplateAssigneeRole = "me" | "project_owner" | "unassigned";
+export interface TemplateSubtask { title: string; offsetDays?: number; assigneeRole?: TemplateAssigneeRole }
+/** task_templates.body (≤ 32 KB; ≤ 50 sub-tasks, ≤ 50 checklist items) */
+export interface TaskTemplateBody {
+  title: string;
+  description?: string;
+  priority?: Priority;
+  /** minutes */
+  estimate?: number;
+  tags?: string[];
+  /** the task's own due date, days after the day it's applied (none when missing) */
+  dueOffsetDays?: number;
+  subtasks?: TemplateSubtask[];
+  checklist?: string[];
+}
+export interface LibraryTemplate {
+  id: string;
+  /** null = personal (and the built-ins) */
+  workspaceId: string | null;
+  /** "" for built-ins */
+  userId: string;
+  name: string;
+  emoji: string | null;
+  body: TaskTemplateBody;
+  shared: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** one of the 8 built-ins (id "builtin-…"; not stored) */
+  builtin?: boolean;
+}
+export interface LibraryTemplateInput {
+  workspaceId: string | null;
+  name: string;
+  emoji?: string | null;
+  body: TaskTemplateBody;
+  /** writers only */
+  shared?: boolean;
+}
+export type LibraryTemplatePatch = Partial<Pick<LibraryTemplate, "name" | "emoji" | "body" | "shared">>;
+export type TemplateFailure = "not_allowed" | "too_many" | "invalid" | "not_found" | "unavailable" | "network" | "error";
+
+/* ---------- board (projects.board_settings) ---------- */
+
+export interface BoardSettings {
+  /** column key (a status, or a section id) → WIP limit (1–999) */
+  wip?: Record<string, number>;
+  /** "Show project covers" on cards without a cover image */
+  covers?: boolean;
+}
+
+/* ---------- kudos (public.kudos; give_kudos · take_back_kudos) ---------- */
+
+export type KudosEmoji = "🎉" | "👏" | "🙌" | "💪" | "⭐" | "🚀" | "❤️" | "🔥" | "💯" | "🏆";
+export interface Kudos {
+  id: string;
+  taskId: string;
+  /** the task's workspace when it was given */
+  workspaceId: string;
+  fromUser: string;
+  toUser: string;
+  emoji: KudosEmoji;
+  note: string | null;
+  createdAt: string;
+  /** give_kudos answers with names; table rows don't have them */
+  fromName?: string;
+  toName?: string;
+}
+export type KudosFailure = "not_allowed" | "not_found" | "not_done" | "team_only" | "self" | "invalid" | "too_many" | "unavailable" | "network" | "error";
+
+/* ---------- live presence (Supabase Realtime presence + broadcast; no tables) ---------- */
+
+/** Someone else on the same object (task, doc, list row). Only a name and a colour: no email, no ids beyond the user id. */
+export interface PresencePeer {
+  userId: string;
+  name: string;
+  /** their avatar colour (Member.color) */
+  color: string;
+  state: "viewing" | "editing" | "typing";
+  /** docs: where their caret is (null = not in the text) */
+  caret?: { blockId: string; offset: number; extent?: number } | null;
+  /** ms since epoch of their last update */
+  at: number;
+}
+/** One block-level doc operation (U5's co-editing; applied by lib/presence applyDocOps). */
+export type DocOp =
+  | { t: "insert"; block: DocBlock; afterId: string | null }
+  | { t: "update"; block: DocBlock }
+  | { t: "delete"; blockId: string }
+  | { t: "move"; blockId: string; afterId: string | null };
+/** What's broadcast on a doc's channel: a batch of ops from one editor. */
+export interface DocOpBatch {
+  docId: string;
+  /** one per open editor (tab), so a person's two tabs merge like two people */
+  clientId: string;
+  userId: string;
+  name: string;
+  /** per client, increasing */
+  seq: number;
+  /** the doc's updatedAt the sender's copy was based on */
+  baseVersion: string;
+  ops: DocOp[];
+  at: number;
+}
+
+/* ---------- momentum (lib/momentum) ---------- */
+
+export interface StreakInfo {
+  /** consecutive working days (Mon–Fri, not bank holidays or your days off) you planned or finished something */
+  days: number;
+  /** today: already counts · still open · not a working day */
+  today: "done" | "pending" | "off";
+  /** the first day of the run (YYYY-MM-DD), null with no run */
+  since: string | null;
+}
+export interface WinsMoment { kind: "kudos_received" | "kudos_given" | "helped" | "unblocked" | "approval"; text: string; taskId?: string; userId?: string }
+export interface WinsRecap {
+  /** Friday afternoon: this week · Monday morning: last week */
+  kind: "friday" | "monday";
+  from: string;
+  to: string;
+  total: number;
+  byProject: { projectId: string; count: number; tasks: { id: string; title: string }[] }[];
+  focusMinutes: number;
+  streak: StreakInfo;
+  moments: WinsMoment[];
+}

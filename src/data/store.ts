@@ -10,6 +10,7 @@ import { supabase, isSupabaseConfigured } from "../lib/supabase";
 import { offlineQueue, LEGACY_QUEUE_KEY, type QueuedMutation } from "../lib/offlineQueue";
 import { reportError } from "../lib/monitoring";
 import { parseActivityMeta } from "../lib/activityMeta";
+import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
@@ -18,7 +19,7 @@ import {
   EVENTS, KANBO_TODAY,
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -183,6 +184,8 @@ interface TaskRow {
   logged_hours?: number | null;
   subtasks?: { id: string; title: string; done: boolean; position?: number }[] | null;
   task_dependencies?: { depends_on: string }[] | null;
+  /** 0048 */
+  cover_attachment_id?: string | null;
 }
 
 function rowToTask(r: TaskRow): Task {
@@ -227,6 +230,7 @@ function rowToTask(r: TaskRow): Task {
     recurrence: r.recurrence ?? "none",
     position: r.position ?? 0,
     createdBy: r.user_id ?? undefined,
+    ...(r.cover_attachment_id !== undefined ? { coverAttachmentId: r.cover_attachment_id } : {}),
   };
 }
 
@@ -239,9 +243,10 @@ export function stampCreator(t: Task, userId: string): Task {
   return !userId || t.createdBy === userId ? t : { ...t, createdBy: userId };
 }
 
-interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; archived_at?: string | null; }
+interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; archived_at?: string | null; board_settings?: unknown; }
 function rowToProject(r: ProjectRow): Project {
-  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined, archivedAt: r.archived_at ?? null };
+  const board = parseBoardSettings(r.board_settings); // 0048
+  return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined, archivedAt: r.archived_at ?? null, ...(board ? { boardSettings: board } : {}) };
 }
 
 interface TagRow { id: string; label: string; color: string; workspace_id?: string | null; }
@@ -259,9 +264,10 @@ function rowToActivity(r: ActivityRow): Activity {
   return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined, ...(meta ? { meta } : {}) };
 }
 
-interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; is_admin?: boolean | null; notify_prefs?: Record<string, boolean> | null; }
+interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; is_admin?: boolean | null; notify_prefs?: NotifyPrefs | null; onboarding?: unknown; }
 function rowToProfile(r: ProfileRow): Profile {
-  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined, isAdmin: r.is_admin ?? undefined, notifyPrefs: r.notify_prefs ?? undefined };
+  const onboarding = r.onboarding !== undefined && r.onboarding !== null ? parseOnboardingState(r.onboarding) : undefined; // 0048
+  return { id: r.id, firstName: r.first_name || "", lastName: r.last_name || "", pronouns: r.pronouns || "", email: r.email || "", avatarUrl: r.avatar_url, approved: r.approved ?? undefined, suspended: r.suspended ?? undefined, isAdmin: r.is_admin ?? undefined, notifyPrefs: r.notify_prefs ?? undefined, ...(onboarding ? { onboarding } : {}) };
 }
 function fullName(p: { firstName: string; lastName: string }): string {
   return [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
@@ -410,6 +416,7 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("mySectionId" in patch) row.my_section_id = patch.mySectionId ?? null;
   if ("custom" in patch) row.custom = patch.custom ?? {};
   if ("effortHours" in patch) row.effort_hours = patch.effortHours ?? null;
+  if ("coverAttachmentId" in patch) row.cover_attachment_id = patch.coverAttachmentId ?? null;   // 0048
   if ("loggedHours" in patch) row.logged_hours = patch.loggedHours ?? null;
   if ("dur" in patch) row.dur = patch.dur ?? null;
   return row;
@@ -1952,7 +1959,7 @@ export const store = {
     if (error && !/archived_at/.test(error.message)) throw error;  // ignore until 0039 is applied
   },
 
-  async updateProject(id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }): Promise<void> {
+  async updateProject(id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings }): Promise<void> {
     if (!supabase) return;
     let row: Record<string, unknown> = {};
     if ("name" in patch && patch.name?.trim()) row.name = patch.name.trim();
@@ -1962,6 +1969,7 @@ export const store = {
     if ("status" in patch) row.status = patch.status ?? null;
     if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
     if ("contributorIds" in patch) row.contributor_ids = patch.contributorIds ?? [];
+    if ("boardSettings" in patch) row.board_settings = patch.boardSettings ?? {};   // 0048
     if (Object.keys(row).length === 0) return;
     // Resilient update: projects.description/status arrive in migration 0015. If
     // it isn't applied yet, strip the unknown column and retry so the rest of the
@@ -2967,7 +2975,7 @@ export const store = {
   },
 
   // Persist this user's notification preferences (jsonb on profiles).
-  async updateNotifyPrefs(userId: string, prefs: Record<string, boolean>): Promise<void> {
+  async updateNotifyPrefs(userId: string, prefs: NotifyPrefs): Promise<void> {
     if (!supabase) { if (demoProfile) demoProfile = { ...demoProfile, notifyPrefs: prefs }; return; }
     const uid = await authUid(userId);
     const { error } = await supabase.from("profiles").update({ notify_prefs: prefs }).eq("id", uid);

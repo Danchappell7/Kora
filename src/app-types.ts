@@ -20,6 +20,8 @@ export interface Route {
   tab?: string;
   /** project › docs: the open doc (/p/:id/docs/:docId) */
   docId?: string;
+  /** 0048: the saved view applied to My tasks or a project (?view=<id>); search views use `list` */
+  savedViewId?: string;
 }
 
 export type TaskView = "list" | "board" | "timeline" | "calendar" | "files" | "matrix";

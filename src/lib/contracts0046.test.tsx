@@ -103,7 +103,7 @@ describe("webhooks", () => {
     expect(webhookFailure(new Error("too many tests"))).toBe("too_many_tests");
     expect(webhookFailure(new Error("too many webhooks"))).toBe("too_many");
     expect(webhookFailure(new Error("webhook not found"))).toBe("not_found");
-    expect(WEBHOOK_EVENTS).toHaveLength(10);   // 0047 added approval.requested / approval.decided
+    expect(WEBHOOK_EVENTS).toHaveLength(11);   // 0047 added approval.requested / approval.decided, 0048 kudos.given
     expect(isWebhookUrlShapeOk("https://10.0.0.1/x")).toBe(false);
   });
 });

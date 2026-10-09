@@ -493,7 +493,7 @@ function TodayDay({
       : <Button variant="hero" size="lg" icon="sunset" onClick={onShutdown}>Shut down my day</Button>
   ) : (
     <Button variant={mode === "plan" ? "hero" : "secondary"} size="lg" kbd="P" loading={busy} disabled={!busy && mode === "none"}
-      icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()}>
+      icon={mode === "replan" ? "refresh" : "kanbo"} aria-keyshortcuts="P" onClick={() => void planMyDay()} data-tour="plan-day">
       <span className="ktoday-hero-label">
         <span aria-hidden={busy || undefined}>{idleLabel}</span>
         <span aria-hidden={!busy || undefined}>{busyLabel}</span>

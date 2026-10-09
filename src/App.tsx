@@ -63,7 +63,7 @@ import { taskMatchesQuery, toQuery } from "./lib/searchQuery";
 import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan } from "./data/types";
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan, NotifyPrefs } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
@@ -1128,7 +1128,7 @@ export default function App() {
     toastSuccess("Profile saved");
   }, [auth.user?.email, toastSuccess]);
 
-  const saveNotifyPrefs = useCallback((prefs: Record<string, boolean>) => {
+  const saveNotifyPrefs = useCallback((prefs: NotifyPrefs) => {
     setProfile((p) => p ? { ...p, notifyPrefs: prefs } : p);
     store.updateNotifyPrefs(userIdRef.current, prefs).catch((e) => { reportError(e, { op: "updateNotifyPrefs" }); toastError("Couldn't save notification preferences."); });
   }, [toastError]);

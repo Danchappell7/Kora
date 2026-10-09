@@ -258,3 +258,32 @@ export function chunk<T>(arr: T[], size: number): T[][] {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
 }
+
+/* ---------------- board upgrade (0048)            [0048 contract → u8] ----------------
+   WIP limits move to projects.board_settings.wip (team-wide, writers set
+   them; lib/profileState parseBoardSettings). The per-browser limits above
+   (kanbo-board-wip) stay readable as the fallback and are copied up the
+   first time a writer opens the board. Swimlane grouping is per person
+   per board (localStorage). Columns past VIRTUALISE_AFTER cards render a
+   window of them (no dependency). */
+
+/** columns with more cards than this render only what's on screen */
+export const VIRTUALISE_AFTER = 50;
+export type SwimlaneBy = "none" | "assignee" | "priority" | "project";
+export interface Swimlane { key: string; label: string; taskIds: string[] }
+
+/** Group a board's tasks into lanes (each lane's tasks keep their board order; "none" = one lane). */
+export function swimlanes(tasks: Pick<Task, "id" | "assigneeId" | "priority" | "projectId">[], by: SwimlaneBy, _ctx: { memberName: (id: string) => string | undefined; projectName: (id: string) => string | undefined }): Swimlane[] {
+  return [{ key: "all", label: "", taskIds: tasks.map((t) => t.id) }];
+}
+
+/** A column against its WIP limit: under it, at it, or over it.  [final] */
+export function wipState(count: number, limit: number | null | undefined): "ok" | "at" | "over" {
+  if (!limit || limit < 1) return "ok";
+  return count > limit ? "over" : count === limit ? "at" : "ok";
+}
+
+/** A card's progress bar: sub-tasks done / total, else the legacy checklist; null when it has neither. */
+export function cardProgress(_task: Pick<Task, "subtasks">, _children: Pick<Task, "status">[]): { done: number; total: number } | null {
+  return null;
+}

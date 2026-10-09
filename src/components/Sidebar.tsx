@@ -687,7 +687,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
         )}
 
         {/* places */}
-        <nav aria-label="Main" className="ksb-nav">
+        <nav aria-label="Main" className="ksb-nav" data-tour="places">
           {items.filter((n) => n.group === "me").map((n) => (
             n.id === "tasks" ? <div key={n.id} style={{ display: "contents" }}>{navRow(n)}{savedRows}</div> : navRow(n)
           ))}

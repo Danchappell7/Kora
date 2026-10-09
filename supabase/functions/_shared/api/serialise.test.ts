@@ -21,6 +21,8 @@ const OUTBOX_TASK = {
   logged_hours: null, workspace_id: W, collaborators: [], my_section_id: null, original_due_date: null,
 };
 
+// kudos.given exactly as public.kudos_after_insert() queues it (captured from the 0048 PGlite run)
+const OUTBOX_KUDOS: OutboxEvent = {"outbox_id": 1, "event": "kudos.given", "created_at": "2026-10-09T17:41:31.698Z", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0", "payload": {"task": {"id": "610f3019-387f-44ec-9c9e-50613b791fe6", "title": "Launch deck", "status": "done", "project_id": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0"}, "kudos": {"id": "f7fb9ef1-c395-4077-97c2-3405baa5b9e6", "note": "Great work", "emoji": "👏", "task_id": "610f3019-387f-44ec-9c9e-50613b791fe6", "to_user": "a89a2412-b64a-49e4-bb75-10dc9466bba2", "from_user": "56709045-a8fa-42c1-8c2b-80f424fe596e", "created_at": "2026-10-09T17:41:31.698+00:00", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0"}, "to_name": "Sana Rao", "from_name": "Theo Hart"}};
 // approval.decided / a cancel exactly as public.approval_webhook() queues them (captured from the 0047 PGlite run)
 const OUTBOX_APPROVAL_DECIDED: OutboxEvent = {"outbox_id": 2, "event": "approval.decided", "created_at": "2026-10-09T00:36:53.627Z", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "payload": {"task": {"id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "title": "Homepage copy", "status": "todo", "due_date": "2026-10-16", "project_id": "3225b824-8470-4228-b843-b3bf735e918e", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266"}, "approval": {"id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67", "note": "Is the tone right?", "rule": "all", "title": "Homepage copy", "status": "changes_requested", "task_id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "created_at": "2026-10-09T00:36:53.62+00:00", "updated_at": "2026-10-09T00:36:53.627+00:00", "resolved_at": "2026-10-09T00:36:53.627+00:00", "requested_by": "b92ddc5f-6db1-49a7-9d3d-5deca0c8a9d5", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "attachment_id": "0b8ea07b-5c95-404d-95d1-7aca9f2c0789"}, "decision": {"comment": "Shorter, please", "user_id": "17824f58-ed25-4046-b5b6-56737cbedbed", "decision": "changes_requested", "decided_at": "2026-10-09T00:36:53.627+00:00"}, "reviewers": [{"comment": null, "user_id": "157e52d3-2d65-44eb-bd73-b5868c7eba25", "decision": null, "decided_at": null, "approval_id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67"}, {"comment": "Shorter, please", "user_id": "17824f58-ed25-4046-b5b6-56737cbedbed", "decision": "changes_requested", "decided_at": "2026-10-09T00:36:53.627+00:00", "approval_id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67"}, {"comment": null, "user_id": "59015e75-5908-44e7-bd53-ca8fafb76a61", "decision": null, "decided_at": null, "approval_id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67"}]}};
 const OUTBOX_APPROVAL_CANCELLED: OutboxEvent = {"outbox_id": 6, "event": "approval.decided", "created_at": "2026-10-09T00:36:53.638Z", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "payload": {"task": {"id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "title": "Homepage copy", "status": "todo", "due_date": "2026-10-16", "project_id": "3225b824-8470-4228-b843-b3bf735e918e", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266"}, "approval": {"id": "376e469d-e889-47f1-8ec5-6c4382c00297", "note": null, "rule": "any", "title": "Homepage copy", "status": "cancelled", "task_id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "created_at": "2026-10-09T00:36:53.636+00:00", "updated_at": "2026-10-09T00:36:53.638+00:00", "resolved_at": "2026-10-09T00:36:53.638+00:00", "requested_by": "b92ddc5f-6db1-49a7-9d3d-5deca0c8a9d5", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "attachment_id": null}, "decision": {"comment": null, "user_id": "b92ddc5f-6db1-49a7-9d3d-5deca0c8a9d5", "decision": "cancelled", "decided_at": "2026-10-09T00:36:53.638+00:00"}, "reviewers": [{"comment": null, "user_id": "360a2b64-4329-473d-8f41-b36756b605be", "decision": null, "decided_at": null, "approval_id": "376e469d-e889-47f1-8ec5-6c4382c00297"}]}};
@@ -125,6 +127,21 @@ describe("webhook events", () => {
     expect(serialiseEvent(ev("member.joined", { member: { id: "m", workspace_id: W, user_id: "u", status: "active", role: "member" } })).data).toMatchObject({ object: "member" });
     const ping = serialiseEvent({ outbox_id: "9", event: "ping", created_at: "2026-10-05T18:00:00Z", workspace_id: null, payload: { webhook: { id: "w", url: "https://x.example.com/h", events: ["task.created"] } } });
     expect(ping).toMatchObject({ id: "evt_9", type: "ping", workspaceId: null, data: { webhookId: "w", events: ["task.created"] } });
+  });
+  it("kudos.given (0048): who thanked whom, the emoji and note, and the task", () => {
+    const e = serialiseEvent(OUTBOX_KUDOS, APP);
+    expect(e).toMatchObject({ id: "evt_1", type: "kudos.given", workspaceId: "32bcfe00-b584-4a9b-a861-d331bceb69b0", createdAt: "2026-10-09T17:41:31.698Z" });
+    expect(e.data).toEqual({
+      object: "kudos", id: "f7fb9ef1-c395-4077-97c2-3405baa5b9e6", taskId: "610f3019-387f-44ec-9c9e-50613b791fe6",
+      workspaceId: "32bcfe00-b584-4a9b-a861-d331bceb69b0",
+      fromUserId: "56709045-a8fa-42c1-8c2b-80f424fe596e", fromName: "Theo Hart",
+      toUserId: "a89a2412-b64a-49e4-bb75-10dc9466bba2", toName: "Sana Rao",
+      emoji: "👏", note: "Great work", createdAt: "2026-10-09T17:41:31.698Z",
+      task: { id: "610f3019-387f-44ec-9c9e-50613b791fe6", title: "Launch deck", projectId: "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20",
+        workspaceId: "32bcfe00-b584-4a9b-a861-d331bceb69b0", status: "done", url: "https://www.kanbo.co.uk/?task=610f3019-387f-44ec-9c9e-50613b791fe6" },
+    });
+    // a payload missing its pieces still serialises (never throws)
+    expect(serialiseEvent({ ...OUTBOX_KUDOS, payload: {} }).data).toMatchObject({ object: "kudos", id: "", emoji: "🎉", note: null, task: { id: "", status: null, url: null } });
   });
   it("approval.decided: the request (status after it), its reviews, its task and the decision", () => {
     const e = serialiseEvent(OUTBOX_APPROVAL_DECIDED, APP);

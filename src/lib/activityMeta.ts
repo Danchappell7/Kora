@@ -3,6 +3,7 @@
    its task. Written only by the 0047 definer functions:
      approval      { approval_id, event, status, rule?, comment? }
      doc_mention   { doc_id, project_id }
+     kudos         { kudos_id, emoji, note }          (0048)
    Older rows (and rows a client logs for itself) have none.  [architect]
    ============================================================ */
 import type { ActivityMeta, ApprovalEvent, ApprovalRule, ApprovalStatus } from "../data/types";
@@ -28,5 +29,10 @@ export function parseActivityMeta(raw: unknown): ActivityMeta | undefined {
   if (docId) out.docId = docId;
   const projectId = str(g("project_id", "projectId"));
   if (projectId) out.projectId = projectId;
+  const kudosId = str(g("kudos_id", "kudosId"));
+  if (kudosId) out.kudosId = kudosId;
+  if (typeof r.emoji === "string" && r.emoji) out.emoji = r.emoji;
+  if (typeof r.note === "string") out.note = r.note;
+  else if (r.note === null && kudosId) out.note = null;
   return Object.keys(out).length ? out : undefined;
 }

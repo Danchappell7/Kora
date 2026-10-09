@@ -89,3 +89,28 @@ export function unreadCount(activity: Activity[]): number {
   for (const a of activity) if (!a.readAt && isNotification(a)) n++;
   return n;
 }
+
+/* ---------- bundles (0048)                         [0048 contract → u4] ----------
+   Related items fold into one row: "3 comments on Launch deck from Sana and
+   Theo", expandable to the items. Same task + same kind family (comments and
+   replies together; a mention stays its own row so it's never buried),
+   newest first, within the triage group. */
+
+export interface InboxBundle {
+  /** stable: `${group}:${taskId}:${family}` (or the single item's id) */
+  key: string;
+  taskId: string | null;
+  /** newest first; a bundle of one is a plain row */
+  items: Activity[];
+  /** "3 comments on Launch deck from Sana and Theo" */
+  summary: string;
+  /** distinct actors, newest first ("Sana", "Theo") */
+  actors: string[];
+  unread: number;
+  latestAt: string;
+}
+
+/** Fold one triage group's items into bundles (order: each bundle at its newest item's place). */
+export function bundleInbox(items: Activity[], _ctx: { tasks: Task[] | ReadonlyMap<string, Task> }): InboxBundle[] {
+  return items.map((a) => ({ key: a.id, taskId: a.taskId, items: [a], summary: a.taskTitle, actors: a.detail ? [a.detail] : [], unread: a.readAt ? 0 : 1, latestAt: a.createdAt }));
+}

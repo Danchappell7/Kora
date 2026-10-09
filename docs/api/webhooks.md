@@ -211,6 +211,9 @@ Kanbo keeps 14 days of delivery history.
 | `project.created` | A project is added. | |
 | `project.updated` | A project's name, emoji, colour, description, status, owner, people, archive state or workspace changes. | `changes` lists the fields. |
 | `member.joined` | Someone joins the workspace (accepts an invite, or is added). | Team endpoints only. |
+| `approval.requested` | Someone asks for approval on a task. | Team endpoints only. `data` is the request with its reviewers and task; `decision` is null. |
+| `approval.decided` | A reviewer approves or asks for changes, or the request is cancelled. | Team endpoints only. `decision.decision`: `approved`, `changes_requested` or `cancelled`. |
+| `kudos.given` | Someone thanks a teammate for a finished task. | Team endpoints only. `data`: who thanked whom, the emoji, an optional note, and the task. |
 | `ping` | You sent a test. | Never subscribed to; never retried. |
 
 A task moved from one workspace to another is `task.deleted`
@@ -537,6 +540,38 @@ someone:
     "status": "active",
     "title": "Designer",
     "createdAt": "2026-10-01T09:00:00.000Z"
+  }
+}
+```
+
+### `kudos.given`
+
+```json
+{
+  "id": "evt_4820",
+  "type": "kudos.given",
+  "createdAt": "2026-10-09T17:41:31.698Z",
+  "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
+  "data": {
+    "object": "kudos",
+    "id": "f7fb9ef1-c395-4077-97c2-3405baa5b9e6",
+    "taskId": "610f3019-387f-44ec-9c9e-50613b791fe6",
+    "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
+    "fromUserId": "56709045-a8fa-42c1-8c2b-80f424fe596e",
+    "fromName": "Theo Hart",
+    "toUserId": "a89a2412-b64a-49e4-bb75-10dc9466bba2",
+    "toName": "Sana Rao",
+    "emoji": "👏",
+    "note": "Great work",
+    "createdAt": "2026-10-09T17:41:31.698Z",
+    "task": {
+      "id": "610f3019-387f-44ec-9c9e-50613b791fe6",
+      "title": "Launch deck",
+      "projectId": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20",
+      "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
+      "status": "done",
+      "url": "https://www.kanbo.co.uk/?task=610f3019-387f-44ec-9c9e-50613b791fe6"
+    }
   }
 }
 ```

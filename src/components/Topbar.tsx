@@ -338,7 +338,7 @@ function CreateSplit({ create }: { create: NonNullable<PageHeaderProps["create"]
   return (
     <div className="kph-create" role="group" aria-label="Create">
       {/* (named even when a narrow header hides its words) */}
-      <Button variant="primary" icon="plus" className="kph-create-main" aria-label="New task" data-tip="New task" aria-keyshortcuts="C"
+      <Button variant="primary" icon="plus" className="kph-create-main" aria-label="New task" data-tip="New task" aria-keyshortcuts="C" data-tour="capture"
         onClick={create.onNewTask}>New task</Button>
       <Button ref={moreRef} variant="primary" icon="chevronDown" className="kph-create-more"
         aria-label="More ways to create" aria-haspopup="menu" aria-expanded={open}
@@ -435,12 +435,12 @@ export function PageHeader({ title, meta, leading, titleAddon, switcher, actions
 
   const searchField = (
     <>
-      <button type="button" className="kph-search" aria-label={searchLabel} aria-keyshortcuts="Meta+K Control+K" onClick={onSearch}>
+      <button type="button" className="kph-search" aria-label={searchLabel} aria-keyshortcuts="Meta+K Control+K" onClick={onSearch} data-tour="search">
         <Icon name="search" size={14} sw={1.75} />
         <span className="kph-search-text">{searchLabel}</span>
         <span aria-hidden="true" style={{ display: "inline-flex" }}><Kbd>⌘K</Kbd></span>
       </button>
-      <IconButton icon="search" label={searchLabel} className="kph-search-ico" aria-keyshortcuts="Meta+K Control+K" onClick={onSearch} />
+      <IconButton icon="search" label={searchLabel} className="kph-search-ico" aria-keyshortcuts="Meta+K Control+K" onClick={onSearch} data-tour="search" />
     </>
   );
 

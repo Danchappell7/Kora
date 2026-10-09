@@ -888,7 +888,7 @@ export function TaskDetail(props: TaskDetailProps) {
       {!isDocked && !isMobile && <div className="ktd-scrim" aria-hidden="true" onClick={onClose} />}
       {/* no outline override: when Escape parks focus on the panel itself,
           keyboard users see the global focus ring (drawn just inside the edge) */}
-      <div ref={trapRef} role="dialog" aria-modal={!isDocked} aria-label={`Task: ${task.title}`} tabIndex={-1}
+      <div ref={trapRef} role="dialog" aria-modal={!isDocked} aria-label={`Task: ${task.title}`} tabIndex={-1} data-tour="task-panel"
         className={proj ? "ktd kp" : "ktd"} style={proj ? projectIdentity(proj).style : undefined} data-project={proj ? proj.id : undefined}
         data-docked={isDocked || undefined} data-mobile={isMobile || undefined}
         onFocusCapture={(e) => { const from = e.relatedTarget; if (from instanceof HTMLElement && !e.currentTarget.contains(from)) returnTo.current = from; }}
