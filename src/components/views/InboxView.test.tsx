@@ -3,6 +3,8 @@ import { render, screen, fireEvent, within, act, waitFor } from "@testing-librar
 import { InboxView } from "./InboxView";
 import type { Activity, Task } from "../../data/types";
 import { presetDate, todayISO } from "../../data/data";
+import { demoSnoozesNow, resetDemoSnoozes } from "../../lib/notifyPrefs";
+import { forgetSnoozeCache } from "../inbox/useThreadSnoozes";
 
 const iso = (msAgo = 0) => new Date(Date.now() - msAgo).toISOString();
 const act_ = (p: Partial<Activity> & { id: string }): Activity => ({
@@ -16,7 +18,7 @@ function inbox(activity: Activity[], extra: Partial<Parameters<typeof InboxView>
   return { ...utils, props };
 }
 
-beforeEach(() => { localStorage.clear(); });
+beforeEach(() => { localStorage.clear(); resetDemoSnoozes(); forgetSnoozeCache(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("InboxView — who did what", () => {
@@ -31,7 +33,7 @@ describe("InboxView — who did what", () => {
   it("treats an email or a departed teammate's full name as the commenter too", () => {
     inbox([
       act_({ id: "a1", detail: "sam@partner.io" }),
-      act_({ id: "a2", detail: "Priya Natarajan" }),
+      act_({ id: "a2", detail: "Priya Natarajan", taskId: "t2" }),   // another task: not folded into one row
     ]);
     expect(screen.getByRole("button", { name: /sam@partner\.io commented on/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Priya Natarajan commented on/ })).toBeInTheDocument();
@@ -50,8 +52,8 @@ describe("InboxView — who did what", () => {
   it("older rows: a single-word name is the commenter, a stock reply in Title Case is your own comment", () => {
     inbox([
       act_({ id: "a1", detail: "Priya", createdAt: OLD }),
-      act_({ id: "a2", detail: "Great Work", createdAt: OLD, taskTitle: "Brief" }),
-      act_({ id: "a3", detail: "Sounds Good.", createdAt: OLD, taskTitle: "Roadmap" }),
+      act_({ id: "a2", detail: "Great Work", createdAt: OLD, taskId: "t2", taskTitle: "Brief" }),
+      act_({ id: "a3", detail: "Sounds Good.", createdAt: OLD, taskId: "t3", taskTitle: "Roadmap" }),
     ]);
     expect(screen.getByRole("button", { name: /Priya commented on Q3 budget/ })).toBeInTheDocument();
     expect(screen.queryByText("“Priya”")).toBeNull();
@@ -118,7 +120,7 @@ describe("InboxView — archive all", () => {
     localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ c2: Date.now() + 3_600_000 }));
     const { props } = inbox([
       act_({ id: "c1", detail: "Maya Lin" }),
-      act_({ id: "c2", detail: "Theo Vance" }),              // snoozed
+      act_({ id: "c2", detail: "Theo Vance", taskId: "t2" }),   // snoozed (its thread, once moved to the server)
       act_({ id: "m1", kind: "mention", detail: "Sana Rao" }),
     ]);
     fireEvent.click(screen.getByRole("button", { name: /Archive all/ }));
@@ -170,19 +172,22 @@ describe("InboxView — archive all", () => {
 });
 
 describe("InboxView — snooze", () => {
-  it("opens the snooze menu in a portal (outside the clipping card) and hides the snoozed row", () => {
-    const { container } = inbox([act_({ id: "a1", detail: "Maya Lin" }), act_({ id: "a2", kind: "assigned", detail: "Sana Rao", taskTitle: "Brief" })]);
+  it("opens the snooze menu in a portal (outside the clipping card) and hides the snoozed thread", () => {
+    const { container } = inbox([act_({ id: "a1", detail: "Maya Lin" }), act_({ id: "a2", kind: "assigned", detail: "Sana Rao", taskId: "t2", taskTitle: "Brief" })]);
     fireEvent.click(screen.getByRole("button", { name: "Snooze “Q3 budget”" }));
     const menu = screen.getByRole("menu", { name: /Snooze “Q3 budget”/ });
     expect(container.contains(menu)).toBe(false);
     expect(menu.parentElement).toBe(document.body);
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(3);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: /Tomorrow, 9am/ }));
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      expect.stringMatching(/^1 hour\d\d:\d\d$/), expect.stringMatching(/^Tomorrow 09:00/), expect.stringMatching(/^Next week/), "Pick a date and time…",
+    ]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Tomorrow 09:00/ }));
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByRole("button", { name: /commented on Q3 budget/ })).toBeNull();
     expect(screen.getByText(/1 snoozed/)).toBeInTheDocument();
-    const saved = JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}");
-    expect(saved.a1).toBeGreaterThan(Date.now());
+    // a thread snooze (every device; the demo keeps it in memory), not this browser's storage
+    expect(demoSnoozesNow()?.map((x) => x.taskId)).toEqual(["t1"]);
+    expect(JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}")).toEqual({});
   });
 
   it("opens upward when the trigger sits near the bottom of the viewport", () => {
@@ -219,7 +224,7 @@ describe("InboxView — snooze", () => {
   it("'Bring back now' only unsnoozes this inbox's items, and brings them back at the top", () => {
     const later = Date.now() + 3_600_000;
     localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ a1: later, otherWsItem: later }));
-    inbox([act_({ id: "a1", detail: "Maya Lin" }), act_({ id: "a2", kind: "assigned", detail: "Theo Vance", taskTitle: "Brief" })]);
+    inbox([act_({ id: "a1", detail: "Maya Lin" }), act_({ id: "a2", kind: "assigned", detail: "Theo Vance", taskId: "t2", taskTitle: "Brief" })]);
     expect(screen.getByText(/1 snoozed/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Bring back now" }));
     const back = screen.getByRole("region", { name: "Back from snooze" });
@@ -252,10 +257,10 @@ describe("InboxView — snooze", () => {
     localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ x9: ended }));
     inbox([act_({ id: "a1", detail: "Maya Lin" })]);
     fireEvent.click(screen.getByRole("button", { name: "Snooze “Q3 budget”" }));
-    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: /In 3 hours/ }));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: /1 hour/ }));
     const saved = JSON.parse(localStorage.getItem("kanbo-inbox-snooze") || "{}");
-    expect(saved.x9).toBe(ended);
-    expect(saved.a1).toBeGreaterThan(Date.now());
+    expect(saved).toEqual({ x9: ended });
+    expect(Date.parse(demoSnoozesNow()![0].until)).toBeGreaterThan(Date.now() + 3_500_000);
   });
 
   it("wakes a snooze while the inbox stays open", () => {
@@ -318,7 +323,7 @@ describe("InboxView — triage groups", () => {
   it("each group is a list, so a screen reader hears how many items it holds", () => {
     inbox([
       act_({ id: "c1", detail: "Maya Lin" }),
-      act_({ id: "c2", detail: "Theo Vance" }),
+      act_({ id: "c2", detail: "Theo Vance", taskId: "t2" }),
       act_({ id: "m1", kind: "mention", detail: "Sana Rao" }),
     ]);
     expect(within(screen.getByRole("region", { name: "FYI" })).getAllByRole("listitem")).toHaveLength(2);
@@ -551,7 +556,7 @@ describe("InboxView — one-key actions", () => {
 describe("InboxView — Snoozed and Archived", () => {
   it("Snoozed lists what's coming back, and brings one back now", () => {
     localStorage.setItem("kanbo-inbox-snooze", JSON.stringify({ a1: Date.now() + 3_600_000 }));
-    inbox([act_({ id: "a1", kind: "assigned", detail: "Theo Vance" }), act_({ id: "c1", detail: "Maya Lin", taskTitle: "Brief" })]);
+    inbox([act_({ id: "a1", kind: "assigned", detail: "Theo Vance" }), act_({ id: "c1", detail: "Maya Lin", taskId: "t2", taskTitle: "Brief" })]);
     fireEvent.click(screen.getByRole("button", { name: /^Snoozed/ }));
     const list = screen.getByRole("region", { name: "Snoozed" });
     expect(within(list).getByText(/^Back /)).toBeInTheDocument();

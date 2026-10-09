@@ -8,6 +8,27 @@
 // Email needs RESEND_API_KEY; push needs the VAPID secrets (0043). Either
 // works without the other; with neither, 400 as before.
 //
+// Calmer notifications (0048, _shared/notifyQueue.ts): every notice goes
+// through planDelivery for its recipient —
+//   • a snoozed thread (notification_snoozes) sends nothing;
+//   • daily digest: no email per event (daily-reminders sends one a day),
+//     push only for mentions and approvals;
+//   • quiet hours: held in notify_queue until they end (the Inbox still
+//     updates at once — that's the database's triggers);
+//   • bundling: the first notice for a task goes now and opens a 2-minute
+//     window; the rest are held to its end and the drain sends them as ONE
+//     push / email ("3 comments on Launch deck from Sana and Theo"), naming
+//     every mention.
+// Every notice is recorded under its event key, so a replayed call alerts
+// nobody twice. Without 0048's queue it behaves exactly as before.
+//
+// { kind: "drain" } sends what's due from the queue. Only the scheduler or a
+// service-role caller may run it (x-cron-secret: CRON_SECRET, or the service
+// key as the bearer). The every-minute schedule calls daily-reminders'
+// "drain" mode (no JWT needed there); this one is for a manual run. Each
+// event call also drains a little (25 notices), so nothing waits long if
+// the schedule is late.
+//
 // { kind: "test", endpoint? } sends Settings' test notification to the
 // caller's own device(s): 200 { ok, sent } · 409 { reason: "no_subscription" }
 // · 429 { reason: "rate_limited" } · 503 { reason: "unconfigured" }.
@@ -33,7 +54,7 @@
 //    already assigned) — never to ids the request names;
 //  - mention / comment push for the caller's most recent comment only;
 //  - each recipient gets one push per event (so replaying a call alerts
-//    nobody again) and at most one a minute per task and kind.
+//    nobody again).
 //
 // Volume cap: 150 calls per person per 10 minutes (room for bulk
 // reassignments), then 429 — in-app notifications still arrive via triggers.
@@ -42,22 +63,24 @@
 // Deploy:  supabase functions deploy notify        (Verify JWT: ON)
 // Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL   (already set for reminders)
 //          VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (push; see docs/integrations/push.md)
+//          CRON_SECRET (the drain)
+// See docs/integrations/notifications.md.
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { hit, KEY_PREFIX } from "../_shared/limits.ts";
 import {
   assignmentEventKey, isAllowedPushEndpoint, PUSH_EVENT_WINDOW_SEC, pushOnceKeys, pushToUser, taskEventPush, TEST_PUSH,
-  vapidFromEnv, type AssigneeEvent, type VapidKeys,
+  vapidFromEnv, type AssigneeEvent, type PushMessage, type VapidKeys,
 } from "../_shared/webpush.ts";
 import {
-  APPROVAL_EVENT_WINDOW_SEC, approvalEmail, approvalPush, planApprovalNotice, type ApprovalRow, type ReviewerRow,
+  APPROVAL_EVENT_WINDOW_SEC, approvalEmail, approvalNoticeText, approvalPush, planApprovalNotice, type ApprovalRow, type ReviewerRow,
 } from "../_shared/approvalNotify.ts";
+import { eventEmail, noticeLine } from "../_shared/notifyCompose.ts";
+import {
+  deliverNotice, drainQueue, readRecipient, readSnoozedUntil, supabaseDrainDeps, supabaseQueueStore, type Notice, type SendOutcome,
+} from "../_shared/notifyQueue.ts";
 
-const COPY: Record<string, { subj: (t: string) => string; line: string }> = {
-  assigned: { subj: (t) => `You were assigned: ${t}`, line: "assigned you a task" },
-  mention:  { subj: (t) => `You were mentioned: ${t}`, line: "mentioned you in" },
-  comment:  { subj: (t) => `New comment: ${t}`,        line: "commented on" },
-};
+const EVENT_KINDS = new Set(["assigned", "mention", "comment"]);
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -66,6 +89,8 @@ const CORS = {
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_RECIPIENTS = 25;
+/** what each event call drains on the side */
+const SIDE_DRAIN = 25;
 
 interface TaskRow {
   id: string; title: string | null; user_id: string; workspace_id: string | null; assignee_id: string | null;
@@ -74,28 +99,34 @@ interface TaskRow {
 /** roles that may change tasks (0041 can_write); guests are read-only */
 const WRITERS = new Set(["owner", "admin", "member"]);
 
+interface Env { resendKey: string | undefined; from: string; appUrl: string; vapid: VapidKeys | null }
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
   try {
     const url = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const resendKey = Deno.env.get("RESEND_API_KEY");
-    const from = Deno.env.get("REMINDER_FROM") ?? "Kanbo <onboarding@resend.dev>";
-    const appUrl = (Deno.env.get("APP_URL") ?? "").replace(/\/+$/, "");
-    // push is optional: null (skipped quietly) until the VAPID secrets are set
-    const vapid = vapidFromEnv((k) => Deno.env.get(k));
+    const env: Env = {
+      resendKey: Deno.env.get("RESEND_API_KEY"),
+      from: Deno.env.get("REMINDER_FROM") ?? "Kanbo <onboarding@resend.dev>",
+      appUrl: (Deno.env.get("APP_URL") ?? "").replace(/\/+$/, ""),
+      // push is optional: null (skipped quietly) until the VAPID secrets are set
+      vapid: vapidFromEnv((k) => Deno.env.get(k)),
+    };
 
     const body = await req.json().catch(() => ({}));
     const kind = String(body?.kind ?? "");
     const supa = createClient(url, serviceKey);
-    if (kind === "test") return await testPush(supa, req, body, vapid);
-    if (kind === "approval") return await approvalNotice(supa, req, body, { resendKey, from, appUrl, vapid });
+    if (kind === "drain") return await drain(supa, req, serviceKey, env, body);
+    if (kind === "test") return await testPush(supa, req, body, env.vapid);
+    if (kind === "approval") return await sideDrain(supa, env, await approvalNotice(supa, req, body, env));
 
-    if (!resendKey && !vapid) return json({ error: "no RESEND_API_KEY" }, 400);
+    if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
     const taskId = String(body?.taskId ?? "");
-    if (!COPY[kind]) return json({ error: "bad kind" }, 400);
+    if (!EVENT_KINDS.has(kind)) return json({ error: "bad kind" }, 400);
     if (!UUID.test(taskId)) return json({ error: "bad taskId" }, 400);
+    const ev = kind as "assigned" | "mention" | "comment";
 
     // the actor must be a real, signed-in, active account
     const actor = await signedInActor(supa, req);
@@ -131,21 +162,21 @@ Deno.serve(async (req) => {
     }
     if (!members.has(actorId)) return json({ error: "not allowed" }, 403);
     // only someone who can change tasks can have assigned one (guests can still comment)
-    if (kind === "assigned" && !WRITERS.has(actorRole)) return json({ error: "not allowed" }, 403);
+    if (ev === "assigned" && !WRITERS.has(actorRole)) return json({ error: "not allowed" }, 403);
 
     // recipients by event, from the database
     let recips: string[] = [];
-    // push: the event this call is about (null → no push), and who may get one
+    // the event this call is about: push needs proof (null → no push); email falls back to a 10-minute key
     let eventKey: string | null = null;
     let pushTo: Set<string> | null = null;
-    if (kind === "assigned") {
+    if (ev === "assigned") {
       // email: the app fires this alongside the save, so the row may not show
       // the new assignee yet — accept the named assignee too (still members-only below)
       const named = Array.isArray(body?.recipientIds) ? body.recipientIds.slice(0, 3).map(String) : [];
       recips = [t.assignee_id ?? "", ...named];
       // push: only the assignee the database has, and only if it shows this
       // person just made that assignment
-      if (vapid && t.assignee_id) {
+      if (t.assignee_id) {
         const since = new Date(Date.now() - PUSH_EVENT_WINDOW_SEC * 1000).toISOString();
         const { data: evs } = await supa.from("task_events").select("id,actor_id,new_value,created_at")
           .eq("task_id", taskId).eq("field", "assignee").eq("actor_id", actorId).gte("created_at", since)
@@ -162,7 +193,7 @@ Deno.serve(async (req) => {
       const mentioned = ((c?.mentions as string[] | null) ?? []).map(String);
       if (!c) return json({ ok: true, sent: 0, note: "no recent comment" });
       if (c.id) eventKey = `c:${c.id}`;
-      if (kind === "mention") {
+      if (ev === "mention") {
         recips = mentioned;
       } else {
         // creator, assignee, collaborators, followers — minus anyone who already
@@ -176,44 +207,52 @@ Deno.serve(async (req) => {
       .slice(0, MAX_RECIPIENTS);
 
     const title = oneLine(t.title || "a task");
-    const link = appUrl ? `${appUrl}/?task=${encodeURIComponent(taskId)}` : "";
-    const push = vapid && eventKey ? taskEventPush(kind as "assigned" | "mention" | "comment", actorName, t.title || "", taskId) : null;
-    // once per recipient per event, and at most once a minute per task and kind
+    const path = `/?task=${encodeURIComponent(taskId)}`;
+    const link = env.appUrl ? `${env.appUrl}${path}` : "";
+    const push = env.vapid && eventKey ? taskEventPush(ev, actorName, t.title || "", taskId) : null;
+    const mail = env.resendKey ? eventEmail(ev, actorName, t.title || "", link) : null;
+    const line = noticeLine(ev, actorName);
+    // without the queue (0048 not run): the old guard — once per recipient per event, at most once a minute per task and kind
     const pushOnce = (id: string) => async () => {
-      for (const k of pushOnceKeys(id, taskId, kind, eventKey!)) {
+      for (const k of pushOnceKeys(id, taskId, ev, eventKey!)) {
         if (!(await hit(supa, `${KEY_PREFIX}${k.key}`, { windowSec: k.windowSec })).allowed) return false;
       }
       return true;
     };
+    const store = supabaseQueueStore(supa);
+    const base = { kind: ev, bundleKey: `task:${taskId}`, taskId, actorId, actorName, title } as const;
+    const tally: Record<string, number> = {};
     let sent = 0, pushed = 0;
     for (const id of recips) {
-      const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended").eq("id", id).maybeSingle();
-      if (prof?.suspended) continue;
-      const prefs = (prof?.notify_prefs ?? {}) as Record<string, boolean>;
-      // push: every device they switched on, unless "<kind>_push" is off
-      if (push && vapid && (!pushTo || pushTo.has(id)) && prefs[`${kind}_push`] !== false) {
-        try { pushed += (await pushToUser(supa, id, push, vapid, { allow: pushOnce(id) })).sent; }
-        catch (e) { console.error("push", String((e as Error)?.message ?? e)); }
+      const person = await readRecipient(supa, id);
+      if (!person) continue;   // suspended, not approved, or gone
+      const snoozedUntil = await readSnoozedUntil(supa, id, taskId);
+      const now = new Date();
+      // push: every device they switched on — when the event is proven and this person may get it
+      if (push && env.vapid && (!pushTo || pushTo.has(id))) {
+        const vapid = env.vapid;
+        const n: Notice = { ...base, userId: id, channel: "push", eventKey: `${ev}:${eventKey}`, payload: { v: 1, line, url: path, push } };
+        const r = await deliverNotice(n, {
+          store, now, prefs: person.prefs, snoozedUntil,
+          send: async ({ recorded }) => {
+            const res = await pushToUser(supa, id, push, vapid, recorded ? {} : { allow: pushOnce(id) });
+            return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+          },
+        });
+        tally[`push:${r.result}`] = (tally[`push:${r.result}`] ?? 0) + 1;
+        if (r.result === "sent") pushed++;
       }
-      if (!resendKey) continue; // push-only set-up: no email
-      if (prefs[`${kind}_email`] === false) continue;
-      const { data: u } = await supa.auth.admin.getUserById(id);
-      const email = u.user?.email;
-      if (!email) continue;
-      const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;color:#1a1a1a">
-        <p style="font-size:15px"><strong>${esc(actorName)}</strong> ${COPY[kind].line} <strong>${esc(title)}</strong>.</p>
-        ${link ? `<p><a href="${esc(link)}" style="display:inline-block;background:#6a5cff;color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-size:14px">Open in Kanbo</a></p>` : ""}
-        <p style="font-size:12px;color:#888">Manage notification emails in Kanbo → Settings.</p>
-      </div>`;
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ from, to: email, subject: COPY[kind].subj(title), html }),
+      if (!mail) continue; // push-only set-up: no email
+      const emailKey = eventKey ?? `a:${taskId}:${id}:${Math.floor(Date.now() / 600_000)}`;
+      const n: Notice = { ...base, userId: id, channel: "email", eventKey: `${ev}:${emailKey}`, payload: { v: 1, line, url: path, email: mail } };
+      const r = await deliverNotice(n, {
+        store, now, prefs: person.prefs, snoozedUntil,
+        send: () => sendMail(supa, env, id, mail.subject, mail.html),
       });
-      if (res.ok) sent++;
-      else console.error("resend", res.status, await res.text().catch(() => ""));
+      tally[`email:${r.result}`] = (tally[`email:${r.result}`] ?? 0) + 1;
+      if (r.result === "sent") sent++;
     }
-    return json({ ok: true, sent, pushed });
+    return await sideDrain(supa, env, json({ ok: true, sent, pushed, outcomes: tally }));
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }
@@ -221,6 +260,42 @@ Deno.serve(async (req) => {
 
 // deno-lint-ignore no-explicit-any
 type Supa = any;
+
+/** Resend, for one person (their address from auth, never from the request). */
+async function sendMail(supa: Supa, env: Env, userId: string, subject: string, html: string): Promise<SendOutcome> {
+  if (!env.resendKey) return "nothing";
+  const { data: u } = await supa.auth.admin.getUserById(userId);
+  const email = u?.user?.email;
+  if (!email) return "nothing";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.resendKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: env.from, to: email, subject, html }),
+  });
+  if (res.ok) return "sent";
+  console.error("resend", res.status, await res.text().catch(() => ""));
+  return "failed";
+}
+
+/** After an event: send a few held notices that are due (the schedule does the rest). */
+async function sideDrain(supa: Supa, env: Env, res: Response): Promise<Response> {
+  const work = drainQueue(supabaseDrainDeps(supa, { ...env, limit: SIDE_DRAIN }))
+    .catch((e) => console.warn("[notify] side drain:", String((e as Error)?.message ?? e)));
+  const rt = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(work); else await work;
+  return res;
+}
+
+/** { kind: "drain" }: the scheduler (x-cron-secret) or a service-role caller only. */
+async function drain(supa: Supa, req: Request, serviceKey: string, env: Env, body: Record<string, unknown>): Promise<Response> {
+  const cronSecret = Deno.env.get("CRON_SECRET") ?? "";
+  const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const secret = req.headers.get("x-cron-secret") ?? "";
+  if (!((!!serviceKey && safeEq(bearer, serviceKey)) || (!!cronSecret && safeEq(secret, cronSecret)))) return json({ error: "unauthorized" }, 401);
+  const limit = Math.min(1000, Math.max(1, Number(body?.limit) || 200));
+  const report = await drainQueue(supabaseDrainDeps(supa, { ...env, limit }));
+  return json({ ok: true, ...report });
+}
 
 /** The caller: a real, signed-in, active account (else the error response). */
 async function signedInActor(supa: Supa, req: Request) {
@@ -234,7 +309,7 @@ async function signedInActor(supa: Supa, req: Request) {
 }
 
 /** Settings › Notifications › "Send a test notification": to the caller's own
- *  device(s) only (this one when the app names its endpoint). */
+ *  device(s) only (this one when the app names its endpoint). Never held: it's a test. */
 async function testPush(supa: Supa, req: Request, body: Record<string, unknown>, vapid: VapidKeys | null): Promise<Response> {
   const actor = await signedInActor(supa, req);
   if (actor instanceof Response) return actor;
@@ -261,8 +336,7 @@ async function teamMembers(supa: Supa, workspaceId: string): Promise<Set<string>
 }
 
 /** kind "approval": email + push for a request or a decision the caller just made (0047). */
-async function approvalNotice(supa: Supa, req: Request, body: Record<string, unknown>,
-  env: { resendKey: string | undefined; from: string; appUrl: string; vapid: VapidKeys | null }): Promise<Response> {
+async function approvalNotice(supa: Supa, req: Request, body: Record<string, unknown>, env: Env): Promise<Response> {
   if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
   const approvalId = String(body?.approvalId ?? "");
   if (!UUID.test(approvalId)) return json({ error: "bad approvalId" }, 400);
@@ -296,36 +370,49 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
     .filter((id) => UUID.test(id) && id !== actorId && members.has(id))
     .slice(0, MAX_RECIPIENTS);
   const taskTitle = t.title || a.title || "";
-  const link = env.appUrl ? `${env.appUrl}/?task=${encodeURIComponent(t.id)}` : "";
+  const path = `/?task=${encodeURIComponent(t.id)}`;
+  const link = env.appUrl ? `${env.appUrl}${path}` : "";
   const mail = approvalEmail(plan, actorName, taskTitle, link);
-  const push = env.vapid ? approvalPush(plan, actorName, taskTitle, t.id, a.id) : null;
+  const push: PushMessage | null = env.vapid ? approvalPush(plan, actorName, taskTitle, t.id, a.id) : null;
+  const text = approvalNoticeText(plan, actorName, taskTitle);
+  const line = `${oneLine(actorName).slice(0, 60) || "Someone"} ${text.lead.replace(/ (on|for)$/, "")}`.trim();
+  const store = supabaseQueueStore(supa);
+  const base = { kind: "approval", bundleKey: `task:${t.id}`, taskId: t.id, actorId, actorName, title: oneLine(taskTitle) } as const;
   let sent = 0, pushed = 0;
   for (const id of recips) {
-    const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended").eq("id", id).maybeSingle();
-    if (prof?.suspended) continue;
+    const person = await readRecipient(supa, id);
+    if (!person) continue;
     // once per recipient per event, email and push alike (a replayed call tells nobody again)
     const once = await hit(supa, `${KEY_PREFIX}notify:approval:${id}:${plan.eventKey}`, { windowSec: APPROVAL_EVENT_WINDOW_SEC + 60 });
     if (!once.allowed) continue;
-    const prefs = (prof?.notify_prefs ?? {}) as Record<string, boolean>;
-    if (push && env.vapid && prefs.approval_push !== false) {
-      try { pushed += (await pushToUser(supa, id, push, env.vapid)).sent; }
-      catch (e) { console.error("push", String((e as Error)?.message ?? e)); }
+    const snoozedUntil = await readSnoozedUntil(supa, id, t.id);
+    const now = new Date();
+    if (push && env.vapid) {
+      const vapid = env.vapid;
+      const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `approval:${plan.eventKey}`, payload: { v: 1, line, url: path, push } }, {
+        store, now, prefs: person.prefs, snoozedUntil,
+        send: async () => {
+          const res = await pushToUser(supa, id, push, vapid);
+          return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+        },
+      });
+      if (r.result === "sent") pushed++;
     }
-    if (!env.resendKey || prefs.approval_email === false) continue;
-    const { data: u } = await supa.auth.admin.getUserById(id);
-    const email = u.user?.email;
-    if (!email) continue;
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${env.resendKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: env.from, to: email, subject: mail.subject, html: mail.html }),
+    if (!env.resendKey) continue;
+    const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `approval:${plan.eventKey}`, payload: { v: 1, line, url: path, email: mail } }, {
+      store, now, prefs: person.prefs, snoozedUntil,
+      send: () => sendMail(supa, env, id, mail.subject, mail.html),
     });
-    if (res.ok) sent++;
-    else console.error("resend", res.status, await res.text().catch(() => ""));
+    if (r.result === "sent") sent++;
   }
   return json({ ok: true, sent, pushed });
 }
 
+function safeEq(a: string, b: string) {
+  if (!a || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
 function oneLine(s: string) { return String(s).replace(/[\r\n]+/g, " ").slice(0, 140); }
-function esc(s: string) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c)); }
 function json(b: unknown, status = 200) { return new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } }); }

@@ -1,0 +1,57 @@
+/* ============================================================
+   KANBO — Settings › Notifications: delivery, quiet hours, time zone (0048).
+   Prefix knp-. Sits on SettingsModal's kset-* rows and cards and adds only
+   the summary line, the time fields, the day chips and the zone picker.
+   Tokens with fallbacks, both themes, phone width, reduced motion.
+   ============================================================ */
+
+/* under the push panel: a group's gap above it */
+.knp-panel { margin-top: 28px; }
+.knp-panel:first-child { margin-top: 0; }
+.knp-panel .kset-group + .kset-group { margin-top: 28px; }
+
+/* the summary line: what all of it adds up to */
+.knp-summary {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0 2px 16px; padding: 10px 12px;
+  border-radius: var(--r-md, 8px); background: var(--fill-1);
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty;
+}
+.knp-summary > svg { flex-shrink: 0; margin-top: 3px; color: var(--icon-quiet, var(--ink-3)); }
+
+/* rows with fields: the text keeps the space, the field sits right (wraps under it on a phone) */
+.knp-row > .kset-row-text { flex-basis: 200px; }
+.knp-row .kset-row-desc[data-tone="signal"] { color: var(--signal, var(--prio-urgent)); }
+.knp-time { width: 112px; height: 36px; padding: 0 10px; font-variant-numeric: tabular-nums; }
+.knp-time[aria-invalid="true"] { border-color: var(--signal, var(--prio-urgent)); }
+.knp-span { flex-wrap: wrap; gap: 8px 12px; }
+.knp-inline { display: inline-flex; align-items: center; gap: 8px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+/* the days quiet hours start on: seven toggle chips */
+.knp-days { flex-wrap: wrap; gap: 4px; }
+.knp-day {
+  min-width: 40px; height: 32px; padding: 0 8px; border: 0; border-radius: var(--r-sm, 6px); cursor: pointer;
+  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline);
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2);
+  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease);
+}
+.knp-day:hover:not(:disabled) { background: var(--fill-2); color: var(--ink); }
+.knp-day[aria-pressed="true"] { background: var(--accent-fill, var(--accent)); color: var(--on-accent); box-shadow: none; }
+.knp-day[aria-pressed="true"]:hover:not(:disabled) { background: var(--accent-fill, var(--accent)); color: var(--on-accent); filter: brightness(1.05); }
+.knp-day:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.knp-day:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* the time zone picker: wide enough for "Argentina / Buenos Aires (GMT-3)" */
+.knp-zone-ctl { flex: 1 1 240px; justify-content: flex-end; min-width: 0; }
+.knp-zone { width: 100%; max-width: 320px; height: 36px; padding: 0 10px; }
+
+@media (max-width: 560px) {
+  .knp-row > .kset-row-ctl { margin-left: 0; }
+  .knp-zone-ctl { justify-content: flex-start; }
+  .knp-zone { max-width: none; }
+  .knp-day { min-width: 0; flex: 1 1 36px; padding: 0 4px; }
+  .knp-days { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .knp-day { transition: none; }
+}
