@@ -1,11 +1,13 @@
-/* lib/lazyLoad: chunks load once (and again after a failure), a loaded chunk's
-   component renders without its fallback, a failed screen reloads the page once
-   in production, and idle prefetching stays out of the way. */
+/* lib/lazyLoad: chunks load once (and again after a failure, under a fresh address
+   the browser will really fetch), a loaded chunk's component renders without its
+   fallback, a failed screen reloads the page once in production, and idle
+   prefetching stays out of the way (and stops when the network struggles). */
 import { Suspense } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import {
-  canPrefetchAhead, chunk, chunkReload, lazyComponent, loadAllChunks, prefetch, prefetchWhenIdle, recoverFromChunkError, RETRY_AFTER_MS,
+  canPrefetchAhead, chunk, chunkImport, chunkReload, chunkRetryable, chunkUrlOf, isChunkLoadError, lazyComponent, loadAllChunks, prefetch,
+  prefetchWhenIdle, recoverFromChunkError, RETRY_AFTER_MS,
 } from "./lazyLoad";
 
 afterEach(() => {
@@ -42,6 +44,66 @@ describe("chunk", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  // what Chrome / Edge and Firefox say when a module file doesn't arrive (Safari names no file)
+  const here = (path: string) => `${window.location.origin}${path}`;
+  const chromeFail = (path: string) => new TypeError(`Failed to fetch dynamically imported module: ${here(path)}`);
+  const firefoxFail = (path: string) => new TypeError(`error loading dynamically imported module: ${here(path)}`);
+  const safariFail = () => new TypeError("Importing a module script failed.");
+
+  it("after a fetch failure, asks for the same file under a fresh address (the browser keeps the failure under the old one)", async () => {
+    const load = vi.fn().mockRejectedValue(chromeFail("/assets/RecycleBin-abc.js"));
+    const fresh = vi.spyOn(chunkImport, "fresh")
+      .mockRejectedValueOnce(chromeFail("/assets/RecycleBin-abc.js?kanbo-retry=1"))
+      .mockResolvedValueOnce({ RecycleBin: "bin" });
+    const c = chunk(load);
+    await expect(c()).rejects.toThrow(/Failed to fetch/);
+    await expect(c()).rejects.toThrow(/Failed to fetch/);      // still offline: a new address each time
+    await expect(c()).resolves.toEqual({ RecycleBin: "bin" });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(fresh.mock.calls).toEqual([[here("/assets/RecycleBin-abc.js"), 1], [here("/assets/RecycleBin-abc.js"), 2]]);
+    expect(c.loaded).toEqual({ RecycleBin: "bin" });
+    await c();
+    expect(fresh).toHaveBeenCalledTimes(2);                     // loaded once, kept
+  });
+
+  it("a failed idle warm-up doesn't break the screen: its real load fetches the file again", async () => {
+    const load = vi.fn().mockRejectedValue(firefoxFail("/src/components/bin/RecycleBin.tsx"));
+    const fresh = vi.spyOn(chunkImport, "fresh").mockResolvedValue({ ok: true });
+    const c = chunk(load);
+    prefetch(c);
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await expect(c()).resolves.toEqual({ ok: true });
+    expect(fresh).toHaveBeenCalledWith(here("/src/components/bin/RecycleBin.tsx"), 1);
+  });
+
+  it("only ever re-imports this site's files; with no file named (Safari) it loads as before", async () => {
+    const fresh = vi.spyOn(chunkImport, "fresh").mockResolvedValue({});
+    const foreign = chunk(vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch dynamically imported module: https://evil.example/x.js")).mockResolvedValueOnce({ a: 1 }));
+    await expect(foreign()).rejects.toThrow();
+    await expect(foreign()).resolves.toEqual({ a: 1 });
+    const safari = chunk(vi.fn().mockRejectedValueOnce(safariFail()).mockResolvedValueOnce({ b: 2 }));
+    await expect(safari()).rejects.toThrow();
+    await expect(safari()).resolves.toEqual({ b: 2 });
+    expect(fresh).not.toHaveBeenCalled();
+  });
+
+  it("tells a chunk that didn't arrive from a bug, and whether it can be asked for again in place", () => {
+    expect(isChunkLoadError(chromeFail("/assets/a.js"))).toBe(true);
+    expect(isChunkLoadError(firefoxFail("/assets/a.js"))).toBe(true);
+    expect(isChunkLoadError(safariFail())).toBe(true);
+    expect(isChunkLoadError(new Error(`Unable to preload CSS for ${here("/assets/a.css")}`))).toBe(true);
+    expect(isChunkLoadError(new TypeError("x is not a function"))).toBe(false);
+    expect(isChunkLoadError(null)).toBe(false);
+    expect(chunkUrlOf(chromeFail("/assets/a.js?kanbo-retry=3"))).toBe(here("/assets/a.js"));
+    expect(chunkUrlOf(chromeFail("/src/a.tsx?t=123"))).toBe(here("/src/a.tsx?t=123"));
+    expect(chunkRetryable(chromeFail("/assets/a.js"))).toBe(true);
+    expect(chunkRetryable(safariFail())).toBe(false);                                         // no file named
+    expect(chunkRetryable(new Error(`Unable to preload CSS for ${here("/assets/a.css")}`))).toBe(false); // a stylesheet
+    expect(chunkRetryable(new TypeError("Failed to fetch dynamically imported module: https://evil.example/a.js"))).toBe(false);
+    expect(chunkRetryable(new TypeError("x is not a function"))).toBe(false);
+  });
+
   it("prefetch never throws, and skips what's already in", async () => {
     const bad = chunk(() => Promise.reject(new Error("nope")));
     const good = vi.fn(async () => ({}));
@@ -70,6 +132,34 @@ describe("lazyComponent", () => {
     render(<Suspense fallback={<p>Loading…</p>}><Hi /></Suspense>);
     expect(screen.getByText("Hi")).toBeInTheDocument();
     expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  it("a screen whose file failed (even in an idle warm-up) loads on a later mount once the file arrives", async () => {
+    const path = "/assets/Bin-xyz.js";
+    const load = vi.fn().mockRejectedValue(new TypeError(`Failed to fetch dynamically imported module: ${window.location.origin}${path}`));
+    const fresh = vi.spyOn(chunkImport, "fresh")
+      .mockRejectedValueOnce(new TypeError(`Failed to fetch dynamically imported module: ${window.location.origin}${path}?kanbo-retry=1`))
+      .mockResolvedValueOnce({ Bin: () => <p>Recycle bin</p> });
+    const c = chunk<{ Bin: () => JSX.Element }>(load);
+    const Bin = lazyComponent(c, (m) => m.Bin, "Bin");
+    prefetch(c);                                                   // the warm-up fails (blocked)
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { Component } = await import("react");
+    class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean }> {
+      state = { failed: false };
+      static getDerivedStateFromError() { return { failed: true }; }
+      render() { return this.state.failed ? <p>Couldn't load</p> : this.props.children; }
+    }
+    const first = render(<Boundary><Suspense fallback={null}><Bin /></Suspense></Boundary>);   // still blocked
+    expect(await screen.findByText("Couldn't load")).toBeInTheDocument();
+    first.unmount();
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + RETRY_AFTER_MS);
+    render(<Boundary><Suspense fallback={null}><Bin /></Suspense></Boundary>);                  // unblocked: fetched afresh
+    expect(await screen.findByText("Recycle bin")).toBeInTheDocument();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(fresh).toHaveBeenCalledTimes(2);
   });
 
   it("after a failed load, the next mount tries again", async () => {
@@ -149,6 +239,22 @@ describe("idle prefetching", () => {
     cancel();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(order).toEqual(["a", "b"]);
+  });
+});
+
+describe("idle prefetching after a failure", () => {
+  it("stops at the first failure (the rest load when they're needed)", async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const ok = (name: string) => chunk(async () => { order.push(name); return name; });
+    const a = ok("a");
+    const bad = chunk(async () => { order.push("bad"); throw new TypeError("Importing a module script failed."); });
+    const c = ok("c");
+    prefetchWhenIdle([a, bad, c]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(order).toEqual(["a", "bad"]);
+    expect(c.loaded).toBeNull();
+    await expect(c()).resolves.toBe("c");                        // on demand, as normal
   });
 });
 

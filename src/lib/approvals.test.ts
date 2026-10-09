@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   APPROVAL_NOTIFY_ROW, DEMO_APPROVAL_ACTIVITY, approvalBadgeAria, approvalErrorText, approvalEventText, approvalInboxLine, approvalWaitingNote,
+  approvalsInWorkspace,
   cancelApproval, decideApproval, demoApprovalEvents, listApprovalSummaries, listMyApprovals, listTaskApprovals, nameList,
   rememberApprovalTask, requestApproval, resetApprovalsDemo, shownInApprovalsGroup, subscribeApprovals, waitingOnApproval, waitingOnApprovalTaskIds,
 } from "./approvals";
@@ -141,7 +142,20 @@ describe("helpers", () => {
     expect(approvalEventText("approved", "pending")).toBe("approved it, still waiting on others");
     expect(approvalEventText("changes_requested", "changes_requested")).toBe("asked for changes");
     expect(approvalEventText("cancelled", "cancelled")).toBe("cancelled the approval request");
+    expect(approvalEventText("moved", "cancelled")).toBe("moved the task, so its approval request was cancelled");
     expect(approvalEventText(null, null)).toBe("updated the approval request");
+  });
+  it("Approvals for you: only requests whose task is in this workspace now", () => {
+    const task = (workspaceId: string | null) => ({ id: "t", title: "T", projectId: "p", workspaceId, status: "todo" as const, dueDate: null });
+    const here = { id: "a1", workspaceId: "ws-a", task: task("ws-a") };
+    const movedAway = { id: "a2", workspaceId: "ws-a", task: task("ws-b") };      // listed before its task moved to B
+    const toPersonal = { id: "a3", workspaceId: "ws-a", task: task(null) };
+    const elsewhere = { id: "a4", workspaceId: "ws-b", task: task("ws-b") };
+    const noTask = { id: "a5", workspaceId: "ws-a", task: null };
+    const list = [here, movedAway, toPersonal, elsewhere, noTask];
+    expect(approvalsInWorkspace(list, "ws-a").map((a) => a.id)).toEqual(["a1", "a5"]);
+    expect(approvalsInWorkspace(list, "ws-b").map((a) => a.id)).toEqual(["a4"]);   // never the old workspace's request
+    expect(approvalsInWorkspace(list, null)).toEqual([]);
   });
   it("badges for screen readers; the Settings row", () => {
     expect(approvalBadgeAria({ status: "pending", rule: "all", approved: 1, total: 3 })).toBe("Approval pending, 1 of 3 approved");

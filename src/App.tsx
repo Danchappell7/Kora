@@ -51,7 +51,7 @@ import type { AskAction, AskContext } from "./lib/askTypes";
 import { listenForPushMessages } from "./lib/push";
 import { takeNewTaskShortcut } from "./lib/install";
 import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
-import { approvalFailure, listApprovalSummaries, listMyApprovals, subscribeApprovals, waitingOnApproval } from "./lib/approvals";
+import { approvalFailure, approvalsInWorkspace, listApprovalSummaries, listMyApprovals, subscribeApprovals, waitingOnApproval } from "./lib/approvals";
 import type { BinUndoResult } from "./lib/trash";
 import { docMentionInWorkspace, docMentionRoute } from "./lib/docMentions";
 import type { DocMakeTask } from "./components/docs/DocEditor";
@@ -3664,7 +3664,7 @@ export default function App() {
         // (hidden while you're a guest here: the notice says where to go)
         onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")}
         // 0047: "Approvals for you" first (this workspace's), and doc @mentions open their doc
-        approvals={{ toReview: myApprovals.toReview.filter((a) => (a.workspaceId ?? null) === workspace), projects, members: wsPeople, onDecided: onApprovalsChange }}
+        approvals={{ toReview: approvalsInWorkspace(myApprovals.toReview, workspace), projects, members: wsPeople, onDecided: onApprovalsChange }}
         onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} warnings={calWarnings} syncing={calSyncing} readOnly={activeReadOnly}

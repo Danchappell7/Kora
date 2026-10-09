@@ -278,10 +278,13 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
     .select("id,task_id,workspace_id,requested_by,status,rule,title,note,created_at,resolved_at")
     .eq("id", approvalId).maybeSingle<ApprovalRow>();
   if (!a) return json({ error: "approval not found" }, 404);
-  const { data: t } = await supa.from("tasks").select("id,title,archived_at").eq("id", a.task_id)
-    .maybeSingle<{ id: string; title: string | null; archived_at: string | null }>();
+  const { data: t } = await supa.from("tasks").select("id,title,archived_at,workspace_id").eq("id", a.task_id)
+    .maybeSingle<{ id: string; title: string | null; archived_at: string | null; workspace_id: string | null }>();
   if (!t) return json({ error: "approval not found" }, 404);
   if (t.archived_at) return json({ ok: true, sent: 0, note: "archived" });
+  // a task that has left the request's workspace took no request with it (0047 cancels it): nobody
+  // there is told about it, and nobody in its new home is told about the old workspace's request
+  if (t.workspace_id !== a.workspace_id) return json({ ok: true, sent: 0, note: "moved" });
   // approvals are team-only: the caller can see the task if they're an active member (guests too)
   const members = await teamMembers(supa, a.workspace_id);
   if (!members.has(actorId)) return json({ error: "not allowed" }, 403);

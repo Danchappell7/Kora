@@ -204,7 +204,8 @@ export interface ApiApproval {
   url: string | null;
 }
 
-/** approval.decided: the decision that sent it (a cancelled request: "cancelled", by whoever cancelled it). */
+/** approval.decided: the decision that sent it (a cancelled request: "cancelled", by whoever cancelled it,
+ *  or moved its task out of the workspace: 0047 cancels the request then, and sends the task as it was here). */
 export interface ApiApprovalDecision {
   userId: string | null;
   decision: "approved" | "changes_requested" | "cancelled";

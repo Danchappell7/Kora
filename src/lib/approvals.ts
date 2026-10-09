@@ -268,6 +268,13 @@ export function approvalInboxLine(a: Pick<Activity, "detail" | "meta">): { actor
   };
 }
 
+/** Inbox › "Approvals for you" in a workspace: the open requests whose task is in it now. A request
+ *  belongs to its task's workspace (0047 cancels it when the task moves away), so one listed before a
+ *  move never shows up in the task's new workspace, nor stays in the old one. */
+export function approvalsInWorkspace<A extends Pick<ApprovalWithTask, "workspaceId" | "task">>(list: readonly A[], workspace: string | null): A[] {
+  return list.filter((a) => (a.workspaceId ?? null) === workspace && (!a.task || (a.task.workspaceId ?? null) === workspace));
+}
+
 /** InboxView: a request notice whose request still waits in "Approvals for you" (that group shows it,
  *  with its buttons), so the triage list can leave it out rather than show it twice. */
 export function shownInApprovalsGroup(a: Pick<Activity, "kind" | "meta">, toReview: readonly Pick<Approval, "id">[]): boolean {
@@ -282,6 +289,8 @@ export function approvalEventText(newValue: string | null, oldValue: string | nu
     case "approved": return oldValue === "approved" ? "approved it" : "approved it, still waiting on others";
     case "changes_requested": return "asked for changes";
     case "cancelled": return "cancelled the approval request";
+    // 0047: the task left the request's workspace, which cancels its open request
+    case "moved": return "moved the task, so its approval request was cancelled";
     default: return "updated the approval request";
   }
 }

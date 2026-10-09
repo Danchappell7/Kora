@@ -28,6 +28,11 @@
 --                                      items, the creator for personal ones.
 --        trash_housekeeping()          purges what's 30 days old (also run by
 --                                      the daily api_housekeeping() cron job).
+--      While an item is in the bin its ids stay reserved (public.trash_ids,
+--      service only): nobody can create a task, project, section, doc,
+--      checklist item, comment or file row under one of them, or change a
+--      row's id to one, so knowing a binned id (a guest reads item_id) can't
+--      block its restore. A restore or purge frees them.
 --      Not in the bin: what goes because its whole workspace is closed, or
 --      because its owner's account is deleted (nobody would see it there).
 --      Storage: a purge removes only the database rows. The files of purged
@@ -50,7 +55,12 @@
 --      (or an owner/admin) cancels. Each step notifies the right people in
 --      the Inbox (kind 'approval', pref 'approval'), adds an 'approval' entry
 --      to the task's history (task_events) and sends approval.requested /
---      approval.decided to webhooks.
+--      approval.decided to webhooks. A request belongs to its task's
+--      workspace: when the task leaves it (moved to another workspace, or to
+--      Personal) its open request is cancelled, and the old workspace's
+--      webhooks get approval.decided ('cancelled') with only what that
+--      workspace already knew about the task (as 0046 sends it task.deleted
+--      'moved'). Nothing is decided, cancelled or announced across workspaces.
 --   4. Project docs (project_docs, project_doc_versions). A block document
 --      per project, readable by the project's audience (guests read only).
 --      All writes through save_project_doc() (optimistic concurrency on
@@ -210,6 +220,15 @@ create table if not exists public.storage_cleanup (
   primary key (bucket, path)
 );
 
+-- the ids a bin item will come back under, reserved while it waits (service
+-- only; read by the guard trigger in section 6). A purge or a bin row's
+-- workspace closing frees them with the row; a restore frees them itself.
+create table if not exists public.trash_ids (
+  id       uuid primary key,
+  trash_id uuid not null references public.trash (id) on delete cascade
+);
+create index if not exists trash_ids_trash_idx on public.trash_ids (trash_id);
+
 -- 3c. approvals
 create table if not exists public.approvals (
   id            uuid primary key default gen_random_uuid(),
@@ -291,7 +310,7 @@ create index if not exists project_doc_versions_doc_idx on public.project_doc_ve
 do $rls$
 declare t text; pol record;
 begin
-  foreach t in array array['audit_events','trash','storage_cleanup','approvals','approval_reviewers','project_docs','project_doc_versions'] loop
+  foreach t in array array['audit_events','trash','storage_cleanup','trash_ids','approvals','approval_reviewers','project_docs','project_doc_versions'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     for pol in select policyname from pg_policies where schemaname = 'public' and tablename = t loop
@@ -315,7 +334,7 @@ create policy "bin: personal or member" on public.trash
     (workspace_id is null and user_id = auth.uid() and public.can_act())
     or (workspace_id is not null and public.is_member(workspace_id)));
 
--- storage_cleanup: service only (no grants, no policies)
+-- storage_cleanup, trash_ids: service only (no grants, no policies)
 
 -- approvals: whoever can see the task; writes only through the functions below
 grant select on public.approvals to authenticated;
@@ -571,6 +590,24 @@ returns jsonb language sql immutable set search_path = public as $$
 $$;
 revoke execute on function public.trash_counts(jsonb) from public, anon, authenticated;
 
+-- Reserve the ids a bin entry will come back under: its tasks, checklist
+-- items, comments, files, sections, docs and its project (every table whose
+-- ids a person can choose). Children's ids (dependencies, plans, approvals,
+-- versions…) are the server's own or restore without a conflict.
+create or replace function public.trash_reserve(p_trash uuid, p_snap jsonb)
+returns void language sql set search_path = public as $$
+  insert into public.trash_ids (id, trash_id)
+  select distinct x.id, p_trash
+    from (select public.kanbo_uuid(e ->> 'id') as id
+            from unnest(array['tasks', 'checklist', 'comments', 'attachments', 'sections', 'docs']) k,
+                 jsonb_array_elements(case when jsonb_typeof(p_snap -> k) = 'array' then p_snap -> k else '[]'::jsonb end) e
+          union all
+          select public.kanbo_uuid(p_snap -> 'project' ->> 'id')) x
+   where x.id is not null
+  on conflict (id) do update set trash_id = excluded.trash_id;
+$$;
+revoke execute on function public.trash_reserve(uuid, jsonb) from public, anon, authenticated;
+
 create or replace function public.trash_capture_task() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -608,6 +645,7 @@ begin
           jsonb_build_object('v', 1) || snap,
           actor, left(case when actor is null then 'Kanbo' else public.kanbo_person_name(actor) end, 200))
   returning id into tid;
+  perform public.trash_reserve(tid, snap);
   perform public.trash_skip_add(array_remove(ids, old.id));
   if old.workspace_id is not null then
     perform public.audit_log(old.workspace_id, 'task.deleted', 'task', old.id::text, old.title,
@@ -670,6 +708,7 @@ begin
             'counts', cnt),
           snap, actor, left(case when actor is null then 'Kanbo' else public.kanbo_person_name(actor) end, 200))
   returning id into tid;
+  perform public.trash_reserve(tid, snap);
   -- its tasks and sections go into this one entry: delete them without bin entries of their own
   prev := coalesce(current_setting('kanbo.trash_bypass', true), '');
   perform set_config('kanbo.trash_bypass', 'on', true);
@@ -692,6 +731,43 @@ create trigger trg_trash_task before delete on public.tasks
 drop trigger if exists trg_trash_project on public.projects;
 create trigger trg_trash_project before delete on public.projects
   for each row execute function public.trash_capture_project();
+
+-- Binned ids stay reserved: no new row under one, and no row's id changed to
+-- one, except by the restore itself (kanbo.restoring, set only by
+-- restore_from_trash around its own inserts). Answers like a duplicate key.
+create or replace function public.trash_guard_ids() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'UPDATE' and new.id is not distinct from old.id then return new; end if;
+  if coalesce(current_setting('kanbo.restoring', true), '') = 'on' then return new; end if;
+  if exists (select 1 from public.trash_ids r where r.id = new.id) then
+    raise exception 'id in use' using errcode = 'unique_violation';
+  end if;
+  return new;
+end; $$;
+revoke execute on function public.trash_guard_ids() from public, anon, authenticated;
+
+do $guard$
+declare t text;
+begin
+  foreach t in array array['tasks', 'projects', 'sections', 'project_docs', 'subtasks', 'comments', 'attachments'] loop
+    execute format('drop trigger if exists trg_trash_guard_ids on public.%I', t);
+    execute format('create trigger trg_trash_guard_ids before insert or update of id on public.%I '
+                   'for each row execute function public.trash_guard_ids()', t);
+  end loop;
+end $guard$;
+
+-- (re-running this file) reserve the ids of what's already in the bin
+do $reserve$
+declare r record;
+begin
+  for r in select x.id, x.snapshot from public.trash x
+            where x.restored_at is null
+              and not exists (select 1 from public.trash_ids i where i.trash_id = x.id)
+            order by x.deleted_at loop
+    perform public.trash_reserve(r.id, r.snapshot);
+  end loop;
+end $reserve$;
 
 -- ---------- 7. the recycle bin: restore ----------
 -- Insert jsonb rows into a table, naming only the columns the rows carry (a
@@ -907,7 +983,8 @@ revoke execute on function public.trash_restore_project(jsonb, uuid) from public
 -- Answers { id, kind, item_id, status: 'restored' | 'already_restored',
 --           project_id (where the task / project now is), note, counts }.
 -- Errors: 'not authorized' · 'not found' (gone, or not yours) ·
---         'restore conflict' (an id exists again) · 'no project to restore into'
+--         'restore conflict' (an id exists again: only for rows made before
+--         the ids were reserved) · 'no project to restore into'
 create or replace function public.restore_from_trash(p_id uuid)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -940,6 +1017,7 @@ begin
   end if;
   perform set_config('kanbo.restoring', prev, true);
   update public.trash set restored_at = now(), restored_by = me where id = r.id;
+  delete from public.trash_ids where trash_id = r.id;               -- its ids are in use again
   pid := case when r.kind = 'project' then r.item_id::text
               else (select t.project_id from public.tasks t where t.id = r.item_id) end;
   if r.workspace_id is not null then
@@ -1121,21 +1199,29 @@ returns text language sql stable set search_path = public as $$
 $$;
 revoke execute on function public.approval_resolve(uuid, text) from public, anon, authenticated;
 
--- approval.requested / approval.decided to the workspace's webhooks (never blocks)
-create or replace function public.approval_webhook(a public.approvals, p_event text, p_decision jsonb default null)
+-- approval.requested / approval.decided to the request's workspace's webhooks
+-- (never blocks). The task as it is now, unless p_task says what to send (a
+-- task leaving the workspace: what the old workspace knew). Never sends a
+-- task that's in another workspace now.
+drop function if exists public.approval_webhook(public.approvals, text, jsonb);   -- (before p_task)
+create or replace function public.approval_webhook(a public.approvals, p_event text, p_decision jsonb default null,
+                                                   p_task jsonb default null)
 returns void language plpgsql security definer set search_path = public as $$
+declare tj jsonb;
 begin
   if not exists (select 1 from public.webhooks w where w.active) then return; end if;
+  tj := coalesce(p_task, public.approval_task_json(a.task_id));
+  if tj is null or public.kanbo_uuid(tj ->> 'workspace_id') is distinct from a.workspace_id then return; end if;
   perform public.webhook_enqueue(a.workspace_id, null, p_event, a.id::text,
     jsonb_build_object(
       'approval', to_jsonb(a),
       'reviewers', coalesce((select jsonb_agg(to_jsonb(r) order by r.user_id) from public.approval_reviewers r where r.approval_id = a.id), '[]'::jsonb),
-      'task', public.approval_task_json(a.task_id))
+      'task', tj)
     || case when p_decision is not null then jsonb_build_object('decision', p_decision) else '{}'::jsonb end);
 exception when others then
   raise warning 'webhook capture skipped (approvals): %', sqlerrm;
 end; $$;
-revoke execute on function public.approval_webhook(public.approvals, text, jsonb) from public, anon, authenticated;
+revoke execute on function public.approval_webhook(public.approvals, text, jsonb, jsonb) from public, anon, authenticated;
 
 -- Ask for approval on a team task (people who can edit it; never guests).
 -- p_reviewers: 1–10 people in the task's workspace (guests may review), not
@@ -1215,7 +1301,10 @@ begin
      or not exists (select 1 from public.approval_reviewers r where r.approval_id = a.id and r.user_id = me) then
     raise exception 'approval not found';
   end if;
-  if a.status <> 'pending' then raise exception 'approval closed'; end if;
+  if a.status <> 'pending'
+     or (select x.workspace_id from public.tasks x where x.id = a.task_id) is distinct from a.workspace_id then
+    raise exception 'approval closed';            -- (a task that left the workspace has its request cancelled)
+  end if;
   update public.approval_reviewers set decision = d, comment = c, decided_at = now()
    where approval_id = a.id and user_id = me;
   st := public.approval_resolve(a.id, a.rule);
@@ -1248,7 +1337,10 @@ begin
      or not (a.requested_by = me or public.ws_role(a.workspace_id) in ('owner', 'admin')) then
     raise exception 'approval not found';
   end if;
-  if a.status <> 'pending' then raise exception 'approval closed'; end if;
+  if a.status <> 'pending'
+     or (select x.workspace_id from public.tasks x where x.id = a.task_id) is distinct from a.workspace_id then
+    raise exception 'approval closed';
+  end if;
   update public.approvals set status = 'cancelled', updated_at = now(), resolved_at = now()
    where id = a.id returning * into a;
   me_name := public.kanbo_person_name(me);
@@ -1282,12 +1374,14 @@ begin
         from (select x.* from public.approvals x
                 join public.approval_reviewers r on r.approval_id = x.id and r.user_id = me and r.decision is null
                where x.status = 'pending' and public.can_see_task(x.task_id)
+                 and exists (select 1 from public.tasks t where t.id = x.task_id and t.workspace_id = x.workspace_id)
                order by x.created_at desc limit 200) a), '[]'::jsonb),
     'requested', coalesce((
       select jsonb_agg(public.approval_json(a) || jsonb_build_object('task', public.approval_task_json(a.task_id))
                        order by a.created_at desc, a.id)
         from (select x.* from public.approvals x
                where x.requested_by = me and x.status = 'pending' and public.can_see_task(x.task_id)
+                 and exists (select 1 from public.tasks t where t.id = x.task_id and t.workspace_id = x.workspace_id)
                order by x.created_at desc limit 200) a), '[]'::jsonb));
 end; $$;
 
@@ -1301,6 +1395,55 @@ grant execute on function public.decide_approval(uuid, text, text) to authentica
 grant execute on function public.cancel_approval(uuid) to authenticated;
 grant execute on function public.task_approvals(uuid) to authenticated;
 grant execute on function public.list_my_approvals() to authenticated;
+
+-- A task leaving its workspace (moved to another one, or to Personal) takes
+-- no open request with it: the request is cancelled. The old workspace's
+-- webhooks hear approval.decided ('cancelled', by whoever moved it) with the
+-- task as it was there, never its new title, project or workspace; the
+-- task's history says why ('approval': moved → cancelled). Its reviewers'
+-- "Approvals for you" drops it; their Inbox notices stay, as for any task
+-- they can no longer see. Never blocks the move.
+create or replace function public.approvals_follow_task() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  a       public.approvals;
+  actor   uuid;
+  aname   text;
+  was     jsonb;
+begin
+  begin
+    for a in update public.approvals x
+                set status = 'cancelled', updated_at = now(), resolved_at = now()
+              where x.task_id = new.id and x.status = 'pending' and x.workspace_id is distinct from new.workspace_id
+             returning x.* loop
+      if actor is null and aname is null then
+        actor := public.kanbo_actor();
+        aname := left(case when actor is null then 'Kanbo' else public.kanbo_person_name(actor) end, 200);
+        was := jsonb_build_object('id', old.id, 'title', old.title, 'project_id', old.project_id,
+                                  'workspace_id', old.workspace_id, 'status', old.status, 'due_date', old.due_date);
+      end if;
+      insert into public.task_events (task_id, actor_id, actor_name, field, old_value, new_value)
+      values (new.id, actor, aname, 'approval', 'cancelled', 'moved');
+      if old.workspace_id is not null and a.workspace_id = old.workspace_id then
+        perform public.approval_webhook(a, 'approval.decided',
+                  jsonb_build_object('user_id', actor, 'decision', 'cancelled', 'reason', 'moved', 'comment', null, 'decided_at', now()),
+                  was);
+      end if;
+    end loop;
+  exception when others then
+    raise warning 'approvals skipped (task moved): %', sqlerrm;
+  end;
+  return null;
+end; $$;
+revoke execute on function public.approvals_follow_task() from public, anon, authenticated;
+drop trigger if exists trg_approvals_follow_task on public.tasks;
+create trigger trg_approvals_follow_task after update of workspace_id on public.tasks
+  for each row when (old.workspace_id is distinct from new.workspace_id)
+  execute function public.approvals_follow_task();
+-- (re-running this file) an open request whose task is in another workspace already
+update public.approvals a set status = 'cancelled', updated_at = now(), resolved_at = now()
+ where a.status = 'pending'
+   and not exists (select 1 from public.tasks t where t.id = a.task_id and t.workspace_id = a.workspace_id);
 
 -- ---------- 10. project docs ----------
 create or replace function public.project_doc_json(d public.project_docs)
@@ -1323,6 +1466,7 @@ revoke execute on function public.project_doc_json(public.project_docs) from pub
 --   p_checkpoint: this save is a version of its own, never folded into your
 --            last one (a restore from Version history, keep mine): the version
 --            that held what the doc said just before stays in the history.
+--   A new doc can't take the id of a doc whose project is in the bin.
 -- Answers { status: 'saved' | 'conflict', doc }.
 -- Errors: 'not authorized' · 'invalid doc' · 'invalid body' · 'doc too large' ·
 --         'invalid title' · 'project not found' · 'doc not found' · 'not allowed' · 'too many docs'
@@ -1354,6 +1498,8 @@ begin
   if d.id is null then
     if p_base_updated_at is not null then raise exception 'doc not found'; end if;   -- deleted while open: don't bring it back
     if p_project is null or not public.can_edit_project(p_project) then raise exception 'project not found'; end if;
+    -- a doc of a project in the bin keeps its id for the restore (the guard trigger refuses it too)
+    if exists (select 1 from public.trash_ids r where r.id = p_doc) then raise exception 'invalid doc'; end if;
     perform pg_advisory_xact_lock(hashtext('kanbo:docs:' || p_project::text));
     if (select count(*) from public.project_docs x where x.project_id = p_project) >= 200 then raise exception 'too many docs'; end if;
     select x.workspace_id into p from public.projects x where x.id = p_project;
@@ -1582,6 +1728,8 @@ insert into public.schema_migrations (version) values ('0047') on conflict (vers
 --   and not has_table_privilege('authenticated', 'public.approvals', 'insert')
 --   and not has_table_privilege('authenticated', 'public.project_docs', 'update')                   as writes_through_functions,
 --   not has_table_privilege('authenticated', 'public.storage_cleanup', 'select')                     as cleanup_queue_service_only,
+--   (select count(*) from pg_trigger where tgname = 'trg_trash_guard_ids') = 7
+--   and not has_table_privilege('authenticated', 'public.trash_ids', 'select')                      as bin_ids_reserved,
 --   (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
 --     and tablename in ('approvals', 'approval_reviewers', 'project_docs')) = 3                       as realtime,
 --   'approval.decided' = any (public.webhook_event_names())                                          as approval_events,
@@ -1589,6 +1737,7 @@ insert into public.schema_migrations (version) values ('0047') on conflict (vers
 --     'trg_notify_comment', 'trg_comment_author', 'trg_webhook_comment')
 --     and pg_get_triggerdef(oid) like '%kanbo.restoring%') = 5                                        as restores_quiet,
 --   exists (select 1 from pg_trigger where tgname = 'trg_before_user_delete_0047')                  as account_deletion,
+--   exists (select 1 from pg_trigger where tgname = 'trg_approvals_follow_task')                    as approvals_follow_task,
 --   not has_function_privilege('authenticated', 'public.kanbo_health()', 'execute')                 as health_service_only,
 --   to_regprocedure('public.sign_in_hints()') is not null
 --   and has_function_privilege('anon', 'public.sign_in_hints()', 'execute')                         as sign_in_hint;

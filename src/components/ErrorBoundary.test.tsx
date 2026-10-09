@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { chunkReload } from "../lib/lazyLoad";
 
 let broken = true;
 function Flaky() {
@@ -44,5 +45,62 @@ describe("ErrorBoundary (inline)", () => {
     expect(screen.getByRole("heading", { name: "Something went wrong on this page" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Go to Today" })).toBeInTheDocument();
+  });
+});
+
+describe("ErrorBoundary (inline) when a view's code didn't arrive", () => {
+  let quiet: { mockRestore: () => void };
+  beforeEach(() => { quiet = vi.spyOn(console, "error").mockImplementation(() => {}); });
+  afterEach(() => { quiet.mockRestore(); vi.restoreAllMocks(); });
+
+  let failure: Error | null = null;
+  function Screen() {
+    if (failure) throw failure;
+    return <p>Recycle bin</p>;
+  }
+  const named = () => new TypeError(`Failed to fetch dynamically imported module: ${window.location.origin}/assets/RecycleBin-abc.js`);
+
+  it("Reload tries in place once when the file can be asked for again, then reloads the page", () => {
+    const reload = vi.spyOn(chunkReload, "reload").mockImplementation(() => {});
+    failure = named();
+    render(<ErrorBoundary inline><Screen /></ErrorBoundary>);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));     // in place: fails again
+    expect(reload).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));     // second time: the page
+    expect(reload).toHaveBeenCalledTimes(1);
+    failure = null;
+  });
+
+  it("in place, it comes back once the file arrives", () => {
+    const reload = vi.spyOn(chunkReload, "reload").mockImplementation(() => {});
+    failure = named();
+    render(<ErrorBoundary inline><Screen /></ErrorBoundary>);
+    failure = null;
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(screen.getByText("Recycle bin")).toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("reloads the page straight away when the browser can't fetch it again in place (Safari, a stylesheet)", () => {
+    const reload = vi.spyOn(chunkReload, "reload").mockImplementation(() => {});
+    for (const e of [new TypeError("Importing a module script failed."), new Error(`Unable to preload CSS for ${window.location.origin}/assets/bin.css`)]) {
+      failure = e;
+      const r = render(<ErrorBoundary inline><Screen /></ErrorBoundary>);
+      fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+      r.unmount();
+    }
+    expect(reload).toHaveBeenCalledTimes(2);
+    failure = null;
+  });
+
+  it("an ordinary crash still re-renders in place, never reloading the page", () => {
+    const reload = vi.spyOn(chunkReload, "reload").mockImplementation(() => {});
+    failure = new TypeError("x is not a function");
+    render(<ErrorBoundary inline><Screen /></ErrorBoundary>);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(reload).not.toHaveBeenCalled();
+    failure = null;
   });
 });

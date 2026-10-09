@@ -5,10 +5,14 @@
    - default: the whole app failed — Reload, or Go to Today
    - inline: a single view or panel failed — the rest of the app keeps
      working; Reload re-renders the view, the leave button routes away
-     ("Go to Today", or "Close" for a panel)
+     ("Go to Today", or "Close" for a panel). When the view's code didn't
+     arrive (a chunk), Reload tries it in place once if the browser can
+     be asked for the file again, and otherwise reloads the page: a
+     browser never fetches a module that failed in this page again.
    ============================================================ */
 import { Component, type ReactNode } from "react";
 import { reportError } from "../lib/monitoring";
+import { chunkReload, chunkRetryable, isChunkLoadError } from "../lib/lazyLoad";
 import { AppBg, Button } from "./primitives";
 
 interface Props {
@@ -47,7 +51,17 @@ export class ErrorBoundary extends Component<Props, State> {
     reportError(error, { componentStack: info.componentStack ?? undefined, boundary: this.props.name ?? (this.props.inline ? "inline" : "app") });
   }
 
-  private retry = () => this.setState({ error: null });
+  /** a chunk that didn't arrive has had its one in-place retry here */
+  private chunkRetried = false;
+
+  private retry = () => {
+    const { error } = this.state;
+    if (error && isChunkLoadError(error)) {
+      if (this.chunkRetried || !chunkRetryable(error)) { chunkReload.reload(); return; }
+      this.chunkRetried = true;
+    }
+    this.setState({ error: null });
+  };
 
   private home = () => {
     this.setState({ error: null });

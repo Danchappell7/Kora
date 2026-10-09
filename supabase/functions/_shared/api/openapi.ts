@@ -336,7 +336,7 @@ const SCHEMAS: Record<string, unknown> = {
   ApprovalDecision: {
     type: "object", required: ["userId", "decision", "comment", "decidedAt"],
     properties: {
-      userId: nullable("string", { format: "uuid", description: "The reviewer, or whoever cancelled it." }),
+      userId: nullable("string", { format: "uuid", description: "The reviewer, or whoever cancelled it (or moved its task out of the workspace)." }),
       decision: { type: "string", enum: ["approved", "changes_requested", "cancelled"] },
       comment: nullable("string"), decidedAt: nullable("string", { format: "date-time" }),
     },
@@ -532,7 +532,7 @@ const INTRO = [
   "",
   "**Automations.** A project's automations (\"When a task is created\", \"status changed\", \"task completed\") run for API changes too, exactly as in the app. A value a rule names that the task can't take (someone outside the workspace, another project's section) is skipped.",
   "",
-  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn).",
+  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn or its task moved out of the workspace: then `task` is the task as it was in this workspace).",
 ].join("\n");
 
 /** The document, with `serverUrl` (…/functions/v1/api/v1) as its only server. */
