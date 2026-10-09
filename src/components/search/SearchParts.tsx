@@ -196,14 +196,14 @@ export function HitRow({ hit, rowId, cursor, onOpen, projectOf, workspaceName }:
     aria = `Comment by ${name} on ${hit.title || "Untitled task"}${snippetText ? `: ${snippetText}` : ""}${when ? `, ${when}` : ""}`;
   } else if (hit.kind === "doc") {
     av = <span className="ksr-av" data-kind="icon" aria-hidden="true">{hit.doc?.icon || <Icon name="notes" size={14} sw={1.75} />}</span>;
-    say = <HighlightTitle className="ksr-t" text={hit.title || "Untitled"} />;
     const where = project?.name ?? hit.doc?.projectName ?? undefined;
-    sub = (
+    say = (
       <>
-        {where && <span className="ksr-sub-meta">{project && <ProjectTile project={project} size={16} />}{where}</span>}
-        {snippetText && <><span aria-hidden="true">·</span><Highlighted className="ksr-snip" runs={snippetRuns} /></>}
+        <HighlightTitle className="ksr-t" text={hit.title || "Untitled"} />
+        {where && <span className="ksr-where">{project && <ProjectTile project={project} size={16} />}<span>{where}</span></span>}
       </>
     );
+    sub = snippetText ? <Highlighted className="ksr-snip" runs={snippetRuns} /> : null;
     aria = `Doc ${hit.title || "Untitled"}${where ? ` in ${where}` : ""}${hit.doc?.archived ? ", archived" : ""}${snippetText ? `: ${snippetText}` : ""}`;
     if (hit.doc?.archived) side = <Pill tone="neutral" icon="archive">Archived</Pill>;
   } else if (hit.kind === "project") {
@@ -249,7 +249,10 @@ export function SearchStart({ recents, onPick, onForget, onForgetAll, examples }
     <div className="ksr-start">
       {recents.length > 0 && (
         <section aria-labelledby="ksr-recent-h">
-          <h3 id="ksr-recent-h">Recent searches<button type="button" className="ksr-link" onClick={onForgetAll}>Clear</button></h3>
+          <div className="ksr-start-head">
+            <h3 id="ksr-recent-h">Recent searches</h3>
+            <button type="button" className="ksr-link" aria-label="Clear recent searches" onClick={onForgetAll}>Clear</button>
+          </div>
           <ul>
             {recents.map((r) => (
               <li key={r}>
@@ -263,7 +266,7 @@ export function SearchStart({ recents, onPick, onForget, onForgetAll, examples }
         </section>
       )}
       <section aria-labelledby="ksr-try-h">
-        <h3 id="ksr-try-h">Try asking</h3>
+        <div className="ksr-start-head"><h3 id="ksr-try-h">Try asking</h3></div>
         <ul>
           {examples.map((x) => (
             <li key={x}>

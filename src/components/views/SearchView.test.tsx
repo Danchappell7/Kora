@@ -630,7 +630,8 @@ describe("nothing typed", () => {
     fireEvent.click(within(recent).getByRole("button", { name: "Remove pricing from recent searches" }));
     expect(within(recent).queryByRole("button", { name: "Search again for pricing" })).not.toBeInTheDocument();
     expect(within(recent).getByRole("button", { name: "Search again for Sarah's overdue tasks" })).toBeInTheDocument();
-    fireEvent.click(within(recent).getByRole("button", { name: "Clear" }));
+    expect(screen.getByRole("heading", { name: "Recent searches" })).toBeInTheDocument();
+    fireEvent.click(within(recent).getByRole("button", { name: "Clear recent searches" }));
     expect(screen.queryByRole("heading", { name: /Recent searches/ })).not.toBeInTheDocument();
   });
 });

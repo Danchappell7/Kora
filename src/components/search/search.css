@@ -95,7 +95,8 @@
 .ksr .ktv-row[data-snippet="true"] { height: auto; min-height: var(--tv-row); align-items: flex-start; padding-top: 7px; padding-bottom: 7px; }
 .ksr .ktv-row[data-snippet="true"] .ktv-lead { padding-top: 2px; }
 .ksr .ktv-row[data-snippet="true"] .ktv-cluster { padding-top: 0; }
-.ksr .ktv-main { display: flex; flex-direction: column; min-width: 0; }
+.ksr .ktv-main { flex-direction: column; align-items: flex-start; justify-content: center; gap: 0; }
+.ksr .ktv-main > .ktv-title { max-width: 100%; }
 .ksr-snip {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
   font: 400 13px/20px var(--tv-ui); color: var(--ink-3);
@@ -127,6 +128,8 @@
 .ksr-say > .ksr-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ksr-say strong { font-weight: 600; }
 .ksr-say .ksr-dim { color: var(--ink-3); font-weight: 500; }
+.ksr-say .ksr-where { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; font: 500 12px/20px var(--tv-ui); color: var(--ink-3); }
+.ksr-say .ksr-where > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ksr-sub { display: flex; align-items: center; gap: 6px; min-width: 0; font: 400 13px/20px var(--tv-ui); color: var(--ink-3); }
 .ksr-sub .ksr-snip { -webkit-line-clamp: 2; }
 .ksr-sub-meta { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -140,9 +143,11 @@ mark.ksr-hl { color: inherit; background: var(--accent-tint, var(--accent-dim));
 .ktv-row[data-done="true"] mark.ksr-hl { font-weight: inherit; }
 
 /* ---------------- nothing typed: recent searches, ways to ask ---------------- */
-.ksr-start { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 32px; margin-top: 24px; }
-.ksr-start h3 { margin: 0 0 6px; font: 600 12px/16px var(--tv-ui); color: var(--ink-3); display: flex; align-items: center; gap: 8px; }
-.ksr-start h3 .ksr-link { margin-left: auto; }
+/* (inside the results region, which runs edge to edge: the icons line up with the page's text) */
+.ksr-start { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 32px; margin-top: 16px; padding: 0 calc(var(--tv-gutter) - 10px); }
+.ksr-start-head { display: flex; align-items: center; gap: 8px; min-height: 28px; margin: 0 0 4px; padding-left: 10px; }
+.ksr-start h3 { margin: 0; font: 600 12px/16px var(--tv-ui); color: var(--ink-3); }
+.ksr-start-head .ksr-link { margin-left: auto; }
 .ksr-start ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .ksr-start li { position: relative; display: flex; align-items: center; }
 .ksr-pick {
@@ -161,6 +166,10 @@ mark.ksr-hl { color: inherit; background: var(--accent-tint, var(--accent-dim));
 
 /* ---------------- phones ---------------- */
 @media (max-width: 859px) {
+  /* the quick searches scroll sideways instead of taking three lines */
+  .ksr-quick { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-left: calc(-1 * var(--tv-gutter)); margin-right: calc(-1 * var(--tv-gutter)); padding: 0 var(--tv-gutter); }
+  .ksr-quick::-webkit-scrollbar { display: none; }
+  .ksr-quick > * { flex-shrink: 0; }
   .ksr-box { height: var(--h-touch, 44px); }
   .ksr-input, .ksr-mirror { font-size: 16px; }   /* no iOS zoom on focus */
   .ksr-chip { height: 32px; }

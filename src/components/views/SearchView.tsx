@@ -443,7 +443,7 @@ export function SearchView(props: SearchViewProps) {
           </div>
         )}
 
-        <div className="ktv-search-row" role="group" aria-label="Quick searches">
+        <div className="ktv-search-row ksr-quick" role="group" aria-label="Quick searches">
           {quick.map((p) => {
             const target = { ...EMPTY_PANEL, ...p.panel };
             const on = !input.trim() && panelsEqual(panel, target);
