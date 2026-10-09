@@ -1,10 +1,16 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { buildInfoFromEnv } from "./src/lib/buildInfo";
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
+  // the running build (commit, build time, Vercel environment): Sentry's release
+  // tag and /admin › System status. Read through src/lib/buildInfo.ts BUILD_INFO.
+  define: {
+    __KANBO_BUILD__: JSON.stringify(buildInfoFromEnv(process.env, { isBuild: command === "build" })),
+  },
   build: {
     rollupOptions: {
       output: {
@@ -29,4 +35,4 @@ export default defineConfig({
     // a small cap fails: "minThreads and maxThreads must not conflict")
     minWorkers: 1,
   },
-});
+}));

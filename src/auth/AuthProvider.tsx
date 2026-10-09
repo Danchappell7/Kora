@@ -20,6 +20,7 @@ import { claimLocalData, parkLocalData, clearLocalUserData, forgetStoredSession,
 import { UnsyncedSignOutDialog } from "./UnsyncedSignOutDialog";
 import { clearTaskDrafts } from "../components/taskDetailHelpers";
 import { disablePush, watchPushSession } from "../lib/push";
+import { googleQueryParams, oauthRedirectTo } from "./googleSignIn";
 
 type PasswordReason = "invite" | "recovery";
 /** (a click event is accepted too, so `onClick={auth.signOut}` keeps working) */
@@ -40,12 +41,14 @@ interface AuthValue {
   clearLinkError: () => void;
   /** verify the pending link (only ever on an explicit click) */
   verifyLink: () => Promise<{ error?: string }>;
-  user: { id: string; email?: string; name?: string } | null;
+  /** `providers`: how this account can sign in ("email", "google"), from Supabase's app_metadata */
+  user: { id: string; email?: string; name?: string; providers?: string[] } | null;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   /** needsConfirmation: the account exists but the email must be confirmed before signing in */
   signUp: (email: string, password: string) => Promise<{ error?: string; needsConfirmation?: boolean }>;
   resendConfirmation: (email: string) => Promise<{ error?: string }>;
-  signInWithGoogle: () => Promise<{ error?: string }>;
+  /** Google's account chooser; `hd` shows that company's accounts first (a hint, never a gate) */
+  signInWithGoogle: (opts?: { hd?: string | null }) => Promise<{ error?: string }>;
   resetPassword: (email: string) => Promise<{ error?: string }>;
   updatePassword: (password: string) => Promise<{ error?: string }>;
   /** Signs out, wipes this device's cached workspace + offline queue, and
@@ -60,12 +63,19 @@ const DEMO_USER = { id: "m-self", email: "daniel@kanbo.app", name: "Daniel Okai"
 
 const AuthContext = createContext<AuthValue | null>(null);
 
+/** How the account signs in ("email", "google"…): app_metadata.providers, else .provider. */
+function providersOf(u: User): string[] | undefined {
+  const meta = (u.app_metadata ?? {}) as { providers?: unknown; provider?: unknown };
+  const list = Array.isArray(meta.providers) ? meta.providers : typeof meta.provider === "string" ? [meta.provider] : [];
+  const clean = list.filter((p): p is string => typeof p === "string" && /^[a-z0-9_-]{1,32}$/.test(p));
+  return clean.length ? clean : undefined;
+}
 function mapUser(u: User | null): AuthValue["user"] {
   if (!u) return null;
-  return { id: u.id, email: u.email ?? undefined, name: (u.user_metadata?.name as string) ?? u.email ?? undefined };
+  return { id: u.id, email: u.email ?? undefined, name: (u.user_metadata?.name as string) ?? u.email ?? undefined, providers: providersOf(u) };
 }
 const sameUser = (a: AuthValue["user"], b: AuthValue["user"]) =>
-  a === b || (!!a && !!b && a.id === b.id && a.email === b.email && a.name === b.name);
+  a === b || (!!a && !!b && a.id === b.id && a.email === b.email && a.name === b.name && (a.providers ?? []).join() === (b.providers ?? []).join());
 
 // Read the landing URL once, synchronously at load — before supabase-js
 // consumes (and clears) an #access_token hash.
@@ -278,11 +288,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { error } = await supabase.auth.resend({ type: "signup", email, options: { emailRedirectTo: window.location.origin } });
       return { error: error?.message };
     },
-    async signInWithGoogle() {
+    async signInWithGoogle(opts) {
       if (!supabase) return {};
+      // prompt=select_account: always ask which Google account (shared desks);
+      // hd: the company's accounts first. Back to /admin when it started there.
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: oauthRedirectTo(window.location), queryParams: googleQueryParams(opts?.hd) },
       });
       return { error: error?.message };
     },

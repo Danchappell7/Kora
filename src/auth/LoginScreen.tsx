@@ -10,6 +10,8 @@ import { store } from "../data/store";
 import { FULL_HEIGHT } from "../lib/viewport";
 import { TextField, PasswordField } from "./AuthFields";
 import { friendlyAuthError, type LinkError, type LinkType } from "./authLinks";
+import { GoogleButton, useGoogleSignIn } from "./GoogleButton";
+import { friendlyGoogleError, googleSignInEnabled, usesGoogle } from "./googleSignIn";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -18,9 +20,13 @@ type Mode = "signin" | "signup" | "reset";
 const SIGNUP_DISABLED = import.meta.env.VITE_DISABLE_SIGNUP === "true";
 // Google sign-in is hidden until the Google provider is configured in Supabase.
 // Set VITE_ENABLE_GOOGLE=true once OAuth credentials are in place. It stays
+// hidden while Supabase says the provider is off, or that "Confirm email" is off
+// (Supabase links Google to the same-email account, which is only safe once
+// every address has been proven: googleSignIn.ts › readiness), and a press
+// never opens Google before Supabase has said both are on. It stays
 // available in invite-only mode: existing accounts can always use it, and
-// Supabase's "Disable signup" still blocks unknown Google accounts.
-const GOOGLE_ENABLED = import.meta.env.VITE_ENABLE_GOOGLE === "true";
+// Supabase's "Disable signup" still blocks unknown Google accounts (the
+// signup_disabled redirect is explained on this screen: authLinks.ts).
 // Where people waiting for approval (or suspended) can get help. Point it at
 // the company IT/helpdesk address for a rollout with VITE_SUPPORT_EMAIL.
 const SUPPORT_EMAIL = (import.meta.env.VITE_SUPPORT_EMAIL as string | undefined)?.trim() || "hello@kanbo.co.uk";
@@ -172,10 +178,23 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
   // the address that still has to confirm its email (offer to resend the link)
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
   const [resent, setResent] = useState(false);
+  const googleOn = googleSignInEnabled();
+  const { hd, readiness, whenReady } = useGoogleSignIn(googleOn);
+  // shown while Supabase's settings are on their way (no jump in the layout), gone if they say no
+  const showGoogle = googleOn && (readiness === "pending" || readiness === "ready");
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   useEffect(() => { if (linkError) clearLinkError(); /* consumed into `banner` */ }, [linkError, clearLinkError]);
+  // back from Google with the browser's Back button (a page restored from the
+  // back/forward cache): the button is usable again
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => { if (e.persisted) setGoogleBusy(false); };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 
-  const reset = () => { setError(null); setNotice(null); setUnconfirmed(null); setResent(false); };
+  const reset = () => { setError(null); setNotice(null); setUnconfirmed(null); setResent(false); setGoogleError(null); };
   const go = (m: Mode) => { setMode(m); reset(); setBanner(null); };
 
   const submit = async (e: React.FormEvent) => {
@@ -217,10 +236,20 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
     else { setResent(true); setNotice(`We’ve sent a new confirmation link to ${unconfirmed}.`); }
   };
 
-  const google = async () => {
+  // the page leaves for Google on success, so "Opening Google…" stays until it does
+  const google = async (withHint: boolean) => {
+    if (googleBusy) return;
     reset();
-    const res = await signInWithGoogle();
-    if (res.error) setError(friendlyAuthError(res.error));
+    setGoogleBusy(true);
+    // a press before Supabase's settings arrive waits for them: never Google while
+    // the provider or "Confirm email" is off (then the button goes and this explains)
+    if ((await whenReady()) !== "ready") {
+      setGoogleBusy(false);
+      setError("Google sign-in isn’t available right now. Sign in with your email and password.");
+      return;
+    }
+    const res = await signInWithGoogle({ hd: withHint ? hd : null });
+    if (res.error) { setGoogleBusy(false); setGoogleError(friendlyGoogleError(res.error, friendlyAuthError)); }
   };
 
   const subtitle = mode === "signin" ? "Welcome back" : mode === "signup" ? "Create your account" : "Reset your password";
@@ -236,12 +265,17 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
         <p style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5, margin: "-6px 0 14px" }}>Enter your email and we’ll send you a link to choose a new password.</p>
       )}
 
-      {mode !== "reset" && GOOGLE_ENABLED && (
+      {mode !== "reset" && showGoogle && (
         <>
-          <button type="button" onClick={google} className="btn btn-ghost" style={{ width: "100%", justifyContent: "center", marginBottom: 16, padding: "10px 15px" }}>
-            <GoogleMark /> Continue with Google
-          </button>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 16px", color: "var(--ink-4)", fontSize: 12 }}>
+          <GoogleButton onClick={() => google(true)} busy={googleBusy} describedBy={hd ? "kanbo-google-hd" : undefined} />
+          {hd && (
+            <p id="kanbo-google-hd" className="kgsi-hint">
+              Shows your <strong>@{hd}</strong> Google accounts first.{" "}
+              <button type="button" className="kgsi-link" onClick={() => google(false)} disabled={googleBusy}>Use another Google account</button>
+            </p>
+          )}
+          {googleError && <div style={{ marginTop: 10 }}><ErrorText>{googleError}</ErrorText></div>}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0", color: "var(--ink-4)", fontSize: 12 }}>
             <div className="divider" style={{ flex: 1 }} /> or <div className="divider" style={{ flex: 1 }} />
           </div>
         </>
@@ -280,6 +314,17 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
           <>Already have an account? <button type="button" onClick={() => go("signin")} style={linkStyle}>Sign in</button></>
         )}
       </div>
+
+      {mode !== "reset" && showGoogle && (
+        <details className="kgsi-about">
+          <summary><Icon name="chevronRight" size={14} /> Signing in with Google</summary>
+          <ul>
+            <li><strong>Same email, same account.</strong> If you already sign in with a password, Google opens that same Kanbo account — your work is all there.</li>
+            <li><strong>Invited to a team?</strong> Choose the Google account for the address your invite went to.</li>
+            <li><strong>A different email is a different account.</strong> If you land somewhere unexpected, sign out and choose the other address.</li>
+          </ul>
+        </details>
+      )}
     </AuthPage>
   );
 }
@@ -430,6 +475,9 @@ export function PendingApproval({ email, onSignOut, suspended }: { email?: strin
   }, [check]);
 
   const mailto = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(suspended ? "Kanbo account suspended" : "Kanbo access request")}`;
+  // arrived through Google (a linked Google identity): say which account it used
+  const viaGoogle = usesGoogle(user?.providers);
+  const shownEmail = email ?? user?.email ?? null;
 
   return (
     <AuthPage width={420} center label={suspended ? "Account suspended" : "Waiting for approval"}>
@@ -444,7 +492,13 @@ export function PendingApproval({ email, onSignOut, suspended }: { email?: strin
       ) : (
         <>
           <h1 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 10px" }}>You’re on the early-access list</h1>
-          <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: "0 0 20px" }}>Your account{email ? ` (${email})` : ""} is waiting for approval. Keep this page open — it checks automatically and lets you in the moment you’re approved.</p>
+          {viaGoogle && shownEmail ? (
+            <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: "0 0 20px", overflowWrap: "anywhere" }}>
+              You’re signed in with Google as <strong style={{ color: "var(--ink-2)", fontWeight: 600 }}>{shownEmail}</strong>. An admin needs to approve this account first. Keep this page open — it checks automatically and lets you in the moment you’re approved.
+            </p>
+          ) : (
+            <p style={{ fontSize: 14, color: "var(--ink-3)", lineHeight: 1.6, margin: "0 0 20px" }}>Your account{email ? ` (${email})` : ""} is waiting for approval. Keep this page open — it checks automatically and lets you in the moment you’re approved.</p>
+          )}
         </>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -462,22 +516,18 @@ export function PendingApproval({ email, onSignOut, suspended }: { email?: strin
       </div>
       {/* live region stays mounted so screen readers announce each result */}
       <p role="status" aria-live="polite" style={{ fontSize: 12.5, lineHeight: 1.5, color: released ? "var(--st-done)" : "var(--ink-3)", margin: status ? "12px 0 0" : 0 }}>{status}</p>
+      {!suspended && (
+        // the usual reason someone invited is stuck here: they came in with another address
+        <p style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5, margin: "16px 0 0" }}>
+          {viaGoogle
+            ? "Invited with a different email? Sign out, then continue with Google and choose that account — each email is its own Kanbo account."
+            : "Invited with a different email? Sign out, then sign in with that address — each email is its own Kanbo account."}
+        </p>
+      )}
       <p style={{ fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.5, margin: "16px 0 0", overflowWrap: "anywhere" }}>
         Questions? Email <a href={mailto} style={{ color: "var(--accent)", fontWeight: 600 }}>{SUPPORT_EMAIL}</a>
       </p>
     </AuthPage>
-  );
-}
-
-/* the multi-colour Google "G" (Google's sign-in branding guidelines ask for it on this button) */
-function GoogleMark() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 48 48" aria-hidden="true" style={{ flexShrink: 0 }}>
-      <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z" />
-      <path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
-      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2A11.9 11.9 0 0 1 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z" />
-      <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3a12 12 0 0 1-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z" />
-    </svg>
   );
 }
 

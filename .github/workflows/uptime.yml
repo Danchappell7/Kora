@@ -1,0 +1,203 @@
+name: Uptime
+
+# Is Kanbo up? Every 10 minutes GitHub checks three addresses from outside:
+#   1. the app                https://www.kanbo.co.uk/            (200 and the app's page)
+#   2. the health function    …/functions/v1/health               (200 and "ok": true: database,
+#                                                                  sign-in, storage and functions)
+#   3. the public API         …/functions/v1/api/v1/openapi.json  (200 and an OpenAPI document)
+# Each gets 20 seconds and two retries (a blip isn't an outage). Anything else fails
+# the run, and GitHub emails whoever last changed this schedule (Settings ›
+# Notifications › Actions: "Failed workflows only" + Email).
+#
+# Every Monday the heartbeat job adds up the week's checks on the run's summary
+# page, and fails (so it emails) if the checks themselves have stopped running.
+# Set the repository variable UPTIME_HEARTBEAT_ISSUE=true to also post the summary
+# as a comment on an "Uptime heartbeat" issue each week (the repository is public,
+# so that issue is too).
+#
+# Scheduled runs use this file on the default branch, so it starts once merged to main.
+# Run it by hand: Actions › Uptime › Run workflow. Until the `health` function is
+# deployed, set the repository variable UPTIME_SKIP_HEALTH=true (and delete it after).
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # the checks (GitHub may start a run a few minutes late)
+    - cron: "17 7 * * 1"     # Monday 07:17 UTC: the weekly heartbeat
+  workflow_dispatch:
+    inputs:
+      heartbeat:
+        description: "Also run the weekly heartbeat now"
+        type: boolean
+        default: false
+
+run-name: ${{ github.event.schedule == '17 7 * * 1' && 'Weekly heartbeat' || 'Uptime check' }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime-${{ github.event.schedule == '17 7 * * 1' && 'heartbeat' || 'check' }}
+  cancel-in-progress: false
+
+env:
+  SITE_URL: https://www.kanbo.co.uk/
+  HEALTH_URL: https://htnchiljplrnjkwimgla.supabase.co/functions/v1/health
+  OPENAPI_URL: https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1/openapi.json
+
+jobs:
+  check:
+    name: App, health and API
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      # set the repository variable UPTIME_SKIP_HEALTH=true only until the health function is deployed
+      SKIP_HEALTH: ${{ vars.UPTIME_SKIP_HEALTH }}
+    steps:
+      - name: Check the three addresses
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          {
+            echo "### Kanbo uptime · $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "| Check | Result | HTTP | Time |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # probe NAME URL JQ_TEST|- GREP_TEXT|-
+          probe() {
+            local name="$1" url="$2" jq_test="$3" grep_text="$4"
+            local body out code secs ok=1 why=""
+            body="$(mktemp)"
+            out="$(curl --silent --show-error --location --output "$body" \
+                    --write-out '%{http_code} %{time_total}' \
+                    --max-time 20 --connect-timeout 10 \
+                    --retry 2 --retry-delay 10 --retry-connrefused \
+                    --header 'Cache-Control: no-cache' \
+                    --user-agent 'kanbo-uptime (GitHub Actions)' \
+                    "$url" 2>/dev/null)" || true
+            code="${out%% *}"; secs="${out##* }"
+            [ -n "$code" ] || code="000"
+            [ -n "$secs" ] && [ "$secs" != "$out" ] || secs="?"
+            [[ "$secs" =~ ^[0-9]+(\.[0-9]+)?$ ]] && secs="$(printf '%.2f' "$secs")"
+            if [ "$code" != "200" ]; then
+              ok=0; why="HTTP $code"
+              [ "$code" = "000" ] && why="no answer within 20 seconds (or the connection failed)"
+            elif [ "$jq_test" != "-" ] && ! jq -e "$jq_test" "$body" > /dev/null 2>&1; then
+              ok=0; why="answered 200, but not with what we expected"
+            elif [ "$grep_text" != "-" ] && ! grep -q -- "$grep_text" "$body"; then
+              ok=0; why="answered 200, but not with the app's page"
+            fi
+            if [ "$ok" = 1 ]; then
+              echo "| $name | ✅ up | $code | ${secs}s |" >> "$GITHUB_STEP_SUMMARY"
+              echo "ok   $name ($code, ${secs}s)"
+            else
+              failed=1
+              echo "| $name | ❌ down: $why | $code | ${secs}s |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error title=$name is down::$url — $why"
+              # the health report names the failing check (never a secret)
+              if [ "$name" = "Health" ] && jq -e . "$body" > /dev/null 2>&1; then
+                jq -c '{ok, db, auth, storage, functions, schema}' "$body" || true
+              fi
+            fi
+            rm -f "$body"
+          }
+
+          probe "App"    "$SITE_URL"    -                                         'id="root"'
+          if [ "${SKIP_HEALTH:-}" = "true" ]; then
+            echo "| Health | ⏸ skipped (UPTIME_SKIP_HEALTH) | | |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            probe "Health" "$HEALTH_URL"  '.ok == true'                             -
+          fi
+          probe "API"    "$OPENAPI_URL" '(.openapi | type == "string") and (.paths | type == "object")' -
+
+          if [ "$failed" = 1 ]; then
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "Something is down. /admin › System status shows which part; Supabase's edge function logs say why." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  heartbeat:
+    name: Weekly heartbeat
+    if: github.event.schedule == '17 7 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.heartbeat)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      POST_ISSUE: ${{ vars.UPTIME_HEARTBEAT_ISSUE }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Add up the last seven days
+        shell: bash
+        run: |
+          set -euo pipefail
+          since="$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          # every uptime check run (not heartbeats) created in the last week
+          gh api --paginate -X GET "repos/$GH_REPO/actions/workflows/uptime.yml/runs" \
+            -f created=">=$since" -f per_page=100 \
+            --jq '.workflow_runs[] | select(.display_title == "Uptime check") | [.status, (.conclusion // ""), .created_at, .html_url] | @tsv' \
+            > runs.tsv || true
+
+          total=$(awk -F'\t' '$1 == "completed"' runs.tsv | wc -l | tr -d ' ')
+          good=$(awk -F'\t' '$1 == "completed" && $2 == "success"' runs.tsv | wc -l | tr -d ' ')
+          bad=$(awk -F'\t' '$1 == "completed" && $2 == "failure"' runs.tsv | wc -l | tr -d ' ')
+          last=$(awk -F'\t' '$1 == "completed" {print $3}' runs.tsv | sort | tail -n 1)
+          judged=$((good + bad))
+          if [ "$judged" -gt 0 ]; then
+            uptime=$(awk -v g="$good" -v j="$judged" 'BEGIN { printf "%.2f", (g / j) * 100 }')
+          else
+            uptime="n/a"
+          fi
+
+          {
+            echo "### Kanbo uptime — the week to $(date -u '+%a %-d %b %Y')"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Checks run | $total (about 1,008 expected; GitHub skips some when it's busy) |"
+            echo "| Passed | $good |"
+            echo "| Failed | $bad |"
+            echo "| Uptime | ${uptime}% |"
+            echo "| Last check | ${last:-none} |"
+            if [ "$bad" -gt 0 ]; then
+              echo
+              echo "Failed runs (newest first):"
+              awk -F'\t' '$1 == "completed" && $2 == "failure" {print $3 "\t" $4}' runs.tsv | sort -r | head -n 10 | while IFS=$'\t' read -r at url; do
+                echo "- [$at]($url)"
+              done
+            fi
+          } > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat summary.md
+
+          # the monitor itself has stopped: no completed check for three hours, or almost none all week
+          stale=1
+          if [ -n "$last" ]; then
+            age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
+            [ "$age" -le 10800 ] && stale=0
+          fi
+          stalled=0
+          if [ "$stale" = 1 ] || [ "$total" -lt 100 ]; then
+            stalled=1
+            echo "::error title=Uptime checks aren't running::Only $total checks ran this week (last: ${last:-none}). Open Actions › Uptime and make sure the workflow is enabled."
+          fi
+
+          if [ "${POST_ISSUE:-}" = "true" ]; then
+            gh label create uptime --color 0E8A16 --description "Kanbo's uptime monitor" 2>/dev/null || true
+            issue=$(gh issue list --label uptime --state open --limit 1 --json number --jq '.[0].number // empty')
+            if [ -z "$issue" ]; then
+              gh issue create --title "Uptime heartbeat" --label uptime \
+                --body "Each Monday the Uptime workflow adds a summary of the week's checks here. Close this issue to start a fresh one."
+              issue=$(gh issue list --label uptime --state open --limit 1 --json number --jq '.[0].number')
+            fi
+            { echo "@$OWNER"; echo; cat summary.md; } > comment.md
+            gh issue comment "$issue" --body-file comment.md
+          fi
+
+          if [ "$stalled" = 1 ]; then exit 1; fi
