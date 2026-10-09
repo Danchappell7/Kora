@@ -168,9 +168,13 @@ export function RecycleBin({ workspaceId, workspaceName, role, currentUserId, me
 
   /* ---- loading ---- */
   const seq = useRef(0);
+  // the visible load still on its way (the first load or "Try again"), 0 when none is
+  const shownLoad = useRef(0);
   const reload = useCallback(async (quiet = false) => {
+    // a quiet refresh never overtakes a visible load: that answer is just as fresh, and the page is waiting on it
+    if (quiet && shownLoad.current) return;
     const n = ++seq.current;
-    if (!quiet) setLoad((l) => (l.state === "ready" ? l : { state: "loading" }));
+    if (!quiet) { shownLoad.current = n; setLoad((l) => (l.state === "ready" ? l : { state: "loading" })); }
     try {
       const items = await listTrash(workspaceId);
       if (!alive.current || n !== seq.current) return;
@@ -180,8 +184,12 @@ export function RecycleBin({ workspaceId, workspaceName, role, currentUserId, me
       setSelected((s) => (([...s].every((id) => have.has(id))) ? s : new Set([...s].filter((id) => have.has(id)))));
     } catch (e) {
       if (!alive.current || n !== seq.current) return;
-      if (quiet) return; // a background refresh that failed keeps what's on screen
-      setLoad({ state: "problem", why: trashFailure(e) });
+      const problem: Load = { state: "problem", why: trashFailure(e) };
+      // a background refresh that failed keeps a list that's on screen, but never leaves the page without an answer
+      if (quiet) setLoad((l) => (l.state === "ready" ? l : problem));
+      else setLoad(problem);
+    } finally {
+      if (shownLoad.current === n) shownLoad.current = 0;
     }
   }, [workspaceId]);
   useEffect(() => {

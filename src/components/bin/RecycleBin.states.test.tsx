@@ -1,8 +1,8 @@
 /* Projects › Recycle bin: the states demo mode never reaches — before 0047,
    a failed load, a restore the database refuses, and an item someone else
    restored first. lib/trash's calls are mocked; its parsers are real. */
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { TrashItem } from "../../data/types";
 
 const { listTrash, restoreFromTrash, purgeTrash, restoreTrashItems } = vi.hoisted(() => ({
@@ -104,5 +104,69 @@ describe("RecycleBin states", () => {
     await waitFor(() => expect(document.activeElement).toHaveAccessibleName("Restore “Pricing table”"));
     expect(screen.getByText("1 item couldn't be restored. Each one says why.")).toBeInTheDocument();
     expect(screen.getAllByRole("status").slice(-1)[0]).toHaveTextContent("Restored 2 items. 1 item couldn't be restored.");
+  });
+});
+
+/* Coming back to the tab refreshes quietly. It must never overtake the visible
+   load (phones switch apps mid-load), and a quiet failure keeps a list but never
+   leaves the page on its skeleton. */
+describe("RecycleBin: coming back to the tab", () => {
+  const comeBack = async () => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  };
+  afterEach(() => { delete (document as { visibilityState?: unknown }).visibilityState; });
+
+  it("while the first load is still on its way, it waits for that answer (before 0047 too)", async () => {
+    let refuse: (e: unknown) => void = () => {};
+    listTrash
+      .mockImplementationOnce(() => new Promise((_res, rej) => { refuse = rej; }))
+      .mockRejectedValue(err("Could not find the table 'public.trash' in the schema cache", "42P01"));
+    bin();
+    expect(screen.getByText("Loading the recycle bin")).toBeInTheDocument();
+    await comeBack();
+    expect(listTrash).toHaveBeenCalledTimes(1);
+    await act(async () => { refuse(err("Could not find the table 'public.trash' in the schema cache", "42P01")); });
+    expect(await screen.findByText("The recycle bin isn't switched on yet")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the recycle bin")).toBeNull();
+  });
+
+  it("the first load's list still lands when the person switched away and back", async () => {
+    let answer: (v: unknown) => void = () => {};
+    listTrash
+      .mockImplementationOnce(() => new Promise((res) => { answer = res; }))
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    bin();
+    await comeBack();
+    await act(async () => { answer([item(1, "Homepage copy")]); });
+    expect(await screen.findByText("Homepage copy")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the recycle bin")).toBeNull();
+  });
+
+  it("after a failed load, a quiet refresh that works shows the list; one that fails keeps the message", async () => {
+    listTrash.mockRejectedValueOnce(new TypeError("Failed to fetch")).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValueOnce([item(1, "Homepage copy")]);
+    bin();
+    expect(await screen.findByText("Couldn't load the recycle bin")).toBeInTheDocument();
+    await comeBack();
+    await waitFor(() => expect(listTrash).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Couldn't load the recycle bin")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the recycle bin")).toBeNull();
+    await comeBack();
+    expect(await screen.findByText("Homepage copy")).toBeInTheDocument();
+  });
+
+  it("with a list on screen, a quiet refresh that fails keeps it; one that works drops rows that went elsewhere", async () => {
+    listTrash.mockResolvedValueOnce([item(1, "Homepage copy"), item(2, "Pricing table")])
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce([item(2, "Pricing table")]);
+    bin();
+    expect(await screen.findByText("Homepage copy")).toBeInTheDocument();
+    await comeBack();
+    await waitFor(() => expect(listTrash).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Homepage copy")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load the recycle bin")).toBeNull();
+    await comeBack();
+    await waitFor(() => expect(screen.queryByText("Homepage copy")).toBeNull());
+    expect(screen.getByText("Pricing table")).toBeInTheDocument();
   });
 });
