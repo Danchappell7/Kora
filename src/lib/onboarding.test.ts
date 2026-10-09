@@ -215,6 +215,9 @@ describe("saving (merge_onboarding's rules)", () => {
     profile = { tour: { step: null, done: true } };
     rerender();
     expect(result.current[0]).toEqual({ tour: { step: null, done: true } });
+    const stored: OnboardingState = { tour: { step: null, done: true }, sample: { projectId: "p", taskIds: [], createdAt: "c" } };
+    act(() => result.current[2](stored));
+    expect(result.current[0]).toBe(stored);
   });
   it("failures by kind", () => {
     expect(onboardingFailure({ message: "not authorized" })).toBe("not_allowed");

@@ -311,9 +311,9 @@ export function saveOnboardingChange(prev: OnboardingState, next: OnboardingStat
 
 /** React, for the host: the person's onboarding state, shown at once and saved behind the scenes.
  *  `fromProfile` is profile.onboarding (it re-syncs when the profile reloads); `change` is what TourHost /
- *  SetupChecklist call (onChange) and what the Help menu's actions use. A refused save puts the state back
- *  and calls onError (e.g. a quiet toast). */
-export function useOnboardingState(fromProfile: OnboardingState | undefined, opts: { onError?: (e: unknown) => void } = {}): [OnboardingState, (next: OnboardingState) => void] {
+ *  SetupChecklist call (onChange); `adopt` takes a state that's already saved (what createTourSample /
+ *  removeTourSample answer). A refused save puts the state back and calls onError (e.g. a quiet toast). */
+export function useOnboardingState(fromProfile: OnboardingState | undefined, opts: { onError?: (e: unknown) => void } = {}): [OnboardingState, (next: OnboardingState) => void, (stored: OnboardingState) => void] {
   const [state, setState] = useState<OnboardingState>(() => fromProfile ?? {});
   const ref = useRef(state);
   const onError = useRef(opts.onError);
@@ -337,7 +337,9 @@ export function useOnboardingState(fromProfile: OnboardingState | undefined, opt
       (e) => { if (ref.current === next) { ref.current = prev; setState(prev); } onError.current?.(e); },
     );
   }, []);
-  return [state, change];
+  /** take a state that's already saved (createTourSample / removeTourSample answer one) without saving it again */
+  const adopt = useCallback((stored: OnboardingState) => { ref.current = stored; setState(stored); }, []);
+  return [state, change, adopt];
 }
 
 /** (tests) */
