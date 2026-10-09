@@ -34,9 +34,12 @@ describe("demo corpus", () => {
     expect(broken).toEqual({ docs: [], comments: [] });
   });
 
-  it("the demo threads sit on real demo tasks, by real demo people, in the past", () => {
+  it("the demo threads sit on real demo tasks, by real demo people, in the past — as many as each task's count", () => {
     const list = demoSearchComments(Date.parse("2026-10-09T10:00:00Z"));
     expect(new Set(list.map((c) => c.id)).size).toBe(list.length);
+    const per: Record<string, number> = {};
+    for (const c of list) per[c.taskId] = (per[c.taskId] ?? 0) + 1;
+    for (const t of TASKS) expect(per[t.id] ?? 0, t.id).toBe(t.comments ?? 0);
     for (const c of list) {
       expect(TASKS.some((t) => t.id === c.taskId), c.taskId).toBe(true);
       expect(MEMBERS.find((m) => m.id === c.authorId)?.name).toBe(c.authorName);
