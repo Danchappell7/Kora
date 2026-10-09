@@ -8,9 +8,12 @@
 // Modes: prioritize (default), breakdown, summary, ask — and, for the
 // redesign, command (Ask Kanbo), extract (notes → tasks), standup (Team
 // Pulse) and status (a project's drafted update), whose prompts and reply
-// checks live in prompts.ts. Every reply must be one strict JSON object
-// (else 502 { error: "bad_output" }), and every 200 carries
-// usage: { used, limit } once the daily count is being kept.
+// checks live in prompts.ts, and plan ("Plan a project with Kanbo": a goal →
+// sections, tasks, owners, estimates, dates and dependencies; plan.ts, checked
+// by _shared/projectPlan.ts validatePlanReply, answered as { plan, usage }).
+// Every reply must be one strict JSON object (else 502 { error: "bad_output" }),
+// and every 200 carries usage: { used, limit } once the daily count is being
+// kept. A plan counts once toward the daily limit, like every other call.
 //
 // Guard rails (every call is billed to our Anthropic key):
 //   • signed-in, approved, not-suspended accounts only (401 / 403)
@@ -32,6 +35,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { countAiCall, dayIn } from "../_shared/limits.ts";
 import { cleanTasks, str } from "./tasks.ts";
 import { firstJsonObject, modeRequest } from "./prompts.ts";
+import { PLAN_MODE, planRequest } from "./plan.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -73,8 +77,8 @@ Deno.serve(async (req: Request) => {
     if (raw.length > MAX_BODY) return json({ error: "payload_too_large" }, 413);
     const b = (JSON.parse(raw || "{}") ?? {}) as Record<string, unknown>;
     const mode = str(b.mode, 20) || "prioritize";
-    // the redesign's modes: prompt + reply check from prompts.ts
-    const planned = modeRequest(mode, b);
+    // the redesign's modes: prompt + reply check from prompts.ts (plan: plan.ts)
+    const planned = mode === PLAN_MODE ? planRequest(b) : modeRequest(mode, b);
     if (planned && "error" in planned) return json(planned, 400);
     const body = {
       mode,
