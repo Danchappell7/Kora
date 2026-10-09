@@ -1,23 +1,29 @@
 /* ============================================================
    KANBO — first-run onboarding: welcome → your name → first project →
-   the hand-over to the guided tour. Shown once to brand-new accounts (no
-   real projects yet). The name step is skipped when the profile already
+   the hand-over to the guided tour (or your five places). Shown once to
+   brand-new accounts (no real projects yet). The name step is skipped when the profile already
    has a first name (e.g. it was just entered in the welcome modal).
    One centred sheet (a bottom sheet on phones), no scrim click to
    close: Escape or "Skip for now" finishes it.
-   The last step doesn't describe the app (the tour shows the real thing,
-   on the real screens): it offers the tour — "Show me around" starts it
-   (lib/onboarding startTour; the TourHost waits for this dialog to
-   close), "Skip the tour" records that (declineTour), and both take you
-   to Today. Escape just closes (a new account is asked again by the tour).
+   The last step depends on whether the guided tour can run here:
+   • `tourAvailable` (the host mounts the TourHost when asked): it doesn't
+     describe the app (the tour shows the real thing, on the real
+     screens), it offers the tour — "Show me around" starts it
+     (lib/onboarding startTour; the TourHost waits for this dialog to
+     close), "Skip the tour" records that (declineTour), and both take
+     you to Today. Escape just closes (a new account is asked again by
+     the tour).
+   • otherwise (the default): "Your five places", then "Take me to
+     Today", so it never offers a tour that nothing would start.
    ============================================================ */
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon, KanboLogo, EmojiPicker, Button, projectPaint } from "./primitives";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Icon, KanboLogo, EmojiPicker, Button, Kbd, projectPaint } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { PLACES, type PlaceId } from "../lib/nav";
 import { declineTour, startTour, TOUR_MINUTES } from "../lib/onboarding";
 import { CompassGlyph } from "./onboarding/glyphs";
-import type { Profile } from "../data/types";
+import type { IconName, Profile } from "../data/types";
 import type { NewProject } from "../data/store";
 
 const COLORS: { value: string; name: string }[] = [
@@ -29,7 +35,16 @@ const COLORS: { value: string; name: string }[] = [
   { value: "oklch(0.78 0.1 45)", name: "Peach" },
 ];
 
-const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project", "You're all set"];
+/** what each of the five places is for (the names and icons come from nav.ts) */
+const PLACE_LINES: Record<PlaceId, string> = {
+  today: "Your plan for the day, drawn for you.",
+  inbox: "Mentions, assignments and requests.",
+  tasks: "Everything on your plate, and what you're waiting on.",
+  projects: "Your team's projects, goals and requests.",
+  team: "Who's doing what, and what's at risk.",
+};
+
+const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project"];
 const MINUTES_WORD = ["zero", "one", "two", "three", "four", "five"][TOUR_MINUTES] ?? String(TOUR_MINUTES);
 
 /** The first run's last word: offer the guided tour (shared with the welcome modal). */
@@ -53,7 +68,7 @@ export function TourHandover({ name, onShowMeAround, onSkip, lede }: { name?: st
   );
 }
 
-export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday, onStartTour, onSkipTour }: {
+export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday, tourAvailable = false, onStartTour, onSkipTour }: {
   open: boolean;
   profile: Profile | null;
   workspaceId: string | null;
@@ -63,6 +78,9 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   onFinish: () => void;
   /** after the last step's choice: runs after onFinish (the app lands on Today anyway when it's left out) */
   onGoToday?: () => void;
+  /** the host mounts the TourHost when asked (useTourWanted): end on the hand-over to the tour. Default false:
+   *  end on "Your five places" → "Take me to Today", so a tour nothing would start is never offered */
+  tourAvailable?: boolean;
   /** "Show me around" (default: lib/onboarding startTour — the mounted TourHost starts once this closes) */
   onStartTour?: () => void;
   /** "Skip the tour" (default: lib/onboarding declineTour — recorded as skipped) */
@@ -121,6 +139,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   };
   const editName = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => { nameEdited.current = true; set(e.target.value); };
   const greetName = firstName.trim();
+  const finishToToday = () => { onFinish(); onGoToday?.(); };
   const finishWith = (tour: "start" | "skip") => {
     onFinish();
     onGoToday?.();
@@ -141,6 +160,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   };
 
   const position = steps.indexOf(step);
+  const stepTitle = step === 3 ? (tourAvailable ? "You're all set" : "Your five places") : STEP_TITLES[step];
 
   return (
     <div className="kbackdrop ksheet-layer konb-layer" data-side="center">
@@ -235,17 +255,53 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
             </form>
           )}
 
-          {step === 3 && (
+          {step === 3 && tourAvailable && (
             <TourHandover key="handover" name={greetName || undefined} onShowMeAround={() => finishWith("start")} onSkip={() => finishWith("skip")} />
+          )}
+
+          {step === 3 && !tourAvailable && (
+            <div key="places" className="konb-step">
+              <div className="konb-head">
+                <h2 className="konb-title">Your five places</h2>
+                <p className="konb-lede">You're all set{greetName ? `, ${greetName}` : ""}. Everything in Kanbo lives in one of these.</p>
+              </div>
+              <PlaceList rows={PLACES.map((p, i) => ({ id: p.id, icon: p.icon, name: p.label, line: PLACE_LINES[p.id], keys: ["G", p.gKey.toUpperCase()], sep: i > 0 && p.group !== PLACES[i - 1].group }))} />
+              <div className="konb-acts" data-stack="">
+                {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={finishToToday}>Take me to Today</Button>
+              </div>
+            </div>
           )}
         </div>
 
         <div className="konb-dots" aria-hidden="true">
           {steps.map((i) => <span key={i} className="konb-dot" data-on={i === step || undefined} />)}
         </div>
-        <p className="sr-only" role="status">{moved ? `Step ${position + 1} of ${steps.length}: ${STEP_TITLES[step]}` : ""}</p>
+        <p className="sr-only" role="status">{moved ? `Step ${position + 1} of ${steps.length}: ${stepTitle}` : ""}</p>
       </div>
     </div>
+  );
+}
+
+/** icon · name · one line (and the g-key on a keyboard): the five places, the rhythm (when there's no tour) */
+export function PlaceList({ rows }: { rows: { id: string; icon: IconName; name: string; line: ReactNode; keys?: string[]; sep?: boolean }[] }) {
+  return (
+    <ul className="konb-places">
+      {rows.map((r) => (
+        <li key={r.id} className="konb-place" data-sep={r.sep || undefined}>
+          <span className="konb-place-icon" aria-hidden="true"><Icon name={r.icon} size={16} sw={1.75} /></span>
+          <span className="konb-place-text">
+            <span className="konb-place-name">{r.name}</span>
+            <span className="konb-place-line">{r.line}</span>
+          </span>
+          {r.keys && (
+            <span className="konb-place-keys" aria-hidden="true">
+              {r.keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -306,6 +362,19 @@ export const FIRST_RUN_CSS = `
 .konb-acts .konb-grow { flex: 1; }
 .konb-acts[data-stack] .kbtn[data-variant="ghost"] { color: var(--ink-3); }
 
+/* place rows (the five places, the rhythm) — the endings when there's no tour */
+.konb-places { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; text-align: left; }
+.konb-place { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 0; }
+.konb-place[data-sep] { margin-top: 8px; padding-top: 14px; box-shadow: inset 0 1px 0 var(--hairline); }
+.konb-place-icon {
+  display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: var(--r-md, 8px);
+  background: var(--fill-1); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.konb-place-text { display: grid; gap: 0; flex: 1; min-width: 0; }
+.konb-place-name { font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.konb-place-line { font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.konb-place-keys { display: inline-flex; gap: 3px; flex-shrink: 0; }
+
 /* the hand-over to the tour */
 .konb-tourmark { width: 52px; height: 52px; border-radius: 14px; background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); color: var(--accent-text, var(--accent)); }
 .konb-foot { margin: -8px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
@@ -321,6 +390,7 @@ export const FIRST_RUN_CSS = `
   .konb-dots { padding: 12px 0 16px; }
   /* 16px stops iOS zooming into a field on focus */
   .konb-input { font-size: 16px; }
+  .konb-place-keys { display: none; }
 }
 @media (max-width: 359px) { .konb-fields { grid-template-columns: 1fr; } }
 @media (pointer: coarse) {

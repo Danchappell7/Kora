@@ -158,13 +158,16 @@ describe("the “Get set up” checklist", () => {
     expect(s?.checklist?.done).toEqual({ plan_day: "x", install_app: NOW.toISOString() });
     expect(withSignalTicks("member", s!, { install_app: true })).toBeNull();
   });
-  it("useShowSetupChecklist keeps the card for its celebration, then lets it go", () => {
+  it("useShowSetupChecklist keeps the card for its celebration, then lets it go (and never answers false in between)", () => {
     let state: OnboardingState = { checklist: { done: { install_app: "a" } } };
-    const { result, rerender } = renderHook(() => useShowSetupChecklist("guest", state, {}));
+    const answers: boolean[] = [];
+    const { result, rerender } = renderHook(() => { const v = useShowSetupChecklist("guest", state, {}); answers.push(v); return v; });
     expect(result.current).toBe(true);
     state = tickSetupItem(state, "set_notifications", true);
     rerender();
     expect(result.current).toBe(true);
+    // every render answered true, the one where the last item was ticked included: the host never unmounts the card
+    expect(answers).not.toContain(false);
     act(() => { vi.advanceTimersByTime(CHECKLIST_CELEBRATE_MS - 10); });
     expect(result.current).toBe(true);
     act(() => { vi.advanceTimersByTime(20); });
@@ -262,6 +265,13 @@ describe("the sample project, through the lean module", () => {
     expect(deps.deleteProject).toHaveBeenCalledWith("proj-1");
     expect(after.sample).toBeUndefined();
     expect(after.tour).toEqual({ step: null, done: true });
+  });
+  it("demo mode: one already recorded is the answer (nothing new is made); a second create after the first adds nothing", async () => {
+    const { deps } = fakeDeps();
+    const first = await createTourSample(deps, { today: NOW, currentUserId: "me", workspaceId: null, current: {} });
+    const again = await createTourSample(deps, { today: NOW, currentUserId: "me", workspaceId: null, current: first });
+    expect(again).toBe(first);
+    expect(deps.createProject).toHaveBeenCalledTimes(1);
   });
   it("a failed removal keeps it (so “Remove” stays on offer)", async () => {
     const { deps } = fakeDeps();

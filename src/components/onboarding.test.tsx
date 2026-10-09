@@ -18,10 +18,30 @@ describe("WelcomeModal", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Add your first name");
   });
 
-  it("closes once the name is saved: it doesn't describe the app (the tour shows the real thing)", async () => {
+  it("with no tour to offer (the default): the rhythm Kanbo runs on, then Start using Kanbo; it never asks for a tour", async () => {
     const save = vi.fn(async () => {});
     const onClose = vi.fn();
-    render(<WelcomeModal open onClose={onClose} initialFirst="" onSaveProfile={save} />);
+    const { rerender } = render(<WelcomeModal open onClose={onClose} initialFirst="" onSaveProfile={save} />);
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Sam" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    expect(await screen.findByRole("heading", { name: /You're all set, Sam/ })).toBeInTheDocument();
+    // the saved name flows back in as a new profile: it stays put
+    rerender(<WelcomeModal open onClose={onClose} initialFirst="Sam" onSaveProfile={save} />);
+    expect(screen.getByText("Here's the rhythm Kanbo runs on.")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((li) => li.querySelector(".konb-place-name")?.textContent)).toEqual(["Capture anything", "Plan your day", "Focus and finish"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Step 2 of 2: the rhythm Kanbo runs on");
+    expect(screen.queryByRole("button", { name: /Show me around/ })).toBeNull();
+    const go = screen.getByRole("button", { name: /Start using Kanbo/ });
+    expect(go).toHaveFocus();
+    fireEvent.click(go);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(tourWanted()).toBe(false);
+  });
+
+  it("with the tour available: closes once the name is saved (it doesn't describe the app: the tour shows the real thing)", async () => {
+    const save = vi.fn(async () => {});
+    const onClose = vi.fn();
+    render(<WelcomeModal open tourAvailable onClose={onClose} initialFirst="" onSaveProfile={save} />);
     fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Sam" } });
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
@@ -29,15 +49,23 @@ describe("WelcomeModal", () => {
     expect(screen.queryByText(/rhythm/)).toBeNull();
   });
 
-  it("offerTour: ends on the hand-over, which stays put when the saved name flows back in", async () => {
+  it("offerTour without the tour available still ends on the rhythm (never a tour nothing would start)", async () => {
+    render(<WelcomeModal open offerTour onClose={vi.fn()} initialFirst="" onSaveProfile={vi.fn(async () => {})} />);
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Sam" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    expect(await screen.findByRole("button", { name: /Start using Kanbo/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Show me around/ })).toBeNull();
+  });
+
+  it("offerTour (tour available): ends on the hand-over, which stays put when the saved name flows back in", async () => {
     const save = vi.fn(async () => {});
     const onClose = vi.fn(), onStartTour = vi.fn(), onSkipTour = vi.fn();
-    const { rerender } = render(<WelcomeModal open offerTour onClose={onClose} initialFirst="" onSaveProfile={save} onStartTour={onStartTour} onSkipTour={onSkipTour} />);
+    const { rerender } = render(<WelcomeModal open tourAvailable offerTour onClose={onClose} initialFirst="" onSaveProfile={save} onStartTour={onStartTour} onSkipTour={onSkipTour} />);
     fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Sam" } });
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
     expect(await screen.findByRole("heading", { name: /You're all set, Sam/ })).toBeInTheDocument();
     // App's saveProfile updates the profile, so the modal's initial name changes
-    rerender(<WelcomeModal open offerTour onClose={onClose} initialFirst="Sam" onSaveProfile={save} onStartTour={onStartTour} onSkipTour={onSkipTour} />);
+    rerender(<WelcomeModal open tourAvailable offerTour onClose={onClose} initialFirst="Sam" onSaveProfile={save} onStartTour={onStartTour} onSkipTour={onSkipTour} />);
     expect(screen.getByRole("heading", { name: /You're all set, Sam/ })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Step 2 of 2: You're all set");
     expect(screen.getByRole("button", { name: /Show me around/ })).toHaveFocus();
@@ -124,12 +152,34 @@ describe("OnboardingModal", () => {
     expect(screen.getByRole("radio", { name: "Violet" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: /Create project/ }));
     expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ name: "Website redesign", color: "oklch(0.74 0.16 305)", workspaceId: "w1" }));
-    expect(screen.getByRole("heading", { name: "You're all set, Sam" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Your five places" })).toBeInTheDocument();
   });
 
-  it("ends on the hand-over to the tour: Show me around starts it, and you land on Today", () => {
+  it("with no tour to offer (the default): ends on your five places, then takes you to Today, and never asks for a tour", () => {
+    const onFinish = vi.fn();
+    const onGoToday = vi.fn();
+    render(<OnboardingModal {...base} onFinish={onFinish} onGoToday={onGoToday} profile={profile("Sam")} />);
+    fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(screen.getByRole("heading", { name: "Your five places" })).toBeInTheDocument();
+    expect(screen.getByText(/You're all set, Sam/)).toBeInTheDocument();
+    const places = screen.getAllByRole("listitem");
+    expect(places.map((li) => li.querySelector(".konb-place-name")?.textContent)).toEqual(["Today", "Inbox", "My tasks", "Projects", "Team"]);
+    expect(screen.getByText("Your plan for the day, drawn for you.")).toBeInTheDocument();
+    expect(screen.getByText("Who's doing what, and what's at risk.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Step 3 of 3: Your five places");
+    expect(screen.queryByRole("button", { name: /Show me around/ })).toBeNull();
+    const go = screen.getByRole("button", { name: /Take me to Today/ });
+    expect(go).toHaveFocus();
+    fireEvent.click(go);
+    expect(onFinish).toHaveBeenCalledTimes(1);
+    expect(onGoToday).toHaveBeenCalledTimes(1);
+    expect(tourWanted()).toBe(false);
+  });
+
+  it("with the tour available: ends on the hand-over to the tour; Show me around starts it, and you land on Today", () => {
     const onFinish = vi.fn(), onGoToday = vi.fn(), onStartTour = vi.fn(), onSkipTour = vi.fn();
-    render(<OnboardingModal {...base} onFinish={onFinish} onGoToday={onGoToday} onStartTour={onStartTour} onSkipTour={onSkipTour} profile={profile("Sam")} />);
+    render(<OnboardingModal {...base} tourAvailable onFinish={onFinish} onGoToday={onGoToday} onStartTour={onStartTour} onSkipTour={onSkipTour} profile={profile("Sam")} />);
     fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
     expect(screen.getByRole("heading", { name: "You're all set, Sam" })).toBeInTheDocument();
@@ -149,7 +199,7 @@ describe("OnboardingModal", () => {
 
   it("Skip the tour: recorded through lib/onboarding (declineTour) when the host doesn't handle it", async () => {
     const onFinish = vi.fn(), onGoToday = vi.fn(), declined = vi.fn(), started = vi.fn();
-    render(<OnboardingModal {...base} onFinish={onFinish} onGoToday={onGoToday} profile={profile("Sam")} />);
+    render(<OnboardingModal {...base} tourAvailable onFinish={onFinish} onGoToday={onGoToday} profile={profile("Sam")} />);
     fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
     fireEvent.click(screen.getByRole("button", { name: "Skip the tour" }));
@@ -164,7 +214,7 @@ describe("OnboardingModal", () => {
   });
 
   it("Show me around, by default, asks the TourHost through lib/onboarding (startTour)", async () => {
-    render(<OnboardingModal {...base} profile={profile("Sam")} />);
+    render(<OnboardingModal {...base} tourAvailable profile={profile("Sam")} />);
     fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
     fireEvent.click(screen.getByRole("button", { name: /Show me around/ }));

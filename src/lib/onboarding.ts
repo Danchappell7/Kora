@@ -197,23 +197,29 @@ export function showSetupChecklist(role: TourRole, state: OnboardingState, signa
 export const CHECKLIST_CELEBRATE_MS = 2400;
 
 /** React: showSetupChecklist, but it stays true for CHECKLIST_CELEBRATE_MS after the card completes
- *  in front of you (so it can celebrate and leave by itself). Use this to mount the card. */
+ *  in front of you (so it can celebrate and leave by itself). Use this to mount the card.
+ *  The hold is decided while rendering (state from the previous render), not in an effect, so the
+ *  render where the last item is ticked already answers true: the card is never unmounted and
+ *  remounted in between (which would lose its celebration, its "All set" and the focus). */
 export function useShowSetupChecklist(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): boolean {
   const show = showSetupChecklist(role, state, signals, opts);
   const complete = checklistProgress(role, state, signals, opts).complete;
   const dismissed = !!state.checklist?.dismissedAt;
+  const [prevShow, setPrevShow] = useState(show);
   const [holding, setHolding] = useState(false);
-  const shown = useRef(show);
+  let hold = holding;
+  if (prevShow !== show) {
+    setPrevShow(show);
+    // shown → not shown because it's finished (not dismissed): hold it for the celebration
+    hold = !show && complete && !dismissed;
+    if (hold !== holding) setHolding(hold);
+  }
   useEffect(() => {
-    const was = shown.current;
-    shown.current = show;
-    if (show) { setHolding(false); return; }
-    if (!was || !complete || dismissed) return;
-    setHolding(true);
+    if (!holding) return;
     const t = window.setTimeout(() => setHolding(false), CHECKLIST_CELEBRATE_MS);
     return () => window.clearTimeout(t);
-  }, [show, complete, dismissed]);
-  return show || (holding && !dismissed);
+  }, [holding]);
+  return show || (hold && !dismissed);
 }
 
 /** The checklist after a tick / untick (manual), recorded at `now`. */
@@ -355,12 +361,42 @@ export function demoOnboardingState(now = new Date()): OnboardingState {
 
 /* ================================ the sample project ================================ */
 
+/** The person's stored record, read straight from the database (null when it can't be: demo mode, offline,
+ *  a database without 0048 yet). */
+async function storedOnboarding(userId: string): Promise<OnboardingState | null> {
+  if (!supabase || !userId) return null;
+  try {
+    const { data, error } = await supabase.from("profiles").select("onboarding").eq("id", userId).maybeSingle();
+    if (error || !data) return null;
+    return parseOnboardingState((data as { onboarding?: unknown }).onboarding);
+  } catch {
+    return null;
+  }
+}
+
 /** Make it (and record it in profiles.onboarding.sample). Loads the sample's module on demand.
- *  Rejects with a readable Error when the project couldn't be made (nothing is left behind). */
+ *  One at a time: when a sample is already recorded (in `current`, or in the database, say by another
+ *  tab) that state is the answer and nothing new is made.
+ *  Rejects with a readable TourSampleError (name "TourSampleError", plus .failure when the record
+ *  couldn't be saved) when the project couldn't be made or recorded; nothing is left behind (a made
+ *  project that couldn't be recorded is taken away again, best effort). */
 export async function createTourSample(deps: TourSampleDeps, ctx: { today: Date; currentUserId: string; workspaceId: string | null; reviewerIds?: string[]; current?: OnboardingState }): Promise<OnboardingState> {
+  if (ctx.current?.sample) return ctx.current;
+  const stored = await storedOnboarding(ctx.currentUserId);
+  if (stored?.sample) return stored;
   const m = await import("./onboardingSample");
   const sample = await m.buildTourSample(deps, ctx);
-  return saveOnboarding({ sample }, ctx.current);
+  try {
+    return await saveOnboarding({ sample }, ctx.current);
+  } catch (e) {
+    // unrecorded, it couldn't be removed in one click (and Help would offer another): take it away again
+    let undone = true;
+    try { await m.deleteTourSample(deps, { sample }); } catch { undone = false; }
+    throw Object.assign(new m.TourSampleError(undone
+      ? "Couldn't finish the sample project, so it was taken away again. Check your connection and try again."
+      : "Couldn't finish the sample project. If “Kanbo tour” shows in your projects, you can delete it there."),
+    { failure: onboardingFailure(e) });
+  }
 }
 /** Remove it (one click) and forget it. A project that's already gone is just forgotten. */
 export async function removeTourSample(deps: TourSampleDeps, state: OnboardingState): Promise<OnboardingState> {

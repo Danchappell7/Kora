@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { OnboardingState } from "../../data/types";
-import { SetupChecklist } from "./SetupChecklist";
+import { useEffect, useState } from "react";
+import type { OnboardingState, TourRole } from "../../data/types";
+import { CHECKLIST_CELEBRATE_MS, useShowSetupChecklist, type SetupSignals } from "../../lib/onboarding";
+import { SetupChecklist, type SetupChecklistProps } from "./SetupChecklist";
 
 const NOW = new Date("2026-10-09T10:00:00+01:00");
 beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW); });
@@ -87,5 +89,83 @@ describe("Get set up", () => {
     expect(screen.getByRole("region", { name: "You're all set" })).not.toHaveAttribute("data-celebrate");
     expect(screen.getByRole("status")).toHaveTextContent("All set.");
     window.matchMedia = orig;
+  });
+});
+
+describe("Get set up, mounted the documented way (useShowSetupChecklist)", () => {
+  let mounts = 0;
+  let shown: boolean[] = [];
+  function Probe(props: SetupChecklistProps) {
+    useEffect(() => { mounts++; }, []);
+    return <SetupChecklist {...props} />;
+  }
+  /** the host: {useShowSetupChecklist(...) && <SetupChecklist/>}, saving changes into its own state */
+  function Host({ initial, role = "guest", signals = {} }: { initial: OnboardingState; role?: TourRole; signals?: SetupSignals }) {
+    const [state, setState] = useState(initial);
+    const show = useShowSetupChecklist(role, state, signals);
+    shown.push(show);
+    return (
+      <main id="main" tabIndex={-1}>
+        <button type="button">Elsewhere</button>
+        {show && <Probe role={role} onboarding={state} signals={signals} onChange={setState} onAction={() => {}} />}
+      </main>
+    );
+  }
+  // the card's hold is a real timer: fake every clock here (a second useFakeTimers is a no-op, so start over)
+  beforeEach(() => { vi.useRealTimers(); vi.useFakeTimers(); vi.setSystemTime(NOW); mounts = 0; shown = []; });
+
+  it("the last tick: the same card stays (no remount), celebrates and says so, then leaves with focus on the main content", () => {
+    render(<Host initial={{ checklist: { done: { install_app: "a" } } }} />);
+    expect(mounts).toBe(1);
+    const box = screen.getByRole("checkbox", { name: "Done: Set your notifications" });
+    box.focus();
+    act(() => { fireEvent.click(box); });
+    // the hook never answered false in between, so the card was never unmounted and remounted
+    expect(shown).not.toContain(false);
+    expect(mounts).toBe(1);
+    expect(screen.getByRole("region", { name: "You're all set" })).toHaveAttribute("data-celebrate", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("All set. Everything on your set-up list is done.");
+    expect(box).toHaveFocus();
+    act(() => { vi.advanceTimersByTime(CHECKLIST_CELEBRATE_MS - 10); });
+    expect(screen.getByRole("region", { name: "You're all set" })).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(20); });
+    expect(screen.queryByRole("region", { name: "You're all set" })).toBeNull();
+    // never dropped on <body>
+    expect(screen.getByRole("main")).toHaveFocus();
+  });
+
+  it("completed by what the app sees (a signal) in front of you: celebrates too", () => {
+    const { rerender } = render(<Host initial={{}} role="guest" signals={{ install_app: true }} />);
+    expect(mounts).toBe(1);
+    rerender(<Host initial={{}} role="guest" signals={{ install_app: true, set_notifications: true }} />);
+    expect(mounts).toBe(1);
+    expect(screen.getByRole("region", { name: "You're all set" })).toHaveAttribute("data-celebrate", "true");
+    act(() => { vi.advanceTimersByTime(CHECKLIST_CELEBRATE_MS + 10); });
+    expect(screen.queryByRole("region", { name: "You're all set" })).toBeNull();
+  });
+
+  it("Dismiss: the card goes at once, and focus goes to the main content, not <body>", () => {
+    render(<Host initial={{}} role="owner" />);
+    const dismiss = screen.getByRole("button", { name: "Dismiss “Get set up”" });
+    dismiss.focus();
+    act(() => { fireEvent.click(dismiss); });
+    expect(screen.queryByRole("region", { name: "Get set up" })).toBeNull();
+    expect(screen.getByRole("main")).toHaveFocus();
+  });
+
+  it("leaving while focus is somewhere else leaves it there", () => {
+    render(<Host initial={{ checklist: { done: { install_app: "a" } } }} />);
+    act(() => { fireEvent.click(screen.getByRole("checkbox", { name: "Done: Set your notifications" })); });
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    elsewhere.focus();
+    act(() => { vi.advanceTimersByTime(CHECKLIST_CELEBRATE_MS + 10); });
+    expect(screen.queryByRole("region", { name: "You're all set" })).toBeNull();
+    expect(elsewhere).toHaveFocus();
+  });
+
+  it("a list that was already complete never shows (nothing to celebrate)", () => {
+    render(<Host initial={{ checklist: { done: { install_app: "a", set_notifications: "b" } } }} />);
+    expect(mounts).toBe(0);
+    expect(shown.every((v) => v === false)).toBe(true);
   });
 });

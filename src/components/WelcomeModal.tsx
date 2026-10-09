@@ -3,20 +3,32 @@
    any account that still has no real name).
    The profile step: a name is required so the account is more than an
    email and teammates/assignment notifications show a real person.
-   Then it gets out of the way. It doesn't describe the app — the guided
-   tour shows the real thing on the real screens — so after the name it
+   Then, with `tourAvailable` (the host mounts the TourHost when asked),
+   it gets out of the way: it doesn't describe the app — the guided tour
+   shows the real thing on the real screens — so after the name it
    closes, unless `offerTour` is set (a new account that won't see the
    onboarding sheet): then it ends on the same hand-over as that sheet
    ("Show me around" / "Skip the tour").
+   Without a tour (the default) it ends on the rhythm Kanbo runs on
+   (capture, plan, focus) → "Start using Kanbo", so it never offers a
+   tour that nothing would start.
    Shares its sheet and styles with OnboardingModal.
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { KanboLogo, Button } from "./primitives";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { declineTour, startTour } from "../lib/onboarding";
-import { FIRST_RUN_CSS, TourHandover } from "./OnboardingModal";
+import { FIRST_RUN_CSS, PlaceList, TourHandover } from "./OnboardingModal";
+import type { IconName } from "../data/types";
 
-export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst, initialLast, canSkip = false, offerTour = false, onStartTour, onSkipTour }: {
+/** the rhythm Kanbo runs on: the ending when there's no guided tour */
+const RHYTHM: { id: string; icon: IconName; title: string; body: string; key: string }[] = [
+  { id: "capture", icon: "plus", title: "Capture anything", body: "Press Q and type it the way you'd say it: “Draft deck 90m deep work today”.", key: "Q" },
+  { id: "plan", icon: "sun", title: "Plan your day", body: "Today sketches a plan around your meetings. Plan my day makes it yours.", key: "P" },
+  { id: "focus", icon: "play", title: "Focus and finish", body: "Start a focus block and let the timer keep you on one thing.", key: "F" },
+];
+
+export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst, initialLast, canSkip = false, tourAvailable = false, offerTour = false, onStartTour, onSkipTour }: {
   open: boolean;
   onClose: () => void;
   onSaveProfile: (firstName: string, lastName: string) => Promise<void>;
@@ -25,14 +37,18 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
   initialLast?: string;
   /** allow dismissing the profile step without entering a name (only when one already exists) */
   canSkip?: boolean;
-  /** after the name, offer the guided tour (a new account the onboarding sheet won't follow). Default: just close */
+  /** the host mounts the TourHost when asked (useTourWanted). Default false: after the name, the rhythm Kanbo
+   *  runs on → "Start using Kanbo" (never a tour that nothing would start) */
+  tourAvailable?: boolean;
+  /** with tourAvailable: after the name, offer the guided tour (a new account the onboarding sheet won't follow).
+   *  Default: just close */
   offerTour?: boolean;
   /** "Show me around" (default: lib/onboarding startTour) */
   onStartTour?: () => void;
   /** "Skip the tour" (default: lib/onboarding declineTour) */
   onSkipTour?: () => void;
 }) {
-  const [phase, setPhase] = useState<"profile" | "handover">("profile");
+  const [phase, setPhase] = useState<"profile" | "rhythm" | "handover">("profile");
   const [firstName, setFirstName] = useState(initialFirst ?? "");
   const [lastName, setLastName] = useState(initialLast ?? "");
   const [saving, setSaving] = useState(false);
@@ -40,9 +56,9 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
   const firstRef = useRef<HTMLInputElement>(null);
   // The name step is required: Escape (or any close) with no name must not
   // dismiss it — App persists a close as "welcomed" and would never ask again.
-  // Once a name exists (canSkip) or has been saved (the hand-over), Escape closes.
+  // Once a name exists (canSkip) or has been saved (the rhythm, the hand-over), Escape closes.
   const onEscape = () => {
-    if (phase === "handover" || canSkip) { onClose(); return; }
+    if (phase !== "profile" || canSkip) { onClose(); return; }
     setError("Add your first name so we can continue.");
     firstRef.current?.focus();
   };
@@ -77,6 +93,8 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
 
   const greet = name?.trim() && !name.includes("@") ? `, ${name.trim().split(/\s+/)[0]}` : "";
   const missing = !!error && !firstName.trim();
+  // a second step follows the name: the rhythm (no tour) or the hand-over (offerTour)
+  const twoSteps = !tourAvailable || offerTour;
 
   const saveName = async () => {
     const f = firstName.trim(), l = lastName.trim();
@@ -84,7 +102,9 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
     setSaving(true); setError(null);
     try {
       await onSaveProfile(f, l);
-      if (offerTour) setPhase("handover"); else onClose();
+      if (!tourAvailable) setPhase("rhythm");
+      else if (offerTour) setPhase("handover");
+      else onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save your name. Try again.");
     } finally {
@@ -98,7 +118,7 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
       <style>{FIRST_RUN_CSS}</style>
       <div ref={trapRef} role="dialog" aria-modal="true" aria-label="Welcome to Kanbo" className="ksheet konb">
         <span className="ksheet-handle" aria-hidden="true" />
-        <div className="konb-body" data-solo={!offerTour || undefined}>
+        <div className="konb-body" data-solo={!twoSteps || undefined}>
           {phase === "profile" ? (
             <form key="profile" className="konb-step" noValidate onSubmit={(e) => { e.preventDefault(); void saveName(); }}>
               <div className="konb-intro">
@@ -132,19 +152,31 @@ export function WelcomeModal({ open, onClose, onSaveProfile, name, initialFirst,
                 {canSkip && <Button variant="ghost" onClick={onClose}>Skip for now</Button>}
               </div>
             </form>
+          ) : phase === "rhythm" ? (
+            <div key="rhythm" className="konb-step">
+              <div className="konb-head">
+                <h2 className="konb-title">You're all set{firstName.trim() ? `, ${firstName.trim()}` : ""}</h2>
+                <p className="konb-lede">Here's the rhythm Kanbo runs on.</p>
+              </div>
+              <PlaceList rows={RHYTHM.map((s) => ({ id: s.id, icon: s.icon, name: s.title, line: s.body, keys: [s.key] }))} />
+              <div className="konb-acts" data-stack="">
+                {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                <Button autoFocus data-autofocus variant="primary" size="lg" full icon="check" onClick={onClose}>Start using Kanbo</Button>
+              </div>
+            </div>
           ) : (
             <TourHandover key="handover" name={firstName.trim() || undefined}
               onShowMeAround={() => { onClose(); (onStartTour ?? (() => startTour({ from: "welcome" })))(); }}
               onSkip={() => { onClose(); (onSkipTour ?? (() => declineTour({ from: "welcome" })))(); }} />
           )}
         </div>
-        {offerTour && (
+        {twoSteps && (
           <div className="konb-dots" aria-hidden="true">
             <span className="konb-dot" data-on={phase === "profile" || undefined} />
-            <span className="konb-dot" data-on={phase === "handover" || undefined} />
+            <span className="konb-dot" data-on={phase !== "profile" || undefined} />
           </div>
         )}
-        <p className="sr-only" role="status">{phase === "handover" ? "Step 2 of 2: You're all set" : ""}</p>
+        <p className="sr-only" role="status">{phase === "handover" ? "Step 2 of 2: You're all set" : phase === "rhythm" ? "Step 2 of 2: the rhythm Kanbo runs on" : ""}</p>
       </div>
     </div>
   );

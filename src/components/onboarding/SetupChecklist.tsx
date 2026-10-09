@@ -17,8 +17,10 @@
      can't be unticked.
    • The card fits the brief's column (two columns of items) and the
      Today rail or a phone (one column): a container query decides.
+   • Leaving with focus inside it (Dismiss, or after the celebration),
+     focus goes to the main content (#main), never dropped on <body>.
    ============================================================ */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Button, IconButton, StatusGlyph } from "../primitives";
 import type { OnboardingState, SetupItemId, TourRole } from "../../data/types";
 import {
@@ -39,6 +41,13 @@ export interface SetupChecklistProps {
 }
 
 const WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six"];
+/** Where focus goes when the card leaves with it inside: the main content (as the skip link and the tour do). */
+function focusMain() {
+  const m = (document.getElementById("main") ?? document.querySelector("main")) as HTMLElement | null;
+  if (!m) return;
+  if (!m.hasAttribute("tabindex")) m.setAttribute("tabindex", "-1");
+  m.focus({ preventScroll: true });
+}
 const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 
 /** The card's ring: done of total in the brand gradient, the count (or a tick, when complete) inside. */
@@ -75,6 +84,17 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
   const [announce, setAnnounce] = useState("");
   const [celebrate, setCelebrate] = useState(false);
   const wasComplete = useRef(view.complete);
+  const cardRef = useRef<HTMLElement>(null);
+
+  // leaving (Dismiss, or after the celebration) while focus is inside: hand it on deliberately. A layout
+  // effect's clean-up runs before React takes the card out of the page, so focus is still in it here.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    return () => {
+      const active = document.activeElement;
+      if (card && active && active !== document.body && card.contains(active)) focusMain();
+    };
+  }, []);
 
   // ticks the app can see are saved once, so they stick
   const reported = useRef(new Set<string>());
@@ -111,7 +131,7 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
     : `${view.done} of ${view.total} done · ${WORDS[view.total] ?? view.total} quick things ${role === "owner" ? "to get your team going" : "to make Kanbo yours"}.`;
 
   return (
-    <section className="ksetup" aria-labelledby={headId} data-complete={view.complete || undefined} data-celebrate={celebrate || undefined}>
+    <section ref={cardRef} className="ksetup" aria-labelledby={headId} data-complete={view.complete || undefined} data-celebrate={celebrate || undefined}>
       <style>{SETUP_CSS}</style>
       <header className="ksetup-head">
         <SetupRing done={view.done} total={view.total} />
