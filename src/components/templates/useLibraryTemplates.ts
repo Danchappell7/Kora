@@ -4,7 +4,8 @@
    tab (onLibraryChange), and says how the load went. The library
    itself falls back to the built-ins (and this browser's own
    templates) when offline or before 0048, so `templates` is only
-   empty while the first load is on its way.
+   empty while the first load is on its way. `viewerId` is who it
+   was listed for (whose templates are "Yours"), once it's loaded.
    ============================================================ */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LibraryTemplate, TemplateFailure } from "../../data/types";
@@ -19,6 +20,8 @@ export interface LibraryState {
   templates: LibraryTemplate[];
   status: LibraryStatus;
   failure: TemplateFailure | null;
+  /** the signed-in account the list is for (demo "m-self"); null until the first load */
+  viewerId: string | null;
   reload: () => void;
 }
 
@@ -26,6 +29,7 @@ export function useLibraryTemplates(workspaceId: string | null, enabled = true):
   const [templates, setTemplates] = useState<LibraryTemplate[]>([]);
   const [status, setStatus] = useState<LibraryStatus>("idle");
   const [failure, setFailure] = useState<TemplateFailure | null>(null);
+  const [viewerId, setViewerId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const seq = useRef(0);
   const reload = useCallback(() => setTick((n) => n + 1), []);
@@ -35,8 +39,8 @@ export function useLibraryTemplates(workspaceId: string | null, enabled = true):
     const mine = ++seq.current;
     let alive = true;
     setStatus((s) => (s === "ready" ? s : "loading"));
-    loadLibrary().then((m) => m.listLibraryTemplates(workspaceId).then(
-      (list) => { if (alive && mine === seq.current) { setTemplates(list); setStatus("ready"); setFailure(null); } },
+    loadLibrary().then((m) => Promise.all([m.listLibraryTemplates(workspaceId), m.libraryViewerId()]).then(
+      ([list, who]) => { if (alive && mine === seq.current) { setTemplates(list); setViewerId(who); setStatus("ready"); setFailure(null); } },
       (e) => { if (alive && mine === seq.current) { setStatus("error"); setFailure(m.templateFailure(e)); } },
     ), () => { if (alive && mine === seq.current) { setStatus("error"); setFailure("network"); } });
     return () => { alive = false; };
@@ -49,5 +53,5 @@ export function useLibraryTemplates(workspaceId: string | null, enabled = true):
     return () => { gone = true; off?.(); };
   }, [enabled, reload]);
 
-  return { templates, status, failure, reload };
+  return { templates, status, failure, viewerId, reload };
 }

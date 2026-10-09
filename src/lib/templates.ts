@@ -7,7 +7,10 @@
      built-ins are merged in on read. (Older builds wrote the built-ins
      into storage on every save, so reads also drop stored "builtin-"
      rows, de-duplicate by id and quietly write the cleaned list back.)
-     Since 0048 they move up into the library (adoptLocalTemplates).
+     Since 0048 they move up into the library (adoptLocalTemplates) —
+     only into the account this browser's data belongs to (auth/localData
+     OWNER_KEY; kanbo-templates is one of its per-account keys, so it's
+     dropped when someone else signs in here).
    • Project templates (kanbo-project-templates) and the built-in ones.
    • Team (workspace) templates [f10].
    • The task template library (public.task_templates, 0048) [u9]:
@@ -17,7 +20,8 @@ import type { Priority, Recurrence, Task, WorkspaceTemplate, WorkspacePlan, Proj
 import { toLocalISO } from "../data/data";
 import { spectrumColor } from "./projectIdentity";
 import { supabase } from "./supabase";
-import { addDays, daysBetween, parseDay } from "./templatePlan";
+import { addDays, daysBetween, parseDay, templateRecurrence, withRecurrence } from "./templatePlan";
+import { OWNER_KEY } from "../auth/localData";
 import { parseLibraryTemplate, parseTemplateBody, templateFailure, TEMPLATE_LIMITS } from "./templateRows";
 
 export interface TaskTemplate {
@@ -746,6 +750,10 @@ export function appliedPlanMessage(plan: Pick<WorkspacePlan, "name">, r: Pick<Ap
      shared as a copy.
    • Tags are kept by label as well as id, so a template finds "Design"
      in whichever workspace it's used.
+   • A template can repeat (body.recurrence, lib/templatePlan
+     templateRecurrence): the task it makes repeats the same way, unless a
+     repeat was already chosen. The per-browser ones keep theirs when they
+     move up.
    ====================================================================== */
 export { parseLibraryTemplate, parseTemplateBody, templateFailure, TEMPLATE_LIMITS };
 
@@ -755,7 +763,8 @@ export const TEMPLATE_COLUMNS = "id,workspace_id,user_id,name,emoji,body,shared,
 export {
   templatePlaceholders, templateSpanDays, templateMeta, templateDayLabel, templateRoleLabel,
   templateQueryOf, matchTemplates, resolveTemplateTags, roleAssignee, templateDayZero, planTemplate, templateTasks,
-  type AppliedTemplatePlan,
+  templateRecurrence, withRecurrence, templateRepeatLabel,
+  type AppliedTemplatePlan, type RepeatingTemplateBody,
 } from "./templatePlan";
 
 
@@ -896,10 +905,13 @@ export function templateBodyBytes(body: TaskTemplateBody): number {
 }
 
 /** A body as the database will take it: trimmed, clamped (lib/templateRows limits),
- *  days 0–365, estimates 5 minutes to a day, no empty sub-tasks or items. */
+ *  days 0–365, estimates 5 minutes to a day, no empty sub-tasks or items, how it
+ *  repeats (if it does). A title ending in spaces keeps one ("Bug: " is typed
+ *  on from when it's used); one that's only spaces is empty. */
 export function cleanTemplateBody(raw: TaskTemplateBody): TaskTemplateBody {
   const parsed = parseTemplateBody(raw) ?? { title: "" };
-  const out: TaskTemplateBody = { title: parsed.title.trim().slice(0, TEMPLATE_LIMITS.title) };
+  const lead = parsed.title.trimStart();
+  const out: TaskTemplateBody = { title: lead.trim() ? lead.replace(/\s+$/, " ").slice(0, TEMPLATE_LIMITS.title) : "" };
   // (kept as written: a trailing "- " is an empty bullet waiting to be filled)
   if (parsed.description && parsed.description.trim()) out.description = parsed.description;
   if (parsed.priority) out.priority = parsed.priority;
@@ -918,7 +930,19 @@ export function cleanTemplateBody(raw: TaskTemplateBody): TaskTemplateBody {
   if (subs.length) out.subtasks = subs;
   const items = (parsed.checklist ?? []).map((c) => c.trim().slice(0, MAX_ITEM_CHARS)).filter(Boolean);
   if (items.length) out.checklist = items;
-  return out;
+  return withRecurrence(out, templateRecurrence(raw));
+}
+
+/** A stored body (task_templates.body) with how it repeats, which lib/templateRows doesn't read. */
+function bodyOf(raw: unknown): TaskTemplateBody | null {
+  const b = parseTemplateBody(raw);
+  return b ? withRecurrence(b, templateRecurrence(raw)) : null;
+}
+/** A task_templates row → LibraryTemplate (lib/templateRows), with how its body repeats. */
+function rowOf(raw: unknown): LibraryTemplate | null {
+  const t = parseLibraryTemplate(raw);
+  const rec = t && raw && typeof raw === "object" ? templateRecurrence((raw as { body?: unknown }).body) : undefined;
+  return t && rec ? { ...t, body: withRecurrence(t.body, rec) } : t;
 }
 
 export type TemplateProblem = "name" | "emoji" | "title" | "too_big" | "share_needs_workspace";
@@ -1055,23 +1079,43 @@ const rows = () => (demoRows ??= seedDemo());
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 let DEMO_DELAY_MS = 120;
 
-/** The legacy per-browser templates as library templates (personal, yours). */
+/** The legacy per-browser templates as library templates (personal, yours), each
+ *  with everything it had: its title as typed ("Bug: "), how it repeats. */
 export function localLibraryTemplates(userId = ""): LibraryTemplate[] {
   return getUserTemplates().map((t) => ({
     id: t.id, workspaceId: null, userId, name: t.name, emoji: null, shared: false, createdAt: "", updatedAt: "",
-    body: cleanTemplateBody({
-      title: t.title.trim() || t.name, description: t.description, priority: t.priority,
+    body: cleanTemplateBody(withRecurrence({
+      title: t.title.trim() ? t.title : t.name, description: t.description, priority: t.priority,
       estimate: t.focusMin, tags: t.tags,
-    }),
+    }, t.recurrence)),
   }));
 }
 
-const sameTemplate = (a: { name: string; body: { title: string } }, b: { name: string; body: { title: string } }) =>
-  sameName(a.name, b.name) && a.body.title.trim() === b.body.title.trim();
+/** whose this browser's stored data is (auth/localData claims it at every sign-in); null when unknown */
+function deviceOwner(): string | null {
+  try { return localStorage.getItem(OWNER_KEY); } catch { return null; }
+}
+/** This browser's own templates, when they're `uid`'s — never another account's left on a shared device. */
+function localTemplatesOf(uid: string): LibraryTemplate[] {
+  return uid && deviceOwner() === uid ? localLibraryTemplates(uid) : [];
+}
+
+/** a body as one string, the same for the same template however it was stored (key order, cleaning) */
+const bodyKey = (b: TaskTemplateBody) =>
+  JSON.stringify(Object.entries(cleanTemplateBody(b)).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+/** the same name and everything the same in it: a copy that's already there */
+const sameTemplate = (a: { name: string; body: TaskTemplateBody }, b: { name: string; body: TaskTemplateBody }) =>
+  sameName(a.name, b.name) && bodyKey(a.body) === bodyKey(b.body);
 
 async function sessionUid(): Promise<string | null> {
   if (!supabase) return DEMO_TEMPLATE_USER;
   try { return (await supabase.auth.getSession()).data.session?.user?.id ?? null; } catch { return null; }
+}
+
+/** Who the library is listed for: the signed-in account (demo: "m-self"; "" when signed out). Its own
+ *  templates are "Yours" — for a host that doesn't pass its currentUserId (lib/templates' rows say userId). */
+export async function libraryViewerId(): Promise<string> {
+  return (await sessionUid()) ?? "";
 }
 
 function visibleTo(list: LibraryTemplate[], uid: string, workspaceId: string | null): LibraryTemplate[] {
@@ -1095,7 +1139,7 @@ export async function listLibraryTemplates(workspaceId: string | null): Promise<
   }
   try { await adoptLocalTemplates(); } catch { /* the library still loads */ }
   const uid = await sessionUid();
-  if (!uid || schemaMissing) return sortLibrary([...localLibraryTemplates(uid ?? ""), ...LIBRARY_BUILTINS], uid ?? "");
+  if (!uid || schemaMissing) return sortLibrary([...localTemplatesOf(uid ?? ""), ...LIBRARY_BUILTINS], uid ?? "");
   const { data, error } = await supabase.from("task_templates").select(TEMPLATE_COLUMNS)
     .order("updated_at", { ascending: false }).limit(1000);
   if (error) {
@@ -1103,12 +1147,12 @@ export async function listLibraryTemplates(workspaceId: string | null): Promise<
     if (f === "unavailable") schemaMissing = true;
     if (f === "unavailable" || f === "network") {
       const last = cache.get(key)?.list;
-      return last ?? sortLibrary([...localLibraryTemplates(uid), ...LIBRARY_BUILTINS], uid);
+      return last ?? sortLibrary([...localTemplatesOf(uid), ...LIBRARY_BUILTINS], uid);
     }
     throw error;
   }
-  const parsed = ((data as unknown[] | null) ?? []).map(parseLibraryTemplate).filter((x): x is LibraryTemplate => !!x && !x.builtin);
-  const list = sortLibrary([...visibleTo(parsed, uid, workspaceId), ...localLibraryTemplates(uid), ...LIBRARY_BUILTINS], uid);
+  const parsed = ((data as unknown[] | null) ?? []).map(rowOf).filter((x): x is LibraryTemplate => !!x && !x.builtin);
+  const list = sortLibrary([...visibleTo(parsed, uid, workspaceId), ...localTemplatesOf(uid), ...LIBRARY_BUILTINS], uid);
   cache.set(key, { at: Date.now(), list });
   return list;
 }
@@ -1141,7 +1185,7 @@ export async function createLibraryTemplate(input: LibraryTemplateInput): Promis
   if (!uid) throw new Error("not authorized");
   const { data, error } = await supabase.from("task_templates").insert(insertRow(uid, input, body)).select(TEMPLATE_COLUMNS).single();
   if (error) throw error;
-  const t = parseLibraryTemplate(data);
+  const t = rowOf(data);
   if (!t) throw new Error("template not found");
   changed();
   return t;
@@ -1181,7 +1225,7 @@ export async function updateLibraryTemplate(id: string, patch: LibraryTemplatePa
   const { data, error } = await supabase.from("task_templates").update(row).eq("id", id).select(TEMPLATE_COLUMNS).single();
   // no row came back: it's gone, or it isn't one this person may change (RLS hides it)
   if (error) throw (error as { code?: string }).code === "PGRST116" ? new Error("template not found") : error;
-  const t = parseLibraryTemplate(data);
+  const t = rowOf(data);
   if (!t) throw new Error("template not found");
   changed();
   return t;
@@ -1206,52 +1250,80 @@ export async function deleteLibraryTemplate(id: string): Promise<void> {
 }
 
 /** Copy this browser's old templates (kanbo-templates) into the library once; how many moved.
- *  Each becomes a personal, unshared template; one you already have (same name
- *  and title) isn't copied twice. Real mode: what moved leaves this browser.
+ *  Each becomes a personal, unshared template with everything it had (how it
+ *  repeats, its title as typed). Only into the account this browser's data
+ *  belongs to (auth/localData's OWNER_KEY, claimed at sign-in): another
+ *  account's are never taken up. One you already have exactly (the same name
+ *  and everything in it) isn't copied twice; one that only shares a name with
+ *  yours comes up as "Name (2)". Real mode: only what's in the library now
+ *  (copied, or there already) leaves this browser — one the library can't take
+ *  (too big, or past the per-person cap) stays here and keeps working.
  *  Demo: copied into the in-memory library each session (the browser keeps them). */
 export function adoptLocalTemplates(): Promise<number> {
   return (adopting ??= adoptNow().catch((e) => { adopting = null; throw e; }));
 }
+/** What to copy (renamed where the name's taken; at most `room`) and what's in the library already. */
+function adoptionPlan(candidates: LibraryTemplate[], existing: { name: string; body: TaskTemplateBody }[], room: number) {
+  const there = new Set<string>();
+  const send: LibraryTemplate[] = [];
+  const taken = existing.map((e) => ({ name: e.name }));
+  for (const c of candidates) {
+    if (existing.some((m) => sameTemplate(m, c))) { there.add(c.id); continue; }
+    if (send.length >= room) continue;
+    const base = c.name.trim().slice(0, TEMPLATE_LIMITS.name);
+    let name = uniqueName(base, taken);
+    if (name.length > TEMPLATE_LIMITS.name) name = uniqueName(base.slice(0, TEMPLATE_LIMITS.name - 6).trimEnd(), taken);
+    if (templateProblem({ name, body: c.body })) continue;   // the library won't take it: it stays in this browser
+    taken.push({ name });
+    send.push({ ...c, name });
+  }
+  return { there, send };
+}
 async function adoptNow(): Promise<number> {
-  const local = getUserTemplates();
-  if (!local.length) return 0;
   const candidates = localLibraryTemplates();
+  if (!candidates.length) return 0;
   if (!supabase) {
     const mine = rows().filter((r) => r.userId === DEMO_TEMPLATE_USER);
-    const fresh = candidates.filter((c) => !mine.some((m) => sameTemplate(m, c)));
+    const { send } = adoptionPlan(candidates, mine, TEMPLATE_LIMITS.perPerson - mine.length);
     const now = new Date().toISOString();
-    for (const c of fresh) rows().push({ ...c, id: `demo-tpl-adopted-${++demoSeq}`, userId: DEMO_TEMPLATE_USER, createdAt: now, updatedAt: now });
-    return fresh.length;
+    for (const c of send) rows().push({ ...c, id: `demo-tpl-adopted-${++demoSeq}`, userId: DEMO_TEMPLATE_USER, createdAt: now, updatedAt: now });
+    return send.length;
   }
   const uid = await sessionUid();
   if (!uid) { adopting = null; return 0; }
+  // someone else's templates left on a shared device (or nobody's we know of): never taken up
+  if (deviceOwner() !== uid) return 0;
   const { data: have, error: readErr } = await supabase.from("task_templates").select("name,body").eq("user_id", uid).limit(1000);
   if (readErr) {
     if (templateFailure(readErr) === "unavailable") { schemaMissing = true; return 0; }
     throw readErr;
   }
   const existing = ((have as { name?: unknown; body?: unknown }[] | null) ?? [])
-    .map((r) => ({ name: String(r.name ?? ""), body: parseTemplateBody(r.body) ?? { title: "" } }));
-  const fresh = candidates.filter((c) => !existing.some((m) => sameTemplate(m, c)));
-  if (fresh.length) {
+    .map((r) => ({ name: String(r.name ?? ""), body: bodyOf(r.body) ?? { title: "" } }));
+  const { there, send } = adoptionPlan(candidates, existing, TEMPLATE_LIMITS.perPerson - existing.length);
+  if (send.length) {
     const { error } = await supabase.from("task_templates")
-      .insert(fresh.map((c) => insertRow(uid, { workspaceId: null, name: c.name, body: c.body, shared: false }, c.body)));
+      .insert(send.map((c) => insertRow(uid, { workspaceId: null, name: c.name, body: c.body, shared: false }, c.body)));
     if (error) {
-      if (templateFailure(error) === "unavailable") { schemaMissing = true; return 0; }
+      const f = templateFailure(error);
+      if (f === "unavailable") { schemaMissing = true; return 0; }
+      if (f === "too_many") return 0;   // filled up meanwhile: they stay here (and still list from this browser)
       throw error;
     }
   }
-  // they're in the library now (or were already): this browser lets them go
-  const moved = new Set(candidates.map((c) => c.id));
-  try { localStorage.setItem(KEY, JSON.stringify(getUserTemplates().filter((t) => !moved.has(t.id)))); } catch { /* storage blocked */ }
-  if (fresh.length) changed();
-  return fresh.length;
+  // what's in the library now (just copied, or there already exactly) leaves this browser; the rest stays
+  const moved = new Set([...there, ...send.map((c) => c.id)]);
+  if (moved.size) {
+    try { localStorage.setItem(KEY, JSON.stringify(getUserTemplates().filter((t) => !moved.has(t.id)))); } catch { /* storage blocked */ }
+  }
+  if (send.length) changed();
+  return send.length;
 }
 
 /* ---------- making one from a task ---------- */
 
-/** "Save as template" from a task: its shape (title, description, priority, estimate, tags), its sub-tasks
- *  with their due dates as offsets from the task's, its checklist.
+/** "Save as template" from a task: its shape (title, description, priority, estimate, tags, how it
+ *  repeats), its sub-tasks with their due dates as offsets from the task's, its checklist.
  *  Dates become "days after it's used", counted from the day the work starts
  *  — the task's start date, else today — or from the earliest of its dates if
  *  that's sooner (so nothing is ever before day 0), keeping their spacing.
@@ -1293,7 +1365,7 @@ export function templateFromTask(task: Task, subtasks: Task[], opts: {
     }),
     checklist: (task.subtasks ?? []).map((s) => s.title).slice(0, TEMPLATE_LIMITS.checklist),
   };
-  let clean = cleanTemplateBody(body);
+  let clean = cleanTemplateBody(withRecurrence(body, task.recurrence));
   // over the size limit: the description gives way first, then the lists
   if (templateBodyBytes(clean) > TEMPLATE_LIMITS.bodyBytes && clean.description) {
     const over = templateBodyBytes(clean) - TEMPLATE_LIMITS.bodyBytes;

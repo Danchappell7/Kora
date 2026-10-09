@@ -7,7 +7,8 @@ vi.hoisted(() => { vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-0
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { NewTaskModal } from "./NewTaskModal";
-import { LIBRARY_BUILTINS, resetLibraryTemplates, type AppliedTemplatePlan } from "../lib/templates";
+import { LIBRARY_BUILTINS, resetLibraryTemplates, withRecurrence, type AppliedTemplatePlan } from "../lib/templates";
+import { isTaskId } from "../lib/taskOps";
 import type { LibraryTemplate, Project, Task, WorkspaceMember } from "../data/types";
 
 const PROJECTS: Project[] = [
@@ -107,6 +108,10 @@ describe("New task from a template", () => {
     create();
     const [parent, ...kids] = onCreate.mock.calls.map((c) => c[0] as Task);
     expect(parent.title).toBe("Expense claim: September");
+    // real ids from the start: a host keeps a UUID (App.persistTask re-ids anything else), so the
+    // sub-tasks' parentId is the id their task is saved under (App.templates.test.tsx goes end to end)
+    expect(isTaskId(parent.id)).toBe(true);
+    expect(kids.every((k) => isTaskId(k.id) && k.id !== parent.id)).toBe(true);
     expect(parent.description).toContain("**Checklist**\n- Every item has a receipt");
     expect(kids.map((k) => [k.title, k.parentId, k.dueDate, k.assigneeId, k.planToday])).toEqual([
       ["Gather the receipts", parent.id, "2026-10-09", "u-1", false],
@@ -114,6 +119,24 @@ describe("New task from a template", () => {
       ["Get it approved", parent.id, "2026-10-12", "u-owner", false],
       ["Send it to finance", parent.id, "2026-10-14", "u-1", false],
     ]);
+  });
+
+  it("a template that repeats sets Repeats (unless one was chosen); Remove puts it back", async () => {
+    const onApplyTemplate = vi.fn();
+    const standup = { ...LIBRARY_BUILTINS[0], id: "tpl-standup", name: "Standup", body: withRecurrence({ title: "Standup notes", subtasks: [{ title: "Post blockers" }] }, "weekdays") };
+    render(<Harness onApplyTemplate={onApplyTemplate} templates={[standup, ...LIBRARY_BUILTINS]} />);
+    const repeat = () => screen.getByRole("combobox", { name: "Repeat" });
+    fireEvent.click(screen.getByRole("button", { name: "Template" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Standup/ }));
+    expect(repeat()).toHaveValue("weekdays");
+    fireEvent.click(screen.getByRole("button", { name: "Remove template “Standup”" }));
+    expect(repeat()).toHaveValue("none");
+    fireEvent.change(repeat(), { target: { value: "monthly" } });     // chosen first: it stays
+    fireEvent.click(screen.getByRole("button", { name: "Template" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Standup/ }));
+    expect(repeat()).toHaveValue("monthly");
+    create();
+    expect((onApplyTemplate.mock.calls[0][0] as AppliedTemplatePlan).task).toMatchObject({ title: "Standup notes", recurrence: "monthly" });
   });
 
   it("the Template button offers the same list with its own search", async () => {

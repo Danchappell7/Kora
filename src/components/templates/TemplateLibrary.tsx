@@ -52,7 +52,9 @@ export interface TemplateLibraryProps {
 }
 
 type Filter = "all" | TemplateKind;
-type Pane = { kind: "preview" } | { kind: "edit"; id: string } | { kind: "new"; from?: LibraryTemplate };
+/* the editor holds the template it opened on (as previewed — a just-saved one may not be in
+   the list until the library's reload lands), so Edit and Save never wait on that reload */
+type Pane = { kind: "preview" } | { kind: "edit"; template: LibraryTemplate } | { kind: "new"; from?: LibraryTemplate };
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "all", label: "All" }, { value: "yours", label: "Yours" }, { value: "shared", label: "Shared" }, { value: "builtin", label: "Built-in" },
 ];
@@ -183,7 +185,7 @@ export function TemplateLibrary({
   const save = (draft: TemplateDraft) => {
     if (busy) return;
     setBusy("save"); setEditError(null);
-    const editing = pane.kind === "edit" ? templates.find((t) => t.id === pane.id) : undefined;
+    const editing = pane.kind === "edit" ? pane.template : undefined;
     const work = editing
       ? updateLibraryTemplate(editing.id, {
         name: draft.name, emoji: draft.emoji, body: draft.body,
@@ -228,7 +230,7 @@ export function TemplateLibrary({
     focusCard(neighbour?.id ?? null);
   });
 
-  const startEdit = (t: LibraryTemplate) => { setEditError(null); dirtyRef.current = false; setPane({ kind: "edit", id: t.id }); };
+  const startEdit = (t: LibraryTemplate) => { setEditError(null); dirtyRef.current = false; setPane({ kind: "edit", template: t }); };
   const startNew = (from?: LibraryTemplate) => {
     if (pane.kind !== "preview" && dirtyRef.current && !window.confirm("Discard your changes to this template?")) return;
     setEditError(null); dirtyRef.current = false; setPane({ kind: "new", from }); if (isPhone) setPhoneDetail(true);
@@ -243,9 +245,9 @@ export function TemplateLibrary({
   const back = () => { setPhoneDetail(false); focusCard(selectedId); };
 
   /* ---- what the right-hand pane shows ---- */
-  const editing = pane.kind === "edit" ? templates.find((t) => t.id === pane.id) : undefined;
+  const editing = pane.kind === "edit" ? pane.template : undefined;
   const draftFor = (): TemplateDraft => {
-    if (pane.kind === "edit" && editing) return { name: editing.name, emoji: editing.emoji, body: editing.body, shared: editing.shared };
+    if (editing) return { name: editing.name, emoji: editing.emoji, body: editing.body, shared: editing.shared };
     if (pane.kind === "new" && pane.from) return { name: `${pane.from.name} (copy)`.slice(0, 80), emoji: pane.from.emoji, body: pane.from.body, shared: false };
     return BLANK;
   };
@@ -260,8 +262,8 @@ export function TemplateLibrary({
   const listLabelId = `ktpl-list-${uid}`;
 
   const paneBody = pane.kind === "edit" || pane.kind === "new" ? (
-    <TemplateEditor key={pane.kind === "edit" ? pane.id : `new-${pane.from?.id ?? ""}`} mode={pane.kind === "edit" ? "edit" : "new"}
-      initial={draftFor()} tileId={pane.kind === "edit" ? pane.id : "new"} canShareHere={editorShare} workspaceName={ws}
+    <TemplateEditor key={pane.kind === "edit" ? pane.template.id : `new-${pane.from?.id ?? ""}`} mode={pane.kind === "edit" ? "edit" : "new"}
+      initial={draftFor()} tileId={pane.kind === "edit" ? pane.template.id : "new"} canShareHere={editorShare} workspaceName={ws}
       busy={busy === "save"} error={editError} onSave={save} onCancel={cancelEdit} onDirtyChange={(d) => { dirtyRef.current = d; }} />
   ) : selected ? (
     <TemplatePreview template={selected} viewer={viewer} workspaceName={ws} memberName={nameOf} tags={tags} canApply={canApply}

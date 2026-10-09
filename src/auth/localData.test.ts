@@ -54,6 +54,7 @@ describe("local data belongs to one account at a time", () => {
     localStorage.setItem(t.SNAPSHOT_KEY, "{}");
     localStorage.setItem("kanbo-filters", '{"priority":"high"}');
     localStorage.setItem("kanbo-inbox-seen", "123");
+    localStorage.setItem("kanbo-templates", '[{"id":"tpl-1","name":"Theirs"}]');
     localStorage.setItem("kanbo-theme", "light");
     sessionStorage.setItem("kanbo-needs-password", "invite");
     t.clearLocalUserData();
@@ -68,6 +69,7 @@ describe("local data belongs to one account at a time", () => {
     expect(t.claimLocalData("user-a")).toBe(false);
     expect(localStorage.getItem("kanbo-filters")).toBe('{"priority":"high"}');
     expect(localStorage.getItem("kanbo-inbox-seen")).toBe("123");
+    expect(localStorage.getItem("kanbo-templates")).not.toBeNull();
 
     // someone else signs in: their view state goes, and the page must reload
     localStorage.setItem("kanbo-onboarded", "1");
@@ -76,6 +78,8 @@ describe("local data belongs to one account at a time", () => {
     expect(localStorage.getItem("kanbo-filters")).toBeNull();
     expect(localStorage.getItem("kanbo-inbox-seen")).toBeNull();
     expect(localStorage.getItem("kanbo-onboarded")).toBeNull();
+    // (their per-browser templates never move up into user-b's library)
+    expect(localStorage.getItem("kanbo-templates")).toBeNull();
     // …and after that reload, no loop
     t = await freshTab();
     expect(t.claimLocalData("user-b")).toBe(false);

@@ -191,7 +191,7 @@ export function PersonMark({ id, name }: { id: string; name: string }) {
 type Due = { date?: string; time?: string } | null;
 interface Picks { due?: Due; assigneeId?: string; projectId?: string }
 
-export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate, onPasteNotes, onImportRows, onOpenImport, tags, initialText, templates: templatesProp, onApplyTemplate, workspaceId, currentUserId = "m-self" }: {
+export function QuickCapture({ open, onClose, projects, members, defaultProjectId, onCreate, onPasteNotes, onImportRows, onOpenImport, tags, initialText, templates: templatesProp, onApplyTemplate, workspaceId, currentUserId: currentUserIdProp }: {
   open: boolean;
   onClose: () => void;
   /** ownerId / workspaceId let a template give sub-tasks to the project's owner */
@@ -213,12 +213,15 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   templates?: readonly LibraryTemplate[];
   /** Create from a template: `plan.task` is what was typed, with the template's values where nothing was;
    *  `plan.subtasks` dated and given to people by role (link them with lib/templates templateTasks);
-   *  `plan.checklist` its items. Omitted: onImportRows (sub-tasks under the task), else onCreate (the task alone);
-   *  either way the checklist goes into the description. */
+   *  `plan.checklist` its items. The host should pass this. Omitted: onImportRows (sub-tasks under the
+   *  task, made the way an import makes rows), else onCreate (the task alone); either way the checklist
+   *  goes into the description. */
   onApplyTemplate?: (plan: AppliedTemplatePlan, template: LibraryTemplate) => void;
-  /** whose template library to load (default: the default project's workspace) */
+  /** the workspace this capture is in: whose template library to load, and whether roles apply
+   *  (default: the default project's workspace, else the workspace of the projects passed in) */
   workspaceId?: string | null;
-  /** "you", for a template's roles (default "m-self": the app reads it as whoever's signed in) */
+  /** "you", for a template's roles and whose templates are "Yours" (default: whoever the library
+   *  was listed for — the signed-in account — else "m-self", which the app reads as them) */
   currentUserId?: string;
 }) {
   const [text, setText] = useState("");
@@ -283,8 +286,14 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   const assignee = assigneeId ? members.find((m) => m.id === assigneeId) : undefined;
 
   /* ---- templates ("/" in the field) ---- */
-  const libWs = workspaceId !== undefined ? workspaceId : (projs.find((p) => p.id === defaultProjectId)?.workspaceId ?? null);
-  const lib = useLibraryTemplates(libWs, open && !templatesProp && wantLibrary);
+  // the workspace this capture is in: as given, else the default project's, else the one the
+  // projects passed in belong to (a host passes one workspace's projects), else Personal
+  const homeProject = projs.find((p) => p.id === defaultProjectId);
+  const homeWs: string | null = workspaceId !== undefined ? workspaceId
+    : homeProject && homeProject.workspaceId !== undefined ? homeProject.workspaceId
+    : (projs.find((p) => p.workspaceId != null)?.workspaceId ?? null);
+  const lib = useLibraryTemplates(homeWs, open && !templatesProp && wantLibrary);
+  const currentUserId = currentUserIdProp ?? (lib.viewerId || "m-self");
   const library = templatesProp ?? lib.templates;
   const libLoading = !templatesProp && lib.status !== "ready" && lib.status !== "error";
   const pickerQuery = !multi && !tpl ? templateQueryOf(text) : null;
@@ -294,7 +303,7 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   // a pasted list is read line by line: a template is for one task
   useEffect(() => { if (multi && tpl) setTpl(null); }, [multi, tpl]);
   // the workspace the task lands in, for a template's roles (Personal: everything's yours)
-  const tplWs = project && project.workspaceId !== undefined ? project.workspaceId : (workspaceId ?? null);
+  const tplWs = project && project.workspaceId !== undefined ? project.workspaceId : homeWs;
   const tplSubs = tpl?.body.subtasks?.length ?? 0;
   const fieldId = `kcap-${uid.replace(/[^a-zA-Z0-9_-]/g, "")}-field`;
 

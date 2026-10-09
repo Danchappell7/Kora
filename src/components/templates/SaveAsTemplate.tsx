@@ -2,7 +2,7 @@
    KANBO — "Save as template" (TaskDetail ⋯ menu).              [u9]
    A small sheet prefilled from the task (lib/templates templateFromTask):
    name, icon, what it keeps (title, description, priority, estimate,
-   tags; sub-tasks with relative days and roles; checklist) — sub-tasks,
+   tags, how it repeats; sub-tasks with relative days and roles; checklist) — sub-tasks,
    checklist and dates can each be left out — "Share with <workspace>"
    for writers; Save → the library. People and dates stay with the task:
    sub-tasks go to roles (whoever uses it, the project owner or nobody)
@@ -13,7 +13,8 @@ import { Button, EmojiPicker, Icon, Sheet, Toggle } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
-  TEMPLATE_LIMITS, createLibraryTemplate, templateDayLabel, templateFailure, templateFromTask, templateRoleLabel,
+  TEMPLATE_LIMITS, createLibraryTemplate, templateDayLabel, templateFailure, templateFromTask, templateRecurrence, templateRepeatLabel,
+  templateRoleLabel,
 } from "../../lib/templates";
 import type { LibraryTemplate, TagDef, Task, TaskTemplateBody } from "../../data/types";
 import { TemplateTile, safeId, useOptionalToast } from "./parts";
@@ -76,6 +77,7 @@ export function SaveAsTemplate({ open, task, subtasks, workspaceId, workspaceNam
 
   const subs = full.subtasks ?? [];
   const items = full.checklist ?? [];
+  const repeat = templateRecurrence(full);
   const hasDates = typeof full.dueOffsetDays === "number" || subs.some((s) => typeof s.offsetDays === "number");
 
   const body = (): TaskTemplateBody => {
@@ -138,7 +140,9 @@ export function SaveAsTemplate({ open, task, subtasks, workspaceId, workspaceNam
 
         <div className="ktpl-save-keeps">
           <p className="ktpl-save-k">It keeps</p>
-          <p className="ktpl-save-base"><Icon name="check" size={14} sw={2} /><span>The title, description, priority, focus time and tags</span></p>
+          <p className="ktpl-save-base"><Icon name="check" size={14} sw={2} />
+            <span>{repeat ? `The title, description, priority, focus time, tags and how it repeats (${templateRepeatLabel(repeat).toLowerCase()})` : "The title, description, priority, focus time and tags"}</span>
+          </p>
           {subs.length > 0 && (
             <label className="ktpl-save-opt">
               <input type="checkbox" checked={keepSubs} onChange={(e) => setKeepSubs(e.target.checked)} />

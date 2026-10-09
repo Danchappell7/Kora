@@ -8,7 +8,7 @@ import {
   listLibraryTemplates, matchTemplates, parseLibraryTemplate, parseTemplateBody, planTemplate, resetLibraryTemplates, roleAssignee,
   saveTemplate, templateBodyBytes, templateDayLabel, templateDayZero, templateFromTask, templateMeta, templatePlaceholders,
   templateProblem, templateQueryOf, templateRights, templateTasks, updateLibraryTemplate, resolveTemplateTags, sortLibrary,
-  isLocalTemplateId, localLibraryTemplates,
+  isLocalTemplateId, localLibraryTemplates, templateRecurrence, templateRepeatLabel, withRecurrence,
 } from "./templates";
 import type { LibraryTemplate, Task } from "../data/types";
 
@@ -239,6 +239,29 @@ describe("templateFromTask — Save as template", () => {
   });
 });
 
+describe("a template that repeats", () => {
+  it("applies with its repeat; the meta line says it; cleaning keeps a real one and drops the rest", () => {
+    const weekly = withRecurrence({ title: "Weekly sync", subtasks: [{ title: "Agenda", offsetDays: 0 }] }, "weekly");
+    expect(planTemplate({ body: weekly }, ctx()).task.recurrence).toBe("weekly");
+    expect(planTemplate({ body: { title: "x" } }, ctx()).task).not.toHaveProperty("recurrence");
+    expect(templateMeta(weekly)).toBe("1 sub-task · Weekly");
+    expect(templateMeta(withRecurrence({ title: "x" }, "weekdays"))).toBe("Every weekday");
+    expect(cleanTemplateBody(weekly)).toEqual({ title: "Weekly sync", subtasks: [{ title: "Agenda", offsetDays: 0 }], recurrence: "weekly" });
+    expect(cleanTemplateBody({ title: "x", recurrence: "none" } as never)).toEqual({ title: "x" });
+    expect(cleanTemplateBody({ title: "x", recurrence: "hourly" } as never)).toEqual({ title: "x" });
+    expect(withRecurrence(weekly, "none")).not.toHaveProperty("recurrence");
+    expect([templateRecurrence(weekly), templateRepeatLabel("biweekly"), templateRepeatLabel(undefined)]).toEqual(["weekly", "Every 2 weeks", "Doesn't repeat"]);
+  });
+  it("Save as template keeps how the task repeats", () => {
+    expect(templateRecurrence(templateFromTask(task({ title: "Standup", recurrence: "weekdays" }), [], { today: FRI }))).toBe("weekdays");
+    expect(templateFromTask(task({ title: "Once", recurrence: "none" }), [], { today: FRI })).not.toHaveProperty("recurrence");
+  });
+  it("this browser's old ones keep their repeat and their title as typed", () => {
+    saveTemplate({ name: "Bugs", title: "Bug: ", priority: "high", tags: [], focusMin: 30, recurrence: "weekly", description: "" });
+    expect(localLibraryTemplates()[0].body).toEqual({ title: "Bug: ", priority: "high", estimate: 30, recurrence: "weekly" });
+  });
+});
+
 describe("words", () => {
   it("meta lines, day and role labels", () => {
     expect(templateMeta(builtin("client-onboarding").body)).toBe("6 sub-tasks · 5 checklist items · 14 days");
@@ -255,11 +278,11 @@ describe("words", () => {
     expect(templateProblem({ name: "n", body: { title: "x" }, shared: true, workspaceId: null })).toBe("share_needs_workspace");
     expect(templateProblem({ name: "n", body: { title: "x" }, shared: true, workspaceId: "ws" })).toBeNull();
   });
-  it("cleans a body: trims, drops empties, clamps days and estimates", () => {
+  it("cleans a body: trims (a title ending in spaces keeps one, to type on from), drops empties, clamps days and estimates", () => {
     expect(cleanTemplateBody({
       title: "  Hi  ", description: "  \n", estimate: 2, dueOffsetDays: -3, tags: [" a ", "a", ""],
       subtasks: [{ title: " s ", offsetDays: 900 }, { title: "  " }], checklist: [" c ", ""],
-    })).toEqual({ title: "Hi", estimate: 5, dueOffsetDays: 0, tags: ["a"], subtasks: [{ title: "s", offsetDays: 365 }], checklist: ["c"] });
+    })).toEqual({ title: "Hi ", estimate: 5, dueOffsetDays: 0, tags: ["a"], subtasks: [{ title: "s", offsetDays: 365 }], checklist: ["c"] });
   });
 });
 
@@ -298,7 +321,7 @@ describe("the library in demo mode (in memory)", () => {
   });
   it("create, edit, share, delete — and sharing needs a workspace", async () => {
     const t = await createLibraryTemplate({ workspaceId: "ws-foundrise", name: "  Sprint review ", emoji: "🏁", body: { title: " Review sprint {n} ", checklist: ["Demo", " "] } });
-    expect(t).toMatchObject({ name: "Sprint review", emoji: "🏁", shared: false, userId: "m-self", workspaceId: "ws-foundrise", body: { title: "Review sprint {n}", checklist: ["Demo"] } });
+    expect(t).toMatchObject({ name: "Sprint review", emoji: "🏁", shared: false, userId: "m-self", workspaceId: "ws-foundrise", body: { title: "Review sprint {n} ", checklist: ["Demo"] } });
     expect((await listLibraryTemplates("ws-foundrise"))[0].id).toBe(t.id);
     const shared = await updateLibraryTemplate(t.id, { shared: true, name: "Sprint review (team)" });
     expect(shared).toMatchObject({ shared: true, name: "Sprint review (team)" });
@@ -311,6 +334,13 @@ describe("the library in demo mode (in memory)", () => {
     expect((await listLibraryTemplates("ws-foundrise")).some((x) => x.id === t.id)).toBe(false);
     await expect(deleteLibraryTemplate(t.id)).rejects.toThrow(/not found/);
   });
+  it("adoption: one that only shares a name with yours comes up as “Name (2)”, with everything it had", async () => {
+    saveTemplate({ name: "Monthly invoice run", title: "Invoices: ", priority: "low", tags: [], focusMin: 30, recurrence: "monthly", description: "" });
+    expect(await adoptLocalTemplates()).toBe(1);
+    const mine = (await listLibraryTemplates(null)).filter((t) => t.name.startsWith("Monthly invoice run"));
+    expect(mine.map((t) => t.name).sort()).toEqual(["Monthly invoice run", "Monthly invoice run (2)"]);
+    expect(mine.find((t) => t.name.endsWith("(2)"))!.body).toEqual({ title: "Invoices: ", priority: "low", estimate: 30, recurrence: "monthly" });
+  });
   it("adopts this browser's old templates once (and never twice by name)", async () => {
     saveTemplate({ name: "Client kickoff", title: "Kickoff: ", priority: "high", tags: ["design"], focusMin: 45, recurrence: "none", description: "Agenda" });
     expect(localLibraryTemplates()).toHaveLength(1);
@@ -318,7 +348,7 @@ describe("the library in demo mode (in memory)", () => {
     const first = await listLibraryTemplates(null);
     const kick = first.filter((t) => t.name === "Client kickoff");
     expect(kick).toHaveLength(1);
-    expect(kick[0]).toMatchObject({ userId: "m-self", workspaceId: null, shared: false, body: { title: "Kickoff:", description: "Agenda", priority: "high", estimate: 45, tags: ["design"] } });
+    expect(kick[0]).toMatchObject({ userId: "m-self", workspaceId: null, shared: false, body: { title: "Kickoff: ", description: "Agenda", priority: "high", estimate: 45, tags: ["design"] } });
     expect(await adoptLocalTemplates()).toBe(1);               // the same run (cached)
     resetLibraryTemplates();
     expect(await adoptLocalTemplates()).toBe(1);               // a new session in demo mode: copied in again (memory only)…

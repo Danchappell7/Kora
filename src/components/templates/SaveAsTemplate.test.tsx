@@ -47,6 +47,13 @@ describe("SaveAsTemplate", () => {
       "Welcome emailIn 3 daysYou", "Kick-off callIn 3 daysProject owner",
     ]);
   });
+  it("a task that repeats keeps how it repeats, and says so", async () => {
+    const p = open({ task: { ...parent, recurrence: "weekly" }, subtasks: [] });
+    expect(screen.getByText("The title, description, priority, focus time, tags and how it repeats (weekly)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save template" }));
+    await waitFor(() => expect(p.onSaved).toHaveBeenCalled());
+    expect((p.onSaved as ReturnType<typeof vi.fn>).mock.calls[0][0].body).toMatchObject({ title: "Onboard Acme", recurrence: "weekly" });
+  });
   it("saves it to the library (shared, when asked) and closes", async () => {
     const p = open();
     fireEvent.change(screen.getByRole("textbox", { name: "Template name" }), { target: { value: "Client onboarding (ours)" } });

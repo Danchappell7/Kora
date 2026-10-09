@@ -11,7 +11,8 @@ import { Button, Icon, PriorityGlyph, SectionLabel, Toggle } from "../primitives
 import { PRIORITY_META } from "../../data/data";
 import { renderRich } from "../../lib/richtext";
 import {
-  isLocalTemplateId, templateDayLabel, templatePlaceholders, templateRights, templateRoleLabel, type TemplateViewer,
+  isLocalTemplateId, templateDayLabel, templatePlaceholders, templateRecurrence, templateRepeatLabel, templateRights, templateRoleLabel,
+  type TemplateViewer,
 } from "../../lib/templates";
 import type { LibraryTemplate, TagDef } from "../../data/types";
 import { TemplateTile, safeId, templateKind } from "./parts";
@@ -78,6 +79,7 @@ export function TemplatePreview({ template: t, viewer, workspaceName, memberName
   const b = t.body;
   const subs = b.subtasks ?? [];
   const items = b.checklist ?? [];
+  const repeat = templateRecurrence(b);
   const ws = workspaceName || "the workspace";
   const tagLabel = (x: string) => tags?.[x]?.label ?? x;
   const tagColour = (x: string) => tags?.[x]?.color ?? Object.values(tags ?? {}).find((d) => d.label.toLowerCase() === x.toLowerCase())?.color;
@@ -132,6 +134,7 @@ export function TemplatePreview({ template: t, viewer, workspaceName, memberName
         <div><dt>Priority</dt><dd><PriorityGlyph priority={b.priority ?? "medium"} />{PRIORITY_META[b.priority ?? "medium"].label}</dd></div>
         <div><dt>Focus time</dt><dd className="mono">{fmtMin(b.estimate ?? 30)}</dd></div>
         <div><dt>Due</dt><dd>{typeof b.dueOffsetDays === "number" ? templateDayLabel(b.dueOffsetDays) : "No due date"}</dd></div>
+        {repeat && <div><dt>Repeats</dt><dd>{templateRepeatLabel(repeat)}</dd></div>}
         {(b.tags?.length ?? 0) > 0 && (
           <div><dt>Tags</dt><dd className="ktpl-pv-tags">{b.tags!.map((x) => (
             <span key={x} className="ktpl-tag" data-static="">

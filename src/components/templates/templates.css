@@ -284,7 +284,7 @@
   .ktpl-pv-acts > .kbtn { flex: 1 1 auto; justify-content: center; }
   .ktpl-del { margin-left: 0; }
   .ktpl-ed-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .ktpl-ed-grid > .ktpl-ed-field:last-child { grid-column: 1 / -1; }
+  .ktpl-ed-grid > .ktpl-ed-field[data-wide] { grid-column: 1 / -1; }
   .ktpl-ed-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--hairline); }
   .ktpl-ed-row > .ktpl-ed-rowtitle { grid-column: 1 / -1; }
   .ktpl-ed-row > .ktpl-ed-days { grid-column: 1; }

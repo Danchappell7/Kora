@@ -9,7 +9,7 @@
    The model (dates are "days after it's used", roles, weekends) is
    written up at the top of lib/templates' library section.
    ============================================================ */
-import type { LibraryTemplate, Subtask, TagDef, Task, TaskTemplateBody, TemplateAssigneeRole } from "../data/types";
+import type { LibraryTemplate, Recurrence, Subtask, TagDef, Task, TaskTemplateBody, TemplateAssigneeRole } from "../data/types";
 import { toLocalISO } from "../data/data";
 import { foldText } from "./searchQuery";
 
@@ -38,19 +38,46 @@ export function templatePlaceholders(title: string): { start: number; end: numbe
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
+/* ---------- repeating ---------- */
+/* A body may also say how the task repeats: `recurrence` (the per-browser
+   templates always could, and keep it when they move up into the library).
+   The database takes any key in body (0048's shape check is on title,
+   sub-tasks and checklist only), so it rides along in the JSON. */
+const REPEATS: readonly Recurrence[] = ["daily", "weekdays", "weekly", "biweekly", "monthly"];
+/** A template body that repeats. */
+export type RepeatingTemplateBody = TaskTemplateBody & { recurrence?: Recurrence };
+/** How a template's task repeats (undefined: it doesn't). Reads any body, stored or not. */
+export function templateRecurrence(body: unknown): Recurrence | undefined {
+  const r = body && typeof body === "object" ? (body as { recurrence?: unknown }).recurrence : undefined;
+  return typeof r === "string" && (REPEATS as readonly string[]).includes(r) ? (r as Recurrence) : undefined;
+}
+/** `body` repeating as `r` (none/undefined: not at all) */
+export function withRecurrence<B extends TaskTemplateBody>(body: B, r: Recurrence | undefined): B {
+  const { recurrence: _drop, ...rest } = body as B & { recurrence?: Recurrence };
+  const rep = templateRecurrence({ recurrence: r });
+  return (rep ? { ...rest, recurrence: rep } : rest) as B;
+}
+const REPEAT_WORDS: Record<Recurrence, string> = {
+  none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly",
+};
+/** "Weekly" · "Every weekday" · "Doesn't repeat" */
+export const templateRepeatLabel = (r: Recurrence | undefined): string => REPEAT_WORDS[r ?? "none"];
+
 /** the furthest day a template reaches (its own due date or a sub-task's), or 0 */
 export function templateSpanDays(body: TaskTemplateBody): number {
   return Math.max(0, body.dueOffsetDays ?? 0, ...(body.subtasks ?? []).map((s) => s.offsetDays ?? 0));
 }
 
-/** "6 sub-tasks · 5 checklist items · 14 days" (a card's meta line) */
+/** "6 sub-tasks · 5 checklist items · 14 days" (a card's meta line; "· Weekly" when it repeats) */
 export function templateMeta(body: TaskTemplateBody): string {
   const parts: string[] = [];
+  const rep = templateRecurrence(body);
   const subs = body.subtasks?.length ?? 0, items = body.checklist?.length ?? 0;
   if (subs) parts.push(plural(subs, "sub-task"));
   if (items) parts.push(plural(items, "checklist item"));
   const span = templateSpanDays(body);
   if (span > 0) parts.push(plural(span, "day"));
+  if (rep) parts.push(templateRepeatLabel(rep));
   return parts.length ? parts.join(" · ") : "A single task";
 }
 
@@ -198,12 +225,14 @@ export function planTemplate(tpl: Pick<LibraryTemplate, "body">, ctx: {
     : typeof b.dueOffsetDays === "number" ? templateDate(today, b.dueOffsetDays, today) : undefined;
   const zero = templateDayZero(b, today, due ?? null);
   const focus = typeof b.estimate === "number" && b.estimate > 0 ? Math.round(b.estimate) : 30;
+  const repeat = templateRecurrence(b);
   const where = { projectId: ctx.projectId, workspaceId: ctx.workspaceId };
   const task: AppliedTemplatePlan["task"] = {
     title: b.title, description: b.description ?? "", priority: b.priority ?? "medium", status: "todo",
     ...where, assigneeId: ctx.assigneeId ?? ctx.currentUserId,
     focusMin: focus, dur: focus, tags: resolveTemplateTags(b.tags, ctx.tags),
     ...(due ? { dueDate: due } : {}),
+    ...(repeat ? { recurrence: repeat } : {}),
   };
   const cap = parseDay(due);
   const subtasks = (b.subtasks ?? []).map((s) => ({

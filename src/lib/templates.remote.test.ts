@@ -1,8 +1,10 @@
 /* lib/templates against a (mocked) real backend: the task_templates queries
    the library makes (the same shapes the PGlite replay in
    scratchpad/pgtest-u9 runs as each kind of person), adoption of this
-   browser's old templates, and every way it fails (0048 not run, offline,
-   refusals). Row fixtures are what PostgREST returns for task_templates. */
+   browser's old templates (only ever into the account this browser's data
+   belongs to: auth/localData's OWNER_KEY), and every way it fails (0048 not
+   run, offline, refusals). Row fixtures are what PostgREST returns for
+   task_templates. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { from, getSession } = vi.hoisted(() => ({ from: vi.fn(), getSession: vi.fn() }));
@@ -12,9 +14,10 @@ vi.mock("./supabase", () => ({
 }));
 
 import {
-  LIBRARY_BUILTINS, TEMPLATE_COLUMNS, createLibraryTemplate, deleteLibraryTemplate, listLibraryTemplates, onLibraryChange,
-  resetLibraryTemplates, saveTemplate, templateFailure, updateLibraryTemplate,
+  LIBRARY_BUILTINS, TEMPLATE_COLUMNS, createLibraryTemplate, deleteLibraryTemplate, libraryViewerId, listLibraryTemplates, onLibraryChange,
+  resetLibraryTemplates, saveTemplate, templateFailure, templateMeta, templateRecurrence, updateLibraryTemplate,
 } from "./templates";
+import { OWNER_KEY } from "../auth/localData";
 
 const ME = "a89a2412-b64a-49e4-bb75-10dc9466bba2";
 const SANA = "228cd532-0fa5-41b7-83d6-4d5cf399b0dd";
@@ -42,6 +45,7 @@ const callsOf = (q: { calls: [string, unknown[]][] }, k: string) => q.calls.filt
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem(OWNER_KEY, ME);   // (auth/localData claims this browser's data for whoever signs in)
   resetLibraryTemplates();
   from.mockReset(); getSession.mockReset();
   getSession.mockResolvedValue({ data: { session: { user: { id: ME } } } });
@@ -103,6 +107,17 @@ describe("listing", () => {
     getSession.mockResolvedValue({ data: { session: null } });
     expect((await listLibraryTemplates(WS)).map((t) => t.id)).toEqual(LIBRARY_BUILTINS.map((t) => t.id));
     expect(from).not.toHaveBeenCalled();
+    expect(await libraryViewerId()).toBe("");
+  });
+  it("is listed for the signed-in account (whose templates are “Yours”)", async () => {
+    expect(await libraryViewerId()).toBe(ME);
+  });
+  it("a template that repeats says so, read back from its body", async () => {
+    from.mockReturnValueOnce(query(ok([row({ body: { title: "Standup notes", recurrence: "weekdays" } }), row({ id: "2", body: { title: "x", recurrence: "fortnightly" } })])));
+    const [standup, odd] = await listLibraryTemplates(WS);
+    expect(templateRecurrence(standup.body)).toBe("weekdays");
+    expect(templateMeta(standup.body)).toBe("Every weekday");
+    expect(templateRecurrence(odd.body)).toBeUndefined();   // not a repeat Kanbo has: it doesn't repeat
   });
 });
 
@@ -116,10 +131,10 @@ describe("writing", () => {
   it("creates as you, cleaned; shared only with a workspace", async () => {
     const q = query(ok(row({ id: "n1", shared: true })));
     from.mockReturnValueOnce(q);
-    const t = await createLibraryTemplate({ workspaceId: WS, name: " Onboarding ", emoji: " 🤝 ", body: { title: " Onboard {client} ", subtasks: [{ title: " Call ", offsetDays: 2.4 }, { title: "" }] }, shared: true });
+    const t = await createLibraryTemplate({ workspaceId: WS, name: " Onboarding ", emoji: " 🤝 ", body: { title: " Onboard {client}  ", subtasks: [{ title: " Call ", offsetDays: 2.4 }, { title: "" }] }, shared: true });
     expect(callsOf(q, "insert")).toEqual([[{
       workspace_id: WS, user_id: ME, name: "Onboarding", emoji: "🤝", shared: true,
-      body: { title: "Onboard {client}", subtasks: [{ title: "Call", offsetDays: 2 }] },
+      body: { title: "Onboard {client} ", subtasks: [{ title: "Call", offsetDays: 2 }] },
     }]]);
     expect(callsOf(q, "select")).toEqual([[TEMPLATE_COLUMNS]]);
     expect(t.id).toBe("n1");
@@ -134,6 +149,17 @@ describe("writing", () => {
     await expect(createLibraryTemplate({ workspaceId: WS, name: "x", body: { title: "x" }, shared: true })).rejects.toSatisfy((e: unknown) => templateFailure(e) === "not_allowed");
     getSession.mockResolvedValue({ data: { session: null } });
     await expect(createLibraryTemplate({ workspaceId: WS, name: "x", body: { title: "x" } })).rejects.toSatisfy((e: unknown) => templateFailure(e) === "not_allowed");
+  });
+  it("keeps how a template repeats (any key rides in body; 0048 checks title, sub-tasks and checklist)", async () => {
+    const q = query(ok(row({ body: { title: "Weekly sync", recurrence: "weekly" } })));
+    from.mockReturnValueOnce(q);
+    const t = await updateLibraryTemplate("a1", { body: { title: "Weekly sync", recurrence: "weekly" } as never });
+    expect(callsOf(q, "update")).toEqual([[{ body: { title: "Weekly sync", recurrence: "weekly" } }]]);
+    expect(templateRecurrence(t.body)).toBe("weekly");
+    const c = query(ok(row({})));
+    from.mockReturnValueOnce(c);
+    await createLibraryTemplate({ workspaceId: WS, name: "x", body: { title: "x", recurrence: "none" } as never });
+    expect((callsOf(c, "insert")[0][0] as { body: object }).body).toEqual({ title: "x" });   // "none": it doesn't repeat
   });
   it("updates only what changed; an RLS-hidden row reads as not found", async () => {
     const q = query(ok(row({ name: "Renamed" })));
@@ -164,24 +190,50 @@ describe("writing", () => {
 });
 
 describe("adopting this browser's old templates", () => {
-  it("copies them up once as personal ones (skipping any you already have), then lets them go", async () => {
+  it("copies them up once as personal ones with everything they had, skipping exact copies you have, then lets them go", async () => {
     saveTemplate({ name: "Weekly review", title: "Weekly review", priority: "medium", tags: ["t1"], focusMin: 30, recurrence: "weekly", description: "Wins" });
     saveTemplate({ name: "Already there", title: "Same", priority: "high", tags: [], focusMin: 60, recurrence: "none", description: "" });
-    const have = query(ok([{ name: "already there", body: { title: "Same" } }]));
+    saveTemplate({ name: "Bug", title: "Bug: ", priority: "high", tags: [], focusMin: 30, recurrence: "none", description: "Steps" });
+    const have = query(ok([
+      { name: "already there", body: { title: "Same", priority: "high", estimate: 60 } },          // exactly this one
+      { name: "Bug", body: { title: "Bug: ", priority: "high", estimate: 30, description: "Old steps" } },   // the same name, not the same
+    ]));
     const insert = query(ok(null));
     const list = query(ok([]));
     from.mockReturnValue(query(ok([])));
     from.mockReturnValueOnce(have).mockReturnValueOnce(insert).mockReturnValueOnce(list);
     const out = await listLibraryTemplates(null);
     expect(callsOf(have, "eq")).toEqual([["user_id", ME]]);
-    expect(callsOf(insert, "insert")).toEqual([[[{
-      workspace_id: null, user_id: ME, name: "Weekly review", emoji: null, shared: false,
-      body: { title: "Weekly review", description: "Wins", priority: "medium", estimate: 30, tags: ["t1"] },
-    }]]]);
+    const mine = { workspace_id: null, user_id: ME, emoji: null, shared: false };
+    expect(callsOf(insert, "insert")).toEqual([[[
+      { ...mine, name: "Bug (2)", body: { title: "Bug: ", description: "Steps", priority: "high", estimate: 30 } },
+      { ...mine, name: "Weekly review", body: { title: "Weekly review", description: "Wins", priority: "medium", estimate: 30, tags: ["t1"], recurrence: "weekly" } },
+    ]]]);
     expect(JSON.parse(localStorage.getItem("kanbo-templates")!)).toEqual([]);
     expect(out.map((t) => t.name)).toEqual(LIBRARY_BUILTINS.map((t) => t.name));   // (the list ran after; this one's empty)
     await listLibraryTemplates(WS);
     expect(from).toHaveBeenCalledTimes(4);   // adoption doesn't run twice in a session
+  });
+  it("never takes up another account's templates left in this browser (nor lists them as yours)", async () => {
+    saveTemplate({ name: "Theirs", title: "Private", priority: "low", tags: [], focusMin: 30, recurrence: "none", description: "Their notes" });
+    localStorage.setItem(OWNER_KEY, SANA);   // this browser's data is Sana's
+    from.mockReturnValue(query(ok([])));
+    const out = await listLibraryTemplates(null);
+    expect(from).toHaveBeenCalledTimes(1);   // the list only: no read of yours, no insert
+    expect(out.map((t) => t.name)).not.toContain("Theirs");
+    expect(JSON.parse(localStorage.getItem("kanbo-templates")!)).toHaveLength(1);   // left where it was
+  });
+  it("what the library can't take (past the cap, too big) stays here and keeps working", async () => {
+    saveTemplate({ name: "Too big", title: "Big", priority: "low", tags: [], focusMin: 30, recurrence: "none", description: "é".repeat(20_000) });
+    saveTemplate({ name: "Older", title: "Older", priority: "low", tags: [], focusMin: 30, recurrence: "none", description: "" });
+    saveTemplate({ name: "Newer", title: "Newer", priority: "low", tags: [], focusMin: 30, recurrence: "none", description: "" });
+    const full = Array.from({ length: 299 }, (_, i) => ({ name: `n${i}`, body: { title: "x" } }));   // room for one more
+    const insert = query(ok(null));
+    from.mockReturnValueOnce(query(ok(full))).mockReturnValueOnce(insert).mockReturnValueOnce(query(ok([])));
+    const out = await listLibraryTemplates(null);
+    expect((callsOf(insert, "insert")[0][0] as { name: string }[]).map((r) => r.name)).toEqual(["Newer"]);
+    expect((JSON.parse(localStorage.getItem("kanbo-templates")!) as { name: string }[]).map((t) => t.name)).toEqual(["Older", "Too big"]);
+    expect(out.slice(0, 2).map((t) => t.name).sort()).toEqual(["Older", "Too big"]);   // still listed from this browser
   });
   it("before 0048 nothing moves and they stay put", async () => {
     saveTemplate({ name: "Keep me", title: "K", priority: "low", tags: [], focusMin: 30, recurrence: "none", description: "" });

@@ -161,7 +161,7 @@ describe("NewTaskModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ops" })); // picked before the template — must survive it
     fireEvent.click(screen.getByRole("button", { name: "Template" }));
     fireEvent.click(await screen.findByRole("option", { name: /Client kickoff/ }));
-    expect(title().value).toBe("Onboard:");
+    expect(title().value).toBe("Onboard: ");   // as it was saved: typed on from
     expect((screen.getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement).value).toBe("**Checklist**\n- kickoff");
     expect(screen.getByRole("group", { name: "Template: Client kickoff" })).toBeInTheDocument();
     typeTitle("Onboard: Acme");

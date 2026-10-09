@@ -17,18 +17,19 @@ const PROJECTS = [
 ];
 const MEMBERS = [{ id: "m-1", name: "Maya Lin" }, { id: "m-3", name: "Sana Rao" }];
 
-function Harness({ onCreate = vi.fn(), onApplyTemplate, onImportRows, defaultProjectId = "p-launch" }: {
+function Harness({ onCreate = vi.fn(), onApplyTemplate, onImportRows, defaultProjectId = "p-launch", projects = PROJECTS }: {
   onCreate?: (t: Partial<Task> & { title: string }) => void;
   onApplyTemplate?: (plan: AppliedTemplatePlan, t: LibraryTemplate) => void;
   onImportRows?: (rows: ImportRow[]) => void;
-  defaultProjectId?: string;
+  defaultProjectId?: string | null;
+  projects?: typeof PROJECTS;
 }) {
   const [open, setOpen] = useState(true);
   return (
     <>
       <span data-testid="state">{open ? "open" : "closed"}</span>
-      <QuickCapture open={open} onClose={() => setOpen(false)} projects={PROJECTS} members={MEMBERS} tags={{}} currentUserId="m-self"
-        defaultProjectId={defaultProjectId} onCreate={onCreate} onApplyTemplate={onApplyTemplate} onImportRows={onImportRows} />
+      <QuickCapture open={open} onClose={() => setOpen(false)} projects={projects} members={MEMBERS} tags={{}} currentUserId="m-self"
+        defaultProjectId={defaultProjectId ?? undefined} onCreate={onCreate} onApplyTemplate={onApplyTemplate} onImportRows={onImportRows} />
     </>
   );
 }
@@ -129,6 +130,22 @@ describe("Quick capture from a template", () => {
     expect(screen.getByTestId("state")).toHaveTextContent("open");
     expect(field().value).toBe("");
     expect(screen.queryByRole("button", { name: /Remove template/ })).toBeNull();
+  });
+
+  it("away from a project (Today, Inbox, My tasks) it's in the projects' workspace: its shared templates, its roles", async () => {
+    const onApplyTemplate = vi.fn();
+    const team = PROJECTS.filter((p) => p.workspaceId === "ws-foundrise");
+    render(<Harness onApplyTemplate={onApplyTemplate} defaultProjectId={null} projects={team} />);
+    await pick("/release", /Release checklist/);         // Maya's, shared with Foundrise
+    type("Release 4.2");
+    fireEvent.keyDown(field(), { key: "Enter" });
+    const plan = onApplyTemplate.mock.calls[0][0] as AppliedTemplatePlan;
+    expect(plan.task).not.toHaveProperty("projectId");   // the host files it, as for any capture
+    // "unassigned" stays nobody; "project owner" is you until it's in a project
+    expect(plan.subtasks.map((s) => [s.title, s.assigneeId])).toEqual([
+      ["Freeze the release branch", "m-self"], ["Run the regression suite", ""], ["Write the release notes", "m-self"],
+      ["Go / no-go check", "m-self"], ["Ship it and watch the dashboards", "m-self"],
+    ]);
   });
 
   it("in Personal every sub-task is yours", async () => {

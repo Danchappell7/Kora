@@ -2,7 +2,7 @@
    KANBO — the template editor (the library's "New template",
    "Edit" and "Make a copy").                                  [u9]
    Name and icon; the task it makes (title with {placeholders},
-   description, priority, focus time, due day, tags); its sub-tasks
+   description, priority, focus time, due day, how it repeats, tags); its sub-tasks
    (title, due day, who it goes to) and checklist, each reordered with
    Move up / Move down — there's no dragging to learn; sharing with the
    workspace for writers. Days are "days after it's used". Problems are
@@ -12,8 +12,8 @@ import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type Keybo
 import { Button, EmojiPicker, Icon, IconButton, Toggle } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { PRIORITY_META } from "../../data/data";
-import { TEMPLATE_LIMITS, templateBodyBytes, templateRoleLabel } from "../../lib/templates";
-import type { Priority, TaskTemplateBody, TemplateAssigneeRole, TemplateSubtask } from "../../data/types";
+import { TEMPLATE_LIMITS, templateBodyBytes, templateRecurrence, templateRepeatLabel, templateRoleLabel, withRecurrence } from "../../lib/templates";
+import type { Priority, Recurrence, TaskTemplateBody, TemplateAssigneeRole, TemplateSubtask } from "../../data/types";
 import { TemplateTile, safeId } from "./parts";
 import "./templates.css";
 
@@ -45,6 +45,7 @@ const PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
 const FOCUS_STEPS = [15, 30, 45, 60, 90, 120, 180, 240];
 const fmtMin = (m: number) => (m < 60 ? `${m}m` : m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m / 60}h`);
 const ROLES: TemplateAssigneeRole[] = ["me", "project_owner", "unassigned"];
+const REPEATS: Recurrence[] = ["none", "daily", "weekdays", "weekly", "biweekly", "monthly"];
 
 /* rows carry a key that survives reordering */
 interface SubRow { key: number; title: string; days: string; role: TemplateAssigneeRole }
@@ -72,6 +73,7 @@ export function TemplateEditor({ mode, initial, tileId, canShareHere, workspaceN
   const [priority, setPriority] = useState<Priority>(initial.body.priority ?? "medium");
   const [estimate, setEstimate] = useState<number>(initial.body.estimate ?? 30);
   const [due, setDue] = useState(daysText(initial.body.dueOffsetDays));
+  const [repeat, setRepeat] = useState<Recurrence>(templateRecurrence(initial.body) ?? "none");
   const [tags, setTags] = useState<string[]>(initial.body.tags ?? []);
   const [tagText, setTagText] = useState("");
   const [subs, setSubs] = useState<SubRow[]>(() => (initial.body.subtasks ?? []).map((s) => ({ key: nextKey(), title: s.title, days: daysText(s.offsetDays), role: s.assigneeRole ?? "me" })));
@@ -87,7 +89,8 @@ export function TemplateEditor({ mode, initial, tileId, canShareHere, workspaceN
   useEffect(() => { nameRef.current?.focus({ preventScroll: true }); }, []);
 
   const body = useMemo<TaskTemplateBody>(() => {
-    const b: TaskTemplateBody = { title: title.trim() };
+    // (the title keeps a trailing space: "Bug: " is typed on from when it's used)
+    const b: TaskTemplateBody = { title: title.trim() ? title.trimStart() : "" };
     if (description.trim()) b.description = description.replace(/\s+$/, "");
     b.priority = priority;
     b.estimate = estimate;
@@ -103,8 +106,8 @@ export function TemplateEditor({ mode, initial, tileId, canShareHere, workspaceN
     if (st.length) b.subtasks = st;
     const cl = items.map((i) => i.text.trim()).filter(Boolean);
     if (cl.length) b.checklist = cl;
-    return b;
-  }, [title, description, priority, estimate, due, tags, subs, items]);
+    return withRecurrence(b, repeat);
+  }, [title, description, priority, estimate, due, repeat, tags, subs, items]);
 
   const draft: TemplateDraft = { name: name.trim(), emoji, body, shared: canShareHere ? shared : initial.shared };
   // dirty = differs from the draft as it first rendered (the same shape, so no false alarms)
@@ -155,13 +158,16 @@ export function TemplateEditor({ mode, initial, tileId, canShareHere, workspaceN
     setSubs((s) => [...s, { key, title: "", days: "", role: "me" }]);
     focusRow("sub", key, "title");
   };
+  /** after a move, focus stays on the row's button that moved it — or, at the end of the list
+   *  (where that one's now disabled), its other one */
+  const movedFocus = (to: number, length: number, by: number) => (by < 0 ? (to === 0 ? "down" : "up") : (to === length - 1 ? "up" : "down"));
   const moveSub = (i: number, by: number) => {
     const row = subs[i];
     const next = moveIn(subs, i, by);
     if (next === subs) return;
     setSubs(next);
     setAnnounce(`Moved “${row.title || "untitled"}” to position ${i + by + 1} of ${subs.length}.`);
-    focusRow("sub", row.key, by < 0 ? "up" : "down");
+    focusRow("sub", row.key, movedFocus(i + by, subs.length, by));
   };
   const removeSub = (i: number) => {
     const row = subs[i];
@@ -184,7 +190,7 @@ export function TemplateEditor({ mode, initial, tileId, canShareHere, workspaceN
     if (next === items) return;
     setItems(next);
     setAnnounce(`Moved “${row.text || "untitled"}” to position ${i + by + 1} of ${items.length}.`);
-    focusRow("item", row.key, by < 0 ? "up" : "down");
+    focusRow("item", row.key, movedFocus(i + by, items.length, by));
   };
   const removeItem = (i: number) => {
     const row = items[i];
@@ -281,13 +287,19 @@ export function TemplateEditor({ mode, initial, tileId, canShareHere, workspaceN
               {[...new Set([...FOCUS_STEPS, estimate])].sort((a, b) => a - b).map((m) => <option key={m} value={m}>{fmtMin(m)}</option>)}
             </select>
           </div>
-          <div className="ktpl-ed-field">
+          <div className="ktpl-ed-field" data-wide="">
             <label htmlFor={id("due")}>Due</label>
             <span className="ktpl-ed-days">
               <input id={id("due")} className="kfield" type="number" inputMode="numeric" min={0} max={365} value={due}
                 onChange={(e) => setDue(e.target.value)} placeholder="–" aria-describedby={id("due-hint")} />
               <span id={id("due-hint")}>days after it's used</span>
             </span>
+          </div>
+          <div className="ktpl-ed-field" data-wide="">
+            <label htmlFor={id("repeat")}>Repeats</label>
+            <select id={id("repeat")} className="kfield" value={repeat} onChange={(e) => setRepeat(e.target.value as Recurrence)}>
+              {REPEATS.map((r) => <option key={r} value={r}>{templateRepeatLabel(r)}</option>)}
+            </select>
           </div>
         </div>
         <div className="ktpl-ed-field">

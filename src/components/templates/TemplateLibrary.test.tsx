@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { TemplateLibrary, type TemplateLibraryProps } from "./TemplateLibrary";
-import { listLibraryTemplates, resetLibraryTemplates } from "../../lib/templates";
+import { TemplateEditor } from "./TemplateEditor";
+import { listLibraryTemplates, resetLibraryTemplates, withRecurrence } from "../../lib/templates";
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -233,5 +234,91 @@ describe("TemplateLibrary", () => {
     open({ initialTemplateId: "builtin-lib-expense-claim" });
     const heading = await screen.findByRole("heading", { name: "Expense claim" });
     await waitFor(() => expect(heading).toHaveFocus());
+  });
+
+  it("shows how a template repeats", async () => {
+    const t = await (await import("../../lib/templates")).createLibraryTemplate({ workspaceId: "ws-foundrise", name: "Standup", body: withRecurrence({ title: "Standup notes" }, "weekdays") });
+    open({ initialTemplateId: t.id });
+    await screen.findByRole("heading", { name: "Standup" });
+    expect(within(pane()).getByText("Repeats").nextSibling).toHaveTextContent("Every weekday");
+    expect(card("Standup")).toHaveTextContent("Every weekday");
+  });
+});
+
+/* Edit straight after a save, before the library's reload has it (the demo answers after a
+   pause here, as the network would): the editor opens on what was just saved, and saves it. */
+describe("TemplateLibrary · before the reload lands", () => {
+  beforeEach(() => { resetLibraryTemplates({ demoDelayMs: 150 }); });
+  const slow = { timeout: 3000 };
+
+  it("Edit right after Create edits that template (it isn't made twice)", async () => {
+    open();
+    await screen.findByRole("option", { name: /Monthly invoice run/ }, slow);
+    fireEvent.click(screen.getByRole("button", { name: "New template" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Template name" }), { target: { value: "Probe" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Probe task" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create template" }));
+    await screen.findByRole("heading", { name: "Probe" }, slow);
+    expect(within(list()).queryByRole("option", { name: /Probe/ })).toBeNull();   // the reload's still on its way
+    fireEvent.click(within(pane()).getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Template name" })).toHaveValue("Probe");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Probe task");
+    fireEvent.change(screen.getByRole("textbox", { name: "Template name" }), { target: { value: "Probe v2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("heading", { name: "Probe v2" }, slow);
+    const all = await listLibraryTemplates("ws-foundrise");
+    expect(all.filter((t) => t.name.startsWith("Probe")).map((t) => t.name)).toEqual(["Probe v2"]);
+  });
+
+  it("Edit right after sharing keeps it shared", async () => {
+    open();
+    await screen.findByRole("option", { name: /Customer interview/ }, slow);
+    fireEvent.click(card("Customer interview"));
+    fireEvent.click(within(pane()).getByRole("switch", { name: "Share with Foundrise" }));
+    await waitFor(() => expect(within(pane()).getByRole("switch", { name: "Share with Foundrise" })).toHaveAttribute("aria-checked", "true"), slow);
+    fireEvent.click(within(pane()).getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("switch", { name: "Share with Foundrise" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(screen.getByRole("textbox", { name: "Template name" }), { target: { value: "Customer call" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("heading", { name: "Customer call" }, slow);
+    expect((await listLibraryTemplates("ws-foundrise")).find((t) => t.name === "Customer call")).toMatchObject({ shared: true });
+  });
+});
+
+describe("TemplateEditor", () => {
+  const edit = (body: Parameters<typeof TemplateEditor>[0]["initial"]["body"], onSave = vi.fn()) => {
+    render(<TemplateEditor mode="edit" tileId="t" canShareHere={false} onSave={onSave} onCancel={vi.fn()} initial={{ name: "T", emoji: null, shared: false, body }} />);
+    return onSave;
+  };
+  it("Repeats: shows a template's repeat, and saves the one chosen", () => {
+    const onSave = edit(withRecurrence({ title: "Standup notes" }, "weekly"));
+    const repeats = screen.getByRole("combobox", { name: "Repeats" });
+    expect(repeats).toHaveValue("weekly");
+    fireEvent.change(repeats, { target: { value: "weekdays" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(onSave.mock.calls[0][0].body).toMatchObject({ title: "Standup notes", recurrence: "weekdays" });
+    fireEvent.change(repeats, { target: { value: "none" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(onSave.mock.calls[1][0].body).not.toHaveProperty("recurrence");
+  });
+  it("a title keeps the space at its end, to type on from", () => {
+    const onSave = edit({ title: "x" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "  Bug: " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(onSave.mock.calls[0][0].body.title).toBe("Bug: ");
+  });
+  it("moving a row to the top or bottom leaves focus on the button that still works", async () => {
+    edit({ title: "t", subtasks: [{ title: "A" }, { title: "B" }, { title: "C" }], checklist: ["x", "y"] });
+    const go = async (name: string, then: string) => {
+      const b = screen.getByRole("button", { name });
+      b.focus(); fireEvent.click(b);
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: then })));
+      expect(document.activeElement).not.toBeDisabled();
+    };
+    await go("Move sub-task 2 up", "Move sub-task 1 down");          // B → top: its "up" is disabled now
+    await go("Move sub-task 1 down", "Move sub-task 2 down");        // B → 2: "down" still works
+    await go("Move sub-task 2 down", "Move sub-task 3 up");          // B → bottom
+    await go("Move checklist item 1 down", "Move checklist item 2 up");
+    expect(screen.getAllByRole("textbox", { name: /^Sub-task \d$/ }).map((x) => (x as HTMLInputElement).value)).toEqual(["A", "C", "B"]);
   });
 });

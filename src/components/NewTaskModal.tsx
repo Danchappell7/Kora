@@ -9,7 +9,7 @@
    Templates (lib/templates, the library): type "/" in the title (or
    "/template") for a fuzzy list of them, or press Template. Applying one
    fills the form (title with its {placeholders} selected, description,
-   priority, focus time, tags, due date) and shows what else it makes —
+   priority, focus time, tags, due date, repeat) and shows what else it makes —
    its sub-tasks, dated from the task's due date and given to people by
    role, and its checklist — all created with the task. Remove takes it
    off again, keeping anything typed since.
@@ -29,9 +29,13 @@ import { TemplatePicker } from "./templates/TemplatePicker";
 import { TemplateChooser } from "./templates/TemplateChooser";
 import { TemplateTile } from "./templates/parts";
 import { useLibraryTemplates } from "./templates/useLibraryTemplates";
+import { newTaskId } from "../lib/taskOps";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status, LibraryTemplate } from "../data/types";
 
-const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? "t-new-" + crypto.randomUUID() : "t-new-" + Date.now());
+/* Every task made here has a real UUID from the start (lib/taskOps newTaskId), so
+   the host keeps it (App.persistTask only re-ids a non-UUID) and a template's
+   sub-tasks can point at their parent's id before it's saved. */
+const newId = newTaskId;
 /** what the form held when it was last dismissed without Create/Cancel —
  *  offered back (never forced) the next time the modal opens */
 interface SavedDraft {
@@ -52,9 +56,9 @@ const OWNS: Record<"due" | "start" | "priority" | "project" | "person" | "focus"
 const HAS_ROW: NlpKind[] = ["date", "time", "start", "priority", "project", "person", "duration", "repeat", "tag"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** the fields a template fills (and Remove puts back) */
-interface TemplateFields { title: string; description: string; descOpen: boolean; priority: Priority; focusMin: number; tags: string[]; dueDate: string; dueTime: string }
+interface TemplateFields { title: string; description: string; descOpen: boolean; priority: Priority; focusMin: number; tags: string[]; dueDate: string; dueTime: string; recurrence: Recurrence }
 interface AppliedTemplate { tpl: LibraryTemplate; before: TemplateFields; set: TemplateFields }
-const BLANK_FIELDS: TemplateFields = { title: "", description: "", descOpen: false, priority: "medium", focusMin: 30, tags: [], dueDate: "", dueTime: "" };
+const BLANK_FIELDS: TemplateFields = { title: "", description: "", descOpen: false, priority: "medium", focusMin: 30, tags: [], dueDate: "", dueTime: "", recurrence: "none" };
 /** the fields with the template's still-untouched values put back as they were before it */
 function withoutTemplate(cur: TemplateFields, a: AppliedTemplate): TemplateFields {
   const keep = <K extends keyof TemplateFields>(k: K): TemplateFields[K] => (cur[k] === a.set[k] ? a.before[k] : cur[k]);
@@ -63,10 +67,12 @@ function withoutTemplate(cur: TemplateFields, a: AppliedTemplate): TemplateField
     title: keep("title"), description: keep("description"), descOpen: cur.description === a.set.description ? a.before.descOpen : cur.descOpen,
     priority: keep("priority"), focusMin: keep("focusMin"), tags: cur.tags.filter((t) => !added.includes(t)),
     dueDate: keep("dueDate"), dueTime: cur.dueDate === a.set.dueDate ? a.before.dueTime : cur.dueTime,
+    recurrence: keep("recurrence"),
   };
 }
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
-/** a template's sub-task as a full new task under `parent` (when the host has no template path) */
+/** a template's sub-task as a full new task under `parent` (when the host has no template path):
+ *  its own real id, pointing at the parent's (both kept by the host), off anyone's day */
 function subtaskOf(s: Partial<Task> & { title: string }, parent: Task, position: number): Task {
   return {
     id: newId(), title: s.title, description: "", status: "todo", priority: s.priority ?? "medium",
@@ -286,7 +292,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
     setPriority(d.priority); setDueDate(d.dueDate); setDueTime(d.dueTime); setStartDate(d.startDate); setRecurrence(d.recurrence); setFocusMin(d.focusMin);
     setTags(d.tags.filter((id) => !!allTags[id]));
     const tpl = d.templateId ? library.find((t) => t.id === d.templateId) : undefined;
-    setApplied(tpl ? { tpl, before: BLANK_FIELDS, set: { title: d.title, description: d.description, descOpen: !!d.description.trim(), priority: d.priority, focusMin: d.focusMin, tags: d.tags, dueDate: d.dueDate, dueTime: d.dueTime } } : null);
+    setApplied(tpl ? { tpl, before: BLANK_FIELDS, set: { title: d.title, description: d.description, descOpen: !!d.description.trim(), priority: d.priority, focusMin: d.focusMin, tags: d.tags, dueDate: d.dueDate, dueTime: d.dueTime, recurrence: d.recurrence } } : null);
     window.setTimeout(() => {
       if (!here) { projectRef.current?.focus(); return; }
       const el = inputRef.current;
@@ -320,10 +326,10 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   useEffect(() => { if (pickerQuery === null && pickerDismissed) setPickerDismissed(false); }, [pickerQuery, pickerDismissed]);
   useEffect(() => { if (pickerOpen && !wantLibrary) setWantLibrary(true); }, [pickerOpen, wantLibrary]);
 
-  const fieldsNow = (): TemplateFields => ({ title, description, descOpen, priority, focusMin, tags, dueDate, dueTime });
+  const fieldsNow = (): TemplateFields => ({ title, description, descOpen, priority, focusMin, tags, dueDate, dueTime, recurrence });
   const setFields = (f: TemplateFields) => {
     setTitle(f.title); setDescription(f.description); setDescOpen(f.descOpen); setPriority(f.priority);
-    setFocusMin(f.focusMin); setTags(f.tags); setDueDate(f.dueDate); setDueTime(f.dueTime);
+    setFocusMin(f.focusMin); setTags(f.tags); setDueDate(f.dueDate); setDueTime(f.dueTime); setRecurrence(f.recurrence);
   };
   const focusTitle = (text: string) => window.setTimeout(() => {
     const el = inputRef.current;
@@ -336,8 +342,9 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
 
   // Apply a template. What's already chosen or typed is never thrown away: the
   // title and description are only filled when empty (or a "/" search), tags
-  // join the ones picked, and a due date chosen by hand stays (the sub-tasks
-  // follow it). A template replacing another starts from before the first.
+  // join the ones picked, a due date chosen by hand stays (the sub-tasks
+  // follow it), and so does a repeat. A template replacing another starts
+  // from before the first.
   const applyTemplate = (tpl: LibraryTemplate, opts: { fresh?: boolean } = {}) => {
     const cur = opts.fresh ? BLANK_FIELDS : fieldsNow();
     const prior = opts.fresh ? null : applied;
@@ -355,6 +362,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
       priority: plan.task.priority ?? "medium", focusMin: plan.task.focusMin ?? 30,
       tags: [...new Set([...base.tags, ...resolveTemplateTags(tpl.body.tags, allTags)])],
       dueDate: base.dueDate || plan.task.dueDate || "", dueTime: base.dueDate ? base.dueTime : "",
+      recurrence: base.recurrence !== "none" ? base.recurrence : (plan.task.recurrence ?? "none"),
     };
     setFields(next);
     setApplied({ tpl, before: base, set: next });

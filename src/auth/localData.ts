@@ -29,8 +29,10 @@ export const STASH_PREFIX = "kanbo-offline-stash-";
 /** per-account view state that would mislead the next person on this device
  *  (another account's filters can hide your tasks; their "inbox seen" time
  *  can mark your notifications as read; their finished onboarding would
- *  skip yours). Kept across your own sign-out and sign-in. */
-export const PER_ACCOUNT_KEYS = ["kanbo-filters", "kanbo-inbox-seen", "kanbo-onboarded"];
+ *  skip yours; their per-browser task templates would move up into your
+ *  template library — lib/templates adoptLocalTemplates). Kept across your
+ *  own sign-out and sign-in. */
+export const PER_ACCOUNT_KEYS = ["kanbo-filters", "kanbo-inbox-seen", "kanbo-onboarded", "kanbo-templates"];
 
 /** The account whose edits this tab's in-memory queue holds. offlineQueue
  *  reads storage once per tab, so another tab changing OWNER_KEY doesn't
