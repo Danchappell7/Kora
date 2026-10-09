@@ -1,12 +1,14 @@
 export type ViewId =
   | "plan" | "home" | "inbox" | "tasks" | "calendar" | "team" | "analytics" | "reports" | "project" | "search"
   | "goals" | "portfolios" | "workload" | "automations" | "forms" | "myweek"
-  | "projects" | "pulse";
+  | "projects" | "pulse"
+  /** 0047: Projects › Recycle bin (/projects/bin) */
+  | "bin";
 
 /** My tasks' tabs. `route.tab` undefined means "open". */
 export type TasksTab = "open" | "waiting" | "done";
 /** A project's tabs: its task views, then its panels. */
-export type ProjectTab = "list" | "board" | "timeline" | "calendar" | "files" | "matrix" | "updates" | "requests" | "rules" | "about";
+export type ProjectTab = "list" | "board" | "timeline" | "calendar" | "files" | "matrix" | "updates" | "requests" | "rules" | "about" | "docs";
 
 export interface Route {
   view: ViewId;
@@ -16,6 +18,8 @@ export interface Route {
   list?: string;
   /** tasks: a TasksTab · project: a ProjectTab */
   tab?: string;
+  /** project › docs: the open doc (/p/:id/docs/:docId) */
+  docId?: string;
 }
 
 export type TaskView = "list" | "board" | "timeline" | "calendar" | "files" | "matrix";

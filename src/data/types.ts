@@ -253,8 +253,26 @@ export interface Attachment {
   userId?: string;
 }
 
-/** "integration": a notice about one of your integrations, with no task (0046: a webhook switched off after 20 failures) */
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration";
+/** "integration": a notice about one of your integrations, with no task (0046: a webhook switched off after 20 failures)
+ *  "approval": an approval request for you, or a decision on yours (0047; meta says which)
+ *  "doc_mention": someone @mentioned you in a project doc (0047; no task — meta.docId / meta.projectId) */
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention";
+
+/** activity.meta (0047): what an Inbox item points at beyond its task. Parsed by lib/activityMeta. */
+export interface ActivityMeta {
+  /** approval items */
+  approvalId?: string;
+  /** approval items: what happened ("requested" → you're asked; a decision → on your request) */
+  event?: ApprovalEvent;
+  /** approval items: the request's status after the event */
+  status?: ApprovalStatus;
+  rule?: ApprovalRule;
+  /** approval decisions: the reviewer's comment (first 280 characters) */
+  comment?: string | null;
+  /** doc mentions */
+  docId?: string;
+  projectId?: string;
+}
 
 export interface Activity {
   id: string;
@@ -264,6 +282,8 @@ export interface Activity {
   detail: string;
   createdAt: string;
   readAt?: string;
+  /** 0047: approval / doc-mention details (absent on older rows) */
+  meta?: ActivityMeta;
 }
 
 /** One row of the workspace's change history (task_events): who moved which
@@ -809,3 +829,397 @@ export interface NotionImportResult {
 export type NotionFailure =
   | "not_connected" | "not_allowed" | "invalid_token" | "not_shared" | "rate_limited"
   | "notion_error" | "invalid" | "not_found" | "unavailable" | "network" | "error";
+
+/* ============================================================
+   0047 — recycle bin, workspace history, approvals, project docs,
+   and the wave's planner + uptime contracts. Database:
+   0047_bin_history_approvals_docs.sql (docs/integrations/database-0047.md).
+   The definer functions answer snake_case JSON; lib/trash, lib/audit,
+   lib/approvals and lib/docs parse it into these camelCase shapes.
+   ============================================================ */
+
+/* ---------- recycle bin (public.trash; restore_from_trash · restore_trash_items · purge_trash) ---------- */
+
+export type TrashKind = "task" | "project";
+/** What a bin item holds (trash.summary.counts). A task's own row counts in `tasks`. */
+export interface TrashCounts {
+  tasks: number;
+  /** tasks: its sub-tasks (all levels) */
+  subtasks: number;
+  comments: number;
+  attachments: number;
+  /** checklist items (public.subtasks) */
+  checklist: number;
+  /** projects: its sections */
+  sections: number;
+  /** projects: its docs */
+  docs: number;
+}
+export interface TrashSummary {
+  /** a task: its project when deleted (null for Personal / a project already gone) · a project: itself */
+  project: { id: string; name: string; emoji: string; color: string; description?: string | null } | null;
+  /** a sub-task deleted on its own: its parent then */
+  parent: { id: string; title: string } | null;
+  /** tasks only */
+  status?: Status;
+  priority?: Priority;
+  dueDate?: string | null;
+  assigneeId?: string | null;
+  /** it was archived when deleted */
+  archived: boolean;
+  counts: TrashCounts;
+}
+/** One bin row (every column but the snapshot, which only the server reads). */
+export interface TrashItem {
+  id: string;
+  kind: TrashKind;
+  /** the deleted task's / project's id: it comes back under it */
+  itemId: string;
+  /** null = personal */
+  workspaceId: string | null;
+  /** the row's creator */
+  userId: string | null;
+  /** a task's project when deleted; a project's own id */
+  projectId: string | null;
+  title: string;
+  summary: TrashSummary;
+  deletedBy: string | null;
+  /** "Kanbo" when the server deleted it (Notion sync, an import undo…) */
+  deletedByName: string | null;
+  deletedAt: string;
+  /** when housekeeping deletes it for good (30 days after deletedAt) */
+  purgeAfter: string;
+  restoredAt: string | null;
+  restoredBy: string | null;
+}
+export interface TrashRestoreResult {
+  /** the bin row */
+  id: string;
+  kind: TrashKind;
+  itemId: string;
+  /** "already_restored": someone (or an earlier call) restored it first — not an error */
+  status: "restored" | "already_restored";
+  /** where it is now: a task's project ("p-personal" for Personal), a project's own id */
+  projectId: string | null;
+  /** say this in the toast when set ("Its project was deleted, so it's back in “Marketing”.") */
+  note: string | null;
+  counts: TrashCounts | null;
+}
+export type TrashFailure = "not_allowed" | "not_found" | "conflict" | "no_project" | "unavailable" | "network" | "error";
+/** restore_trash_items(): one answer per id, newest delete first. */
+export interface TrashBulkResult {
+  id: string;
+  ok: boolean;
+  result?: TrashRestoreResult;
+  error?: TrashFailure;
+  /** the server's words for a failure */
+  message?: string;
+}
+
+/* ---------- workspace history (public.audit_events) ---------- */
+
+export type AuditAction =
+  | "task.deleted" | "task.restored" | "task.purged"
+  | "project.deleted" | "project.restored" | "project.purged" | "project.archived" | "project.unarchived"
+  | "member.invited" | "member.joined" | "member.removed" | "role.changed"
+  | "workspace.renamed"
+  | "integration.connected" | "integration.disconnected"
+  | "api_key.created" | "api_key.revoked"
+  | "webhook.created" | "webhook.deleted";
+export type AuditTargetKind = "task" | "project" | "member" | "workspace" | "integration" | "api_key" | "webhook";
+export interface AuditEvent {
+  id: string;
+  workspaceId: string;
+  /** null: the person's account is gone, or Kanbo did it (cron, Notion sync) */
+  actorId: string | null;
+  /** as it was then ("Kanbo" for the server) */
+  actorName: string;
+  /** a later migration may add actions: show those by their raw name */
+  action: AuditAction | (string & {});
+  targetKind: AuditTargetKind | (string & {}) | null;
+  targetId: string | null;
+  targetTitle: string | null;
+  /** per action: role.changed { from, to }, member.removed { self, invite, account_deleted },
+   *  workspace.renamed { from, to }, integration.* { provider }, webhook.* { host, events },
+   *  api_key.* { access, prefix }, task/project.deleted { trash_id, … }, *.purged { expired? } */
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
+/** A page of history: newest first, keyset-paged on (createdAt, id). */
+export interface AuditQuery {
+  workspaceId: string;
+  /** one person's actions */
+  actorId?: string | null;
+  /** only these actions */
+  actions?: AuditAction[] | null;
+  /** YYYY-MM-DD, inclusive, Europe/London days */
+  from?: string | null;
+  to?: string | null;
+  /** the `next` of the previous page */
+  before?: AuditCursor | null;
+  /** default 100, at most 500 */
+  limit?: number;
+}
+export interface AuditCursor { createdAt: string; id: string }
+export interface AuditPage { events: AuditEvent[]; next: AuditCursor | null }
+export type AuditFailure = "unavailable" | "network" | "error";
+
+/* ---------- approvals (public.approvals, approval_reviewers) ---------- */
+
+export type ApprovalStatus = "pending" | "approved" | "changes_requested" | "cancelled";
+/** any: the first approval approves · all: everyone must approve. Any "changes requested" resolves it as that. */
+export type ApprovalRule = "any" | "all";
+export type ApprovalDecision = "approved" | "changes_requested";
+/** what an Inbox approval item / history entry says happened */
+export type ApprovalEvent = "requested" | ApprovalDecision | "cancelled";
+export interface ApprovalReviewer {
+  userId: string;
+  name: string;
+  /** null: not decided yet */
+  decision: ApprovalDecision | null;
+  comment: string | null;
+  decidedAt: string | null;
+}
+export interface Approval {
+  id: string;
+  taskId: string;
+  workspaceId: string;
+  requestedBy: string | null;
+  requestedByName: string | null;
+  /** defaults to the task's title */
+  title: string;
+  note: string | null;
+  /** a specific file on the task, when the request is about one */
+  attachmentId: string | null;
+  status: ApprovalStatus;
+  rule: ApprovalRule;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  reviewers: ApprovalReviewer[];
+  /** you're a reviewer and it's still open */
+  canDecide: boolean;
+  /** you asked (or you're an owner/admin) and it's still open */
+  canCancel: boolean;
+}
+/** list_my_approvals(): an approval with its task. */
+export interface ApprovalWithTask extends Approval {
+  task: { id: string; title: string; projectId: string; workspaceId: string | null; status: Status; dueDate: string | null } | null;
+}
+export interface MyApprovals {
+  /** open requests waiting on your decision (Inbox › Approvals for you) */
+  toReview: ApprovalWithTask[];
+  /** open requests you made (My tasks › Waiting on › Waiting on approval) */
+  requested: ApprovalWithTask[];
+}
+/** A task's latest request, for row/card badges ("Pending 1/2", "Approved", "Changes requested"). */
+export interface ApprovalSummary {
+  approvalId: string;
+  taskId: string;
+  status: ApprovalStatus;
+  rule: ApprovalRule;
+  approved: number;
+  total: number;
+}
+export interface NewApprovalInput {
+  taskId: string;
+  /** 1–10 people in the task's workspace (guests may review), never yourself */
+  reviewerIds: string[];
+  rule: ApprovalRule;
+  note?: string | null;
+  /** defaults to the task's title */
+  title?: string | null;
+  attachmentId?: string | null;
+}
+export type ApprovalFailure = "not_allowed" | "not_found" | "already_pending" | "closed" | "invalid" | "unavailable" | "network" | "error";
+
+/* ---------- project docs (public.project_docs, project_doc_versions) ---------- */
+
+export type DocBlockType = "h1" | "h2" | "h3" | "p" | "bullet" | "numbered" | "todo" | "quote" | "divider" | "callout";
+export type DocMark = "b" | "i" | "code";
+/** A run of text inside a block. A mention span's text is the name as shown ("@Sana"). */
+export interface DocSpan {
+  text: string;
+  marks?: DocMark[];
+  /** a link (http(s) / mailto only) */
+  href?: string;
+  /** an @mention: the member's user id */
+  mention?: string;
+}
+/** One block of a doc. The body is DocBlock[] (stored as-is in project_docs.body). */
+export interface DocBlock {
+  /** stable within the doc (lib/docs newBlockId) */
+  id: string;
+  type: DocBlockType;
+  /** absent for dividers */
+  spans?: DocSpan[];
+  /** todo blocks */
+  checked?: boolean;
+  /** "Make task": the task this line became (its live status shows beside the line) */
+  taskId?: string;
+  /** callouts: an emoji */
+  icon?: string;
+  /** list nesting, 0–3 */
+  indent?: number;
+}
+export interface ProjectDoc {
+  id: string;
+  projectId: string;
+  /** the project's (null = personal) */
+  workspaceId: string | null;
+  title: string;
+  body: DocBlock[];
+  /** an emoji */
+  icon: string | null;
+  position: number | null;
+  /** who the doc @mentions now (the server notifies newcomers once) */
+  mentions: string[];
+  createdBy: string | null;
+  createdByName: string | null;
+  updatedBy: string | null;
+  updatedByName: string | null;
+  createdAt: string;
+  /** the optimistic-concurrency token: send it back as baseUpdatedAt */
+  updatedAt: string;
+  archivedAt: string | null;
+  /** you may edit it (never guests) */
+  canEdit: boolean;
+}
+/** A doc in the Docs tab's list (no body). */
+export type ProjectDocListItem = Omit<ProjectDoc, "body" | "mentions" | "createdByName" | "updatedByName" | "canEdit">;
+export interface ProjectDocVersion {
+  id: string;
+  docId: string;
+  title: string;
+  /** null in version lists (fetch one to read it) */
+  body: DocBlock[] | null;
+  savedBy: string | null;
+  savedAt: string;
+}
+export interface DocSaveInput {
+  /** a fresh uuid for a new doc (made by the app) */
+  id: string;
+  projectId: string;
+  title: string;
+  body: DocBlock[];
+  /** null for a new doc; else the updatedAt you last loaded or saved */
+  baseUpdatedAt: string | null;
+  /** undefined/null keeps the icon, "" clears it */
+  icon?: string | null;
+  /** every member the doc @mentions now (lib/docs mentionsIn); null = unchanged */
+  mentions?: string[] | null;
+}
+/** conflict: someone else saved since your base — `doc` is theirs ("Sana edited this — reload / keep mine";
+ *  keep mine = save again with baseUpdatedAt = doc.updatedAt). */
+export type DocSaveResult = { status: "saved"; doc: ProjectDoc } | { status: "conflict"; doc: ProjectDoc };
+export type DocSaveState = "idle" | "saving" | "saved" | "offline" | "conflict" | "error";
+export type DocTemplateId = "blank" | "brief" | "meeting" | "decisions" | "retro";
+export type DocFailure = "not_allowed" | "not_found" | "too_large" | "too_many" | "invalid" | "unavailable" | "network" | "error";
+
+/* ---------- AI project planner (lib/projectPlanner; ai-assist mode "plan") ---------- */
+
+export type { AiPlanReply, AiPlanRequest, AiPlanTask, AiPlanRosterEntry } from "../../supabase/functions/_shared/projectPlan.ts";
+
+export interface PlannerInput {
+  /** what the person wants to achieve */
+  goal: string;
+  /** YYYY-MM-DD */
+  deadline?: string | null;
+  /** who may be assigned (member ids); empty = the whole roster */
+  memberIds?: string[];
+  constraints?: string | null;
+  projectName?: string | null;
+}
+export interface PlannerRosterMember {
+  id: string;
+  name: string;
+  /** their job title in the workspace */
+  title?: string | null;
+  /** guests can be assigned but carry no team capacity (Workload) */
+  guest?: boolean;
+}
+export interface PlannerContext {
+  /** YYYY-MM-DD, Europe/London */
+  today: string;
+  workspaceId: string | null;
+  roster: PlannerRosterMember[];
+  mode: "new" | "append";
+  /** append: the project's sections and task titles (so the plan adds, not repeats) */
+  existingSections?: string[];
+  existingTitles?: string[];
+}
+export interface PlanSection {
+  /** stable within the draft */
+  key: string;
+  name: string;
+}
+export interface PlanTask {
+  /** stable within the draft; dependsOn names these */
+  key: string;
+  title: string;
+  /** a PlanSection key (null: no section) */
+  sectionKey: string | null;
+  /** a roster member id (resolved from the AI's hint), or null */
+  assigneeId: string | null;
+  estimateHours: number | null;
+  /** working days from the plan's start day */
+  startOffset: number;
+  dueOffset: number;
+  dependsOn: string[];
+  isMilestone: boolean;
+  description: string;
+}
+/** The editable draft (step 2: review). */
+export interface PlanDraft {
+  /** the project's name (new) — or the project's own (append) */
+  name: string;
+  emoji: string;
+  /** suggested identity colour */
+  hue: import("../lib/projectIdentity").SpectrumKey;
+  /** YYYY-MM-DD: day 0 (a working day) */
+  startDate: string;
+  deadline: string | null;
+  sections: PlanSection[];
+  tasks: PlanTask[];
+  /** where the draft came from */
+  source: "ai" | "fallback";
+}
+export type PlanWarningKind = "overloaded" | "past_deadline" | "unassigned" | "dependency_order" | "trimmed";
+export interface PlanWarning {
+  kind: PlanWarningKind;
+  /** a sentence to show */
+  message: string;
+  taskKeys?: string[];
+  memberId?: string;
+}
+/** How the planner creates things: the host's own create paths (so its state updates). */
+export interface PlanApplyDeps {
+  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null; description?: string }): Promise<Project>;
+  createSection(input: { projectId: string; workspaceId: string | null; name: string; position?: number }): Promise<Section>;
+  /** store.createTasksBatch semantics: saved copies (final ids) in order; throws BatchCreateError with .saved on partial failure */
+  createTasks(tasks: Task[]): Promise<Task[]>;
+  addDependency(taskId: string, dependsOn: string): Promise<void>;
+  /** rollback after a failure (new projects only): removes what was made (it goes to the bin) */
+  deleteProject?(projectId: string): Promise<void>;
+  deleteTasks?(taskIds: string[]): Promise<void>;
+}
+export interface PlanApplyProgress {
+  step: "project" | "sections" | "tasks" | "dependencies" | "done";
+  done: number;
+  total: number;
+}
+export interface AppliedProjectPlan {
+  project: Project;
+  sections: Section[];
+  tasks: Task[];
+  dependencies: number;
+  /** what couldn't be made, by name */
+  failed: string[];
+  /** a failure undid everything that had been made */
+  rolledBack: boolean;
+}
+export type PlannerFailure = "ai_unavailable" | "daily_limit" | "not_allowed" | "bad_output" | "network" | "error";
+
+/* ---------- uptime (health edge function; /admin › System status) ---------- */
+
+export type { HealthCheck, HealthCheckName, HealthReport } from "../../supabase/functions/_shared/health.ts";

@@ -9,6 +9,7 @@ import type { RealtimeChannel, RealtimePostgresChangesPayload, SupabaseClient } 
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 import { offlineQueue, LEGACY_QUEUE_KEY, type QueuedMutation } from "../lib/offlineQueue";
 import { reportError } from "../lib/monitoring";
+import { parseActivityMeta } from "../lib/activityMeta";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
@@ -251,9 +252,10 @@ function rowToComment(r: CommentRow): Comment {
   return { id: r.id, taskId: r.task_id, authorId: r.user_id, authorName: r.author_name, body: r.body, createdAt: r.created_at, mentions: r.mentions ?? [], reactions: r.reactions ?? {}, parentId: r.parent_id ?? undefined };
 }
 
-interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; read_at?: string | null; }
+interface ActivityRow { id: string; task_id: string | null; task_title: string; kind: string; detail: string; created_at: string; archived_at?: string | null; read_at?: string | null; meta?: unknown; }
 function rowToActivity(r: ActivityRow): Activity {
-  return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined };
+  const meta = parseActivityMeta(r.meta); // 0047: approvals and doc mentions
+  return { id: r.id, taskId: r.task_id, taskTitle: r.task_title, kind: r.kind as ActivityKind, detail: r.detail, createdAt: r.created_at, readAt: r.read_at ?? undefined, ...(meta ? { meta } : {}) };
 }
 
 interface ProfileRow { id: string; first_name: string; last_name: string; pronouns: string; email: string; avatar_url: string | null; approved?: boolean | null; suspended?: boolean | null; is_admin?: boolean | null; notify_prefs?: Record<string, boolean> | null; }

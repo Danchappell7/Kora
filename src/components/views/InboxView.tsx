@@ -28,6 +28,9 @@ const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   assigned:  { icon: "user",    verb: "assigned you" },
   mention:   { icon: "message", verb: "mentioned you in" },
   integration: { icon: "zap",   verb: "" },
+  // 0047: placeholders until w4 (approvals: meta.event picks the words) and w5 (doc mentions: no task) render them
+  approval:    { icon: "check", verb: "asked for your approval on" },
+  doc_mention: { icon: "notes", verb: "mentioned you in" },
 };
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;

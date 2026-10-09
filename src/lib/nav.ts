@@ -8,7 +8,8 @@
    My tasks   /tasks · /tasks/waiting · /tasks/done  (?due=today|overdue|week)
    Search     /search · /search/list/:id
    Projects   /projects · /projects/portfolios · /projects/goals
-              /projects/rules · /projects/requests · /p/:id · /p/:id/:tab
+              /projects/rules · /projects/requests · /projects/bin
+              /p/:id · /p/:id/:tab · /p/:id/docs/:docId
    Team       /team · /team/people · /team/workload
               /team/insights · /team/insights/trends
 
@@ -105,7 +106,7 @@ const PLACE_OF: Record<ViewId, PlaceId> = {
   plan: "today", myweek: "today", calendar: "today", home: "today",
   inbox: "inbox",
   tasks: "tasks", search: "tasks",
-  projects: "projects", portfolios: "projects", goals: "projects", automations: "projects", forms: "projects", project: "projects",
+  projects: "projects", portfolios: "projects", goals: "projects", automations: "projects", forms: "projects", project: "projects", bin: "projects",
   pulse: "team", team: "team", workload: "team", analytics: "team", reports: "team",
 };
 
@@ -123,7 +124,7 @@ export function tabsFor(place: PlaceId, ctx: NavCtx): PlaceTab[] {
 
 /* ---------------- addresses ---------------- */
 
-const PROJECT_TABS: readonly ProjectTab[] = ["list", "board", "timeline", "calendar", "files", "matrix", "updates", "requests", "rules", "about"];
+const PROJECT_TABS: readonly ProjectTab[] = ["list", "board", "timeline", "calendar", "files", "matrix", "updates", "requests", "rules", "about", "docs"];
 const TASKS_TABS = ["waiting", "done"] as const;           // "open" is the bare /tasks
 const DUE_FOCUS = ["today", "overdue", "week"] as const;
 const RESERVED = new Set(["/admin", "/privacy", "/terms"]);
@@ -147,6 +148,7 @@ const PATHS: Record<string, Route> = {
   "/projects/goals": { view: "goals" },
   "/projects/rules": { view: "automations" },
   "/projects/requests": { view: "forms" },
+  "/projects/bin": { view: "bin" },
   "/team": { view: "pulse" },
   "/team/pulse": { view: "pulse" },
   "/team/people": { view: "team" },
@@ -172,7 +174,7 @@ const PATHS: Record<string, Route> = {
 const VIEW_PATH: Record<Exclude<ViewId, "tasks" | "search" | "project">, string> = {
   plan: "/today", myweek: "/today/week", calendar: "/today/month", home: "/today/overview",
   inbox: "/inbox",
-  projects: "/projects", portfolios: "/projects/portfolios", goals: "/projects/goals", automations: "/projects/rules", forms: "/projects/requests",
+  projects: "/projects", portfolios: "/projects/portfolios", goals: "/projects/goals", automations: "/projects/rules", forms: "/projects/requests", bin: "/projects/bin",
   pulse: "/team", team: "/team/people", workload: "/team/workload", analytics: "/team/insights", reports: "/team/insights/trends",
 };
 
@@ -195,7 +197,8 @@ export function pathOf(route: Route): string {
     case "project": {
       if (!route.projectId) return "/projects";
       const tab = isOneOf(PROJECT_TABS, route.tab) ? `/${route.tab}` : "";
-      return `/p/${encodeURIComponent(route.projectId)}${tab}`;
+      const doc = route.tab === "docs" && route.docId ? `/${encodeURIComponent(route.docId)}` : "";
+      return `/p/${encodeURIComponent(route.projectId)}${tab}${doc}`;
     }
     default:
       return VIEW_PATH[route.view] ?? "/today";
@@ -217,6 +220,7 @@ export function routeOf(pathname: string, search = ""): Route | null {
   if (seg[0] === "p") {
     if (!seg[1]) return { view: "projects" };
     const route: Route = { view: "project", projectId: decode(seg[1]) };
+    if (seg[2] === "docs" && seg[3]) return { ...route, tab: "docs", docId: decode(seg[3]) };
     return isOneOf(PROJECT_TABS, seg[2]) ? { ...route, tab: seg[2] } : route;
   }
   if (seg[0] === "search") {
@@ -280,6 +284,7 @@ export const GO_TARGETS: GoTarget[] = [
   { id: "goals", label: "Goals", keywords: "goals okrs objectives key results", icon: "target", route: { view: "goals" } },
   { id: "rules", label: "Rules", keywords: "rules automations automation", icon: "zap", route: { view: "automations" } },
   { id: "requests", label: "Requests", keywords: "requests forms form intake", icon: "inbox", route: { view: "forms" } },
+  { id: "bin", label: "Recycle bin", keywords: "recycle bin trash deleted restore undelete recover", icon: "trash", route: { view: "bin" } },
   { id: "pulse", label: "Pulse", keywords: "team pulse standup stand-up daily radar risks", icon: "pulse", route: { view: "pulse" }, hint: "G E" },
   { id: "people", label: "People", keywords: "team people members invite roles", icon: "users", route: { view: "team" } },
   { id: "workload", label: "Workload", keywords: "workload capacity load", icon: "chart", route: { view: "workload" } },

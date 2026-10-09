@@ -31,6 +31,7 @@ const PRIORITIES = Object.keys(PRIORITY_META) as Priority[];
 const VIEWS: Record<ViewId, true> = {
   plan: true, home: true, inbox: true, tasks: true, calendar: true, team: true, analytics: true, reports: true, project: true,
   search: true, goals: true, portfolios: true, workload: true, automations: true, forms: true, myweek: true, projects: true, pulse: true,
+  bin: true,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);

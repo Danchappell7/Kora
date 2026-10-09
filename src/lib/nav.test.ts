@@ -6,9 +6,9 @@ import type { Route, ViewId, ProjectTab } from "../app-types";
 
 const VIEWS: ViewId[] = [
   "plan", "home", "inbox", "tasks", "calendar", "team", "analytics", "reports", "project", "search",
-  "goals", "portfolios", "workload", "automations", "forms", "myweek", "projects", "pulse",
+  "goals", "portfolios", "workload", "automations", "forms", "myweek", "projects", "pulse", "bin",
 ];
-const PROJECT_TABS: ProjectTab[] = ["list", "board", "timeline", "calendar", "files", "matrix", "updates", "requests", "rules", "about"];
+const PROJECT_TABS: ProjectTab[] = ["list", "board", "timeline", "calendar", "files", "matrix", "updates", "requests", "rules", "about", "docs"];
 const TEAM: NavCtx = { personal: false, guest: false, admin: false };
 const PERSONAL: NavCtx = { personal: true, guest: false, admin: true };
 const GUEST: NavCtx = { personal: false, guest: true, admin: false };
@@ -75,6 +75,21 @@ describe("addresses round-trip", () => {
     expect(pathOf({ view: "analytics" })).toBe("/team/insights");
     expect(pathOf({ view: "reports" })).toBe("/team/insights/trends");
     expect(pathOf({ view: "project" })).toBe("/projects");
+    expect(pathOf({ view: "bin" })).toBe("/projects/bin");
+  });
+
+  it("for project docs (0047): the Docs tab and one doc", () => {
+    const list: Route = { view: "project", projectId: "p-launch", tab: "docs" };
+    expect(pathOf(list)).toBe("/p/p-launch/docs");
+    expect(roundTrip(list)).toEqual(list);
+    const doc: Route = { view: "project", projectId: "p-launch", tab: "docs", docId: "0b6f5c1e-8f3c-4a6e-9d1a-2f3b4c5d6e7f" };
+    expect(pathOf(doc)).toBe("/p/p-launch/docs/0b6f5c1e-8f3c-4a6e-9d1a-2f3b4c5d6e7f");
+    expect(roundTrip(doc)).toEqual(doc);
+    // a docId only means something on the Docs tab
+    expect(pathOf({ view: "project", projectId: "p-launch", tab: "list", docId: "x" })).toBe("/p/p-launch/list");
+    expect(routeOf("/p/p-launch/docs/a%20b")).toEqual({ view: "project", projectId: "p-launch", tab: "docs", docId: "a b" });
+    expect(placeOf({ view: "bin" })).toBe("projects");
+    expect(titleOf({ view: "bin" })).toBe("Projects");
   });
 });
 

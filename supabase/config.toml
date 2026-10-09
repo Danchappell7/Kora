@@ -100,3 +100,9 @@ verify_jwt = false
 # changes, both with the CRON_SECRET header (x-cron-secret); 401 for anyone else
 [functions.webhook-dispatch]
 verify_jwt = false
+
+# 0047 wave: uptime. GitHub Actions and the /admin console call it without a
+# JWT; it answers only ok/timings (no data, no secrets) and checks the
+# database with kanbo_health() (service role)
+[functions.health]
+verify_jwt = false
