@@ -16,7 +16,9 @@
 //     day (rate key per local date); nothing to say → no email.
 //   "drain" (every minute): sends the push and email held for bundling and
 //     quiet hours (_shared/notifyQueue.ts drainQueue), one message per task
-//     per person.
+//     per person. Up to 200 a run, started within 40 seconds (the scheduler
+//     waits 55); what it doesn't reach goes straight back for the next run.
+//     Its claim outlasts any run, so a slow one is never sent twice.
 //
 // Prefs (profiles.notify_prefs, default ON): "due_email" for the email,
 // "due_push" for the push; "delivery", "digest_time", "quiet_hours",
@@ -57,6 +59,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PAGE = 1000;
 /** a held due list carries at most this many tasks (notify_queue.payload ≤ 8 KB) */
 const HELD_DUE_TASKS = 25;
+/** notices a scheduled drain claims (it starts none after 40 s and hands the rest back) */
+const DRAIN_LIMIT = 200;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Env { resendKey: string | undefined; from: string; appUrl: string; tz: string; vapid: VapidKeys | null }
@@ -85,7 +89,7 @@ Deno.serve(async (req) => {
   const mode = String(body?.mode ?? new URL(req.url).searchParams.get("mode") ?? "due");
   const supa = createClient(url, serviceKey);
   try {
-    if (mode === "drain") return json({ mode, ...(await drainQueue(supabaseDrainDeps(supa, { ...env, limit: 500 }))) });
+    if (mode === "drain") return json({ mode, ...(await drainQueue(supabaseDrainDeps(supa, { ...env, limit: DRAIN_LIMIT }))) });
     if (mode === "digest") return json({ mode, ...(await digests(supa, env)) });
     if (mode !== "due") return json({ error: "bad mode" }, 400);
     return await dueReminders(supa, env);

@@ -208,5 +208,22 @@ describe("planDelivery", () => {
     const now = at("2026-10-09T06:00:20Z");
     expect(planDelivery(base({ now, pendingUntil: at("2026-10-09T06:00:00Z") }))).toEqual({ action: "hold", until: now, reason: "bundle" });
     expect(planDelivery(base({ now, pendingUntil: at("2026-10-09T06:01:30Z") }))).toEqual({ action: "hold", until: at("2026-10-09T06:01:30Z"), reason: "bundle" });
+    expect(planDelivery(base({ now, pendingUntil: at("2026-10-09T06:02:20Z") }))).toEqual({ action: "hold", until: at("2026-10-09T06:02:20Z"), reason: "bundle" });
+  });
+
+  it("never joins a longer wait: held for quiet hours since switched off, a mention goes now", () => {
+    // a comment was held at 23:00 to 07:00; quiet hours are off by 05:30
+    const now = at("2026-10-09T04:30:00Z");
+    const pendingUntil = at("2026-10-09T06:00:00Z");
+    expect(planDelivery(base({ now, pendingUntil, kind: "mention" }))).toEqual({ action: "send" });
+    // just past the window: on its own too (a window it opens, if one was just sent)
+    expect(planDelivery(base({ now, pendingUntil: at("2026-10-09T04:32:01Z") }))).toEqual({ action: "send" });
+    expect(planDelivery(base({ now, pendingUntil, lastSentForTask: at("2026-10-09T04:29:30Z") }))).toEqual({
+      action: "hold", until: at("2026-10-09T04:31:30Z"), reason: "bundle",
+    });
+    // still in (new, shorter) quiet hours: their end, not the old one
+    expect(planDelivery(base({ now, pendingUntil, raw: { quiet_hours: { start: "22:00", end: "06:00" } } }))).toEqual({
+      action: "hold", until: at("2026-10-09T05:00:00Z"), reason: "quiet_hours",
+    });
   });
 });

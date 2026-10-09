@@ -103,6 +103,13 @@ describe("thread snoozes (demo: in memory)", () => {
     await expect(snoozeThread("t-1", "not a date")).rejects.toThrow("invalid snooze");
   });
 
+  it("keeps the database's rule: no further back than a day, no more than a year ahead", async () => {
+    await expect(snoozeThread("t-1", at("2026-10-08T08:59:00Z"))).rejects.toThrow("invalid snooze");   // a day and a minute ago
+    await expect(snoozeThread("t-1", at("2027-10-11T09:00:00Z"))).rejects.toThrow("invalid snooze");
+    expect((await snoozeThread("t-1", at("2026-10-08T10:00:00Z"))).until).toBe("2026-10-08T10:00:00.000Z");   // 23 hours ago: ended
+    expect((await snoozeThread("t-1", at("2027-10-09T09:00:00Z"))).until).toBe("2027-10-09T09:00:00.000Z");
+  });
+
   it("names failures", () => {
     expect(snoozeFailure({ code: "42P01", message: 'relation "public.notification_snoozes" does not exist' })).toBe("unavailable");
     expect(snoozeFailure(new Error("too many snoozes"))).toBe("too_many");

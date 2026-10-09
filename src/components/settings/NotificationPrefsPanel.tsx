@@ -9,18 +9,26 @@
      • Quiet hours: on/off, from–to, which days they start on;
        "Notifications wait until quiet hours end. Your Inbox still updates."
      • Time zone (defaults to Europe/London; "Use this device's time zone")
-   Saves through onSaveNotifyPrefs (the whole object, as the rest of the
-   panel does); lib/notifyPrefs readNotifyPrefs / applyNotifyPrefsPatch.
-   Without onSaveNotifyPrefs it's read-only. Demo: works on the demo
-   profile. Keyboard and screen-reader complete; phone width wraps.
+   Saving: each change goes as a patch through merge_notify_prefs
+   (lib/notifyPrefs mergeNotifyPrefs), one after another, so two devices
+   (or a stale tab) never overwrite each other's settings and a slow reply
+   can't undo a newer choice. The change shows at once; if it can't be
+   saved it's put back and the panel says so. The stored prefs go to
+   onNotifyPrefsStored (state only), or, when only onSaveNotifyPrefs is
+   wired, to it once a burst of changes settles. Typed times save once
+   they're whole and you pause or leave the field. A change to quiet hours,
+   time zone or delivery also re-plans notices already held
+   (rescheduleHeldNotices). Without either callback it's read-only. Demo:
+   the whole object through onSaveNotifyPrefs, on the demo profile.
+   Keyboard and screen-reader complete; phone width wraps.
    ============================================================ */
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, Icon, Segmented, Toggle, type SegmentedOption } from "../primitives";
 import { SetGroup, SetNote, SetRow } from "../integrations/settingsBits";
 import { isSupabaseConfigured } from "../../lib/backend";
 import {
-  applyNotifyPrefsPatch, deviceTimeZone as browserTimeZone, describeNotifyPrefs, quietDaysLabel, readNotifyPrefs, timeZoneChoices,
-  zoneLabel, zoneOption,
+  applyNotifyPrefsPatch, deviceTimeZone as browserTimeZone, describeNotifyPrefs, mergeNotifyPrefs, quietDaysLabel, readNotifyPrefs,
+  rescheduleHeldNotices, timeZoneChoices, touchesTiming, zoneLabel, zoneOption,
 } from "../../lib/notifyPrefs";
 import { digestMoment, hhmmToMinutes, inQuietHours, localParts, zonedTime } from "../../../supabase/functions/_shared/notifyTiming.ts";
 import type { NotifyDelivery, NotifyPrefs } from "../../data/types";
@@ -28,8 +36,12 @@ import "./notificationPrefs.css";
 
 export interface NotificationPrefsPanelProps {
   notifyPrefs: NotifyPrefs;
-  /** saves the whole prefs object (SettingsModal's onSaveNotifyPrefs); absent = read-only */
+  /** SettingsModal's onSaveNotifyPrefs (saves the whole object). With a backend the panel saves each
+   *  change itself and calls this only when onNotifyPrefsStored isn't given: once a burst of changes
+   *  settles, with the prefs as stored. Demo: every change, as before. */
   onSaveNotifyPrefs?: (prefs: NotifyPrefs) => void;
+  /** (preferred) the prefs as stored after each change — keep the profile in step; don't save them again */
+  onNotifyPrefsStored?: (prefs: NotifyPrefs) => void;
   /** the browser's timezone, offered as "Use this device's timezone" (default: Intl's) */
   deviceTimeZone?: string;
 }
@@ -46,14 +58,91 @@ const DAYS: { n: number; short: string; long: string }[] = [
 const ALL_DAYS = [1, 2, 3, 4, 5, 6, 7];
 const DEFAULT_QUIET = { start: "22:00", end: "07:00", days: ALL_DAYS };
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** a typed time saves after this pause (or when you leave the field) */
+const TIME_SAVE_MS = 600;
 
-export function NotificationPrefsPanel({ notifyPrefs, onSaveNotifyPrefs, deviceTimeZone }: NotificationPrefsPanelProps) {
-  const p = readNotifyPrefs(notifyPrefs);
-  const readOnly = !onSaveNotifyPrefs;
+export function NotificationPrefsPanel({ notifyPrefs, onSaveNotifyPrefs, onNotifyPrefsStored, deviceTimeZone }: NotificationPrefsPanelProps) {
+  const readOnly = !onSaveNotifyPrefs && !onNotifyPrefsStored;
   const demo = !isSupabaseConfigured;
   const device = deviceTimeZone || browserTimeZone();
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
-  const save = (patch: NotifyPrefs) => onSaveNotifyPrefs?.(applyNotifyPrefsPatch(notifyPrefs, patch));
+
+  // what's shown: the profile's prefs, with this panel's changes on top until they're stored
+  const [overlay, setOverlay] = useState<NotifyPrefs | null>(null);
+  const [saveError, setSaveError] = useState(false);
+  const shown = overlay ?? notifyPrefs;
+  const p = readNotifyPrefs(shown);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  const props = useRef({ notifyPrefs, onSaveNotifyPrefs, onNotifyPrefsStored });
+  props.current = { notifyPrefs, onSaveNotifyPrefs, onNotifyPrefsStored };
+  // saves in flight, in order: what they'll make of the prefs, and the server's latest answer
+  const io = useRef({
+    chain: Promise.resolve() as Promise<unknown>, pending: [] as NotifyPrefs[], view: shown, stored: null as NotifyPrefs | null,
+    retime: false, alive: true,
+  });
+  useEffect(() => { io.current.alive = true; return () => { io.current.alive = false; }; }, []);
+  // the profile caught up (or changed elsewhere): show it, unless a save is still on its way
+  useEffect(() => { if (!io.current.pending.length) setOverlay(null); }, [notifyPrefs]);
+
+  const save = (patch: NotifyPrefs) => {
+    if (readOnly) return;
+    const s = io.current;
+    const next = applyNotifyPrefsPatch(s.pending.length ? s.view : shownRef.current, patch);
+    s.view = next;
+    setOverlay(next);
+    setSaveError(false);
+    if (demo) {
+      // the demo profile is the store, in this tab only: the whole object, as before
+      (props.current.onSaveNotifyPrefs ?? props.current.onNotifyPrefsStored)?.(next);
+      return;
+    }
+    s.pending.push(patch);
+    s.chain = s.chain.then(async () => {
+      let stored: NotifyPrefs | null = null;
+      try { stored = await mergeNotifyPrefs(patch); } catch { stored = null; }
+      s.pending.shift();
+      if (stored) s.stored = stored;
+      // the server's answer, with what's still on its way on top (a failed change falls away)
+      s.view = s.pending.reduce((acc, x) => applyNotifyPrefsPatch(acc, x), s.stored ?? props.current.notifyPrefs);
+      if (s.alive) { setOverlay(s.view); if (!stored) setSaveError(true); }
+      const { onNotifyPrefsStored: told, onSaveNotifyPrefs: whole } = props.current;
+      if (stored) {
+        told?.(stored);
+        if (touchesTiming(patch)) s.retime = true;
+      }
+      if (!s.pending.length) {
+        if (s.stored && !told) whole?.(s.stored);
+        // quiet hours, time zone or delivery changed: what's already held follows (once per burst)
+        if (s.retime) void rescheduleHeldNotices();
+        s.stored = null; s.retime = false;
+      }
+    });
+  };
+
+  // typed times: one save once you pause or leave the field (not one per keystroke)
+  const typing = useRef<{ key: string; id: number; run: () => void } | null>(null);
+  const flushTyping = () => {
+    const t = typing.current;
+    if (!t) return;
+    typing.current = null;
+    window.clearTimeout(t.id);
+    t.run();
+  };
+  const saveTyped = (key: string, run: () => void) => {
+    if (typing.current && typing.current.key !== key) flushTyping();
+    if (typing.current) window.clearTimeout(typing.current.id);
+    typing.current = { key, run, id: window.setTimeout(flushTyping, TIME_SAVE_MS) };
+  };
+  const cancelTyped = (key: string) => {
+    if (typing.current?.key !== key) return;
+    window.clearTimeout(typing.current.id);
+    typing.current = null;
+  };
+  // closing Settings mid-pause still saves what was typed
+  const flushRef = useRef(flushTyping);
+  flushRef.current = flushTyping;
+  useEffect(() => () => flushRef.current(), []);
 
   // times are typed into native fields: keep what's being typed, save it once it's a whole time
   const [digestDraft, setDigestDraft] = useState(p.digestTime);
@@ -68,9 +157,13 @@ export function NotificationPrefsPanel({ notifyPrefs, onSaveNotifyPrefs, deviceT
   const overnight = HHMM.test(startDraft) && HHMM.test(endDraft) && hhmmToMinutes(endDraft) < hhmmToMinutes(startDraft);
 
   const setQuietTimes = (start: string, end: string) => {
-    if (!quiet || !HHMM.test(start) || !HHMM.test(end) || start === end) return;
-    if (start === quiet.start && end === quiet.end) return;
-    save({ quiet_hours: { start, end, days: quiet.days } });
+    if (!quiet || !HHMM.test(start) || !HHMM.test(end) || start === end) { cancelTyped("quiet"); return; }
+    saveTyped("quiet", () => {
+      // as things are when it saves (days may have changed meanwhile)
+      const q = readNotifyPrefs(shownRef.current).quietHours;
+      if (!q || (start === q.start && end === q.end)) return;
+      save({ quiet_hours: { start, end, days: q.days } });
+    });
   };
   const toggleDay = (n: number) => {
     if (!quiet) return;
@@ -103,6 +196,12 @@ export function NotificationPrefsPanel({ notifyPrefs, onSaveNotifyPrefs, deviceT
         <Icon name="bell" size={14} sw={1.75} />
         <span>{describeNotifyPrefs(p)}</span>
       </p>
+      {saveError && (
+        <p className="knp-err" role="alert">
+          <Icon name="alert" size={14} sw={2} />
+          <span>Couldn't save that change, so it's back as it was. Check your connection and try again.</span>
+        </p>
+      )}
 
       <SetGroup title="Delivery">
         <SetRow group label="How notifications reach you" desc={deliveryDesc}>
@@ -122,10 +221,12 @@ export function NotificationPrefsPanel({ notifyPrefs, onSaveNotifyPrefs, deviceT
             <div className="kset-row-ctl">
               <input id={`knp-digest-${uid}`} type="time" step={900} className="kset-input knp-time" value={digestDraft} disabled={readOnly}
                 aria-describedby={`knp-digest-${uid}-d`}
+                onBlur={flushTyping}
                 onChange={(e) => {
                   const v = e.target.value;
                   setDigestDraft(v);
-                  if (HHMM.test(v) && v !== p.digestTime) save({ digest_time: v });
+                  if (!HHMM.test(v)) { cancelTyped("digest"); return; }
+                  saveTyped("digest", () => { if (v !== readNotifyPrefs(shownRef.current).digestTime) save({ digest_time: v }); });
                 }} />
             </div>
           </div>
@@ -158,13 +259,13 @@ export function NotificationPrefsPanel({ notifyPrefs, onSaveNotifyPrefs, deviceT
                 <label className="knp-inline">
                   <span>From</span>
                   <input type="time" step={900} className="kset-input knp-time" value={startDraft} disabled={readOnly}
-                    aria-invalid={sameTimes || undefined}
+                    aria-invalid={sameTimes || undefined} onBlur={flushTyping}
                     onChange={(e) => { setStartDraft(e.target.value); setQuietTimes(e.target.value, endDraft); }} />
                 </label>
                 <label className="knp-inline">
                   <span>to</span>
                   <input type="time" step={900} className="kset-input knp-time" value={endDraft} disabled={readOnly}
-                    aria-invalid={sameTimes || undefined}
+                    aria-invalid={sameTimes || undefined} onBlur={flushTyping}
                     onChange={(e) => { setEndDraft(e.target.value); setQuietTimes(startDraft, e.target.value); }} />
                 </label>
               </div>

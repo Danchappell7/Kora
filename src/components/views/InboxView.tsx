@@ -156,6 +156,8 @@ const SNOOZE_KEY = "kanbo-inbox-snooze";
 const ZERO_KEY = "kanbo-inbox-zero-day";
 const MAX_TIMEOUT = 2 ** 31 - 1;
 const WAKE_WINDOW = 7 * 86400000;
+/** an ended thread snooze put back by Undo: 0048's snooze_guard takes nothing over a day old */
+const UNDO_ENDED_FLOOR = 23 * 3600000;
 type SnoozeState = {
   until: Record<string, number>;   // persisted: id → wake time (ms), including ended snoozes not yet flagged
   woke: Record<string, number>;    // this visit: came back during/just before it, flagged until acted on
@@ -612,6 +614,15 @@ export function InboxView({
     if (items.length === 1) onArchive(items[0].id);
     else if (items.length > 1) onClearAll(items.map((a) => a.id));
   };
+  /** Undo a thread's snooze: put back what it had. A running snooze comes back as it was. One that
+   *  had ended (the thread was "Back from snooze") ends again, keeping that flag — no further back
+   *  than the database takes (a day). One the Inbox no longer flagged, or none, is settled. */
+  const undoThreadSnooze = (taskId: string, before: number | undefined) => {
+    const t = Date.now();
+    if (before === undefined || before <= t - WAKE_WINDOW) return threads.settle(taskId);
+    if (before > t) return threads.snooze(taskId, new Date(before));
+    return threads.snooze(taskId, new Date(Math.max(before, t - UNDO_ENDED_FLOOR)));
+  };
   const snoozeRow = (row: Row, until: number) => {
     focusNextRef.current = neighbourOf(row.id);
     setMenu(null);
@@ -627,7 +638,10 @@ export function InboxView({
         if (!mounted.current) return;
         if (!r.ok) { toast?.error(snoozeFailureMessage(r.failure)); return; }
         toast?.action(`Snoozed until ${wakeLabel(until)}`, "Undo", () => {
-          void (before !== undefined ? threads.snooze(taskId, new Date(before)) : threads.settle(taskId));
+          void undoThreadSnooze(taskId, before).then((u) => {
+            if (u.ok || !mounted.current) return;
+            toast?.error(u.failure === "network" || u.failure === "unavailable" ? snoozeFailureMessage(u.failure) : "Couldn't undo that snooze. Try again.");
+          });
         });
       });
       return;

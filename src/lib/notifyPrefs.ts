@@ -63,6 +63,22 @@ export async function mergeNotifyPrefs(patch: NotifyPrefs): Promise<NotifyPrefs>
   return data && typeof data === "object" && !Array.isArray(data) ? (data as NotifyPrefs) : {};
 }
 
+/** The keys that decide when held push and email may go: a change to one plans them again. */
+export const TIMING_PREF_KEYS = ["quiet_hours", "timezone", "delivery"] as const;
+export const touchesTiming = (patch: NotifyPrefs): boolean => TIMING_PREF_KEYS.some((k) => k in patch);
+
+/**
+ * After a change to quiet hours, time zone or delivery: what's already held
+ * for you is planned again by the new settings (notify { kind: "replan" }),
+ * so switching quiet hours off releases what was waiting for them. Only ever
+ * earlier. Best-effort: if it can't be reached, held notices still go when
+ * their old wait ends. Demo: nothing is held.
+ */
+export async function rescheduleHeldNotices(): Promise<void> {
+  if (!supabase) return;
+  try { await supabase.functions.invoke("notify", { body: { kind: "replan" } }); } catch { /* best-effort */ }
+}
+
 /* ---------- words for the settings ---------- */
 
 /** The browser's timezone (or London when it can't say). */
@@ -257,6 +273,9 @@ export async function snoozeThread(taskId: string, until: Date | string): Promis
   if (!taskId || Number.isNaN(at.getTime())) throw new Error("invalid snooze");
   const iso = at.toISOString();
   if (!supabase) {
+    // the database's own rule (0048 snooze_guard): no further back than a day, no more than a year ahead
+    const now = Date.now();
+    if (at.getTime() < now - 86_400_000 || at.getTime() > now + SNOOZE_MAX_DAYS * 86_400_000) throw new Error("invalid snooze");
     const rows = demoRows();
     const row: NotificationSnooze = { taskId, until: iso, createdAt: rows.get(taskId)?.createdAt ?? new Date().toISOString() };
     rows.set(taskId, row);

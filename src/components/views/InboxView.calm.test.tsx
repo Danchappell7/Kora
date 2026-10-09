@@ -168,6 +168,48 @@ describe("thread snoozes", () => {
     expect(screen.getByRole("button", { name: /Sana Rao commented on Launch deck/ })).toBeInTheDocument();
   });
 
+  it("Undo after re-snoozing a thread that came back days ago: it's back again, as it was (not an error)", async () => {
+    const { ToastProvider } = await import("../Toast");
+    // its last snooze ended three days ago: still flagged "Back from snooze", too old for the database to take back
+    resetDemoSnoozes([{ taskId: "t1", until: iso(3 * 86_400_000), createdAt: iso(4 * 86_400_000) }]);
+    render(
+      <ToastProvider>
+        <InboxView activity={[act_({ id: "c1", detail: "Sana Rao" })]} tasks={[t1]} onOpen={vi.fn()} onArchive={vi.fn()} onClearAll={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(within(screen.getByRole("region", { name: "Back from snooze" })).getByRole("button", { name: /Sana Rao commented/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Snooze “Launch deck”" }));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: /^Tomorrow 09:00/ }));
+    await act(async () => {});
+    expect(screen.queryByRole("region", { name: "Back from snooze" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await act(async () => {});
+    // ended again, as recently as the database allows: still "Back from snooze", and it stays
+    expect(demoSnoozesNow()).toEqual([expect.objectContaining({ taskId: "t1", until: iso(23 * 3_600_000) })]);
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    expect(within(screen.getByRole("region", { name: "Back from snooze" })).getByRole("button", { name: /Sana Rao commented/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't undo/)).toBeNull();
+  });
+
+  it("an Undo the server refuses says so", async () => {
+    const { ToastProvider } = await import("../Toast");
+    const onSnooze = vi.fn(async () => undefined);
+    const onUnsnooze = vi.fn(async () => { throw new Error("Failed to fetch"); });
+    render(
+      <ToastProvider>
+        <InboxView activity={[act_({ id: "c1", detail: "Sana Rao" })]} tasks={[t1]} onOpen={vi.fn()} onArchive={vi.fn()} onClearAll={vi.fn()}
+          snoozes={[]} onSnooze={onSnooze} onUnsnooze={onUnsnooze} />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Snooze “Launch deck”" }));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: /^Tomorrow 09:00/ }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await act(async () => {});
+    expect(onUnsnooze).toHaveBeenCalledWith("t1");
+    expect(screen.getByText("You're offline. Try again when you're connected.")).toBeInTheDocument();
+  });
+
   it("a custom date and time: a small dialog, checked, then snoozed", async () => {
     inbox([act_({ id: "c1", detail: "Sana Rao" })]);
     fireEvent.click(screen.getByRole("button", { name: "Snooze “Launch deck”" }));

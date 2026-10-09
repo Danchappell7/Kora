@@ -248,7 +248,9 @@ export interface DeliveryInput {
   /** when this recipient last got something on this channel for this task (opens / extends the bundle window) */
   lastSentForTask?: Date | null;
   /** (u4) the earliest deliver_after of this task's notices still waiting for this recipient on this
-   *  channel: a new one joins them, so they go out as one */
+   *  channel: a new one joins them, so they go out as one — but only when they're due within the
+   *  bundle window. A longer wait was planned for prefs that may since have changed (quiet hours
+   *  switched off, a new time zone), so the new notice is planned on its own. */
   pendingUntil?: Date | null;
 }
 /** send now · hold until (bundle window, quiet hours) · leave it to the digest · don't send */
@@ -263,8 +265,11 @@ export type DeliveryPlan =
  * their switch for it is off → skip · the thread is snoozed → skip · daily
  * digest: email waits for the digest, push goes only for mentions and
  * approvals · quiet hours → hold to their end · bundling: join notices still
- * waiting for this task, or, within 2 minutes of the last one sent, hold to
- * the window's end · otherwise send now.
+ * waiting for this task when they're due within the 2-minute window, or,
+ * within 2 minutes of the last one sent, hold to the window's end · otherwise
+ * send now. A notice never joins a longer wait: that was planned for prefs
+ * that may have changed since (notifyQueue's deliverNotice brings such
+ * notices forward to join this one instead).
  */
 export function planDelivery(input: DeliveryInput): DeliveryPlan {
   const { kind, channel, now, prefs } = input;
@@ -278,7 +283,10 @@ export function planDelivery(input: DeliveryInput): DeliveryPlan {
     return { action: "hold", until: quietHoursEnd(now, prefs.quietHours, prefs.timezone), reason: "quiet_hours" };
   }
   if (prefs.bundle) {
-    if (input.pendingUntil) return { action: "hold", until: new Date(Math.max(input.pendingUntil.getTime(), now.getTime())), reason: "bundle" };
+    const pending = input.pendingUntil?.getTime();
+    if (pending !== undefined && Number.isFinite(pending) && pending <= now.getTime() + NOTIFY_BUNDLE_WINDOW_SEC * 1000) {
+      return { action: "hold", until: new Date(Math.max(pending, now.getTime())), reason: "bundle" };
+    }
     const last = input.lastSentForTask?.getTime();
     if (last !== undefined && Number.isFinite(last)) {
       const end = last + NOTIFY_BUNDLE_WINDOW_SEC * 1000;

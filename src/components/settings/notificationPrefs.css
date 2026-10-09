@@ -18,6 +18,13 @@
 }
 .knp-summary > svg { flex-shrink: 0; margin-top: 3px; color: var(--icon-quiet, var(--ink-3)); }
 
+/* a change that didn't save (it's been put back) */
+.knp-err {
+  display: flex; align-items: flex-start; gap: 6px; margin: -8px 2px 16px;
+  font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); text-wrap: pretty;
+}
+.knp-err > svg { flex-shrink: 0; margin-top: 3px; }
+
 /* rows with fields: the text keeps the space, the field sits right (wraps under it on a phone) */
 .knp-row > .kset-row-text { flex-basis: 200px; }
 .knp-row .kset-row-desc[data-tone="signal"] { color: var(--signal, var(--prio-urgent)); }

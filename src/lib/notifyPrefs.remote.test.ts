@@ -3,8 +3,8 @@
    key), realtime, and the failures the Inbox falls back on. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { rpc, from, channel, removeChannel, getSession } = vi.hoisted(() => ({
-  rpc: vi.fn(), from: vi.fn(), channel: vi.fn(), removeChannel: vi.fn(async (..._a: unknown[]) => "ok"),
+const { rpc, from, channel, removeChannel, getSession, invoke } = vi.hoisted(() => ({
+  rpc: vi.fn(), from: vi.fn(), channel: vi.fn(), removeChannel: vi.fn(async (..._a: unknown[]) => "ok"), invoke: vi.fn(),
   getSession: vi.fn(async () => ({ data: { session: { user: { id: "u-1" } } } })),
 }));
 vi.mock("./supabase", () => ({
@@ -14,11 +14,14 @@ vi.mock("./supabase", () => ({
     channel: (...a: unknown[]) => channel(...a),
     removeChannel: (...a: unknown[]) => removeChannel(...a),
     auth: { getSession: () => getSession() },
+    functions: { invoke: (...a: unknown[]) => invoke(...a) },
   },
   isSupabaseConfigured: true,
 }));
 
-import { listSnoozes, mergeNotifyPrefs, snoozeFailure, snoozeThread, subscribeSnoozes, unsnoozeThread } from "./notifyPrefs";
+import {
+  listSnoozes, mergeNotifyPrefs, rescheduleHeldNotices, snoozeFailure, snoozeThread, subscribeSnoozes, touchesTiming, unsnoozeThread,
+} from "./notifyPrefs";
 
 /** a PostgREST-ish builder that records its calls and resolves to `result` */
 function table(result: { data: unknown; error: unknown }) {
@@ -45,6 +48,15 @@ describe("prefs", () => {
   it("a refusal surfaces", async () => {
     rpc.mockResolvedValue({ data: null, error: { message: "not authorized", code: "P0001" } });
     await expect(mergeNotifyPrefs({ delivery: "digest" })).rejects.toMatchObject({ message: "not authorized" });
+  });
+  it("after a change to when things may go, asks notify to plan what's held again (best-effort)", async () => {
+    expect([touchesTiming({ quiet_hours: null }), touchesTiming({ timezone: "Asia/Tokyo" }), touchesTiming({ delivery: "digest" })]).toEqual([true, true, true]);
+    expect([touchesTiming({ bundle: false }), touchesTiming({ comment_email: false }), touchesTiming({ digest_time: "07:00" })]).toEqual([false, false, false]);
+    invoke.mockResolvedValueOnce({ data: { ok: true, moved: 2 }, error: null });
+    await rescheduleHeldNotices();
+    expect(invoke).toHaveBeenCalledWith("notify", { body: { kind: "replan" } });
+    invoke.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(rescheduleHeldNotices()).resolves.toBeUndefined();
   });
 });
 

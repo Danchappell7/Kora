@@ -1,6 +1,8 @@
-/* Settings › Notifications › delivery, quiet hours and time zone (0048, u4). */
+/* Settings › Notifications › delivery, quiet hours and time zone (0048, u4).
+   Demo mode: the whole object through onSaveNotifyPrefs, on the demo profile
+   (NotificationPrefsPanel.remote.test.tsx covers the real backend's patches). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { NotificationPrefsPanel } from "./NotificationPrefsPanel";
 import type { NotifyPrefs } from "../../data/types";
@@ -38,6 +40,8 @@ describe("NotificationPrefsPanel", () => {
     fireEvent.change(time, { target: { value: "" } });   // half-typed: nothing saved
     expect(onSave).toHaveBeenCalledTimes(1);
     fireEvent.change(time, { target: { value: "17:30" } });
+    expect(onSave).toHaveBeenCalledTimes(1);               // saved once you pause or leave the field
+    fireEvent.blur(time);
     expect(onSave).toHaveBeenLastCalledWith({ comment_email: false, delivery: "digest", digest_time: "17:30" });
     fireEvent.click(within(delivery).getByRole("button", { name: "Real time" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ delivery: "realtime" }));
@@ -64,6 +68,7 @@ describe("NotificationPrefsPanel", () => {
     expect(within(quiet).getByText("Overnight: ends at 07:00 the next morning.")).toBeInTheDocument();
     const hours = within(quiet).getByRole("group", { name: "Hours" });
     fireEvent.change(within(hours).getByLabelText("From"), { target: { value: "21:30" } });
+    fireEvent.blur(within(hours).getByLabelText("From"));
     expect(onSave).toHaveBeenLastCalledWith({ quiet_hours: { start: "21:30", end: "07:00", days: [1, 2, 3, 4, 5, 6, 7] } });
     // weekends off: Sat and Sun don't start a quiet night
     const days = within(quiet).getByRole("group", { name: "Days" });
@@ -82,12 +87,31 @@ describe("NotificationPrefsPanel", () => {
     render(<Harness onSave={onSave} initial={{ quiet_hours: { start: "22:00", end: "07:00", days: [3] } }} />);
     const quiet = group("Quiet hours");
     fireEvent.change(within(quiet).getByLabelText("to"), { target: { value: "22:00" } });
+    fireEvent.blur(within(quiet).getByLabelText("to"));
     expect(onSave).not.toHaveBeenCalled();
     expect(within(quiet).getByText("Pick an end time that's different from the start.")).toBeInTheDocument();
     expect(within(quiet).getByLabelText("to")).toHaveAttribute("aria-invalid", "true");
     fireEvent.click(within(quiet).getByRole("button", { name: "Wednesday" }));
     expect(onSave).not.toHaveBeenCalled();
     expect(within(quiet).getByText("Keep at least one day, or switch quiet hours off.")).toBeInTheDocument();
+  });
+
+  it("a typed time saves once you pause — one save, not one per change — and still saves if Settings closes", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-10-09T10:00:00+01:00"));
+    const onSave = vi.fn();
+    const { unmount } = render(<Harness onSave={onSave} initial={{ delivery: "digest" }} />);
+    const time = screen.getByLabelText("Digest time");
+    for (const v of ["07:00", "07:15", "07:30"]) fireEvent.change(time, { target: { value: v } });
+    expect(onSave).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(650); });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenLastCalledWith({ delivery: "digest", digest_time: "07:30" });
+    // typed, then Settings closed before the pause ended
+    fireEvent.change(time, { target: { value: "09:45" } });
+    unmount();
+    expect(onSave).toHaveBeenLastCalledWith({ delivery: "digest", digest_time: "09:45" });
   });
 
   it("a digest time inside quiet hours says when it really arrives", () => {

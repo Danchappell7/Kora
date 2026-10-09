@@ -142,7 +142,14 @@ curl -sS -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/notify" 
   decides: switched off → nothing; thread snoozed → nothing; digest → email
   waits for the digest, push only for mentions and approvals; quiet hours →
   held to their end; within 2 minutes of the last one about this task (or
-  while others about it are waiting) → held to join them; otherwise sent now.
+  while others about it are due within those 2 minutes) → held to join them;
+  otherwise sent now. A notice never joins a longer wait: if others about the
+  task are still held for quiet hours the person has since switched off,
+  shortened or moved to another time zone, they come forward to go with it.
+- Changing quiet hours, the time zone or delivery in Settings also asks
+  `notify` (`{ "kind": "replan" }`) to plan the person's own held notices
+  again: switching quiet hours off releases what was waiting for them. Only
+  ever earlier; a wait that grew is caught when it comes due.
 - Every notice is written to `notify_queue` under its event key (the comment,
   the task_events row, the approval decision), so a replayed call alerts
   nobody twice. Held ones wait with `deliver_after`; sent ones are kept a week
@@ -152,7 +159,13 @@ curl -sS -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/notify" 
   task, checks each again (still in the workspace? snoozed since? switched to
   the digest? quiet hours begun?) and sends one message per group. A send that
   fails is retried after 2, 4, 6 and 8 minutes, then given up (kept two days
-  for a look).
+  for a look). So is a check that can't be made (a passing database error):
+  that's never taken to mean someone has left.
+- A run claims up to 200 notices with a 10-minute lease (longer than an edge
+  function can run, so the next minute's run never claims them too), starts
+  no group after 40 seconds and hands back what it didn't reach at once.
+  Emails are paced for Resend (about two a second), as the morning list and
+  the digest are. A bundle that straddles the 200 goes as two messages.
 - The digest (`daily-reminders` mode `digest`, every 15 minutes) goes to each
   digest person once per local date, from their digest time (moved to the end
   of quiet hours if it falls inside them) for up to two hours, so a late

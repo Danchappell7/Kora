@@ -29,6 +29,14 @@
 // event call also drains a little (25 notices), so nothing waits long if
 // the schedule is late.
 //
+// { kind: "replan" }: Settings calls this after the caller changes their
+// quiet hours, time zone or delivery. Their own held push and email come
+// forward to what the new settings say (never later), so switching quiet
+// hours off releases what was waiting for them. Rate-limited; own rows only.
+//
+// A recipient whose profile can't be read for a fresh event gets it with
+// the default settings (as before 0048) rather than being skipped.
+//
 // { kind: "test", endpoint? } sends Settings' test notification to the
 // caller's own device(s): 200 { ok, sent } · 409 { reason: "no_subscription" }
 // · 429 { reason: "rate_limited" } · 503 { reason: "unconfigured" }.
@@ -77,7 +85,8 @@ import {
 } from "../_shared/approvalNotify.ts";
 import { eventEmail, noticeLine } from "../_shared/notifyCompose.ts";
 import {
-  deliverNotice, drainQueue, readRecipient, readSnoozedUntil, supabaseDrainDeps, supabaseQueueStore, type Notice, type SendOutcome,
+  DEFAULT_RECIPIENT, deliverNotice, drainQueue, readRecipient, readSnoozedUntil, rescheduleHeld, supabaseDrainDeps, supabaseQueueStore,
+  type Notice, type SendOutcome,
 } from "../_shared/notifyQueue.ts";
 
 const EVENT_KINDS = new Set(["assigned", "mention", "comment"]);
@@ -120,6 +129,7 @@ Deno.serve(async (req) => {
     const supa = createClient(url, serviceKey);
     if (kind === "drain") return await drain(supa, req, serviceKey, env, body);
     if (kind === "test") return await testPush(supa, req, body, env.vapid);
+    if (kind === "replan") return await replan(supa, req, env);
     if (kind === "approval") return await sideDrain(supa, env, await approvalNotice(supa, req, body, env));
 
     if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
@@ -224,9 +234,10 @@ Deno.serve(async (req) => {
     const tally: Record<string, number> = {};
     let sent = 0, pushed = 0;
     for (const id of recips) {
-      const person = await readRecipient(supa, id);
+      // can't read the profile right now: the defaults, as before (a fresh event is never lost to it)
+      const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
       if (!person) continue;   // suspended, not approved, or gone
-      const snoozedUntil = await readSnoozedUntil(supa, id, taskId);
+      const snoozedUntil = await readSnoozedUntil(supa, id, taskId).catch(() => null);
       const now = new Date();
       // push: every device they switched on — when the event is proven and this person may get it
       if (push && env.vapid && (!pushTo || pushTo.has(id))) {
@@ -295,6 +306,26 @@ async function drain(supa: Supa, req: Request, serviceKey: string, env: Env, bod
   const limit = Math.min(1000, Math.max(1, Number(body?.limit) || 200));
   const report = await drainQueue(supabaseDrainDeps(supa, { ...env, limit }));
   return json({ ok: true, ...report });
+}
+
+/** { kind: "replan" }: the caller changed quiet hours, time zone or delivery — their own held
+ *  notices come forward to what the new settings say (never later), and what's now due goes. */
+async function replan(supa: Supa, req: Request, env: Env): Promise<Response> {
+  const actor = await signedInActor(supa, req);
+  if (actor instanceof Response) return actor;
+  const limit = await hit(supa, `${KEY_PREFIX}notify-replan:${actor.actorId}`, { windowSec: 600, max: 30 });
+  if (!limit.allowed) return json({ error: "too many changes — try again shortly", retryAfter: limit.retryAfter }, 429);
+  let moved = 0;
+  try {
+    const person = await readRecipient(supa, actor.actorId);
+    if (!person) return json({ ok: true, moved: 0 });
+    moved = await rescheduleHeld(supa, actor.actorId, person.prefs, new Date());
+  } catch (e) {
+    console.warn("[notify] replan:", String((e as Error)?.message ?? e));
+    return json({ error: "couldn't check held notifications — they'll still arrive", reason: "unavailable" }, 503);
+  }
+  const res = json({ ok: true, moved });
+  return moved > 0 && (env.resendKey || env.vapid) ? await sideDrain(supa, env, res) : res;
 }
 
 /** The caller: a real, signed-in, active account (else the error response). */
@@ -380,12 +411,12 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
   const base = { kind: "approval", bundleKey: `task:${t.id}`, taskId: t.id, actorId, actorName, title: oneLine(taskTitle) } as const;
   let sent = 0, pushed = 0;
   for (const id of recips) {
-    const person = await readRecipient(supa, id);
+    const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
     if (!person) continue;
     // once per recipient per event, email and push alike (a replayed call tells nobody again)
     const once = await hit(supa, `${KEY_PREFIX}notify:approval:${id}:${plan.eventKey}`, { windowSec: APPROVAL_EVENT_WINDOW_SEC + 60 });
     if (!once.allowed) continue;
-    const snoozedUntil = await readSnoozedUntil(supa, id, t.id);
+    const snoozedUntil = await readSnoozedUntil(supa, id, t.id).catch(() => null);
     const now = new Date();
     if (push && env.vapid) {
       const vapid = env.vapid;
