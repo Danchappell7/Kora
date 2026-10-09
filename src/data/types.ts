@@ -1200,9 +1200,12 @@ export interface PlanApplyDeps {
   /** store.createTasksBatch semantics: saved copies (final ids) in order; throws BatchCreateError with .saved on partial failure */
   createTasks(tasks: Task[]): Promise<Task[]>;
   addDependency(taskId: string, dependsOn: string): Promise<void>;
-  /** rollback after a failure (new projects only): removes what was made (it goes to the bin) */
+  /** rollback after a failure — a new project: removes it with everything in it (it goes to the bin) */
   deleteProject?(projectId: string): Promise<void>;
+  /** rollback — tasks that saved */
   deleteTasks?(taskIds: string[]): Promise<void>;
+  /** rollback when adding to a project: a section the plan added (empty by then; store.deleteSection) */
+  deleteSection?(sectionId: string): Promise<void>;
 }
 export interface PlanApplyProgress {
   step: "project" | "sections" | "tasks" | "dependencies" | "done";
@@ -1211,6 +1214,7 @@ export interface PlanApplyProgress {
 }
 export interface AppliedProjectPlan {
   project: Project;
+  /** the sections and tasks this run made that stand (after a failed tidy-up: what it couldn't remove) */
   sections: Section[];
   tasks: Task[];
   dependencies: number;
