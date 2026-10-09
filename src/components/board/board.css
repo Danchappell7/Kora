@@ -1,0 +1,150 @@
+/* ============================================================
+   KANBO — the board upgrade: card covers, rename in place, the
+   progress bar and due chip, rows (swimlanes), WIP limits in the
+   warn tone, the column menu, drag-kit affordances and the virtual
+   column's spacers. Comes with the board's own (lazy) chunk, after
+   kanbo.css, so every rule here is scoped to .kbd-* (or a .kbd-*
+   ancestor) and never wins a tie it shouldn't. Tokens only, so both
+   themes follow.
+   ============================================================ */
+
+/* ---------- cards ---------- */
+/* priority / move triggers that wait out of sight show on hover, as rows do */
+/* (keyboard focus in the card reveals them too — :focus-within would leave them up after a click) */
+.kbd-card:hover .ktv-trig[data-hidden="true"] { opacity: 1; }
+.kbd-card:has(:focus-visible) .ktv-trig[data-hidden="true"] { opacity: 1; }
+
+/* a cover: one of the task's images, bleeding to the card's edges */
+.kbd-cover {
+  flex-shrink: 0; height: 104px; margin: -12px -12px 2px; overflow: hidden;
+  border-radius: var(--r-md, 8px) var(--r-md, 8px) 0 0;
+  background: var(--fill-1); box-shadow: inset 0 -1px 0 var(--hairline);
+}
+.kbd-cover img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; -webkit-user-drag: none; }
+/* …or the project's identity cover, as a slim band */
+.kbd-pcover { flex-shrink: 0; margin: -12px -12px 0; }
+.kbd-pcover .kpcover { border-radius: var(--r-md, 8px) var(--r-md, 8px) 0 0; }
+/* the select box sits on the cover, so it needs its own ground */
+.kbd-card[data-cover] .ktv-sel { box-shadow: var(--e1, var(--shadow)); }
+.kbd-card[data-cover] .ktv-sel ~ .ktv-card-top { padding-right: 0; }
+.kbd-card[data-cover="image"] .ktv-sel:not([aria-checked="true"]) { background: var(--surface-raised); }
+
+/* the title: click to rename (desktop, writers) */
+.kbd-card .ktv-card-title[data-rename] { cursor: text; border-radius: var(--r-xs, 4px); transition: background var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease); }
+.kbd-card .ktv-card-title[data-rename]:hover { background: var(--tv-hover); box-shadow: 0 0 0 3px var(--tv-hover); }
+.kbd-rename {
+  flex: 1; min-width: 0; min-height: 26px; margin: -3px -4px; padding: 2px 4px; box-sizing: border-box;
+  border: 1px solid var(--accent); border-radius: var(--r-xs, 4px); outline: none; resize: none; overflow: hidden;
+  background: var(--field-bg, var(--surface)); color: var(--ink); font: 500 14px/20px var(--tv-ui);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
+}
+.kbd-card[data-editing] { cursor: default; }
+
+/* sub-task (or checklist) progress */
+.kbd-progress { display: flex; align-items: center; gap: 8px; margin-top: -2px; }
+.kbd-progress .kmeter-wrap { flex: 1 1 auto; }
+.kbd-progress > .ktv-mono { flex-shrink: 0; color: var(--ink-3); }
+.kbd-progress[data-complete] > .ktv-mono { color: var(--ok); }
+
+/* the due chip: overdue (signal, with a mark — never colour alone) and today (accent) read as chips */
+.kbd-due { align-items: center; gap: 2px; border-radius: var(--r-sm, 6px); }
+.kbd-due[data-tone] { padding-left: 6px; }
+.ktv-card-meta .kbd-due[data-tone] .kdate-wrap { margin-left: -2px; }
+.kbd-due[data-tone="overdue"] { color: var(--tv-signal); background: var(--signal-tint, color-mix(in oklab, var(--tv-signal) 10%, transparent)); }
+.kbd-due[data-tone="overdue"] .kdate { color: var(--tv-signal); }
+.kbd-due[data-tone="today"] { padding-left: 0; background: color-mix(in oklab, var(--accent) 9%, transparent); }
+.kbd-due[data-tone="today"] .kdate { color: var(--accent-text, var(--accent)); }
+.kbd-due-icon { flex-shrink: 0; }
+
+/* the column's well: on Paper a recessed bg-deep with a hairline edge (as kanbo.css draws .klane) */
+[data-theme="light"] .kbd-lane { background: var(--bg-deep); box-shadow: inset 0 0 0 1px var(--hairline); }
+
+/* drag kit: the card in the air, every column that would take it, the one under the pointer */
+.kbd-card[data-kdnd-dragging="true"] { opacity: 0.4; }
+.kbd-lane[data-can-drop="true"] { box-shadow: inset 0 0 0 1px var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); }
+
+/* ---------- WIP limits (the warn token) ---------- */
+.kbd-count { display: inline-flex; align-items: center; gap: 3px; }
+.ktv-wip.kbd-count[data-wip="at"] { color: var(--ink-2); background: var(--tv-hover); }
+.ktv-wip.kbd-count[data-wip="over"] { color: var(--warn); font-weight: 600; background: color-mix(in oklch, var(--warn) 14%, transparent); }
+button.ktv-wip.kbd-count[data-wip="over"]:hover { color: var(--warn); background: color-mix(in oklch, var(--warn) 20%, transparent); }
+.kbd-lane[data-wip="over"] { background: color-mix(in oklab, var(--warn) 7%, var(--bg-deep)); box-shadow: inset 0 2px 0 var(--warn), inset 0 0 0 1px color-mix(in oklch, var(--warn) 30%, transparent); }
+/* (after the WIP edge, so a drop's affordance always shows) */
+.kbd-lane:is([data-drop="true"], [data-kdnd-over="true"]) {
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-deep)); box-shadow: inset 0 0 0 1.5px var(--accent-line, var(--accent));
+}
+
+/* the column menu: the limit edited in place, then the column's actions */
+.kbd-colmenu { display: grid; gap: 2px; width: 272px; max-width: calc(100vw - 32px); }
+.kbd-wipform { display: grid; gap: 8px; padding: 6px 6px 4px; }
+.kbd-wiplabel { font: 600 12px/16px var(--tv-ui); color: var(--ink-2); }
+.kbd-wiprow { display: flex; align-items: center; gap: 6px; }
+.kbd-wiprow > .kbtn { margin-left: auto; }
+.kbd-step {
+  display: inline-grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--hairline-strong); border-radius: var(--r-sm, 6px); background: var(--surface-raised);
+  color: var(--ink-2); font: 600 15px/1 var(--tv-ui); cursor: pointer;
+}
+.kbd-step:hover:not(:disabled) { background: var(--tv-hover); color: var(--ink); }
+.kbd-step:disabled { opacity: 0.4; cursor: not-allowed; }
+.kbd-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kbd-wipinput { width: 64px; height: 28px; padding: 0 6px; text-align: center; font-family: var(--font-mono); font-variant-numeric: tabular-nums; -moz-appearance: textfield; appearance: textfield; }
+.kbd-wipinput::-webkit-inner-spin-button, .kbd-wipinput::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.kbd-wipinput:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.kbd-wipinput[aria-invalid="true"] { border-color: var(--tv-signal); }
+.kbd-wiphelp { margin: 0; font: 500 12px/16px var(--tv-ui); color: var(--ink-2); }
+.kbd-wiphelp[data-tone="over"] { color: var(--warn); }
+.kbd-wiphelp[data-tone="error"] { color: var(--tv-signal); }
+.kbd-wipnote { margin: 0; font: 500 12px/16px var(--tv-ui); color: var(--ink-3); }
+.kbd-wipremove { justify-self: start; margin-left: -6px; }
+
+/* ---------- the board's own bar (when the page doesn't choose its display) ---------- */
+.kbd-bar { padding-bottom: 0; }
+.kbd-bar-end { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.kbd-covers { height: var(--h-sm, 28px); padding: 0 12px; font-size: 13px; }
+.kbd-covers > svg { color: var(--tv-quiet); }
+.kbd-covers:hover:not([aria-pressed="true"]) { background: var(--tv-hover); color: var(--ink); }
+.kbd-covers[aria-pressed="true"] {
+  border-color: var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background: var(--tv-selected); color: var(--accent-text, var(--accent));
+}
+.kbd-covers[aria-pressed="true"] > svg { color: currentColor; }
+
+/* ---------- rows (swimlanes) ---------- */
+.kbd-grid { display: flex; flex-direction: column; flex: 1 0 auto; min-width: min-content; padding: 0 var(--tv-gutter) 32px; }
+/* the column heads stay put while the rows scroll under them */
+.kbd-heads { position: sticky; top: 0; z-index: 3; display: flex; gap: 12px; padding-top: 12px; background: var(--bg); box-shadow: 0 1px 0 var(--hairline); }
+.kbd-heads > .ktv-colrail { flex-direction: row; justify-content: center; gap: 2px; height: 36px; padding: 0; }
+.kbd-swim { display: flex; flex-direction: column; }
+.kbd-swim + .kbd-swim { margin-top: 4px; }
+/* the row's name stays at the left edge when the board scrolls sideways */
+.kbd-swim-head { position: sticky; left: var(--tv-gutter); align-self: flex-start; margin: 0; padding: 14px 0 6px; font: inherit; }
+.kbd-swim-head > button {
+  display: inline-flex; align-items: center; gap: 8px; height: 28px; max-width: min(480px, 80vw); margin-left: -4px; padding: 0 8px 0 4px;
+  border: 0; border-radius: var(--r-sm, 6px); background: transparent; color: var(--ink); cursor: pointer; font: 600 13px/20px var(--tv-ui);
+  transition: background var(--d-1, 90ms) var(--ease);
+}
+.kbd-swim-head > button:hover { background: var(--tv-hover); }
+.kbd-swim-head > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kbd-swim-head > button > svg:first-child { flex-shrink: 0; color: var(--tv-quiet); }
+.kbd-swim-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kbd-swim-count { color: var(--ink-4); }
+.kbd-swim-row { display: flex; gap: 12px; }
+.kbd-swim[data-folded] .kbd-swim-head { padding-bottom: 2px; }
+.kbd-cellwrap > .ktv-lane { min-height: 72px; }
+.kbd-cellwrap > .ktv-lane:not(:has(> [data-card-id])) { min-height: 56px; }
+.kbd-railcell { flex-shrink: 0; width: 44px; }
+.kbd-nolanes { margin-top: 12px; }
+@media (max-width: 859px) {
+  .kbd-grid { padding-bottom: 96px; }
+  .kbd-swim-head > button { height: 36px; }
+}
+
+/* ---------- a long column's stand-ins for cards that aren't rendered ---------- */
+.kbd-vspace { flex-shrink: 0; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kbd-card .ktv-card-title[data-rename], .kbd-swim-head > button { transition: none; }
+}
+@media (forced-colors: active) {
+  .ktv-wip.kbd-count[data-wip="over"], .kbd-due[data-tone="overdue"] { border: 1px solid CanvasText; }
+}
