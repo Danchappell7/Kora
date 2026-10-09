@@ -1,0 +1,364 @@
+/* ============================================================
+   KANBO — project docs: the Docs tab, a doc's page, the block editor.
+   Paper & Navy tokens only (kanbo.css), so both themes come for free;
+   the page frame is the Projects one (projects.css: .kpj-page/.kpj-wrap).
+   Reading width is --read-max (720px); type follows the scale: the doc
+   title is Sora 28/36 (22/30 on a phone), body Manrope 15/24.
+   ============================================================ */
+
+/* ---------------- the Docs list ---------------- */
+.kdocs { padding-top: 8px; }
+.kdocs-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 48px; padding: 8px 0; }
+.kdocs-toolbar-title { margin: 0; font: 600 15px/24px var(--font-ui); color: var(--ink); }
+.kdocs-toolbar-title .kpj-count { margin-left: 6px; }
+.kdocs-spacer { flex: 1 1 auto; }
+.kdocs-filter { width: 220px; max-width: 100%; }
+.kdocs-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.kdocs-row {
+  position: relative; display: grid; grid-template-columns: 20px 36px minmax(0, 1fr) auto; align-items: center; gap: 0 10px;
+  min-height: 56px; margin: 0 -12px; padding: 6px 12px 6px 0; border-radius: var(--r-sm);
+  transition: background var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease);
+}
+.kdocs-row + .kdocs-row::before { content: ""; position: absolute; left: 66px; right: 12px; top: 0; height: 1px; background: var(--hairline); }
+.kdocs-row:hover { background: var(--fill-1); }
+.kdocs-row:hover + .kdocs-row::before, .kdocs-row:hover::before { background: transparent; }
+.kdocs-row[data-dragging="true"] { opacity: 0.5; }
+.kdocs-row[data-drop="before"] { box-shadow: inset 0 2px 0 var(--accent); }
+.kdocs-row[data-drop="after"] { box-shadow: inset 0 -2px 0 var(--accent); }
+.kdocs-grip {
+  display: inline-grid; place-items: center; width: 20px; height: 32px; padding: 0; border: 0; border-radius: var(--r-xs);
+  background: transparent; color: var(--icon-quiet); cursor: grab; opacity: 0; transition: opacity var(--d-1) var(--ease);
+}
+.kdocs-row:hover .kdocs-grip, .kdocs-grip:focus-visible { opacity: 1; }
+.kdocs-grip:active { cursor: grabbing; }
+.kdocs-icon {
+  display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: var(--r-md);
+  background: var(--surface-2); font-size: 20px; line-height: 1;
+}
+.kdocs-main { display: flex; flex-direction: column; min-width: 0; }
+.kdocs-title {
+  display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 14px/20px var(--font-ui); color: var(--ink); text-decoration: none;
+}
+.kdocs-title::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.kdocs-title:focus-visible { outline: none; }
+.kdocs-title:focus-visible::after { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kdocs-title[data-untitled="true"] { color: var(--ink-3); }
+.kdocs-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
+.kdocs-acts { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 2px; }
+.kdocs-acts .kibtn { opacity: 0; transition: opacity var(--d-1) var(--ease); }
+.kdocs-row:hover .kdocs-acts .kibtn, .kdocs-acts .kibtn:focus-visible, .kdocs-acts .kibtn[aria-expanded="true"] { opacity: 1; }
+/* (its own rule: a browser without :has() drops only this one) */
+.kdocs-row:has(:focus-visible) .kdocs-acts .kibtn { opacity: 1; }
+.kdocs-grip, .kdocs-acts { position: relative; z-index: 1; }
+.kdocs-archived { margin-top: 24px; }
+.kdocs-archived-toggle {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: -8px; border: 0; border-radius: var(--r-sm);
+  background: transparent; font: 600 12px/16px var(--font-ui); color: var(--ink-3); cursor: pointer;
+}
+.kdocs-archived-toggle:hover { background: var(--fill-1); color: var(--ink-2); }
+.kdocs-archived-toggle svg { transition: transform var(--d-2) var(--ease); }
+.kdocs-archived-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.kdocs-row[data-archived="true"] .kdocs-icon { opacity: 0.6; }
+.kdocs-note { margin: 8px 0 0; font: 500 12px/16px var(--font-ui); color: var(--signal); }
+.kdocs-templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; width: 100%; max-width: 520px; margin: 0 auto; }
+.kdocs-template {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px; min-height: 72px; border: 0; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e1); text-align: left; cursor: pointer;
+  font: 600 13px/18px var(--font-ui); color: var(--ink);
+  transition: box-shadow var(--d-1) var(--ease), transform var(--d-1) var(--ease);
+}
+.kdocs-template:hover:not(:disabled) { box-shadow: var(--e-lift); }
+.kdocs-template:disabled { opacity: 0.6; cursor: progress; }
+.kdocs-template-icon { font-size: 20px; line-height: 1; }
+.kdocs-tmenu-icon { display: inline-grid; place-items: center; width: 16px; font-size: 14px; line-height: 1; }
+.kdocs-skel { display: grid; gap: 8px; padding-top: 8px; }
+
+/* ---------------- a doc's page ---------------- */
+.kdoc-page { padding-top: 4px; }
+.kdoc-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 48px; padding: 8px 0; }
+.kdoc-head-meta { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
+.kdoc-head-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kdoc-head-acts { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.kdoc-iconpick {
+  display: inline-grid; place-items: center; width: 56px; height: 56px; margin: 8px 0 4px -6px; padding: 0; border: 0; border-radius: var(--r-md);
+  background: transparent; font-size: 40px; line-height: 1; cursor: pointer;
+  transition: background var(--d-1) var(--ease);
+}
+.kdoc-iconpick:hover:not(:disabled) { background: var(--fill-1); }
+.kdoc-iconpick:disabled { cursor: default; }
+.kdoc-iconpick[data-empty="true"] { width: auto; height: 28px; padding: 0 8px; margin-left: -8px; gap: 6px; display: inline-flex; align-items: center; font: 500 12px/16px var(--font-ui); color: var(--ink-3); opacity: 0; }
+.kdoc-page:hover .kdoc-iconpick[data-empty="true"], .kdoc-iconpick[data-empty="true"]:focus-visible { opacity: 1; }
+.kdoc-archived {
+  display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); font: 500 13px/20px var(--font-ui); color: var(--ink-2);
+}
+.kdoc-archived > svg { flex: none; color: var(--icon-quiet); }
+.kdoc-archived > p { flex: 1; min-width: 0; margin: 0; }
+.kdoc-gone { padding-top: 24px; }
+
+/* ---------------- the editor ---------------- */
+.kdoc-editor { position: relative; outline: none; padding-bottom: 48px; }
+.kdoc-title-row { display: flex; align-items: flex-start; gap: 12px; }
+.kdoc-title {
+  flex: 1 1 auto; min-width: 0; display: block; width: 100%; margin: 0 0 12px; padding: 0; border: 0; border-radius: 0;
+  background: transparent; resize: none; overflow: hidden; outline: none; box-shadow: none;
+  font: 600 28px/36px var(--font-head); letter-spacing: -0.02em; color: var(--ink); overflow-wrap: anywhere;
+}
+textarea.kdoc-title { height: 36px; field-sizing: content; }
+.kdoc-title::placeholder { color: var(--ink-4); opacity: 1; }
+.kdoc-title[data-readonly="true"] { margin-bottom: 16px; }
+@media (max-width: 859px) { .kdoc-title { font-size: 22px; line-height: 30px; } textarea.kdoc-title { height: 30px; } }
+
+.kdoc-save {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; height: 24px; white-space: nowrap;
+  font: 500 12px/16px var(--font-ui); color: var(--ink-3);
+}
+.kdoc-title-row > .kdoc-save { margin-top: 8px; }
+.kdoc-save[data-state="saved"] > svg { color: var(--ok); }
+.kdoc-save:is([data-state="offline"], [data-state="conflict"], [data-state="error"]) { color: var(--signal); }
+.kdoc-save .kspin { width: 12px; height: 12px; }
+
+.kdoc-banner {
+  display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px 10px; margin: 0 0 16px; padding: 10px 12px; border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warn) 10%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--warn) 30%, transparent);
+  font: 500 13px/20px var(--font-ui); color: var(--ink);
+}
+.kdoc-banner[data-tone="signal"] { background: color-mix(in oklch, var(--signal) 8%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--signal) 28%, transparent); }
+.kdoc-banner > svg { flex: none; margin-top: 2px; color: var(--warn); }
+.kdoc-banner[data-tone="signal"] > svg { color: var(--signal); }
+.kdoc-banner > p { flex: 1 1 260px; min-width: 0; margin: 0; }
+.kdoc-banner b { font-weight: 600; }
+.kdoc-banner-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+
+.kdoc-blocks { position: relative; }
+.kdoc-row {
+  position: relative; display: flex; align-items: flex-start; gap: 6px; min-height: 28px; padding: 1px 0;
+  border-radius: var(--r-sm); transition: background var(--d-1) var(--ease);
+}
+.kdoc-text {
+  position: relative; flex: 1 1 auto; min-width: 0; padding: 2px 0; outline: none;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+  font: 400 15px/24px var(--font-ui); color: var(--ink); caret-color: var(--accent);
+}
+.kdoc-text[data-empty="true"]::before {
+  content: attr(data-placeholder); position: absolute; left: 0; top: 2px; right: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--ink-4); pointer-events: none;
+}
+.kdoc-text::selection, .kdoc-text *::selection { background: color-mix(in oklch, var(--accent) 22%, transparent); }
+
+/* headings */
+.kdoc-block[data-type="h1"] { margin-top: 28px; }
+.kdoc-block[data-type="h2"] { margin-top: 20px; }
+.kdoc-block[data-type="h3"] { margin-top: 14px; }
+.kdoc-blocks > .kdoc-block:first-child, .kdoc-view > .kdoc-block:first-child { margin-top: 0; }
+.kdoc-block[data-type="h1"] .kdoc-text { font: 600 24px/32px var(--font-head); letter-spacing: -0.016em; }
+.kdoc-block[data-type="h2"] .kdoc-text { font: 600 19px/28px var(--font-head); letter-spacing: -0.01em; }
+.kdoc-block[data-type="h3"] .kdoc-text { font: 600 16px/24px var(--font-ui); }
+@media (max-width: 859px) {
+  .kdoc-block[data-type="h1"] .kdoc-text { font-size: 21px; line-height: 28px; }
+  .kdoc-block[data-type="h2"] .kdoc-text { font-size: 18px; line-height: 26px; }
+}
+
+/* lists */
+.kdoc-block[data-indent="1"] { padding-left: 24px; }
+.kdoc-block[data-indent="2"] { padding-left: 48px; }
+.kdoc-block[data-indent="3"] { padding-left: 72px; }
+.kdoc-marker {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 28px;
+  color: var(--ink-2); user-select: none;
+}
+.kdoc-marker[data-kind="bullet"]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.kdoc-block[data-indent="1"] > .kdoc-marker[data-kind="bullet"]::before { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
+.kdoc-block[data-indent="2"] > .kdoc-marker[data-kind="bullet"]::before,
+.kdoc-block[data-indent="3"] > .kdoc-marker[data-kind="bullet"]::before { border-radius: 1px; width: 5px; height: 5px; }
+.kdoc-marker[data-kind="number"] { justify-content: flex-end; padding-right: 2px; font: 500 14px/28px var(--font-ui); font-variant-numeric: tabular-nums; color: var(--ink-3); width: auto; min-width: 22px; }
+.kdoc-check {
+  width: 16px; height: 16px; margin: 6px 3px 0; padding: 0; border: 1.5px solid var(--control-border); border-radius: var(--r-xs);
+  background: var(--field-bg); color: var(--on-accent); cursor: pointer;
+  transition: background var(--d-1) var(--ease), border-color var(--d-1) var(--ease);
+}
+.kdoc-check[data-checked="true"] { background: var(--accent-fill); border-color: transparent; }
+button.kdoc-check:hover { border-color: var(--accent); }
+.kdoc-block[data-checked="true"] .kdoc-text { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
+
+/* quote, callout, divider */
+.kdoc-block[data-type="quote"] .kdoc-text { padding-left: 14px; box-shadow: inset 3px 0 0 var(--hairline-strong); color: var(--ink-2); }
+.kdoc-block[data-type="quote"] .kdoc-text[data-empty="true"]::before { left: 14px; }
+.kdoc-block[data-type="callout"] { margin: 8px 0; padding: 8px 12px 8px 8px; border-radius: var(--r-md); background: var(--surface-2); gap: 8px; }
+.kdoc-callout-icon {
+  flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; font-size: 18px; line-height: 1;
+}
+button.kdoc-callout-icon { cursor: pointer; }
+button.kdoc-callout-icon:hover { background: var(--fill-1); }
+.kdoc-divider { flex: 1; display: flex; align-items: center; height: 26px; border-radius: var(--r-sm); outline: none; }
+.kdoc-divider::before { content: ""; flex: 1; height: 1px; background: var(--hairline-strong); }
+.kdoc-divider:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.kdoc-rule { height: 1px; margin: 12px 0; border: 0; background: var(--hairline-strong); }
+
+/* inline */
+.kdoc-text strong, .kdoc-view strong { font-weight: 700; }
+.kdoc-text em, .kdoc-view em { font-style: italic; }
+.kdoc-text code, .kdoc-view code {
+  padding: 1px 4px; border-radius: var(--r-xs); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline);
+  font: 500 0.87em/1 var(--font-mono); color: var(--ink);
+}
+.kdoc-text a, .kdoc-view a {
+  color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-color: color-mix(in oklch, var(--accent-text) 45%, transparent);
+}
+.kdoc-view a:hover { text-decoration-color: currentColor; }
+.kdoc-mention {
+  display: inline; padding: 1px 4px; margin: 0 1px; border-radius: var(--r-xs); white-space: nowrap;
+  font-weight: 600; color: color-mix(in oklch, var(--accent-text), var(--pill-ink-mix) var(--pill-ink-shift));
+  background: color-mix(in oklch, var(--accent-text) 10%, transparent);
+}
+.kdoc-ph { color: var(--ink-4); }
+
+/* a Make-task line's chip */
+.kdoc-task {
+  flex: none; position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; height: 24px; margin-top: 2px; padding: 0 8px 0 6px;
+  border: 0; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hairline);
+  font: 600 12px/1 var(--font-ui); color: var(--ink-2); white-space: nowrap; cursor: pointer; user-select: none;
+  transition: background var(--d-1) var(--ease);
+}
+.kdoc-task:hover:not(:disabled) { background: var(--fill-2); }
+.kdoc-task:disabled { cursor: default; }
+.kdoc-task[data-status="done"] { color: var(--st-done); }
+.kdoc-task[data-status="blocked"] { color: var(--st-blocked); }
+.kdoc-task[data-status="progress"] { color: var(--st-progress); }
+.kdoc-task[data-status="review"] { color: var(--st-review); }
+.kdoc-task[data-status="making"] { cursor: progress; color: var(--ink-3); }
+.kdoc-task .kspin { width: 12px; height: 12px; }
+.kdoc-block[data-task="done"] .kdoc-text { color: var(--ink-3); }
+
+/* the gutter: + and the handle, on hover (on touch: the line you're in) */
+.kdoc-gutter {
+  position: absolute; top: 2px; left: -52px; display: inline-flex; gap: 2px; opacity: 0;
+  transition: opacity var(--d-1) var(--ease);
+}
+.kdoc-row:hover > .kdoc-gutter { opacity: 1; }
+.kdoc-gbtn {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--icon-quiet); cursor: pointer;
+}
+.kdoc-gbtn:hover { background: var(--fill-1); color: var(--ink-2); }
+.kdoc-handle { cursor: grab; touch-action: none; }
+.kdoc-handle:active { cursor: grabbing; }
+.kdoc-block[data-type="h1"] > .kdoc-gutter { top: 6px; }
+.kdoc-block[data-type="h2"] > .kdoc-gutter { top: 4px; }
+.kdoc-block[data-type="callout"] > .kdoc-gutter { top: 10px; left: -60px; }
+.kdoc-block[data-indent="1"] > .kdoc-gutter { left: -28px; }
+.kdoc-block[data-indent="2"] > .kdoc-gutter { left: -4px; }
+.kdoc-block[data-indent="3"] > .kdoc-gutter { left: 20px; }
+/* phones: no gutter (it would cost the text 52px); "/" and the selection bubble do its work */
+@media (max-width: 859px) { .kdoc-gutter { display: none; } }
+/* touch screens wide enough for it: the handle of the line you're in */
+@media (hover: none) and (min-width: 860px) {
+  .kdoc-row[data-focus="true"] > .kdoc-gutter { opacity: 1; }
+  .kdoc-gutter > .kdoc-gbtn:first-child { display: none; }
+}
+
+/* block selection (Esc) */
+.kdoc-block[data-selected="true"] { background: var(--bg-selected); box-shadow: 0 0 0 1px var(--accent-line); }
+.kdoc-editor[data-selecting="true"] .kdoc-text { caret-color: transparent; }
+.kdoc-drop { position: absolute; left: 0; right: 0; height: 2px; margin-top: -1px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+.kdoc-tail { height: 48px; cursor: text; }
+
+/* slash / mention menu (stays with the caret; focus never leaves the line) */
+.kdoc-pop {
+  position: absolute; z-index: var(--z-popover); width: 280px; max-width: calc(100vw - 32px); max-height: 320px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 4px; border-radius: var(--r-lg); background: var(--surface-raised); box-shadow: var(--e2);
+  animation: kdocPop var(--d-2) var(--ease);
+}
+.kdoc-pop[data-up="true"] { transform: translateY(-100%); }
+.kdoc-opt {
+  display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px; border-radius: var(--r-sm); cursor: pointer;
+  font: 500 13px/18px var(--font-ui); color: var(--ink);
+}
+.kdoc-opt[data-active="true"] { background: var(--fill-1); box-shadow: inset 2px 0 0 var(--accent); }
+.kdoc-opt-ico {
+  flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-sm);
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hairline); font: 600 12px/1 var(--font-ui); color: var(--ink-2);
+}
+.kmenu-item .kdoc-opt-ico { width: 20px; height: 20px; font-size: 11px; box-shadow: none; }
+.kdoc-opt-main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.kdoc-opt-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kdoc-opt-hint { font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
+.kdoc-pop-note { margin-top: 4px; padding: 6px 8px 4px; border-top: 1px solid var(--hairline); font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
+@keyframes kdocPop { from { opacity: 0; } to { opacity: 1; } }
+
+/* the selection bubble and the link box */
+.kdoc-bubble, .kdoc-linkbox {
+  position: absolute; z-index: var(--z-popover); transform: translate(-50%, calc(-100% - 8px));
+  display: inline-flex; align-items: center; gap: 2px; padding: 4px; border-radius: var(--r-md);
+  background: var(--surface-raised); box-shadow: var(--e2); white-space: nowrap;
+}
+.kdoc-bbtn {
+  display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: var(--r-sm);
+  background: transparent; font: 600 13px/1 var(--font-ui); color: var(--ink-2); cursor: pointer;
+}
+.kdoc-bbtn:hover { background: var(--fill-1); color: var(--ink); }
+.kdoc-bbtn[aria-pressed="true"] { color: var(--accent-text); background: var(--bg-selected); }
+.kdoc-bbtn code { font: 500 11px/1 var(--font-mono); }
+.kdoc-bsep { width: 1px; height: 16px; margin: 0 2px; background: var(--hairline-strong); }
+.kdoc-bubble-link {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 28px; padding: 0 8px; border-radius: var(--r-sm);
+  font: 500 12px/16px var(--font-ui); color: var(--accent-text); text-decoration: none;
+}
+.kdoc-bubble-link > span { overflow: hidden; text-overflow: ellipsis; }
+.kdoc-bubble-link:hover { background: var(--fill-1); }
+.kdoc-linkbox { flex-direction: column; align-items: stretch; padding: 6px; white-space: normal; width: 340px; max-width: calc(100vw - 32px); }
+.kdoc-linkbox form { display: flex; align-items: center; gap: 6px; }
+.kdoc-linkbox .kfield { flex: 1; min-width: 0; }
+.kdoc-linkbox-err { margin: 6px 2px 2px; font: 500 12px/16px var(--font-ui); color: var(--signal); }
+
+/* read only */
+.kdoc-view { display: flex; flex-direction: column; }
+.kdoc-view .kdoc-block { display: flex; align-items: flex-start; gap: 6px; padding-top: 1px; padding-bottom: 1px; margin: 0; }
+.kdoc-view .kdoc-text { margin: 0; white-space: pre-wrap; }
+.kdoc-view :is(h3, h4, h5).kdoc-text { margin: 0; }
+.kdoc-view .kdoc-block[data-type="h1"] { margin-top: 28px; }
+.kdoc-view .kdoc-block[data-type="h2"] { margin-top: 20px; }
+.kdoc-view .kdoc-block[data-type="h3"] { margin-top: 14px; }
+.kdoc-view .kdoc-block[data-type="callout"] { margin: 8px 0; padding: 8px 12px 8px 8px; }
+.kdoc-view blockquote.kdoc-block { margin: 2px 0; }
+.kdoc-list { margin: 0; padding: 0; list-style: none; }
+.kdoc-view .kdoc-check { display: inline-grid; place-items: center; cursor: default; }
+.kdoc-gap { height: 12px; }
+.kdoc-view-empty { margin: 0; font: 400 15px/24px var(--font-ui); color: var(--ink-3); }
+
+/* version history */
+.kdoc-vh { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.kdoc-vh-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto; margin: 0 -8px; padding: 2px 8px; border-radius: var(--r-md); }
+.kdoc-vh-list:focus-visible { outline-offset: 0; }
+.kdoc-vh-row {
+  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 8px; border-radius: var(--r-sm); cursor: pointer;
+}
+.kdoc-vh-row:hover { background: var(--fill-1); }
+.kdoc-vh-row[aria-selected="true"] { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
+.kdoc-vh-dot { width: 24px; height: 24px; border-radius: 50%; background: var(--fill-2); }
+.kdoc-vh-main { display: flex; flex-direction: column; min-width: 0; }
+.kdoc-vh-when { font: 600 13px/18px var(--font-ui); color: var(--ink); }
+.kdoc-vh-who { font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
+.kdoc-vh-preview { padding: 16px; border-radius: var(--r-lg); background: var(--bg); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kdoc-vh-meta { margin: 0 0 4px; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
+.kdoc-vh-title { margin: 0 0 12px; font: 600 20px/28px var(--font-head); letter-spacing: -0.012em; color: var(--ink); }
+.kdoc-vh-note { margin: 0; font: 500 13px/20px var(--font-ui); color: var(--ink-3); }
+.kdoc-vh-foot-note { flex: 1; min-width: 0; font: 500 12px/16px var(--font-ui); color: var(--ink-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .kdocs-row, .kdocs-grip, .kdocs-acts .kibtn, .kdocs-template, .kdocs-archived-toggle svg, .kdoc-iconpick, .kdoc-row, .kdoc-gutter, .kdoc-check, .kdoc-task { transition: none; }
+  .kdoc-pop { animation: none; }
+}
+@media (hover: none) {
+  .kdocs-grip, .kdocs-acts .kibtn { opacity: 1; }
+}
+@media (max-width: 559px) {
+  .kdocs-row { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 0 10px; margin: 0 -8px; padding-left: 8px; }
+  .kdocs-grip, .kdocs-grip-space { display: none; }
+  .kdocs-row + .kdocs-row::before { left: 54px; }
+  .kdocs-filter { width: 100%; order: 3; }
+}
+.kdoc-confirm { margin: 0; font: 400 14px/22px var(--font-ui); color: var(--ink-2); }
