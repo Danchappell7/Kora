@@ -9,8 +9,15 @@ import type { Task, Project, Member, SavedSearch, Comment, SearchHit } from "../
 
 vi.mock("../../lib/exportTasks", () => ({ exportTasksCsv: vi.fn(), printTasks: vi.fn() }));
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
-const api = vi.hoisted(() => ({ searchAll: vi.fn() }));
-vi.mock("../../lib/searchApi", async (orig) => ({ ...(await orig<typeof import("../../lib/searchApi")>()), searchAll: api.searchAll }));
+const api = vi.hoisted(() => ({ searchAll: vi.fn(), localSearchCalls: 0, taskScans: 0 }));
+vi.mock("../../lib/searchApi", async (orig) => {
+  const real = await orig<typeof import("../../lib/searchApi")>();
+  return { ...real, searchAll: api.searchAll, localSearch: (a: Parameters<typeof real.localSearch>[0]) => { api.localSearchCalls += 1; return real.localSearch(a); } };
+});
+vi.mock("../../lib/search/searchSpec", async (orig) => {
+  const real = await orig<typeof import("../../lib/search/searchSpec")>();
+  return { ...real, localTaskMatches: (...a: Parameters<typeof real.localTaskMatches>) => { api.taskScans += 1; return real.localTaskMatches(...a); } };
+});
 const saveView = vi.hoisted(() => ({ props: null as null | Record<string, unknown> }));
 vi.mock("./SavedViewEditor", () => ({
   SaveViewButton: (p: Record<string, unknown>) => { saveView.props = p; return <button type="button">Save view</button>; },
@@ -61,6 +68,29 @@ beforeEach(() => {
   saveView.props = null;
 });
 afterEach(() => { window.matchMedia = realMatchMedia; vi.useRealTimers(); });
+
+describe("re-renders", () => {
+  it("a parent re-render with the same people, comments and handlers (all built afresh) doesn't search again", () => {
+    const tasks = [task({ id: "t1", title: "Pricing deck" }), task({ id: "t2", title: "Hiring plan", description: "pricing first" })];
+    const comment: Comment = { id: "c1", taskId: "t2", authorId: "u-sarah", authorName: "Sarah Price", body: "pricing is next", createdAt: "2026-10-08T09:00:00Z" };
+    const view = (people: { id: string; name: string }[]) => (
+      <SearchView tasks={tasks} projects={PROJECTS} members={people} currentUserId="u-me" onOpen={() => {}} savedSearches={[]}
+        onSaveSearch={() => {}} onDeleteSavedSearch={() => {}} demoCorpus={false} serverSearch={false}
+        comments={[comment]} onGo={() => {}} onOpenPerson={() => {}} />
+    );
+    const { rerender } = render(view([{ id: "u-me", name: "Dan" }, { id: "u-sarah", name: "Sarah Price" }]));
+    typeIn("pricing");
+    expect(screen.getByRole("heading", { name: /Tasks/ })).toBeInTheDocument();
+    const before = { local: api.localSearchCalls, scans: api.taskScans };
+    rerender(view([{ id: "u-me", name: "Dan" }, { id: "u-sarah", name: "Sarah Price" }]));
+    rerender(view([{ id: "u-me", name: "Dan" }, { id: "u-sarah", name: "Sarah Price" }]));
+    expect({ local: api.localSearchCalls, scans: api.taskScans }).toEqual(before);
+    // someone new (or renamed) is a real change
+    rerender(view([{ id: "u-me", name: "Dan" }, { id: "u-sarah", name: "Sarah Price" }, { id: "u-far", name: "Farah Elsewhere" }]));
+    expect(api.localSearchCalls).toBeGreaterThan(before.local);
+    expect(api.taskScans).toBeGreaterThan(before.scans);
+  });
+});
 
 describe("filter selects always show the active filter", () => {
   it("'Assigned to me' reads 'Open (not done)', not 'Any status' (and the panel is open to show it)", () => {

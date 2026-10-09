@@ -19,6 +19,16 @@
    statuses, archived, dates, projects — and recording where they were
    (ParsedSearchNL.spans), so a chip can be taken back out of the input
    (removeChipFromInput). What nobody claimed, minus filler, is the text.
+
+   Words that are everyday English as well as filters need a cue, so
+   titles stay titles: kind words need a connector or (the app's own
+   plural nouns) to lead with who or where ("docs mentioning…",
+   "comments by Theo"; not "user research", "project plan"); status and
+   date adjectives count alone or beside another filter or "tasks"
+   ("Maya's done tasks", "late tasks"; not "closed beta", "late fees",
+   "today page redesign"); a weekday's short name needs "due", "by", "on",
+   "this" or "next" ("due sat"; not "sat nav"). Dates joined by "or" /
+   "and" are either-or ("today or tomorrow"); side by side they narrow.
    ============================================================ */
 import type { Member, ParsedSearch, Project, SearchChip, SearchChipKind, SearchFilters, SearchHitKind, Status } from "../data/types";
 import { foldText } from "./searchQuery";
@@ -65,14 +75,18 @@ export function todayIn(today: Date | string, timezone = "Europe/London"): strin
   }
 }
 
-const WEEKDAYS: Record<string, number> = {
+/** a lookup table with no prototype: "constructor" or "toString" typed in the box is just a word */
+const table = <V,>(entries: Record<string, V>): Record<string, V> => Object.freeze(Object.assign(Object.create(null) as Record<string, V>, entries));
+const WEEKDAYS: Record<string, number> = table({
   mon: 0, monday: 0, tue: 1, tues: 1, tuesday: 1, wed: 2, weds: 2, wednesday: 2,
   thu: 3, thur: 3, thurs: 3, thursday: 3, fri: 4, friday: 4, sat: 5, saturday: 5, sun: 6, sunday: 6,
-};
-const MONTHS: Record<string, number> = {
+});
+/** the short names, which are everyday words too ("sat nav", "sun cream") */
+const WEEKDAY_FULL = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+const MONTHS: Record<string, number> = table({
   jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5,
   jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11,
-};
+});
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** "Fri 16 Oct" (with the year when it isn't this one) */
@@ -149,18 +163,31 @@ const STOP = new Set([
   "task", "tasks", "doc", "docs", "comment", "comments", "project", "projects", "people", "open", "done", "blocked", "review",
   "today", "tomorrow", "yesterday", "week", "month", "overdue", "archived", "show", "find", "search", "everything", "anything",
 ]);
-const KIND_WORDS: Record<string, SearchHitKind> = {
+const KIND_WORDS: Record<string, SearchHitKind> = table({
   task: "task", tasks: "task", todos: "task",
   comment: "comment", comments: "comment", reply: "comment", replies: "comment",
   doc: "doc", docs: "doc", document: "doc", documents: "doc", page: "doc", pages: "doc", wiki: "doc",
   project: "project", projects: "project",
   people: "person", person: "person", member: "person", members: "person", teammate: "person", teammates: "person",
   colleague: "person", colleagues: "person", user: "person", users: "person",
-};
+});
 const KIND_LABEL: Record<SearchHitKind, string> = { task: "Tasks", comment: "Comments", doc: "Docs", project: "Projects", person: "People" };
+/** the app's own nouns. The other kind words (user, page, document, reply, member, wiki…) are everyday words
+ *  in titles ("user research", "page speed", "reply to client"), so they're a filter only before a clear
+ *  connector ("pages mentioning…", "users named…") */
+const STRONG_KINDS = new Set(["task", "tasks", "comment", "comments", "doc", "docs", "project", "projects", "people", "person"]);
+/** …and the plural ones, which may lead with who or where ("comments by Theo", "docs in Launch") */
+const PLURAL_KINDS = new Set(["tasks", "comments", "docs", "projects", "people"]);
+const KIND_PREPS = new Set(["by", "from", "in", "on", "for", "within", "under", "across"]);
 /** after a kind word: "docs mentioning…", "comments about…", "people named…" */
 const CONNECTORS = new Set(["mentioning", "mention", "mentions", "about", "containing", "contain", "contains", "with", "saying", "says",
   "named", "called", "regarding", "re", "matching", "match", "matches", "like", "including"]);
+/** the connectors that are clear enough after an everyday kind word ("page with broken links" is a title) */
+const WEAK_CONNECTORS = new Set([...CONNECTORS].filter((w) => !["with", "like", "including", "re"].includes(w)));
+/** a kind word that would be read as a filter after a possessive ("Theo's comments", "Maya's replies"; "Maya's page" is hers) */
+const possessiveKind = (w: string): SearchHitKind | undefined => (STRONG_KINDS.has(w) || KIND_WORDS[w] === "comment" ? KIND_WORDS[w] : undefined);
+/** the cues that make a weekday abbreviation a date ("due fri", "by sat"; "sat nav" and "sun cream" are words) */
+const ABBR_CUES = new Set(["due", "by", "on", "before", "after", "until", "till", "from", "since"]);
 /** dropped from the text once a filter has been read */
 const SOFT_FILLER = new Set(["task", "tasks", "item", "items", "thing", "things", "stuff", "ones", "one", "work", "everything", "anything", "todos"]);
 /** always dropped from the text (they'd only narrow a word search) */
@@ -206,7 +233,7 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
   };
   const add = (kind: SearchChipKind, label: string, patch: SearchFilters, range: [number, number]) => {
     const prev = chips.get(kind);
-    if (prev) { prev.ranges.push(range); return prev; }
+    if (prev) { prev.ranges.push(range); prev.at = Math.min(prev.at, range[0]); return prev; }
     const c: ChipAcc = { kind, label, patch, ranges: [range], at: range[0] };
     chips.set(kind, c);
     return c;
@@ -274,7 +301,7 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     if (base === "today" || base === "tomorrow") continue;   // read by the dates
     if (n === "my" || n === "mine" || n === "our") {
       if (n === "our") continue;
-      const nextKind = free(i + 1) ? KIND_WORDS[toks[i + 1].n] : undefined;
+      const nextKind = free(i + 1) ? possessiveKind(toks[i + 1].n) : undefined;
       if (nextKind === "comment") { add("author", "By me", { authorId: me }, take(i, i)); continue; }
       if (nextKind && nextKind !== "task") continue;                       // "my docs": just docs
       if (n === "my" && !me) continue;
@@ -284,7 +311,7 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     if (!base) continue;
     const m = memberAt(i, { possessive: true });
     if (!m) continue;
-    const nextKind = free(m.last + 1) ? KIND_WORDS[toks[m.last + 1].n] : undefined;
+    const nextKind = free(m.last + 1) ? possessiveKind(toks[m.last + 1].n) : undefined;
     if (nextKind === "comment") {
       add("author", `By ${m.name}`, { authorId: m.id }, take(i, m.last));
     } else if (!nextKind || nextKind === "task") {
@@ -292,31 +319,46 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     }
   }
 
-  /* ---- 2. kinds: "docs mentioning…", "comments by…", "pricing in docs", "people" */
+  /* ---- 2. kinds: "docs mentioning…", "comments by Theo", "pricing in docs", "docs and comments about…".
+     A kind word is a filter only with a cue: a connector after it, "in" before it, a possessive, or (the
+     app's own plural nouns) leading the search with who or where, or standing alone. Bare everyday words
+     ("user research", "project plan", "reply to client") stay words. */
   const kinds: SearchHitKind[] = [];
   const first = firstContent();
+  /** connectors taken into a kind chip: what follows them is the subject, never a filter's neighbour */
+  const connectorAt = new Set<number>();
   for (let i = 0; i < toks.length; i++) {
-    if (!free(i)) continue;
-    const kind = KIND_WORDS[toks[i].n];
-    if (!kind) continue;
-    const prevPossessive = i > 0 && toks[i - 1].used && (possessiveBase(toks[i - 1].n) || ["my", "mine"].includes(toks[i - 1].n));
-    const connector = free(i + 1) && CONNECTORS.has(toks[i + 1].n);
+    if (!free(i) || !KIND_WORDS[toks[i].n]) continue;
+    // "docs and comments", "docs or pages": one chain, one cue
+    const chain = [i];
+    for (let j = i; is(j + 1, "and", "or") && free(j + 2) && KIND_WORDS[toks[j + 2].n]; j += 2) chain.push(j + 2);
+    const last = chain[chain.length - 1];
+    const words = chain.map((k) => toks[k].n);
+    const nx = free(last + 1) ? toks[last + 1].n : "";
+    const connector = !!nx && (STRONG_KINDS.has(toks[last].n) ? CONNECTORS : WEAK_CONNECTORS).has(nx);
+    // "docs that mention…", "pages which mention…"
+    const thatConnector = !connector && (nx === "that" || nx === "which") && free(last + 2) && CONNECTORS.has(toks[last + 2].n);
+    const strong = words.every((w) => STRONG_KINDS.has(w));
+    const plural = words.every((w) => PLURAL_KINDS.has(w));
     const lead = i === first;
-    const alone = toks.filter((t) => !t.quoted && !t.used && !FILLER.has(t.n)).length === 1;
-    const afterIn = i > 0 && is(i - 1, "in", "within", "among", "across");
-    // "and"/"or" chains: "docs and comments mentioning pricing"
-    const chained = kinds.length > 0 && i > 1 && is(i - 1, "and", "or") && toks[i - 2].used && !!KIND_WORDS[toks[i - 2].n];
-    // tasks only become a filter when asked for outright ("tasks mentioning…"); otherwise they're filler
-    if (kind === "task" && !connector) continue;
-    if (!(connector || lead || alone || afterIn || prevPossessive || chained)) continue;
-    let from = i, to = i;
-    if (afterIn) from = i - 1;
-    if (chained) from = i - 1;
-    if (connector) to = i + 1;
-    if (!kinds.includes(kind)) kinds.push(kind);
-    add("kind", "", {}, take(from, to));
-    // "that mention…" / "which mention…"
-    if (is(to + 1, "that", "which") && free(to + 2) && CONNECTORS.has(toks[to + 2].n)) add("kind", "", {}, take(to + 1, to + 2));
+    const alone = strong && toks.filter((t) => !t.quoted && !t.used && !FILLER.has(t.n)).length === chain.length;
+    const afterIn = plural && i > 0 && is(i - 1, "in", "within", "among", "across");
+    const prevPossessive = i > 0 && toks[i - 1].used && (!!possessiveBase(toks[i - 1].n) || ["my", "mine"].includes(toks[i - 1].n))
+      && words.every((w) => !!possessiveKind(w));
+    // "comments by Theo", "docs in Launch", "projects for Q4"
+    const leadCue = lead && plural && KIND_PREPS.has(nx);
+    // "comment by Theo"
+    const personCue = lead && strong && (nx === "by" || nx === "from") && !!memberAt(last + 2, { allowMe: true });
+    if (!(connector || thatConnector || alone || afterIn || prevPossessive || leadCue || personCue)) { i = last; continue; }
+    // tasks are a filter only when asked for outright ("tasks mentioning…", "tasks and docs…"); otherwise they're filler
+    const found = words.map((w) => KIND_WORDS[w]).filter((k) => k !== "task" || connector || thatConnector || chain.length > 1);
+    if (!found.length) { i = last; continue; }
+    for (const k of found) if (!kinds.includes(k)) kinds.push(k);
+    const to = connector ? last + 1 : thatConnector ? last + 2 : last;
+    if (connector) connectorAt.add(last + 1);
+    if (thatConnector) connectorAt.add(last + 2);
+    add("kind", "", {}, take(afterIn ? i - 1 : i, to));
+    i = to;
   }
   if (kinds.length) {
     const c = chips.get("kind")!;
@@ -352,47 +394,54 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     else add("assignee", isMe ? "Assigned to me" : m.name, { assigneeId: m.id }, take(from, m.last));
   }
 
-  /* ---- 4. statuses */
-  const statuses: Status[] = [];
+  /* ---- 4. statuses. The names ("blocked", "in review", "to do") count anywhere; the everyday adjectives
+     ("done", "closed", "started", "pending"…) wait for step 8, which reads them as filters only in context
+     ("closed beta", "definition of done" and "pending invoices" are titles) */
+  const statuses: { s: Status; at: number }[] = [];
   const addStatus = (s: Status, from: number, to: number) => {
-    if (!statuses.includes(s)) statuses.push(s);
+    if (!statuses.some((x) => x.s === s)) statuses.push({ s, at: toks[from].start });
     // "blocked or in review": the "or" between two statuses goes with them
-    if (from > 1 && is(from - 1, "or", "and") && toks[from - 2].used && chips.get("status")?.ranges.some((r) => r[1] === toks[from - 2].end)) from -= 1;
+    const ranges = chips.get("status")?.ranges ?? [];
+    if (from > 1 && is(from - 1, "or", "and") && toks[from - 2].used && ranges.some((r) => r[1] === toks[from - 2].end)) from -= 1;
+    else if (to + 2 < toks.length && is(to + 1, "or", "and") && toks[to + 2].used && ranges.some((r) => r[0] === toks[to + 2].start)) to += 1;
     add("status", "", {}, take(from, to));
   };
+  const addOpen = (from: number, to: number) => add("open", "Open", { excludeDone: true }, take(from, to));
+  /** words that are a filter only in context (step 8): [from, to] and what they'd add */
+  const pending: { from: number; to: number; apply: () => void }[] = [];
+  const later = (from: number, to: number, apply: () => void) => pending.push({ from, to, apply });
   for (let i = 0; i < toks.length; i++) {
     if (!free(i)) continue;
     const n = toks[i].n;
     const nx = free(i + 1) ? toks[i + 1].n : "";
-    if (n === "blocked" || n === "stuck") addStatus("blocked", i, i);
+    const at = i;
+    if (n === "blocked") addStatus("blocked", i, i);
+    else if (n === "stuck") later(at, at, () => addStatus("blocked", at, at));
     else if ((n === "on" && nx === "hold")) addStatus("blocked", i, i + 1);
-    else if ((n === "in" || n === "under" || n === "awaiting" || n === "needs" || n === "for") && (nx === "review" || nx === "reviews")) addStatus("review", i, i + 1);
-    else if (n === "in-review" || n === "reviewing") addStatus("review", i, i);
+    else if ((n === "in" || n === "under" || n === "awaiting" || n === "needs") && (nx === "review" || nx === "reviews")) addStatus("review", i, i + 1);
+    else if (n === "for" && (nx === "review" || nx === "reviews")) later(at, at + 1, () => addStatus("review", at, at + 1));
+    else if (n === "in-review") addStatus("review", i, i);
+    else if (n === "reviewing") later(at, at, () => addStatus("review", at, at));
     else if (n === "in" && nx === "progress") addStatus("progress", i, i + 1);
-    else if (["in-progress", "wip", "ongoing", "started", "underway", "doing"].includes(n)) addStatus("progress", i, i);
-    else if (n === "under" && nx === "way") addStatus("progress", i, i + 1);
+    else if (["in-progress", "wip"].includes(n)) addStatus("progress", i, i);
+    else if (["ongoing", "started", "underway", "doing"].includes(n)) later(at, at, () => addStatus("progress", at, at));
+    else if (n === "under" && nx === "way") later(at, at + 1, () => addStatus("progress", at, at + 1));
     else if (n === "to" && nx === "do") addStatus("todo", i, i + 1);
     else if (["todo", "to-do", "unstarted"].includes(n)) addStatus("todo", i, i);
     else if (n === "not" && (nx === "started" || nx === "begun")) addStatus("todo", i, i + 1);
     else if (["done", "completed", "finished", "closed", "complete"].includes(n) && !(n === "complete" && i === firstContent())) {
       if (n === "done" && is(i - 1, "not")) continue;
-      addStatus("done", i, i);
+      later(at, at, () => addStatus("done", at, at));
     } else if (n === "not" && (nx === "done" || nx === "finished" || nx === "completed" || nx === "closed")) {
-      add("open", "Open", { excludeDone: true }, take(i, i + 1));
+      addOpen(i, i + 1);
     } else if (["incomplete", "unfinished", "outstanding", "remaining", "pending", "unresolved"].includes(n)) {
-      add("open", "Open", { excludeDone: true }, take(i, i));
+      later(at, at, () => addOpen(at, at));
     } else if (n === "open") {
       // "open" is a filter before a noun ("open tasks"), after a possessive, or at the very end; "open bank account" is a title
       const end = !toks.slice(i + 1).some((t) => t.quoted || (!t.used && !FILLER.has(t.n) && !SOFT_FILLER.has(t.n)));
       if (SOFT_FILLER.has(nx) || end || (i > 0 && toks[i - 1].used)) add("open", "Open", { excludeDone: true }, take(i, i));
     }
   }
-  if (statuses.length) {
-    const c = chips.get("status")!;
-    c.patch = { statuses };
-    c.label = statuses.map((s, ix) => (ix === 0 ? STATUS_WORD[s] : STATUS_WORD[s].toLowerCase())).join(" or ");
-  }
-
   /* ---- 5. archived */
   for (let i = 0; i < toks.length; i++) {
     if (!free(i) || !["archived", "archive", "archives"].includes(toks[i].n)) continue;
@@ -403,13 +452,12 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     add("archived", "Including archived", { includeArchived: true }, take(from, to));
   }
 
-  /* ---- 6. dates */
-  const due = { from: undefined as string | undefined, to: undefined as string | undefined, open: false, labels: [] as string[] };
+  /* ---- 6. dates. Explicit ones ("due today", "by friday", "next week", "16 oct", "overdue") count
+     anywhere; everyday words ("today", "late", "upcoming", "friday") wait for step 8; a weekday's short
+     name ("sat", "sun") needs a cue ("due sat", "by fri", "this wed"). */
+  const dueParts: { range: DueRange; from: number; to: number }[] = [];
   const addDue = (r: DueRange, from: number, to: number) => {
-    if (r.from && (!due.from || r.from > due.from)) due.from = r.from;
-    if (r.to && (!due.to || r.to < due.to)) due.to = r.to;
-    if (r.open) due.open = true;
-    due.labels.push(r.label);
+    dueParts.push({ range: r, from, to });
     add("due", "", {}, take(from, to));
   };
   for (let i = 0; i < toks.length; i++) {
@@ -422,6 +470,8 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     else if (n0 === "after" || n0 === "since" || n0 === "from") { lead = "after"; s++; }
     const r = readDate(s, today);
     if (!r) continue;
+    // "sat nav", "sun cream", "for sat"… a short weekday name is a date only after a cue
+    if (r.abbr && !(lead && (ABBR_CUES.has(n0) || ABBR_CUES.has(toks[s - 1]?.n ?? "")))) continue;
     let range: DueRange = r.range;
     const kind = r.range.kind;
     if (lead === "by" && kind !== "overdue") {
@@ -432,32 +482,38 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
       const startDay = n0 === "after" || toks[s - 1]?.n === "after" ? addDaysISO(range.to ?? range.from!, 1) : range.from!;
       range = { from: startDay, to: undefined, label: `Due ${n0 === "after" || toks[s - 1]?.n === "after" ? "after" : "from"} ${r.phrase}`, kind: "after" };
     }
+    if (!lead && r.soft) { const rr = range, at = i, last = r.last; later(at, last, () => addDue(rr, at, last)); i = last; continue; }
     addDue(range, i, r.last);
   }
-  if (due.labels.length) {
-    const c = chips.get("due")!;
-    const patch: SearchFilters = {};
-    if (due.from) patch.dueFrom = due.from;
-    if (due.to) patch.dueTo = due.to;
-    if (due.open) patch.excludeDone = true;
-    c.patch = patch;
-    c.label = due.labels.map((l, ix) => (ix === 0 ? l : l.charAt(0).toLowerCase() + l.slice(1))).join(", ");
-  }
 
-  function readDate(s: number, t: string): { range: DueRange; last: number; phrase: string } | null {
+  /** A date phrase at token s: its range, last token and words. `soft`: an everyday word (a filter only in
+   *  context, step 8); `abbr`: a weekday's short name (a filter only after a cue). */
+  function readDate(s: number, t: string): { range: DueRange; last: number; phrase: string; soft?: boolean; abbr?: boolean } | null {
     if (!free(s)) return null;
     const w = (k: number) => (free(k) ? toks[k].n : "");
     const a = w(s), b = w(s + 1), c = w(s + 2);
     const one = (from: string, to: string, label: string, phrase: string, last: number, kind: DueKind = "day"): { range: DueRange; last: number; phrase: string } =>
       ({ range: { from, to, label, kind }, last, phrase });
-    if (["overdue", "late"].includes(a)) return { range: { to: addDaysISO(t, -1), open: true, label: "Overdue", kind: "overdue" }, last: s, phrase: "overdue" };
-    if (a === "past" && b === "due") return { range: { to: addDaysISO(t, -1), open: true, label: "Overdue", kind: "overdue" }, last: s + 1, phrase: "overdue" };
-    if (["today", "today's", "tonight", "tod", "eod"].includes(a)) return one(t, t, "Due today", "today", s);
-    if (["tomorrow", "tomorrow's", "tmrw", "tmr"].includes(a)) return one(addDaysISO(t, 1), addDaysISO(t, 1), "Due tomorrow", "tomorrow", s);
-    if (a === "yesterday" || a === "yesterday's") return one(addDaysISO(t, -1), addDaysISO(t, -1), "Due yesterday", "yesterday", s);
-    if (a === "soon" || a === "upcoming") return one(t, addDaysISO(t, 7), "Due soon", "soon", s, "range");
-    if (a === "coming" && b === "up") return one(t, addDaysISO(t, 7), "Due soon", "soon", s + 1, "range");
+    const soft = <T extends object>(x: T) => ({ ...x, soft: true });
+    const overdue = (last: number) => ({ range: { to: addDaysISO(t, -1), open: true, label: "Overdue", kind: "overdue" as DueKind }, last, phrase: "overdue" });
+    if (a === "overdue") return overdue(s);
+    if (a === "late") return soft(overdue(s));
+    if (a === "past" && b === "due") return overdue(s + 1);
+    if (a === "eod") return one(t, t, "Due today", "today", s);
+    if (["today", "today's", "tonight", "tod"].includes(a)) return soft(one(t, t, "Due today", "today", s));
+    if (["tomorrow", "tomorrow's", "tmrw", "tmr"].includes(a)) return soft(one(addDaysISO(t, 1), addDaysISO(t, 1), "Due tomorrow", "tomorrow", s));
+    if (a === "yesterday" || a === "yesterday's") return soft(one(addDaysISO(t, -1), addDaysISO(t, -1), "Due yesterday", "yesterday", s));
+    if (a === "soon" || a === "upcoming") return soft(one(t, addDaysISO(t, 7), "Due soon", "soon", s, "range"));
+    if (a === "coming" && b === "up") return soft(one(t, addDaysISO(t, 7), "Due soon", "soon", s + 1, "range"));
     const mon = addDaysISO(t, -dowMon(t));
+    const weekOffset = (x: string) => (x === "this" || x === "the" ? 0 : x === "next" ? 1 : x === "last" ? -1 : null);
+    // "friday next week", "next week fri": that week's day
+    const dayInWeek = (offset: number, wd: string, last: number) => {
+      const day = addDaysISO(mon, 7 * offset + WEEKDAYS[wd]);
+      return one(day, day, `Due ${dayLabel(day, t)}`, dayLabel(day, t), last);
+    };
+    if (a in WEEKDAYS && weekOffset(b) !== null && (c === "week" || c === "wk")) return dayInWeek(weekOffset(b)!, a, s + 2);
+    if (weekOffset(a) !== null && a !== "the" && (b === "week" || b === "wk") && c in WEEKDAYS) return dayInWeek(weekOffset(a)!, c, s + 2);
     const weekRange = (offset: number, label: string, phrase: string, last: number) => one(addDaysISO(mon, 7 * offset), addDaysISO(mon, 7 * offset + 6), label, phrase, last, "range");
     const monthRange = (offset: number, label: string, phrase: string, last: number) => {
       const d = parseYmd(t);
@@ -477,7 +533,8 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     if (a === "last" && b === "month") return monthRange(-1, "Due last month", "last month", s + 1);
     if (a === "weekend" || ((a === "this" || a === "the") && b === "weekend") || (a === "next" && b === "weekend")) {
       const sat = addDaysISO(mon, a === "next" ? 12 : 5);
-      return one(sat, addDaysISO(sat, 1), a === "next" ? "Due next weekend" : "Due this weekend", a === "next" ? "next weekend" : "this weekend", a === "weekend" ? s : s + 1, "range");
+      const r = one(sat, addDaysISO(sat, 1), a === "next" ? "Due next weekend" : "Due this weekend", a === "next" ? "next weekend" : "this weekend", a === "weekend" ? s : s + 1, "range");
+      return a === "weekend" ? soft(r) : r;
     }
     // "next 7 days", "the next 2 weeks", "last 3 days"
     {
@@ -504,7 +561,9 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
         if (pre === "next") day = addDaysISO(mon, 7 + target);
         else if (pre === "last") day = addDaysISO(t, -(((td - target + 7) % 7) || 7));
         else day = addDaysISO(t, (target - td + 7) % 7);
-        return one(day, day, `Due ${dayLabel(day, t)}`, dayLabel(day, t), pre ? s + 1 : s);
+        const r = one(day, day, `Due ${dayLabel(day, t)}`, dayLabel(day, t), pre ? s + 1 : s);
+        // "this fri", "next tue": a date. "friday" alone: in context ("Friday standup" is a title); "sat": after a cue
+        return pre ? r : WEEKDAY_FULL.has(wd) ? soft(r) : { ...r, soft: true, abbr: true };
       }
     }
     // dates: 2026-10-16 · 16/10(/2026) · 16 oct (2026) · 16th of October · oct 16(th)
@@ -557,6 +616,45 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
     if (p) add("project", `In ${p.name}`, { projectId: p.id }, take(i, p.last));
   }
 
+  /* ---- 8. the everyday words ("done", "closed", "pending", "late", "upcoming", "today", "friday"): a
+     filter when they stand alone, or sit next to another filter, a word like "tasks", or each other
+     ("Maya's done tasks", "done last week", "blocked today", "today or tomorrow"). Otherwise they're
+     words: "definition of done", "closed beta", "late fees", "upcoming webinar", "today page redesign". */
+  {
+    const open = pending.filter((p) => toks.slice(p.from, p.to + 1).every((t) => !t.used));
+    const inOpen = (k: number) => open.some((p) => k >= p.from && k <= p.to && !toks[k].used);
+    // alone: every word left (fillers aside) is one of them ("done", "today", "monday or tuesday")
+    const content = toks.map((t, k) => ({ t, k })).filter(({ t }) => t.quoted || (!t.used && !FILLER.has(t.n) && !SOFT_FILLER.has(t.n)));
+    const alone = content.length > 0 && content.every(({ t, k }) => !t.quoted && inOpen(k));
+    const besideFilter = (p: { from: number; to: number }): boolean => {
+      for (const [start, step] of [[p.from - 1, -1], [p.to + 1, 1]] as const) {
+        for (let k = start; k >= 0 && k < toks.length; k += step) {
+          const t = toks[k];
+          if (t.quoted || connectorAt.has(k)) break;          // "comments about closed beta": the subject
+          if (t.used || SOFT_FILLER.has(t.n) || inOpen(k)) return true;
+          if (FILLER.has(t.n)) continue;                       // "the", "and", "or", "of"…
+          break;
+        }
+      }
+      return false;
+    };
+    const ok = open.filter((p) => alone || besideFilter(p));
+    for (const p of ok) if (toks.slice(p.from, p.to + 1).every((t) => !t.used)) p.apply();
+  }
+  if (statuses.length) {
+    const c = chips.get("status")!;
+    const ordered = [...statuses].sort((x, y) => x.at - y.at).map((x) => x.s);
+    c.patch = { statuses: ordered };
+    c.label = ordered.map((s, ix) => (ix === 0 ? STATUS_WORD[s] : STATUS_WORD[s].toLowerCase())).join(" or ");
+  }
+  if (dueParts.length) {
+    const c = chips.get("due")!;
+    const { patch, label, joiners } = combineDue(dueParts.sort((x, y) => x.from - y.from), toks, input);
+    for (const k of joiners) if (free(k)) add("due", "", {}, take(k, k));
+    c.patch = patch;
+    c.label = label;
+  }
+
   /* ---- leftovers → text */
   const anyChip = chips.size > 0;
   const keep = toks.filter((t) => !t.used && (t.quoted || !(FILLER.has(t.n) || (anyChip && SOFT_FILLER.has(t.n)))));
@@ -567,14 +665,69 @@ function parse(input: string, ctx: SearchNLContext): ParsedSearchNL {
   const list: SearchChip[] = [...chips.values()]
     .filter((c) => c.label)
     .sort((x, y) => x.at - y.at)
-    .map((c) => ({ id: c.kind, kind: c.kind, label: c.label, patch: c.patch, source: c.ranges.map(([a, b]) => input.slice(a, b)).join(" … ") }));
+    .map((c) => ({ id: c.kind, kind: c.kind, label: c.label, patch: c.patch, source: joinRanges(c.ranges, input) }));
   const spans: Record<string, [number, number][]> = {};
   for (const c of chips.values()) if (c.label) spans[c.kind] = c.ranges.slice().sort((x, y) => x[0] - y[0]);
   return { input, text, filters: chipsToFilters(list), chips: list, spans };
 }
 
+/** a chip's words as typed: touching ranges run together ("today or tomorrow"), others are joined with " … " */
+function joinRanges(ranges: [number, number][], input: string): string {
+  const sorted = ranges.slice().sort((x, y) => x[0] - y[0]);
+  let out = "";
+  let end = -1;
+  for (const [a, b] of sorted) {
+    if (!out) out = input.slice(a, b);
+    else out += (/^\s*$/.test(input.slice(end, a)) ? input.slice(end, a) : " … ") + input.slice(a, b);
+    end = b;
+  }
+  return out;
+}
+
 type DueKind = "day" | "range" | "overdue" | "by" | "after";
 interface DueRange { from?: string; to?: string; open?: boolean; label: string; kind: DueKind }
+
+/** Several date phrases → one range. Joined by "or" / "and" / a comma ("today or tomorrow", "overdue or due
+ *  today", "this week or next week") they're either-or: the span that covers them all. Side by side they
+ *  narrow each other ("overdue this week") — unless that leaves nothing, when they're either-or too.
+ *  An explicit bound ("by friday", "after 16 oct") always narrows. Open work only (excludeDone) is kept if any
+ *  part asks for it: an either-or with "overdue" without it would list every finished task in history. */
+function combineDue(parts: { range: DueRange; from: number; to: number }[], toks: Tok[], input: string): { patch: SearchFilters; label: string; joiners: number[] } {
+  const minS = (a?: string, b?: string) => (a && b ? (a < b ? a : b) : undefined);
+  const maxS = (a?: string, b?: string) => (a && b ? (a > b ? a : b) : undefined);
+  let from = parts[0].range.from, to = parts[0].range.to, open = !!parts[0].range.open;
+  let label = parts[0].range.label;
+  let lastLabel = label;
+  const joiners: number[] = [];
+  for (let k = 1; k < parts.length; k++) {
+    const prev = parts[k - 1], cur = parts[k].range;
+    const between = input.slice(toks[prev.to].end, toks[parts[k].from].start);
+    const joined = /^(?:\s|,|&|\/|\bor\b|\band\b|\beither\b)+$/i.test(between) && /,|&|\/|\bor\b|\band\b/i.test(between);
+    const bound = cur.kind === "by" || cur.kind === "after" || prev.range.kind === "by" || prev.range.kind === "after";
+    // narrowed: the later start, the earlier end (an open end takes the other's)
+    const nFrom = from && cur.from ? (from > cur.from ? from : cur.from) : from ?? cur.from;
+    const nTo = to && cur.to ? (to < cur.to ? to : cur.to) : to ?? cur.to;
+    const empty = !!(nFrom && nTo && nFrom > nTo);
+    const either = !bound && (joined || empty);
+    if (either) {
+      from = minS(from, cur.from); to = maxS(to, cur.to);
+      // "Due today or tomorrow", "Overdue or due today"
+      label += " or " + (lastLabel.startsWith("Due ") && cur.label.startsWith("Due ") ? cur.label.slice(4) : lower(cur.label));
+      if (joined) for (let j = prev.to + 1; j < parts[k].from; j++) if (["or", "and", "either"].includes(toks[j].n)) joiners.push(j);
+    } else {
+      from = nFrom; to = nTo;
+      label += ", " + lower(cur.label);
+    }
+    open = open || !!cur.open;
+    lastLabel = cur.label;
+  }
+  const patch: SearchFilters = {};
+  if (from) patch.dueFrom = from;
+  if (to) patch.dueTo = to;
+  if (open) patch.excludeDone = true;
+  return { patch, label, joiners };
+}
+const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
 
 const STATUS_WORD: Record<Status, string> = { todo: "To do", progress: "In progress", review: "In review", blocked: "Blocked", done: "Done" };
 

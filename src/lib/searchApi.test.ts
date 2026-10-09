@@ -72,8 +72,29 @@ describe("localSearch follows search_all's rules", () => {
   it("include archived brings back archived tasks and what's in archived projects", () => {
     const hits = run("pricing", { includeArchived: true });
     expect(ids(hits, "task")).toEqual(expect.arrayContaining(["t-arch", "t-oldp"]));
-    expect(ids(hits, "doc")).toEqual(["d-1", "d-2"]);
-    expect(ids(hits, "project")).toEqual(["p-launch", "p-old"]);
+    // a title match ranks above a match in the body
+    expect(ids(hits, "doc")).toEqual(["d-2", "d-1"]);
+    expect(ids(hits, "project")).toEqual(["p-old", "p-launch"]);
+  });
+  it("ranks every match before the cap: a title hit is never crowded out by earlier, weaker ones", () => {
+    const projects: Project[] = [...PROJECTS, { id: "p-q3", name: "Q3 Product Launch", emoji: "", color: "blue", workspaceId: "ws-1" }];
+    setReferenceData({ projects, members: MEMBERS });
+    const many = [
+      ...Array.from({ length: 8 }, (_, i) => task({ id: `t-w${i}`, title: `Write copy ${i}`, projectId: "p-q3" })),
+      task({ id: "t-check", title: "Launch checklist", projectId: "p-launch" }),
+      task({ id: "t-done-l", title: "Launch retro", status: "done", projectId: "p-launch" }),
+    ];
+    const hits = localSearch({ text: "launch", filters: {}, tasks: many, projects, members: MEMBERS, currentUserId: "m-self", limit: 5 });
+    expect(ids(hits, "task")).toEqual(["t-check", "t-done-l", "t-w0", "t-w1", "t-w2"]);
+    // and merged with the server's, still ranked before the cap
+    const merged = mergeSearchHits(hits, [], { text: "launch", limitPerKind: 5 });
+    expect(ids(merged, "task").slice(0, 2)).toEqual(["t-check", "t-done-l"]);
+    // docs too
+    const docs = [
+      ...Array.from({ length: 6 }, (_, i) => ({ id: `d-n${i}`, projectId: "p-launch", title: `Notes ${i}`, workspaceId: "ws-1", text: "the launch plan" })),
+      { id: "d-l", projectId: "p-launch", title: "Launch plan", workspaceId: "ws-1", text: "" },
+    ];
+    expect(ids(localSearch({ text: "launch", filters: { kinds: ["doc"] }, tasks: [], projects, members: MEMBERS, docs, currentUserId: "m-self", limit: 3 }))).toEqual(["d-l", "d-n0", "d-n1"]);
   });
   it("task filters narrow tasks; a project narrows everything; an author narrows comments", () => {
     expect(ids(run("pricing", { assigneeId: "m-1" }), "task").sort()).toEqual(["t-deck", "t-review"]);   // collaborator counts
@@ -145,6 +166,17 @@ describe("mergeSearchHits", () => {
     ];
     const server = [hit({ id: "ranked", title: "Deck", rank: 0.9, source: "server" })];
     expect(mergeSearchHits(local, server, { text: "deck" }).map((h) => h.id)).toEqual(["ranked", "new", "old", "done"]);
+  });
+  it("keepOrder (⌘K): the device's rows stay put when the server's answer arrives; its own rows slot in by title", () => {
+    const local = [hit({ id: "a", title: "Deck notes" }), hit({ id: "b", title: "Deck review" }), hit({ id: "c", title: "Board", snippet: "the deck" })];
+    const server = [
+      hit({ id: "b", title: "Deck review", rank: 0.9, source: "server" }),
+      hit({ id: "s1", title: "Slides", rank: 0.8, source: "server" }),
+      hit({ id: "s2", title: "Deck", rank: 0.1, source: "server" }),
+    ];
+    expect(mergeSearchHits(local, server, { text: "deck", keepOrder: true }).map((h) => h.id)).toEqual(["s2", "a", "b", "c", "s1"]);
+    // without it, the server's rank reorders the device's rows
+    expect(mergeSearchHits(local, server, { text: "deck" }).map((h) => h.id)).toEqual(["s2", "b", "a", "s1", "c"]);
   });
   it("de-duplicates by kind + id: the server's snippet wins, the device's fills the gaps", () => {
     const local = [hit({ id: "a", title: "Pricing", snippet: "local", updatedAt: "2026-10-01T00:00:00Z" }), hit({ kind: "doc", id: "a", title: "Pricing doc" })];

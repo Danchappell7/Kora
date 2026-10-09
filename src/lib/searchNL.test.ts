@@ -19,6 +19,7 @@ const CTX: SearchNLContext = {
 };
 const p = (input: string, ctx: Partial<SearchNLContext> = {}) => parseSearchNL(input, { ...CTX, ...ctx });
 const labels = (input: string) => p(input).chips.map((c) => c.label);
+const due = (input: string) => { const f = p(input).filters; return [f.dueFrom, f.dueTo]; };
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-09T10:00:00+01:00")); });
 afterEach(() => { vi.useRealTimers(); });
@@ -112,8 +113,11 @@ describe("parseSearchNL — statuses", () => {
   it("open / not done / outstanding — but 'open' at the start of a title is text", () => {
     expect(p("open tasks in Launch").filters).toEqual({ excludeDone: true, projectId: "p-launch" });
     expect(p("not done").filters).toEqual({ excludeDone: true });
-    expect(p("outstanding invoices").filters).toEqual({ excludeDone: true });
-    expect(p("outstanding invoices").text).toBe("invoices");
+    expect(p("outstanding tasks").filters).toEqual({ excludeDone: true });
+    expect(p("Maya's outstanding work").filters).toEqual({ assigneeId: "m-1", excludeDone: true });
+    // next to a plain word it's that word: "outstanding invoices" is a title
+    expect(p("outstanding invoices").filters).toEqual({});
+    expect(p("outstanding invoices").text).toBe("outstanding invoices");
     expect(p("open bank account").filters).toEqual({});
     expect(p("open bank account").text).toBe("open bank account");
   });
@@ -124,7 +128,6 @@ describe("parseSearchNL — statuses", () => {
 });
 
 describe("parseSearchNL — dates (Friday 9 Oct 2026, Europe/London)", () => {
-  const due = (input: string) => { const f = p(input).filters; return [f.dueFrom, f.dueTo]; };
   it("today, tomorrow, yesterday, overdue", () => {
     expect(due("due today")).toEqual(["2026-10-09", "2026-10-09"]);
     expect(due("today's tasks")).toEqual(["2026-10-09", "2026-10-09"]);
@@ -166,8 +169,37 @@ describe("parseSearchNL — dates (Friday 9 Oct 2026, Europe/London)", () => {
     expect(due("due after 16 oct")).toEqual(["2026-10-17", undefined]);
     expect(labels("by friday")).toEqual(["Due by Fri 9 Oct"]);
   });
-  it("two date phrases narrow each other", () => {
+  it("two date phrases side by side narrow each other", () => {
     expect(p("overdue this week").filters).toEqual({ dueFrom: "2026-10-05", dueTo: "2026-10-08", excludeDone: true });
+    expect(labels("overdue this week")).toEqual(["Overdue, due this week"]);
+    expect(p("next week by wednesday").filters).toEqual({ dueFrom: "2026-10-12", dueTo: "2026-10-14" });
+  });
+  it("joined by 'or', 'and' or a comma they're either-or: the span covering both", () => {
+    expect(p("due today or tomorrow").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-10" });
+    expect(labels("due today or tomorrow")).toEqual(["Due today or tomorrow"]);
+    expect(p("monday or tuesday").filters).toEqual({ dueFrom: "2026-10-12", dueTo: "2026-10-13" });
+    expect(labels("monday or tuesday")).toEqual(["Due Mon 12 Oct or Tue 13 Oct"]);
+    expect(p("this week or next week").filters).toEqual({ dueFrom: "2026-10-05", dueTo: "2026-10-18" });
+    expect(p("due today and tomorrow").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-10" });
+    expect(p("today, tomorrow").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-10" });
+    // overdue keeps it to open work (or every finished task in history would join in)
+    expect(p("overdue or due today").filters).toEqual({ dueTo: "2026-10-09", excludeDone: true });
+    expect(labels("overdue or due today")).toEqual(["Overdue or due today"]);
+    // the "or" goes with the chip, and the rest is still searched for
+    const r = p("pricing due today or tomorrow");
+    expect(r.text).toBe("pricing");
+    expect(removeChipFromInput(r, "due")).toBe("pricing");
+  });
+  it("side by side but with nothing in common, they're either-or too", () => {
+    expect(p("today tomorrow").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-10" });
+  });
+  it("explicit bounds always narrow ('after … and before …' is between)", () => {
+    expect(p("after 12 oct and before 20 oct").filters).toEqual({ dueFrom: "2026-10-13", dueTo: "2026-10-19" });
+  });
+  it("a weekday with its week: 'friday next week', 'next week fri'", () => {
+    expect(due("friday next week")).toEqual(["2026-10-16", "2026-10-16"]);
+    expect(due("next week fri")).toEqual(["2026-10-16", "2026-10-16"]);
+    expect(due("wednesday this week")).toEqual(["2026-10-07", "2026-10-07"]);
   });
   it("dates are worked out in the person's timezone", () => {
     // 23:30 UTC on Fri 9 Oct is already Sat 10 Oct in London (BST), still Friday in New York
@@ -227,6 +259,81 @@ describe("parseSearchNL — kinds", () => {
     expect(p("tasks mentioning pricing").filters).toEqual({ kinds: ["task"] });
     expect(p("Maya's tasks").filters).toEqual({ assigneeId: "m-1" });
     expect(p("update api docs").filters).toEqual({});   // a title, not a kind
+  });
+});
+
+describe("parseSearchNL — everyday words stay words unless something cues a filter", () => {
+  const none = (input: string) => { const r = p(input); return { filters: r.filters, chips: r.chips.length }; };
+  it("kind words: only the app's own nouns, and only with a cue", () => {
+    for (const s of ["user research", "project plan", "reply to client email", "document the release process", "page speed",
+      "member onboarding", "wiki cleanup", "page with broken links", "comments section redesign", "people ops hiring plan", "update api docs"]) {
+      expect(none(s), s).toEqual({ filters: {}, chips: 0 });
+    }
+    expect(p("user research").text).toBe("user research");
+    expect(p("document the release process").text).toBe("document release process");
+  });
+  it("…a clear connector makes even the everyday ones a filter", () => {
+    expect(p("pages about pricing").filters).toEqual({ kinds: ["doc"] });
+    expect(p("users named sana").filters).toEqual({ kinds: ["person"] });
+    expect(p("documents mentioning tiers").text).toBe("tiers");
+  });
+  it("…and a plural kind word may lead with who or where", () => {
+    expect(p("comments on the deck").filters).toEqual({ kinds: ["comment"] });
+    expect(p("comments on the deck").text).toBe("deck");
+    expect(p("docs in launch").filters).toEqual({ kinds: ["doc"], projectId: "p-launch" });
+    expect(p("comment by Theo").filters).toEqual({ kinds: ["comment"], authorId: "m-2" });
+    expect(p("Theo's replies").filters).toEqual({ kinds: ["comment"], authorId: "m-2" });
+  });
+  it("a possessive before an everyday word is the assignee", () => {
+    expect(p("Maya's page redesign").filters).toEqual({ assigneeId: "m-1" });
+    expect(p("Maya's page redesign").text).toBe("page redesign");
+    expect(p("my page edits").filters).toEqual({ assigneeId: "m-self" });
+  });
+  it("status adjectives: alone, or beside another filter or 'tasks'", () => {
+    for (const s of ["getting started guide", "closed beta", "definition of done", "pending invoices", "doing taxes", "finished goods count",
+      "remaining budget", "ongoing support rota", "send deck for review"]) {
+      expect(none(s), s).toEqual({ filters: {}, chips: 0 });
+    }
+    expect(p("closed beta").text).toBe("closed beta");
+    expect(p("done").filters).toEqual({ statuses: ["done"] });
+    expect(p("done tasks").filters).toEqual({ statuses: ["done"] });
+    expect(p("Maya's done tasks").filters).toEqual({ assigneeId: "m-1", statuses: ["done"] });
+    expect(p("closed in launch").filters).toEqual({ statuses: ["done"], projectId: "p-launch" });
+    expect(p("pending tasks").filters).toEqual({ excludeDone: true });
+    expect(p("started this week").filters).toEqual({ statuses: ["progress"], dueFrom: "2026-10-05", dueTo: "2026-10-11" });
+    expect(p("done or blocked").filters).toEqual({ statuses: ["done", "blocked"] });
+    expect(labels("done or blocked")).toEqual(["Done or blocked"]);
+    expect(removeChipFromInput(p("pricing done or blocked"), "status")).toBe("pricing");
+  });
+  it("…but never the subject after a connector", () => {
+    expect(p("comments about closed beta").filters).toEqual({ kinds: ["comment"] });
+    expect(p("comments about closed beta").text).toBe("closed beta");
+  });
+  it("date words: alone, beside a filter or 'tasks', or after a cue", () => {
+    for (const s of ["upcoming webinar", "late fees", "today page redesign", "Black Friday", "weekend plans", "Friday standup notes"]) {
+      expect(none(s), s).toEqual({ filters: {}, chips: 0 });
+    }
+    expect(p("late tasks").filters).toEqual({ dueTo: "2026-10-08", excludeDone: true });
+    expect(p("upcoming tasks").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-16" });
+    expect(p("blocked today").filters).toEqual({ statuses: ["blocked"], dueFrom: "2026-10-09", dueTo: "2026-10-09" });
+    expect(p("done today").filters).toEqual({ statuses: ["done"], dueFrom: "2026-10-09", dueTo: "2026-10-09" });
+    expect(p("pricing deck due today").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-09" });
+    expect(p("standup for friday").filters).toEqual({ dueFrom: "2026-10-09", dueTo: "2026-10-09" });
+  });
+  it("a weekday's short name is a date only after due / by / on / this / next", () => {
+    for (const s of ["sun cream", "sat nav", "wed planning", "mon dashboard", "for sat"]) expect(none(s), s).toEqual({ filters: {}, chips: 0 });
+    expect(p("sat nav for maya").filters).toEqual({ assigneeId: "m-1" });
+    expect(p("sat nav for maya").text).toBe("sat nav");
+    expect(due("due sat")).toEqual(["2026-10-10", "2026-10-10"]);
+    expect(due("by sun")).toEqual([undefined, "2026-10-11"]);
+    expect(due("on wed")).toEqual(["2026-10-14", "2026-10-14"]);
+    expect(due("this sun")).toEqual(["2026-10-11", "2026-10-11"]);
+    expect(due("next mon")).toEqual(["2026-10-12", "2026-10-12"]);
+  });
+  it("words that are also JavaScript's own names are just words", () => {
+    expect(p("constructor").text).toBe("constructor");
+    expect(p("toString deck").text).toBe("toString deck");
+    expect(p("due constructor").chips).toEqual([]);
   });
 });
 

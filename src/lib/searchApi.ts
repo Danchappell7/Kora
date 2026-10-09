@@ -11,6 +11,8 @@
      server's rules: every word must match; task filters narrow tasks,
      a project narrows everything, an author narrows comments; no words
      and only task filters lists those tasks; nothing at all lists nothing.
+     Every match of a kind is ranked (title > body, open before done,
+     newest) before the per-kind cap, so a title hit is never crowded out.
    • mergeSearchHits: local first (instant), then the server's, de-duplicated
      by kind+id (the server's snippet wins), ranked: exact title > prefix >
      words in title > body; then open work before finished, the server's
@@ -133,15 +135,18 @@ export function localSearch(input: LocalSearchInput): SearchHit[] {
   const out: SearchHit[] = [];
 
   if (kinds.has("task") && (terms.length || narrows)) {
-    const hits: SearchHit[] = [];
+    const found: Task[] = [];
     for (const t of input.tasks) {
       if (!taskPassesFilters(t, f, projectById)) continue;
       if (terms.length && !taskMatchesText(t, text)) continue;
-      hits.push(taskHit(t, terms.length ? makeSnippet(t.description, terms) : null));
+      found.push(t);
     }
-    // no words: soonest due first (as the server lists them)
-    if (!terms.length) hits.sort((a, b) => (a.task!.dueDate ?? "9999") < (b.task!.dueDate ?? "9999") ? -1 : (a.task!.dueDate ?? "9999") > (b.task!.dueDate ?? "9999") ? 1 : 0);
-    out.push(...hits.slice(0, cap));
+    // every match ranked first, then capped: a title hit is never crowded out by earlier weaker ones
+    // (words: title > description/project/people, open before done, newest; no words: soonest due first, as the server lists them)
+    const ranked = terms.length
+      ? rankByTitle(found, (t) => t.title, (t) => (t.status === "done" ? 1 : 0), (t) => t.completedAt ?? t.createdAt ?? null, text)
+      : found.map((t, i) => ({ t, i })).sort((a, b) => cmp(a.t.dueDate ?? "9999", b.t.dueDate ?? "9999") || a.i - b.i).map((x) => x.t);
+    out.push(...ranked.slice(0, cap).map((t) => taskHit(t, terms.length ? makeSnippet(t.description, terms) : null)));
   }
   if (!terms.length && !authorOnly) return out;
 
@@ -168,33 +173,29 @@ export function localSearch(input: LocalSearchInput): SearchHit[] {
   if (!terms.length) return out;
   if (kinds.has("doc") && input.docs?.length) {
     const hits: SearchHit[] = [];
-    for (const d of input.docs) {
-      if (!inScope(d.workspaceId, f)) continue;
-      if (!f.includeArchived && (d.archived || archivedProject(d.projectId))) continue;
-      if (f.projectId && d.projectId !== f.projectId) continue;
-      if (!allTermsIn(terms, [d.title, d.text])) continue;
+    const matched = input.docs.filter((d) => inScope(d.workspaceId, f) && (f.includeArchived || !(d.archived || archivedProject(d.projectId)))
+      && (!f.projectId || d.projectId === f.projectId) && allTermsIn(terms, [d.title, d.text]));
+    for (const d of rankByTitle(matched, (x) => x.title, (x) => (x.archived ? 1 : 0), (x) => x.updatedAt ?? null, text).slice(0, cap)) {
       hits.push({
         kind: "doc", id: d.id, title: d.title, snippet: makeSnippet(d.text, terms), rank: 0, taskId: null, projectId: d.projectId,
         workspaceId: d.workspaceId, updatedAt: d.updatedAt ?? null, source: "local",
         doc: { icon: d.icon ?? null, projectName: projects.get(d.projectId)?.name ?? null, updatedBy: d.updatedBy ?? null, archived: !!d.archived },
       });
     }
-    out.push(...hits.slice(0, cap));
+    out.push(...hits);
   }
   if (kinds.has("project")) {
     const hits: SearchHit[] = [];
-    for (const p of input.projects) {
-      if (!inScope(p.workspaceId, f)) continue;
-      if (!f.includeArchived && p.archivedAt) continue;
-      if (f.projectId && p.id !== f.projectId) continue;
-      if (!allTermsIn(terms, [p.name, p.description])) continue;
+    const matched = input.projects.filter((p) => inScope(p.workspaceId, f) && (f.includeArchived || !p.archivedAt)
+      && (!f.projectId || p.id === f.projectId) && allTermsIn(terms, [p.name, p.description]));
+    for (const p of rankByTitle(matched, (x) => x.name, (x) => (x.archivedAt ? 1 : 0), () => null, text).slice(0, cap)) {
       hits.push({
         kind: "project", id: p.id, title: p.name, snippet: makeSnippet(p.description, terms), rank: 0, taskId: null, projectId: p.id,
         workspaceId: p.workspaceId ?? null, updatedAt: null, source: "local",
         project: { emoji: p.emoji || null, color: p.color || null, status: p.status ?? null, ownerId: p.ownerId ?? null, archived: !!p.archivedAt },
       });
     }
-    out.push(...hits.slice(0, cap));
+    out.push(...hits);
   }
   // people: the whole text in a name, or the start of an email — never in Personal (as the server has it)
   if (kinds.has("person") && f.workspaceId !== null) {
@@ -219,6 +220,16 @@ export function localSearch(input: LocalSearchInput): SearchHit[] {
 
 /* ------------------------------------------------------------------ merge + rank */
 
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** Every match, best first: how well the title matches the words (titleTier), then live before finished or
+ *  archived, then newest; the order given breaks ties. (Ranked before any cap is applied.) */
+function rankByTitle<T>(items: T[], title: (x: T) => string, settled: (x: T) => number, when: (x: T) => string | null, text: string): T[] {
+  return items
+    .map((x, i) => ({ x, i, tier: titleTier(title(x), text), settled: settled(x), when: when(x) ?? "" }))
+    .sort((a, b) => b.tier - a.tier || a.settled - b.settled || cmp(b.when, a.when) || a.i - b.i)
+    .map((r) => r.x);
+}
+
 /** How well the title matches the words: 4 exact · 3 starts with them · 2 has every word · 1 has some · 0 body only. */
 export function titleTier(title: string, text: string): number {
   const terms = searchTerms(text);
@@ -231,9 +242,12 @@ export function titleTier(title: string, text: string): number {
   return terms.some((x) => t.includes(x)) ? 1 : 0;
 }
 
-/** Local first, then the server's, de-duplicated and ranked; per-kind cap. */
-export function mergeSearchHits(local: SearchHit[], server: SearchHit[], opts?: { limitPerKind?: number; text?: string }): SearchHit[] {
+/** Local first, then the server's, de-duplicated and ranked; per-kind cap. `keepOrder` (⌘K): rows the device
+ *  found keep their order when the server's answer arrives (its rank only places the rows it alone found),
+ *  so nothing jumps under the cursor — a better title match still rises. */
+export function mergeSearchHits(local: SearchHit[], server: SearchHit[], opts?: { limitPerKind?: number; text?: string; keepOrder?: boolean }): SearchHit[] {
   const cap = opts?.limitPerKind ?? SEARCH_VIEW_LIMIT;
+  const keepOrder = !!opts?.keepOrder;
   const text = opts?.text ?? "";
   const byKey = new Map<string, { hit: SearchHit; order: number }>();
   let order = 0;
@@ -262,6 +276,7 @@ export function mergeSearchHits(local: SearchHit[], server: SearchHit[], opts?: 
     if (!hasText) return a.order - b.order;
     return b.tier - a.tier
       || a.done - b.done
+      || (keepOrder ? a.order - b.order : 0)
       || (b.hit.rank ?? 0) - (a.hit.rank ?? 0)
       || (b.hit.updatedAt ?? "").localeCompare(a.hit.updatedAt ?? "")
       || a.order - b.order;

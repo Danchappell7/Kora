@@ -125,7 +125,7 @@ export interface SearchViewProps {
 export function SearchView(props: SearchViewProps) {
   const {
     tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch,
-    onBulkDelete, sections, customFields, onToggle, activeId, presetView, workspaces, comments, docs, onOpenDoc, onOpenProject, onOpenPerson,
+    onBulkDelete, sections, customFields, onToggle, activeId, presetView, workspaces, onOpenDoc, onOpenProject, onOpenPerson,
     onOpenComment, onGo, views, timezone,
   } = props;
   const uid = currentUserId ?? "";
@@ -137,13 +137,21 @@ export function SearchView(props: SearchViewProps) {
 
   // the day relative words count from: the device's day (as the sidebar counts), or the person's timezone
   const today = timezone ? todayIn(new Date(), timezone) : todayISO();
-  const everyone = useMemo<Member[]>(() => members.map((m) => getMember(m.id) ?? { id: m.id, name: m.name, email: "", type: "team", color: "" }), [members]);
+  // App builds `members` (and `comments` / `docs`, if it passes them) afresh on every render: hold on to the
+  // last ones while their content is the same, so a presence tick or a realtime change elsewhere doesn't
+  // re-read the words, rescan every task and re-render every row
+  const membersKey = members.map((m) => `${m.id}\u0001${m.name}`).join("\u0002");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const people0 = useMemo(() => members, [membersKey]);
+  const comments = useSameItems(props.comments);
+  const docs = useSameItems(props.docs);
+  const everyone = useMemo<Member[]>(() => people0.map((m) => getMember(m.id) ?? { id: m.id, name: m.name, email: "", type: "team", color: "" }), [people0]);
   const nlCtx = useMemo<SearchNLContext>(() => ({
-    members: members.filter((m) => m.name),
+    members: people0.filter((m) => m.name),
     // live projects first: "in launch" means the live one when an archived one shares the word
     projects: [...projects.filter((p) => !p.archivedAt), ...projects.filter((p) => p.archivedAt)],
     currentUserId: uid, today, timezone,
-  }), [members, projects, uid, today, timezone]);
+  }), [people0, projects, uid, today, timezone]);
 
   /* ---------------- state: the words, the panel ---------------- */
   const presetKeyJSON = JSON.stringify(presetView ?? preset ?? null);
@@ -202,7 +210,9 @@ export function SearchView(props: SearchViewProps) {
   const corpus = useDemoCorpus(props.demoCorpus ?? !supabase, useMemo(() => projects.map((p) => p.id), [projects]), useMemo(() => tasks.map((t) => t.id), [tasks]));
   const allComments = useMemo(() => dedupe([...(comments ?? []), ...(corpus?.comments ?? [])]), [comments, corpus]);
   const allDocs = useMemo(() => dedupe([...(docs ?? []), ...(corpus?.docs ?? [])]), [docs, corpus]);
-  const openable = (k: SearchHitKind) => k === "task" || k === "comment" || (k === "doc" ? !!(onOpenDoc || onGo) : k === "project" ? !!(onOpenProject || onGo) : !!(onOpenPerson || onGo));
+  // (booleans, so handlers passed as fresh arrows each render don't redo the merge below)
+  const canOpenDoc = !!(onOpenDoc || onGo), canOpenProject = !!(onOpenProject || onGo), canOpenPerson = !!(onOpenPerson || onGo);
+  const openable = (k: SearchHitKind) => k === "task" || k === "comment" || (k === "doc" ? canOpenDoc : k === "project" ? canOpenProject : canOpenPerson);
   const singleKind = resolved.kinds.length === 1 ? resolved.kinds[0] : null;
   const limit = singleKind && singleKind !== "task" ? SEARCH_LIMIT_MAX : SEARCH_VIEW_LIMIT;
   const search = useUniversalSearch({
@@ -235,7 +245,7 @@ export function SearchView(props: SearchViewProps) {
     const server = (search.server ?? []).filter((h) => h.kind !== "task");
     return mergeSearchHits(local, server, { text, limitPerKind: limit }).filter((h) => resolved.kinds.includes(h.kind) && openable(h.kind));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, search.local, search.server, text, limit, resolved.kinds, onOpenDoc, onOpenProject, onOpenPerson, onGo]);
+  }, [active, search.local, search.server, text, limit, resolved.kinds, canOpenDoc, canOpenProject, canOpenPerson]);
 
   const counts = useMemo(() => {
     const c: Record<SearchHitKind, number> = { task: matchedTasks.length, comment: 0, doc: 0, project: 0, person: 0 };
@@ -622,6 +632,15 @@ export function SearchView(props: SearchViewProps) {
       )}
     </div>
   );
+}
+
+/** The array from last render while its items are the same ones (by identity): a prop rebuilt on every
+ *  render with the same items stays one array, so what's memoised on it isn't redone. */
+function useSameItems<T>(xs: T[] | undefined): T[] | undefined {
+  const ref = useRef(xs);
+  const prev = ref.current;
+  if (prev !== xs && !(prev && xs && prev.length === xs.length && prev.every((x, i) => x === xs[i]))) ref.current = xs;
+  return ref.current;
 }
 
 function dedupe<T extends { id: string }>(xs: T[]): T[] {

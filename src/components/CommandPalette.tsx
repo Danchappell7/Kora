@@ -6,9 +6,13 @@
    Typing shows, in order: Ask Kanbo · Tasks · Projects · Docs ·
    Comments · People · Go to · Actions. Search (0048, package u2): the
    words are read like the Search page reads them ("Maya's overdue
-   tasks", "docs mentioning pricing"); what the app holds answers at
-   once, the server's full-text search_all joins after a short pause
-   (SEARCH_DEBOUNCE_MS; a newer keystroke cancels it), matches marked.
+   tasks", "docs mentioning pricing"), and what they were read as is on
+   show — tinted in the field and listed as removable chips under it
+   (Shift+Tab reaches them). A task whose title has every word typed is
+   always offered first, whatever the words were read as. What the app
+   holds answers at once; the server's full-text search_all joins after
+   a short pause (SEARCH_DEBOUNCE_MS; a newer keystroke cancels it)
+   without moving the rows already shown; matches marked.
    The Ask row is picked for you when the text reads like a
    question or an instruction ("…?", "move …", "what …"), or when
    nothing matches; otherwise the first result is. Tab swaps the two.
@@ -33,7 +37,10 @@ import { fmtDay } from "../lib/askActions";
 import type { AiOutcome, AskAction, AskContext, AskResult } from "../lib/askTypes";
 import type { Route } from "../app-types";
 import type { IconName, Task, Status, Project, Workspace, Comment, Member, SearchHit } from "../data/types";
-import { mergeSearchHits, SEARCH_DEBOUNCE_MS, SEARCH_PALETTE_LIMIT, type LocalSearchInput } from "../lib/searchApi";
+import { mergeSearchHits, titleTier, SEARCH_DEBOUNCE_MS, SEARCH_PALETTE_LIMIT, type LocalSearchInput } from "../lib/searchApi";
+import { hasSearchText } from "../lib/searchQuery";
+import { removeChipFromInput } from "../lib/searchNL";
+import { CHIP_ICON, chipSpoken } from "../lib/search/chips";
 import { splitHighlights } from "../lib/searchRows";
 import { highlightRuns } from "../lib/search/highlight";
 import { EMPTY_PANEL, resolveSearch } from "../lib/search/searchSpec";
@@ -157,6 +164,23 @@ const PALETTE_CSS = `
 .kcmd-mirror { position: absolute; left: 0; top: 50%; translate: 0 -50%; white-space: pre; color: transparent; pointer-events: none; will-change: transform; }
 .kcmd-tok { color: transparent; background: var(--accent-tint, var(--accent-dim)); border-radius: var(--r-xs, 4px); box-shadow: 0 0 0 2px var(--accent-tint, var(--accent-dim)); }
 .kcmd-esc { flex-shrink: 0; }
+
+/* what the words were read as (search filters): removable chips under the field */
+.kcmd-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex-shrink: 0; padding: 8px 12px 0 18px; }
+.kcmd-chips-label { margin-right: 2px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kcmd-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 24px; padding: 0 2px 0 8px; border-radius: 999px;
+  border: 1px solid var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background: var(--bg-selected, var(--accent-dim));
+  font: 600 12px/1 var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); white-space: nowrap;
+}
+.kcmd-chip > svg { flex-shrink: 0; }
+.kcmd-chip-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kcmd-chip-x {
+  display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: inherit; cursor: pointer; opacity: 0.8;
+}
+.kcmd-chip-x:hover { opacity: 1; background: color-mix(in oklch, var(--accent) 14%, transparent); }
+.kcmd-chip-x:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 .kcmd-close { display: none; }
 @media (hover: none) and (pointer: coarse) { .kcmd-esc { display: none; } .kcmd-close { display: inline-grid; } }
 
@@ -201,6 +225,9 @@ const PALETTE_CSS = `
   .kcmd-list { max-height: none; }
   .kcmd-foot .kcmd-hint { display: none; }
   .kcmd-foot:not(:has(.kcmd-usage)) { display: none; }
+  .kcmd-chips { padding: 8px 12px 0; }
+  .kcmd-chip { height: 32px; padding-left: 10px; }
+  .kcmd-chip-x { width: 28px; height: 28px; }
 }
 @media (prefers-reduced-motion: reduce) { .kcmd, .kcmd-layer::before { animation: none; } }
 `;
@@ -277,6 +304,7 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const answerRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const firstChipRef = useRef<HTMLButtonElement>(null);
   const askRef = useRef<AskKanboHandle>(null);
   const askSeq = useRef(0);
   const limitRef = useRef<number | null>(null);
@@ -316,15 +344,27 @@ export function CommandPalette({
     active: open && !ask && resolved.active, text: resolved.text, filters: resolved.filters, limit: SEARCH_PALETTE_LIMIT, debounceMs: SEARCH_DEBOUNCE_MS,
     server: serverSearch, local: { tasks, projects: projects ?? [], members: people, comments: searchComments, docs: searchDocs, currentUserId: ctx.me },
   });
-  // the device's hits keep their places; the server's own join after them (rows never jump under the cursor)
-  const hits = useMemo(() => {
-    const local = mergeSearchHits(found.local, [], { text: resolved.text, limitPerKind: SEARCH_PALETTE_LIMIT });
-    const seen = new Set(local.map((h) => `${h.kind}:${h.id}`));
-    const extra = (found.server ?? []).filter((h) => !seen.has(`${h.kind}:${h.id}`));
-    // the server's snippets (stems, whole bodies) still win for rows both found
-    const better = new Map((found.server ?? []).map((h) => [`${h.kind}:${h.id}`, h]));
-    return [...local.map((h) => { const s = better.get(`${h.kind}:${h.id}`); return s?.snippet ? { ...h, snippet: s.snippet } : h; }), ...extra];
-  }, [found.local, found.server, resolved.text]);
+  // one ranked list per kind, capped after ranking: the device's rows keep their order when the server's answer
+  // arrives (nothing jumps under the cursor), its own rows slot in by how well their titles match, and its
+  // snippets (stems, whole bodies) win for rows both found
+  const hits = useMemo(() => mergeSearchHits(found.local, found.server ?? [], { text: resolved.text, limitPerKind: SEARCH_PALETTE_LIMIT, keepOrder: true }),
+    [found.local, found.server, resolved.text]);
+  // a task whose title has every word typed is always offered (first), whatever the words were read as:
+  // "closed beta" finds "Closed beta invite list" even if "closed" had been read as a status
+  const archivedProjects = useMemo(() => new Set((projects ?? []).filter((p) => p.archivedAt).map((p) => p.id)), [projects]);
+  const literal = useMemo<Task[]>(() => {
+    if (!open || !hasSearchText(q)) return [];
+    const widen = !!resolved.filters.includeArchived;
+    return tasks
+      .map((t, i) => ({ t, i, tier: titleTier(t.title, q) }))
+      .filter((x) => x.tier >= 2 && !x.t.archivedAt && (widen || !archivedProjects.has(x.t.projectId)))
+      .sort((a, b) => b.tier - a.tier || (a.t.status === "done" ? 1 : 0) - (b.t.status === "done" ? 1 : 0) || a.i - b.i)
+      .slice(0, SEARCH_PALETTE_LIMIT)
+      .map((x) => x.t);
+  }, [open, q, tasks, archivedProjects, resolved.filters.includeArchived]);
+  // the filters the words were read as (shown as chips, so nothing narrows the list unseen)
+  const chips = open && !ask ? resolved.parsed.chips : [];
+  const removeChip = (id: string) => { setQ(removeChipFromInput(resolved.parsed, id)); inputRef.current?.focus({ preventScroll: true }); };
 
   const query = q.trim().toLowerCase();
   const spans = useMemo<NlpSpan[]>(() => {
@@ -332,9 +372,15 @@ export function CommandPalette({
     try { return parseTask(q, { projects: ctx.projects, members: ctx.members }).spans.filter((s) => s.end > s.start && s.start >= 0 && s.end <= q.length); }
     catch { return []; }
   }, [open, q, ctx]);
+  // tinted behind the text: the words read as search filters, then what the task grammar recognises (Ask) where they don't overlap
+  const tints = useMemo<[number, number][]>(() => {
+    const out: [number, number][] = Object.values(resolved.parsed.spans).flat().filter(([a, b]) => b > a && a >= 0 && b <= q.length);
+    for (const s of spans) if (!out.some(([a, b]) => s.start < b && s.end > a)) out.push([s.start, s.end]);
+    return out.sort((x, y) => x[0] - y[0]);
+  }, [resolved.parsed.spans, spans, q]);
   // the mirror follows the field when the text scrolls sideways
   const syncMirror = () => { const el = inputRef.current, m = mirrorRef.current; if (el && m) m.style.transform = `translateX(${-el.scrollLeft}px)`; };
-  useLayoutEffect(syncMirror, [q, spans]);
+  useLayoutEffect(syncMirror, [q, tints]);
 
   // keep the highlighted row visible when navigating by keyboard
   useEffect(() => { if (open && !ask) document.getElementById(optId(sel))?.scrollIntoView?.({ block: "nearest" }); }, [sel, open, ask]);
@@ -391,9 +437,16 @@ export function CommandPalette({
     }
 
     // ---- tasks, comments, docs, people: universal search (the words, read as the Search page reads them) ----
+    // titles with every word typed first, then the search's own ranked rows
     const byId = new Map(tasks.map((t) => [t.id, t]));
-    const taskItems: Item[] = hits.filter((h) => h.kind === "task").slice(0, SEARCH_PALETTE_LIMIT)
-      .map((h) => byId.get(h.id)).filter((t): t is Task => !!t && !t.archivedAt).map(taskItem);
+    const taskRows: Task[] = [...literal];
+    for (const h of hits) {
+      if (taskRows.length >= SEARCH_PALETTE_LIMIT) break;
+      if (h.kind !== "task" || taskRows.some((t) => t.id === h.id)) continue;
+      const t = byId.get(h.id);
+      if (t && !t.archivedAt) taskRows.push(t);
+    }
+    const taskItems: Item[] = taskRows.map(taskItem);
     const hitItem = (h: SearchHit): Item => {
       if (h.kind === "comment") {
         const runs = splitHighlights(h.snippet);
@@ -452,7 +505,7 @@ export function CommandPalette({
       { key: "actions", heading: "Actions", items: actionItems },
     ];
   }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today,
-    hits, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo]);
+    hits, literal, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo]);
 
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   // real matches: tasks, projects, places and actions (not the Ask row, and not "See all results")
@@ -577,6 +630,8 @@ export function CommandPalette({
     if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => items.length ? (s + 1) % items.length : 0); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => items.length ? (s - 1 + items.length) % items.length : 0); }
     else if (e.key === "Enter") { e.preventDefault(); if (!e.repeat && items[sel]) activate(items[sel]); }
+    // Shift+Tab: to the filters the words were read as (each one removable)
+    else if (e.key === "Tab" && e.shiftKey && chips.length > 0 && firstChipRef.current) { e.preventDefault(); firstChipRef.current.focus(); }
     // Tab swaps between the Ask row and the first result
     else if (e.key === "Tab" && tabTo > 0) { e.preventDefault(); setSel((s) => (s === 0 ? tabTo : 0)); }
   };
@@ -609,9 +664,10 @@ export function CommandPalette({
       </div>
     );
   };
-  /** a title with the searched words marked */
+  /** a title with the searched words marked (or, for a title matched as typed, the words typed) */
   const marked = (label: string): ReactNode => {
-    const runs = resolved.text ? highlightRuns(label, resolved.text) : [];
+    let runs = resolved.text ? highlightRuns(label, resolved.text) : [];
+    if (!runs.some((r) => r.hit)) runs = highlightRuns(label, q);
     if (!runs.some((r) => r.hit)) return label;
     return runs.map((r, i) => (r.hit ? <mark key={i} className="kcmd-hl">{r.text}</mark> : <span key={i}>{r.text}</span>));
   };
@@ -690,6 +746,7 @@ export function CommandPalette({
   // what the answer on screen would do, as AskKanbo counted it (after its checks and the person's edits)
   const sum = ask?.phase === "done" && summary?.seq === ask.seq ? summary : null;
   const enterTo = (label: string) => (coarse ? "" : ` Press Enter to ${label.charAt(0).toLowerCase()}${label.slice(1)}.`);
+  const readAs = chips.length ? ` Read as: ${chips.map(chipSpoken).join(", ")}.` : "";
   const announcement = ask
     ? ask.phase === "loading" ? `Kanbo is reading ${ask.sent.length} ${plural(ask.sent.length, "task", "tasks")}.${coarse ? "" : " Press Escape to cancel."}`
       : !sum ? ""
@@ -699,7 +756,7 @@ export function CommandPalette({
             : sum.follow ? enterTo(sum.follow).trim() : "",
           sum.leftOut ? `Kanbo left out ${sum.leftOut} ${plural(sum.leftOut, "change", "changes")}.` : "",
         ].filter(Boolean).join(" ")
-    : query ? (hasResults ? `${resultCount} ${plural(resultCount, "result", "results")}` : "No results. Press Enter to ask Kanbo.") : "";
+    : query ? (hasResults ? `${resultCount} ${plural(resultCount, "result", "results")}.${readAs}` : `No results.${readAs} Press Enter to ask Kanbo.`) : "";
   const askVerb = !sum ? "" : sum.selected ? "apply" : !sum.changes && sum.follow ? "open" : "";
 
   return (
@@ -713,16 +770,16 @@ export function CommandPalette({
         <div className="kcmd-bar">
           <AiMark size={16} thinking={ask?.phase === "loading"} />
           <div className="kcmd-field">
-            {spans.length > 0 && (
+            {tints.length > 0 && (
               <div ref={mirrorRef} className="kcmd-mirror" aria-hidden="true">
                 {(() => {
                   const out: ReactNode[] = [];
                   let at = 0;
-                  [...spans].sort((a, b) => a.start - b.start).forEach((s, i) => {
-                    if (s.start < at) return;                 // overlapping: keep the first
-                    if (s.start > at) out.push(q.slice(at, s.start));
-                    out.push(<mark key={i} className="kcmd-tok">{q.slice(s.start, s.end)}</mark>);
-                    at = s.end;
+                  tints.forEach(([a, b], i) => {
+                    if (a < at) return;                       // overlapping: keep the first
+                    if (a > at) out.push(q.slice(at, a));
+                    out.push(<mark key={i} className="kcmd-tok">{q.slice(a, b)}</mark>);
+                    at = b;
                   });
                   out.push(q.slice(at));
                   return out;
@@ -740,7 +797,25 @@ export function CommandPalette({
           <span className="kcmd-esc" aria-hidden="true"><Kbd>Esc</Kbd></span>
           <IconButton className="kcmd-close" icon="x" label="Close" size="sm" onClick={close} />
         </div>
-        <span id="kcmd-help" className="sr-only">Use the up and down arrow keys to move through results and Enter to choose. Tab switches between asking Kanbo and the first result.</span>
+        {!inAsk && chips.length > 0 && (
+          <div className="kcmd-chips" role="group" aria-label="Filters read from your search">
+            <span className="kcmd-chips-label" aria-hidden="true">Read as</span>
+            {chips.map((c, i) => (
+              <span key={c.id} className="kcmd-chip" data-kind={c.kind}>
+                <Icon name={CHIP_ICON[c.kind]} size={12} sw={2} />
+                <span className="kcmd-chip-t">{c.label}</span>
+                <button ref={i === 0 ? firstChipRef : undefined} type="button" className="kcmd-chip-x" aria-label={`Remove filter: ${chipSpoken(c)}`} title="Remove this filter"
+                  onMouseDown={(e) => e.preventDefault() /* keep focus in the field */} onClick={() => removeChip(c.id)}>
+                  <Icon name="x" size={11} sw={2.25} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <span id="kcmd-help" className="sr-only">
+          Use the up and down arrow keys to move through results and Enter to choose. Tab switches between asking Kanbo and the first result.
+          {chips.length > 0 && " Shift+Tab reaches the filters your words were read as, to remove one."}
+        </span>
         <div className="sr-only" aria-live="polite">{announcement}</div>
 
         {inAsk ? (
@@ -764,7 +839,9 @@ export function CommandPalette({
               <div key={g.key} role="presentation">
                 {g.items.map(renderItem)}
                 {/* nothing matches: say so under the Ask row, which Enter will use */}
-                {g.key === "ask" && onlyAsk && <p role="presentation" className="kcmd-empty">No tasks, projects or pages match “{q.trim()}”. Press Enter to ask Kanbo.</p>}
+                {g.key === "ask" && onlyAsk && <p role="presentation" className="kcmd-empty">{chips.length
+                  ? "Nothing matches with these filters. Remove one above, or press Enter to ask Kanbo."
+                  : <>No tasks, projects or pages match “{q.trim()}”. Press Enter to ask Kanbo.</>}</p>}
               </div>
             )))}
           </div>

@@ -129,6 +129,62 @@ describe("⌘K search", () => {
     expect(within(screen.getByRole("group", { name: "Tasks" })).getAllByRole("option")).toHaveLength(1);
   });
 
+  it("shows what the words were read as: tinted in the field, and chips that can be removed (Shift+Tab reaches them)", () => {
+    const { container } = open();
+    type("Maya's blocked");
+    const chips = screen.getByRole("group", { name: "Filters read from your search" });
+    expect(within(chips).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Remove filter: assigned to Maya Lin", "Remove filter: status blocked"]);
+    expect([...container.querySelectorAll("mark.kcmd-tok")].map((m) => m.textContent)).toEqual(["Maya's", "blocked"]);
+    expect(screen.getByText(/Read as: assigned to Maya Lin, status blocked\./)).toBeInTheDocument();
+    // Shift+Tab from the field goes to the first chip; removing it takes its words out and puts focus back
+    fireEvent.keyDown(input(), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toHaveAccessibleName("Remove filter: assigned to Maya Lin");
+    fireEvent.click(document.activeElement!);
+    expect(input()).toHaveValue("blocked");
+    expect(input()).toHaveFocus();
+    expect(within(screen.getByRole("group", { name: "Tasks" })).getAllByRole("option").map((o) => o.textContent)).toEqual([expect.stringContaining("Pricing deck")]);
+    // plain words: no chips, nothing tinted
+    type("pricing");
+    expect(screen.queryByRole("group", { name: "Filters read from your search" })).not.toBeInTheDocument();
+    expect(container.querySelector("mark.kcmd-tok")).toBeNull();
+  });
+
+  it("says when the filters leave nothing", () => {
+    open();
+    type("Sana's blocked");
+    expect(screen.getByText("Nothing matches with these filters. Remove one above, or press Enter to ask Kanbo.")).toBeInTheDocument();
+  });
+
+  it("a task whose title has every word typed is always offered first, whatever the words were read as", () => {
+    const more = [...tasks, task("t4", "Blocked domains list"), task("t5", "Maya's handover notes", { assigneeId: "m-3" })];
+    open({ tasks: more });
+    type("blocked domains");
+    expect(within(screen.getByRole("group", { name: "Tasks" })).getAllByRole("option").map((o) => o.textContent)).toEqual([expect.stringContaining("Blocked domains list")]);
+    type("Maya's handover");
+    const rows = within(screen.getByRole("group", { name: "Tasks" })).getAllByRole("option");
+    expect(rows[0]).toHaveTextContent("Maya's handover notes");
+    expect(within(rows[0]).getAllByText(/Maya's|handover/, { selector: "mark" }).length).toBeGreaterThan(0);
+  });
+
+  it("everyday words stay words: 'closed beta' is a title, not a status", () => {
+    open({ tasks: [task("t6", "Closed beta invite list", { status: "progress" }), task("t7", "Beta pricing", { description: "closed for now", status: "done" })] });
+    type("closed beta");
+    expect(screen.queryByRole("group", { name: "Filters read from your search" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Tasks" })).getAllByRole("option").map((o) => o.textContent))
+      .toEqual([expect.stringContaining("Closed beta invite list"), expect.stringContaining("Beta pricing")]);
+  });
+
+  it("ranks every task before capping: an exact title isn't crowded out by earlier weaker matches", () => {
+    const launch: Project = { id: "p-q3", name: "Q3 Product Launch", emoji: "", color: "blue", workspaceId: "ws-1" };
+    setReferenceData({ members: MEMBERS, projects: [...projects, launch] });
+    const many = [...Array.from({ length: 8 }, (_, i) => task(`w${i}`, `Write copy ${i}`, { projectId: "p-q3" })), task("lc", "Launch checklist")];
+    open({ tasks: many, projects: [...projects, launch] });
+    type("launch");
+    const rows = within(screen.getByRole("group", { name: "Tasks" })).getAllByRole("option");
+    expect(rows).toHaveLength(5);
+    expect(rows[0]).toHaveTextContent("Launch checklist");
+  });
+
   it("in demo mode it searches the demo docs' text", async () => {
     setReferenceData({ members: MEMBERS });
     open({ demoCorpus: true, onGo: vi.fn(), projects: [{ id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: "blue", workspaceId: "ws-foundrise" }] });

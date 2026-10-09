@@ -10,7 +10,8 @@ import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefOb
 import { Avatar, Icon, IconButton, Pill, ProjectTile } from "../primitives";
 import { getMember, timeAgo } from "../../data/data";
 import { splitHighlights } from "../../lib/searchRows";
-import type { IconName, SearchChip, SearchChipKind, SearchHit } from "../../data/types";
+import { CHIP_ICON, chipSpoken } from "../../lib/search/chips";
+import type { SearchChipKind, SearchHit } from "../../data/types";
 
 /* ------------------------------------------------------------------ highlights */
 
@@ -73,21 +74,7 @@ export function SearchBox({ value, onChange, onKeyDown, spans, inputRef, label, 
 
 /* ------------------------------------------------------------------ chips */
 
-const CHIP_ICON: Record<SearchChipKind, IconName> = {
-  assignee: "user", author: "message", project: "folder", status: "circle", due: "calendar", kind: "layers", archived: "archive", open: "circle",
-};
-/** How a screen reader names a chip ("assigned to Maya Lin", "status blocked", "due Fri 16 Oct"). */
-export function chipSpoken(c: Pick<SearchChip, "kind" | "label">): string {
-  const lower = c.label.charAt(0).toLowerCase() + c.label.slice(1);
-  switch (c.kind) {
-    case "assignee": return /^assigned/i.test(c.label) ? lower : `assigned to ${c.label}`;
-    case "author": return `comments ${lower}`;
-    case "status": return `status ${lower}`;
-    case "open": return "open tasks only";
-    case "kind": return `showing ${lower}`;
-    default: return lower;
-  }
-}
+export { chipSpoken };
 
 export function SearchChips({ chips, onRemove, onClearAll, label = "Read as" }: {
   chips: { id: string; kind: SearchChipKind; label: string }[];
