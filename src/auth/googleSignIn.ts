@@ -9,10 +9,10 @@
                              for six hours on this device. A hint only: anyone
                              can still pick another account ("Use another Google
                              account"), and it never decides who gets in.
-                             sign_in_hints() is NOT in a migration: it's the
-                             one-off paste supabase/sql/sign_in_hints.sql
-                             (docs/integrations/google-sign-in.md). Until it's
-                             run the rpc answers PGRST202 and there's simply no
+                             sign_in_hints() ships in migration 0047 (also
+                             kept as supabase/sql/sign_in_hints.sql; see
+                             docs/integrations/google-sign-in.md). Until 0047
+                             runs the rpc answers PGRST202 and there's simply no
                              hint. It's callable signed out (anon), so it tells
                              anyone the single auto-approved domain — the same
                              domain this page shows ("Shows your @… accounts

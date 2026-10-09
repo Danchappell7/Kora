@@ -15,7 +15,7 @@ and email and password work as before.
 | Google Cloud web client with the redirect URI `https://htnchiljplrnjkwimgla.supabase.co/auth/v1/callback` | <https://console.cloud.google.com/auth/clients> (the **Kanbo** project) | Nothing to see yet. |
 | Google provider switched on, with that client's ID and secret | <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/auth/providers> › **Google** | The button stays hidden: Supabase reports `google: false`. |
 | `VITE_ENABLE_GOOGLE=true` on Vercel (Production and Preview), then a redeploy | Vercel › kora › Settings › Environment Variables | The button isn't built into the page at all. |
-| Optional: the company hint, `sign_in_hints()` | the SQL below | No hint: Google lists every account on the device. |
+| Optional: the company hint, `sign_in_hints()` | comes with database update 0047 (nothing extra to run) | No hint: Google lists every account on the device. |
 
 The sign-in page reads Supabase's public settings
 (`GET /auth/v1/settings`, public key only) on every visit. It shows the
@@ -54,12 +54,16 @@ first. "Use another Google account" sits underneath for everyone else. It's
 only a hint: it never decides who gets in.
 
 The app asks the database for that one domain through `sign_in_hints()`. That
-function is **not part of any migration**, 0047 included. It's a one-off paste,
-kept in the repository as
-[`supabase/sql/sign_in_hints.sql`](../../supabase/sql/sign_in_hints.sql). It's
-safe to run more than once.
+function is **part of database update 0047** (section 14), so once 0047 has
+run there's nothing more to do: add your one domain under **/admin ›
+Auto-approved company domains** and the hint appears. The same SQL is also
+kept on its own as
+[`supabase/sql/sign_in_hints.sql`](../../supabase/sql/sign_in_hints.sql), for
+a database that needs just this function again. It's safe to run more than
+once.
 
-1. Open <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>.
+1. Only if you need it on its own: open
+   <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>.
 2. Paste this and press **Run**. It says **Success. No rows returned**.
 
 ```sql
@@ -86,8 +90,8 @@ and never a list. That's the same domain the sign-in page shows ("Shows your
 @yourcompany.co.uk Google accounts first"). The approved-domains list itself
 stays admins-only.
 
-**Without it**, or with a database rebuilt from the migrations alone, there's
-simply no hint. Browsers remember "no hint" for six hours, so after running the
+**Without it** (a database that hasn't run 0047 yet), there's simply no
+hint. Browsers remember "no hint" for six hours, so after running the
 SQL a returning visitor may not see the hint until then. A private window shows
 it straight away.
 

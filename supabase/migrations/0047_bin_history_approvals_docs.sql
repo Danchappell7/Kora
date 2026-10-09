@@ -71,6 +71,10 @@
 --      for their tasks).
 --   8. kanbo_health(): one cheap query for the health edge function
 --      (service role only).
+--   9. sign_in_hints(): the sign-in page's Google `hd` hint — the ONE
+--      auto-approved company domain when there is exactly one, otherwise
+--      null. Callable signed out on purpose; never returns a list. Also kept
+--      as the stand-alone paste supabase/sql/sign_in_hints.sql (same SQL).
 --
 -- Needs 0043 and 0046. Idempotent: safe to run more than once (re-running
 -- keeps every bin item, event, approval and doc). RUN IT LAST. 0046
@@ -1514,7 +1518,7 @@ drop trigger if exists trg_before_user_delete_0047 on auth.users;
 create trigger trg_before_user_delete_0047 before delete on auth.users
   for each row execute function public.before_user_delete_0047();
 
--- ---------- 14. health ----------
+-- ---------- 14. health and the sign-in hint ----------
 -- SERVICE ROLE ONLY (the health edge function): one cheap round trip.
 create or replace function public.kanbo_health()
 returns jsonb language sql security definer stable set search_path = public as $$
@@ -1522,6 +1526,22 @@ returns jsonb language sql security definer stable set search_path = public as $
                             'schema', (select max(version) from public.schema_migrations));
 $$;
 revoke execute on function public.kanbo_health() from public, anon, authenticated;
+
+-- sign_in_hints(): "Continue with Google" passes Google's `hd` hint (that
+-- company's accounts first in the account chooser) when exactly ONE company
+-- domain is auto-approved. Signed-out visitors can't read approved_domains
+-- (admins only), so this answers just that: { "google_hd": "acme.co.uk" } with
+-- one approved domain, { "google_hd": null } with none or several. A hint
+-- only: it never decides who gets in. Public on purpose (anon may call it):
+-- it's the domain the sign-in page itself shows. Same statements as
+-- supabase/sql/sign_in_hints.sql (src/auth/signInHintsSql.test.ts checks).
+create or replace function public.sign_in_hints()
+returns jsonb language sql security definer stable set search_path = public as $$
+  select jsonb_build_object('google_hd',
+    (select case when count(*) = 1 then min(d.domain) end from public.approved_domains d));
+$$;
+revoke execute on function public.sign_in_hints() from public;
+grant execute on function public.sign_in_hints() to anon, authenticated, service_role;
 
 -- ---------- 15. service-role grants ----------
 do $svc$
@@ -1569,5 +1589,7 @@ insert into public.schema_migrations (version) values ('0047') on conflict (vers
 --     'trg_notify_comment', 'trg_comment_author', 'trg_webhook_comment')
 --     and pg_get_triggerdef(oid) like '%kanbo.restoring%') = 5                                        as restores_quiet,
 --   exists (select 1 from pg_trigger where tgname = 'trg_before_user_delete_0047')                  as account_deletion,
---   not has_function_privilege('authenticated', 'public.kanbo_health()', 'execute')                 as health_service_only;
+--   not has_function_privilege('authenticated', 'public.kanbo_health()', 'execute')                 as health_service_only,
+--   to_regprocedure('public.sign_in_hints()') is not null
+--   and has_function_privilege('anon', 'public.sign_in_hints()', 'execute')                         as sign_in_hint;
 -- ============================================================

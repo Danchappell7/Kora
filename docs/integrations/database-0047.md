@@ -18,6 +18,7 @@ run again, run 0047 again straight afterwards (see the end of this page).
 | Inbox details | `activity.meta` | `{ approval_id, event, status }` or `{ doc_id, project_id }`. |
 | Quiet restores | the notification, comment-author and comment-webhook triggers | Skip rows a restore puts back: no repeated notices, comments keep their authors' names. Restored tasks and projects do send `task.created` / `project.created` to webhooks. |
 | Health | `kanbo_health()` | Service role only (the `health` edge function). |
+| Sign-in hint | `sign_in_hints()` | Anyone, signed in or not: the one auto-approved company domain when there is exactly one, otherwise nothing (never a list). The sign-in page uses it for Google's `hd` hint. See `google-sign-in.md`. |
 
 Realtime streams `approvals`, `approval_reviewers` and `project_docs`.
 
@@ -47,7 +48,9 @@ select
     'trg_notify_comment', 'trg_comment_author', 'trg_webhook_comment')
     and pg_get_triggerdef(oid) like '%kanbo.restoring%') = 5                                        as restores_quiet,
   exists (select 1 from pg_trigger where tgname = 'trg_before_user_delete_0047')                  as account_deletion,
-  not has_function_privilege('authenticated', 'public.kanbo_health()', 'execute')                 as health_service_only;
+  not has_function_privilege('authenticated', 'public.kanbo_health()', 'execute')                 as health_service_only,
+  to_regprocedure('public.sign_in_hints()') is not null
+  and has_function_privilege('anon', 'public.sign_in_hints()', 'execute')                         as sign_in_hint;
 ```
 
 ### Emptying the bin

@@ -1,10 +1,10 @@
 -- ============================================================
 -- KANBO — sign_in_hints(): the sign-in page's Google hint
--- A ONE-OFF PASTE, not a migration: it is not in 0047 (or any file under
--- supabase/migrations), so a database rebuilt from the migrations alone
--- doesn't have it until this is run. Owner steps and the check query:
+-- ALSO PART OF MIGRATION 0047 (section 14, the same statements): a database
+-- that ran 0047 already has it. This stand-alone copy is for putting just this
+-- function back. Owner notes and the check query:
 -- docs/integrations/google-sign-in.md. Safe to run more than once, and
--- harmless where a later migration already made it. Needs approved_domains.
+-- harmless where 0047 already made it. Needs approved_domains (0041).
 --
 -- "Continue with Google" passes Google's `hd` hint (that company's accounts
 -- first in the account chooser) when exactly ONE company domain is
