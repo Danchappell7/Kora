@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { ToastProvider } from "../Toast";
@@ -6,6 +6,11 @@ import { ListView, dropPosition, planDrop, dueDateForBucket } from "./ListView";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project } from "../../data/types";
 import type { GroupBy } from "../../app-types";
+import { LONG_PRESS_MS } from "../../lib/gestures";
+import { clearUndo } from "../../lib/undoStack";
+import { installPointerEvent, down, moveTo, up, swipeBy } from "../phone/testPointer";
+
+installPointerEvent();
 
 let n = 0;
 const mk = (p: Partial<Task> & { title: string }): Task => ({
@@ -425,111 +430,270 @@ describe("ListView bulk selection — Escape and touch", () => {
 
 describe("ListView on phones: swipe and long press", () => {
   // a phone: narrow and touch-first
-  const phone = () => {
+  const phone = (extra?: RegExp) => {
     const orig = window.matchMedia;
-    window.matchMedia = ((q: string) => ({ matches: /max-width|hover: none|pointer: coarse/.test(q), media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as unknown as typeof window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: /max-width|hover: none|pointer: coarse/.test(q) || !!extra?.test(q), media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as unknown as typeof window.matchMedia;
     return () => { window.matchMedia = orig; };
   };
-  const swipe = (el: Element, dx: number) => {
-    fireEvent.touchStart(el, { touches: [{ clientX: 200, clientY: 20 }] });
-    for (const f of [0.25, 0.5, 0.75, 1]) fireEvent.touchMove(el, { touches: [{ clientX: 200 + dx * f, clientY: 22 }] });
-    fireEvent.touchEnd(el, { touches: [] });
+  let restore = () => {};
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-09T10:00:00+01:00")); restore = phone(); clearUndo(); });
+  afterEach(() => { restore(); vi.useRealTimers(); });
+  const longPress = (el: Element) => { down(el, 100, 20); act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 20); }); up(el, 100, 20); };
+  const openSheet = (title: string) => {
+    longPress(within(screen.getByRole("group", { name: title })).getByRole("button", { name: title }));
+    return screen.getByRole("dialog", { name: `Actions for “${title}”` });
   };
 
   it("a swipe right completes the task; a short one springs back and does nothing", () => {
-    const restore = phone();
-    try {
-      const t = mk({ title: "Send the brief" });
-      const props = base([t], { onPatch: vi.fn() });
-      render(<ListView {...props} />);
-      const row = screen.getByRole("group", { name: "Send the brief" });
-      swipe(row, 40);
-      expect(props.onToggle).not.toHaveBeenCalled();
-      swipe(row, 160);
-      expect(props.onToggle).toHaveBeenCalledWith(t.id);
-      // the click a swipe leaves behind doesn't open the task
-      fireEvent.click(row);
-      expect(props.onOpen).not.toHaveBeenCalled();
-    } finally { restore(); }
+    const t = mk({ title: "Send the brief" });
+    const props = base([t], { onPatch: vi.fn() });
+    render(<ListView {...props} />);
+    const row = screen.getByRole("group", { name: "Send the brief" });
+    swipeBy(row, 40, { msPerStep: 80 });
+    expect(props.onToggle).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(600); });
+    swipeBy(row, 160);
+    expect(props.onToggle).toHaveBeenCalledWith(t.id);
+    // the click a swipe leaves behind doesn't open the task
+    fireEvent.click(row);
+    expect(props.onOpen).not.toHaveBeenCalled();
   });
 
-  it("a swipe left offers Tomorrow · Next week · Pick, and a date comes with an Undo toast", async () => {
-    const restore = phone();
-    try {
-      const t = mk({ title: "Approve naming", dueDate: iso(0) });
-      const onPatch = vi.fn();
-      render(<ToastProvider><ListView {...base([t], { onPatch })} /></ToastProvider>);
-      const row = screen.getByRole("group", { name: "Approve naming" });
-      swipe(row, -150);
-      const tray = screen.getByRole("group", { name: "Reschedule “Approve naming”" });
-      expect(within(tray).getByRole("button", { name: /^Due next week/ })).toBeInTheDocument();
-      expect(within(tray).getByRole("button", { name: "Pick a due date" })).toBeInTheDocument();
-      fireEvent.click(within(tray).getByRole("button", { name: /^Due tomorrow/ }));
-      expect(onPatch).toHaveBeenCalledWith(t.id, { dueDate: iso(1) });
-      expect(await screen.findByText("“Approve naming” is now due tomorrow")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: /^Undo/ }));
-      expect(onPatch).toHaveBeenLastCalledWith(t.id, { dueDate: iso(0) });
-    } finally { restore(); }
+  it("the reveal under a right swipe is green, and says when letting go will finish it", () => {
+    const t = mk({ title: "Ship it" });
+    const { container } = render(<ListView {...base([t], { onPatch: vi.fn() })} />);
+    const row = screen.getByRole("group", { name: "Ship it" });
+    swipeBy(row, 40, { release: false });
+    const reveal = container.querySelector(".ktv-swipe-done")!;
+    expect(reveal).toHaveTextContent("Done");
+    expect(reveal.getAttribute("data-armed")).toBeNull();
+    act(() => { vi.advanceTimersByTime(40); });
+    moveTo(row, 400, 22);
+    expect(reveal.getAttribute("data-armed")).toBe("true");
+    expect(reveal).toHaveTextContent("Let go to finish");
+    up(row, 400, 22);
+  });
+
+  it("swiping a done row right reopens it, with an Undo that finishes it again", async () => {
+    const t = mk({ title: "Old news", status: "done", completedAt: iso(-1) });
+    const onPatch = vi.fn(), onToggle = vi.fn();
+    const { container } = render(<ToastProvider><ListView {...base([t], { onPatch, onToggle })} /></ToastProvider>);
+    const row = screen.getByRole("group", { name: "Old news" });
+    swipeBy(row, 200, { release: false });
+    expect(container.querySelector(".ktv-swipe-done")).toHaveTextContent("Not done");
+    up(row, 400, 22);
+    expect(onToggle).toHaveBeenCalledWith(t.id);
+    expect(screen.getByText("Reopened “Old news”")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Undo/ }));
+    expect(onPatch).toHaveBeenLastCalledWith(t.id, { status: "done", completedAt: iso(-1) });
+  });
+
+  it("a swipe left offers Today · Tomorrow · Next week · Pick, and a date comes with an Undo toast", () => {
+    const t = mk({ title: "Approve naming", dueDate: iso(0) });
+    const onPatch = vi.fn();
+    render(<ToastProvider><ListView {...base([t], { onPatch })} /></ToastProvider>);
+    const row = screen.getByRole("group", { name: "Approve naming" });
+    swipeBy(row, -200);
+    const tray = screen.getByRole("group", { name: "Reschedule “Approve naming”" });
+    const names = within(tray).getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    expect(names).toEqual(["Due today, Fri 9 (its due date now)", "Due tomorrow, Sat 10", "Due next week, Fri 16", "Pick a due date"]);
+    fireEvent.click(within(tray).getByRole("button", { name: /^Due tomorrow/ }));
+    expect(onPatch).toHaveBeenCalledWith(t.id, { dueDate: iso(1) });
+    expect(screen.getByText("“Approve naming” is now due tomorrow")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Undo/ }));
+    expect(onPatch).toHaveBeenLastCalledWith(t.id, { dueDate: iso(0) });
+    expect(screen.queryByRole("group", { name: /^Reschedule/ })).toBeNull();
+  });
+
+  it("the tray's Today moves a later task to today; its buttons only take focus while it's open", () => {
+    const t = mk({ title: "Later thing", dueDate: iso(5) });
+    const onPatch = vi.fn();
+    const { container } = render(<ToastProvider><ListView {...base([t], { onPatch })} /></ToastProvider>);
+    const row = screen.getByRole("group", { name: "Later thing" });
+    swipeBy(row, -60, { release: false });
+    // (still being pulled: hidden from screen readers, so found by its class)
+    const tray = container.querySelector<HTMLElement>(".ktv-swipe-tray")!;
+    expect(screen.queryByRole("group", { name: /^Reschedule/ })).toBeNull();
+    expect(tray.getAttribute("aria-hidden")).toBe("true");
+    expect(within(tray).getAllByRole("button", { hidden: true }).every((b) => b.tabIndex === -1)).toBe(true);
+    act(() => { vi.advanceTimersByTime(40); });
+    moveTo(row, -100, 22);
+    act(() => { vi.advanceTimersByTime(16); });
+    up(row, -100, 22);
+    expect(tray.getAttribute("aria-hidden")).toBeNull();
+    fireEvent.click(within(tray).getByRole("button", { name: /^Due today/ }));
+    expect(onPatch).toHaveBeenCalledWith(t.id, { dueDate: iso(0) });
+    expect(screen.getByText("“Later thing” is now due today")).toBeInTheDocument();
   });
 
   it("a vertical drag is a scroll: the row stays put", () => {
-    const restore = phone();
-    try {
-      const t = mk({ title: "Scroll past me" });
-      const props = base([t], { onPatch: vi.fn() });
-      render(<ListView {...props} />);
-      const row = screen.getByRole("group", { name: "Scroll past me" });
-      fireEvent.touchStart(row, { touches: [{ clientX: 100, clientY: 100 }] });
-      fireEvent.touchMove(row, { touches: [{ clientX: 130, clientY: 180 }] });
-      fireEvent.touchMove(row, { touches: [{ clientX: 300, clientY: 190 }] });
-      fireEvent.touchEnd(row, { touches: [] });
-      expect(row.style.transform).toBe("");
-      expect(screen.queryByRole("group", { name: /^Reschedule/ })).toBeNull();
-      expect(props.onToggle).not.toHaveBeenCalled();
-    } finally { restore(); }
+    const t = mk({ title: "Scroll past me" });
+    const props = base([t], { onPatch: vi.fn() });
+    render(<ListView {...props} />);
+    const row = screen.getByRole("group", { name: "Scroll past me" });
+    down(row, 100, 100);
+    act(() => { vi.advanceTimersByTime(30); });
+    moveTo(row, 130, 180);
+    act(() => { vi.advanceTimersByTime(30); });
+    moveTo(row, 300, 190);
+    up(row, 300, 190);
+    expect(row.style.transform).toBe("");
+    expect(screen.queryByRole("group", { name: /^Reschedule/ })).toBeNull();
+    expect(props.onToggle).not.toHaveBeenCalled();
   });
 
   it("a long press opens the row's action sheet, whose choices apply and close it", () => {
-    vi.useFakeTimers();
-    const restore = phone();
-    try {
-      const t = mk({ title: "Book the venue", priority: "low" });
-      const onPatch = vi.fn();
-      const props = base([t], { onPatch, onBulkPatch: vi.fn() });
-      render(<ListView {...props} />);
-      const row = screen.getByRole("group", { name: "Book the venue" });
-      const title = within(row).getByRole("button", { name: "Book the venue" });
-      fireEvent.touchStart(title, { touches: [{ clientX: 100, clientY: 20 }] });
-      act(() => { vi.advanceTimersByTime(500); });
-      fireEvent.touchEnd(title, { touches: [] });
-      // the click some browsers send after a long press isn't also a tap that opens the task
-      fireEvent.click(title);
-      expect(props.onOpen).not.toHaveBeenCalled();
-      const sheet = screen.getByRole("dialog", { name: "Actions for “Book the venue”" });
-      expect(within(sheet).getByRole("button", { name: "Open task" })).toBeInTheDocument();
-      expect(within(sheet).getByRole("button", { name: /Select/ })).toBeInTheDocument();
-      fireEvent.click(within(within(sheet).getByRole("group", { name: "Priority" })).getByRole("button", { name: /High/ }));
-      expect(onPatch).toHaveBeenCalledWith(t.id, { priority: "high" });
-      act(() => { vi.advanceTimersByTime(400); });
-      expect(screen.queryByRole("dialog", { name: /Actions for/ })).toBeNull();
-      // the next tap opens it as usual
-      fireEvent.click(title);
-      expect(props.onOpen).toHaveBeenCalledWith(t.id);
-    } finally { restore(); vi.useRealTimers(); }
+    const t = mk({ title: "Book the venue", priority: "low" });
+    const onPatch = vi.fn();
+    const props = base([t], { onPatch, onBulkPatch: vi.fn() });
+    render(<ListView {...props} />);
+    const row = screen.getByRole("group", { name: "Book the venue" });
+    const title = within(row).getByRole("button", { name: "Book the venue" });
+    longPress(title);
+    // the click some browsers send after a long press isn't also a tap that opens the task
+    fireEvent.click(title);
+    expect(props.onOpen).not.toHaveBeenCalled();
+    const sheet = screen.getByRole("dialog", { name: "Actions for “Book the venue”" });
+    expect(within(sheet).getByRole("button", { name: "Open task" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("button", { name: /Select/ })).toBeInTheDocument();
+    fireEvent.click(within(within(sheet).getByRole("group", { name: "Priority" })).getByRole("button", { name: /High/ }));
+    expect(onPatch).toHaveBeenCalledWith(t.id, { priority: "high" });
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(screen.queryByRole("dialog", { name: /Actions for/ })).toBeNull();
+    // the next tap opens it as usual
+    fireEvent.click(title);
+    expect(props.onOpen).toHaveBeenCalledWith(t.id);
+  });
+
+  it("the sheet assigns, with an Undo", () => {
+    const t = mk({ title: "Draft the FAQ", assigneeId: "m-1" });
+    const onPatch = vi.fn();
+    render(<ToastProvider><ListView {...base([t], { onPatch, members: [{ id: "m-1", name: "Sana Rao" }, { id: "m-2", name: "Theo Park" }] })} /></ToastProvider>);
+    const sheet = openSheet("Draft the FAQ");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Assign: Sana Rao. Change" }));
+    const list = within(sheet).getByRole("group", { name: "Assign “Draft the FAQ”" });
+    // the list opens on its Back button; the current person is marked
+    expect(within(list).getByRole("button", { name: "Back to all actions" })).toHaveFocus();
+    expect(within(list).getByRole("button", { name: /Sana Rao/ })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(list).getByRole("button", { name: /Theo Park/ }));
+    expect(onPatch).toHaveBeenCalledWith(t.id, { assigneeId: "m-2" });
+    expect(screen.getByText("Assigned “Draft the FAQ” to Theo Park")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Undo/ }));
+    expect(onPatch).toHaveBeenLastCalledWith(t.id, { assigneeId: "m-1" });
+  });
+
+  it("Back from a list returns to the actions, on the row that opened it", () => {
+    const t = mk({ title: "Pick a vendor" });
+    render(<ListView {...base([t], { onPatch: vi.fn(), members: [{ id: "m-1", name: "Sana Rao" }] })} />);
+    const sheet = openSheet("Pick a vendor");
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Assign:/ }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Back to all actions" }));
+    expect(within(sheet).getByRole("button", { name: /^Assign:/ })).toHaveFocus();
+  });
+
+  it("the sheet moves a task and its sub-tasks to another project; Undo brings them all back", () => {
+    const projects = [
+      { id: "p-a", name: "Alpha", color: "#5b5bd6", workspaceId: "w1" },
+      { id: "p-b", name: "Beta", color: "#2a9d8f", workspaceId: "w1" },
+    ] as Project[];
+    const parent = mk({ id: "par", title: "Plan the offsite", projectId: "p-a", workspaceId: "w1", sectionId: "s-1" });
+    const kid = mk({ id: "kid", title: "Book rooms", projectId: "p-a", workspaceId: "w1", parentId: "par" });
+    const onPatch = vi.fn();
+    render(<ToastProvider><ListView {...base([parent, kid], { onPatch, projects })} /></ToastProvider>);
+    const sheet = openSheet("Plan the offsite");
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Move to project/ }));
+    fireEvent.click(within(sheet).getByRole("button", { name: /Beta/ }));
+    expect(onPatch).toHaveBeenCalledWith("par", { projectId: "p-b", workspaceId: "w1", sectionId: undefined });
+    expect(onPatch).toHaveBeenCalledWith("kid", { projectId: "p-b", workspaceId: "w1", sectionId: undefined });
+    expect(screen.getByText("Moved “Plan the offsite” to Beta with 1 sub-task")).toBeInTheDocument();
+    onPatch.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /^Undo/ }));
+    expect(onPatch).toHaveBeenCalledWith("par", { projectId: "p-a", workspaceId: "w1", sectionId: "s-1" });
+    expect(onPatch).toHaveBeenCalledWith("kid", { projectId: "p-a", workspaceId: "w1", sectionId: undefined });
+  });
+
+  it("the sheet deletes through the app (its toast has the Undo); the single-task path wins when given", () => {
+    const t = mk({ title: "Stale idea" });
+    const onBulkDelete = vi.fn(), onDeleteTask = vi.fn();
+    const { unmount } = render(<ListView {...base([t], { onPatch: vi.fn(), onBulkDelete })} />);
+    let sheet = openSheet("Stale idea");
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Delete task/ }));
+    expect(onBulkDelete).toHaveBeenCalledWith([t.id]);
+    unmount();
+    act(() => { vi.advanceTimersByTime(600); });
+    render(<ListView {...base([t], { onPatch: vi.fn(), onBulkDelete, onDeleteTask })} />);
+    sheet = openSheet("Stale idea");
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Delete task/ }));
+    expect(onDeleteTask).toHaveBeenCalledWith(t.id);
+    expect(onBulkDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("the sheet's status, Today and due changes come with an Undo; Done is the row's own completion", () => {
+    const t = mk({ title: "Write the post" });
+    const onPatch = vi.fn(), onToggle = vi.fn();
+    render(<ToastProvider><ListView {...base([t], { onPatch, onToggle })} /></ToastProvider>);
+    let sheet = openSheet("Write the post");
+    fireEvent.click(within(within(sheet).getByRole("group", { name: "Status" })).getByRole("button", { name: /In progress/ }));
+    expect(onPatch).toHaveBeenCalledWith(t.id, { status: "progress", completedAt: undefined });
+    expect(screen.getByText("“Write the post” is now in progress")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(600); });
+    sheet = openSheet("Write the post");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Add to Today" }));
+    expect(onPatch).toHaveBeenLastCalledWith(t.id, { planToday: true });
+    expect(screen.getByText("Added “Write the post” to Today")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(600); });
+    sheet = openSheet("Write the post");
+    fireEvent.click(within(within(sheet).getByRole("group", { name: "Status" })).getByRole("button", { name: /^Done/ }));
+    expect(onToggle).toHaveBeenCalledWith(t.id);
+  });
+
+  it("no Move without another project, no Assign without people, no Delete without a way to delete", () => {
+    const t = mk({ title: "Lonely" });
+    render(<ListView {...base([t], { onPatch: vi.fn(), projects: [{ id: "p-launch", name: "Launch", color: "#5b5bd6" } as Project] })} />);
+    const sheet = openSheet("Lonely");
+    expect(within(sheet).queryByRole("button", { name: /^Move to project/ })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: /^Assign/ })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: /^Delete/ })).toBeNull();
+  });
+
+  it("reduced motion: the row doesn't slide, and the swipe still completes", () => {
+    restore();
+    restore = phone(/reduce/);
+    const t = mk({ title: "Calm" });
+    const props = base([t], { onPatch: vi.fn() });
+    const { container } = render(<ListView {...props} />);
+    const row = screen.getByRole("group", { name: "Calm" });
+    swipeBy(row, 200, { release: false });
+    expect(row.style.transform).toBe("");
+    expect(container.querySelector(".ktv-rowhost")?.getAttribute("data-still")).toBe("true");
+    up(row, 400, 22);
+    expect(props.onToggle).toHaveBeenCalledWith(t.id);
+  });
+
+  it("while a selection is under way, rows don't swipe and a long press adds to it", () => {
+    const a = mk({ title: "One" }), b = mk({ title: "Two" });
+    const props = base([a, b], { onPatch: vi.fn(), onBulkPatch: vi.fn() });
+    render(<ListView {...props} />);
+    const sheet = openSheet("One");
+    fireEvent.click(within(sheet).getByRole("button", { name: /Select/ }));
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    const two = screen.getByRole("group", { name: "Two" });
+    swipeBy(two, 200);
+    expect(props.onToggle).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(600); });
+    longPress(within(two).getByRole("button", { name: "Two" }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
   });
 
   it("guests get neither: no tray, no sheet", () => {
-    vi.useFakeTimers();
-    const restore = phone();
-    try {
-      const t = mk({ title: "Read only" });
-      render(<ListView {...base([t], { onPatch: vi.fn(), readOnly: true })} />);
-      const row = screen.getByRole("group", { name: "Read only" });
-      swipe(row, -150);
-      fireEvent.touchStart(row, { touches: [{ clientX: 100, clientY: 20 }] });
-      act(() => { vi.advanceTimersByTime(500); });
-      expect(screen.queryByRole("group", { name: /^Reschedule/ })).toBeNull();
-      expect(screen.queryByRole("dialog")).toBeNull();
-    } finally { restore(); vi.useRealTimers(); }
+    const t = mk({ title: "Read only" });
+    render(<ListView {...base([t], { onPatch: vi.fn(), readOnly: true })} />);
+    const row = screen.getByRole("group", { name: "Read only" });
+    swipeBy(row, -150);
+    longPress(row);
+    expect(screen.queryByRole("group", { name: /^Reschedule/ })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(row.style.transform).toBe("");
   });
 });

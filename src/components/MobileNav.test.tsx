@@ -64,4 +64,23 @@ describe("MobileNav", () => {
     expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button")).toHaveLength(3);
   });
+
+  it("with onQuickAdd the centre + opens the phone's quick add instead (warming its code on touch)", () => {
+    const onQuickAdd = vi.fn(), onQuickAddIntent = vi.fn();
+    const p = renderNav({ onQuickAdd, onQuickAddIntent });
+    const plus = screen.getByRole("button", { name: "Add a task" });
+    expect(plus).toHaveAttribute("aria-haspopup", "dialog");
+    expect(screen.queryByRole("button", { name: "Quick capture" })).toBeNull();
+    fireEvent.pointerDown(plus);
+    expect(onQuickAddIntent).toHaveBeenCalledTimes(1);
+    fireEvent.click(plus);
+    expect(onQuickAdd).toHaveBeenCalledTimes(1);
+    expect(p.onCapture).not.toHaveBeenCalled();
+  });
+
+  it("no + at all for read-only people (neither handler)", () => {
+    renderNav({ onCapture: undefined });
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(nav).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Today", "My tasks", "Inbox", "More"]);
+  });
 });

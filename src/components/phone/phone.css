@@ -1,0 +1,70 @@
+/* ============================================================
+   KANBO — phone gestures on task rows, the quick-actions sheet's
+   pages, and the desktop drag-to-plan grip.                      [u7]
+   Loaded after taskViews.css (ListView imports it second), so these
+   refine the swipe layers it already draws.
+   ============================================================ */
+
+/* ---- right: a green reveal that fills once letting go will finish the task ----
+   --st-done is text-safe ink on its own tint; filled, the page colour reads on it
+   in both themes (light: near-white on deep green; Navy: the navy on a light green) */
+.ktv-swipe-done { background: color-mix(in oklab, var(--st-done-fill) 16%, var(--bg)); color: var(--st-done); }
+.ktv-swipe-done[data-armed="true"] { background: var(--st-done); color: var(--bg); }
+/* reopening a done row is the accent (it isn't a finish) */
+.ktv-swipe-done[data-kind="reopen"] { background: var(--accent-tint, var(--accent-dim)); color: var(--accent-text, var(--accent)); }
+.ktv-swipe-done[data-kind="reopen"][data-armed="true"] { background: var(--accent-fill, var(--accent)); color: var(--on-accent); }
+
+/* a row being pulled is opaque at once (its hover / page-colour fade would let the reveal's words show through) */
+.ktv-row[data-shifted]:not([data-glide]) { transition: none; }
+
+/* ---- left: Today · Tomorrow · Next week · Pick ---- */
+.ktv-swipe-tray > button[data-current="true"] { color: var(--accent-text, var(--accent)); box-shadow: inset 1px 0 0 var(--hairline), inset 0 -2px 0 var(--accent); }
+.ktv-swipe-tray > button[data-current="true"] .ktv-mono { color: inherit; }
+
+/* ---- prefers-reduced-motion: the row stays put; the reveal shows in place, over its edge ---- */
+.ktv-rowhost[data-still="true"] .ktv-swipe { z-index: 2; }
+.ktv-rowhost[data-still="true"] .ktv-swipe-done { right: auto; width: max-content; min-width: 112px; padding-right: 16px; box-shadow: 1px 0 0 var(--hairline); }
+.ktv-rowhost[data-still="true"] .ktv-swipe-tray { left: auto; width: 256px; box-shadow: -1px 0 0 var(--hairline); }
+/* before letting go, the tray is only a promise */
+.ktv-rowhost[data-still="true"] .ktv-swipe-tray:not([data-open]) { opacity: 0.72; }
+.ktv-rowhost[data-still="true"] .ktv-swipe-tray:not([data-open]):not([data-armed]) { opacity: 0.4; }
+
+/* ---- desktop: picked up by lib/dnd ---- */
+.ktv-row[data-kdnd-dragging="true"] { opacity: 0.4; }
+/* the grip, where the row itself drags to reorder: in the row's right padding, on hover */
+.kph-grip {
+  position: absolute; top: 50%; translate: 0 -50%;
+  right: calc(max(var(--tv-gutter), 100% - var(--tv-list-max, 100%) - var(--tv-gutter)) - 22px);
+  display: grid; place-items: center; width: 16px; height: 24px; border-radius: var(--r-xs, 4px);
+  color: var(--icon-quiet, var(--ink-4)); cursor: grab; opacity: 0; touch-action: none;
+  transition: opacity var(--d-1, 90ms) var(--ease), background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
+}
+.ktv-row:hover .kph-grip, .ktv-row:has(:focus-visible) .kph-grip, .kph-grip[data-kdnd-dragging="true"] { opacity: 1; }
+.kph-grip:hover { background: var(--tv-hover); color: var(--ink-2); }
+.kph-grip[data-kdnd-dragging="true"] { cursor: grabbing; }
+@media (hover: none), (pointer: coarse) { .kph-grip { display: none; } }
+
+/* ---- the quick-actions sheet: its Assign / Move lists ---- */
+.ktv-act .kph-value { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); }
+.ktv-act > .kph-chev { margin-left: 2px; color: var(--icon-quiet, var(--ink-4)); }
+.ktv-act[data-tone="danger"], .ktv-act[data-tone="danger"] > svg { color: var(--signal); }
+.kph-head { display: flex; align-items: center; gap: 8px; min-height: 36px; padding-top: 2px; }
+.kph-head > h3 { margin: 0; font: 600 15px/22px var(--tv-ui); color: var(--ink); }
+.kph-back {
+  display: inline-flex; align-items: center; gap: 2px; height: 36px; margin-left: -6px; padding: 0 10px 0 4px;
+  border: 0; border-radius: var(--r-md, 8px); background: transparent; color: var(--accent-text, var(--accent)); cursor: pointer;
+  font: 600 14px/20px var(--tv-ui);
+}
+.kph-back:hover, .kph-back:active { background: var(--tv-hover); }
+.kph-list { display: grid; gap: 2px; margin: -8px -8px 0; }
+.kph-list .ktv-act[aria-pressed="true"] { font-weight: 600; }
+.kph-grow { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktv-act > .kph-tick { color: var(--accent-text, var(--accent)); }
+.kph-none {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%;
+  border: 1.5px dashed var(--hairline-strong); color: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kph-grip, .ktv-swipe-tray, .ktv-swipe-tray > button { transition: none !important; }
+}

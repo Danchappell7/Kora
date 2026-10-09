@@ -6,8 +6,14 @@
    right-hand cluster that lines up row to row — project, due date,
    priority, assignee. No stripes, no dividers: groups carry the
    structure. J/K move, X selects, S/P/D/A edit, ⌘↵ completes.
-   Phones: swipe a row right to complete it, left for Tomorrow ·
-   Next week · Pick; a long press opens the row's action sheet.
+   Phones (lib/gestures): swipe a row right to complete it (a green
+   reveal), left for Today · Tomorrow · Next week · Pick; a long press
+   opens the row's quick actions (status, due, priority, assign, move,
+   Today, select, delete). Every change says what it did, with an Undo.
+   Desktop: a row is also a lib/dnd drag source (to Today, a week's day,
+   a sidebar project or person; every selected row goes along). Where
+   rows reorder by dragging (a project in manual order) that native drag
+   keeps the row, and the kit starts from the row's grip instead.
    ============================================================ */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, memo, type ReactNode } from "react";
 import {
@@ -22,14 +28,18 @@ import { pushUndo } from "../../lib/undoStack";
 import { parseDateText } from "../../lib/nlp";
 import { dayLabel, daysFromToday, localDayOf } from "../../lib/myTaskBuckets";
 import {
-  getProject, getMember, dueState, fmtDue, toLocalISO, presetDate, KANBO_TODAY, TAGS,
+  getProject, getMember, dueState, fmtDue, toLocalISO, KANBO_TODAY, TAGS,
   STATUS_META, STATUS_ORDER, PRIORITY_META,
 } from "../../data/data";
 import type { Task, Subtask, IconName, Priority, Section, CustomFieldDef, Project, TagDef } from "../../data/types";
 import type { GroupBy } from "../../app-types";
 import { useEntrance } from "../../hooks/useEntrance";
 import "./taskViews.css";
+import "../phone/phone.css";
 import { TaskApprovalBadge } from "../approvals/ApprovalSummaries";
+import { useSwipeRow } from "../../lib/gestures";
+import { useTaskDragSource, isTaskDragActive } from "../../lib/dnd";
+import { RowActionSheet, quickDueChoices, shortDay } from "../phone/RowActionSheet";
 
 // small chips showing a task's filled custom-field values (max 3)
 export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
@@ -164,6 +174,7 @@ const NO_MEMBERS: { id: string; name: string }[] = [];
 const NO_FIELDS: CustomFieldDef[] = [];
 const NO_SECTIONS: Section[] = [];
 const NO_PROJECTS: Project[] = [];
+const NOOP = () => undefined;
 
 // a latest-value callback with a stable identity (keeps memo'd rows from re-rendering)
 function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
@@ -186,12 +197,8 @@ function CurrentMark() {
 type RowEdit = (task: Task, patch: Partial<Task>, what: string) => void;
 
 /* ---------- phone gestures ---------- */
-/** the swipe-left tray: Tomorrow · Next week · Pick, 64px each */
-const TRAY_W = 192;
-/** how far a right swipe travels before letting go completes the task */
-const SWIPE_DONE_AT = 112;
-const LONG_PRESS_MS = 450;
-const buzz = (ms: number) => { try { navigator.vibrate?.(ms); } catch { /* unsupported */ } };
+/** the swipe-left tray: Today · Tomorrow · Next week · Pick, 64px each */
+const TRAY_W = 256;
 /** A due date in words for a toast: "today", "tomorrow", else "Wed 7 Oct". */
 export function dueWords(iso: string, today: Date = KANBO_TODAY): string {
   const n = daysFromToday(iso, today);
@@ -200,9 +207,6 @@ export function dueWords(iso: string, today: Date = KANBO_TODAY): string {
   const d = localDayOf(iso);
   return d ? dayLabel(d, today) : iso;
 }
-const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-/** "Thu 1" under a tray button */
-const shortDay = (iso: string) => { const d = localDayOf(iso); return d ? `${WD[d.getDay()]} ${d.getDate()}` : ""; };
 /** the natural-language date field in every row's picker ("fri", "in 2 weeks"); the chip's own parser covers the rest */
 const parseDue = (text: string) => parseDateText(text);
 
@@ -242,8 +246,10 @@ interface TaskRowProps {
   celebrate?: boolean;
   meta?: ReactNode;
   action?: ReactNode;
-  /** phones: swipe right completes, swipe left offers Tomorrow · Next week · Pick */
+  /** phones: swipe right completes, swipe left offers Today · Tomorrow · Next week · Pick */
   swipe?: boolean;
+  /** a right swipe let go past the line: complete (or reopen) with the settle and an Undo */
+  onSwipeDone?: (id: string) => void;
   /** a date from the swipe tray (applied with an Undo toast) */
   onQuickDue?: (task: Task, iso: string | undefined) => void;
   /** the tray's Pick: open this row's date picker */
@@ -252,9 +258,15 @@ interface TaskRowProps {
   onDue?: (task: Task, patch: Partial<Task>) => void;
   /** phones: a long press opens the row's action sheet */
   onLongPress?: (id: string) => void;
+  /** desktop: the row is a lib/dnd drag source (to Today, a day, a project…) */
+  kitOn?: boolean;
+  /** …picked up by its grip (the row itself drags to reorder) */
+  kitGrip?: boolean;
+  /** the ids a drag from this row carries (every selected row when it's selected) */
+  kitIds?: (id: string) => string[];
 }
 
-const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, onCheck, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, touchSelect = false, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onEdit, members = NO_MEMBERS, customFields = NO_FIELDS, showProject = true, quietAssignee = false, cursor = false, active = false, celebrate = true, meta, action, swipe = false, onQuickDue, onPickDue, onDue, onLongPress }: TaskRowProps) {
+const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpen, onToggle, onToggleSubtask, onCheck, smart, depth = 0, isMobile, readOnly = false, selected = false, selectionActive = false, onSelect, touchSelect = false, draggable = false, dragging = false, dropHint = null, onPickup, onHover, onRowDrop, onMoveBy, onRefocus, onEdit, members = NO_MEMBERS, customFields = NO_FIELDS, showProject = true, quietAssignee = false, cursor = false, active = false, celebrate = true, meta, action, swipe = false, onSwipeDone, onQuickDue, onPickDue, onDue, onLongPress, kitOn = false, kitGrip = false, kitIds }: TaskRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -264,7 +276,6 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   const assigneeRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLButtonElement>(null);
   const checkByKey = useRef(false); // was the completion toggle pressed from the keyboard?
-  const press = useRef<{ timer: number; x: number; y: number; fired: boolean } | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const toggleMenu = (m: "priority" | "assignee") => setMenu((cur) => cur === m ? null : m);
   const edit = readOnly ? undefined : onEdit;
@@ -298,7 +309,6 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
   const [landed, setLanded] = useState(() => wasJustLanded(task.id));
   useEffect(() => { if (wasJustLanded(task.id)) setLanded(true); }, [task.id, task.position]);
   useEffect(() => { if (!landed) return; const t = window.setTimeout(() => setLanded(false), 1000); return () => window.clearTimeout(t); }, [landed]);
-  useEffect(() => () => { if (press.current) window.clearTimeout(press.current.timer); }, []);
   // sub-tasks are full tasks with parentId; legacy checklist items live on task.subtasks
   const subDone = childDone + (task.subtasks ?? []).filter((s) => s.done).length;
   const subTotal = childTasks.length + (task.subtasks?.length ?? 0);
@@ -318,127 +328,64 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
 
   /* ---- phones: swipe right to complete, left for the reschedule tray; long press for the sheet ---- */
   const hostRef = useRef<HTMLDivElement>(null);
-  const [shift, setShiftState] = useState(0);
-  const shiftRef = useRef(0);
-  const sideRef = useRef<"right" | "left">("right"); // which layer shows while the row is off-centre
-  const setShift = (n: number) => { shiftRef.current = n; if (n) sideRef.current = n > 0 ? "right" : "left"; setShiftState(n); };
-  const [tray, setTray] = useState(false);
-  const [glide, setGlide] = useState(false); // a released row eases home; a dragged one follows the finger
-  // the glide lasts one transition (reduced motion has none, so a timer ends it rather than transitionend)
-  useEffect(() => {
-    if (!glide) return;
-    const t = window.setTimeout(() => setGlide(false), 220);
-    return () => window.clearTimeout(t);
-  }, [glide]);
-  const [armed, setArmed] = useState(false);
-  const swipeRef = useRef<{ x: number; y: number; base: number; axis: "x" | null; reach: number } | null>(null);
-  const swallowUntil = useRef(0); // the click a finished swipe leaves behind
-  const closeTray = (animate = true) => { setGlide(animate); setShift(0); setTray(false); setArmed(false); };
-  // a selection starting, or the row being done, puts the row back
-  useEffect(() => {
-    if ((!swipe || done) && (shiftRef.current !== 0 || tray)) closeTray();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [swipe, done]);
-  // a touch anywhere else closes an open tray
-  useEffect(() => {
-    if (!tray) return;
-    const onDown = (e: Event) => { if (!(e.target instanceof Node) || !hostRef.current?.contains(e.target)) closeTray(); };
-    document.addEventListener("touchstart", onDown, { capture: true, passive: true });
-    document.addEventListener("mousedown", onDown, true);
-    return () => {
-      document.removeEventListener("touchstart", onDown, { capture: true });
-      document.removeEventListener("mousedown", onDown, true);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tray]);
   // while a selection is under way a long press adds to it; otherwise it opens the sheet (phones) or starts one
-  const longPress = touchSelect && onSelect ? () => onSelect(task.id, false)
+  const longPressFn = touchSelect && onSelect ? () => onSelect(task.id, false)
     : onLongPress ? () => onLongPress(task.id)
     : onSelect ? () => onSelect(task.id, false) : undefined;
-  const touchable = swipe || !!longPress;
-  const cancelPress = () => { const s = press.current; if (s && !s.fired) { window.clearTimeout(s.timer); press.current = null; } };
-  const onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    const p = e.touches[0];
-    if (!p || e.touches.length > 1) { cancelPress(); swipeRef.current = null; return; }
-    if (swipe) swipeRef.current = { x: p.clientX, y: p.clientY, base: shiftRef.current, axis: null, reach: Math.min(SWIPE_DONE_AT, (hostRef.current?.clientWidth || 360) * 0.34) };
-    // the glyph keeps its own long press (the status menu, where the platform offers one)
-    if (!longPress || press.current || (e.target as HTMLElement).closest?.(".ktv-lead")) return;
-    const timer = window.setTimeout(() => {
-      if (!press.current) return;
-      press.current.fired = true;
-      swipeRef.current = null;
-      buzz(10);
-      longPress();
-    }, LONG_PRESS_MS);
-    press.current = { timer, x: p.clientX, y: p.clientY, fired: false };
-  };
-  const onTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    const p = e.touches[0];
-    if (!p) return;
-    const s = press.current;
-    if (s && !s.fired && Math.hypot(p.clientX - s.x, p.clientY - s.y) > 8) cancelPress();
-    const w = swipeRef.current;
-    if (!w) return;
-    const dx = p.clientX - w.x, dy = p.clientY - w.y;
-    if (!w.axis) {
-      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-      // mostly vertical: it's a scroll, and the row stays put (a done row has no tray to pull out)
-      if (Math.abs(dx) <= Math.abs(dy) * 1.2 || (w.base === 0 && dx < 0 && done)) { swipeRef.current = null; return; }
-      w.axis = "x";
-      setGlide(false);
-    }
-    let next = w.base + dx;
-    if (w.base < 0) next = Math.min(0, next);          // an open tray only closes
-    if (done) next = Math.max(0, next);
-    if (next < -TRAY_W) next = -TRAY_W + (next + TRAY_W) * 0.25;       // resists past the tray
-    if (next > w.reach) next = w.reach + (next - w.reach) * 0.35;     // and past the finish line
-    const nowArmed = w.base === 0 && next >= w.reach;
-    if (nowArmed !== armed) { setArmed(nowArmed); if (nowArmed) buzz(8); }
-    setShift(next);
-  };
-  const onTouchEnd = (e: React.TouchEvent<HTMLDivElement>, cancelled: boolean) => {
-    // A long press that fired, or a swipe: the tap it ends is spent. Cancelling touchend stops the
-    // click the browser would send (which would land on the sheet's scrim and close it); any that
-    // still arrives is swallowed.
-    if (press.current?.fired) {
-      press.current = null;
-      swallowUntil.current = Date.now() + 400;
-      if (e.cancelable) e.preventDefault();
-    }
-    cancelPress();
-    const w = swipeRef.current;
-    swipeRef.current = null;
-    if (!w || w.axis !== "x") return;
-    if (e.cancelable) e.preventDefault();
-    swallowUntil.current = Date.now() + 400;
-    const x = shiftRef.current;
-    if (!cancelled && w.base === 0 && x >= w.reach) { closeTray(); onCheck(task.id); return; }
-    const open = !cancelled && !done && (w.base < 0 ? x <= -TRAY_W + 48 : x <= -64);
-    setGlide(true); setArmed(false);
-    setShift(open ? -TRAY_W : 0);
-    setTray(open);
-  };
-  const tomorrowIso = presetDate("tomorrow");
-  const nextWeekIso = presetDate("nextweek");
+  const sw = useSwipeRow({
+    disabled: (!swipe && !longPressFn) || editingTitle,
+    onSwipeRight: swipe ? () => onSwipeDone?.(task.id) : undefined,
+    // the tray opens itself; a done row has nothing to reschedule
+    onSwipeLeft: swipe && !done ? NOOP : undefined,
+    // (a touch long-press that lib/dnd already turned into a drag isn't also a sheet)
+    onLongPress: longPressFn ? () => { if (!isTaskDragActive()) longPressFn(); } : undefined,
+    revealWidth: TRAY_W, hostRef, longPressIgnore: ".ktv-lead",
+  });
+  const { reset: closeTray, open: tray } = sw;
+  // a selection starting, or the row being done, puts the row back
+  useEffect(() => { if ((!swipe || done) && tray) closeTray(); }, [swipe, done, tray, closeTray]);
+  // which layer shows while the row is off-centre (kept while it eases home)
+  const sideRef = useRef<"right" | "left">("right");
+  if (sw.offset > 0 || sw.direction === "right") sideRef.current = "right";
+  else if (sw.offset < 0 || sw.direction === "left") sideRef.current = "left";
+  const revealing = swipe && (sw.offset !== 0 || tray || sw.gliding || sw.phase === "committed");
+  const armed = sw.phase === "armed";
   const trayDue = (iso: string) => { closeTray(); onQuickDue?.(task, iso); };
+  const quickDue = quickDueChoices();
+
+  /* ---- desktop: a lib/dnd drag source (the whole row, or its grip where the row reorders) ---- */
+  const kit = useTaskDragSource({
+    taskIds: () => (kitIds ? kitIds(task.id) : [task.id]),
+    source: "list", originId: task.id, label: task.title,
+    disabled: !kitOn || editingTitle,
+  });
+  const kitOnRow = kitOn && !kitGrip;
+  const onRowPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    sw.bind.onPointerDown?.(e);
+    if (kitOnRow) kit.bind.onPointerDown?.(e);
+  };
 
   return (
     <div className="ktv-rowwrap">
-      <div ref={hostRef} className="ktv-rowhost">
-      {swipe && (shift !== 0 || tray || glide) && (
+      <div ref={hostRef} className="ktv-rowhost" data-still={sw.still && revealing ? "true" : undefined}>
+      {revealing && (
         sideRef.current === "right" ? (
-          <div className="ktv-swipe ktv-swipe-done" data-armed={armed || undefined} aria-hidden="true">
-            <Icon name={done ? "refresh" : "check"} size={16} sw={2.2} /><span>{done ? "Not done" : "Done"}</span>
+          <div className="ktv-swipe ktv-swipe-done" data-kind={done ? "reopen" : undefined} data-armed={armed || undefined} aria-hidden="true">
+            <Icon name={done ? "refresh" : "check"} size={16} sw={2.2} /><span>{done ? "Not done" : armed ? "Let go to finish" : "Done"}</span>
           </div>
         ) : (
-          <div className="ktv-swipe ktv-swipe-tray" role="group" aria-label={`Reschedule ${q}`} aria-hidden={!tray || undefined}>
-            <button type="button" tabIndex={tray ? 0 : -1} onClick={() => trayDue(tomorrowIso)} aria-label={`Due tomorrow, ${shortDay(tomorrowIso)}`}>
-              Tomorrow<span className="ktv-mono" aria-hidden="true">{shortDay(tomorrowIso)}</span>
-            </button>
-            <button type="button" tabIndex={tray ? 0 : -1} onClick={() => trayDue(nextWeekIso)} aria-label={`Due next week, ${shortDay(nextWeekIso)}`}>
-              Next week<span className="ktv-mono" aria-hidden="true">{shortDay(nextWeekIso)}</span>
-            </button>
-            <button type="button" tabIndex={tray ? 0 : -1} data-pick="true" onClick={() => { swallowUntil.current = 0; closeTray(false); onPickDue?.(task.id); }} aria-label="Pick a due date">
+          <div className="ktv-swipe ktv-swipe-tray" role="group" aria-label={`Reschedule ${q}`} aria-hidden={!tray || undefined}
+            data-open={tray || undefined} data-armed={armed || undefined}>
+            {quickDue.map((d) => {
+              const current = task.dueDate === d.iso;
+              return (
+                <button key={d.key} type="button" tabIndex={tray ? 0 : -1} data-current={current || undefined} onClick={() => trayDue(d.iso)}
+                  aria-label={`Due ${d.label.toLowerCase()}, ${shortDay(d.iso)}${current ? " (its due date now)" : ""}`}>
+                  {d.label}<span className="ktv-mono" aria-hidden="true">{shortDay(d.iso)}</span>
+                </button>
+              );
+            })}
+            <button type="button" tabIndex={tray ? 0 : -1} data-pick="true" onClick={() => { closeTray(); onPickDue?.(task.id); }} aria-label="Pick a due date">
               <Icon name="calendar" size={16} sw={1.75} />Pick
             </button>
           </div>
@@ -446,32 +393,28 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
       )}
       <div role="group" aria-label={task.title} data-row-id={task.id} data-selected={selected || undefined}
         className={"ktv-row task-row" + (landed ? " kland-row" : "")}
-        data-done={done || undefined} data-cursor={cursor || undefined} data-active={active || undefined} data-drag={dragging || undefined}
+        data-done={done || undefined} data-cursor={cursor || undefined} data-active={active || undefined} data-drag={dragging || kit.isDragging || undefined}
         data-drop={dropHint ?? undefined} data-draggable={draggable || undefined}
-        data-swipe={swipe || undefined} data-shifted={swipe && (shift !== 0 || tray || glide) ? sideRef.current : undefined} data-glide={glide || undefined}
-        onClickCapture={(e) => {
-          // the click a long press or a swipe leaves behind, or a tap that closes the open tray, goes no
-          // further (not even to the title or a chip inside the row)
-          if (Date.now() < swallowUntil.current || tray) {
-            e.stopPropagation(); e.preventDefault();
-            if (tray) closeTray();
-          }
-        }}
+        data-swipe={swipe || undefined} data-shifted={revealing && !sw.still ? sideRef.current : undefined} data-glide={sw.gliding || undefined}
+        data-kdnd-source={kitOnRow ? kit.bind["data-kdnd-source"] : undefined}
+        data-kdnd-dragging={kitOnRow ? kit.bind["data-kdnd-dragging"] : undefined}
+        onClickCapture={sw.bind.onClickCapture}
         onClick={() => {
           if (touchSelect && onSelect) { onSelect(task.id, false); return; }
           onOpen(task.id);
         }}
-        onTouchStart={touchable ? onTouchStart : undefined}
-        onTouchMove={touchable ? onTouchMove : undefined}
-        onTouchEnd={touchable ? (e) => onTouchEnd(e, false) : undefined}
-        onTouchCancel={touchable ? (e) => onTouchEnd(e, true) : undefined}
-        onContextMenu={touchable ? (e) => { if (press.current?.fired) e.preventDefault(); } : undefined}
+        onPointerDown={sw.bind.onPointerDown || kitOnRow ? onRowPointerDown : undefined}
+        onPointerMove={sw.bind.onPointerMove}
+        onPointerUp={sw.bind.onPointerUp}
+        onPointerCancel={sw.bind.onPointerCancel}
+        onContextMenu={sw.bind.onContextMenu}
+        onTouchEnd={sw.bind.onTouchEnd}
         draggable={draggable}
-        onDragStart={draggable ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}
+        onDragStart={draggable ? (e) => { if (e.target !== e.currentTarget) return; e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; onPickup?.(task.id); } : undefined}
         onDragOver={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); onHover?.(task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
         onDrop={draggable ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); const r = e.currentTarget.getBoundingClientRect(); onRowDrop?.(id, task.id, e.clientY < r.top + r.height / 2 ? "top" : "bottom"); } : undefined}
         onDragEnd={draggable ? () => onPickup?.("") : undefined}
-        style={depth || shift ? { ...(depth ? { paddingLeft: `calc(var(--tv-gutter) + ${depth * 22}px)` } : null), ...(shift ? { transform: `translate3d(${shift}px, 0, 0)` } : null) } : undefined}>
+        style={depth || sw.bind.style?.transform || sw.bind.style?.touchAction ? { ...(depth ? { paddingLeft: `calc(var(--tv-gutter) + ${depth * 22}px)` } : null), ...sw.bind.style } : undefined}>
 
         {onSelect && (
           <button type="button" role="checkbox" aria-checked={selected} aria-label={`Select ${q}`} className="ktv-sel ksel"
@@ -601,6 +544,17 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
             ) : (!quietAssignee || !assignee) && <Avatar id={task.assigneeId} size={20} />}
           </span>
         </div>
+        {kitOn && kitGrip && (
+          // the row itself drags to reorder, so the trip elsewhere starts here (a mouse thing: the
+          // keyboard has T, M and D, and phones the long-press sheet)
+          <span className="kph-grip" aria-hidden="true" data-tip="Drag to Today, a day or a project" {...kit.bind}
+            draggable onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={stop}>
+            <svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor" focusable="false">
+              <circle cx="2" cy="2" r="1.25" /><circle cx="6" cy="2" r="1.25" /><circle cx="2" cy="7" r="1.25" />
+              <circle cx="6" cy="7" r="1.25" /><circle cx="2" cy="12" r="1.25" /><circle cx="6" cy="12" r="1.25" />
+            </svg>
+          </span>
+        )}
       </div>
       </div>
 
@@ -637,79 +591,6 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
     </div>
   );
 });
-
-/** Phones: a long press on a row opens this sheet: open, status, due, priority, Today and select. */
-function RowActionSheet({ task, canSelect, onOpen, onStatus, onDue, onPickDue, onPriority, onToday, onSelect }: {
-  task: Task; canSelect: boolean;
-  onOpen: (id: string) => void;
-  onStatus: (t: Task, s: Task["status"]) => void;
-  onDue: (t: Task, iso: string | undefined) => void;
-  onPickDue: (id: string) => void;
-  onPriority: (t: Task, p: Priority) => void;
-  onToday: (t: Task) => void;
-  onSelect: (id: string) => void;
-}) {
-  const proj = getProject(task.projectId);
-  const quick = [
-    { label: "Today", iso: toLocalISO(KANBO_TODAY) },
-    { label: "Tomorrow", iso: presetDate("tomorrow") },
-    { label: "Next week", iso: presetDate("nextweek") },
-  ];
-  return (
-    <div className="ktv-acts">
-      <p className="ktv-acts-meta">
-        <StatusGlyph status={task.status} size={14} readOnly /><span>{STATUS_META[task.status].label}</span>
-        {proj && <><span aria-hidden="true">·</span><ProjectTile project={proj} size={16} /><span className="truncate">{proj.name}</span></>}
-        {task.dueDate && <><span aria-hidden="true">·</span><span className="ktv-mono">{fmtDue(task.dueDate)}</span></>}
-      </p>
-      <button type="button" className="ktv-act" onClick={() => onOpen(task.id)}>
-        <Icon name="arrowUpRight" size={18} sw={1.75} /><span>Open task</span>
-      </button>
-      <div className="ktv-acts-sec" role="group" aria-label="Status">
-        <h3>Status</h3>
-        <div className="ktv-chips">
-          {STATUS_ORDER.map((s) => (
-            <button key={s} type="button" className="ktv-chip" aria-pressed={task.status === s} onClick={() => onStatus(task, s)}>
-              <StatusGlyph status={s} size={14} readOnly /><span>{STATUS_META[s].label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="ktv-acts-sec" role="group" aria-label="Due date">
-        <h3>Due</h3>
-        <div className="ktv-chips">
-          {quick.map((d) => (
-            <button key={d.label} type="button" className="ktv-chip" aria-pressed={task.dueDate === d.iso} onClick={() => onDue(task, d.iso)}>
-              <span>{d.label}</span><span className="ktv-mono" aria-hidden="true">{shortDay(d.iso)}</span>
-            </button>
-          ))}
-          <button type="button" className="ktv-chip" onClick={() => onPickDue(task.id)}><Icon name="calendar" size={14} sw={1.75} /><span>Pick a date…</span></button>
-          {task.dueDate && <button type="button" className="ktv-chip" onClick={() => onDue(task, undefined)}><span>No date</span></button>}
-        </div>
-      </div>
-      <div className="ktv-acts-sec" role="group" aria-label="Priority">
-        <h3>Priority</h3>
-        <div className="ktv-chips">
-          {(["urgent", "high", "medium", "low"] as const).map((p) => (
-            <button key={p} type="button" className="ktv-chip" aria-pressed={task.priority === p} onClick={() => onPriority(task, p)}>
-              <PriorityGlyph priority={p} /><span>{PRIORITY_META[p].label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="ktv-acts-list">
-        <button type="button" className="ktv-act" onClick={() => onToday(task)}>
-          <Icon name="sun" size={18} sw={1.75} /><span>{task.planToday ? "Take off Today" : "Add to Today"}</span>
-        </button>
-        {canSelect && (
-          <button type="button" className="ktv-act" onClick={() => onSelect(task.id)}>
-            <Icon name="check" size={18} sw={1.75} /><span>Select</span><small>to change several at once</small>
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function GroupHeader({ groupKey, label, tone, count, collapsed, onToggleCollapse, onRename, onDelete, selectState, onSelectAll, onAdd, dropActive = false, onDragOver, onDrop }: {
   groupKey: string; label: string; tone?: "signal"; count: number; collapsed: boolean; onToggleCollapse: () => void;
@@ -772,7 +653,7 @@ export interface ListGroup {
 }
 
 export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_PROJECTS, compact = false, onOpen, onToggle, onToggleSubtask, groupBy, smart, sort, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members: membersIn = NO_MEMBERS, sections: sectionsIn = NO_SECTIONS, onCreateSection, onRenameSection, onDeleteSection, customFields: customFieldsIn = NO_FIELDS, sectionField = "sectionId", sectionProjectId, filtered = false, onClearFilters, readOnly = false,
-  groups: groupsIn, showProject = true, quietAssigneeFor, renderMeta, renderAction, focusGroup, focusKey, emptyState, footer, allTags, keyboard = true, label = "Tasks", activeId }: {
+  groups: groupsIn, showProject = true, quietAssigneeFor, renderMeta, renderAction, focusGroup, focusKey, emptyState, footer, allTags, keyboard = true, label = "Tasks", activeId, onDeleteTask, gestures = true, dragToPlan = true }: {
   tasks: Task[]; allTasks: Task[]; projects?: Project[]; compact?: boolean; onOpen: (id: string) => void; onToggle: (id: string) => void; onToggleSubtask: (taskId: string, subId: string) => void; groupBy: GroupBy; smart: boolean;
   onBulkPatch?: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete?: (ids: string[]) => void;
@@ -817,6 +698,13 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   label?: string;
   /** the task open in the task panel: its row stays marked while you work beside it */
   activeId?: string;
+  /** the long-press sheet's Delete for one task (App's deleteTask: "Deleted “X”", Undo through the bin).
+   *  Without it, Delete goes through onBulkDelete([id]); with neither, the sheet has no Delete. */
+  onDeleteTask?: (id: string) => void;
+  /** phones: swipe rows and long-press for the quick actions (default on) */
+  gestures?: boolean;
+  /** desktop: rows are lib/dnd drag sources, to Today, a week's day, a sidebar project or person (default on) */
+  dragToPlan?: boolean;
 }) {
   const entrance = useEntrance();
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -911,18 +799,50 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
 
   // ---- phones: swipes and the long-press sheet. Their changes say what happened, with an Undo ----
   const toast = useOptionalToast();
+  /** say what changed, with an Undo (the toast's button and ⌘Z run it once, whichever comes first) */
+  const announce = useStableCallback((message: string, label: string, undo: () => void) => {
+    let undone = false;
+    const run = () => { if (undone) return; undone = true; undo(); };
+    // a toast registers its own Undo with ⌘Z; bare (tests, previews) the list does, and says it here
+    if (toast) toast.action(message, "Undo", run, {});
+    else { pushUndo(label, run); setLive(message); }
+  });
   const toastEdit = useStableCallback((t: Task, p: Partial<Task>, what: string, message: string) => {
     if (!patch) return;
     const before: Partial<Task> = {};
     for (const k of Object.keys(p) as (keyof Task)[]) (before as Record<string, unknown>)[k] = t[k];
     patch(t.id, p);
-    // one undo, whichever runs it first: the toast's button or ⌘Z
-    let undone = false;
-    let remove = () => {};
-    const undo = () => { if (undone) return; undone = true; remove(); patch(t.id, before); };
-    remove = pushUndo(`${what} of “${t.title}”`, undo);
-    toast?.action(message, "Undo", undo, {});
+    announce(message, `${what} of “${t.title}”`, () => patch(t.id, before));
   });
+  // a swipe right let go past the line (or the sheet's Done / To do): finishing settles in place (App's
+  // own toast has the Undo); reopening a done one says so here, and Undo puts it back as it was
+  const onSwipeDone = useStableCallback((id: string) => {
+    const t = findTask(id);
+    if (!t) return;
+    if (t.status !== "done" || !patch) { onCheck(id); return; }
+    const before: Partial<Task> = { status: t.status, completedAt: t.completedAt };
+    onCheck(id);
+    announce(`Reopened “${t.title}”`, `Status of “${t.title}”`, () => patch(t.id, before));
+  });
+  // the sheet's Assign: one task, with an Undo
+  const onAssign = useStableCallback((t: Task, memberId: string) => {
+    if (memberId === t.assigneeId) return;
+    const who = members.find((m) => m.id === memberId)?.name ?? getMember(memberId)?.name;
+    toastEdit(t, { assigneeId: memberId }, "Assignee", memberId ? `Assigned “${t.title}” to ${who ?? "them"}` : `“${t.title}” is unassigned now`);
+  });
+  // the sheet's Move: the task and its sub-tasks go to the project (sections stay behind); Undo brings them all back
+  const onMoveTask = useStableCallback((t: Task, projectId: string) => {
+    if (!patch || projectId === t.projectId) return;
+    const family = [t, ...descendantsOf(t.id).filter((c) => c.projectId !== projectId)];
+    const before = family.map((x) => ({ id: x.id, p: { projectId: x.projectId, workspaceId: x.workspaceId, sectionId: x.sectionId } as Partial<Task> }));
+    patch(t.id, { projectId, workspaceId: workspaceOf(projectId), sectionId: undefined });
+    moveFamily(t.id, projectId);
+    const name = (projects.find((p) => p.id === projectId) ?? getProject(projectId))?.name ?? "another project";
+    const kids = family.length - 1;
+    announce(`Moved “${t.title}” to ${name}${kids ? ` with ${kids} sub-task${kids === 1 ? "" : "s"}` : ""}`, `Project of “${t.title}”`,
+      () => before.forEach((b) => patch(b.id, b.p)));
+  });
+  const deleteOne = readOnly ? undefined : onDeleteTask ?? (onBulkDelete ? (id: string) => onBulkDelete([id]) : undefined);
   const onQuickDue = useStableCallback((t: Task, iso: string | undefined) => {
     if ((iso ?? undefined) === (t.dueDate ?? undefined)) return;
     toastEdit(t, iso ? { dueDate: iso } : { dueDate: undefined, dueTime: undefined }, "Due date",
@@ -1313,9 +1233,20 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   const recentlySettled = (id: string) => { const t = settledAt.current.get(id); return !!t && Date.now() - t < 1500; };
   const touchSelect = isTouch && selectionActive;
   // phones: rows swipe (not while a selection is under way: taps toggle it then) and long-press for the sheet
-  const swipeRows = isMobile && !!patch && !selectionActive;
+  const swipeRows = gestures && isMobile && !!patch && !selectionActive;
   // (and don't also offer the browser's own drag, which would fight both on the phones that have it)
-  const sheetable = isMobile && !!patch;
+  const sheetable = gestures && isMobile && !!patch;
+  // desktop: rows go to Today / a day / a project / a person through lib/dnd. Not on touch screens (a
+  // long press there is the sheet, or a selection) and never for read-only people
+  const kitOn = dragToPlan && !!patch && !isTouch;
+  const kitGrip = dragEnabled && !sheetable;
+  // a drag from a selected row carries the whole selection, in the order it's on screen
+  const kitIds = useStableCallback((id: string): string[] => {
+    if (!selected.has(id) || selected.size < 2) return [id];
+    const shown = visibleOrder.filter((x) => selected.has(x));
+    const rest = [...selected].filter((x) => presentIds.has(x) && !shown.includes(x));
+    return [...shown, ...rest];
+  });
   const sheetTask = sheetId ? findTask(sheetId) : undefined;
   const lastSheetTask = useRef<Task | undefined>(undefined);
   if (sheetTask) lastSheetTask.current = sheetTask;
@@ -1389,7 +1320,8 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
                   showProject={showProject} quietAssignee={!!quietAssigneeFor && t.assigneeId === quietAssigneeFor}
                   cursor={kb.cursor === t.id} active={activeId === t.id} celebrate={!recentlySettled(t.id)}
                   meta={renderMeta?.(t)} action={renderAction?.(t)}
-                  swipe={swipeRows} onQuickDue={onQuickDue} onPickDue={onPickDue} onDue={onDue} onLongPress={sheetable ? onLongPress : undefined} />
+                  swipe={swipeRows} onSwipeDone={onSwipeDone} onQuickDue={onQuickDue} onPickDue={onPickDue} onDue={onDue} onLongPress={sheetable ? onLongPress : undefined}
+                  kitOn={kitOn} kitGrip={kitGrip} kitIds={kitIds} />
               ))}</div>
               {!isCollapsed && !expandedGroups.has(g.key) && g.items.length > ROW_CAP && (
                 <button type="button" className="ktv-more" onClick={() => setExpandedGroups((s) => new Set(s).add(g.key))}>
@@ -1449,20 +1381,24 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
       <Sheet open={!!sheetTask} onClose={() => setSheetId(null)} side="bottom" title={lastSheetTask.current?.title}
         label={lastSheetTask.current ? `Actions for “${lastSheetTask.current.title}”` : "Task actions"}>
         {lastSheetTask.current && (
-          <RowActionSheet task={lastSheetTask.current} canSelect={bulkEnabled}
+          <RowActionSheet key={lastSheetTask.current.id} task={lastSheetTask.current} canSelect={bulkEnabled} members={members} projects={projects}
             onOpen={(id) => { setSheetId(null); onOpen(id); }}
             onStatus={(t, s) => {
               setSheetId(null);
               if (s === t.status) return;
-              // finishing, or reopening to To do, is the row's own completion toggle (the settle, and App's Undo toast)
-              if (s === "done" || (t.status === "done" && s === "todo")) { onCheck(t.id); return; }
+              // finishing, or reopening to To do, is the row's own completion toggle (the settle, and an Undo toast:
+              // App's for a finish, the list's for a reopen)
+              if (s === "done" || (t.status === "done" && s === "todo")) { onSwipeDone(t.id); return; }
               toastEdit(t, { status: s, completedAt: undefined }, "Status", `“${t.title}” is now ${STATUS_META[s].label.toLowerCase()}`);
             }}
             onDue={(t, iso) => { setSheetId(null); onQuickDue(t, iso); }}
             onPickDue={(id) => { setSheetId(null); window.setTimeout(() => onPickDue(id), 200); }}
             onPriority={(t, pr) => { setSheetId(null); if (pr !== t.priority) toastEdit(t, { priority: pr }, "Priority", `“${t.title}” is now ${PRIORITY_META[pr].label.toLowerCase()} priority`); }}
             onToday={(t) => { setSheetId(null); toastEdit(t, { planToday: !t.planToday }, "Today", t.planToday ? `Took “${t.title}” off Today` : `Added “${t.title}” to Today`); }}
-            onSelect={(id) => { setSheetId(null); onSelectRow(id, false); }} />
+            onSelect={(id) => { setSheetId(null); onSelectRow(id, false); }}
+            onAssign={members.length ? (t, id) => { setSheetId(null); onAssign(t, id); } : undefined}
+            onMove={projects.length ? (t, pid) => { setSheetId(null); onMoveTask(t, pid); } : undefined}
+            onDelete={deleteOne ? (t) => { setSheetId(null); deleteOne(t.id); } : undefined} />
         )}
       </Sheet>
 
