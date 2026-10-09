@@ -7,7 +7,10 @@
      dates past the deadline). 3 Create: the project (emoji + spectrum hue
      suggestion), sections, tasks and dependencies through `deps`, with
      progress and rollback messaging on failure. "append" mode adds tasks
-     to an existing project ("Add tasks with Kanbo").
+     to an existing project ("Add tasks with Kanbo"). If a rollback can't
+     remove everything, the sheet remembers what's left and removes it
+     before trying again (or, appending, reuses it), so a retry never makes
+     anything twice; the copy says what's still there.
    Kanbo AI drafts the plan when it's on (ai-assist mode "plan"); with it
    off, in demo mode, offline or unavailable, the same plan shape comes
    from lib/projectPlanner fallbackPlan() on the device, and the review
@@ -22,9 +25,9 @@ import { IdentityFields } from "../project/IdentityPicker";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { isSupabaseConfigured } from "../../lib/supabase";
 import {
-  addPlanSection, applyProjectPlan, fallbackPlan, isPlanDay, londonToday, PLAN_LIMITS, PLAN_PROJECT_NAME_MAX, planCategory,
-  planCategoryLabel, planDayLabel, planEdgeCount, PLANNER_COPY, PLANNER_EXAMPLES, plannerFailure, plannerResultMessage, plannerRoster,
-  planTotals, planWarnings, planWithAi, shiftPlanStart, tasksBySection,
+  addPlanSection, applyProjectPlan, fallbackPlan, isPlanDay, leftSections, londonToday, mergePlanLeftovers, PLAN_LIMITS, PLAN_PROJECT_NAME_MAX,
+  planCategory, planCategoryLabel, planDayLabel, planEdgeCount, planLeftovers, PLANNER_COPY, PLANNER_EXAMPLES, plannerFailure, plannerResultMessage,
+  plannerRoster, planTotals, planWarnings, planWithAi, removePlanLeftovers, shiftPlanStart, tasksBySection, type PlanLeftovers,
 } from "../../lib/projectPlanner";
 import { PlanReview } from "./PlanReview";
 import { PlanTimeline } from "./PlanTimeline";
@@ -69,6 +72,7 @@ const NOBODY = "\u0000nobody";
 type DeviceWhy = "off" | "demo" | "unavailable" | "offline" | "chosen" | "limit";
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const fmtH = (h: number) => `${Math.round(h * 10) / 10}h`;
+const capFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const STEPS: { id: "describe" | "review" | "create"; label: string }[] = [
   { id: "describe", label: "Describe" }, { id: "review", label: "Review" }, { id: "create", label: "Create" },
 ];
@@ -101,6 +105,10 @@ export function ProjectPlanner({
   const [aiProblem, setAiProblem] = useState<{ reason: PlannerFailure; message: string } | null>(null);
   const [progress, setProgress] = useState<PlanApplyProgress | null>(null);
   const [failure, setFailure] = useState<{ message: string; failed: string[] } | null>(null);
+  /** what an earlier try made and couldn't remove (removed, or reused, before the next try) */
+  const [left, setLeft] = useState<PlanLeftovers | null>(null);
+  /** an earlier try made things and took them away again */
+  const [undone, setUndone] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
   const [undo, setUndo] = useState<{ before: PlanDraft; label: string } | null>(null);
@@ -120,7 +128,7 @@ export function ProjectPlanner({
     if (open) {
       setStep("describe"); setGoal((initialGoal ?? "").slice(0, PLAN_LIMITS.goal)); setDeadline(undefined); setDeadlineNote(null); setConstraints("");
       setName(""); setPicked((team.length ? team : roster).map((r) => r.id)); setDraft(null); setDrafted(null); setAiProblem(null);
-      setProgress(null); setFailure(null); setConfirmDiscard(false); setIdentityOpen(false); setUndo(null); setSaid("");
+      setProgress(null); setFailure(null); setLeft(null); setUndone(false); setConfirmDiscard(false); setIdentityOpen(false); setUndo(null); setSaid("");
       setFlash({ keys: new Set(), focus: null, seq: 0 });
     }
   }
@@ -221,32 +229,47 @@ export function ProjectPlanner({
   const create = async (retry = false) => {
     if (!draft || readOnly || (step !== "review" && !retry)) return;
     if (!draft.tasks.some((t) => t.title.trim())) { setSaid("There are no tasks to create yet."); return; }
+    const mode = appending ? "append" : "new";
+    const fail = (message: string, failed: string[]) => {
+      setFailure({ message, failed });
+      setStep("failed");
+      setSaid(message);
+      focusSoon(() => failRef.current);
+    };
     setStep("creating");
     setFailure(null);
     setConfirmDiscard(false);
     setProgress({ step: appending ? "sections" : "project", done: 0, total: 1 });
     setSaid(appending ? `Adding the tasks to ${project!.name}.` : `Creating ${draft.name || "the project"}.`);
+    // what an earlier try couldn't remove goes first, so nothing is made twice; sections that still won't go are reused
+    let carried: PlanLeftovers | null = null;
+    if (left) {
+      carried = await removePlanLeftovers(left, deps);
+      setLeft(carried);
+      if (carried?.project) {
+        fail(`Kanbo still couldn't remove “${carried.project.name}”, so it hasn't started again (that would make a second one). Delete it from Projects, or try again in a moment.`, []);
+        return;
+      }
+    }
+    const reuse = (carried?.sections ?? []).filter((c) => !(sections ?? []).some((s) => s.id === c.id));
     try {
       const r = await applyProjectPlan(draft, {
         workspaceId: appending ? project!.workspaceId ?? workspaceId : workspaceId, currentUserId,
-        project: appending ? project : null, sections: appending ? sections : undefined, goal: appending ? undefined : goal.trim(),
+        project: appending ? project : null, sections: appending ? [...(sections ?? []), ...reuse] : undefined, goal: appending ? undefined : goal.trim(),
       }, deps, setProgress);
       if (r.rolledBack || !r.tasks.length) {
-        const message = plannerResultMessage(r, appending ? "append" : "new").text;
-        setFailure({ message, failed: r.failed });
-        setStep("failed");
-        setSaid(message);
-        focusSoon(() => failRef.current);
+        // what's standing now: this try's leftovers and any earlier ones it reused
+        const standing = mergePlanLeftovers(carried, planLeftovers(r, mode));
+        setLeft(standing);
+        setUndone(true);
+        fail(plannerResultMessage({ ...r, sections: standing?.sections ?? [], rolledBack: !standing }, mode).text, r.failed);
         return;
       }
-      onCreated(r);
+      // the host hears about the sections an earlier try made too
+      onCreated(reuse.length ? { ...r, sections: [...reuse.filter((c) => !r.sections.some((s) => s.id === c.id)), ...r.sections] } : r);
       onClose();
     } catch (e) {
-      const message = (e as Error)?.message || "Couldn't create the project, so nothing was made.";
-      setFailure({ message, failed: [] });
-      setStep("failed");
-      setSaid(message);
-      focusSoon(() => failRef.current);
+      fail((e as Error)?.message || "Couldn't create the project, so nothing was made.", []);
     }
   };
 
@@ -275,6 +298,11 @@ export function ProjectPlanner({
   const size = isPhone ? "lg" : "md";
   const n = draft?.tasks.length ?? 0;
   const createLabel = appending ? (n ? `Add ${plural(n, "task")}` : "Add tasks") : "Create project";
+  const discardText = left?.project
+    ? `Discard this plan? “${left.project.name}” is still in Projects, with no tasks.`
+    : left?.sections.length
+      ? `Discard this plan? ${capFirst(leftSections(left.sections))} ${left.sections.length === 1 ? "is" : "are"} still in “${project?.name ?? "the project"}”, empty.`
+      : undone ? "Discard this plan? Nothing from it was kept." : "Discard this plan? Nothing has been created.";
 
   let footer: JSX.Element | null;
   if (readOnly) {
@@ -282,7 +310,7 @@ export function ProjectPlanner({
   } else if (confirmDiscard) {
     footer = (
       <div className="kpl-foot" role="group" aria-label="Discard this plan?">
-        <span className="kpl-foot-q">Discard this plan? Nothing has been created.</span>
+        <span className="kpl-foot-q">{discardText}</span>
         <Button key="keep" ref={keepRef} variant="ghost" size={size} onClick={() => setConfirmDiscard(false)}>Keep editing</Button>
         <Button key="discard" variant="danger" size={size} onClick={onClose}>Discard</Button>
       </div>
@@ -678,7 +706,9 @@ function Creating({ draft, progress, appending, projectName }: { draft: PlanDraf
           );
         })}
       </ol>
-      <p className="kpl-hint">Keep this open until it's finished. If anything fails, Kanbo removes what it made, so you're never left with half a plan.</p>
+      <p className="kpl-hint">{appending
+        ? "Keep this open until it's finished. If the tasks can't all be added, Kanbo removes the tasks and sections it added, and tells you if anything is left over."
+        : "Keep this open until it's finished. If its sections or tasks can't all be made, Kanbo removes what it made, and tells you if anything is left over."}</p>
     </div>
   );
 }

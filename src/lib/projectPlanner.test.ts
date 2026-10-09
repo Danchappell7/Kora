@@ -7,7 +7,7 @@ import {
   movePlanTask, nudgePlanTask, offsetForDate, patchPlanTask, PlanApplyError, planCategory, planEdgeCount, PLANNER_EXAMPLES, plannerFailure,
   plannerResultMessage, plannerRoster, planRequestBody, planStartDay, planTimeline, planTotals, planWarnings, planWithAi, PLAN_LIMITS,
   projectNameFrom, removePlanSection, removePlanTasks, renamePlanSection, shiftPlanStart, suggestIdentity, taskDates, tasksBySection, workingDaysBetween,
-  PlannerError, plannerDeps, plannerPeople,
+  PlannerError, plannerDeps, plannerPeople, planLeftovers, mergePlanLeftovers, removePlanLeftovers, leftSections,
 } from "./projectPlanner";
 import type { AiPlanReply, Member, PlanApplyDeps, PlanDraft, PlannerContext, Project, Section, Task } from "../data/types";
 
@@ -423,6 +423,7 @@ describe("applyProjectPlan", () => {
       addDependency: vi.fn(async (a: string, b: string) => { calls.push(`dep:${a}->${b}`); }),
       deleteProject: vi.fn(async (id: string) => { calls.push(`deleteProject:${id}`); }),
       deleteTasks: vi.fn(async (ids: string[]) => { calls.push(`deleteTasks:${ids.length}`); }),
+      deleteSection: vi.fn(async (id: string) => { calls.push(`deleteSection:${id}`); }),
       ...over,
     };
     return { deps, calls };
@@ -509,14 +510,40 @@ describe("applyProjectPlan", () => {
     expect(r.tasks).toEqual([]);
   });
 
-  it("the tidy-up itself fails: says the half-made project is still there", async () => {
+  it("the tidy-up itself fails: says the half-made project is still there (and isn't listed as a failure)", async () => {
     const { deps } = makeDeps({
       createTasks: vi.fn(async () => { throw new Error("offline"); }),
       deleteProject: vi.fn(async () => { throw new Error("no"); }),
     });
-    const r = await applyProjectPlan(draft(), { workspaceId: "ws", currentUserId: "me" }, deps);
+    const d = draft();
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me" }, deps);
     expect(r.rolledBack).toBe(false);
-    expect(last(r.failed)).toMatch(/half-made project/);
+    expect(r.tasks).toEqual([]);
+    expect(r.sections).toHaveLength(d.sections.length);
+    expect(r.failed).toEqual(d.tasks.map((t) => t.title));
+    expect(planLeftovers(r, "new")).toEqual({ project: r.project, sections: r.sections });
+    expect(plannerResultMessage(r, "new")).toEqual({ tone: "error", text: expect.stringContaining("“Launch our mobile app in the App Store” is still in Projects with no tasks. Trying again removes it first") });
+  });
+
+  it("the tidy-up fails after some tasks saved: what stands is handed over and said", async () => {
+    const { deps } = makeDeps({
+      createTasks: vi.fn(async (tasks: Task[]) => { throw Object.assign(new Error("x"), { saved: tasks.slice(1), failed: [{ task: tasks[0], message: "x" }] }); }),
+      deleteProject: vi.fn(async () => { throw new Error("no"); }),
+    });
+    const d = draft();
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me" }, deps);
+    expect(r.rolledBack).toBe(false);
+    expect(r.tasks).toHaveLength(d.tasks.length - 1);
+    expect(r.failed).toEqual([d.tasks[0].title]);
+    expect(planLeftovers(r, "new")).toBeNull(); // the host gets it like any plan that partly worked
+    expect(plannerResultMessage(r, "new")).toMatchObject({ tone: "info", text: expect.stringMatching(/is ready: 18 tasks in 5 sections, but “?.+ couldn't be added\.$/) });
+  });
+
+  it("the host hands back no saved tasks: treated as a failure, not an empty project", async () => {
+    const { deps, calls } = makeDeps({ createTasks: vi.fn(async () => []) });
+    const r = await applyProjectPlan(draft(), { workspaceId: "ws", currentUserId: "me" }, deps);
+    expect(r.rolledBack).toBe(true);
+    expect(calls).toContain("deleteProject:p-new");
   });
 
   it("a link fails: reported, the plan stands", async () => {
@@ -551,16 +578,109 @@ describe("applyProjectPlan", () => {
     expect(plannerResultMessage(r, "append")).toEqual({ tone: "success", text: `Added ${d.tasks.length} tasks to “Q3 Product Launch”.` });
   });
 
-  it("append: a failed batch removes the tasks that saved, never the project", async () => {
+  it("append: a failed batch removes the tasks that saved, then the sections it added — never the project", async () => {
     const { deps, calls } = makeDeps({
       createTasks: vi.fn(async (tasks: Task[]) => { throw Object.assign(new Error("x"), { saved: tasks.slice(1), failed: [{ task: tasks[0], message: "x" }] }); }),
     });
     const d = fallbackPlan({ goal: PLANNER_EXAMPLES[0] }, ctx({ mode: "append" }));
     const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: [] }, deps);
     expect(r.rolledBack).toBe(true);
+    expect(r.sections).toEqual([]);
+    expect(r.tasks).toEqual([]);
     expect(calls).not.toContain("deleteProject:p-new");
-    expect(calls).toContain(`deleteTasks:${d.tasks.length - 1}`);
-    expect(plannerResultMessage(r, "append").text).toMatch(/removed the ones that had saved/);
+    const made = calls.filter((c) => c.startsWith("section:")).length;
+    expect(made).toBe(d.sections.length);
+    // tasks first, then the sections, newest first
+    const del = calls.filter((c) => c.startsWith("delete"));
+    expect(del).toEqual([`deleteTasks:${d.tasks.length - 1}`, ...Array.from({ length: made }, (_, i) => `deleteSection:sec-${made - i}`)]);
+    expect(plannerResultMessage(r, "append").text).toBe("Couldn't add the tasks to “Launch our mobile app”, so Kanbo removed what it had added and the project is as it was. Try again in a moment.");
+  });
+
+  it("append: nothing saved — the new sections still go; the reused ones are never touched", async () => {
+    const { deps, calls } = makeDeps({ createTasks: vi.fn(async () => { throw new Error("offline"); }) });
+    const d = fallbackPlan({ goal: PLANNER_EXAMPLES[0] }, ctx({ mode: "append" }));
+    const existing: Section[] = [{ id: "old-1", projectId: project.id, name: d.sections[1].name, position: 3 }];
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: existing }, deps);
+    expect(r.rolledBack).toBe(true);
+    expect(deps.deleteTasks).not.toHaveBeenCalled();
+    const removed = calls.filter((c) => c.startsWith("deleteSection:"));
+    expect(removed).toHaveLength(d.sections.length - 1);
+    expect(removed).not.toContain("deleteSection:old-1");
+  });
+
+  it("append: a failed add and then Try again with the same sections leaves each section once (the review's probe)", async () => {
+    // a stand-in for the project's sections as the database has them
+    const live = new Map<string, Section>([["old-1", { id: "old-1", projectId: project.id, name: "Discovery", position: 1 }]]);
+    let n = 0;
+    let fail = true;
+    const deps: PlanApplyDeps = {
+      createProject: vi.fn(async () => { throw new Error("not in append"); }),
+      createSection: vi.fn(async (i) => { const sec = { id: `sec-${++n}`, ...i }; live.set(sec.id, sec); return sec; }),
+      createTasks: vi.fn(async (tasks: Task[]) => { if (fail) throw Object.assign(new Error("2 of N failed"), { saved: tasks.slice(0, 3), failed: tasks.slice(3).map((task) => ({ task, message: "rls" })) }); return tasks; }),
+      addDependency: vi.fn(async () => {}),
+      deleteTasks: vi.fn(async () => {}),
+      deleteSection: vi.fn(async (id: string) => { live.delete(id); }),
+    };
+    const d = fallbackPlan({ goal: "Redesign the marketing website with a new pricing page" }, ctx({ mode: "append", existingSections: ["Discovery"], existingTitles: [] }));
+    const sectionsProp = [...live.values()]; // the host's out-of-date prop, the same both times
+    const r1 = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: sectionsProp }, deps);
+    expect(r1.rolledBack).toBe(true);
+    expect([...live.keys()]).toEqual(["old-1"]); // nothing left behind
+    fail = false;
+    const r2 = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: sectionsProp }, deps);
+    expect(r2.rolledBack).toBe(false);
+    const names = [...live.values()].map((s) => s.name.toLowerCase());
+    expect(new Set(names).size).toBe(names.length); // none twice
+    expect(names.length).toBe(1 + r2.sections.length);
+  });
+
+  it("append: a section that won't go is left, said and reused next time — never made twice", async () => {
+    const { deps, calls } = makeDeps({
+      createTasks: vi.fn(async () => { throw new Error("offline"); }),
+      deleteSection: vi.fn(async (id: string) => { if (id === "sec-2") throw new Error("offline"); calls.push(`deleteSection:${id}`); }),
+    });
+    const d = fallbackPlan({ goal: PLANNER_EXAMPLES[0] }, ctx({ mode: "append" }));
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: [] }, deps);
+    expect(r.rolledBack).toBe(false);
+    expect(r.tasks).toEqual([]);
+    expect(r.sections.map((s) => s.id)).toEqual(["sec-2"]);
+    expect(r.failed).toEqual(d.tasks.map((t) => t.title)); // what's left isn't a failure to make
+    const left = planLeftovers(r, "append")!;
+    expect(left).toEqual({ project: null, sections: r.sections });
+    expect(plannerResultMessage(r, "append").text).toBe(`Couldn't add the tasks to “Launch our mobile app”, and Kanbo couldn't remove the new section “${d.sections[1].name}” it had added, so it's still there, empty. Trying again won't add it twice.`);
+    // it still won't go: the next try reuses it by name
+    const still = await removePlanLeftovers(left, deps);
+    expect(still).toEqual(left);
+    const before = (deps.createSection as ReturnType<typeof vi.fn>).mock.calls.length;
+    (deps.createTasks as ReturnType<typeof vi.fn>).mockImplementation(async (tasks: Task[]) => tasks);
+    const r2 = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: still!.sections }, deps);
+    const madeAgain = (deps.createSection as ReturnType<typeof vi.fn>).mock.calls.slice(before).map((c) => c[0].name);
+    expect(madeAgain).not.toContain(d.sections[1].name);
+    expect(madeAgain).toHaveLength(d.sections.length - 1);
+    expect(r2.tasks.some((t) => t.sectionId === "sec-2")).toBe(true);
+  });
+
+  it("append: tasks that won't go keep their sections, and are handed over as what stands", async () => {
+    const { deps, calls } = makeDeps({
+      createTasks: vi.fn(async (tasks: Task[]) => { throw Object.assign(new Error("x"), { saved: tasks.slice(1), failed: [{ task: tasks[0], message: "x" }] }); }),
+      deleteTasks: vi.fn(async () => { throw new Error("offline"); }),
+    });
+    const d = fallbackPlan({ goal: PLANNER_EXAMPLES[0] }, ctx({ mode: "append" }));
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: [] }, deps);
+    expect(r.rolledBack).toBe(false);
+    expect(r.tasks).toHaveLength(d.tasks.length - 1);
+    expect(r.sections).toHaveLength(d.sections.length);
+    expect(calls.some((c) => c.startsWith("deleteSection:"))).toBe(false);
+    expect(plannerResultMessage(r, "append").tone).toBe("info");
+  });
+
+  it("append without a way to remove sections: they're left and said, not claimed as undone", async () => {
+    const { deps } = makeDeps({ createTasks: vi.fn(async () => { throw new Error("offline"); }), deleteSection: undefined });
+    const d = fallbackPlan({ goal: PLANNER_EXAMPLES[0] }, ctx({ mode: "append" }));
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", project, sections: [] }, deps);
+    expect(r.rolledBack).toBe(false);
+    expect(r.sections).toHaveLength(d.sections.length);
+    expect(plannerResultMessage(r, "append").text).toMatch(new RegExp(`couldn't remove the ${d.sections.length} new sections \\(“.+” and 2 more\\) it had added, so they're still there, empty`));
   });
 
   it("nothing to make is an error, not an empty project", async () => {
@@ -572,6 +692,27 @@ describe("applyProjectPlan", () => {
 });
 
 describe("wiring helpers", () => {
+  it("leftovers: merged across tries, removed before the next one", async () => {
+    const p: Project = { id: "p1", name: "P", emoji: "", color: "c", workspaceId: "ws" };
+    const a = { project: null, sections: [{ id: "s1", projectId: "p1", name: "A" }] };
+    const b = { project: null, sections: [{ id: "s1", projectId: "p1", name: "A" }, { id: "s2", projectId: "p1", name: "B" }] };
+    expect(mergePlanLeftovers(null, null)).toBeNull();
+    expect(mergePlanLeftovers(a, null)).toBe(a);
+    expect(mergePlanLeftovers(a, b)!.sections.map((s) => s.id)).toEqual(["s1", "s2"]);
+    expect(mergePlanLeftovers(null, { project: p, sections: [] })!.project).toBe(p);
+    const deleteProject = vi.fn(async () => {});
+    const deleteSection = vi.fn(async (id: string) => { if (id === "s2") throw new Error("no"); });
+    const base = { createProject: vi.fn(), createSection: vi.fn(), createTasks: vi.fn(), addDependency: vi.fn() } as unknown as PlanApplyDeps;
+    expect(await removePlanLeftovers({ project: p, sections: b.sections }, { ...base, deleteProject })).toBeNull();
+    expect(deleteProject).toHaveBeenCalledWith("p1");
+    expect(await removePlanLeftovers({ project: p, sections: [] }, { ...base, deleteProject: vi.fn(async () => { throw new Error("no"); }) })).toEqual({ project: p, sections: [] });
+    expect(await removePlanLeftovers({ project: p, sections: [] }, base)).toEqual({ project: p, sections: [] });
+    expect(await removePlanLeftovers(b, { ...base, deleteSection })).toEqual({ project: null, sections: [b.sections[1]] });
+    expect(await removePlanLeftovers(b, base)).toEqual(b);
+    expect(leftSections([{ name: "Design" }])).toBe("the new section “Design”");
+    expect(leftSections([{ name: "A" }, { name: "B" }])).toBe("the 2 new sections (“A”, “B”)");
+  });
+
   it("plannerDeps: the store's paths as the signed-in person; a description is best-effort; deletes reported", async () => {
     const calls: string[] = [];
     const store = {
@@ -582,6 +723,7 @@ describe("wiring helpers", () => {
       addDependency: vi.fn(async (a: string, b: string) => { calls.push(`d:${a}>${b}`); }),
       deleteProject: vi.fn(async () => {}),
       deleteTask: vi.fn(async (id: string) => { if (id === "bad") throw new Error("no"); }),
+      deleteSection: vi.fn(async () => {}),
     };
     const deps = plannerDeps(store, "me");
     const p = await deps.createProject({ name: "X", emoji: "", color: "c", workspaceId: "ws", description: "Goal" });
@@ -594,6 +736,8 @@ describe("wiring helpers", () => {
     await deps.deleteTasks!(["x", "y"]);
     expect(store.deleteTask).toHaveBeenCalledTimes(2);
     await expect(deps.deleteTasks!(["x", "bad"])).rejects.toThrow("no");
+    await deps.deleteSection!("s1");
+    expect(store.deleteSection).toHaveBeenCalledWith("s1");
   });
   it("plannerPeople: active members with titles, guests marked; personal is just you", () => {
     const rows = [

@@ -1194,7 +1194,9 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
 /** Make it: project (new mode, with identity), sections, tasks (one createTasks batch), dependencies — with progress, and rollback messaging on failure.
  *  New mode: the project, its sections and the tasks stand or fall together — a failure removes what was made (`deps.deleteProject`;
  *  it goes to the recycle bin) and resolves with `rolledBack`. If the project itself can't be made, it rejects with a PlanApplyError
- *  (nothing was made). Append mode: tasks that saved are removed again (`deps.deleteTasks`) when others didn't; sections it added stay.
+ *  (nothing was made). Append mode: when the tasks can't all be added, the ones that saved are removed (`deps.deleteTasks`) and then
+ *  the sections this run added (`deps.deleteSection`), so the project is as it was; sections it reused are never touched.
+ *  When the tidy-up itself fails, `rolledBack` is false and the result holds what's still standing (see planLeftovers).
  *  Dependency links are made last, a few at a time: one that fails is reported in `failed`, and never undoes the plan.
  *  `opts.goal` (optional) becomes the new project's description. */
 export async function applyProjectPlan(
@@ -1226,26 +1228,36 @@ export async function applyProjectPlan(
   }
   const ws = project.workspaceId ?? opts.workspaceId ?? null;
 
-  /** Remove what was made: true when nothing of it is left. */
-  const undo = async (made: Task[]): Promise<boolean> => {
+  // 2. sections: a new project's own, or — appending — only the names the project doesn't have yet
+  const madeSections: Section[] = [];
+  /** Remove what this run made; resolves with what's still standing (all empty: it all went). */
+  const undo = async (made: Task[]): Promise<{ project: boolean; sections: Section[]; tasks: Task[] }> => {
     if (!append) {
-      if (!deps.deleteProject) return false;
-      try { await deps.deleteProject(project.id); } catch { return false; }
-      // with 0047 the project's delete takes its tasks into the bin with it (these deletes are then no-ops);
-      // before it, tasks outlive their project, so they're removed too
+      try {
+        if (!deps.deleteProject) throw new Error("no way to remove the project");
+        await deps.deleteProject(project.id);
+      } catch { return { project: true, sections: [...madeSections], tasks: made }; }
+      // with 0047 the project's delete takes its sections and tasks into the bin with it (these deletes are then
+      // no-ops); before it, tasks outlived their project, so they're removed too
       if (made.length && deps.deleteTasks) { try { await deps.deleteTasks(made.map((t) => t.id)); } catch { /* the project is gone: nothing shows them */ } }
-      return true;
+      return { project: false, sections: [], tasks: [] };
     }
-    if (!made.length) return true;
-    if (!deps.deleteTasks) return false;
-    try { await deps.deleteTasks(made.map((t) => t.id)); return true; } catch { return false; }
+    let tasks = made;
+    if (made.length && deps.deleteTasks) {
+      try { await deps.deleteTasks(made.map((t) => t.id)); tasks = []; } catch { /* still there */ }
+    }
+    // then the sections this run added — only once their tasks are gone (a task that stays keeps its section)
+    const sections: Section[] = [];
+    for (const sec of [...madeSections].reverse()) {
+      if (tasks.length || !deps.deleteSection) { sections.unshift(sec); continue; }
+      try { await deps.deleteSection(sec.id); } catch { sections.unshift(sec); }
+    }
+    return { project: false, sections, tasks };
   };
   const result = (over: Partial<AppliedProjectPlan>): AppliedProjectPlan => ({
     project, sections: [], tasks: [], dependencies: 0, failed, rolledBack: false, ...over,
   });
 
-  // 2. sections: a new project's own, or — appending — only the names the project doesn't have yet
-  const madeSections: Section[] = [];
   const sectionId = new Map<string, string>(); // plan section key → section id
   const wanted = groups.filter((g) => g.section).map((g) => g.section!);
   const existing = append ? (opts.sections ?? []).filter((s) => s.projectId === project.id) : [];
@@ -1265,9 +1277,8 @@ export async function applyProjectPlan(
     } catch (e) {
       failed.push(s.name);
       if (append) continue; // the tasks still go in, without that section
-      const ok = await undo([]);
-      if (!ok) failed.push(`the half-made project “${project.name}”`);
-      return result({ sections: ok ? [] : madeSections, rolledBack: ok });
+      const left = await undo([]);
+      return result({ sections: left.sections, rolledBack: !left.project });
     }
   }
 
@@ -1301,7 +1312,7 @@ export async function applyProjectPlan(
   let saved: Task[];
   try {
     saved = await deps.createTasks(built);
-    if (!Array.isArray(saved)) saved = [];
+    if (!Array.isArray(saved) || !saved.length) throw Object.assign(new Error("none of the tasks came back saved"), { saved: [] });
   } catch (e) {
     const partial = Array.isArray((e as { saved?: unknown })?.saved) ? ((e as { saved: Task[] }).saved) : [];
     const savedIds = new Set(partial.map((t) => t.id));
@@ -1309,9 +1320,8 @@ export async function applyProjectPlan(
       ? ((e as { failed: { task?: Task }[] }).failed).map((f) => f.task?.title).filter((x): x is string => !!x)
       : built.filter((b) => !savedIds.has(b.id)).map((b) => b.title);
     failed.push(...(lost.length ? lost : [`${plural(built.length, "task")}`]));
-    const ok = await undo(partial);
-    if (!ok) failed.push(append ? `${plural(partial.length, "task")} that did save` : `the half-made project “${project.name}”`);
-    return result({ sections: madeSections, tasks: ok ? [] : partial, rolledBack: ok });
+    const left = await undo(partial);
+    return result({ sections: left.sections, tasks: left.tasks, rolledBack: !left.project && !left.sections.length && !left.tasks.length });
   }
   // the saved copies, matched to the plan by id (or by position, if the host gave them new ids)
   const byId = new Map(saved.map((t) => [t.id, t]));
@@ -1348,6 +1358,36 @@ export async function applyProjectPlan(
   return result({ sections: madeSections, tasks, dependencies: [...linked.values()].reduce((n, l) => n + l.length, 0) });
 }
 
+/** What a run that ended without its tasks left standing because it couldn't be removed: the new project
+ *  (its sections go with it), or — appending — the sections it added. Null when nothing is left. */
+export interface PlanLeftovers { project: Project | null; sections: Section[] }
+export function planLeftovers(r: AppliedProjectPlan, mode: "new" | "append"): PlanLeftovers | null {
+  if (r.rolledBack || r.tasks.length) return null;
+  if (mode === "new") return { project: r.project, sections: r.sections };
+  return r.sections.length ? { project: null, sections: r.sections } : null;
+}
+/** Two runs' leftovers as one (a project only comes from the latest: a retry removes the earlier one first). */
+export function mergePlanLeftovers(a: PlanLeftovers | null, b: PlanLeftovers | null): PlanLeftovers | null {
+  if (!a) return b;
+  if (!b) return a;
+  const sections = [...a.sections, ...b.sections.filter((s) => !a.sections.some((x) => x.id === s.id))];
+  return { project: b.project ?? a.project, sections };
+}
+/** Before trying again, remove what an earlier run left standing (a project goes to the bin with its sections;
+ *  sections one by one). Resolves with what's still there, or null. */
+export async function removePlanLeftovers(left: PlanLeftovers, deps: PlanApplyDeps): Promise<PlanLeftovers | null> {
+  if (left.project) {
+    if (!deps.deleteProject) return left;
+    try { await deps.deleteProject(left.project.id); return null; } catch { return left; }
+  }
+  const still: Section[] = [];
+  for (const sec of left.sections) {
+    if (!deps.deleteSection) { still.push(sec); continue; }
+    try { await deps.deleteSection(sec.id); } catch { still.push(sec); }
+  }
+  return still.length ? { project: null, sections: still } : null;
+}
+
 /* ================================ wiring (for the host) ================================ */
 
 /** The store-shaped create paths the planner needs (data/store's `store` fits). */
@@ -1359,6 +1399,7 @@ export interface PlannerStore {
   addDependency(taskId: string, dependsOn: string): Promise<void>;
   deleteProject(id: string): Promise<void>;
   deleteTask(id: string): Promise<void>;
+  deleteSection(id: string): Promise<void>;
 }
 
 /** PlanApplyDeps over the store, as the signed-in person: `plannerDeps(store, userId)`.
@@ -1375,12 +1416,20 @@ export function plannerDeps(s: PlannerStore, userId: string): PlanApplyDeps {
     createTasks: (tasks) => s.createTasksBatch(tasks, userId),
     addDependency: (a, b) => s.addDependency(a, b),
     deleteProject: (id) => s.deleteProject(id),
+    deleteSection: (id) => s.deleteSection(id),
     deleteTasks: async (ids) => {
       const failed: unknown[] = [];
       await pool(ids, 4, async (id) => { try { await s.deleteTask(id); } catch (e) { failed.push(e); } });
       if (failed.length) throw failed[0];
     },
   };
+}
+
+/** “the new section “Design”” · “the 3 new sections (“A”, “B”, “C”)” */
+export function leftSections(sections: readonly Pick<Section, "name">[]): string {
+  if (sections.length === 1) return `the new section “${sections[0].name}”`;
+  const names = sections.slice(0, 3).map((s) => `“${s.name}”`).join(", ");
+  return `the ${sections.length} new sections (${names}${sections.length > 3 ? ` and ${sections.length - 3} more` : ""})`;
 }
 
 /** The planner's people for a workspace: its active members (with their job titles, which help
@@ -1406,15 +1455,24 @@ export function plannerPeople(
   return { members: out, guestIds: here.filter((r) => r.role === "guest").map((r) => r.userId!) };
 }
 
-/** The toast after the planner has made something (or had to undo it). */
+/** The sentence after the planner has made something (the host's toast), or had to undo it (the sheet's failure). */
 export function plannerResultMessage(r: AppliedProjectPlan, mode: "new" | "append"): { tone: "success" | "info" | "error"; text: string } {
   const name = r.project?.name ?? "the project";
   if (r.rolledBack) {
     return { tone: "error", text: mode === "new"
       ? `Couldn't finish making “${name}”, so Kanbo removed what it had made (it's in the recycle bin for 30 days). Try again in a moment.`
-      : `Couldn't add the tasks to “${name}”, so Kanbo removed the ones that had saved. Try again in a moment.` };
+      : `Couldn't add the tasks to “${name}”, so Kanbo removed what it had added and the project is as it was. Try again in a moment.` };
   }
-  if (!r.tasks.length) return { tone: "error", text: `Couldn't create the tasks in “${name}”. Try again in a moment.` };
+  if (!r.tasks.length) {
+    // the tidy-up failed too: say what's still there
+    if (mode === "new") {
+      return { tone: "error", text: `Couldn't finish making “${name}”, and Kanbo couldn't remove what it had made, so “${name}” is still in Projects with no tasks. Trying again removes it first, so there won't be two.` };
+    }
+    if (r.sections.length) {
+      return { tone: "error", text: `Couldn't add the tasks to “${name}”, and Kanbo couldn't remove ${leftSections(r.sections)} it had added, so ${r.sections.length === 1 ? "it's" : "they're"} still there, empty. Trying again won't add ${r.sections.length === 1 ? "it" : "them"} twice.` };
+    }
+    return { tone: "error", text: `Couldn't add the tasks to “${name}”. Try again in a moment.` };
+  }
   const made = mode === "new"
     ? `“${name}” is ready: ${plural(r.tasks.length, "task")}${r.sections.length ? ` in ${plural(r.sections.length, "section")}` : ""}`
     : `Added ${plural(r.tasks.length, "task")} to “${name}”`;

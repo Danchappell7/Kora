@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ProjectPlanner, type ProjectPlannerProps } from "./ProjectPlanner";
 import { MEMBERS, PROJECTS, TASKS } from "../../data/data";
-import type { AppliedProjectPlan, PlanApplyDeps, Task } from "../../data/types";
+import type { AppliedProjectPlan, PlanApplyDeps, Section, Task } from "../../data/types";
 import { PLANNER_EXAMPLES } from "../../lib/projectPlanner";
 
 function deps(over: Partial<PlanApplyDeps> = {}): PlanApplyDeps {
@@ -16,6 +16,7 @@ function deps(over: Partial<PlanApplyDeps> = {}): PlanApplyDeps {
     addDependency: vi.fn(async () => {}),
     deleteProject: vi.fn(async () => {}),
     deleteTasks: vi.fn(async () => {}),
+    deleteSection: vi.fn(async () => {}),
     ...over,
   };
 }
@@ -232,8 +233,49 @@ describe("ProjectPlanner — create", () => {
     expect(alert).toHaveTextContent(/recycle bin for 30 days/);
     expect(d.deleteProject).toHaveBeenCalledWith("p-new");
     expect(props.onCreated).not.toHaveBeenCalled();
+    // closing now says nothing is left (the bin has it), not that nothing was ever made
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(within(footer()).getByText("Discard this plan? Nothing from it was kept.")).toBeInTheDocument();
+    fireEvent.click(within(footer()).getByRole("button", { name: "Keep editing" }));
     fail = false;
     await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: "Try again" })); });
+    expect(props.onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("says plainly what happens if it fails part-way", async () => {
+    const d = deps({ createTasks: vi.fn(() => new Promise<Task[]>(() => {})) });
+    setup({ initialGoal: PLANNER_EXAMPLES[0], deps: d });
+    await draftIt();
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: /Create project/ })); });
+    expect(dialog().querySelector(".kpl-creating .kpl-hint")).toHaveTextContent("If its sections or tasks can't all be made, Kanbo removes what it made, and tells you if anything is left over.");
+    expect(dialog()).not.toHaveTextContent(/never left with half a plan/);
+  });
+
+  it("a rollback that can't remove the project: said, and Try again removes it first — never a second project", async () => {
+    let tasksFail = true;
+    let deleteFails = true;
+    const d = deps({
+      createTasks: vi.fn(async (ts: Task[]) => { if (tasksFail) throw new Error("offline"); return ts; }),
+      deleteProject: vi.fn(async () => { if (deleteFails) throw new Error("offline"); }),
+    });
+    const { props } = setup({ initialGoal: PLANNER_EXAMPLES[0], deps: d });
+    await draftIt();
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: /Create project/ })); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("is still in Projects with no tasks. Trying again removes it first, so there won't be two.");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(within(footer()).getByText("Discard this plan? “Launch our mobile app in the App Store” is still in Projects, with no tasks.")).toBeInTheDocument();
+    fireEvent.click(within(footer()).getByRole("button", { name: "Keep editing" }));
+    // still can't remove it: nothing new is made
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: "Try again" })); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Kanbo still couldn't remove “Launch our mobile app in the App Store”, so it hasn't started again");
+    expect(d.createProject).toHaveBeenCalledTimes(1);
+    // now it goes: removed first, then made afresh
+    deleteFails = false;
+    tasksFail = false;
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: "Try again" })); });
+    expect(d.createProject).toHaveBeenCalledTimes(2);
+    const removedAt = (d.deleteProject as ReturnType<typeof vi.fn>).mock.invocationCallOrder;
+    expect(removedAt[removedAt.length - 1]).toBeLessThan((d.createProject as ReturnType<typeof vi.fn>).mock.invocationCallOrder[1]);
     expect(props.onCreated).toHaveBeenCalledTimes(1);
   });
 
@@ -268,5 +310,80 @@ describe("ProjectPlanner — append", () => {
     const batch = (d.createTasks as ReturnType<typeof vi.fn>).mock.calls[0][0] as Task[];
     expect(batch.some((t) => t.sectionId === "sec-assets")).toBe(true);
     expect(props.onCreated).toHaveBeenCalled();
+  });
+
+  /** the project's sections as the database has them, and deps over them */
+  function liveSections(over: Partial<PlanApplyDeps> = {}) {
+    const live = new Map<string, Section>([["sec-assets", { id: "sec-assets", projectId: "p-launch", name: "Launch assets", position: 5 }]]);
+    let n = 0;
+    const d = deps({
+      createSection: vi.fn(async (i) => { const s = { id: `sec-new-${++n}`, ...i }; live.set(s.id, s); return s; }),
+      deleteSection: vi.fn(async (id: string) => { live.delete(id); }),
+      ...over,
+    });
+    return { live, d, prop: [...live.values()] };
+  }
+
+  it("a failed add takes away the sections it made too; Try again makes each once", async () => {
+    const project = PROJECTS.find((p) => p.id === "p-launch")!;
+    let fail = true;
+    const { live, d, prop } = liveSections({
+      createTasks: vi.fn(async (ts: Task[]) => { if (fail) throw Object.assign(new Error("x"), { saved: ts.slice(0, 2), failed: ts.slice(2).map((task) => ({ task, message: "x" })) }); return ts; }),
+    });
+    const { props } = setup({ mode: "append", project, sections: prop, deps: d, initialGoal: PLANNER_EXAMPLES[0] });
+    await draftIt();
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: /^Add \d+ tasks/ })); });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The tasks weren't added");
+    expect(alert).toHaveTextContent("so Kanbo removed what it had added and the project is as it was.");
+    expect(d.deleteTasks).toHaveBeenCalledTimes(1);
+    expect([...live.keys()]).toEqual(["sec-assets"]);
+    fail = false;
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: "Try again" })); });
+    expect(props.onCreated).toHaveBeenCalledTimes(1);
+    const names = [...live.values()].map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+    const r = (props.onCreated as ReturnType<typeof vi.fn>).mock.calls[0][0] as AppliedProjectPlan;
+    expect(r.sections.map((s) => s.id).sort()).toEqual([...live.keys()].filter((id) => id !== "sec-assets").sort());
+  });
+
+  it("sections that can't be removed are said, kept out of a second copy, and handed to the host", async () => {
+    const project = PROJECTS.find((p) => p.id === "p-launch")!;
+    let fail = true;
+    const { live, d, prop } = liveSections({
+      createTasks: vi.fn(async (ts: Task[]) => { if (fail) throw new Error("offline"); return ts; }),
+      deleteSection: vi.fn(async () => { throw new Error("offline"); }),
+    });
+    const { props } = setup({ mode: "append", project, sections: prop, deps: d, initialGoal: PLANNER_EXAMPLES[0] });
+    await draftIt();
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: /^Add \d+ tasks/ })); });
+    const made = live.size - 1;
+    expect(made).toBeGreaterThan(1);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(`couldn't remove the ${made} new sections`);
+    expect(alert).toHaveTextContent("so they're still there, empty. Trying again won't add them twice.");
+    expect(alert).not.toHaveTextContent(/removed what it had added/);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(within(footer()).getByText(`Discard this plan? The ${made} new sections (“Plan & positioning”, “Product readiness”, “Go-to-market” and 1 more) are still in “${project.name}”, empty.`)).toBeInTheDocument();
+    fireEvent.click(within(footer()).getByRole("button", { name: "Keep editing" }));
+    fail = false;
+    const sectionCalls = (d.createSection as ReturnType<typeof vi.fn>).mock.calls.length;
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: "Try again" })); });
+    // it tried to tidy them again, then reused them by name: no new sections at all
+    expect((d.createSection as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sectionCalls);
+    expect(live.size).toBe(made + 1);
+    expect(props.onCreated).toHaveBeenCalledTimes(1);
+    const r = (props.onCreated as ReturnType<typeof vi.fn>).mock.calls[0][0] as AppliedProjectPlan;
+    expect(r.sections.map((s) => s.id).sort()).toEqual([...live.keys()].filter((id) => id !== "sec-assets").sort());
+    expect(r.tasks.every((t) => !t.sectionId || live.has(t.sectionId))).toBe(true);
+  });
+
+  it("says what it removes when adding", async () => {
+    const project = PROJECTS.find((p) => p.id === "p-launch")!;
+    const d = deps({ createTasks: vi.fn(() => new Promise<Task[]>(() => {})) });
+    setup({ mode: "append", project, sections: [], deps: d, initialGoal: PLANNER_EXAMPLES[0] });
+    await draftIt();
+    await act(async () => { fireEvent.click(within(footer()).getByRole("button", { name: /^Add \d+ tasks/ })); });
+    expect(dialog().querySelector(".kpl-creating .kpl-hint")).toHaveTextContent("If the tasks can't all be added, Kanbo removes the tasks and sections it added, and tells you if anything is left over.");
   });
 });
