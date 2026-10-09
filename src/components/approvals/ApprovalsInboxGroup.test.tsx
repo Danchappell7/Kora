@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApprovalsInboxGroup } from "./ApprovalsInboxGroup";
 import { ApprovalBadge } from "./ApprovalBadge";
-import { listMyApprovals, listTaskApprovals, resetApprovalsDemo } from "../../lib/approvals";
+import { APPROVAL_LIMITS, listMyApprovals, listTaskApprovals, resetApprovalsDemo } from "../../lib/approvals";
 import { MEMBERS, PROJECTS } from "../../data/data";
 import type { ApprovalWithTask } from "../../data/types";
 
@@ -102,6 +102,47 @@ describe("ApprovalsInboxGroup", () => {
     fireEvent.click(within(row).getByRole("button", { name: "Cancel" }));
     fireEvent.click(within(row).getByRole("button", { name: "Approve “Set up usage analytics events”" }));
     await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+    // the put-away draft was for "Request changes": it never goes out as the approval's comment
+    const t10 = (await listTaskApprovals("t-10"))[0];
+    expect(t10.status).toBe("approved");
+    expect(t10.reviewers.find((r) => r.userId === "m-self")?.comment).toBeNull();
+  });
+
+  it("C, type, Escape, then A approves with no comment (the draft stays behind)", async () => {
+    const onDecided = vi.fn();
+    render(group({ approvals: waiting.slice(1), onDecided }));
+    const row = screen.getByRole("listitem");
+    const main = within(row).getAllByRole("button")[0];
+    main.focus();
+    fireEvent.keyDown(main, { key: "c" });
+    const box = within(row).getByRole("textbox");
+    await waitFor(() => expect(box).toHaveFocus());
+    fireEvent.change(box, { target: { value: "The header colour is wrong" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(within(row).queryByRole("textbox")).toBeNull();
+    await waitFor(() => expect(main).toHaveFocus());
+    fireEvent.keyDown(main, { key: "a" });
+    await screen.findByText("You're all caught up on approvals.");
+    expect(onDecided).toHaveBeenCalledTimes(1);
+    const decided = onDecided.mock.calls[0][0];
+    expect(decided.status).toBe("approved");
+    const mine = decided.reviewers.find((r: { userId: string }) => r.userId === "m-self");
+    expect(mine).toMatchObject({ decision: "approved", comment: null });
+    const stored = (await listTaskApprovals("t-10"))[0].reviewers.find((r) => r.userId === "m-self");
+    expect(stored).toMatchObject({ decision: "approved", comment: null });
+  });
+
+  it("an over-long draft put away never blocks an Approve", async () => {
+    render(group({ approvals: waiting.slice(1) }));
+    const row = screen.getByRole("listitem");
+    fireEvent.click(within(row).getByRole("button", { name: /Request changes on/ }));
+    const box = within(row).getByRole("textbox");
+    fireEvent.change(box, { target: { value: "x".repeat(APPROVAL_LIMITS.comment + 1) } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    fireEvent.click(within(row).getByRole("button", { name: /^Approve/ }));
+    await screen.findByText("You're all caught up on approvals.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((await listTaskApprovals("t-10"))[0].reviewers.find((r) => r.userId === "m-self")).toMatchObject({ decision: "approved", comment: null });
   });
 
   it("a request someone else already closed drops out with a note, without an error on the row", async () => {

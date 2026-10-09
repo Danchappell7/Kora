@@ -94,7 +94,10 @@ export function ApprovalsInboxGroup({ approvals, projects, members, currentUserI
   };
   const decide = async (a: ApprovalWithTask, d: ApprovalDecision) => {
     if (busy) return;
-    const comment = (drafts[a.id] ?? "").trim();
+    // The draft belongs to "Request changes" only. One put away with Escape stays for next time, but it
+    // never rides along on an Approve: the requester would read criticism beside "Approved" (and so would
+    // the email, push and webhooks). This group has no approval comment; the task's panel has one, in view.
+    const comment = d === "changes_requested" ? (drafts[a.id] ?? "").trim() : "";
     if (comment.length > APPROVAL_LIMITS.comment) {
       setErrors((e) => ({ ...e, [a.id]: `The comment is too long (${APPROVAL_LIMITS.comment.toLocaleString("en-GB")} characters at most).` }));
       return;
@@ -216,7 +219,8 @@ export function ApprovalsInboxGroup({ approvals, projects, members, currentUserI
   );
 }
 
-/* "Request changes": a comment that grows as you write. ⌘/Ctrl+↵ sends, Escape puts it away (the draft stays). */
+/* "Request changes": a comment that grows as you write. ⌘/Ctrl+↵ sends, Escape puts it away (the draft
+   stays for the next C, and is never sent with an Approve). */
 function ChangesComposer({ approval: a, value, busy, onChange, onSend, onCancel }: {
   approval: ApprovalWithTask;
   value: string;
