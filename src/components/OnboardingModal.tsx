@@ -1,17 +1,23 @@
 /* ============================================================
    KANBO — first-run onboarding: welcome → your name → first project →
-   your five places. Shown once to brand-new accounts (no real projects
-   yet). The name step is skipped when the profile already has a first
-   name (e.g. it was just entered in the welcome modal).
+   the hand-over to the guided tour. Shown once to brand-new accounts (no
+   real projects yet). The name step is skipped when the profile already
+   has a first name (e.g. it was just entered in the welcome modal).
    One centred sheet (a bottom sheet on phones), no scrim click to
    close: Escape or "Skip for now" finishes it.
+   The last step doesn't describe the app (the tour shows the real thing,
+   on the real screens): it offers the tour — "Show me around" starts it
+   (lib/onboarding startTour; the TourHost waits for this dialog to
+   close), "Skip the tour" records that (declineTour), and both take you
+   to Today. Escape just closes (a new account is asked again by the tour).
    ============================================================ */
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Icon, KanboLogo, EmojiPicker, Button, Kbd, projectPaint } from "./primitives";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Icon, KanboLogo, EmojiPicker, Button, projectPaint } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { useFocusTrap } from "../hooks/useFocusTrap";
-import { PLACES, type PlaceId } from "../lib/nav";
-import type { IconName, Profile } from "../data/types";
+import { declineTour, startTour, TOUR_MINUTES } from "../lib/onboarding";
+import { CompassGlyph } from "./onboarding/glyphs";
+import type { Profile } from "../data/types";
 import type { NewProject } from "../data/store";
 
 const COLORS: { value: string; name: string }[] = [
@@ -23,18 +29,31 @@ const COLORS: { value: string; name: string }[] = [
   { value: "oklch(0.78 0.1 45)", name: "Peach" },
 ];
 
-/** what each of the five places is for (the names and icons come from nav.ts) */
-const PLACE_LINES: Record<PlaceId, string> = {
-  today: "Your plan for the day, drawn for you.",
-  inbox: "Mentions, assignments and requests.",
-  tasks: "Everything on your plate, and what you're waiting on.",
-  projects: "Your team's projects, goals and requests.",
-  team: "Who's doing what, and what's at risk.",
-};
+const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project", "You're all set"];
+const MINUTES_WORD = ["zero", "one", "two", "three", "four", "five"][TOUR_MINUTES] ?? String(TOUR_MINUTES);
 
-const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project", "Your five places"];
+/** The first run's last word: offer the guided tour (shared with the welcome modal). */
+export function TourHandover({ name, onShowMeAround, onSkip, lede }: { name?: string; onShowMeAround: () => void; onSkip: () => void; lede?: string }) {
+  return (
+    <div className="konb-step konb-intro">
+      <span className="konb-mark konb-tourmark" aria-hidden="true"><CompassGlyph size={26} sw={1.6} /></span>
+      <div className="konb-head">
+        <h2 className="konb-title">You're all set{name ? `, ${name}` : ""}</h2>
+        <p className="konb-lede">
+          {lede ?? `Next, a quick look around the real thing. Kanbo points out your places, search, capture and planning your day, right where they live. It takes about ${MINUTES_WORD} minutes.`}
+        </p>
+      </div>
+      <div className="konb-acts" data-stack="">
+        {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+        <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={onShowMeAround}>Show me around</Button>
+        <Button variant="ghost" onClick={onSkip}>Skip the tour</Button>
+      </div>
+      <p className="konb-foot">You can take it any time from Help (?).</p>
+    </div>
+  );
+}
 
-export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday }: {
+export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday, onStartTour, onSkipTour }: {
   open: boolean;
   profile: Profile | null;
   workspaceId: string | null;
@@ -42,8 +61,12 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   onSaveProfile: (d: { firstName: string; lastName: string; pronouns: string; avatarUrl?: string | null }) => Promise<void>;
   onCreateProject: (p: NewProject) => void;
   onFinish: () => void;
-  /** "Take me to Today": runs after onFinish (the app lands on Today anyway when it's left out) */
+  /** after the last step's choice: runs after onFinish (the app lands on Today anyway when it's left out) */
   onGoToday?: () => void;
+  /** "Show me around" (default: lib/onboarding startTour — the mounted TourHost starts once this closes) */
+  onStartTour?: () => void;
+  /** "Skip the tour" (default: lib/onboarding declineTour — recorded as skipped) */
+  onSkipTour?: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [firstName, setFirstName] = useState(profile?.firstName || "");
@@ -98,7 +121,12 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   };
   const editName = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => { nameEdited.current = true; set(e.target.value); };
   const greetName = firstName.trim();
-  const finishToToday = () => { onFinish(); onGoToday?.(); };
+  const finishWith = (tour: "start" | "skip") => {
+    onFinish();
+    onGoToday?.();
+    if (tour === "start") (onStartTour ?? (() => startTour({ from: "onboarding" })))();
+    else (onSkipTour ?? (() => declineTour({ from: "onboarding" })))();
+  };
 
   // colour: one radio group, arrows move and pick
   const onSwatchKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -208,17 +236,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
           )}
 
           {step === 3 && (
-            <div key="places" className="konb-step">
-              <div className="konb-head">
-                <h2 className="konb-title">Your five places</h2>
-                <p className="konb-lede">You're all set{greetName ? `, ${greetName}` : ""}. Everything in Kanbo lives in one of these.</p>
-              </div>
-              <PlaceList rows={PLACES.map((p, i) => ({ id: p.id, icon: p.icon, name: p.label, line: PLACE_LINES[p.id], keys: ["G", p.gKey.toUpperCase()], sep: i > 0 && p.group !== PLACES[i - 1].group }))} />
-              <div className="konb-acts" data-stack="">
-                {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={finishToToday}>Take me to Today</Button>
-              </div>
-            </div>
+            <TourHandover key="handover" name={greetName || undefined} onShowMeAround={() => finishWith("start")} onSkip={() => finishWith("skip")} />
           )}
         </div>
 
@@ -231,28 +249,6 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   );
 }
 
-/** icon · name · one line (and the g-key on a keyboard) */
-export function PlaceList({ rows }: { rows: { id: string; icon: IconName; name: string; line: ReactNode; keys?: string[]; sep?: boolean }[] }) {
-  return (
-    <ul className="konb-places">
-      {rows.map((r) => (
-        <li key={r.id} className="konb-place" data-sep={r.sep || undefined}>
-          <span className="konb-place-icon" aria-hidden="true"><Icon name={r.icon} size={16} sw={1.75} /></span>
-          <span className="konb-place-text">
-            <span className="konb-place-name">{r.name}</span>
-            <span className="konb-place-line">{r.line}</span>
-          </span>
-          {r.keys && (
-            <span className="konb-place-keys" aria-hidden="true">
-              {r.keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}
-            </span>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 /* Shared by the welcome and onboarding sheets. New Paper & Navy tokens are
    read with a fallback to today's, so this looks right either side of P01. */
 export const FIRST_RUN_CSS = `
@@ -261,6 +257,7 @@ export const FIRST_RUN_CSS = `
 }
 .ksheet.konb { --sheet-w: 480px; overflow: hidden; }
 .konb-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 32px 32px 8px; }
+.konb-body[data-solo] { padding-bottom: 32px; }
 .konb-step { display: flex; flex-direction: column; gap: 24px; animation: konbIn var(--d-3, 240ms) var(--ease); }
 .konb-intro { display: flex; flex-direction: column; align-items: center; gap: 20px; text-align: center; }
 @keyframes konbIn { from { opacity: 0.35; translate: 0 4px; } }
@@ -309,18 +306,9 @@ export const FIRST_RUN_CSS = `
 .konb-acts .konb-grow { flex: 1; }
 .konb-acts[data-stack] .kbtn[data-variant="ghost"] { color: var(--ink-3); }
 
-/* place rows (the five places, the rhythm tour) */
-.konb-places { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; text-align: left; }
-.konb-place { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 0; }
-.konb-place[data-sep] { margin-top: 8px; padding-top: 14px; box-shadow: inset 0 1px 0 var(--hairline); }
-.konb-place-icon {
-  display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: var(--r-md, 8px);
-  background: var(--fill-1); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--hairline);
-}
-.konb-place-text { display: grid; gap: 0; flex: 1; min-width: 0; }
-.konb-place-name { font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
-.konb-place-line { font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
-.konb-place-keys { display: inline-flex; gap: 3px; flex-shrink: 0; }
+/* the hand-over to the tour */
+.konb-tourmark { width: 52px; height: 52px; border-radius: 14px; background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); color: var(--accent-text, var(--accent)); }
+.konb-foot { margin: -8px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
 /* progress */
 .konb-dots { display: flex; justify-content: center; gap: 6px; flex-shrink: 0; padding: 16px 0 20px; }
@@ -329,10 +317,10 @@ export const FIRST_RUN_CSS = `
 
 @media (max-width: 859px) {
   .konb-body { padding: 28px 16px 4px; }
+  .konb-body[data-solo] { padding-bottom: max(20px, env(safe-area-inset-bottom, 0px)); }
   .konb-dots { padding: 12px 0 16px; }
   /* 16px stops iOS zooming into a field on focus */
   .konb-input { font-size: 16px; }
-  .konb-place-keys { display: none; }
 }
 @media (max-width: 359px) { .konb-fields { grid-template-columns: 1fr; } }
 @media (pointer: coarse) {

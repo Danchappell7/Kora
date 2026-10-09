@@ -21,12 +21,27 @@
    sidebar places, ⌘K search, New task, Plan my day, the task panel and
    the Inbox's first triage group). A step whose anchor isn't on screen
    (e.g. phone layout, a closed panel) shows as a centred card instead.
+
+   This module is LEAN on purpose: the shell (App) imports it to decide
+   whether to mount the lazy TourHost / SetupChecklist and to save. The
+   sample project's content lives in ./onboardingSample and only loads
+   when someone asks for it (createTourSample / removeTourSample import
+   it on demand; tourSamplePlan is a pass-through re-export, which Rollup
+   keeps in whichever lazy chunk uses it).
    ============================================================ */
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type {
-  DocBlock, OnboardingPatch, OnboardingState, Project, Role, SetupItemId, Task, TourRole,
+  OnboardingPatch, OnboardingState, Role, SetupItemId, TourRole,
 } from "../data/types";
+import { parseOnboardingState } from "./profileState";
+import { supabase } from "./supabase";
+import type { TourSampleDeps } from "./onboardingSample";
+import { setupItemsFor, type ChecklistOpts } from "./onboardingItems";
 
 export { parseOnboardingState } from "./profileState";
+export type { TourSampleDeps, TourSamplePlan, TourSampleCtx } from "./onboardingSample";
+/** The sample project's content (pure: the same every time, dates relative to `today`). */
+export { tourSamplePlan } from "./onboardingSample";
 
 /** CSS selectors for the elements the tour points at (the first visible match wins).  [final] */
 export const TOUR_ANCHORS = {
@@ -45,72 +60,309 @@ export function tourRoleOf(role: Role | null | undefined, personal: boolean): To
   return role === "guest" ? "guest" : "member";
 }
 
-/** The checklist's items per role, in order.  [final] */
-export const SETUP_ITEMS: Readonly<Record<TourRole, readonly SetupItemId[]>> = {
-  owner: ["invite_team", "connect_calendar", "add_domain", "connect_slack"],
-  member: ["plan_day", "complete_task", "install_app", "set_notifications"],
-  guest: ["plan_day", "complete_task", "install_app", "set_notifications"],
-};
+/** The checklist's items per role, in order.  [final] (declared in the leaf module ./onboardingItems, unchanged,
+ *  so the lazy words module can use it without importing this one) */
+export { SETUP_ITEMS, setupItemsFor, type ChecklistOpts } from "./onboardingItems";
 
 /** What the app can see right now (the integrator computes these; any item already true counts as done). */
 export type SetupSignals = Partial<Record<SetupItemId, boolean>>;
 
-export interface TourStep {
-  id: string;
-  anchor: TourAnchor | null;
-  title: string;
-  body: string;
-  /** the shortcut it teaches, shown as a key cap ("⌘K", "Q", "P") */
-  kbd?: string;
+/** The facts the app has, in its own words (all optional): setupSignals turns them into SetupSignals. */
+export interface SetupFacts {
+  /** people in the workspace besides you (active or invited) */
+  teammates?: number;
+  /** calendar connections (lib/calendars) */
+  calendars?: number;
+  /** auto-approved company domains (Admin) */
+  companyDomains?: number;
+  /** Slack connected for this workspace */
+  slack?: boolean;
+  /** any of your tasks on today's plan (planToday or a slot) */
+  plannedToday?: boolean;
+  /** you've completed at least one task */
+  completedAny?: boolean;
+  /** running as the installed app (lib/install isStandalone) */
+  installed?: boolean;
+  /** push on here (lib/push isPushOnHere), or notification preferences saved */
+  notificationsChosen?: boolean;
+}
+export function setupSignals(f: SetupFacts): SetupSignals {
+  return {
+    invite_team: (f.teammates ?? 0) > 0,
+    connect_calendar: (f.calendars ?? 0) > 0,
+    add_domain: (f.companyDomains ?? 0) > 0,
+    connect_slack: !!f.slack,
+    plan_day: !!f.plannedToday,
+    complete_task: !!f.completedAny,
+    install_app: !!f.installed,
+    set_notifications: !!f.notificationsChosen,
+  };
 }
 
-const notBuilt = (fn: string) => Promise.reject(new Error(`${fn}: not built yet (package u1)`));
+/* ================================ the tour ================================ */
 
-/** The tour for a role (owner/admin, member, guest: guests never see write-only steps). */
-export function tourSteps(_role: TourRole): TourStep[] { return []; }
+export type { TourStep } from "./onboardingCopy";
+/** About three minutes, whatever the role. */
+export const TOUR_MINUTES = 3;
+/** The tour for a role, and where a saved step resumes: the words live in ./onboardingCopy (only the lazy
+ *  TourHost loads them). */
+export { tourSteps, resumeIndex } from "./onboardingCopy";
 
-/** Progress of the "Get set up" card: manual ticks + signals. */
-export interface ChecklistItemView { id: SetupItemId; label: string; hint: string; done: boolean }
-export function checklistView(_role: TourRole, _state: OnboardingState, _signals: SetupSignals): { items: ChecklistItemView[]; done: number; total: number; complete: boolean } {
-  return { items: [], done: 0, total: 0, complete: true };
+/** Should the tour start by itself? (a new person who hasn't finished or skipped it, or one part-way through) */
+export function shouldAutoStartTour(state: OnboardingState, opts: { isNewAccount: boolean }): boolean {
+  const t = state.tour;
+  if (t?.done || t?.skipped) return false;
+  if (t?.step) return true;                 // part-way: carry on where they left off
+  return !!opts.isNewAccount && !t;         // never started: new accounts only
 }
 
-/** Should the card show on Today? (not dismissed, not complete) */
-export function showSetupChecklist(_role: TourRole, _state: OnboardingState, _signals: SetupSignals): boolean { return false; }
+/** The tour state after a move (step id), a finish or a skip. */
+export function tourState(role: TourRole, at: { step: string } | "done" | "skipped", now = new Date()): NonNullable<OnboardingState["tour"]> {
+  const updatedAt = now.toISOString();
+  if (at === "done") return { step: null, done: true, skipped: false, role, updatedAt };
+  if (at === "skipped") return { step: null, done: false, skipped: true, role, updatedAt };
+  return { step: at.step, done: false, skipped: false, role, updatedAt };
+}
 
-/** Should the tour start by itself? (a new person who hasn't finished or skipped it) */
-export function shouldAutoStartTour(_state: OnboardingState, _opts: { isNewAccount: boolean }): boolean { return false; }
+/* ---------- asking the mounted TourHost to start (or not) ---------- */
 
-/** Save a patch to profiles.onboarding (rpc merge_onboarding); answers the stored state. Demo: in memory. */
-export function saveOnboarding(_patch: OnboardingPatch): Promise<OnboardingState> { return notBuilt("saveOnboarding"); }
+export interface TourRequest { from?: string }
+type Bus = { kind: "start"; opts: TourRequest } | { kind: "decline"; opts: TourRequest };
+const startListeners = new Set<(opts: TourRequest) => void>();
+const declineListeners = new Set<(opts: TourRequest) => void>();
+const wantedListeners = new Set<() => void>();
+let pending: Bus | null = null;
+let wanted = false;
+
+function emit(ev: Bus) {
+  wanted = true;
+  wantedListeners.forEach((cb) => cb());
+  const set = ev.kind === "start" ? startListeners : declineListeners;
+  // nobody's listening yet (the TourHost is lazy): it gets it as soon as it subscribes
+  if (!set.size) { pending = ev; return; }
+  pending = null;
+  set.forEach((cb) => cb(ev.opts));
+}
+function deliverPending(kind: Bus["kind"], cb: (opts: TourRequest) => void) {
+  if (!pending || pending.kind !== kind) return;
+  const ev = pending;
+  pending = null;
+  queueMicrotask(() => cb(ev.opts));
+}
 
 /** Ask the mounted TourHost to (re)start the tour — the Help menu's "Take the tour". */
-export function startTour(_opts?: { from?: string }): void { /* no TourHost yet */ }
+export function startTour(opts: TourRequest = {}): void { emit({ kind: "start", opts }); }
 /** TourHost listens here. Returns unsubscribe. */
-export function onTourRequest(_cb: (opts: { from?: string }) => void): () => void { return () => undefined; }
+export function onTourRequest(cb: (opts: TourRequest) => void): () => void {
+  startListeners.add(cb);
+  deliverPending("start", cb);
+  return () => { startListeners.delete(cb); };
+}
+/** "Not now" from outside the tour (the first-run dialog's hand-over): the TourHost records it as skipped. */
+export function declineTour(opts: TourRequest = {}): void { emit({ kind: "decline", opts }); }
+export function onTourDecline(cb: (opts: TourRequest) => void): () => void {
+  declineListeners.add(cb);
+  deliverPending("decline", cb);
+  return () => { declineListeners.delete(cb); };
+}
+/** True once startTour/declineTour has been called in this page: mount the (lazy) TourHost so it can answer. */
+export function tourWanted(): boolean { return wanted; }
+function subscribeWanted(cb: () => void) { wantedListeners.add(cb); return () => { wantedListeners.delete(cb); }; }
+/** React: `useTourWanted() || shouldAutoStartTour(...)` decides when to mount the lazy TourHost. */
+export function useTourWanted(): boolean { return useSyncExternalStore(subscribeWanted, tourWanted, () => false); }
+/** (tests) */
+export function __resetTourBus(): void { pending = null; wanted = false; startListeners.clear(); declineListeners.clear(); wantedListeners.clear(); }
 
-/* ---------- the sample project ---------- */
+/* ================================ the checklist ================================ */
 
-/** How the sample project is made and removed (the integrator wires App's create paths, like PlanApplyDeps). */
-export interface TourSampleDeps {
-  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null; description?: string }): Promise<Project>;
-  /** store.createTasksBatch semantics (final ids; parentId for sub-tasks) */
-  createTasks(tasks: Task[]): Promise<Task[]>;
-  addDependency(taskId: string, dependsOn: string): Promise<void>;
-  /** a doc in the project (lib/docs saveProjectDoc); optional: skipped when absent */
-  createDoc?(projectId: string, title: string, body: DocBlock[]): Promise<{ id: string }>;
-  /** an approval request (team workspaces only; lib/approvals requestApproval); optional */
-  requestApproval?(taskId: string, reviewerIds: string[], note: string): Promise<void>;
-  /** removal: the project goes (to the bin) with its tasks and doc */
-  deleteProject(projectId: string): Promise<void>;
+/** done / total / complete for a role (no words: the shell uses it to decide whether to mount the card). */
+export function checklistProgress(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): { done: number; total: number; complete: boolean } {
+  const ticked = state.checklist?.done ?? {};
+  const ids = setupItemsFor(role, opts);
+  const done = ids.filter((id) => !!signals[id] || !!ticked[id]).length;
+  return { done, total: ids.length, complete: ids.length > 0 && done === ids.length };
+}
+/** The card's items with their words (in ./onboardingCopy, loaded with the card). */
+export { checklistView, SETUP_COPY } from "./onboardingCopy";
+export type { ChecklistItemView } from "./onboardingCopy";
+
+/** Should the card show on Today? (not dismissed, not complete) */
+export function showSetupChecklist(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): boolean {
+  if (state.checklist?.dismissedAt) return false;
+  const v = checklistProgress(role, state, signals, opts);
+  return v.total > 0 && !v.complete;
 }
 
-/** The sample project's content (pure: the same every time, dates relative to `today`). */
-export interface TourSamplePlan { project: { name: string; emoji: string; color: string; description: string }; tasks: Task[]; dependencies: [string, string][]; doc: { title: string; body: DocBlock[] } | null }
-export function tourSamplePlan(_ctx: { today: Date; currentUserId: string; workspaceId: string | null }): TourSamplePlan {
-  return { project: { name: "Kanbo tour", emoji: "🧭", color: "oklch(0.74 0.14 230)", description: "" }, tasks: [], dependencies: [], doc: null };
+/** How long the card stays to celebrate once everything's done (then it leaves by itself). */
+export const CHECKLIST_CELEBRATE_MS = 2400;
+
+/** React: showSetupChecklist, but it stays true for CHECKLIST_CELEBRATE_MS after the card completes
+ *  in front of you (so it can celebrate and leave by itself). Use this to mount the card. */
+export function useShowSetupChecklist(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): boolean {
+  const show = showSetupChecklist(role, state, signals, opts);
+  const complete = checklistProgress(role, state, signals, opts).complete;
+  const dismissed = !!state.checklist?.dismissedAt;
+  const [holding, setHolding] = useState(false);
+  const shown = useRef(show);
+  useEffect(() => {
+    const was = shown.current;
+    shown.current = show;
+    if (show) { setHolding(false); return; }
+    if (!was || !complete || dismissed) return;
+    setHolding(true);
+    const t = window.setTimeout(() => setHolding(false), CHECKLIST_CELEBRATE_MS);
+    return () => window.clearTimeout(t);
+  }, [show, complete, dismissed]);
+  return show || (holding && !dismissed);
 }
-/** Make it (and record it in profiles.onboarding.sample). */
-export function createTourSample(_deps: TourSampleDeps, _ctx: { today: Date; currentUserId: string; workspaceId: string | null }): Promise<OnboardingState> { return notBuilt("createTourSample"); }
-/** Remove it (one click) and forget it. */
-export function removeTourSample(_deps: TourSampleDeps, _state: OnboardingState): Promise<OnboardingState> { return notBuilt("removeTourSample"); }
+
+/** The checklist after a tick / untick (manual), recorded at `now`. */
+export function tickSetupItem(state: OnboardingState, id: SetupItemId, done: boolean, now = new Date()): OnboardingState {
+  const list = state.checklist ?? {};
+  const ticks = { ...(list.done ?? {}) };
+  if (done) ticks[id] = ticks[id] ?? now.toISOString();
+  else delete ticks[id];
+  return { ...state, checklist: { ...list, done: ticks } };
+}
+
+/** Record ticks the app can see (signals) that aren't saved yet, so progress sticks (e.g. "installed" is only
+ *  visible inside the installed app). Null when there's nothing new. */
+export function withSignalTicks(role: TourRole, state: OnboardingState, signals: SetupSignals, now = new Date(), opts: ChecklistOpts = {}): OnboardingState | null {
+  const ticks = state.checklist?.done ?? {};
+  const fresh = setupItemsFor(role, opts).filter((id) => signals[id] && !ticks[id]);
+  if (!fresh.length) return null;
+  let next = state;
+  for (const id of fresh) next = tickSetupItem(next, id, true, now);
+  return next;
+}
+
+/** Hide the card (Dismiss) or bring it back (Help › Get set up). */
+export function dismissSetupChecklist(state: OnboardingState, dismissed: boolean, now = new Date()): OnboardingState {
+  return { ...state, checklist: { ...(state.checklist ?? {}), dismissedAt: dismissed ? now.toISOString() : null } };
+}
+
+/* ================================ saving ================================ */
+
+const KEYS = ["v", "tour", "checklist", "sample", "momentum"] as const;
+
+/** What merge_onboarding does, on the client: one level deep, a key set to null is removed. */
+export function applyOnboardingPatch(state: OnboardingState, patch: OnboardingPatch): OnboardingState {
+  const out: Record<string, unknown> = { ...state };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    if (v === null) delete out[k]; else out[k] = v;
+  }
+  return parseOnboardingState(out);
+}
+
+/** The patch that turns `prev` into `next` (changed top-level keys; removed ones as null). */
+export function onboardingPatch(prev: OnboardingState, next: OnboardingState): OnboardingPatch {
+  const patch: Record<string, unknown> = {};
+  for (const k of KEYS) {
+    const a = prev[k], b = next[k];
+    if (b === undefined) { if (a !== undefined) patch[k] = null; continue; }
+    if (JSON.stringify(a) !== JSON.stringify(b)) patch[k] = b;
+  }
+  if (Object.keys(patch).length && next.v === undefined && prev.v === undefined) patch.v = 1;
+  return patch as OnboardingPatch;
+}
+
+export type OnboardingFailure = "not_allowed" | "invalid" | "too_big" | "unavailable" | "network" | "error";
+/** A save error → a failure kind (the RPC's words, PostgREST's codes, the network). */
+export function onboardingFailure(e: unknown): OnboardingFailure {
+  const err = e as { message?: unknown; code?: unknown } | null;
+  const msg = String(err?.message ?? e ?? "");
+  const code = String(err?.code ?? "");
+  if (/not authorized|permission denied|JWT/i.test(msg) || code === "42501") return "not_allowed";
+  if (/invalid patch|profile not found/i.test(msg)) return "invalid";
+  if (/profiles_onboarding_shape|check constraint/i.test(msg) || code === "23514") return "too_big";
+  if (/could not find the function|does not exist|schema cache/i.test(msg) || code === "PGRST202" || code === "42883") return "unavailable";
+  if (/fetch|network|offline|timed? ?out/i.test(msg)) return "network";
+  return "error";
+}
+
+// demo mode, and a database without 0048 yet: kept for this visit
+let memory: OnboardingState = {};
+
+/** Save a patch to profiles.onboarding (rpc merge_onboarding); answers the stored state. Demo: in memory.
+ *  `current` (the state the app shows) is the base for demo mode and for a database without 0048 yet
+ *  (kept for this visit); with the server, its answer wins. Rejects (Error with .failure) when refused. */
+export async function saveOnboarding(patch: OnboardingPatch, current?: OnboardingState): Promise<OnboardingState> {
+  const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as OnboardingPatch;
+  if (!supabase) {
+    memory = applyOnboardingPatch(current ?? memory, clean);
+    return memory;
+  }
+  const { data, error } = await supabase.rpc("merge_onboarding", { p_patch: clean });
+  if (error) {
+    const failure = onboardingFailure(error);
+    if (failure === "unavailable") { memory = applyOnboardingPatch(current ?? memory, clean); return memory; }
+    throw Object.assign(new Error(error.message || "Couldn't save your progress."), { failure });
+  }
+  return parseOnboardingState(data);
+}
+
+/** Save the change from `prev` to `next` (the TourHost's / SetupChecklist's onChange): the host's one-liner. */
+export function saveOnboardingChange(prev: OnboardingState, next: OnboardingState): Promise<OnboardingState> {
+  const patch = onboardingPatch(prev, next);
+  if (!Object.keys(patch).length) return Promise.resolve(next);
+  return saveOnboarding(patch, prev);
+}
+
+/** React, for the host: the person's onboarding state, shown at once and saved behind the scenes.
+ *  `fromProfile` is profile.onboarding (it re-syncs when the profile reloads); `change` is what TourHost /
+ *  SetupChecklist call (onChange) and what the Help menu's actions use. A refused save puts the state back
+ *  and calls onError (e.g. a quiet toast). */
+export function useOnboardingState(fromProfile: OnboardingState | undefined, opts: { onError?: (e: unknown) => void } = {}): [OnboardingState, (next: OnboardingState) => void] {
+  const [state, setState] = useState<OnboardingState>(() => fromProfile ?? {});
+  const ref = useRef(state);
+  const onError = useRef(opts.onError);
+  onError.current = opts.onError;
+  const key = JSON.stringify(fromProfile ?? {});
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    const v = fromProfile ?? {};
+    ref.current = v;
+    setState(v);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const change = useCallback((next: OnboardingState) => {
+    const prev = ref.current;
+    if (next === prev) return;
+    ref.current = next;
+    setState(next);
+    saveOnboardingChange(prev, next).then(
+      (stored) => { if (ref.current === next) { ref.current = stored; setState(stored); } },
+      (e) => { if (ref.current === next) { ref.current = prev; setState(prev); } onError.current?.(e); },
+    );
+  }, []);
+  return [state, change];
+}
+
+/** (tests) */
+export function __resetOnboardingMemory(state: OnboardingState = {}): void { memory = state; }
+
+/* ================================ demo ================================ */
+
+/** The demo profile's first run: the tour already taken, one setup item done, no sample yet. */
+export function demoOnboardingState(now = new Date()): OnboardingState {
+  const earlier = new Date(now.getTime() - 26 * 3_600_000).toISOString();
+  return { v: 1, tour: { step: null, done: true, skipped: false, role: "owner", updatedAt: earlier }, checklist: { done: { invite_team: earlier } } };
+}
+
+/* ================================ the sample project ================================ */
+
+/** Make it (and record it in profiles.onboarding.sample). Loads the sample's module on demand.
+ *  Rejects with a readable Error when the project couldn't be made (nothing is left behind). */
+export async function createTourSample(deps: TourSampleDeps, ctx: { today: Date; currentUserId: string; workspaceId: string | null; reviewerIds?: string[]; current?: OnboardingState }): Promise<OnboardingState> {
+  const m = await import("./onboardingSample");
+  const sample = await m.buildTourSample(deps, ctx);
+  return saveOnboarding({ sample }, ctx.current);
+}
+/** Remove it (one click) and forget it. A project that's already gone is just forgotten. */
+export async function removeTourSample(deps: TourSampleDeps, state: OnboardingState): Promise<OnboardingState> {
+  const m = await import("./onboardingSample");
+  await m.deleteTourSample(deps, state);
+  return saveOnboarding({ sample: null }, state);
+}
