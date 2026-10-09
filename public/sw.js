@@ -3,11 +3,21 @@
    - navigations (HTML): network-first, so a new deploy is always picked
      up immediately; the cached shell is only used offline (or while the
      server is erroring). Only a healthy app shell is ever cached — a
-     transient error page must never become the offline shell.
-   - static same-origin assets (Vite hashes them, so they're immutable):
-     stale-while-revalidate for instant loads. Each fresh shell prunes
-     hashed /assets/* files that neither it nor the previous deploy uses,
-     so the cache holds at most two deploys instead of growing forever.
+     transient error page must never become the offline shell. Installing
+     also keeps the shell's own files (its script, styles and preloads),
+     which the first visit fetched before this worker was there.
+   - Vite's build output (/assets/*, every name hashed, so immutable):
+     cache-first — a file once fetched is never fetched again, which is
+     what makes the app's code-split screens instant (and work offline).
+     Each fresh shell prunes hashed /assets/* files that neither it nor
+     the previous deploy uses, so the cache holds at most two deploys
+     instead of growing forever.
+   - other static same-origin files (icons, the manifest, theme-init.js):
+     stale-while-revalidate for instant loads.
+   - a file is only kept when it's a whole 200 that isn't an HTML page:
+     the host answers an unknown path (a chunk an old tab asks for after
+     a deploy) with the app's index.html, which must never be stored as
+     that file.
    - cross-origin (Supabase API, fonts CDN, etc.): never intercepted.
    - web push (0043): shows each push as a notification; a click focuses an
      open Kanbo window and takes it to the push's link (same origin only),
@@ -25,7 +35,7 @@ const PUSH_ONLY = /[?&]push-only=1(?:&|$)/.test((self.location && self.location.
 self.addEventListener("install", (e) => {
   self.skipWaiting();
   if (PUSH_ONLY) return;
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {})));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {}).then(() => warmShell(c)).catch(() => {})));
 });
 
 self.addEventListener("activate", (e) => {
@@ -40,6 +50,48 @@ self.addEventListener("activate", (e) => {
 function isAppShell(res) {
   return !!res && res.ok && res.status === 200 && res.type === "basic" &&
     (res.headers.get("content-type") || "").indexOf("text/html") !== -1;
+}
+
+/** A response fit to keep for a file: a whole 200 from this origin, and not an HTML
+ *  page standing in for a file that isn't there (see the header). */
+function isCacheableAsset(res) {
+  return !!res && res.status === 200 && res.type === "basic" &&
+    (res.headers.get("content-type") || "").indexOf("text/html") === -1;
+}
+
+/** Vite's hashed build output: never changes under the same name. */
+function isHashedAsset(url) {
+  return url.pathname.indexOf("/assets/") === 0;
+}
+
+/** /assets/… paths a shell or a script names (the shell's are absolute; Vite's
+ *  lazy-chunk lists inside a script are "assets/…", without the slash). */
+function assetPathsIn(text) {
+  const out = [];
+  const re = /\/?assets\/[\w.-]+\.(?:m?js|css|woff2?|png|svg|jpe?g|webp)/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const path = m[0].charAt(0) === "/" ? m[0] : "/" + m[0];
+    if (out.indexOf(path) === -1) out.push(path);
+  }
+  return out;
+}
+
+/** Keep the cached shell's own files: the first visit fetched them before this
+ *  worker was installed, and without them the offline shell can't start. */
+async function warmShell(cache) {
+  const shell = await cache.match("/");
+  if (!shell) return 0;
+  const paths = assetPathsIn(await shell.text());
+  let added = 0;
+  await Promise.all(paths.map(async (path) => {
+    if (await cache.match(path)) return;
+    try {
+      const res = await fetch(path);
+      if (isCacheableAsset(res)) { await cache.put(path, res); added++; }
+    } catch (err) { /* offline: the page fetches it through us next time */ }
+  }));
+  return added;
 }
 
 function offlineShell(req) {
@@ -120,11 +172,27 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // static assets: stale-while-revalidate
+  // the build's hashed files: cache-first (they never change under the same name)
+  if (isHashedAsset(url)) {
+    e.respondWith(
+      // (a copy kept before this check existed could be the app's HTML: never serve that as a file)
+      caches.match(req).catch(() => undefined).then((cached) => (isCacheableAsset(cached) ? cached : fetch(req).then((res) => {
+        if (isCacheableAsset(res)) {
+          const copy = res.clone();
+          const put = caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+          try { e.waitUntil(put); } catch (err) { /* the put still runs */ }
+        }
+        return res;
+      }))).catch(() => Response.error()), // offline and not kept: a network error, as without us
+    );
+    return;
+  }
+
+  // other static files: stale-while-revalidate
   e.respondWith(
     caches.match(req).then((cached) => {
       const network = fetch(req)
-        .then((res) => { if (res && res.status === 200) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); } return res; })
+        .then((res) => { if (isCacheableAsset(res)) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); } return res; })
         .catch(() => cached);
       return cached || network;
     }),

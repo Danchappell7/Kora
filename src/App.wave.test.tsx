@@ -2,14 +2,19 @@
    place (sidebar, its address, its header), a project's Docs tab, approval chips
    on rows, "Approvals for you" and doc mentions in the Inbox, Waiting on
    approval, Settings › Workspace › History, and the planner's openers. */
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, beforeAll } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import App from "./App";
+import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { resetTrashDemo } from "./lib/trash";
 import { resetApprovalsDemo } from "./lib/approvals";
 import { resetDemoDocs } from "./lib/docs";
+
+// the app's screens are code-split (lazyViews.ts): load them all first, so every
+// screen renders as synchronously as it did unsplit
+beforeAll(loadAllChunks, 60_000);
 
 const renderApp = () => render(<ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider>);
 const boot = async () => { renderApp(); await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument()); };

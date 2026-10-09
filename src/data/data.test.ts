@@ -530,14 +530,15 @@ describe("parseCapture phrases", () => {
   it("uses built-in tag ids in demo mode only", async () => {
     expect(parseCapture("Write chapter deep work")!.tags).toEqual(["writing"]);
     vi.resetModules();
-    vi.doMock("../lib/supabase", () => ({ isSupabaseConfigured: true, supabase: null }));
+    // (data.ts asks lib/backend, which needs no Supabase client)
+    vi.doMock("../lib/backend", () => ({ isSupabaseConfigured: true }));
     try {
       const real = await import("./data");
       const t = real.parseCapture("Write chapter deep work")!;
       expect(t.energy).toBe("deep"); // energy is still read…
       expect(t.tags).toEqual([]);    // …but no demo tag id is written
     } finally {
-      vi.doUnmock("../lib/supabase");
+      vi.doUnmock("../lib/backend");
       vi.resetModules();
     }
   });

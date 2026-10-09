@@ -254,7 +254,7 @@ export interface PageHeaderProps {
   meta?: string;
   leading?: ReactNode;
   titleAddon?: ReactNode;
-  switcher?: { items: { id: string; label: string }[]; value: string; onChange: (id: string) => void; label: string };
+  switcher?: { items: { id: string; label: string }[]; value: string; onChange: (id: string) => void; label: string; onIntent?: (id: string) => void };
   actions?: ReactNode;
   tabs?: TabItem[];
   tabValue?: string;
@@ -379,7 +379,7 @@ export function PageHeader({ title, meta, leading, titleAddon, switcher, actions
   const hasTabs = !!tabs && tabs.length > 0;
   const hasMomentum = momentum != null;
   const segmented = switcher && (
-    <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} />
+    <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} onIntent={switcher.onIntent} />
   );
   const tabsRow = (trailing: ReactNode) => hasTabs && (
     <div className="kph-tabs">

@@ -1,12 +1,17 @@
 /* The identity-and-voice polish, through the whole app in demo mode: the
    project page's cover header, the directory's gallery, the Inbox's count
    during a visit, and Settings › Profile showing the demo person. */
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import App from "./App";
+import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
+
+// the app's screens are code-split (lazyViews.ts): load them all first, so every
+// screen renders as synchronously as it did unsplit
+beforeAll(loadAllChunks, 60_000);
 
 const renderApp = () => render(<ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider>);
 const boot = async () => { renderApp(); await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument()); };

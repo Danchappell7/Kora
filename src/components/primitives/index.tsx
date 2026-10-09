@@ -333,17 +333,20 @@ export interface SegmentedOption<T extends string = string> {
 }
 // A single-select toggle group: each option is a toggle button whose pressed
 // state is exposed (aria-pressed), inside a named group ("View", "Group by").
-export function Segmented<T extends string>({ options, value, onChange, ariaLabel }: {
+export function Segmented<T extends string>({ options, value, onChange, ariaLabel, onIntent }: {
   options: SegmentedOption<T>[];
   value: T;
   onChange: (v: T) => void;
   ariaLabel?: string;
+  /** the pointer or focus is on an option (it may be picked next: e.g. fetch what it shows) */
+  onIntent?: (v: T) => void;
 }) {
   return (
     <div className="kseg" role="group" aria-label={ariaLabel}>
       {options.map((o) => (
         <button key={o.value} type="button" className="kseg-btn" data-active={o.value === value} aria-pressed={o.value === value}
-          onClick={() => onChange(o.value)} title={o.label}>
+          onClick={() => onChange(o.value)} title={o.label}
+          onPointerEnter={onIntent && (() => onIntent(o.value))} onFocus={onIntent && (() => onIntent(o.value))}>
           {o.icon && <Icon name={o.icon} size={14} sw={1.75} />}{o.label}
         </button>
       ))}

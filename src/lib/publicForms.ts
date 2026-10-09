@@ -20,29 +20,30 @@
 
    The validation rules, caps and messages are shared with the function
    (supabase/functions/_shared/publicForm.ts): one copy, never drifting.
-   main.tsx imports this module at startup, so it stays small: no React,
-   no demo data, nothing from the app shell. The page itself never uses
-   the Supabase client: it talks to the function with plain fetch, no
-   cookies and no Kanbo session.
+   It stays small: no React, no demo data, nothing from the app shell.
+   The page itself never uses the Supabase client: it talks to the
+   function with plain fetch, no cookies and no Kanbo session. The
+   in-app calls below (switching a link, regenerating it, the status
+   probe) fetch the client when they run, so /f/<token> never downloads
+   supabase-js. The address and theme helpers main.tsx needs before
+   anything else live in ./publicPage.
    ============================================================ */
 import type { PublicFormFailure, PublicFormLoad, PublicFormResult, PublicFormSchema, PublicFormSubmission } from "../data/types";
 import {
   checkSubmission, FAILURE_MESSAGES, isPublicToken, parsePublicSchema, PUBLIC_LIMITS, RATE_LIMIT_MESSAGES,
   type PublicFieldKey, type RateLimitScope,
 } from "../../supabase/functions/_shared/publicForm.ts";
-import { supabase } from "./supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export { PUBLIC_LIMITS, PUBLIC_PRIORITIES, FIELD_MESSAGES, FAILURE_MESSAGES, RATE_LIMIT_MESSAGES, isPublicToken } from "../../supabase/functions/_shared/publicForm.ts";
 export type { RateLimitScope } from "../../supabase/functions/_shared/publicForm.ts";
+export { publicFormTokenFromPath, applyPublicTheme } from "./publicPage";
+
+/** The signed-in app's Supabase client (null in demo mode), loaded on first use. */
+const client = async (): Promise<SupabaseClient | null> => (await import("./supabase")).supabase;
 
 /** The token /f/demo uses: the page renders demoPublicForm() and fakes a submission. */
 export const DEMO_PUBLIC_TOKEN = "demo";
-
-/** "/f/<token>" (optionally with a trailing slash) → the token; null for any other path. */
-export function publicFormTokenFromPath(pathname: string): string | null {
-  const m = /^\/f\/([A-Za-z0-9_-]{1,128})\/?$/.exec(pathname || "");
-  return m ? m[1] : null;
-}
 
 /** The shareable link: <origin>/f/<token> (origin defaults to the current page's). */
 export function publicFormUrl(token: string, origin?: string): string {
@@ -262,6 +263,7 @@ function linkError(e: unknown): PublicLinkError {
 
 /** Switch the public link on/off; returns the row's state afterwards (switching on mints a token). Throws on refusal. */
 export async function setFormPublic(formId: string, enabled: boolean): Promise<{ publicEnabled: boolean; publicToken: string | null }> {
+  const supabase = await client();
   // demo: nothing to save; every demo form previews at /f/demo
   if (!supabase) return { publicEnabled: enabled, publicToken: DEMO_PUBLIC_TOKEN };
   if (!formId || formId.startsWith("tmp-")) throw new PublicLinkError("pending", LINK_MESSAGES.pending);
@@ -282,6 +284,7 @@ export async function setFormPublic(formId: string, enabled: boolean): Promise<{
 
 /** "Regenerate link": a new token (the old link stops working). Throws on refusal. */
 export async function regenerateFormLink(formId: string): Promise<string> {
+  const supabase = await client();
   if (!supabase) return DEMO_PUBLIC_TOKEN;
   if (!formId || formId.startsWith("tmp-")) throw new PublicLinkError("pending", LINK_MESSAGES.pending);
   if (isOffline()) throw new PublicLinkError("offline", LINK_MESSAGES.offline);
@@ -311,8 +314,8 @@ let pageProbe: Promise<PublicLinksStatus["page"]> | null = null;
 
 /** Probe once per session (an "unknown" answer is tried again next time). Never throws. */
 export async function publicLinksStatus(opts: PublicFormCallOptions & { checkPage?: boolean } = {}): Promise<PublicLinksStatus> {
-  if (!supabase) return { links: "demo", page: "demo" };
-  const db = supabase;
+  const db = await client();
+  if (!db) return { links: "demo", page: "demo" };
   if (!linksProbe) {
     linksProbe = (async (): Promise<PublicLinksStatus["links"]> => {
       try {
@@ -345,28 +348,4 @@ export async function publicLinksStatus(opts: PublicFormCallOptions & { checkPag
 export function resetPublicLinksStatus(): void {
   linksProbe = null;
   pageProbe = null;
-}
-
-/* ---------------- the public page's theme ---------------- */
-
-/**
- * The public page is Paper unless the visitor's system is dark. It ignores
- * the app's saved theme (a requester isn't a Kanbo user). Sets data-theme on
- * <html> now and follows system changes; returns the clean-up.
- */
-export function applyPublicTheme(): () => void {
-  if (typeof document === "undefined") return () => {};
-  const root = document.documentElement;
-  let mq: MediaQueryList | null = null;
-  try { mq = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null; } catch { mq = null; }
-  const set = () => root.setAttribute("data-theme", mq?.matches ? "dark" : "light");
-  set();
-  if (!mq) return () => {};
-  const on = () => set();
-  if (typeof mq.addEventListener === "function") mq.addEventListener("change", on);
-  else mq.addListener?.(on);
-  return () => {
-    if (typeof mq!.removeEventListener === "function") mq!.removeEventListener("change", on);
-    else mq!.removeListener?.(on);
-  };
 }

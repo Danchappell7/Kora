@@ -8,7 +8,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectTile, SectionLabel, projectIdentity } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { MenuItem, MenuSeparator } from "./Topbar";
-import { trialDaysLeft, BILLING_ENABLED } from "./Billing";
+import { trialDaysLeft, BILLING_ENABLED } from "../lib/billing";
 import { useToast } from "./Toast";
 import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch, Role } from "../data/types";
 import type { Route } from "../app-types";
@@ -16,7 +16,8 @@ import { navItems, placeOf, type NavItem } from "../lib/nav";
 import { canDeleteProject, canArchiveProject } from "../lib/permissions";
 import { getMember } from "../data/data";
 import { BREAK_MIN, type FocusTimer } from "../hooks/useFocusTimer";
-import { InstallPrompt } from "./integrations";
+import { InstallPrompt } from "./integrations/InstallPrompt";
+import { prefetchProps } from "../lazyViews";
 
 /* Sidebar-only rules, kept beside the component so the column's layout
    lives in one place. Tokens that are new in Paper & Navy are read with a
@@ -595,7 +596,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     }
     return (
       <button key={n.id} type="button" className="knav" data-active={active || undefined} aria-current={active ? "page" : undefined}
-        aria-label={name} onClick={() => setRoute(n.route)}>
+        aria-label={name} onClick={() => setRoute(n.route)} {...prefetchProps(n.route)}>
         <Icon name={PLACE_ICON[n.id] ?? n.icon} size={16} sw={1.75} className="knav-ico" />
         <span className="knav-label">{n.label}</span>
         {trailing}
@@ -611,7 +612,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           <div key={s.id} className="ksaved-row">
             <button type="button" className="knav" data-nested="" data-active={active || undefined} aria-current={active ? "page" : undefined}
               aria-label={count != null ? `${s.name}, ${count} ${count === 1 ? "task" : "tasks"}` : undefined}
-              onClick={() => setRoute({ view: "search", list: s.id })}>
+              onClick={() => setRoute({ view: "search", list: s.id })} {...prefetchProps({ view: "search", list: s.id })}>
               <Icon name="filter" size={14} sw={1.75} className="knav-ico" />
               <span className="knav-label">{s.name}</span>
               {count != null && <span className="knav-count knav-badge" aria-hidden="true">{count}</span>}
@@ -716,7 +717,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                 const reserve = (1 + (archivable ? 1 : 0) + (deletable ? 1 : 0)) * 25 + 8;
                 return (
                   <div key={p.id} role="listitem" className="kproj-item" style={{ "--kacts": `${reserve}px` } as CSSProperties}>
-                    <button type="button" onClick={() => setRoute({ view: "project", projectId: p.id })} className="kproj kp" style={projectIdentity(p).style} data-active={active || undefined} aria-current={active ? "page" : undefined}>
+                    <button type="button" onClick={() => setRoute({ view: "project", projectId: p.id })} {...prefetchProps({ view: "project", projectId: p.id })} className="kproj kp" style={projectIdentity(p).style} data-active={active || undefined} aria-current={active ? "page" : undefined}>
                       <ProjectTile project={p} size={20} />
                       <span className="truncate kproj-name">{p.name}</span>
                       {isPinned && <span className="kproj-pinmark" aria-hidden="true"><StarGlyph filled size={11} /></span>}
@@ -748,7 +749,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             </div>
           )}
           {visibleProjects.length > 0 && (
-            <button type="button" className="ksb-quiet ksb-all" onClick={() => setRoute({ view: "projects" })}>
+            <button type="button" className="ksb-quiet ksb-all" onClick={() => setRoute({ view: "projects" })} {...prefetchProps({ view: "projects" })}>
               <span>All projects</span>
               <Icon name="arrowRight" size={14} sw={2} />
               {visibleProjects.length > listedProjects.length && (
@@ -778,7 +779,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           )}
 
           {/* 0047: deleted tasks and projects wait here for 30 days */}
-          <button type="button" className="ksb-quiet" onClick={() => setRoute({ view: "bin" })} aria-current={route.view === "bin" ? "page" : undefined}>
+          <button type="button" className="ksb-quiet" onClick={() => setRoute({ view: "bin" })} {...prefetchProps({ view: "bin" })} aria-current={route.view === "bin" ? "page" : undefined}>
             <Icon name="trash" size={14} sw={1.75} />
             <span style={{ flex: 1 }}>Recycle bin</span>
           </button>

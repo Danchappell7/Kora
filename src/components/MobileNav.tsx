@@ -8,6 +8,7 @@
 import { Icon } from "./primitives";
 import type { Route } from "../app-types";
 import { PLACES, placeOf, type PlaceId } from "../lib/nav";
+import { prefetchCapture, prefetchProps } from "../lazyViews";
 
 const MOBILE_CSS = `
 .kmnav {
@@ -63,7 +64,7 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore, more
     const unread = id === "inbox" && inboxCount > 0;
     return (
       <button key={id} type="button" className="kmnav-slot" data-active={active || undefined} aria-current={active ? "page" : undefined}
-        aria-label={unread ? `${label}, ${inboxCount} unread` : label} onClick={() => setRoute(to)}>
+        aria-label={unread ? `${label}, ${inboxCount} unread` : label} onClick={() => setRoute(to)} {...prefetchProps(to)}>
         <span className="kmnav-ico">
           <Icon name={icon} size={22} sw={1.75} />
           {unread && <span className="kmnav-badge" aria-hidden="true">{inboxCount > 99 ? "99+" : inboxCount}</span>}
@@ -81,7 +82,7 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore, more
       {slot("today")}
       {slot("tasks")}
       {onCapture && (
-        <button type="button" className="kmnav-slot" aria-label="Quick capture" aria-keyshortcuts="Q" onClick={onCapture}>
+        <button type="button" className="kmnav-slot" aria-label="Quick capture" aria-keyshortcuts="Q" onClick={onCapture} onPointerDown={prefetchCapture}>
           <span className="kmnav-plus"><Icon name="plus" size={22} sw={2} /></span>
         </button>
       )}

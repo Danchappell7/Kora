@@ -18,7 +18,7 @@ import {
 } from "./authLinks";
 import { claimLocalData, parkLocalData, clearLocalUserData, forgetStoredSession, isAuthStorageKey, pageNav } from "./localData";
 import { UnsyncedSignOutDialog } from "./UnsyncedSignOutDialog";
-import { clearTaskDrafts } from "../components/taskDetailHelpers";
+import { clearTaskDrafts } from "../lib/taskDrafts";
 import { disablePush, watchPushSession } from "../lib/push";
 import { googleQueryParams, oauthRedirectTo } from "./googleSignIn";
 

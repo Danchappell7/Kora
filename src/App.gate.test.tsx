@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { Profile } from "./data/types";
 
@@ -14,8 +14,13 @@ const auth = vi.hoisted(() => ({
 vi.mock("./auth/AuthProvider", () => ({ useAuth: () => auth, AuthProvider: ({ children }: { children: React.ReactNode }) => children }));
 
 import App from "./App";
+import { loadAllChunks } from "./lib/lazyLoad";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
+
+// the app's screens are code-split (lazyViews.ts): load them all first, so every
+// screen renders as synchronously as it did unsplit
+beforeAll(loadAllChunks, 60_000);
 
 const spies: { mockRestore: () => void }[] = [];
 afterEach(() => { spies.splice(0).forEach((s) => s.mockRestore()); localStorage.clear(); window.history.replaceState(null, "", "/"); });

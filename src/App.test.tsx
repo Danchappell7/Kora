@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { render, screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import App from "./App";
+import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
@@ -10,6 +11,10 @@ import { isTaskId } from "./lib/taskOps";
 import { pushUndo, clearUndo } from "./lib/undoStack";
 import { toLocalISO, KANBO_TODAY } from "./data/data";
 import { WORKSPACE_TEMPLATES } from "./lib/templates";
+
+// the app's screens are code-split (lazyViews.ts): load them all first, so every
+// screen renders as synchronously as it did unsplit
+beforeAll(loadAllChunks, 60_000);
 
 const renderApp = () => render(
   <ToastProvider>

@@ -10,7 +10,7 @@
    ============================================================ */
 import type { Task, WorkspaceEvent } from "../data/types";
 import { KANBO_TODAY, getMember, getProject, toLocalISO } from "../data/data";
-import { addDays, fmtDayMonth, localDay, round1, startOfWeekMon, taskLoadInWeek } from "../components/views/reportingUtils";
+import { addDays, fmtDayMonth, localDay, round1, startOfWeekMon, taskLoadInWeek } from "./weekMath";
 
 export type RiskKind = "blocked" | "blocker_late" | "slipping" | "stale" | "unassigned_due" | "over_capacity" | "milestone_at_risk";
 

@@ -5,6 +5,9 @@
 import type { Activity, Attachment, Comment, Task } from "../data/types";
 import { STATUS_META, PRIORITY_META, KANBO_TODAY, toLocalISO } from "../data/data";
 import { approvalActivityVerb, approvalEventText } from "../lib/approvals";
+import { DRAFT_PREFIX, UNSAVED_PREFIX } from "../lib/taskDrafts";
+
+export { clearTaskDrafts } from "../lib/taskDrafts";
 
 export interface MentionCandidate { id: string; name: string }
 
@@ -132,7 +135,6 @@ export function canDeleteAttachment(a: Pick<Attachment, "path"> & { userId?: str
 /* Unsent comment drafts survive switching task or closing the panel (per tab).
    Keyed by the signed-in user too, so someone else signing in on the same tab
    never finds (and posts) another person's draft. */
-const DRAFT_PREFIX = "kanbo-draft:";
 const draftKey = (userId: string, taskId: string) => `${DRAFT_PREFIX}${userId}:${taskId}`;
 export function readDraft(userId: string, taskId: string): string {
   try { return sessionStorage.getItem(draftKey(userId, taskId)) ?? ""; } catch { return ""; }
@@ -148,7 +150,6 @@ export function writeDraft(userId: string, taskId: string, text: string): void {
    (the save may not have reached the server, or someone else had changed it).
    The panel offers it back the next time you open that task. */
 export type UnsavedField = "title" | "description";
-const UNSAVED_PREFIX = "kanbo-unsaved:";
 const unsavedKey = (userId: string, taskId: string, field: UnsavedField) => `${UNSAVED_PREFIX}${userId}:${taskId}:${field}`;
 export function stashUnsaved(userId: string, taskId: string, field: UnsavedField, text: string): void {
   try { sessionStorage.setItem(unsavedKey(userId, taskId, field), text); } catch { /* storage blocked */ }
@@ -166,17 +167,6 @@ export function takeUnsaved(userId: string, taskId: string, field: UnsavedField)
   } catch { return null; }
 }
 
-/** Forget every unsent comment draft and unsaved edit in this tab (call on sign-out). */
-export function clearTaskDrafts(): void {
-  try {
-    const doomed: string[] = [];
-    for (let i = 0; i < sessionStorage.length; i++) {
-      const k = sessionStorage.key(i);
-      if (k && (k.startsWith(DRAFT_PREFIX) || k.startsWith(UNSAVED_PREFIX))) doomed.push(k);
-    }
-    doomed.forEach((k) => sessionStorage.removeItem(k));
-  } catch { /* storage blocked */ }
-}
 
 /* ============================================================
    Dates, durations and the words the panel uses for them.

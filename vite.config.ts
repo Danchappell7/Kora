@@ -2,6 +2,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { buildInfoFromEnv } from "./src/lib/buildInfo";
+import { vendorChunk } from "./src/lib/vendorChunks";
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
@@ -14,11 +15,9 @@ export default defineConfig(({ command }) => ({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ["react", "react-dom"],
-          supabase: ["@supabase/supabase-js"],
-          sentry: ["@sentry/react"],
-        },
+        // third-party code in long-lived chunks of its own (src/lib/vendorChunks.ts);
+        // the app itself is split by screen with import() (entryChunks.ts, lazyViews.ts)
+        manualChunks: vendorChunk,
       },
     },
   },

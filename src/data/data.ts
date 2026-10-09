@@ -8,7 +8,7 @@ import type {
   Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
   Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
-import { isSupabaseConfigured } from "../lib/supabase";
+import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
 import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";

@@ -1,9 +1,10 @@
 /* App: whose plan each surface shows, and what Ask Kanbo's Apply and Undo write.
    The palette and Team › Pulse are stood in for, so the tests can hand App the
    changes Ask proposes and see exactly what Pulse is given. */
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import App from "./App";
+import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
@@ -12,12 +13,16 @@ import { toLocalISO, KANBO_TODAY } from "./data/data";
 import type { Task } from "./data/types";
 import type { AskAction } from "./lib/askTypes";
 
+// the app's screens are code-split (lazyViews.ts): load them all first, so every
+// screen renders as synchronously as it did unsplit
+beforeAll(loadAllChunks, 60_000);
+
 const seen = vi.hoisted(() => ({
-  palette: null as null | { tasks?: Task[]; onApplyAsk?: (a: AskAction[]) => void },
+  palette: null as null | { tasks?: Task[]; onApplyAsk?: (a: AskAction[]) => void; onClose?: () => void },
   pulse: null as null | { tasks: Task[]; onPatch?: (id: string, patch: Partial<Task>) => void },
 }));
 vi.mock("./components/CommandPalette", () => ({
-  CommandPalette: (p: { tasks?: Task[]; onApplyAsk?: (a: AskAction[]) => void }) => { seen.palette = p; return null; },
+  CommandPalette: (p: { tasks?: Task[]; onApplyAsk?: (a: AskAction[]) => void; onClose?: () => void }) => { seen.palette = p; return null; },
 }));
 vi.mock("./components/views/TeamPulse", () => ({
   TeamPulse: (p: { tasks: Task[]; onPatch?: (id: string, patch: Partial<Task>) => void }) => { seen.pulse = p; return <p>Team pulse stand-in</p>; },
@@ -44,6 +49,11 @@ function mayasTask(row: Partial<Task> = {}) {
 const boot = async () => {
   render(<ToastProvider><AuthProvider><App /></AuthProvider></ToastProvider>);
   await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
+  // the palette is mounted the first time it opens (and kept): open it and close it
+  // again, so the stand-in goes on seeing what App hands it
+  fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+  await waitFor(() => expect(seen.palette).not.toBeNull());
+  act(() => { seen.palette!.onClose!(); });
 };
 const key = (k: string) => fireEvent.keyDown(document.body, { key: k });
 const ask = (actions: AskAction[]) => act(() => { seen.palette!.onApplyAsk!(actions); });

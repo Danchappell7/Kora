@@ -8,10 +8,9 @@ import type { CSSProperties } from "react";
 import { Icon, Button, projectPaint } from "./primitives";
 import type { TagDef } from "../data/types";
 
-export const TAG_COLORS: { c: string; name: string }[] = [
-  { c: "oklch(0.74 0.16 305)", name: "purple" }, { c: "oklch(0.74 0.14 230)", name: "blue" }, { c: "oklch(0.75 0.13 155)", name: "green" },
-  { c: "oklch(0.78 0.15 70)", name: "amber" }, { c: "oklch(0.66 0.2 20)", name: "red" }, { c: "oklch(0.7 0.02 240)", name: "grey" },
-];
+import { TAG_COLORS } from "../lib/tags";
+
+export { TAG_COLORS };
 const TAG_MAX = 40;
 /** optimistic tags carry a temporary id until the server confirms them */
 const isPendingTag = (id: string) => id.startsWith("tmp-");
