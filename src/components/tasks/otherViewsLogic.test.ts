@@ -6,6 +6,7 @@ import {
   timelineMovePatch, timelineStartPatch, wipStorageKey, wipKeyFor, loadWipLimits, LEGACY_WIP_KEY, readWipLimits, parseWipLimit, chunk,
   NO_PROJECT_COL, VIRTUALISE_AFTER, swimlanes, swimlaneKeyOf, lanePatch, effectiveSwimlane, readSwimlane, swimlaneStorageKey, laneCollapseStorageKey,
   wipSettingKey, localWipToSettings, withWipLimit, withCovers, wipBreachMessage, wipState, cardProgress, cardHeightEstimate,
+  applyBoardSettingsChange, wipToShare,
   planInsertMany, stackOffsets, virtualRanges, virtualSegments,
 } from "./otherViewsLogic";
 
@@ -289,6 +290,25 @@ describe("WIP limits on board settings", () => {
     expect(withWipLimit(undefined, "todo", 0)).toEqual({ wip: { todo: 1 } });
     expect(withCovers({ wip: { todo: 2 } }, true)).toEqual({ wip: { todo: 2 }, covers: true });
     expect(withCovers({ covers: true }, false)).toEqual({});
+  });
+
+  it("merges one change the way merge_board_settings does (wip a level deeper, null removes)", () => {
+    const base = { wip: { todo: 5, review: 2 }, covers: true };
+    expect(applyBoardSettingsChange(base, {})).toEqual(base);
+    expect(applyBoardSettingsChange(base, { wip: { progress: 3, todo: null } })).toEqual({ wip: { review: 2, progress: 3 }, covers: true });
+    expect(applyBoardSettingsChange(base, { wip: null })).toEqual({ covers: true });
+    expect(applyBoardSettingsChange(base, { covers: false })).toEqual({ wip: { todo: 5, review: 2 } });
+    expect(applyBoardSettingsChange(base, { covers: null })).toEqual({ wip: { todo: 5, review: 2 } });
+    expect(applyBoardSettingsChange(undefined, { covers: true, wip: { todo: 2.4 } })).toEqual({ covers: true, wip: { todo: 2 } });
+    expect(applyBoardSettingsChange({ wip: { todo: 1 } }, { wip: { todo: null } })).toEqual({}); // an empty wip goes
+    expect(base).toEqual({ wip: { todo: 5, review: 2 }, covers: true }); // never mutated
+  });
+
+  it("offers up only the limits a board doesn't share yet", () => {
+    const local = { "status:progress": 2, "status:review": 4, "priority:urgent": 1 };
+    expect(wipToShare(local, undefined)).toEqual({ progress: 2, review: 4, "priority:urgent": 1 });
+    expect(wipToShare(local, { review: 1 })).toEqual({ progress: 2, "priority:urgent": 1 });
+    expect(wipToShare({}, undefined)).toEqual({});
   });
 
   it("says when a move takes a column past its limit, and only then", () => {

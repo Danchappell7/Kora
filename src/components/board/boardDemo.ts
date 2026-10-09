@@ -8,6 +8,8 @@
    coverAttachmentId: null on the task, which wins over the default.
    ============================================================ */
 import { isSupabaseConfigured } from "../../lib/backend";
+import { getProject } from "../../data/data";
+import { applyBoardSettingsChange, type BoardSettingsChange } from "../tasks/otherViewsLogic";
 import type { Attachment, BoardSettings, Task } from "../../data/types";
 
 const svg = (body: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
@@ -119,4 +121,25 @@ export function demoAwareBoardSettings(projectId: string | null | undefined, set
   const has = !!settings && (Object.keys(settings).length > 0);
   if (has || !projectId || !isDemoBoard() || touched.has(projectId)) return settings;
   return DEMO_BOARD_SETTINGS[projectId] ?? settings;
+}
+
+/**
+ * The project's board settings once a change is made, built from the freshest
+ * copy there is when the change is made (the app's own project list, which
+ * live updates and optimistic saves keep current), not from what a screen
+ * rendered earlier; `fallback` only for a project that list doesn't hold.
+ * Marks the board changed, so the demo seed stops standing in. Save it with
+ * the change itself, which the database merges one level deep
+ * (merge_board_settings), so a teammate's edit made meanwhile survives.
+ */
+export function nextBoardSettings(projectId: string | null | undefined, fallback: BoardSettings | undefined, change: BoardSettingsChange): BoardSettings {
+  const base = currentBoardSettings(projectId, fallback);
+  markBoardSettingsTouched(projectId);
+  return applyBoardSettingsChange(base, change);
+}
+
+/** The project's board settings right now (the freshest copy; see nextBoardSettings), demo seed included. */
+export function currentBoardSettings(projectId: string | null | undefined, fallback: BoardSettings | undefined): BoardSettings | undefined {
+  const live = projectId ? getProject(projectId) : undefined;
+  return demoAwareBoardSettings(projectId, live ? live.boardSettings : fallback);
 }

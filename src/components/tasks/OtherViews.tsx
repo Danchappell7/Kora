@@ -24,17 +24,17 @@ import {
   addDaysISO, daysBetweenISO, mondayOf, switchCalendarPeriod, type CalendarPeriod,
   hideNestedSubtasks, assigneeColumnKey, UNASSIGNED_COL, FORMER_COL, NO_PROJECT_COL,
   planReorder, planInsertMany, barSpan, clipSpan, effectiveStartISO, timelineMovePatch, timelineStartPatch,
-  wipKeyFor, loadWipLimits, chunk, type BarSpan,
+  wipKeyFor, loadWipLimits, readWipLimits, wipStorageKey, chunk, type BarSpan,
   VIRTUALISE_AFTER, SWIMLANE_OPTIONS, swimlanes, lanePatch, effectiveSwimlane, swimlaneStorageKey, laneCollapseStorageKey, readSwimlane,
-  wipSettingKey, localWipToSettings, withWipLimit, withCovers, wipBreachMessage, wipState, cardProgress, cardHeightEstimate,
-  type SwimlaneBy, type Swimlane, type SwimlaneCtx,
+  wipSettingKey, wipToShare, wipBreachMessage, wipState, cardProgress, cardHeightEstimate,
+  type SwimlaneBy, type Swimlane, type SwimlaneCtx, type BoardSettingsChange,
 } from "./otherViewsLogic";
 import { Popover, MenuItem } from "../board/AnchoredPopover";
 import { ColumnMenu } from "../board/ColumnMenu";
 import { CardMoveMenu, type MoveColumn } from "../board/CardMoveMenu";
 import { VirtualCards } from "../board/VirtualCards";
 import { useCoverUrls } from "../board/useCoverUrls";
-import { demoAwareBoardSettings, effectiveCoverId, markBoardSettingsTouched } from "../board/boardDemo";
+import { currentBoardSettings, demoAwareBoardSettings, effectiveCoverId, nextBoardSettings } from "../board/boardDemo";
 import { useOptionalToast } from "../rituals/shared";
 import "./taskViews.css";
 import "../board/board.css";
@@ -150,9 +150,14 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
     setMenu(null);
     setDraft(task.title); editingRef.current = true; setEditing(true);
   }, [p.canRename, task.title]);
-  const finishRename = (save: boolean) => {
+  // where focus goes when the field closes: back to the card after Enter / Escape (the field it was in is
+  // gone), or after the window itself lost focus; a click elsewhere keeps what was clicked
+  const refocusCard = useRef(false);
+  const finishRename = (save: boolean, how: "key" | "blur") => {
     if (!editingRef.current) return;
-    editingRef.current = false; setEditing(false);
+    editingRef.current = false;
+    refocusCard.current = how === "key" || (typeof document.hasFocus === "function" && !document.hasFocus());
+    setEditing(false);
     const next = draft.replace(/\s+/g, " ").trim();
     if (save && next && next !== task.title) { onPatch?.(task.id, { title: next }); p.onAnnounce(`Renamed to ${next}`); }
     else if (save && !next) p.onAnnounce(`A task needs a title, so it's still ${task.title}`);
@@ -163,6 +168,15 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
     if (!editing || !el) return;
     el.style.height = "0px"; el.style.height = `${el.scrollHeight}px`;
   }, [editing, draft]);
+  // the field just closed: put focus back on the card itself, not on the page (WCAG 2.4.3)
+  useLayoutEffect(() => {
+    if (editing || !refocusCard.current) return;
+    refocusCard.current = false;
+    const card = cardRef.current;
+    const ae = document.activeElement;
+    if (!card || (ae && ae !== document.body && !card.contains(ae))) return;
+    card.querySelector<HTMLElement>("[data-card-open]")?.focus({ preventScroll: true });
+  }, [editing]);
   useEffect(() => { if (editing) { titleInput.current?.focus({ preventScroll: true }); titleInput.current?.select(); } }, [editing]);
   // E / F2 and M from the board's keyboard; a card that re-mounts (moved to another column) never re-runs an old request
   const seen = useRef({ rename: p.renameNonce, move: p.moveNonce });
@@ -272,10 +286,10 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
             onChange={(e) => setDraft(e.target.value.replace(/[\r\n]+/g, " "))}
             onKeyDown={(e) => {
               e.stopPropagation();
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); finishRename(true); }
-              else if (e.key === "Escape") { e.preventDefault(); finishRename(false); }
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); finishRename(true, "key"); }
+              else if (e.key === "Escape") { e.preventDefault(); finishRename(false, "key"); }
             }}
-            onBlur={() => finishRename(true)} onClick={stop} onPointerDown={stop} onDragStart={(e) => e.preventDefault()} />
+            onBlur={() => finishRename(true, "blur")} onClick={stop} onPointerDown={stop} onDragStart={(e) => e.preventDefault()} />
         ) : (
           <span className="ktv-card-title" data-card-title data-rename={p.canRename || undefined}
             title={p.canRename ? "Click to rename" : undefined}
@@ -502,8 +516,10 @@ export interface BoardViewProps {
   /** a project board's settings (projects.board_settings; pass {} when it has none): its WIP limits are
    *  then everyone's, and "Show project covers" applies. Without it (My tasks) limits stay on this device. */
   boardSettings?: BoardSettings;
-  /** project writers: save the board's settings (store.updateProject(id, { boardSettings })) */
-  onChangeBoardSettings?: (next: BoardSettings) => void;
+  /** project writers: save the board's settings. `next` is the whole object (for the app's own copy), built
+   *  from the freshest copy when the change is made; `change` is just what changed, for the database to merge
+   *  (merge_board_settings), so a teammate's edit made meanwhile is never overwritten. */
+  onChangeBoardSettings?: (next: BoardSettings, change: BoardSettingsChange) => void;
   /** the board's project (default: read from scopeKey "project:<id>") */
   projectId?: string;
   /** attachment id → signed image link for cover images; without it the board fetches the ones it needs */
@@ -516,7 +532,7 @@ export interface BoardViewProps {
 const readLS = (k: string): string | null => { try { return localStorage.getItem(k); } catch { return null; } };
 const writeLS = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 const readSet = (k: string): Set<string> => { try { const s = localStorage.getItem(k); const a = s ? JSON.parse(s) : []; return new Set(Array.isArray(a) ? a.filter((x): x is string => typeof x === "string") : []); } catch { return new Set(); } };
-/** the board's WIP limits were copied up to its project once (never again, even after they're cleared) */
+/** this device's limits for a project board were offered up to it once (never again, whatever the answer) */
 const wipCopiedKey = (scope: string) => `kanbo-board-wip-copied:${scope}`;
 
 export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle, activeId,
@@ -537,6 +553,15 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const toggleSelect = useCallback((id: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
   const clearSel = () => { setSelected(new Set()); setBulkMenu(null); };
   const selIds = [...selected].filter((id) => tasks.some((t) => t.id === id));
+  // a selected card that leaves the board (a filter, a move elsewhere, a teammate) leaves the selection too
+  useEffect(() => {
+    if (!selected.size) return;
+    const shown = new Set(tasks.map((t) => t.id));
+    const kept = [...selected].filter((id) => shown.has(id));
+    if (kept.length === selected.size) return;
+    setSelected(new Set(kept));
+    if (!kept.length) setBulkMenu(null);
+  }, [tasks]); // eslint-disable-line react-hooks/exhaustive-deps
   const applyBulk = (p: Partial<Task>) => { onBulkPatch?.(selIds, p); clearSel(); };
   const BULK_PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -584,9 +609,13 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const [wipCache, setWipCache] = useState<Record<string, Record<string, number>>>({});
   const localWip = useMemo(() => wipCache[wipStore] ?? (() => { try { return loadWipLimits((k) => localStorage.getItem(k), scopeKey); } catch { return {}; } })(), [wipCache, wipStore, scopeKey]);
   const limitOf = (colKey: string): number | undefined => (teamWip ? settings?.wip?.[wipSettingKey(group, colKey)] : localWip[`${group}:${colKey}`]);
-  const saveSettings = (next: BoardSettings) => { markBoardSettingsTouched(ownProjectId); onChangeBoardSettings?.(next); };
+  /** one change to the project's settings, never a stale whole copy (see nextBoardSettings) */
+  const saveChange = (change: BoardSettingsChange) => {
+    if (!onChangeBoardSettings) return;
+    onChangeBoardSettings(nextBoardSettings(ownProjectId, boardSettings, change), change);
+  };
   const saveLimit = (colKey: string, n: number | null) => {
-    if (teamWip) { saveSettings(withWipLimit(settings, wipSettingKey(group, colKey), n)); return; }
+    if (teamWip) { saveChange({ wip: { [wipSettingKey(group, colKey)]: n == null ? null : Math.max(1, Math.min(999, Math.round(n))) } }); return; }
     const next = { ...localWip };
     const k = `${group}:${colKey}`;
     if (n == null) delete next[k]; else next[k] = n;
@@ -594,19 +623,26 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     writeLS(wipStore, JSON.stringify(next));
   };
   const wipNote = teamWip ? "Shared with everyone on this board." : scopeKey ? "Saved for this board on this device." : "Saved on this device.";
-  // the first time a writer opens a project board, the limits this device kept for it become the board's own
+  // The first time a writer opens a project board that shares no limits, limits this device kept for this
+  // very board (never the old device-wide ones) are offered up, once: nothing is written unless they say yes.
   useEffect(() => {
-    if (!onChangeBoardSettings || readOnly || !scopeKey) return;
+    if (!onChangeBoardSettings || readOnly || !scopeKey || !toast) return;
     const flag = wipCopiedKey(scopeKey);
     if (readLS(flag)) return;
     writeLS(flag, "1");
-    if (settings?.wip && Object.keys(settings.wip).length) return;
-    const local = (() => { try { return loadWipLimits((k) => localStorage.getItem(k), scopeKey); } catch { return {}; } })();
-    const up = localWipToSettings(local);
-    if (!Object.keys(up).length) return;
-    saveSettings({ ...(settings ?? {}), wip: up });
-    toast?.toast("This board's WIP limits are now shared with everyone on it.", "info");
-  }, [scopeKey, !!onChangeBoardSettings, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+    const own = readWipLimits(readLS(wipStorageKey(scopeKey)));
+    if (Object.keys(currentBoardSettings(ownProjectId, boardSettings)?.wip ?? {}).length || !Object.keys(wipToShare(own, undefined)).length) return;
+    // bound to this board: the offer outlives a switch to another project's board
+    const pid = ownProjectId, fallback = boardSettings, save = onChangeBoardSettings;
+    toast.action("You set WIP limits for this board on this device. Share them with everyone on it?", "Share limits", () => {
+      // only the limits the board still doesn't have (a teammate may have set some since)
+      const add = wipToShare(own, currentBoardSettings(pid, fallback)?.wip);
+      if (!Object.keys(add).length) return;
+      const change: BoardSettingsChange = { wip: add };
+      save(nextBoardSettings(pid, fallback, change), change);
+      toast.toast("WIP limits shared with everyone on this board.", "success");
+    }, { key: `kanbo-wip-share:${scopeKey}` });
+  }, [scopeKey, !!onChangeBoardSettings, readOnly, !!toast]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---- covers ---- */
   const coversFor = useCallback((pid: string): boolean => {
@@ -785,7 +821,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const onKitLeave = (cellKey: string) => { setDragOver((d) => (d === cellKey ? null : d)); setHover(null); };
   const onKitDrop = (cellKey: string, lane: HTMLElement | null, e: TaskDropEvent) => {
     endHover();
-    const ids = e.payload.taskIds.filter((id) => live.current.byId.has(id));
+    const ids = e.payload.taskIds.filter((id) => live.current.colOf.has(id));
     if (!ids.length) return;
     const moving = new Set(ids);
     const at = e.point ? pointAt(lane, e.point.y) : null;
@@ -803,11 +839,12 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     const col = L.columns.find((c) => c.key === colKey);
     if (!col) return false;
     const laneOk = laneKey == null || L.lanesBy === "none" || !!lanePatch(L.lanesBy, laneKey);
-    return payload.taskIds.every((id) => L.byId.has(id) && (col.accepts || L.colOf.get(id) === colKey) && (laneOk || L.laneOf.get(id) === laneKey));
+    return payload.taskIds.every((id) => L.colOf.has(id) && (col.accepts || L.colOf.get(id) === colKey) && (laneOk || L.laneOf.get(id) === laneKey));
   };
+  // only cards on this board right now: a selected card a filter has since hidden never travels unseen
   const dragIds = useCallback((id: string) => {
-    const sel = live.current.selected;
-    return sel.has(id) ? [id, ...[...sel].filter((x) => x !== id && live.current.byId.has(x))] : [id];
+    const L = live.current;
+    return L.selected.has(id) ? [id, ...[...L.selected].filter((x) => x !== id && L.colOf.has(x))] : [id];
   }, []);
 
   // keyboard alternative to drag-and-drop: Alt+↑/↓ reorders, Alt+←/→ moves between columns (within its row)
@@ -993,7 +1030,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
       <div role="status" aria-live="polite" className="sr-only">{announce}</div>
       {showBar && (
         <BoardBar group={group} onGroup={onGroupChange ? undefined : (g) => setOwnGroup(g)} lanes={lanesBy} onLanes={onSwimlaneChange ? undefined : setLanes}
-          covers={!!settings?.covers} onCovers={onChangeBoardSettings && !onSwimlaneChange && editable ? (on) => saveSettings(withCovers(settings, on)) : undefined} hintId={hintId} />
+          covers={!!settings?.covers} onCovers={onChangeBoardSettings && !onSwimlaneChange && editable ? (on) => saveChange({ covers: on }) : undefined} hintId={hintId} />
       )}
       <p id={hintId} className="sr-only">{editable
         ? `Press Enter to open, E to rename, M to move it, T to add it to Today. Alt plus the arrow keys moves the card up, down or to the next column${lanes ? " in its row" : ""}.`

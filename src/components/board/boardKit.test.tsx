@@ -99,6 +99,28 @@ describe("the board on the drag kit", () => {
     expect(calls[0][2]).toBeGreaterThan(1); // after "Three"
   });
 
+  it("a selected card a filter has since hidden stays behind: never dragged, never dropped, out of the selection", () => {
+    const tasks = [mk({ id: "a", title: "One", position: 1 }), mk({ id: "b", title: "Two", position: 2 }), mk({ id: "c", title: "Three", status: "review", position: 1 })];
+    const props = { tasks, allTasks: tasks, onOpen: vi.fn(), onAdd: vi.fn(), onMove: vi.fn(), onPatch: vi.fn(), onBulkPatch: vi.fn(), members };
+    const { rerender } = render(<BoardView {...props} />);
+    fireEvent.click(within(card("a")).getByRole("checkbox", { name: "Select One" }));
+    fireEvent.click(within(card("b")).getByRole("checkbox", { name: "Select Two" }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    // a filter hides Two (it's still among all tasks)
+    rerender(<BoardView {...props} tasks={[tasks[0], tasks[2]]} />);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect((h.sources.get("a")!.taskIds as () => string[])()).toEqual(["a"]);
+    // a payload naming a card that isn't on the board is never taken, nor moved
+    const t = h.targets.get("review")!;
+    expect(t.accepts!(payload(["a", "b"]))).toBe(false);
+    keyDrop("review", ["a", "b"]);
+    expect(props.onMove.mock.calls.map((c) => c[0])).toEqual(["a"]);
+    // and it doesn't come back selected when the filter lets it back
+    rerender(<BoardView {...props} />);
+    expect(within(card("b")).getByRole("checkbox", { name: "Select Two" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
+
   it("rows make one target per column per row (left out of Move to… menus)", () => {
     localStorage.setItem("kanbo-board-lanes:project:p1", "assignee");
     const p = board([mk({ id: "a", title: "Brief", assigneeId: "m-1" }), mk({ id: "b", title: "Deck", assigneeId: "m-self" })], { scopeKey: "project:p1" });

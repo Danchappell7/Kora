@@ -1,9 +1,10 @@
 /* The board upgrade (u8): covers, rename in place, progress, the due chip,
-   rows (swimlanes), shared WIP limits (copied up once), the WIP toast, the
+   rows (swimlanes), shared WIP limits (saved as one change on the freshest
+   copy; this device's offered up once, on a yes), the WIP toast, the
    Move to… menu and long columns. Dates are relative to KANBO_TODAY (fixed
    when data.ts loads), so nothing here depends on the real date. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, within, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, within, cleanup, act } from "@testing-library/react";
 
 // these pin the board's own (HTML5) drag, used while the drag kit is inert: keep the kit inert here
 // even once it's live (boardKit.test.tsx covers the board on the kit)
@@ -21,7 +22,7 @@ const { BoardView } = await import("../tasks/OtherViews");
 import { addDaysISO } from "../tasks/otherViewsLogic";
 import { BoardDisplayOptions } from "./BoardDisplayOptions";
 import { ToastProvider } from "../Toast";
-import { KANBO_TODAY, toLocalISO } from "../../data/data";
+import { KANBO_TODAY, toLocalISO, PROJECTS, setReferenceData } from "../../data/data";
 import type { Task, BoardSettings } from "../../data/types";
 
 const mk = (over: Partial<Task>): Task => ({
@@ -92,6 +93,27 @@ describe("cards", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "   " } });
     fireEvent.blur(screen.getByRole("textbox"));
     expect(p.onPatch).not.toHaveBeenCalled();
+  });
+
+  it("gives focus back to the card when the field closes from the keyboard (Escape, or Enter with nothing changed)", () => {
+    const p = board([mk({ id: "a", title: "Alpha" }), mk({ id: "b", title: "Beta" })]);
+    const open = () => screen.getByRole("button", { name: /^Alpha, To do/ });
+    open().focus();
+    fireEvent.keyDown(open(), { key: "F2" });
+    expect(screen.getByRole("textbox", { name: "Rename Alpha" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(open()).toHaveFocus();
+    fireEvent.keyDown(open(), { key: "F2" });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Rename Alpha" }), { key: "Enter" });
+    expect(p.onPatch).not.toHaveBeenCalled();
+    expect(open()).toHaveFocus();
+    // a click on something else keeps what was clicked
+    fireEvent.keyDown(open(), { key: "F2" });
+    const other = screen.getByRole("button", { name: /^Beta, To do/ });
+    act(() => other.focus());
+    expect(other).toHaveFocus();
+    expect(screen.queryByRole("textbox")).toBeNull();
   });
 
   it("renames from the keyboard (F2 on the card) and never on a read-only board", () => {
@@ -234,7 +256,8 @@ describe("WIP limits", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "One more" }));
     expect(within(dialog).getByText("2 of 3: room for 1 more.")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { todo: 3 } });
+    // the whole object for the app's own copy, and just the change for the database to merge
+    expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { todo: 3 } }, { wip: { todo: 3 } });
     expect(localStorage.getItem("kanbo-board-wip:project:p1")).toBeNull();
   });
 
@@ -246,22 +269,62 @@ describe("WIP limits", () => {
     expect(within(dialog).getByText("2 of 3: room for 1 more.")).toBeInTheDocument();
   });
 
-  it("copies this device's limits up to the project once, with a word about it", () => {
+  it("offers this device's limits for this board up to the project once, and shares them only on a yes", () => {
     localStorage.setItem("kanbo-board-wip:project:p1", JSON.stringify({ "status:progress": 2, "priority:urgent": 1 }));
     const onChangeBoardSettings = vi.fn();
     board(two, { scopeKey: "project:p1", boardSettings: {}, onChangeBoardSettings }, { toasts: true });
+    expect(onChangeBoardSettings).not.toHaveBeenCalled(); // nothing written just by opening the board
+    expect(screen.getByText("You set WIP limits for this board on this device. Share them with everyone on it?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Share limits" }));
     expect(onChangeBoardSettings).toHaveBeenCalledTimes(1);
-    expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { progress: 2, "priority:urgent": 1 } });
-    expect(screen.getByText("This board's WIP limits are now shared with everyone on it.")).toBeInTheDocument();
+    expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { progress: 2, "priority:urgent": 1 } }, { wip: { progress: 2, "priority:urgent": 1 } });
+    expect(screen.getByText("WIP limits shared with everyone on this board.")).toBeInTheDocument();
     cleanup();
-    board(two, { scopeKey: "project:p1", boardSettings: {}, onChangeBoardSettings });
-    expect(onChangeBoardSettings).toHaveBeenCalledTimes(1); // once, ever
-    // a board that already has shared limits keeps them
-    localStorage.clear();
+    board(two, { scopeKey: "project:p1", boardSettings: {}, onChangeBoardSettings }, { toasts: true });
+    expect(screen.queryByRole("button", { name: "Share limits" })).toBeNull(); // asked once, ever
+    expect(onChangeBoardSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("never offers the old device-wide limits, or anything to a board that already shares some", () => {
+    localStorage.setItem("kanbo-board-wip", JSON.stringify({ "status:progress": 2 }));
+    const onChangeBoardSettings = vi.fn();
+    board(two, { scopeKey: "project:p1", boardSettings: {}, onChangeBoardSettings }, { toasts: true });
+    expect(screen.queryByRole("button", { name: "Share limits" })).toBeNull();
+    expect(onChangeBoardSettings).not.toHaveBeenCalled();
+    // the board shows its own (none), not the device-wide ones
+    expect(screen.getByRole("button", { name: /0 tasks in In progress\. Set WIP limit/ })).toHaveTextContent(/^0$/);
+    cleanup(); localStorage.clear();
     localStorage.setItem("kanbo-board-wip:project:p2", JSON.stringify({ "status:todo": 9 }));
-    const other = vi.fn();
-    board(two, { scopeKey: "project:p2", boardSettings: { wip: { review: 1 } }, onChangeBoardSettings: other });
-    expect(other).not.toHaveBeenCalled();
+    board(two, { scopeKey: "project:p2", boardSettings: { wip: { review: 1 } }, onChangeBoardSettings }, { toasts: true });
+    expect(screen.queryByRole("button", { name: "Share limits" })).toBeNull();
+    expect(onChangeBoardSettings).not.toHaveBeenCalled();
+  });
+
+  it("a yes given late shares only what the board still doesn't have", () => {
+    localStorage.setItem("kanbo-board-wip:project:p-late", JSON.stringify({ "status:progress": 2, "status:review": 4 }));
+    const before = PROJECTS;
+    setReferenceData({ projects: [...before, { id: "p-late", name: "Late", emoji: "📁", color: "oklch(0.7 0.1 200)", workspaceId: null }] });
+    try {
+      const onChangeBoardSettings = vi.fn();
+      board(two, { scopeKey: "project:p-late", boardSettings: {}, onChangeBoardSettings }, { toasts: true });
+      // meanwhile a teammate set In review's limit (a live update into the app's copy)
+      setReferenceData({ projects: PROJECTS.map((x) => (x.id === "p-late" ? { ...x, boardSettings: { wip: { review: 1 } } } : x)) });
+      fireEvent.click(screen.getByRole("button", { name: "Share limits" }));
+      expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { review: 1, progress: 2 } }, { wip: { progress: 2 } });
+    } finally { setReferenceData({ projects: before }); }
+  });
+
+  it("builds the saved settings from the freshest copy, not the one the board last rendered", () => {
+    const before = PROJECTS;
+    setReferenceData({ projects: [...before, { id: "p-fresh", name: "Fresh", emoji: "📁", color: "oklch(0.7 0.1 200)", workspaceId: null, boardSettings: { wip: { todo: 4 } } }] });
+    try {
+      const onChangeBoardSettings = vi.fn();
+      board(two, { scopeKey: "project:p-fresh", boardSettings: { wip: { todo: 4 } }, onChangeBoardSettings });
+      // a teammate's limit arrives in the app's copy; this board hasn't re-rendered
+      setReferenceData({ projects: PROJECTS.map((x) => (x.id === "p-fresh" ? { ...x, boardSettings: { wip: { todo: 4, review: 2 } } } : x)) });
+      fireEvent.click(screen.getByRole("button", { name: /Project covers/ }));
+      expect(onChangeBoardSettings).toHaveBeenLastCalledWith({ wip: { todo: 4, review: 2 }, covers: true }, { covers: true });
+    } finally { setReferenceData({ projects: before }); }
   });
 
   it("a move that takes a column past its limit says so (toast and screen reader)", () => {
@@ -277,7 +340,7 @@ describe("WIP limits", () => {
     board(two, { scopeKey: "project:p1", boardSettings: { wip: { todo: 5 }, covers: true } as BoardSettings, onChangeBoardSettings });
     fireEvent.click(screen.getByRole("button", { name: "Options for To do column" }));
     fireEvent.click(screen.getByRole("button", { name: "Remove limit" }));
-    expect(onChangeBoardSettings).toHaveBeenCalledWith({ covers: true });
+    expect(onChangeBoardSettings).toHaveBeenCalledWith({ covers: true }, { wip: { todo: null } });
   });
 });
 
@@ -288,7 +351,7 @@ describe("project covers toggle", () => {
     const t = screen.getByRole("button", { name: /Project covers/ });
     expect(t).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(t);
-    expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { todo: 4 }, covers: true });
+    expect(onChangeBoardSettings).toHaveBeenCalledWith({ wip: { todo: 4 }, covers: true }, { covers: true });
   });
   it("read-only boards don't offer it", () => {
     board([mk({ id: "a" })], { scopeKey: "project:p1", boardSettings: {}, readOnly: true });

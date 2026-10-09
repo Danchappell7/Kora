@@ -262,9 +262,11 @@ export function chunk<T>(arr: T[], size: number): T[][] {
 
 /* ---------------- board upgrade (0048)            [0048 contract → u8] ----------------
    WIP limits move to projects.board_settings.wip (team-wide, writers set
-   them; lib/profileState parseBoardSettings). The per-browser limits above
-   (kanbo-board-wip) stay readable as the fallback and are copied up the
-   first time a writer opens the board. Swimlane grouping is per person
+   them, one change at a time: BoardSettingsChange, merged by
+   merge_board_settings; lib/profileState parseBoardSettings). The
+   per-browser limits above (kanbo-board-wip) stay in use on My tasks; the
+   ones a device kept for a project board itself are offered up, once, the
+   first time a writer opens it. Swimlane grouping is per person
    per board (localStorage). Columns past VIRTUALISE_AFTER cards render a
    window of them (no dependency). */
 
@@ -368,20 +370,48 @@ export function localWipToSettings(local: Record<string, number>): Record<string
   return out;
 }
 
+/**
+ * One change to a project's board settings, never the whole object, so two
+ * writers (or a tab that missed a live update) change only what they touched.
+ * Merged one level deep, as merge_board_settings (0048) stores it: wip keys
+ * merge (a null removes that limit; wip: null removes them all), covers on or
+ * off (false / null removes it).
+ */
+export interface BoardSettingsChange {
+  wip?: Record<string, number | null> | null;
+  covers?: boolean | null;
+}
+
+/** The settings with a change merged in (the client's copy of merge_board_settings). An empty wip disappears. */
+export function applyBoardSettingsChange(settings: BoardSettings | undefined, change: BoardSettingsChange): BoardSettings {
+  const next: BoardSettings = { ...(settings ?? {}) };
+  if ("wip" in change) {
+    const wip: Record<string, number> = change.wip === null ? {} : { ...(settings?.wip ?? {}) };
+    for (const [k, v] of Object.entries(change.wip ?? {})) {
+      if (v == null || !Number.isFinite(v)) delete wip[k];
+      else wip[k] = Math.max(1, Math.min(999, Math.round(v)));
+    }
+    if (Object.keys(wip).length) next.wip = wip; else delete next.wip;
+  }
+  if ("covers" in change) { if (change.covers) next.covers = true; else delete next.covers; }
+  return next;
+}
+
 /** The settings with one limit set (n) or cleared (null). An empty wip disappears. */
 export function withWipLimit(settings: BoardSettings | undefined, key: string, n: number | null): BoardSettings {
-  const wip = { ...(settings?.wip ?? {}) };
-  if (n == null) delete wip[key]; else wip[key] = Math.max(1, Math.min(999, Math.round(n)));
-  const next: BoardSettings = { ...(settings ?? {}) };
-  if (Object.keys(wip).length) next.wip = wip; else delete next.wip;
-  return next;
+  return applyBoardSettingsChange(settings, { wip: { [key]: n } });
 }
 
 /** The settings with "Show project covers" on or off. */
 export function withCovers(settings: BoardSettings | undefined, on: boolean): BoardSettings {
-  const next: BoardSettings = { ...(settings ?? {}) };
-  if (on) next.covers = true; else delete next.covers;
-  return next;
+  return applyBoardSettingsChange(settings, { covers: on });
+}
+
+/** The limits a device kept for a board that the board doesn't share yet (never overriding one it does). */
+export function wipToShare(local: Record<string, number>, shared: Record<string, number> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(localWipToSettings(local))) if (shared?.[k] == null) out[k] = v;
+  return out;
 }
 
 /** Said (toast + screen reader) when a move takes a column past its limit; null when it doesn't. */

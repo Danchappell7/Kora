@@ -42,6 +42,8 @@
 --   5. tasks.cover_attachment_id (an image file on the same task; cleared
 --      when the file is deleted) and projects.board_settings (WIP limits,
 --      "show project covers": writers of the project).
+--      merge_board_settings(project, patch) merges one change atomically
+--      (one level deep, two for "wip"; null removes), as merge_onboarding.
 --   6. notification_snoozes: snooze a thread (a task) until a time. Your own
 --      rows, for tasks you can see (guests too: it's your Inbox, not the
 --      task). Snoozed threads send no push or email; the Inbox brings them
@@ -586,6 +588,59 @@ alter table public.projects drop constraint if exists projects_board_settings_sh
 alter table public.projects add constraint projects_board_settings_shape check (
   jsonb_typeof(board_settings) = 'object' and pg_column_size(board_settings) <= 4096);
 
+-- Merge one change into a project's board settings in one statement, so two
+-- writers (or a tab that missed a live update) never overwrite each other's
+-- limits: "wip" merges a level deeper (a null removes that limit, "wip": null
+-- all of them; a limit is a whole number 1-999), "covers" is true or goes
+-- (false / null), any other key merges as merge_onboarding does (null
+-- removes it). Runs as you: the project's own update policies decide
+-- (writers; never guests, the suspended or outsiders). Errors:
+-- 'not authorized' · 'invalid patch' · 'project not found' (or not yours to
+-- change) · a check violation when the result is too large.
+create or replace function public.merge_board_settings(p_project uuid, p_patch jsonb)
+returns jsonb language plpgsql security invoker set search_path = public as $$
+declare
+  patch_wip jsonb;
+  out_v jsonb;
+begin
+  if auth.uid() is null or not public.can_act() then raise exception 'not authorized'; end if;
+  if p_project is null or p_patch is null or jsonb_typeof(p_patch) <> 'object' then raise exception 'invalid patch'; end if;
+  if p_patch ? 'wip' and jsonb_typeof(p_patch -> 'wip') not in ('object', 'null') then raise exception 'invalid patch'; end if;
+  if p_patch ? 'covers' and jsonb_typeof(p_patch -> 'covers') not in ('boolean', 'null') then raise exception 'invalid patch'; end if;
+  patch_wip := case when jsonb_typeof(p_patch -> 'wip') = 'object' then p_patch -> 'wip' else '{}'::jsonb end;
+  if exists (select 1 from jsonb_each(patch_wip) w
+              where char_length(w.key) not between 1 and 200
+                 or not (jsonb_typeof(w.value) = 'null'
+                         or (jsonb_typeof(w.value) = 'number'
+                             and (w.value #>> '{}')::numeric between 1 and 999
+                             and (w.value #>> '{}')::numeric = trunc((w.value #>> '{}')::numeric)))) then
+    raise exception 'invalid patch';
+  end if;
+  update public.projects pr
+     set board_settings = (
+       select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb)
+         from jsonb_each(
+                coalesce(pr.board_settings, '{}'::jsonb) || (p_patch - 'wip')
+                || case when not (p_patch ? 'wip') then '{}'::jsonb
+                        else jsonb_build_object('wip', (
+                          select coalesce(jsonb_object_agg(w.key, w.value), '{}'::jsonb)
+                            from jsonb_each(
+                                   case when jsonb_typeof(p_patch -> 'wip') = 'object'
+                                         and jsonb_typeof(pr.board_settings -> 'wip') = 'object'
+                                        then pr.board_settings -> 'wip' else '{}'::jsonb end
+                                   || patch_wip) w
+                           where jsonb_typeof(w.value) <> 'null')) end) e
+        where jsonb_typeof(e.value) <> 'null'
+          and not (e.key = 'covers' and e.value = 'false'::jsonb)
+          and not (e.key = 'wip' and e.value = '{}'::jsonb))
+   where pr.id = p_project
+  returning pr.board_settings into out_v;
+  if out_v is null then raise exception 'project not found'; end if;
+  return out_v;
+end; $$;
+revoke execute on function public.merge_board_settings(uuid, jsonb) from public, anon;
+grant execute on function public.merge_board_settings(uuid, jsonb) to authenticated;
+
 -- ---------- 7. notification snoozes ----------
 create table if not exists public.notification_snoozes (
   user_id    uuid not null references auth.users (id) on delete cascade,
@@ -989,7 +1044,9 @@ insert into public.schema_migrations (version) values ('0048') on conflict (vers
 --   not has_table_privilege('authenticated', 'public.notify_queue', 'select')                       as notify_queue_service_only,
 --   exists (select 1 from pg_constraint where conname = 'tasks_cover_attachment_id_fkey' and condeferrable) as task_covers,
 --   exists (select 1 from information_schema.columns where table_schema = 'public'
---     and table_name = 'projects' and column_name = 'board_settings')                               as board_settings,
+--     and table_name = 'projects' and column_name = 'board_settings')
+--   and exists (select 1 from pg_proc p where p.oid = to_regprocedure('public.merge_board_settings(uuid, jsonb)')
+--     and not p.prosecdef)                                                                         as board_settings,
 --   'kudos.given' = any (public.webhook_event_names())                                               as kudos_event,
 --   (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
 --     and tablename in ('saved_views', 'kudos', 'notification_snoozes')) = 3                         as realtime,
