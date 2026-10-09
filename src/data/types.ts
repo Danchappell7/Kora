@@ -633,7 +633,8 @@ export type ApiKeyFailure = "not_allowed" | "too_many" | "invalid" | "not_found"
 
 export type WebhookEvent =
   | "task.created" | "task.updated" | "task.completed" | "task.deleted"
-  | "comment.created" | "project.created" | "project.updated" | "member.joined";
+  | "comment.created" | "project.created" | "project.updated" | "member.joined"
+  | "approval.requested" | "approval.decided";
 /** what a delivery carried: an event, or a test ping */
 export type WebhookDeliveryEvent = WebhookEvent | "ping";
 export interface Webhook {

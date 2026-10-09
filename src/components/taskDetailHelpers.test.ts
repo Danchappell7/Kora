@@ -86,6 +86,8 @@ describe("activityLine", () => {
     // App logs your own comment with its text as the detail
     expect(activityLine({ kind: "comment", detail: "Can we move this to Friday?" }, ["Maya Lin"])).toBe("Comment: “Can we move this to Friday?”");
     expect(activityLine({ kind: "comment", detail: "" })).toBe("Someone commented");
+    expect(activityLine({ kind: "approval", detail: "Sana Rao", meta: { event: "requested", status: "pending" } })).toBe("Sana Rao asked for your approval on this task");
+    expect(activityLine({ kind: "approval", detail: "Olive", meta: { event: "approved", status: "approved" } })).toBe("Olive approved this task");
   });
 });
 
@@ -236,6 +238,13 @@ describe("due-date slip history", () => {
     expect(eventText(ev("assignee", null, "u2"), nameOf)).toBe("assigned Theo Vance");
     expect(eventText(ev("assignee", "u2", null), nameOf)).toBe("unassigned it");
   });
+  it("words approval history (0047: new_value = what happened, old_value = the status after it)", () => {
+    expect(eventText(ev("approval", "pending", "requested"))).toBe("asked for approval");
+    expect(eventText(ev("approval", "pending", "approved"))).toBe("approved it, still waiting on others");
+    expect(eventText(ev("approval", "approved", "approved"))).toBe("approved it");
+    expect(eventText(ev("approval", "changes_requested", "changes_requested"))).toBe("asked for changes");
+    expect(eventText(ev("approval", "cancelled", "cancelled"))).toBe("cancelled the approval request");
+  });
 });
 
 describe("buildTimeline", () => {
@@ -260,5 +269,10 @@ describe("buildTimeline", () => {
     const items = buildTimeline([], [e("e1", "2026-09-30T10:00:00Z", "assignee", "u1"), e("e2", "2026-09-30T10:01:00Z", "status", "done")],
       [a("a1", "2026-09-30T10:00:30Z", "assigned"), a("a2", "2026-09-30T10:02:00Z", "completed"), a("a3", "2026-09-29T10:00:00Z", "assigned")], "t1");
     expect(items.map((i) => i.id)).toEqual(["a-a3", "e-e1", "e-e2"]);
+  });
+  it("leaves out an approval notice that repeats its history row", () => {
+    const items = buildTimeline([], [e("e1", "2026-09-30T10:00:00Z", "approval", "requested")],
+      [a("a1", "2026-09-30T10:00:01Z", "approval"), a("a2", "2026-09-28T10:00:00Z", "approval")], "t1");
+    expect(items.map((i) => i.id)).toEqual(["a-a2", "e-e1"]);
   });
 });

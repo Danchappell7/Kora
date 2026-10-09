@@ -309,6 +309,54 @@ const SCHEMAS: Record<string, unknown> = {
       key: { type: "object", required: ["id", "access", "workspaceId"], properties: { id: uuid(), access: { type: "string", enum: ["read", "write"] }, workspaceId: nullable("string", { format: "uuid", description: "Set for a team key: the only workspace it can reach." }) } },
     },
   },
+  // webhook data only (approval.requested / approval.decided): approvals have no REST endpoints yet
+  ApprovalReviewer: {
+    type: "object", required: ["userId", "decision", "comment", "decidedAt"],
+    properties: {
+      userId: uuid(), decision: { type: ["string", "null"], enum: ["approved", "changes_requested", null], description: "null until they decide." },
+      comment: nullable("string", { maxLength: 2000 }), decidedAt: nullable("string", { format: "date-time" }),
+    },
+  },
+  Approval: {
+    type: "object",
+    required: ["object", "id", "taskId", "workspaceId", "requestedBy", "title", "note", "attachmentId", "status", "rule", "reviewers", "createdAt", "updatedAt", "resolvedAt", "url"],
+    properties: {
+      object: { const: "approval" }, id: uuid(), taskId: uuid(), workspaceId: uuid("Approvals are for team tasks only."),
+      requestedBy: nullable("string", { format: "uuid", description: "Who asked; null once their account is deleted." }),
+      title: { type: "string", maxLength: 200, description: "The task's title when it was asked, unless they gave another." },
+      note: nullable("string", { maxLength: 2000 }), attachmentId: nullable("string", { format: "uuid", description: "A file on the task the request is about." }),
+      status: { type: "string", enum: ["pending", "approved", "changes_requested", "cancelled"] },
+      rule: { type: "string", enum: ["any", "all"], description: "any: the first approval approves it. all: everyone must approve. Either way, one \"changes requested\" decides it as that." },
+      reviewers: { type: "array", minItems: 1, maxItems: 10, items: ref("ApprovalReviewer") },
+      createdAt: nullable("string", { format: "date-time" }), updatedAt: nullable("string", { format: "date-time" }),
+      resolvedAt: nullable("string", { format: "date-time", description: "When it stopped being pending." }),
+      url: nullable("string", { format: "uri", description: "Opens its task in Kanbo." }),
+    },
+  },
+  ApprovalDecision: {
+    type: "object", required: ["userId", "decision", "comment", "decidedAt"],
+    properties: {
+      userId: nullable("string", { format: "uuid", description: "The reviewer, or whoever cancelled it." }),
+      decision: { type: "string", enum: ["approved", "changes_requested", "cancelled"] },
+      comment: nullable("string"), decidedAt: nullable("string", { format: "date-time" }),
+    },
+  },
+  ApprovalEvent: {
+    description: "The `data` of approval.requested and approval.decided webhook events: the request, its task, and the decision that sent it (null for approval.requested).",
+    allOf: [ref("Approval"), {
+      type: "object", required: ["task", "decision"],
+      properties: {
+        task: {
+          type: "object", required: ["id", "title", "projectId", "workspaceId", "status", "dueDate", "url"],
+          properties: {
+            id: uuid(), title: nullable("string"), projectId: nullable("string"), workspaceId: nullable("string", { format: "uuid" }),
+            status: { type: ["string", "null"], enum: ["todo", "progress", "review", "blocked", "done", null] }, dueDate: date(), url: nullable("string", { format: "uri" }),
+          },
+        },
+        decision: { oneOf: [ref("ApprovalDecision"), { type: "null" }] },
+      },
+    }],
+  },
   TaskList: listSchema("Task"), ProjectList: listSchema("Project"), SectionList: listSchema("Section"),
   CommentList: listSchema("Comment"), MemberList: listSchema("Member"), WorkspaceList: listSchema("Workspace"),
 };
@@ -484,7 +532,7 @@ const INTRO = [
   "",
   "**Automations.** A project's automations (\"When a task is created\", \"status changed\", \"task completed\") run for API changes too, exactly as in the app. A value a rule names that the task can't take (someone outside the workspace, another project's section) is skipped.",
   "",
-  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks.",
+  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn).",
 ].join("\n");
 
 /** The document, with `serverUrl` (…/functions/v1/api/v1) as its only server. */

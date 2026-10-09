@@ -255,8 +255,9 @@ export function webhookHealth(w: Pick<Webhook, "active" | "failureCount" | "last
   return w.lastDeliveryAt ? "ok" : "new";
 }
 
-/** member.joined only happens in team workspaces, so personal endpoints never offer it. */
-export const PERSONAL_WEBHOOK_EVENTS: readonly WebhookEvent[] = WEBHOOK_EVENTS.filter((e) => e !== "member.joined");
+/** member.joined and approvals only happen in team workspaces, so personal endpoints never offer them. */
+const TEAM_ONLY_EVENTS = new Set<WebhookEvent>(["member.joined", "approval.requested", "approval.decided"]);
+export const PERSONAL_WEBHOOK_EVENTS: readonly WebhookEvent[] = WEBHOOK_EVENTS.filter((e) => !TEAM_ONLY_EVENTS.has(e));
 
 /* ---------- wording, in British English ---------- */
 const timeFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
