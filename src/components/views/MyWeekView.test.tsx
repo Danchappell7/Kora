@@ -4,7 +4,7 @@ import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { MyWeekView } from "./MyWeekView";
 import { ToastProvider } from "../Toast";
 import { dayOffset } from "../../data/data";
-import { useTaskDragSource, __resetDnd } from "../../lib/dnd";
+import { useTaskDragSource, useDropTargets, listDropTargets, dropOnTarget, DragLayer, __resetDnd } from "../../lib/dnd";
 import { loadAllChunks } from "../../lib/lazyLoad";
 import type { Task } from "../../data/types";
 
@@ -163,6 +163,41 @@ describe("MyWeekView — moving work between days", () => {
     expect(dayCol(to).querySelector(".kweek-mark")?.textContent).toBe("15:30");
     on("pointerup", xOf(to) + 8, 36 + 214);
     expect(onPatch).toHaveBeenCalledWith("a", { dueDate: to, dueTime: "15:30" });
+  });
+
+  it("the strips stay out of menus (a day is offered once); a keyboard time still reaches one, and a bare day keeps the time", () => {
+    const { onPatch } = renderWeek([task({ id: "a", title: "Timed", dueDate: dayOffset(0), dueTime: "10:00" })]);
+    const to = otherDay();
+    const listed = listDropTargets(["week-day", "week-slot"]);
+    expect(listed.filter((t) => t.kind === "week-slot")).toEqual([]);
+    expect(listed.map((t) => t.id)).toEqual([...weekIsos(), "no-date"]);
+    const payload = { taskIds: ["a"], source: "list" as const, originId: "a" };
+    let took = false;
+    act(() => { took = dropOnTarget(payload, { kind: "week-slot", id: `${to}T14:30` }); });
+    expect(took).toBe(true);
+    expect(onPatch).toHaveBeenLastCalledWith("a", { dueDate: to, dueTime: "14:30" });
+    act(() => { took = dropOnTarget(payload, { kind: "week-slot", id: to }); });
+    expect(took).toBe(true);
+    expect(onPatch).toHaveBeenLastCalledWith("a", { dueDate: to });
+    expect(screen.getAllByText(/^Moved “Timed” to /).length).toBeGreaterThan(0);
+  });
+
+  it("moving down a strip, the ghost says the time; the week and its menus don't re-render on every step", () => {
+    let menus = 0;
+    function Menu() { useDropTargets(["week-day", "project", "person"]); menus++; return null; }
+    const onPatch = vi.fn();
+    render(<ToastProvider><DragLayer /><Menu /><MyWeekView tasks={[task({ id: "a", title: "Call Sana" })]} onOpen={vi.fn()} onPatch={onPatch} currentUserId="me" /></ToastProvider>);
+    const to = otherDay();
+    fireEvent.pointerDown(chipOf("Call Sana"), { clientX: 5, clientY: 5, button: 0, pointerId: 1, pointerType: "mouse" });
+    on("pointermove", 30, 30);
+    on("pointermove", xOf(to) + 8, 40);
+    const before = menus;
+    for (let y = 46; y < 390; y += 6) on("pointermove", xOf(to) + 8, y);
+    expect(menus).toBe(before);
+    // the strip runs 07:00–21:00 over 356px: 388px is its last quarter hour
+    expect(document.querySelector(".kdnd-ghost > span")?.textContent).toMatch(/^→ .+, 20:45$/);
+    on("pointerup", xOf(to) + 8, 388);
+    expect(onPatch).toHaveBeenCalledWith("a", { dueDate: to, dueTime: "20:45" });
   });
 
   it("several days' chips keep their times; a day lists the timed ones first", () => {

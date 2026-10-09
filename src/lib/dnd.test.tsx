@@ -347,6 +347,56 @@ describe("dnd: the keyboard path", () => {
   });
 });
 
+describe("dnd: hints and menus", () => {
+  it("a hint that follows the pointer reaches the ghost, never the menus", () => {
+    let menus = 0;
+    function Menu() { useDropTargets(); menus++; return null; }
+    let state: ReturnType<typeof useDragState> | null = null;
+    function Probe() { state = useDragState(); return null; }
+    function Hinted() {
+      const [n, setN] = useState(0);
+      const t = useTaskDropTarget({ target: { kind: "today-slot", id: "d", label: "Today's plan" }, hint: n ? `slot ${n}` : undefined,
+        onOver: () => setN((x) => x + 1), onDrop: () => {} });
+      return <section {...t.bind} data-rect="200 0 400 100" />;
+    }
+    render(<><DragLayer /><Probe /><Source id="a" /><Hinted /><Menu /></>);
+    press(screen.getByTestId("src-a"), 10, 10);
+    on("pointermove", 20, 10);
+    on("pointermove", 300, 50);
+    const before = menus;
+    on("pointermove", 300, 60);
+    on("pointermove", 300, 70);
+    expect(menus).toBe(before);
+    expect(document.querySelector(".kdnd-ghost > span")?.textContent).toBe("→ slot 3");
+    expect(state!.hint).toBe("slot 3");
+    expect(state!.over).toEqual({ kind: "today-slot", id: "d", label: "Today's plan" });
+    expect(listDropTargets()).toEqual([{ kind: "today-slot", id: "d", label: "Today's plan" }]);
+    on("pointerup", 300, 70);
+  });
+
+  it("a menu re-renders only when what it lists changes", () => {
+    let projects = 0;
+    function Menu() { useDropTargets(["project"]); projects++; return null; }
+    function Host() {
+      const [n, setN] = useState(0);
+      return (
+        <>
+          <button type="button" onClick={() => setN((x) => x + 1)}>more</button>
+          {n > 0 && <Target target={{ kind: "week-day", id: "2026-10-09", label: "Fri 9 Oct" }} rect="0 0 1 1" />}
+          {n > 1 && <Target target={{ kind: "project", id: "p1", label: "Launch" }} rect="0 0 1 1" />}
+          <Menu />
+        </>
+      );
+    }
+    render(<Host />);
+    const settle = projects;
+    fireEvent.click(screen.getByText("more")); // a day mounts: Host re-renders the menu once, its list doesn't change
+    expect(projects).toBe(settle + 1);
+    fireEvent.click(screen.getByText("more")); // a project mounts: once for Host, once for the new list
+    expect(projects).toBe(settle + 3);
+  });
+});
+
 describe("dnd: targets written inline", () => {
   it("a fresh target object each render with the same contents doesn't churn the menus", () => {
     let renders = 0;

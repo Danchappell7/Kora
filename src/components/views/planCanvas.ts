@@ -345,12 +345,14 @@ export function estimateMinutes(t: Pick<Task, "dur" | "focusMin" | "effortHours"
 }
 
 /** The patch that puts a task on today's plan at `start`: it joins today's list if it isn't
- *  on it, and an estimate in hours becomes its length when it had none of its own. */
-export function planPatch(t: Task, start: number): Partial<Task> {
+ *  on it, and an estimate in hours becomes its length when it had none of its own. Its length
+ *  (tasks.dur) is the task's, not your plan's: pass `withLength` false for a task that isn't
+ *  yours, and only your plan (its slot, today's list) is written. */
+export function planPatch(t: Task, start: number, withLength = true): Partial<Task> {
   const p: Partial<Task> = { scheduled: start };
   if (!t.planToday) p.planToday = true;
   const est = estimateMinutes(t);
-  if (est !== durOf(t)) p.dur = est;
+  if (withLength && est !== durOf(t)) p.dur = est;
   return p;
 }
 
@@ -398,4 +400,14 @@ export function slotMinutes(from: number, to: number, dur: number, step = 15): n
   const first = Math.ceil(from / step) * step;
   for (let m = first; m + Math.max(dur, 0) <= to; m += step) out.push(m);
   return out;
+}
+
+/** Digits typed into the keyboard time picker, read as they come: the hour is the first two digits when
+ *  they make one ("14…", "09…"), else the first ("9…"); what follows is the minutes, a lone
+ *  digit standing for tens ("143" → 14:30). */
+export function typedTime(t: string): { h: number; mm: number } {
+  const two = t.length >= 2 && +t.slice(0, 2) <= 23;
+  const hText = t.length <= 1 ? t : two ? t.slice(0, 2) : t.slice(0, 1);
+  const rest = t.slice(hText.length, hText.length + 2);
+  return { h: +hText, mm: rest ? Math.min(59, +rest.padEnd(2, "0")) : 0 };
 }

@@ -53,8 +53,13 @@
      • a slot target ("today-slot", "week-slot") registered under a day id
        also takes keyboard drops on "YYYY-MM-DDTHH:MM": dropOnTarget hands
        its onDrop that id with data { date, minute }.
-     • a target with data.listed === false is pointer-only: it isn't listed
-       for menus (e.g. the Daybeam, a second way onto Today's canvas).
+     • a target with data.listed === false isn't listed for menus (the
+       Daybeam, a second way onto Today's canvas; a week's time strips,
+       which would only repeat their day). A slot one still takes keyboard
+       drops on its day's times.
+     • a target's `hint` (e.g. the time a drop would land at) is what the
+       ghost says while it's under the pointer; unlike `label` it may change
+       on every move, as it isn't part of the registry menus list.
      • payload.meta.edge (a CSS colour) tints the ghost's edge.
    ============================================================ */
 import { createElement, useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -151,6 +156,9 @@ export interface TaskDropTargetOptions {
   onOver?: (e: TaskDropEvent) => void;
   onLeave?: () => void;
   disabled?: boolean;
+  /** what the ghost says while this target is under the pointer (default: target.label), e.g.
+   *  "10:00–10:30 · overlaps Standup". Free to change on every move: menus never see it */
+  hint?: string;
 }
 
 /** spread onto the element that takes the drop */
@@ -176,6 +184,8 @@ export interface DragState {
   payload: TaskDragPayload | null;
   over: DropTargetRef | null;
   point: DragPoint | null;
+  /** where it would land, in words: the target's hint, else its label (absent when idle) */
+  hint?: string;
 }
 
 export interface DragLayerProps {
@@ -193,6 +203,8 @@ export const DND_LONG_PRESS_MS = 350;
 export const DND_SNAP_MINUTES = 15;
 /** auto-scroll when the pointer is this close to a scroller's edge */
 export const DND_AUTOSCROLL_EDGE_PX = 48;
+/** touch: how far a finger may wander while it holds (more is a scroll or a swipe, never a drag) */
+export const DND_TOUCH_SLOP_PX = 8;
 
 /* ---------- pure helpers (final) ---------- */
 
@@ -211,7 +223,7 @@ export function dragLabel(payload: Pick<TaskDragPayload, "taskIds">, title?: str
 
 /* ============================== the engine (u3) ============================== */
 
-const TOUCH_SLOP = 8;        // px a finger may wander while it holds (more is a scroll or a swipe)
+const TOUCH_SLOP = DND_TOUCH_SLOP_PX;
 const AUTOSCROLL_MAX = 16;   // px per frame at the very edge
 const SPRING_MS = 700;       // hover a [data-kdnd-spring] this long and it's clicked
 const IGNORE = "input, textarea, select, [contenteditable]:not([contenteditable='false']), [data-kdnd-ignore]";
@@ -255,7 +267,9 @@ const subCoarse = (f: () => void) => { coarseSubs.add(f); return () => { coarseS
 const subReg = (f: () => void) => { regSubs.add(f); return () => { regSubs.delete(f); }; };
 
 function emit(coarse: boolean) {
-  state = live ? { payload: live.payload, over: live.over?.o.target ?? null, point: live.point } : IDLE;
+  const over = live?.over?.o;
+  const hint = over ? (over.hint ?? over.target.label) : undefined;
+  state = live ? { payload: live.payload, over: over?.target ?? null, point: live.point, ...(hint ? { hint } : null) } : IDLE;
   if (coarse) coarseSubs.forEach((f) => f());
   moveSubs.forEach((f) => f());
 }
@@ -626,7 +640,7 @@ export function useTaskDropTarget(opts: TaskDropTargetOptions): TaskDropTarget {
     if (listedChanged && entries.has(en)) {
       bumpReg();
       if (live?.over === en) emit(true); // the ghost's hint follows the target's label
-    }
+    } else if (was.hint !== opts.hint && live?.over === en) emit(false); // the ghost only: menus never see a hint
   });
   const ref = useCallback((el: HTMLElement | null) => {
     if (en.el === el) return;
@@ -653,17 +667,24 @@ export function useDragState(): DragState {
   return useSyncExternalStore(subMove, () => state, () => IDLE);
 }
 
-/** The drop targets mounted right now, optionally only some kinds (for "Move to…" / "Schedule…" menus; re-renders as they mount). */
+const NO_TARGETS: DropTargetRef[] = Object.freeze([]) as unknown as DropTargetRef[];
+const sameRef = (a: DropTargetRef, b: DropTargetRef) =>
+  a === b || (a.kind === b.kind && a.id === b.id && a.label === b.label && sameData(a.data, b.data));
+
+/** The drop targets mounted right now, optionally only some kinds (for "Move to…" / "Schedule…" menus).
+ *  Re-renders only when what it lists changes (by value), not on every change to the registry. */
 export function useDropTargets(kinds?: DropTargetKind[]): DropTargetRef[] {
-  const version = useSyncExternalStore(subReg, () => regVersion, () => 0);
   const key = kinds ? kinds.join(",") : "*";
-  const ref = useRef<DropTargetRef[]>([]);
-  return useMemo(() => {
+  const cache = useRef<{ key: string; v: number; list: DropTargetRef[] }>({ key: "", v: -1, list: NO_TARGETS });
+  const read = useCallback(() => {
+    const c = cache.current;
+    if (c.key === key && c.v === regVersion) return c.list;
     const next = listDropTargets(key === "*" ? undefined : (key.split(",") as DropTargetKind[]));
-    const prev = ref.current;
-    if (prev.length === next.length && prev.every((t, i) => t === next[i])) return prev;
-    return (ref.current = next);
-  }, [version, key]); // eslint-disable-line react-hooks/exhaustive-deps
+    const same = c.list.length === next.length && c.list.every((t, i) => sameRef(t, next[i]));
+    cache.current = { key, v: regVersion, list: same ? c.list : next };
+    return cache.current.list;
+  }, [key]);
+  return useSyncExternalStore(subReg, read, () => NO_TARGETS);
 }
 
 /** The same, read once (outside React). */
@@ -690,7 +711,8 @@ export function dropOnTarget(payload: TaskDragPayload, target: Pick<DropTargetRe
   for (const en of entries) {
     if (!en.el || en.o.disabled || en.o.target.kind !== target.kind) continue;
     if (en.o.target.id === target.id) { found = en; ref = en.o.target; break; }
-    if (slot && en.o.target.id === slot[1] && !found && en.o.target.data?.listed !== false) {
+    // (a slot that isn't listed — a week's time strip — still takes its day's times)
+    if (slot && en.o.target.id === slot[1] && !found) {
       found = en;
       ref = { ...en.o.target, id: target.id, data: { ...en.o.target.data, date: slot[1], minute: +slot[2] * 60 + +slot[3] } };
     }
@@ -755,7 +777,7 @@ export function DragLayer({ getTaskTitle }: DragLayerProps): ReactElement | null
     },
   },
   createElement("b", null, titleOf(p)),
-  s.over?.label ? createElement("span", null, `→ ${s.over.label}`) : null,
+  s.hint ? createElement("span", null, `→ ${s.hint}`) : null,
   n > 1 ? createElement("i", null, n) : null);
   return createPortal([region, ghost], document.body);
 }

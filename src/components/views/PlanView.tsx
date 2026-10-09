@@ -16,8 +16,11 @@
    the Daybeam a second, smaller way onto the day. Tasks dragged from
    anywhere else (My tasks, a board, the Inbox, search) land the same
    way, several at once back to back. A block's bottom edge drags its
-   length. The keyboard does it all too: ↑/↓ move a block, Alt+↑/↓
-   change its length, S (or the clock) opens "Schedule…".
+   length (a finger holds it first, so a swipe that starts there still
+   scrolls). The keyboard does it all too: ↑/↓ move a block, Alt+↑/↓
+   change its length, S (or the clock) opens "Schedule…". A block's
+   length is the task's own estimate (tasks.dur, shared, not part of
+   your plan), so only the task's assignee can change it.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, useId, Suspense } from "react";
 import type {
@@ -41,7 +44,7 @@ import {
   localDayKey, planSeenKey, readSeen, writeSeen, carryOver, recordSeen, markSeen, touchSeen, carryLabel,
   estimateMinutes, planPatch, stackDrop, canvasMinute, resizeMinutes, clashesWith,
 } from "./planCanvas";
-import { useTaskDragSource, useTaskDropTarget, type TaskDragPayload, type TaskDropEvent, type DragPoint } from "../../lib/dnd";
+import { useTaskDragSource, useTaskDropTarget, DND_LONG_PRESS_MS, DND_TOUCH_SLOP_PX, type TaskDragPayload, type TaskDropEvent, type DragPoint } from "../../lib/dnd";
 import { ScheduleMenu, prefetchPlanMenus } from "../dnd/lazy";
 import type { Lane, SeenMap } from "./planCanvas";
 import { freeGaps as freeGapsOf, isTodaysScope, WORK_START, type GhostBlock } from "../../lib/brief";
@@ -349,12 +352,15 @@ const PLAN_CSS = `
 .kday-drop span { white-space: nowrap; font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--accent-text, var(--accent)); }
 .kday-drop .kday-drop-clash { min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 500 11px/16px var(--kp-ui); color: var(--warn, var(--ink-2)); }
 /* a block's bottom edge drags its length: a grip that shows on hover (always there on touch) */
-.kday-resize { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; touch-action: none; }
+.kday-resize { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; }
 .kday-resize::after { content: ""; position: absolute; left: 50%; bottom: 2px; width: 24px; height: 3px; margin-left: -12px; border-radius: 2px;
   background: var(--ink-4); opacity: 0; transition: opacity var(--kp-d1) var(--ease); }
 .kday-block:hover .kday-resize::after, .kday-block[data-resizing="true"] .kday-resize::after { opacity: 0.8; }
 .kday-block[data-resizing="true"] { z-index: 6; box-shadow: 0 0 0 1.5px var(--accent), var(--kp-e2); }
 .kday-block[data-short="true"] .kday-resize { height: 6px; }
+/* someone else's task: its length is theirs to set (the edge only says so, and opens it like the rest) */
+.kday-resize[data-locked] { cursor: inherit; }
+.kday-resize[data-locked]::after { display: none; }
 
 @keyframes kdayLand { from { opacity: 0.35; transform: translateY(3px) scale(0.985); } }
 @keyframes kdayFade { from { opacity: 0.35; } }
@@ -491,7 +497,10 @@ const PLAN_CSS = `
   .kday-ghost[data-short="true"] { min-height: 26px; z-index: 5; }
   /* touch: the slot and "Not today" side by side, always there */
   .krail-acts { position: static; opacity: 1; pointer-events: auto; }
-  .kday-resize { height: 14px; }
+  /* (held, not swiped: see startResize) a roomier edge where the block is tall enough to spare it;
+     a short block keeps most of itself for picking it up */
+  .kday-resize { height: 10px; }
+  .kday-block[data-tall="true"] .kday-resize { height: 14px; }
   .kday-resize::after { opacity: 0.5; }
   .krail-item[data-slot="true"] .iadd-place { display: none; }
   .krail-item:hover .krail-slot, .krail-item:focus-within .krail-slot { opacity: 1; }
@@ -538,9 +547,11 @@ function EventBlock({ ev, lane, win, nowMin, onExtract }: { ev: CalEvent; lane?:
   );
 }
 
-function TaskBlock({ task, start, dur, lane, win, nowMin, helpId, readOnly, onPress, onDragEnd, onOpen, onRemove, onKeyMove, onKeyBlur, onToggle, onStartFocus,
+function TaskBlock({ task, start, dur, lane, win, nowMin, helpId, readOnly, lengthLock, onPress, onDragEnd, onOpen, onRemove, onKeyMove, onKeyBlur, onToggle, onStartFocus,
   onSchedule, onResizeStart, resizing, landing }: {
   task: Task; start: number; dur: number; lane?: Lane; win: DayWindow; nowMin: number; helpId: string; readOnly?: boolean;
+  /** null: you can change its length; else why not (someone else's task) */
+  lengthLock: string | null;
   onPress: OnPress;
   onDragEnd: () => void;
   onOpen: (id: string) => void;
@@ -578,7 +589,7 @@ function TaskBlock({ task, start, dur, lane, win, nowMin, helpId, readOnly, onPr
         </span>
         <button type="button" className="kday-open" data-block-id={task.id} onClick={() => onOpen(task.id)}
           onKeyDown={(ev) => onKeyMove(ev, task)} onFocus={focus.onFocus} onBlur={() => { focus.onBlur(); onKeyBlur(); }}
-          aria-label={`${task.title}, ${range}${now ? ", happening now" : ""}`} aria-describedby={helpId} aria-keyshortcuts={readOnly ? undefined : "S"}>
+          aria-label={`${task.title}, ${range}${now ? ", happening now" : ""}`} aria-describedby={lengthLock == null ? helpId : helpId + "-t"} aria-keyshortcuts={readOnly ? undefined : "S"}>
           <span className="kday-block-title">{task.title}</span>
         </button>
         {!readOnly && (
@@ -610,11 +621,14 @@ function TaskBlock({ task, start, dur, lane, win, nowMin, helpId, readOnly, onPr
           {proj && <span className="kday-proj"><ProjectTile project={proj} size={16} />{proj.name}</span>}
         </div>
       )}
-      {/* (the keyboard's way: Alt+↑/↓ on the block, or Length in Reschedule…) */}
-      {!readOnly && !done && (
-        <span className="kday-resize" aria-hidden="true" title="Drag to change its length"
+      {/* (the keyboard's way: Alt+↑/↓ on the block, or Length in Reschedule…). A click that
+          doesn't stretch it opens the task, as anywhere else on the block does */}
+      {!readOnly && !done && (lengthLock == null ? (
+        <span className="kday-resize" aria-hidden="true" title="Drag to change its length" onClick={() => onOpen(task.id)}
           onPointerDown={(ev) => { ev.stopPropagation(); onResizeStart(ev, task, start, dur); }} />
-      )}
+      ) : (
+        <span className="kday-resize" data-locked="" aria-hidden="true" title={lengthLock} onClick={() => onOpen(task.id)} />
+      ))}
     </div>
   );
 }
@@ -677,7 +691,7 @@ function GhostView({ task, ghost, lane, win, helpId, onPress, onDragEnd, onOpen,
 
 interface CanvasBlock { task: Task; start: number; dur: number }
 
-function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, readOnly, onPress, onDragEnd, onOpen, onRemove, onKeyMove, onKeyBlur, onToggle, onStartFocus,
+function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, readOnly, lengthLock, onPress, onDragEnd, onOpen, onRemove, onKeyMove, onKeyBlur, onToggle, onStartFocus,
   onAccept, onSkip, onExtract, onSchedule, onResizeStart, resizingId, inAir, preview, setCanvas, target, landing, freeGaps, openTime, pulse }: {
   blocks: CanvasBlock[];
   ghosts: GhostBlock[];
@@ -687,6 +701,8 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
   win: DayWindow;
   helpId: string;
   readOnly?: boolean;
+  /** why a block's length isn't yours to change (null: it is) */
+  lengthLock: (t: Task) => string | null;
   onPress: OnPress;
   onDragEnd: () => void;
   onOpen: (id: string) => void;
@@ -776,6 +792,7 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
         }),
         ...blocks.filter((b) => b.start + b.dur > win.from).map((b) => ({ at: b.task.scheduled ?? b.start, node: (
           <TaskBlock key={"t" + b.task.id} task={b.task} start={b.start} dur={b.dur} lane={lanes["t:" + b.task.id]} win={win} nowMin={nowMin} helpId={helpId} readOnly={readOnly}
+            lengthLock={readOnly ? null : lengthLock(b.task)}
             onPress={onPress} onDragEnd={onDragEnd} onOpen={onOpen} onRemove={onRemove} onKeyMove={onKeyMove} onKeyBlur={onKeyBlur} onToggle={onToggle}
             onStartFocus={onStartFocus} onSchedule={onSchedule} onResizeStart={onResizeStart} resizing={resizingId === b.task.id} landing={landing?.[b.task.id]} />
         ) })),
@@ -1091,6 +1108,25 @@ export function PlanView({
   const members = useMemo(() => membersProp ?? MEMBERS.map((m) => ({ id: m.id, name: m.name })), [membersProp]);
   const projects = useMemo(() => projectsProp ?? PROJECTS.filter((p) => !p.archivedAt).map((p) => ({ id: p.id, name: p.name })), [projectsProp]);
 
+  /* A block's length is the task's own estimate (tasks.dur: the row's, everyone's, and what
+     Team Radar counts), not part of your plan the way its slot is. So only the task's
+     assignee changes it (the edge, Alt+↑/↓, Length in Schedule…); a task you collaborate on
+     keeps the length its assignee gave it. (A bare PlanView with nobody signed in: yours.) */
+  const ownsLength = useCallback((t: Task) => !me || t.assigneeId === me, [me]);
+  const lengthOwner = useCallback((t: Task): string | null => {
+    const id = t.assigneeId;
+    const name = id ? (members.find((m) => m.id === id)?.name ?? getMember(id)?.name) : undefined;
+    return name ? name.split(/\s+/)[0] : null;
+  }, [members]);
+  /** the edge's tooltip on someone else's block (null: it's yours to stretch) */
+  const lengthLock = useCallback((t: Task): string | null => {
+    if (ownsLength(t)) return null;
+    const who = lengthOwner(t);
+    return who ? `${who} sets how long this takes` : "Not assigned to you: its length stays as it is";
+  }, [ownsLength, lengthOwner]);
+  /** how long a task runs once it's on the day: yours, from its estimate; anyone else's, as it is */
+  const lenFor = useCallback((t: Task) => (ownsLength(t) ? estimateMinutes(t) : durOf(t)), [ownsLength]);
+
   // drag to plan: where the drag in the air would land, a block being stretched, the Schedule… menu
   const [preview, setPreview] = useState<Preview | null>(null);
   const [resize, setResize] = useState<{ id: string; dur: number } | null>(null);
@@ -1116,6 +1152,7 @@ export function PlanView({
   const tasksRef = useRef(tasks); tasksRef.current = tasks;
   const pressRef = useRef<Press | null>(null);
   const resizeRef = useRef<(() => void) | null>(null);
+  const touchHoldRef = useRef(false); // a finger is stretching a block: the page mustn't scroll
   const lastDragEndRef = useRef(-Infinity); // no drag has ended yet — a click right after load still opens
   const kbRef = useRef(kb); kbRef.current = kb;
   const kbTimer = useRef(0);
@@ -1244,11 +1281,11 @@ export function PlanView({
   /* ----- placing / removing ----- */
   const place = useCallback((id: string, start: number, title: string, dur: number) => {
     const t = tasksRef.current.find((x) => x.id === id);
-    // anything from the rail that isn't on today's list yet joins it (with its estimate as its length)
-    onUpdate(id, t ? planPatch(t, start) : { scheduled: start, planToday: true });
+    // anything from the rail that isn't on today's list yet joins it (with its estimate as its length, when it's yours)
+    onUpdate(id, t ? planPatch(t, start, ownsLength(t)) : { scheduled: start, planToday: true });
     touchBlock(id, start);
-    announce(`Planned “${title}” for ${fmtTimeRange(start, start + (t ? estimateMinutes(t) : dur))}.`);
-  }, [onUpdate, touchBlock, announce]);
+    announce(`Planned “${title}” for ${fmtTimeRange(start, start + (t ? lenFor(t) : dur))}.`);
+  }, [onUpdate, touchBlock, announce, ownsLength, lenFor]);
   const unschedule = useCallback((id: string, title: string) => {
     onUpdate(id, { scheduled: null });
     touchBlock(id, null);
@@ -1329,10 +1366,10 @@ export function PlanView({
     const others = cur
       .filter((t) => t.id !== target.id && isPlaced(t) && t.status !== "done" && !t.archivedAt)
       .map((t) => ({ id: "busy-" + t.id, title: t.title, start: t.scheduled!, end: t.scheduled! + durOf(t), kind: "meeting" as const }));
-    const placed = planDay([{ ...target, energy: energyKindOf(target), dur: estimateMinutes(target), scheduled: null }], [...dayEvents, ...others],
+    const placed = planDay([{ ...target, energy: energyKindOf(target), dur: lenFor(target), scheduled: null }], [...dayEvents, ...others],
       { nowMin: Math.max(readClock().nowMin, WORK_START) });
     return placed[target.id] ?? null;
-  }, [dayEvents]);
+  }, [dayEvents, lenFor]);
 
   const scheduleOne = useCallback((id: string, viaKeyboard: boolean) => {
     const target = tasksRef.current.find((t) => t.id === id); if (!target) return;
@@ -1340,11 +1377,11 @@ export function PlanView({
     const at = g ? g.start : slotFor(target);
     if (at != null) {
       revealRef.current = { id, focus: viaKeyboard };
-      place(id, at, target.title, estimateMinutes(target));
+      place(id, at, target.title, lenFor(target));
     } else {
       notify(`“${target.title}” doesn’t fit in what’s left of today. Drag it onto a gap, or take something else off the day.`);
     }
-  }, [ghostById, slotFor, place, notify]);
+  }, [ghostById, slotFor, place, notify, lenFor]);
 
   /** Where a capture went when it isn't on your day: "for Fri 2 Oct, 15:00", "for Maya Lin".
    *  Those leave the page, so they're said out loud (a toast); today's show up in the rail. */
@@ -1405,6 +1442,11 @@ export function PlanView({
       const curStart = kbRef.current?.id === task.id ? kbRef.current.start : task.scheduled!;
       const curDur = kbRef.current?.id === task.id ? kbRef.current.dur : durOf(task);
       let next = { id: task.id, start: curStart, dur: curDur };
+      if (ev.altKey && !ownsLength(task)) {
+        const who = lengthOwner(task);
+        announce(who ? `Only ${who} can change how long “${task.title}” takes.` : `“${task.title}” isn't assigned to you, so its length stays as it is.`);
+        return;
+      }
       if (ev.altKey) {
         // Alt: longer / shorter by a quarter hour (the bottom edge's drag)
         const dur = clamp(curDur + (ev.key === "ArrowDown" ? SNAP : -SNAP), SNAP, Math.max(SNAP, win.to - curStart));
@@ -1433,7 +1475,7 @@ export function PlanView({
       ev.preventDefault(); ev.stopPropagation();
       openSchedule(task.id, ev.currentTarget);
     }
-  }, [readOnly, flushKb, announce, removeFromDay, onStartFocus, openSchedule, win.from, win.to]);
+  }, [readOnly, flushKb, announce, removeFromDay, onStartFocus, openSchedule, win.from, win.to, ownsLength, lengthOwner]);
 
   /* ----- drag to plan (lib/dnd): Today's targets ----- */
   const byId = useCallback((id: string) => tasksRef.current.find((t) => t.id === id), []);
@@ -1441,7 +1483,10 @@ export function PlanView({
   const itemsOf = useCallback((p: TaskDragPayload): Task[] =>
     p.taskIds.map(byId).filter((t): t is Task => !!t && t.status !== "done" && !t.archivedAt), [byId]);
   const acceptsDrag = useCallback((p: TaskDragPayload) => !readOnly && itemsOf(p).length > 0, [readOnly, itemsOf]);
-  const lengthOf = useCallback((p: TaskDragPayload) => itemsOf(p).reduce((a, t) => a + estimateMinutes(t), 0) || 30, [itemsOf]);
+  /** The rail takes Today's own blocks (back to Unplanned) and tasks from elsewhere (onto today's
+   *  list). A row or a suggestion of Today's let go there is cancelled: it's where it came from. */
+  const acceptsRail = useCallback((p: TaskDragPayload) => acceptsDrag(p) && (p.source !== "today" || itemsOf(p).some(isPlaced)), [acceptsDrag, itemsOf]);
+  const lengthOf = useCallback((p: TaskDragPayload) => itemsOf(p).reduce((a, t) => a + lenFor(t), 0) || 30, [itemsOf, lenFor]);
   const markDragEnd = useCallback(() => { lastDragEndRef.current = performance.now(); }, []);
 
   // A press remembers where the block was held, so it follows the pointer from that spot
@@ -1496,12 +1541,12 @@ export function PlanView({
     }
     // a block let go where it was writes nothing
     const one = items[0];
-    if (items.length === 1 && isPlaced(one) && one.scheduled === first && estimateMinutes(one) === durOf(one)) return;
-    const { placed, overflow } = stackDrop(items.map((t) => ({ id: t.id, dur: estimateMinutes(t) })), first, DAY_END);
+    if (items.length === 1 && isPlaced(one) && one.scheduled === first && lenFor(one) === durOf(one)) return;
+    const { placed, overflow } = stackDrop(items.map((t) => ({ id: t.id, dur: lenFor(t) })), first, DAY_END);
     const undo: { id: string; patch: Partial<Task> }[] = [];
     for (const pl of placed) {
       const t = byId(pl.id)!;
-      const patch = planPatch(t, pl.start);
+      const patch = planPatch(t, pl.start, ownsLength(t));
       undo.push({ id: t.id, patch: { scheduled: t.scheduled ?? null, planToday: !!t.planToday, ...("dur" in patch ? { dur: t.dur } : {}) } });
       onUpdate(t.id, patch);
       touchBlock(t.id, pl.start);
@@ -1529,10 +1574,11 @@ export function PlanView({
     // from another place, or several at once: said in a toast, with Undo; a block moved here is seen moving
     if ((p.source !== "today" || items.length > 1) && toast) toast.action(msg, "Undo", () => undo.forEach((u) => onUpdate(u.id, u.patch)), { ms: 10000 });
     else announce(msg);
-  }, [itemsOf, byId, slotFor, notify, onUpdate, touchBlock, busyFor, toast, announce]);
+  }, [itemsOf, byId, slotFor, notify, onUpdate, touchBlock, busyFor, toast, announce, lenFor, ownsLength]);
 
   /** Dropped on the rail: a block goes back to Unplanned; a task from elsewhere joins today's list. */
   const dropOnRail = useCallback((p: TaskDragPayload) => {
+    if (!acceptsRail(p)) return; // (a row of the rail's own: nothing to do)
     const items = itemsOf(p);
     const off = items.filter(isPlaced), add = items.filter((t) => !t.planToday);
     if (!off.length && !add.length) return;
@@ -1548,14 +1594,16 @@ export function PlanView({
         add.forEach((t) => onUpdate(t.id, { planToday: false }));
       }, { ms: 10000 });
     } else announce(msg);
-  }, [itemsOf, onUpdate, touchBlock, toast, announce]);
+  }, [acceptsRail, itemsOf, onUpdate, touchBlock, toast, announce]);
 
-  const canvasLabel = preview?.on === "canvas"
+  // (the labels are what menus list, so they stay put; where a drag would land, which changes
+  // on every quarter hour, is the ghost's hint)
+  const canvasHint = preview?.on === "canvas"
     ? `${fmtTimeRange(preview.start, preview.start + preview.dur)}${preview.clash.length ? ` · overlaps ${preview.clash[0]}` : ""}`
-    : "Today's plan";
-  const canvasRefObj = useMemo(() => ({ kind: "today-slot" as const, id: day, data: { date: day }, label: canvasLabel }), [day, canvasLabel]);
+    : undefined;
+  const canvasRefObj = useMemo(() => ({ kind: "today-slot" as const, id: day, data: { date: day }, label: "Today's plan" }), [day]);
   const canvasT = useTaskDropTarget({
-    target: canvasRefObj, accepts: acceptsDrag, disabled: readOnly,
+    target: canvasRefObj, accepts: acceptsDrag, disabled: readOnly, hint: canvasHint,
     onOver: (e) => { if (e.point) showPreview(e.payload, "canvas", canvasStart(e.payload, e.point, lengthOf(e.payload))); },
     onLeave: () => setPreview((cur) => (cur?.on === "canvas" ? null : cur)),
     onDrop: (e) => {
@@ -1565,17 +1613,16 @@ export function PlanView({
   });
   // (a block on its way back says where it's going; anything else joins today's list)
   const [railBack, setRailBack] = useState(false);
-  const railLabel = railBack ? "Back to Unplanned" : "Today, no time";
-  const railRefObj = useMemo(() => ({ kind: "today-rail" as const, id: day, data: { date: day }, label: railLabel }), [day, railLabel]);
+  const railRefObj = useMemo(() => ({ kind: "today-rail" as const, id: day, data: { date: day }, label: "Today, no time" }), [day]);
   const railT = useTaskDropTarget({
-    target: railRefObj, accepts: acceptsDrag, disabled: readOnly, onDrop: (e) => dropOnRail(e.payload),
+    target: railRefObj, accepts: acceptsRail, disabled: readOnly, onDrop: (e) => dropOnRail(e.payload), hint: railBack ? "Back to Unplanned" : undefined,
     onOver: (e) => { const back = itemsOf(e.payload).some(isPlaced); setRailBack((b) => (b === back ? b : back)); },
     onLeave: () => setRailBack(false),
   });
-  const beamLabel = preview?.on === "beam" ? fmtTimeRange(preview.start, preview.start + preview.dur) : "Today's plan";
-  const beamRefObj = useMemo(() => ({ kind: "today-slot" as const, id: `${day}@beam`, data: { date: day, listed: false }, label: beamLabel }), [day, beamLabel]);
+  const beamHint = preview?.on === "beam" ? fmtTimeRange(preview.start, preview.start + preview.dur) : undefined;
+  const beamRefObj = useMemo(() => ({ kind: "today-slot" as const, id: `${day}@beam`, data: { date: day, listed: false }, label: "Today's plan" }), [day]);
   const beamT = useTaskDropTarget({
-    target: beamRefObj, accepts: acceptsDrag, disabled: readOnly,
+    target: beamRefObj, accepts: acceptsDrag, disabled: readOnly, hint: beamHint,
     onOver: (e) => { if (e.point) showPreview(e.payload, "beam", beamStart(e.point.x, lengthOf(e.payload))); },
     onLeave: () => setPreview((cur) => (cur?.on === "beam" ? null : cur)),
     onDrop: (e) => { const at = e.point ? beamStart(e.point.x, lengthOf(e.payload)) : null; if (at != null) dropAt(e.payload, at, e.via); },
@@ -1594,53 +1641,83 @@ export function PlanView({
   const { ref: railBindRef, ...railAttrs } = railT.bind;
   const setRail = useCallback((el: HTMLElement | null) => { railRef.current = el; railBindRef(el); }, [railBindRef]);
 
-  /* ----- a block's bottom edge: drag its length (Escape puts it back) ----- */
+  /* ----- a block's bottom edge: drag its length (Escape puts it back), with an Undo -----
+     A mouse or pen takes it at once. A finger holds it first (DND_LONG_PRESS_MS, as a block is
+     picked up): a swipe that starts on the edge is a scroll, and never changes anything. */
   const startResize = useCallback((e: ReactPointerEvent<HTMLElement>, task: Task, start: number, dur0: number) => {
-    if (readOnly || resizeRef.current) return;
+    if (readOnly || resizeRef.current || !ownsLength(task)) return;
     const touch = e.pointerType === "touch";
-    if (!touch && e.button !== 0) return;
-    e.preventDefault();
-    flushKbRef.current();
-    const pid = e.pointerId, y0 = e.clientY, zoom = uiZoom();
-    let cur = dur0;
+    if ((!touch && e.button !== 0) || e.isPrimary === false) return;
+    if (!touch) e.preventDefault(); // (no text selection; a finger's press is left to the browser, so it can still scroll)
+    const pid = e.pointerId, x0 = e.clientX, y0 = e.clientY, zoom = uiZoom();
     const root = document.documentElement, cursor = root.style.cursor;
-    root.style.cursor = "ns-resize";
-    setResize({ id: task.id, dur: dur0 });
+    let cur = dur0, on = false, changed = false, timer = 0;
+    const begin = () => {
+      on = true;
+      flushKbRef.current();
+      if (touch) { touchHoldRef.current = true; try { navigator.vibrate?.(8); } catch { /* unsupported */ } }
+      else root.style.cursor = "ns-resize";
+      setResize({ id: task.id, dur: dur0 });
+    };
     const move = (ev: PointerEvent) => {
       if (ev.pointerId !== pid) return;
+      if (!on) { if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > DND_TOUCH_SLOP_PX) done(false); return; } // moved before the hold: a scroll
       const d = resizeMinutes(dur0, ev.clientY - y0, start, win.to, win.pxm, zoom, SNAP);
-      if (d !== cur) { cur = d; setResize({ id: task.id, dur: d }); }
+      if (d !== cur) { cur = d; changed = true; setResize({ id: task.id, dur: d }); }
     };
-    const done = (commit: boolean) => {
+    function done(commit: boolean) {
+      window.clearTimeout(timer);
       window.removeEventListener("pointermove", move, true);
       window.removeEventListener("pointerup", up, true);
       window.removeEventListener("pointercancel", cancel, true);
       window.removeEventListener("keydown", key, true);
-      root.style.cursor = cursor;
+      window.removeEventListener("contextmenu", noMenu, true);
       resizeRef.current = null;
-      lastDragEndRef.current = performance.now();
+      touchHoldRef.current = false;
+      if (!on) return; // a tap, or a swipe: nothing happened (a tap's click opens the task)
+      if (!touch) root.style.cursor = cursor;
+      // its click mustn't also open the task (a mouse click that stretched nothing still does)
+      if (changed || touch) lastDragEndRef.current = performance.now();
       setResize(null);
       if (commit && cur !== dur0) {
         onUpdate(task.id, { dur: cur });
-        announce(`“${task.title}” now runs ${fmtTimeRange(start, start + cur)} (${fmtDuration(cur)}).`);
+        const msg = `“${task.title}” now runs ${fmtTimeRange(start, start + cur)} (${fmtDuration(cur)}).`;
+        if (toast) toast.action(msg, "Undo", () => onUpdate(task.id, { dur: task.dur }), { ms: 10000 });
+        else announce(msg);
       }
-    };
+    }
     const up = (ev: PointerEvent) => { if (ev.pointerId === pid) done(true); };
     const cancel = (ev: PointerEvent) => { if (ev.pointerId === pid) done(false); };
     const key = (ev: KeyboardEvent) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); done(false); } };
+    // a finger's hold mustn't open the browser's own menu first
+    const noMenu = (ev: Event) => { if (touch && ev.cancelable) ev.preventDefault(); };
     window.addEventListener("pointermove", move, true);
     window.addEventListener("pointerup", up, true);
     window.addEventListener("pointercancel", cancel, true);
     window.addEventListener("keydown", key, true);
+    window.addEventListener("contextmenu", noMenu, true);
     resizeRef.current = () => done(false);
-  }, [readOnly, win.to, win.pxm, onUpdate, announce]);
+    if (touch) timer = window.setTimeout(begin, DND_LONG_PRESS_MS);
+    else begin();
+  }, [readOnly, ownsLength, win.to, win.pxm, onUpdate, announce, toast]);
+  // A finger stretching a block mustn't scroll the day. Browsers decide whether a touch can be
+  // held back when it lands, so on a touch screen a non-passive listener waits all along, and only
+  // acts while a stretch is under way (lib/dnd keeps one the same way for its drags).
+  useEffect(() => {
+    if (readOnly || !(navigator.maxTouchPoints > 0 || "ontouchstart" in window)) return;
+    const hold = (ev: TouchEvent) => { if (touchHoldRef.current && ev.cancelable) ev.preventDefault(); };
+    window.addEventListener("touchmove", hold, { passive: false });
+    return () => window.removeEventListener("touchmove", hold);
+  }, [readOnly]);
   useEffect(() => () => resizeRef.current?.(), []);
 
   /** "Schedule…" chose a time (and maybe a length): the keyboard's drag onto the day. */
-  const scheduleAt = useCallback((id: string, minute: number, dur: number) => {
+  const scheduleAt = useCallback((id: string, minute: number, len: number) => {
     const t = byId(id); if (!t) return;
-    const patch = planPatch(t, minute);
-    if (dur !== durOf(t)) patch.dur = dur; else delete patch.dur;
+    const own = ownsLength(t);
+    const dur = own ? len : durOf(t); // (someone else's task keeps its length)
+    const patch = planPatch(t, minute, own);
+    if (own && dur !== durOf(t)) patch.dur = dur; else delete patch.dur;
     if (t.scheduled === minute && t.planToday && !("dur" in patch)) return;
     if (t.scheduled === minute && t.planToday) delete patch.scheduled;
     revealRef.current = { id, focus: true };
@@ -1648,7 +1725,7 @@ export function PlanView({
     touchBlock(id, minute);
     const clash = clashesWith({ start: minute, end: minute + dur }, busyFor(new Set([id])));
     announce(`Planned “${t.title}” for ${fmtTimeRange(minute, minute + dur)}.${clash.length ? ` It overlaps ${clash.join(", ")}.` : ""}`);
-  }, [byId, onUpdate, touchBlock, busyFor, announce]);
+  }, [byId, onUpdate, touchBlock, busyFor, announce, ownsLength]);
 
   // the click that ends a drag must not also open the task
   const openItem = useCallback((id: string) => {
@@ -1768,7 +1845,7 @@ export function PlanView({
 
   const canvas = (
     <DayCanvas blocks={blocks} ghosts={liveGhosts} taskById={taskById} events={dayEvents} nowMin={nowMin} win={win} helpId={helpId} readOnly={readOnly}
-      onPress={onPress} onDragEnd={markDragEnd} onOpen={openItem} onRemove={removeFromDay} onKeyMove={onBlockKey} onKeyBlur={flushKb} onToggle={toggleDone}
+      lengthLock={lengthLock} onPress={onPress} onDragEnd={markDragEnd} onOpen={openItem} onRemove={removeFromDay} onKeyMove={onBlockKey} onKeyBlur={flushKb} onToggle={toggleDone}
       onStartFocus={onStartFocus} onAccept={acceptGhost} onSkip={onSkip ? skipGhost : undefined} onExtract={onExtractFromMeeting}
       onSchedule={openSchedule} onResizeStart={startResize} resizingId={resize?.id}
       inAir={inAir} preview={preview} setCanvas={setCanvas} target={canvasAttrs} landing={landing}
@@ -1776,8 +1853,7 @@ export function PlanView({
   );
   // the block or row "Schedule…" was opened for (it may have moved, or gone, since)
   const scheduling = scheduleId ? taskById.get(scheduleId) : undefined;
-  // (a row picked up from the rail itself: the rail doesn't light up for it)
-  const fromRail = inAirPayload?.source === "today" && inAirPayload.meta?.from === "rail";
+  // (a row picked up from the rail itself, or a suggestion: the rail doesn't take them, see acceptsRail)
   const railNote = railT.isOver && inAirPayload
     ? itemsOf(inAirPayload).some(isPlaced) ? "Release to move back to Unplanned"
       : itemsOf(inAirPayload).some((t) => !t.planToday) ? "Release to add to today's list" : null
@@ -1787,6 +1863,7 @@ export function PlanView({
     <div ref={rootRef} className="kplan" data-stacked={stacked || undefined}>
       <style>{PLAN_CSS}</style>
       <span id={helpId} className="sr-only">Press Enter to open. Use the up and down arrow keys to move it by 15 minutes, or hold Shift to move it by an hour; hold Alt to make it longer or shorter. Press S to pick a time, Delete to send it back to Unplanned{onStartFocus ? ", or F to start focus on it" : ""}.</span>
+      <span id={helpId + "-t"} className="sr-only">Press Enter to open. Use the up and down arrow keys to move it by 15 minutes, or hold Shift to move it by an hour. It isn't assigned to you, so its length is its assignee's to set. Press S to pick a time, Delete to send it back to Unplanned{onStartFocus ? ", or F to start focus on it" : ""}.</span>
       <span id={helpId + "-g"} className="sr-only">A suggestion from Kanbo. Press Enter to put it on your day, or drag it to another time.</span>
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
       <div className="kplan-main">
@@ -1821,7 +1898,7 @@ export function PlanView({
         </div>
       </div>
       <aside {...railAttrs} ref={setRail} className="krail" aria-label="Unplanned" data-drop={(!!railNote) || undefined}
-        data-can={(railT.canDrop && !fromRail) || undefined}>
+        data-can={railT.canDrop || undefined}>
         {railNote && (
           <div className="krail-dropnote"><span><Icon name={stacked ? "chevronDown" : "arrowLeft"} size={16} /> {railNote}</span></div>
         )}
@@ -1912,10 +1989,11 @@ export function PlanView({
       {scheduling && (
         <Suspense fallback={null}>
           <ScheduleMenu open anchorRef={scheduleAnchor} onClose={() => setScheduleId(null)} title={scheduling.title}
-            value={{ date: day, minute: isPlaced(scheduling) ? scheduling.scheduled! : (ghostById.get(scheduling.id)?.start ?? slotFor(scheduling)), dur: isPlaced(scheduling) ? durOf(scheduling) : estimateMinutes(scheduling) }}
-            withDuration from={DAY_START} to={DAY_END} step={SNAP} nowMin={nowMin} today={day} pickLabel={isPlaced(scheduling) ? "Move" : "Schedule"}
+            value={{ date: day, minute: isPlaced(scheduling) ? scheduling.scheduled! : (ghostById.get(scheduling.id)?.start ?? slotFor(scheduling)), dur: isPlaced(scheduling) ? durOf(scheduling) : lenFor(scheduling) }}
+            withDuration lengthLocked={ownsLength(scheduling) ? undefined : (lengthOwner(scheduling) ? `set by ${lengthOwner(scheduling)}` : "not yours to change")}
+            from={DAY_START} to={DAY_END} step={SNAP} nowMin={nowMin} today={day} pickLabel={isPlaced(scheduling) ? "Move" : "Schedule"}
             busy={() => busyFor(new Set([scheduling.id]))}
-            onPick={(v) => { if (v.minute != null) scheduleAt(scheduling.id, v.minute, v.dur ?? estimateMinutes(scheduling)); }} />
+            onPick={(v) => { if (v.minute != null) scheduleAt(scheduling.id, v.minute, v.dur ?? lenFor(scheduling)); }} />
         </Suspense>
       )}
     </div>

@@ -150,6 +150,31 @@ describe("PlanView: drag to plan from anywhere", () => {
     expect(screen.getByText("Added “Tomorrow's” to today's list.")).toBeInTheDocument();
   });
 
+  it("a row picked up from the rail and let go back on it is cancelled: nothing written, nothing promised", () => {
+    const { onUpdate } = renderPlan([task({ id: "d", title: "Due today", dueDate: localDayKey() })]);
+    const row = screen.getByRole("button", { name: /^Due today,/ }).closest("[data-intake-card]")!;
+    press(row, 900, 300);
+    on("pointermove", 900, 310);
+    on("pointermove", 400, 310); // over the day…
+    on("pointermove", 905, 300); // …and back: changed my mind
+    expect(document.querySelector(".krail-dropnote")).toBeNull();
+    expect(document.querySelector("aside")).not.toHaveAttribute("data-drop");
+    expect(document.querySelector("aside")).not.toHaveAttribute("data-can");
+    on("pointerup", 905, 300);
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("a suggestion let go on the rail is cancelled too (Not now is how it's waved away)", () => {
+    const { onUpdate } = renderPlan([task({ id: "g", title: "Suggested", dueDate: localDayKey() })], { ghosts: [{ id: "g", start: 600, end: 630, overdue: false }] });
+    press(document.querySelector(".kday-ghost")!, 100, 200);
+    on("pointermove", 100, 210);
+    on("pointermove", 900, 300);
+    expect(document.querySelector(".krail-dropnote")).toBeNull();
+    on("pointerup", 900, 300);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
   it("a keyboard drop on a time runs the canvas's own handler; the beam isn't offered twice", () => {
     const { onUpdate } = renderPlan([task({ id: "m", title: "Memo", planToday: true })], {
       lede: () => <div data-daybeam="" data-from="480" data-to="1080">beam</div>,
@@ -194,6 +219,7 @@ describe("PlanView: a block's length", () => {
   it("Alt+↓ / Alt+↑ change it from the keyboard, in one write", () => {
     vi.useRealTimers();
     vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 9, 8, 0, 0));
     const { onUpdate } = renderPlan([task({ id: "b1", title: "Deck", planToday: true, scheduled: 9 * 60 })]);
     const btn = screen.getByRole("button", { name: /^Deck,/ });
     act(() => btn.focus());
@@ -204,6 +230,140 @@ describe("PlanView: a block's length", () => {
     act(() => { vi.advanceTimersByTime(800); });
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith("b1", { dur: 45 });
+  });
+
+  it("a click on the edge that stretches nothing opens the task; a stretch can be undone (and its click opens nothing)", () => {
+    const onOpen = vi.fn();
+    const { onUpdate } = renderPlan([task({ id: "b1", title: "Write brief", planToday: true, scheduled: 9 * 60 })], { onOpen });
+    const edge = () => document.querySelector(".kday-resize")!;
+    press(edge(), 100, 148);
+    on("pointerup", 100, 148);
+    fireEvent.click(edge());
+    expect(onOpen).toHaveBeenCalledWith("b1");
+    expect(onUpdate).not.toHaveBeenCalled();
+    press(edge(), 100, 148);
+    on("pointermove", 100, 180);
+    on("pointerup", 100, 180);
+    fireEvent.click(edge());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith("b1", { dur: 60 });
+    expect(screen.getByText("“Write brief” now runs 09:00–10:00 (1h).")).toBeInTheDocument();
+    clickUndo();
+    expect(onUpdate).toHaveBeenLastCalledWith("b1", { dur: undefined });
+  });
+});
+
+describe("PlanView: a block's length on a touch screen", () => {
+  const touch = (type: string, x: number, y: number, id = 3) =>
+    act(() => { window.dispatchEvent(new window.PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: id, pointerType: "touch" })); });
+  const touchDown = (el: Element, x: number, y: number, id = 3) => fireEvent.pointerDown(el, { clientX: x, clientY: y, pointerId: id, pointerType: "touch" });
+  const touchmove = () => { const ev = new Event("touchmove", { bubbles: true, cancelable: true }); act(() => { window.dispatchEvent(ev); }); return ev.defaultPrevented; };
+  let touchPoints: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 9, 8, 0, 0));
+    // a touch screen (the day listens for a finger it may have to hold still)
+    touchPoints = Object.getOwnPropertyDescriptor(navigator, "maxTouchPoints");
+    Object.defineProperty(navigator, "maxTouchPoints", { value: 5, configurable: true });
+  });
+  afterEach(() => {
+    if (touchPoints) Object.defineProperty(navigator, "maxTouchPoints", touchPoints);
+    else delete (navigator as { maxTouchPoints?: number }).maxTouchPoints;
+  });
+
+  it("a swipe that starts on a block's bottom edge scrolls the day: nothing changes", () => {
+    const { onUpdate } = renderPlan([task({ id: "b", title: "Block", planToday: true, scheduled: 600 })]);
+    touchDown(document.querySelector(".kday-resize")!, 100, 230);
+    touch("pointermove", 100, 260); // past the slop before the hold: a scroll
+    expect(touchmove()).toBe(false);
+    act(() => { vi.advanceTimersByTime(400); });
+    touch("pointermove", 100, 320);
+    touch("pointerup", 100, 320);
+    expect(document.querySelector(".kday-block")).not.toHaveAttribute("data-resizing");
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a hold takes the edge (the day stays still meanwhile), then it stretches, with Undo", () => {
+    const { onUpdate } = renderPlan([task({ id: "b", title: "Block", planToday: true, scheduled: 600 })]);
+    touchDown(document.querySelector(".kday-resize")!, 100, 230);
+    touch("pointermove", 102, 233); // a wobble while holding
+    act(() => { vi.advanceTimersByTime(360); });
+    expect(document.querySelector(".kday-block")).toHaveAttribute("data-resizing", "true");
+    expect(touchmove()).toBe(true);
+    touch("pointermove", 100, 260); // +30 minutes
+    touch("pointerup", 100, 260);
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith("b", { dur: 60 });
+    expect(touchmove()).toBe(false);
+    clickUndo();
+    expect(onUpdate).toHaveBeenLastCalledWith("b", { dur: undefined });
+  });
+
+  it("a tap on the edge opens the task, like the rest of the block", () => {
+    const onOpen = vi.fn();
+    const { onUpdate } = renderPlan([task({ id: "b", title: "Block", planToday: true, scheduled: 600 })], { onOpen });
+    const edge = document.querySelector(".kday-resize")!;
+    touchDown(edge, 100, 230);
+    touch("pointerup", 100, 230);
+    fireEvent.click(edge);
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(document.querySelector(".kday-block")).not.toHaveAttribute("data-resizing");
+    expect(onOpen).toHaveBeenCalledWith("b");
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("PlanView: someone else's task keeps its length (tasks.dur is the task's, not your plan)", () => {
+  const sana = { assigneeId: "m-3", collaborators: ["m-self"] };
+  const members = [{ id: "m-self", name: "Daniel Okai" }, { id: "m-3", name: "Sana Rao" }];
+
+  it("no edge to stretch (it says whose it is); Alt+↑/↓ says why and writes nothing; ↑/↓ still move it", () => {
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 9, 8, 0, 0));
+    const { onUpdate } = renderPlan([task({ id: "c", title: "Moodboard", planToday: true, scheduled: 9 * 60, ...sana })], { members });
+    expect(document.querySelector(".kday-resize:not([data-locked])")).toBeNull();
+    expect(document.querySelector(".kday-resize[data-locked]")).toHaveAttribute("title", "Sana sets how long this takes");
+    const btn = screen.getByRole("button", { name: /^Moodboard,/ });
+    expect(btn).toHaveAccessibleDescription(/isn't assigned to you, so its length is its assignee's to set/);
+    // a press on that edge picks the block up, as anywhere else on it
+    press(document.querySelector(".kday-resize")!, 100, 148);
+    on("pointermove", 100, 170);
+    expect(document.querySelector(".kday-block")).not.toHaveAttribute("data-resizing");
+    act(() => { fireEvent.keyDown(window, { key: "Escape" }); });
+    on("pointerup", 100, 170);
+    act(() => btn.focus());
+    fireEvent.keyDown(btn, { key: "ArrowDown", altKey: true });
+    act(() => { vi.advanceTimersByTime(800); });
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText("Only Sana can change how long “Moodboard” takes.")).toBeInTheDocument();
+    fireEvent.keyDown(btn, { key: "ArrowDown" });
+    act(() => { vi.advanceTimersByTime(800); });
+    expect(onUpdate).toHaveBeenCalledWith("c", { scheduled: 9 * 60 + 15 });
+  });
+
+  it("dropped on the day, it runs its own length: only your plan is written, never its estimate", () => {
+    const { onUpdate } = renderPlan([task({ id: "e", title: "Estimate", focusMin: 0, effortHours: 1.5, ...sana })], { members }, ["e"]);
+    carry(100, 190);
+    expect(document.querySelector(".kday-drop")?.textContent).toBe("10:00–10:30");
+    on("pointerup", 100, 190);
+    expect(onUpdate).toHaveBeenCalledWith("e", { scheduled: 600, planToday: true });
+  });
+
+  it("Schedule… keeps its length, says whose it is, and saves only the time", async () => {
+    await loadAllChunks();
+    const { onUpdate } = renderPlan([task({ id: "c", title: "Moodboard", planToday: true, scheduled: 9 * 60, ...sana })], { members });
+    fireEvent.click(screen.getByRole("button", { name: "Reschedule “Moodboard”" }));
+    const dialog = await screen.findByRole("dialog", { name: "Schedule “Moodboard”" });
+    expect(within(dialog).queryByRole("spinbutton")).toBeNull();
+    expect(dialog.textContent).toContain("Length30m· set by Sana");
+    const list = within(dialog).getByRole("listbox");
+    fireEvent.keyDown(list, { key: "ArrowRight" }); // (the length doesn't move)
+    fireEvent.keyDown(list, { key: "ArrowDown" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveAccessibleName("09:15–09:45, free");
+    fireEvent.keyDown(list, { key: "Enter" });
+    expect(onUpdate).toHaveBeenCalledWith("c", { scheduled: 9 * 60 + 15 });
   });
 });
 
@@ -224,6 +384,15 @@ describe("PlanView: Schedule… (the keyboard's drag onto the day)", () => {
     fireEvent.keyDown(list, { key: "Enter" });
     expect(onUpdate).toHaveBeenCalledWith("m", { scheduled: 8 * 60 + 15, dur: 45 });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("typing a time picks it: 1, 4, 3 is 14:30", async () => {
+    await loadAllChunks();
+    renderPlan([task({ id: "m", title: "Draft memo", planToday: true })]);
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Draft memo, 30m/ }), { key: "s" });
+    const list = within(await screen.findByRole("dialog", { name: "Schedule “Draft memo”" })).getByRole("listbox");
+    for (const k of ["1", "4", "3"]) fireEvent.keyDown(list, { key: k });
+    expect(within(list).getByRole("option", { selected: true })).toHaveAccessibleName("14:30–15:00, free");
   });
 
   it("the clock on a block reschedules it; a time that runs into a meeting says so", async () => {

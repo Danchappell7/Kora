@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   layoutLanes, mergeIntervals, totalMinutes, durOf, energyMetaOf, energyKindOf,
   carryOver, recordSeen, markSeen, touchSeen, readSeen, writeSeen, planSeenKey, isMine, carryLabel, localDayKey, todaysEvents,
-  estimateMinutes, planPatch, stackDrop, canvasMinute, resizeMinutes, clashesWith, slotMinutes,
+  estimateMinutes, planPatch, stackDrop, canvasMinute, resizeMinutes, clashesWith, slotMinutes, typedTime,
 } from "./planCanvas";
 import type { SeenMap } from "./planCanvas";
 import { ENERGY } from "../../data/data";
@@ -228,6 +228,8 @@ describe("drag to plan: the canvas maths", () => {
     expect(planPatch(base({ focusMin: 30, planToday: true }), 540)).toEqual({ scheduled: 540 });
     expect(planPatch(base({ focusMin: 30 }), 540)).toEqual({ scheduled: 540, planToday: true });
     expect(planPatch(base({ effortHours: 2, planToday: true }), 600)).toEqual({ scheduled: 600, dur: 120 });
+    // someone else's task: only your plan, never its length (tasks.dur is the task's own)
+    expect(planPatch(base({ effortHours: 2 }), 600, false)).toEqual({ scheduled: 600, planToday: true });
   });
 
   it("several tasks land back to back; what runs past the day waits without a time", () => {
@@ -262,5 +264,17 @@ describe("drag to plan: the canvas maths", () => {
     expect(clashesWith({ start: 630, end: 700 }, busy)).toEqual([]);
     expect(slotMinutes(420, 480, 30)).toEqual([420, 435, 450]);
     expect(slotMinutes(425, 480, 0)).toEqual([435, 450, 465, 480]);
+  });
+
+  it("a time typed into the picker, read as it comes", () => {
+    expect(typedTime("1")).toEqual({ h: 1, mm: 0 });
+    expect(typedTime("14")).toEqual({ h: 14, mm: 0 });
+    expect(typedTime("143")).toEqual({ h: 14, mm: 30 });
+    expect(typedTime("1430")).toEqual({ h: 14, mm: 30 });
+    expect(typedTime("9")).toEqual({ h: 9, mm: 0 });
+    expect(typedTime("930")).toEqual({ h: 9, mm: 30 });
+    expect(typedTime("0915")).toEqual({ h: 9, mm: 15 });
+    expect(typedTime("2359")).toEqual({ h: 23, mm: 59 });
+    expect(typedTime("199")).toEqual({ h: 19, mm: 59 });
   });
 });

@@ -11,7 +11,7 @@
    seven-day sparkline.
    ============================================================ */
 import {
-  Suspense, useCallback, useId, useMemo, useRef, useState,
+  Suspense, memo, useCallback, useId, useMemo, useRef, useState,
   type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject,
 } from "react";
 import { Button, Icon, SectionLabel, StatusGlyph, projectPaint } from "../primitives";
@@ -218,7 +218,8 @@ function MoveMenu({ task, targets, anchorRef, open, onClose, onMove, onPickTime,
   );
 }
 
-function TaskChip({ t, targets, onOpen, onMove, onSchedule, onElsewhere, showTime }: {
+// (memo: a day re-renders as a drag moves down its time strip; its chips needn't)
+const TaskChip = memo(function TaskChip({ t, targets, onOpen, onMove, onSchedule, onElsewhere, showTime }: {
   t: Task; targets: Target[];
   onOpen: (id: string) => void;
   onMove?: (id: string, iso: string) => void;
@@ -267,9 +268,12 @@ function TaskChip({ t, targets, onOpen, onMove, onSchedule, onElsewhere, showTim
       )}
     </div>
   );
-}
+});
 
-/** One day: a "week-day" target (that day), with a "week-slot" strip (a time that day). */
+/** One day: a "week-day" target (that day), with a "week-slot" strip (a time that day). The strip
+ *  isn't listed for menus (it would only repeat the day, and Schedule… is the keyboard's way to a
+ *  time); keyboard drops on "YYYY-MM-DDTHH:MM" still reach it. While a drag is over it, the time
+ *  it would get is the ghost's hint, not its label, so menus don't re-render on every move. */
 function DayColumn({ date, iso, isToday, isPast, weekend, label, items, chip, canMove, accepts, onDrop }: {
   date: Date; iso: string; isToday: boolean; isPast: boolean; weekend: boolean;
   /** "Today" / "Fri 9 Oct" (the ghost's hint, keyboard menus) */
@@ -284,13 +288,14 @@ function DayColumn({ date, iso, isToday, isPast, weekend, label, items, chip, ca
   const [at, setAt] = useState<number | null>(null);
   const dayRef = useMemo(() => ({ kind: "week-day" as const, id: iso, data: { date: iso }, label }), [iso, label]);
   const day = useTaskDropTarget({ target: dayRef, accepts, disabled: !canMove, onDrop: (e) => onDrop(e.payload, iso, undefined) });
-  const slotRef = useMemo(() => ({ kind: "week-slot" as const, id: iso, data: { date: iso }, label: at != null ? `${label}, ${hhmm(at)}` : `${label}, at a time` }), [iso, label, at]);
+  const slotRef = useMemo(() => ({ kind: "week-slot" as const, id: iso, data: { date: iso, listed: false }, label: `${label}, at a time` }), [iso, label]);
   const slot = useTaskDropTarget({
-    target: slotRef, accepts, disabled: !canMove,
+    target: slotRef, accepts, disabled: !canMove, hint: at != null ? `${label}, ${hhmm(at)}` : undefined,
     onOver: (e) => { if (e.within) { const m = stripMinute(e.within.y); setAt((cur) => (cur === m ? cur : m)); } },
     onLeave: () => setAt(null),
     onDrop: (e: TaskDropEvent) => {
-      const m = e.within ? stripMinute(e.within.y) : typeof e.target.data?.minute === "number" ? e.target.data.minute as number : null;
+      // (a keyboard drop on the bare day, with no time, keeps the time it had: it's a move to the day)
+      const m = e.within ? stripMinute(e.within.y) : typeof e.target.data?.minute === "number" ? e.target.data.minute as number : undefined;
       onDrop(e.payload, iso, m);
     },
   });

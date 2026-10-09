@@ -23,7 +23,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
 import { Popover } from "../primitives/Popover";
 import { Button, Icon } from "../primitives";
 import { dropOnTarget, useDropTargets, type DropTargetKind, type DropTargetRef, type TaskDragPayload } from "../../lib/dnd";
-import { fmtDuration, slotMinutes } from "../views/planCanvas";
+import { fmtDuration, slotMinutes, typedTime } from "../views/planCanvas";
 import { hhmm } from "./weekSlots";
 import type { IconName } from "../../data/types";
 
@@ -52,6 +52,7 @@ const MENU_CSS = `
 .ksch-len [role="spinbutton"] { min-width: 52px; height: 28px; padding: 0 8px; border-radius: var(--r-sm, 6px); text-align: center; outline: none;
   font: 600 12px/28px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); background: var(--fill-1); }
 .ksch-len [role="spinbutton"]:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.ksch-len-fixed { font: 600 12px/28px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
 .ksch-foot { display: flex; align-items: center; gap: 8px; padding: 6px 4px 0 6px; border-top: 1px solid var(--hairline); }
 .ksch-keys { flex: 1; min-width: 0; font: 500 11px/16px var(--font-mono); color: var(--ink-4); }
 .kmove-label { padding: 8px 8px 4px; font: 600 11px/16px var(--font-ui); letter-spacing: 0.02em; color: var(--ink-3); }
@@ -88,6 +89,9 @@ export interface ScheduleMenuProps {
   allowNoTime?: boolean;
   /** Today: the block's length, ←/→ by 15 minutes */
   withDuration?: boolean;
+  /** with withDuration: the length can't change here (someone else's task), and why ("set by Maya"),
+   *  said in place of the Length control; the times still run for that length */
+  lengthLocked?: string;
   /** the stretch of the day on offer (minutes), on the quarter hour by default */
   from?: number;
   to?: number;
@@ -105,7 +109,7 @@ export interface ScheduleMenuProps {
 const clampN = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function ScheduleMenu({
-  open, anchorRef, onClose, title, days, value, allowNoTime = false, withDuration = false, from = 7 * 60, to = 22 * 60, step = 15,
+  open, anchorRef, onClose, title, days, value, allowNoTime = false, withDuration = false, lengthLocked, from = 7 * 60, to = 22 * 60, step = 15,
   busy, nowMin, today, onPick, pickLabel = "Schedule",
 }: ScheduleMenuProps) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -146,14 +150,13 @@ export function ScheduleMenu({
     if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
   }, [minute, open]);
 
-  // type a time: "9" → 09:00, "14" → 14:00, "143" / "1430" → 14:30
+  // type a time: "9" → 09:00, "14" → 14:00, "143" / "1430" → 14:30, "930" → 09:30
   const typed = useRef({ text: "", at: 0 });
   const typeAhead = (k: string) => {
     const now = Date.now();
-    const t = (now - typed.current.at < 900 ? typed.current.text : "") + k;
+    const t = ((now - typed.current.at < 900 ? typed.current.text : "") + k).slice(0, 4);
     typed.current = { text: t, at: now };
-    const h = t.length <= 2 ? +t : +t.slice(0, t.length - 2);
-    const mm = t.length <= 2 ? 0 : +t.slice(-2).padEnd(2, "0");
+    const { h, mm } = typedTime(t);
     if (!Number.isFinite(h) || h > 23) return;
     const want = h * 60 + Math.min(59, mm);
     const best = options.filter((o): o is number => o != null).reduce<number | null>((b, o) => (b == null || Math.abs(o - want) < Math.abs(b - want) ? o : b), null);
@@ -175,7 +178,7 @@ export function ScheduleMenu({
     const i = Math.max(0, days.findIndex((d) => d.date === date));
     setDate(days[clampN(i + n, 0, days.length - 1)].date);
   };
-  const lengthBy = (n: number) => setDur((d) => clampN(d + n * step, step, Math.max(step, Math.min(8 * 60, to - from))));
+  const lengthBy = (n: number) => { if (!lengthLocked) setDur((d) => clampN(d + n * step, step, Math.max(step, Math.min(8 * 60, to - from)))); };
 
   const onKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const hour = Math.max(1, Math.round(60 / step));
@@ -203,7 +206,7 @@ export function ScheduleMenu({
   };
 
   const optId = (m: number | null) => `${uid}-o-${m ?? "any"}`;
-  const keys = withDuration ? "↑↓ time · ←→ length" : days?.length ? "↑↓ time · ←→ day" : "↑↓ time · ⇧↑↓ hour";
+  const keys = withDuration && !lengthLocked ? "↑↓ time · ←→ length" : days?.length ? "↑↓ time · ←→ day" : "↑↓ time · ⇧↑↓ hour";
   const chosen = describe(minute);
   return (
     <Popover open={open} anchorRef={anchorRef} onClose={onClose} role="dialog" label={`Schedule “${title}”`} minWidth={288} initialFocus={listRef}>
@@ -233,7 +236,12 @@ export function ScheduleMenu({
             );
           })}
         </div>
-        {withDuration && (
+        {withDuration && lengthLocked && (
+          <div className="ksch-len">
+            <span>Length</span><b className="ksch-len-fixed">{fmtDuration(dur)}</b><span>· {lengthLocked}</span>
+          </div>
+        )}
+        {withDuration && !lengthLocked && (
           <div className="ksch-len">
             <span id={`${uid}-len`}>Length</span>
             <button type="button" className="kibtn" data-size="sm" tabIndex={-1} aria-label="Shorter by 15 minutes" onClick={() => lengthBy(-1)}><Icon name="chevronLeft" size={14} sw={2} /></button>
