@@ -31,6 +31,7 @@ import type { ApiErrorCode, Tx } from "./types.ts";
 export const WEBHOOK_EVENTS: readonly WebhookEventType[] = [
   "task.created", "task.updated", "task.completed", "task.deleted",
   "comment.created", "project.created", "project.updated", "member.joined",
+  "approval.requested", "approval.decided",
 ];
 
 /** The event catalogue (docs, Settings checklist). */
@@ -43,6 +44,8 @@ export const WEBHOOK_EVENT_INFO: Readonly<Record<WebhookEventType, { label: stri
   "project.created": { label: "Project created", description: "A project is added." },
   "project.updated": { label: "Project updated", description: "A project's name, look, description, status, owner, people or archive state changes." },
   "member.joined":   { label: "Member joined",   description: "Someone joins the workspace (accepts an invite)." },
+  "approval.requested": { label: "Approval requested", description: "Someone asks for approval on a task. `data` is the request with its reviewers and task." },
+  "approval.decided":   { label: "Approval decided",   description: "A reviewer approves or asks for changes, or the request is cancelled. `decision` says which; `status` is where the request now stands." },
 };
 
 export const WEBHOOK_HEADERS = {

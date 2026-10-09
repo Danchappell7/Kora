@@ -4,6 +4,7 @@
    ============================================================ */
 import type { Activity, Attachment, Comment, Task } from "../data/types";
 import { STATUS_META, PRIORITY_META, KANBO_TODAY, toLocalISO } from "../data/data";
+import { approvalActivityVerb, approvalEventText } from "../lib/approvals";
 
 export interface MentionCandidate { id: string; name: string }
 
@@ -96,9 +97,11 @@ export function dependencyCandidates(task: Task, tasks: Task[], query: string, l
  * your own comment, which is logged with its text — so a comment row only reads
  * "X commented" when `detail` is a known teammate, and is otherwise quoted.
  */
-export function activityLine(a: Pick<Activity, "kind" | "detail">, knownNames: string[] = []): string {
+export function activityLine(a: Pick<Activity, "kind" | "detail" | "meta">, knownNames: string[] = []): string {
   const who = a.detail?.trim() || "Someone";
   if (a.kind === "mention") return `${who} mentioned you`;
+  // 0047: "Sana asked for your approval on this task" · "Olive approved this task"
+  if (a.kind === "approval") return `${who} ${approvalActivityVerb(a.meta)} this task`;
   if (a.kind === "assigned") return `${who} assigned you`;
   if (a.kind === "comment") {
     const lc = who.toLowerCase();
@@ -347,6 +350,8 @@ export function eventText(e: Pick<HistoryEvent, "field" | "oldValue" | "newValue
     if (e.oldValue && v) return `moved due ${dayLabel(e.oldValue, today)} → ${dayLabel(v, today)}`;
     return v ? `set due ${dayLabel(v, today)}` : "cleared the due date";
   }
+  // 0047: new_value = what happened, old_value = the request's status after it
+  if (e.field === "approval") return approvalEventText(v, e.oldValue);
   return `updated ${e.field}`;
 }
 
@@ -378,6 +383,8 @@ export function buildTimeline(comments: Comment[], events: HistoryEvent[], activ
     .filter((a) => !(a.kind === "assigned" && near("assignee", a.createdAt)))
     .filter((a) => !(a.kind === "completed" && near("status", a.createdAt, (v) => v === "done")))
     .filter((a) => !((a.kind === "status" || a.kind === "reopened") && near("status", a.createdAt)))
+    // an approval notice repeats the history row the same request or decision wrote
+    .filter((a) => !(a.kind === "approval" && near("approval", a.createdAt)))
     .sort((a, b) => time(b.createdAt) - time(a.createdAt))
     .slice(0, 8);
 

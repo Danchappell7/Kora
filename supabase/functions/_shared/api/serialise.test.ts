@@ -2,8 +2,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  changedFields, isoDate, isoTime, num, PROJECT_COLUMN_FIELDS, serialiseComment, serialiseEvent, serialiseMember,
-  serialiseProject, serialiseSection, serialiseTask, serialiseWorkspace, TASK_COLUMN_FIELDS, type OutboxEvent,
+  changedFields, isoDate, isoTime, num, PROJECT_COLUMN_FIELDS, serialiseApproval, serialiseComment, serialiseEvent, serialiseMember,
+  serialiseProject, serialiseSection, serialiseTask, serialiseWorkspace, TASK_COLUMN_FIELDS, type ApiApprovalEvent, type OutboxEvent,
 } from "./serialise.ts";
 
 const migration = readFileSync(new URL("../../../migrations/0046_api_webhooks_notion.sql", import.meta.url), "utf8");
@@ -20,6 +20,10 @@ const OUTBOX_TASK = {
   archived_at: null, assignee_id: "", description: "", completed_at: "2026-10-05", effort_hours: null, is_milestone: false,
   logged_hours: null, workspace_id: W, collaborators: [], my_section_id: null, original_due_date: null,
 };
+
+// approval.decided / a cancel exactly as public.approval_webhook() queues them (captured from the 0047 PGlite run)
+const OUTBOX_APPROVAL_DECIDED: OutboxEvent = {"outbox_id": 2, "event": "approval.decided", "created_at": "2026-10-09T00:36:53.627Z", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "payload": {"task": {"id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "title": "Homepage copy", "status": "todo", "due_date": "2026-10-16", "project_id": "3225b824-8470-4228-b843-b3bf735e918e", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266"}, "approval": {"id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67", "note": "Is the tone right?", "rule": "all", "title": "Homepage copy", "status": "changes_requested", "task_id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "created_at": "2026-10-09T00:36:53.62+00:00", "updated_at": "2026-10-09T00:36:53.627+00:00", "resolved_at": "2026-10-09T00:36:53.627+00:00", "requested_by": "b92ddc5f-6db1-49a7-9d3d-5deca0c8a9d5", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "attachment_id": "0b8ea07b-5c95-404d-95d1-7aca9f2c0789"}, "decision": {"comment": "Shorter, please", "user_id": "17824f58-ed25-4046-b5b6-56737cbedbed", "decision": "changes_requested", "decided_at": "2026-10-09T00:36:53.627+00:00"}, "reviewers": [{"comment": null, "user_id": "157e52d3-2d65-44eb-bd73-b5868c7eba25", "decision": null, "decided_at": null, "approval_id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67"}, {"comment": "Shorter, please", "user_id": "17824f58-ed25-4046-b5b6-56737cbedbed", "decision": "changes_requested", "decided_at": "2026-10-09T00:36:53.627+00:00", "approval_id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67"}, {"comment": null, "user_id": "59015e75-5908-44e7-bd53-ca8fafb76a61", "decision": null, "decided_at": null, "approval_id": "71fff4f3-5f61-473a-8bd2-bb16e6d1af67"}]}};
+const OUTBOX_APPROVAL_CANCELLED: OutboxEvent = {"outbox_id": 6, "event": "approval.decided", "created_at": "2026-10-09T00:36:53.638Z", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "payload": {"task": {"id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "title": "Homepage copy", "status": "todo", "due_date": "2026-10-16", "project_id": "3225b824-8470-4228-b843-b3bf735e918e", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266"}, "approval": {"id": "376e469d-e889-47f1-8ec5-6c4382c00297", "note": null, "rule": "any", "title": "Homepage copy", "status": "cancelled", "task_id": "817d5120-a9f4-4c76-8084-6fcef1ae92ab", "created_at": "2026-10-09T00:36:53.636+00:00", "updated_at": "2026-10-09T00:36:53.638+00:00", "resolved_at": "2026-10-09T00:36:53.638+00:00", "requested_by": "b92ddc5f-6db1-49a7-9d3d-5deca0c8a9d5", "workspace_id": "a6d82f83-cea1-4fd2-8ab9-7f35421c1266", "attachment_id": null}, "decision": {"comment": null, "user_id": "b92ddc5f-6db1-49a7-9d3d-5deca0c8a9d5", "decision": "cancelled", "decided_at": "2026-10-09T00:36:53.638+00:00"}, "reviewers": [{"comment": null, "user_id": "360a2b64-4329-473d-8f41-b36756b605be", "decision": null, "decided_at": null, "approval_id": "376e469d-e889-47f1-8ec5-6c4382c00297"}]}};
 
 describe("value helpers", () => {
   it("dates and times from strings or Dates", () => {
@@ -121,6 +125,37 @@ describe("webhook events", () => {
     expect(serialiseEvent(ev("member.joined", { member: { id: "m", workspace_id: W, user_id: "u", status: "active", role: "member" } })).data).toMatchObject({ object: "member" });
     const ping = serialiseEvent({ outbox_id: "9", event: "ping", created_at: "2026-10-05T18:00:00Z", workspace_id: null, payload: { webhook: { id: "w", url: "https://x.example.com/h", events: ["task.created"] } } });
     expect(ping).toMatchObject({ id: "evt_9", type: "ping", workspaceId: null, data: { webhookId: "w", events: ["task.created"] } });
+  });
+  it("approval.decided: the request (status after it), its reviews, its task and the decision", () => {
+    const e = serialiseEvent(OUTBOX_APPROVAL_DECIDED, APP);
+    const p = OUTBOX_APPROVAL_DECIDED.payload as Record<string, Record<string, unknown>>;
+    expect(e).toMatchObject({ id: "evt_2", type: "approval.decided", workspaceId: p.approval.workspace_id, createdAt: "2026-10-09T00:36:53.627Z" });
+    const d = e.data as ApiApprovalEvent;
+    expect(d).toMatchObject({
+      object: "approval", id: p.approval.id, taskId: p.task.id, status: "changes_requested", rule: "all", note: "Is the tone right?",
+      title: "Homepage copy", attachmentId: p.approval.attachment_id, requestedBy: p.approval.requested_by,
+      createdAt: "2026-10-09T00:36:53.620Z", resolvedAt: "2026-10-09T00:36:53.627Z", url: `https://www.kanbo.co.uk/?task=${p.task.id}`,
+      task: { id: p.task.id, title: "Homepage copy", status: "todo", dueDate: "2026-10-16", projectId: p.task.project_id, url: `https://www.kanbo.co.uk/?task=${p.task.id}` },
+      decision: { decision: "changes_requested", comment: "Shorter, please", decidedAt: "2026-10-09T00:36:53.627Z" },
+    });
+    expect(d.reviewers).toHaveLength(3);
+    expect(d.reviewers.filter((r) => r.decision === "changes_requested")).toEqual([
+      { userId: (p.decision as Record<string, unknown>).user_id, decision: "changes_requested", comment: "Shorter, please", decidedAt: "2026-10-09T00:36:53.627Z" },
+    ]);
+    // never the reviewers' approval_id or anything else the row carries
+    expect(Object.keys(d.reviewers[0]).sort()).toEqual(["comment", "decidedAt", "decision", "userId"]);
+  });
+  it("approval.requested has decision null; a cancel is approval.decided with decision cancelled", () => {
+    const req = serialiseEvent({ ...OUTBOX_APPROVAL_DECIDED, event: "approval.requested" }, APP).data as ApiApprovalEvent;
+    expect(req.decision).toBeNull();
+    const c = serialiseEvent(OUTBOX_APPROVAL_CANCELLED, APP).data as ApiApprovalEvent;
+    expect(c.status).toBe("cancelled");
+    expect(c.decision).toMatchObject({ decision: "cancelled", comment: null });
+    expect(c.decision?.userId).toBe((OUTBOX_APPROVAL_CANCELLED.payload!.approval as Record<string, unknown>).requested_by);
+  });
+  it("approvals: unknown values fall back safely; no app address → url null", () => {
+    const a = serialiseApproval({ id: "a", task_id: "t", workspace_id: W, status: "weird", rule: "most", title: null, note: "" }, [{ user_id: "u", decision: "maybe" }, null, { decision: "approved" }]);
+    expect(a).toMatchObject({ status: "pending", rule: "any", title: "", note: null, url: null, reviewers: [{ userId: "u", decision: null, comment: null, decidedAt: null }] });
   });
   it("throws on an event it doesn't know", () => {
     expect(() => serialiseEvent(ev("user.deleted", {}))).toThrow(/unknown webhook event/);

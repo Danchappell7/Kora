@@ -42,6 +42,7 @@ const EVENT_GROUPS: { label: string; events: WebhookEvent[] }[] = [
   { label: "Comments", events: ["comment.created"] },
   { label: "Projects", events: ["project.created", "project.updated"] },
   { label: "People", events: ["member.joined"] },
+  { label: "Approvals", events: ["approval.requested", "approval.decided"] },
 ];
 const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url; } };
 const retryWords = RETRY_SCHEDULE_MIN.map((m) => (m < 60 ? `${m} min` : `${m / 60} h`)).join(", ");

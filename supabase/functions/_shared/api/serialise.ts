@@ -150,7 +150,8 @@ export interface ApiMe {
 
 export type WebhookEventType =
   | "task.created" | "task.updated" | "task.completed" | "task.deleted"
-  | "comment.created" | "project.created" | "project.updated" | "member.joined";
+  | "comment.created" | "project.created" | "project.updated" | "member.joined"
+  | "approval.requested" | "approval.decided";
 export type WebhookDeliveryType = WebhookEventType | "ping";
 
 /** What a webhook endpoint receives (the POST body). */
@@ -170,6 +171,54 @@ export interface WebhookEnvelope<T = unknown> {
 
 /** comment.created's data: the comment plus the task it's on. */
 export type ApiCommentEvent = ApiComment & { task: { id: string; title: string | null; projectId: string | null; url: string | null } };
+/** One reviewer's review of an approval request (0047). */
+export interface ApiApprovalReviewer {
+  userId: string;
+  /** null: not decided yet */
+  decision: "approved" | "changes_requested" | null;
+  comment: string | null;
+  decidedAt: string | null;
+}
+
+/** An approval request on a task (0047): who asked whom, the rule, and where it stands. */
+export interface ApiApproval {
+  object: "approval";
+  id: string;
+  taskId: string;
+  workspaceId: string;
+  /** who asked (null once their account is deleted) */
+  requestedBy: string | null;
+  /** defaults to the task's title */
+  title: string;
+  note: string | null;
+  /** a file on the task the request is about */
+  attachmentId: string | null;
+  status: "pending" | "approved" | "changes_requested" | "cancelled";
+  /** any: the first approval approves · all: everyone must approve (any "changes requested" decides it either way) */
+  rule: "any" | "all";
+  reviewers: ApiApprovalReviewer[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  resolvedAt: string | null;
+  /** opens the task in Kanbo */
+  url: string | null;
+}
+
+/** approval.decided: the decision that sent it (a cancelled request: "cancelled", by whoever cancelled it). */
+export interface ApiApprovalDecision {
+  userId: string | null;
+  decision: "approved" | "changes_requested" | "cancelled";
+  comment: string | null;
+  decidedAt: string | null;
+}
+
+/** approval.requested / approval.decided's data: the request, its task, and (decided) the decision. */
+export type ApiApprovalEvent = ApiApproval & {
+  task: { id: string; title: string | null; projectId: string | null; workspaceId: string | null; status: ApiStatus | null; dueDate: string | null; url: string | null };
+  /** null for approval.requested */
+  decision: ApiApprovalDecision | null;
+};
+
 /** ping's data. */
 export interface ApiPing { webhookId: string; url: string | null; events: string[]; message: string }
 
@@ -367,6 +416,64 @@ export function serialiseWorkspace(row: Row): ApiWorkspace {
   };
 }
 
+const APPROVAL_STATUSES = ["pending", "approved", "changes_requested", "cancelled"] as const;
+
+/** An approvals row (+ its approval_reviewers rows, as to_jsonb() gives them) → the API's approval. */
+export function serialiseApproval(row: Row, reviewers: unknown, ctx?: SerialiseCtx): ApiApproval {
+  const taskId = str(row.task_id) ?? "";
+  const list = (Array.isArray(reviewers) ? reviewers : []).filter((r): r is Row => !!r && typeof r === "object");
+  return {
+    object: "approval",
+    id: String(row.id),
+    taskId,
+    workspaceId: str(row.workspace_id) ?? "",
+    requestedBy: nonEmpty(row.requested_by),
+    title: str(row.title) ?? "",
+    note: nonEmpty(row.note),
+    attachmentId: nonEmpty(row.attachment_id),
+    status: pick(row.status, APPROVAL_STATUSES, "pending"),
+    rule: row.rule === "all" ? "all" : "any",
+    reviewers: list.filter((r) => nonEmpty(r.user_id)).map((r) => ({
+      userId: String(r.user_id),
+      decision: r.decision === "approved" || r.decision === "changes_requested" ? r.decision : null,
+      comment: nonEmpty(r.comment),
+      decidedAt: isoTime(r.decided_at),
+    })),
+    createdAt: isoTime(row.created_at),
+    updatedAt: isoTime(row.updated_at),
+    resolvedAt: isoTime(row.resolved_at),
+    url: taskId ? taskUrl(taskId, ctx) : null,
+  };
+}
+
+/** The outbox payload of an approval event ({ approval, reviewers, task, decision? }) → its data. */
+export function serialiseApprovalEvent(p: Row, ctx?: SerialiseCtx): ApiApprovalEvent {
+  const asRow = (v: unknown): Row => (v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {});
+  const t = asRow(p.task), d = asRow(p.decision);
+  const tid = nonEmpty(t.id);
+  const decision: ApiApprovalDecision | null = p.decision && typeof p.decision === "object"
+    ? {
+      userId: nonEmpty(d.user_id),
+      decision: d.decision === "approved" || d.decision === "changes_requested" ? d.decision : "cancelled",
+      comment: nonEmpty(d.comment),
+      decidedAt: isoTime(d.decided_at),
+    }
+    : null;
+  return {
+    ...serialiseApproval(asRow(p.approval), p.reviewers, ctx),
+    task: {
+      id: tid ?? "",
+      title: nonEmpty(t.title),
+      projectId: nonEmpty(t.project_id),
+      workspaceId: nonEmpty(t.workspace_id),
+      status: typeof t.status === "string" && (API_STATUSES as readonly string[]).includes(t.status) ? t.status as ApiStatus : null,
+      dueDate: isoDate(t.due_date),
+      url: tid ? taskUrl(tid, ctx) : null,
+    },
+    decision,
+  };
+}
+
 /* ------------------------------------------------------------ webhook events */
 
 /** A row of public.webhook_claim_deliveries() (or webhook_outbox) — what serialiseEvent needs. */
@@ -421,6 +528,10 @@ export function serialiseEvent(o: OutboxEvent, ctx?: SerialiseCtx): WebhookEnvel
       return { ...base, data: serialiseProject(asRow(p.project), ctx), changes: changedFields(p.changes, PROJECT_COLUMN_FIELDS) };
     case "member.joined":
       return { ...base, data: serialiseMember(asRow(p.member)) };
+    case "approval.requested":
+      return { ...base, data: { ...serialiseApprovalEvent(p, ctx), decision: null } };
+    case "approval.decided":
+      return { ...base, data: serialiseApprovalEvent(p, ctx) };
     case "ping": {
       const w = asRow(p.webhook);
       const data: ApiPing = {
