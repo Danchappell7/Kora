@@ -7,11 +7,12 @@
    and text; light theme #FFFFFF fill · #747775 edge · #1F1F1F text,
    dark theme #131314 · #8E918F · #E3E3E3; hover and press as an 8% /
    12% layer of the text colour. Kanbo's own focus ring for keyboards.
-   Plus useGoogleSignIn(): the `hd` hint and whether the provider is on.
+   Plus useGoogleSignIn(): the `hd` hint and whether the button may be
+   used (Google on AND "Confirm email" on: googleSignIn.ts › readiness).
    ============================================================ */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
-import { hdSetting, loadGoogleHint, loadGoogleProviderReady } from "./googleSignIn";
+import { hdSetting, loadGoogleHint, loadGoogleReadiness, type GoogleReadiness } from "./googleSignIn";
 import "./googleButton.css";
 
 export function GoogleButton({ onClick, busy, label = "Continue with Google", describedBy }: {
@@ -44,14 +45,21 @@ export function GoogleG({ size = 20 }: { size?: number }) {
   );
 }
 
-/** For the sign-in page: the `hd` hint (null = none) and whether Google is switched on in
- *  Supabase (null = can't tell yet, so the button shows). Does nothing while `enabled` is false. */
-export function useGoogleSignIn(enabled: boolean): { hd: string | null; providerReady: boolean | null } {
+/** For the sign-in page: the `hd` hint (null = none), whether "Continue with Google" may be used
+ *  ("pending" until Supabase's public settings answer), and `whenReady()`, which waits for that
+ *  answer — a press before it arrives waits too, so Google is never opened while Supabase says
+ *  the provider or "Confirm email" is off. Does nothing while `enabled` is false. */
+export function useGoogleSignIn(enabled: boolean): {
+  hd: string | null;
+  readiness: GoogleReadiness | "pending";
+  whenReady: () => Promise<GoogleReadiness>;
+} {
   const [hd, setHd] = useState<string | null>(() => {
     const s = hdSetting(import.meta.env.VITE_GOOGLE_HD);
     return enabled && s.mode === "fixed" ? s.domain : null;
   });
-  const [providerReady, setProviderReady] = useState<boolean | null>(null);
+  const [readiness, setReadiness] = useState<GoogleReadiness | "pending">(enabled ? "pending" : "unknown");
+  const ready = useRef<Promise<GoogleReadiness> | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
@@ -64,11 +72,15 @@ export function useGoogleSignIn(enabled: boolean): { hd: string | null; provider
       loadGoogleHint({ setting, rpc: () => client.rpc("sign_in_hints"), storage })
         .then((v) => { if (alive) setHd(v); });
     }
-    if (client) {
-      loadGoogleProviderReady({ supabaseUrl: import.meta.env.VITE_SUPABASE_URL as string | undefined, anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined })
-        .then((v) => { if (alive) setProviderReady(v); });
-    }
+    // the public settings, straight from the project's address (no session needed)
+    const p = loadGoogleReadiness({
+      supabaseUrl: import.meta.env.VITE_SUPABASE_URL as string | undefined,
+      anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined,
+    });
+    ready.current = p;
+    void p.then((v) => { if (alive) setReadiness(v); });
     return () => { alive = false; };
   }, [enabled]);
-  return { hd, providerReady };
+  const whenReady = useCallback(async (): Promise<GoogleReadiness> => (ready.current ? ready.current : "unknown"), []);
+  return { hd, readiness, whenReady };
 }

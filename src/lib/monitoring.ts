@@ -20,7 +20,15 @@
                   Bearer values, API keys, webhook secrets, email
                   addresses, PostgREST filters (they can carry what people
                   typed), and any field named like a secret, everywhere
-                  in an event; task text in error context (title, body…)
+                  in an event; task text in error context (title, body…);
+                  and the labels in Sentry's element paths. A click or
+                  keypress breadcrumb, an interaction (INP) span and the
+                  page-load's lcp.element / cls.source.N describe the
+                  element as `div[aria-label="Task: …"] > button`, with the
+                  aria-label, title, name and alt of it and five ancestors:
+                  task titles, project and people's names. Those values go
+                  (`div[aria-label] > button`); a path that doesn't read
+                  cleanly becomes "[element]".
    ============================================================ */
 import * as Sentry from "@sentry/react";
 import { BUILD_INFO } from "./buildInfo";
@@ -117,10 +125,30 @@ const SLACK_HOOK = /(hooks\.slack\.com\/services\/)[A-Za-z0-9/_-]+/gi;
 // PostgREST filters (rest/v1/tasks?title=ilike.*…*) can carry what someone typed
 const REST_QUERY = /(\/(?:rest|storage)\/v1\/[^\s?#"'\\]*)\?[^\s#"'\\]*/g;
 
+/* Sentry's element paths (htmlTreeAsString): `tag#id.class[aria-label="…"][type="…"][name="…"][title="…"][alt="…"]`
+   for the element and up to four ancestors, joined by " > ". The values of aria-label, title, name and alt are
+   what Kanbo shows people (task titles, project and people's names). */
+// strict: a value runs to the `"]` that ends the attribute (another attribute, the next element, or the end)
+const DOM_TEXT_ATTR = /\[(aria-label|title|name|alt)="[\s\S]*?"\](?=\[|\s>\s|$)/g;
+// loose, for any other text (a serialised DOM event's target): up to the first quote
+const DOM_TEXT_ATTR_LOOSE = /\[(aria-label|title|name|alt)="[^"]*"\]/g;
+// one element once the labels are gone: a tag (or component name), #id, .classes, then [label] or a short [attr="token"]
+const DOM_SEGMENT = /^[A-Za-z][A-Za-z0-9_-]*(?:#[^\s#.[\]>"]+)?(?:\.[^\s#.[\]>"]+)*(?:\[(?:aria-label|title|name|alt)\]|\[[a-z][a-z0-9_:.-]{0,40}="[A-Za-z0-9_:.-]{0,40}"\])*$/;
+
+/** A Sentry element path with the labels taken out: `div[aria-label="Task: Q4 plan"] > button.kbtn` →
+ *  `div[aria-label] > button.kbtn`. Fails closed: anything that doesn't read as a plain path (a label
+ *  with `"]` in it, say) becomes "[element]". */
+export function scrubDomPath(path: string): string {
+  if (typeof path !== "string" || !path || path === "<unknown>") return path;
+  const out = path.replace(DOM_TEXT_ATTR, "[$1]");
+  return out.split(" > ").every((seg) => DOM_SEGMENT.test(seg)) ? out : "[element]";
+}
+
 /** Every token, secret and address we know of in a piece of text, replaced by a placeholder. */
 export function scrubText(text: string): string {
   if (!text) return text;
   return scrubCapabilityUrls(text)
+    .replace(DOM_TEXT_ATTR_LOOSE, "[$1]")
     .replace(AUTH_PARAM, "$1:redacted")
     .replace(REST_QUERY, "$1?:redacted")
     .replace(JWT, "[jwt]")
@@ -152,20 +180,45 @@ function redactContent(v: unknown, depth = 0): unknown {
   return v;
 }
 
+type SpanLike = { op?: unknown; origin?: unknown; description?: unknown; data?: Record<string, unknown> | null };
 type Scrubbable = {
   user?: Record<string, unknown> | null;
   request?: { cookies?: unknown; headers?: Record<string, unknown> } | null;
   extra?: Record<string, unknown>;
-  breadcrumbs?: Array<{ data?: Record<string, unknown> } | null>;
+  breadcrumbs?: Array<{ category?: unknown; message?: unknown; data?: Record<string, unknown> } | null>;
+  spans?: Array<SpanLike | null>;
+  contexts?: { trace?: { data?: Record<string, unknown> | null } | null } | null;
   sdk?: Record<string, unknown>;
   sdkProcessingMetadata?: { dynamicSamplingContext?: unknown };
 };
 
-/** Every string in an event's plain data, scrubbed in place (page URL, transaction,
- *  breadcrumbs, spans, contexts), secret-named fields dropped, what people wrote kept
- *  out of error context and breadcrumb data, the user reduced to the hashed id, and
- *  Sentry told not to infer an IP address. Also the trace header's transaction name. */
-export function scrubEvent<T>(event: T): T {
+/** Span attributes that hold an element path: the page load's largest paint and layout shifts. */
+const DOM_PATH_ATTR = /^(?:lcp\.element|cls\.source\.\d+)$/;
+function scrubDomPathAttrs(data: Record<string, unknown> | null | undefined): void {
+  if (!data || typeof data !== "object") return;
+  for (const k of Object.keys(data)) if (DOM_PATH_ATTR.test(k) && typeof data[k] === "string") data[k] = scrubDomPath(data[k] as string);
+}
+
+/** A click or keypress breadcrumb (`ui.click`, `ui.input`): its message is the element's path. */
+const isUiCrumb = (c: { category?: unknown; message?: unknown }): c is { category: string; message: string } =>
+  typeof c.category === "string" && c.category.startsWith("ui.") && typeof c.message === "string";
+
+/** A span named after an element (an interaction / INP span, a layout shift): its description is the path. */
+function isElementSpan(sp: SpanLike): boolean {
+  const op = typeof sp.op === "string" ? sp.op : "";
+  const origin = typeof sp.origin === "string" ? sp.origin : typeof sp.data?.["sentry.origin"] === "string" ? (sp.data["sentry.origin"] as string) : "";
+  return /^ui\.(?:interaction|webvital)/.test(op) || /^auto\.(?:http\.browser\.(?:inp|cls)|ui\.browser\.metrics)\b/.test(origin);
+}
+
+function scrubSpanLike(sp: SpanLike | null | undefined): void {
+  if (!sp || typeof sp !== "object") return;
+  if (typeof sp.description === "string" && isElementSpan(sp)) sp.description = scrubDomPath(sp.description);
+  scrubDomPathAttrs(sp.data);
+}
+
+/** Scrubs every string in plain data in place (scrubText) and drops secret-named fields.
+ *  One per pass: it remembers what it has seen (cycles, shared objects). */
+function deepScrubber(): (v: unknown, depth: number) => unknown {
   const seen = new WeakSet<object>();
   const walk = (v: unknown, depth: number): unknown => {
     if (typeof v === "string") return scrubText(v);
@@ -181,6 +234,15 @@ export function scrubEvent<T>(event: T): T {
     }
     return v;
   };
+  return walk;
+}
+
+/** Every string in an event's plain data, scrubbed in place (page URL, transaction,
+ *  breadcrumbs, spans, contexts), secret-named fields dropped, what people wrote kept
+ *  out of error context and breadcrumb data, the user reduced to the hashed id, and
+ *  Sentry told not to infer an IP address. Also the trace header's transaction name. */
+export function scrubEvent<T>(event: T): T {
+  const walk = deepScrubber();
   try {
     const e = event as unknown as Scrubbable | null;
     if (e && typeof e === "object") {
@@ -192,7 +254,14 @@ export function scrubEvent<T>(event: T): T {
       }
       if (e.request) { delete e.request.cookies; if (e.request.headers) { delete e.request.headers.Cookie; delete e.request.headers.cookie; } }
       if (e.extra) redactContent(e.extra);
-      if (Array.isArray(e.breadcrumbs)) for (const b of e.breadcrumbs) if (b?.data) redactContent(b.data);
+      if (Array.isArray(e.breadcrumbs)) for (const b of e.breadcrumbs) {
+        if (!b) continue;
+        if (b.data) redactContent(b.data);
+        if (isUiCrumb(b)) b.message = scrubDomPath(b.message);   // (second lock: beforeBreadcrumb did it already)
+      }
+      // element paths in a transaction: its spans, and the page load's lcp.element / cls.source.N
+      if (Array.isArray(e.spans)) for (const sp of e.spans) scrubSpanLike(sp);
+      scrubDomPathAttrs(e.contexts?.trace?.data);
     }
     walk(event, 0);
     const meta = e?.sdkProcessingMetadata;
@@ -203,16 +272,28 @@ export function scrubEvent<T>(event: T): T {
   return event;
 }
 
-/** Breadcrumbs as they're recorded: route changes get their template; addresses are scrubbed. */
-export function shapeBreadcrumb<T extends { category?: string; data?: Record<string, unknown> }>(crumb: T): T {
+/** Breadcrumbs as they're recorded: route changes get their template; addresses are scrubbed;
+ *  a click or keypress names its element without the labels (no task titles or people's names). */
+export function shapeBreadcrumb<T extends { category?: string; message?: string; data?: Record<string, unknown> }>(crumb: T): T {
   try {
     if (crumb.category === "navigation" && crumb.data) {
       const to = typeof crumb.data.to === "string" ? crumb.data.to : null;
       if (to) crumb.data.route = routeName(to);
     }
+    if (isUiCrumb(crumb)) crumb.message = scrubDomPath(crumb.message);
     if (crumb.data) for (const k of ["url", "from", "to"]) if (typeof crumb.data[k] === "string") crumb.data[k] = scrubText(crumb.data[k] as string);
   } catch { /* keep the crumb as it was */ }
   return crumb;
+}
+
+/** A span as it's sent (beforeSendSpan: a transaction's spans and standalone ones such as INP):
+ *  element paths without their labels, then the same scrub as everything else. */
+export function scrubSpan<T>(span: T): T {
+  try {
+    scrubSpanLike(span as unknown as SpanLike);
+    deepScrubber()(span, 0);
+  } catch { /* never drop a span over this */ }
+  return span;
 }
 
 /* ---------------- who ---------------- */
@@ -272,6 +353,7 @@ export function initMonitoring(): void {
     beforeBreadcrumb: (crumb) => shapeBreadcrumb(crumb),
     beforeSend: (event) => scrubEvent(event),
     beforeSendTransaction: (event) => scrubEvent(event),
+    beforeSendSpan: (span) => scrubSpan(span),
   });
   try { Sentry.setTag("surface", surfaceOf(window.location.pathname)); } catch { /* no window */ }
 }

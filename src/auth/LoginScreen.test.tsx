@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 
 const h = vi.hoisted(() => ({
   auth: {} as Record<string, unknown>,
@@ -124,8 +124,23 @@ describe("PendingApproval", () => {
 });
 
 describe("Sign in with Google", () => {
-  beforeEach(() => { mockAuth(); try { localStorage.clear(); } catch { /* ignore */ } });
-  afterEach(() => { vi.unstubAllEnvs(); });
+  // GoTrue's public settings (GET /auth/v1/settings): is Google on, and is "Confirm email" off?
+  const settingsBody = (google: boolean, autoconfirm: boolean) =>
+    ({ external: { google, email: true }, disable_signup: false, mailer_autoconfirm: autoconfirm });
+  const answer = (body: unknown) => ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const settingsSay = (google: boolean, autoconfirm: boolean) => fetchMock.mockImplementation(async () => answer(settingsBody(google, autoconfirm)));
+
+  beforeEach(() => {
+    mockAuth();
+    try { localStorage.clear(); } catch { /* ignore */ }
+    vi.stubEnv("VITE_SUPABASE_URL", "https://x.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "anon-public");
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    settingsSay(true, false);                                   // Google on, Confirm email on
+  });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
   it("stays hidden until VITE_ENABLE_GOOGLE is on", () => {
     render(<LoginScreen />);
@@ -162,10 +177,68 @@ describe("Sign in with Google", () => {
     await waitFor(() => expect(a.signInWithGoogle).toHaveBeenLastCalledWith({ hd: null }));
   });
 
-  it("never offers a hint for a free email provider, and not in password reset", () => {
+  it("asks Supabase's public settings with the public key only", async () => {
+    vi.stubEnv("VITE_ENABLE_GOOGLE", "true");
+    render(<LoginScreen />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith("https://x.supabase.co/auth/v1/settings", expect.objectContaining({ headers: { apikey: "anon-public" } }));
+    expect(screen.getByRole("button", { name: "Continue with Google" })).toBeInTheDocument();
+  });
+
+  it("hides the button while Confirm email is off (a same-email password account could belong to a stranger)", async () => {
+    vi.stubEnv("VITE_ENABLE_GOOGLE", "true");
+    settingsSay(true, true);
+    render(<LoginScreen />);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument());
+    expect(screen.queryByText(/Same email, same account/)).not.toBeInTheDocument();
+    // email and password still work
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+  });
+
+  it("hides the button when the provider is off, or when Supabase can't be asked", async () => {
+    vi.stubEnv("VITE_ENABLE_GOOGLE", "true");
+    settingsSay(false, false);
+    const { unmount } = render(<LoginScreen />);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument());
+    unmount();
+    fetchMock.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
+    render(<LoginScreen />);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument());
+  });
+
+  it("a press before Supabase answers waits for it, and never opens Google if Confirm email turns out to be off", async () => {
+    vi.stubEnv("VITE_ENABLE_GOOGLE", "true");
+    let reply: (r: Response) => void = () => {};
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { reply = resolve; }));
+    const a = mockAuth();
+    render(<LoginScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Google" }));
+    expect(await screen.findByRole("button", { name: "Opening Google…" })).toBeDisabled();
+    reply(answer(settingsBody(true, true)));
+    expect(await screen.findByText(/Google sign-in isn’t available right now/)).toBeInTheDocument();
+    expect(a.signInWithGoogle).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Google/ })).not.toBeInTheDocument();
+  });
+
+  it("a press before Supabase answers goes on to Google once it says yes", async () => {
+    vi.stubEnv("VITE_ENABLE_GOOGLE", "true");
+    let reply: (r: Response) => void = () => {};
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { reply = resolve; }));
+    const a = mockAuth();
+    render(<LoginScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Google" }));
+    expect(a.signInWithGoogle).not.toHaveBeenCalled();
+    reply(answer(settingsBody(true, false)));
+    await waitFor(() => expect(a.signInWithGoogle).toHaveBeenCalledWith({ hd: null }));
+  });
+
+  it("never offers a hint for a free email provider, and not in password reset", async () => {
     vi.stubEnv("VITE_ENABLE_GOOGLE", "true");
     vi.stubEnv("VITE_GOOGLE_HD", "gmail.com");
     render(<LoginScreen />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });   // Supabase's answer has landed
+    expect(screen.getByRole("button", { name: "Continue with Google" })).toBeInTheDocument();
     expect(screen.queryByText(/accounts first/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
     expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument();

@@ -9,10 +9,28 @@
                              for six hours on this device. A hint only: anyone
                              can still pick another account ("Use another Google
                              account"), and it never decides who gets in.
-   • provider readiness      GET /auth/v1/settings says whether the Google
-                             provider is switched on in Supabase; when it says
-                             no, the button stays hidden (instead of sending
-                             people to a raw "provider is not enabled" page).
+                             sign_in_hints() is NOT in a migration: it's the
+                             one-off paste supabase/sql/sign_in_hints.sql
+                             (docs/integrations/google-sign-in.md). Until it's
+                             run the rpc answers PGRST202 and there's simply no
+                             hint. It's callable signed out (anon), so it tells
+                             anyone the single auto-approved domain — the same
+                             domain this page shows ("Shows your @… accounts
+                             first"); never a list, never more than that.
+   • readiness               GET /auth/v1/settings says whether the Google
+                             provider is switched on in Supabase AND whether
+                             "Confirm email" is on (mailer_autoconfirm false).
+                             The button is used only when both are: Supabase
+                             links a Google sign-in to the existing account
+                             with the same email, and while Confirm email is
+                             off every password sign-up counts as confirmed —
+                             so a stranger who signed up with someone's
+                             address first (no proof needed) would keep a
+                             password into the account that person then
+                             fills through Google. Off, either way, or when
+                             Supabase can't be asked: no Google button
+                             (instead of a raw "provider is not enabled" page
+                             or a takeover).
    • queryParams             prompt=select_account (shared desks: always ask
                              which account) + hd.
    ============================================================ */
@@ -132,7 +150,11 @@ export async function loadGoogleHint(deps: {
   } catch { return null; }
 }
 
-/* ---------------- is the provider on? ---------------- */
+/* ---------------- may the button be used? ---------------- */
+
+/** How long the sign-in page waits for Supabase's public settings. Until they answer the
+ *  button shows, but a press waits for them (see LoginScreen). */
+export const SETTINGS_TIMEOUT_MS = 8000;
 
 /** GoTrue's public settings: is Google switched on? null when it can't tell. */
 export function parseGoogleProvider(raw: unknown): boolean | null {
@@ -143,23 +165,51 @@ export function parseGoogleProvider(raw: unknown): boolean | null {
   return typeof g === "boolean" ? g : null;
 }
 
-export async function loadGoogleProviderReady(deps: {
+/** GoTrue's public settings: is "Confirm email" OFF (every sign-up counts as confirmed)? null when it can't tell. */
+export function parseEmailAutoconfirm(raw: unknown): boolean | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = (raw as { mailer_autoconfirm?: unknown }).mailer_autoconfirm;
+  return typeof v === "boolean" ? v : null;
+}
+
+/**
+ * Whether "Continue with Google" may be used:
+ * • "ready"             Google is on and so is "Confirm email"
+ * • "provider-off"      the Google provider isn't switched on in Supabase
+ * • "confirm-email-off" Google is on but "Confirm email" is off: linking a Google sign-in to an
+ *                       existing same-email account is only safe once addresses are proven
+ *                       (DEPLOYMENT.md Step 7e), so the button stays hidden
+ * • "unknown"           Supabase couldn't be asked, or didn't say: hidden too (fails closed)
+ */
+export type GoogleReadiness = "ready" | "provider-off" | "confirm-email-off" | "unknown";
+
+export function googleReadiness(settings: unknown): GoogleReadiness {
+  const google = parseGoogleProvider(settings);
+  if (google === false) return "provider-off";
+  const autoconfirm = parseEmailAutoconfirm(settings);
+  if (google === true && autoconfirm === true) return "confirm-email-off";
+  if (google === true && autoconfirm === false) return "ready";
+  return "unknown";
+}
+
+/** Asks GET /auth/v1/settings (public: the anon key only) whether Google sign-in may be used. Never throws. */
+export async function loadGoogleReadiness(deps: {
   supabaseUrl: string | null | undefined;
   anonKey: string | null | undefined;
   fetch?: (url: string, init?: RequestInit) => Promise<Response>;
   timeoutMs?: number;
-}): Promise<boolean | null> {
+}): Promise<GoogleReadiness> {
   const base = (deps.supabaseUrl ?? "").trim().replace(/\/+$/, "");
   const key = (deps.anonKey ?? "").trim();
-  if (!base || !key) return null;
+  if (!base || !key) return "unknown";
   const doFetch = deps.fetch ?? ((u: string, i?: RequestInit) => fetch(u, i));
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), deps.timeoutMs ?? HINT_TIMEOUT_MS);
+  const t = setTimeout(() => ac.abort(), deps.timeoutMs ?? SETTINGS_TIMEOUT_MS);
   try {
     const res = await doFetch(`${base}/auth/v1/settings`, { headers: { apikey: key }, signal: ac.signal });
-    if (!res.ok) return null;
-    return parseGoogleProvider(await res.json());
-  } catch { return null; } finally { clearTimeout(t); }
+    if (!res.ok) return "unknown";
+    return googleReadiness(await res.json());
+  } catch { return "unknown"; } finally { clearTimeout(t); }
 }
 
 /* ---------------- words ---------------- */

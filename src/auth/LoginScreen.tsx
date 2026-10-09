@@ -19,8 +19,11 @@ type Mode = "signin" | "signup" | "reset";
 // signup" toggle in Supabase; this just matches the UI to it.
 const SIGNUP_DISABLED = import.meta.env.VITE_DISABLE_SIGNUP === "true";
 // Google sign-in is hidden until the Google provider is configured in Supabase.
-// Set VITE_ENABLE_GOOGLE=true once OAuth credentials are in place (and it stays
-// hidden while Supabase says the provider is off: useGoogleSignIn). It stays
+// Set VITE_ENABLE_GOOGLE=true once OAuth credentials are in place. It stays
+// hidden while Supabase says the provider is off, or that "Confirm email" is off
+// (Supabase links Google to the same-email account, which is only safe once
+// every address has been proven: googleSignIn.ts › readiness), and a press
+// never opens Google before Supabase has said both are on. It stays
 // available in invite-only mode: existing accounts can always use it, and
 // Supabase's "Disable signup" still blocks unknown Google accounts (the
 // signup_disabled redirect is explained on this screen: authLinks.ts).
@@ -176,8 +179,9 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
   const [resent, setResent] = useState(false);
   const googleOn = googleSignInEnabled();
-  const { hd, providerReady } = useGoogleSignIn(googleOn);
-  const showGoogle = googleOn && providerReady !== false;
+  const { hd, readiness, whenReady } = useGoogleSignIn(googleOn);
+  // shown while Supabase's settings are on their way (no jump in the layout), gone if they say no
+  const showGoogle = googleOn && (readiness === "pending" || readiness === "ready");
   const [googleBusy, setGoogleBusy] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
 
@@ -237,6 +241,13 @@ export function LoginScreen({ initialMode = "signin", onBack }: { initialMode?: 
     if (googleBusy) return;
     reset();
     setGoogleBusy(true);
+    // a press before Supabase's settings arrive waits for them: never Google while
+    // the provider or "Confirm email" is off (then the button goes and this explains)
+    if ((await whenReady()) !== "ready") {
+      setGoogleBusy(false);
+      setError("Google sign-in isn’t available right now. Sign in with your email and password.");
+      return;
+    }
     const res = await signInWithGoogle({ hd: withHint ? hd : null });
     if (res.error) { setGoogleBusy(false); setGoogleError(friendlyGoogleError(res.error, friendlyAuthError)); }
   };

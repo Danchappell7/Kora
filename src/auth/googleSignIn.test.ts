@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   googleSignInEnabled, normaliseDomain, hdSetting, googleQueryParams, oauthRedirectTo, readHintCache, writeHintCache,
-  parseSignInHints, loadGoogleHint, parseGoogleProvider, loadGoogleProviderReady, friendlyGoogleError, usesGoogle,
-  HINT_CACHE_KEY, HINT_CACHE_MS,
+  parseSignInHints, loadGoogleHint, parseGoogleProvider, parseEmailAutoconfirm, googleReadiness, loadGoogleReadiness,
+  friendlyGoogleError, usesGoogle, HINT_CACHE_KEY, HINT_CACHE_MS,
 } from "./googleSignIn";
 
 function memStorage() {
@@ -104,21 +104,62 @@ describe("the hint, cached", () => {
   });
 });
 
-describe("is the provider on?", () => {
+describe("may the button be used?", () => {
+  // GoTrue's GET /auth/v1/settings, as Supabase serves it
+  const settings = (google: unknown, autoconfirm: unknown) =>
+    ({ external: { google, email: true, apple: false }, disable_signup: false, mailer_autoconfirm: autoconfirm, phone_autoconfirm: false, sms_provider: "twilio", saml_enabled: false });
+
   it("reads GoTrue's settings", () => {
     expect(parseGoogleProvider({ external: { google: true, email: true } })).toBe(true);
     expect(parseGoogleProvider({ external: { google: false } })).toBe(false);
     expect(parseGoogleProvider({ external: {} })).toBeNull();
     expect(parseGoogleProvider(null)).toBeNull();
+    expect(parseEmailAutoconfirm(settings(true, true))).toBe(true);
+    expect(parseEmailAutoconfirm(settings(true, false))).toBe(false);
+    expect(parseEmailAutoconfirm({ external: {} })).toBeNull();
+    expect(parseEmailAutoconfirm({ mailer_autoconfirm: "false" })).toBeNull();
+    expect(parseEmailAutoconfirm(null)).toBeNull();
   });
 
-  it("asks /auth/v1/settings with the public key, and can't tell when it fails", async () => {
-    const f = vi.fn(async () => Response.json({ external: { google: false } }));
-    expect(await loadGoogleProviderReady({ supabaseUrl: "https://x.supabase.co/", anonKey: "anon", fetch: f })).toBe(false);
+  it("is ready only when Google is on AND Confirm email is on (mailer_autoconfirm false)", () => {
+    expect(googleReadiness(settings(true, false))).toBe("ready");
+    expect(googleReadiness(settings(false, false))).toBe("provider-off");
+    expect(googleReadiness(settings(false, true))).toBe("provider-off");
+  });
+
+  it("refuses while Confirm email is off: a stranger's unproven password account would be linked", () => {
+    // mailer_autoconfirm: every password sign-up counts as confirmed, so Supabase links a later
+    // Google sign-in for that address to it, and the stranger keeps their password
+    expect(googleReadiness(settings(true, true))).toBe("confirm-email-off");
+  });
+
+  it("fails closed when it can't tell", () => {
+    expect(googleReadiness(settings(true, undefined))).toBe("unknown");
+    expect(googleReadiness(settings(true, null))).toBe("unknown");
+    expect(googleReadiness(settings(undefined, false))).toBe("unknown");
+    expect(googleReadiness({})).toBe("unknown");
+    expect(googleReadiness(null)).toBe("unknown");
+    expect(googleReadiness("ok")).toBe("unknown");
+  });
+
+  it("asks /auth/v1/settings with the public key, and is unknown when that fails", async () => {
+    const f = vi.fn(async () => Response.json(settings(true, false)));
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co/", anonKey: "anon", fetch: f })).toBe("ready");
     expect(f).toHaveBeenCalledWith("https://x.supabase.co/auth/v1/settings", expect.objectContaining({ headers: { apikey: "anon" } }));
-    expect(await loadGoogleProviderReady({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => new Response("", { status: 500 }) })).toBeNull();
-    expect(await loadGoogleProviderReady({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => { throw new Error("offline"); } })).toBeNull();
-    expect(await loadGoogleProviderReady({ supabaseUrl: "", anonKey: "anon" })).toBeNull();
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => Response.json(settings(true, true)) })).toBe("confirm-email-off");
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => Response.json(settings(false, false)) })).toBe("provider-off");
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => new Response("", { status: 500 }) })).toBe("unknown");
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => new Response("<html>", { status: 200 }) })).toBe("unknown");
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: async () => { throw new Error("offline"); } })).toBe("unknown");
+    expect(await loadGoogleReadiness({ supabaseUrl: "", anonKey: "anon" })).toBe("unknown");
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "" })).toBe("unknown");
+  });
+
+  it("gives up on a settings request that hangs", async () => {
+    const hang = vi.fn((_u: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    expect(await loadGoogleReadiness({ supabaseUrl: "https://x.supabase.co", anonKey: "anon", fetch: hang, timeoutMs: 10 })).toBe("unknown");
   });
 });
 

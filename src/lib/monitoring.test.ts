@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   scrubCapabilityUrls, scrubEvent, scrubText, routeName, resolveEnvironment, parseSampleRate, defaultTracesRate,
-  routeLoadSampler, hashUserId, isSaveOp, surfaceOf, sentryIssuesUrl, shapeBreadcrumb,
+  routeLoadSampler, hashUserId, isSaveOp, surfaceOf, sentryIssuesUrl, shapeBreadcrumb, scrubDomPath, scrubSpan,
 } from "./monitoring";
 
 describe("scrubCapabilityUrls", () => {
@@ -118,6 +118,76 @@ describe("scrubEvent (who and what)", () => {
   });
 });
 
+describe("element paths (clicks, keypresses, interaction timings)", () => {
+  // what Sentry's htmlTreeAsString makes of a click inside TaskDetail: the dialog's aria-label is the task title
+  const TASK_CLICK = 'div.ktd-panel[aria-label="Task: Sack Sana Ahmed before Q4"] > div.ktd-head > button.kbtn[type="button"][title="Close"]';
+
+  it("drops aria-label, title, name and alt values, keeping the shape of the path", () => {
+    expect(scrubDomPath(TASK_CLICK)).toBe('div.ktd-panel[aria-label] > div.ktd-head > button.kbtn[type="button"][title]');
+    expect(scrubDomPath('span.ktd-presence[title="Also viewing: Sana Ahmed, Tom Ruiz"]')).toBe("span.ktd-presence[title]");
+    expect(scrubDomPath('button.ksb-pin[aria-label="Pin project Launch \u2014 Acme"]')).toBe("button.ksb-pin[aria-label]");
+    expect(scrubDomPath('input#\u003Ar1\u003A.kfield[type="email"][name="email"]')).toBe('input#:r1:.kfield[type="email"][name]');
+    expect(scrubDomPath('img.kav[alt="Sana Ahmed"]')).toBe("img.kav[alt]");
+    expect(scrubDomPath('div[role="dialog"][aria-label="Task: Sack Sana Ahmed before Q4"] > button.kbtn')).toBe('div[role="dialog"][aria-label] > button.kbtn');
+    expect(scrubDomPath("body > div#root > main.kapp")).toBe("body > div#root > main.kapp");
+    expect(scrubDomPath("<unknown>")).toBe("<unknown>");
+  });
+
+  it("fails closed when a label could fool the parser", () => {
+    for (const hostile of [
+      'div[aria-label="Sana"] > secret plans"] > button',
+      'div[aria-label="Tom said "hi" to Sana"] > button',
+      'li[title="a > b"][data-x="Sana Ahmed"]',
+      'div[aria-label="unterminated Sana Ahmed',
+    ]) {
+      const out = scrubDomPath(hostile);
+      expect(out, hostile).not.toMatch(/Sana|secret|Tom/);
+    }
+    expect(scrubDomPath('div[aria-label="Tom said "hi" to Sana"] > button')).toBe("div[aria-label] > button");
+    expect(scrubDomPath('div[aria-label="Sana"] > secret plans"] > button')).toBe("[element]");
+  });
+
+  it("scrubs click and keypress breadcrumbs as they're recorded, and leaves other crumbs' messages alone", () => {
+    expect(shapeBreadcrumb({ category: "ui.click", message: TASK_CLICK }).message).not.toContain("Sana");
+    expect(shapeBreadcrumb({ category: "ui.input", message: 'input.kfield[name="Sana\u2019s notes"]' }).message).toBe("input.kfield[name]");
+    expect(shapeBreadcrumb({ category: "save", message: "Save failed: updateTask" }).message).toBe("Save failed: updateTask");
+  });
+
+  it("scrubs them again in the event, in transaction spans and in the page load's web-vital attributes", () => {
+    const event = {
+      breadcrumbs: [{ category: "ui.click", message: TASK_CLICK }],
+      spans: [
+        { op: "ui.interaction.click", origin: "auto.ui.browser.metrics", description: TASK_CLICK },
+        { op: "http.client", description: "GET https://x.supabase.co/rest/v1/tasks?title=ilike.*Sana*" },
+      ],
+      contexts: { trace: { data: { "lcp.element": 'h2.ktd-title[title="Sack Sana Ahmed before Q4"]', "cls.source.1": 'li[aria-label="Tom Ruiz"]', "lcp.size": 1200 } } },
+      extra: { __serialized__: { target: 'img.kav[alt="Sana Ahmed"]', isTrusted: true } },
+    };
+    scrubEvent(event);
+    expect(JSON.stringify(event)).not.toMatch(/Sana|Tom/);
+    expect(event.breadcrumbs[0].message).toBe('div.ktd-panel[aria-label] > div.ktd-head > button.kbtn[type="button"][title]');
+    expect(event.spans[0].description).toBe('div.ktd-panel[aria-label] > div.ktd-head > button.kbtn[type="button"][title]');
+    expect(event.contexts.trace.data["lcp.element"]).toBe("h2.ktd-title[title]");
+    expect(event.contexts.trace.data["lcp.size"]).toBe(1200);
+    expect(event.extra.__serialized__.target).toBe("img.kav[alt]");
+  });
+
+  it("scrubs a standalone interaction (INP) span before it's sent", () => {
+    const span = {
+      op: "ui.interaction.click", origin: "auto.http.browser.inp", description: TASK_CLICK,
+      data: { "sentry.origin": "auto.http.browser.inp", transaction: "/p/:id/board", user: "3f9a0c1b2d4e5f60718a", "http.query": "?q=Sana" },
+    };
+    expect(scrubSpan(span)).toBe(span);
+    expect(span.description).toBe('div.ktd-panel[aria-label] > div.ktd-head > button.kbtn[type="button"][title]');
+    expect(span.data.transaction).toBe("/p/:id/board");
+    expect(span.data["http.query"]).toBe("[redacted]");
+    expect(JSON.stringify(span)).not.toContain("Sana");
+    // a span that isn't named after an element keeps its name (scrubbed like any text)
+    const fetchSpan = { op: "http.client", description: "GET /rest/v1/tasks?title=eq.Sana", data: {} };
+    expect(scrubSpan(fetchSpan).description).toBe("GET /rest/v1/tasks?:redacted");
+  });
+});
+
 describe("routes, environment and sampling", () => {
   it("names a route by its template", () => {
     expect(routeName("/p/9f0c2b9e-1111-4111-8111-111111111111/board")).toBe("/p/:id/board");
@@ -228,6 +298,9 @@ describe("with a DSN", () => {
     expect(opts.dsn).toBe("https://pub@o1.ingest.sentry.io/42");
     expect(opts.sendDefaultPii).toBe(false);
     expect(typeof opts.tracesSampler).toBe("function");
+    expect(typeof opts.beforeBreadcrumb).toBe("function");
+    expect(typeof opts.beforeSendSpan).toBe("function");
+    expect(opts.beforeBreadcrumb({ category: "ui.click", message: 'button[aria-label="Delete Sana\u2019s task"]' }).message).toBe("button[aria-label]");
     expect(opts.environment).toBe(m.MONITORING_ENVIRONMENT);
     // route-load spans are named by template
     const bt = sentry.browserTracingIntegration.mock.calls[0][0] as { beforeStartSpan: (o: { name: string; attributes?: Record<string, unknown> }) => { name: string; attributes: Record<string, unknown> } };
