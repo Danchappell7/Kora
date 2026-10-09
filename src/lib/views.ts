@@ -5,7 +5,8 @@
    • Rules (the database enforces them): you read your own and the shared
      ones of your workspaces (guests too, read-only); writers share; you
      edit your own; owners/admins also rename, unpin or delete shared
-     ones (they stay their maker's). A pinned shared view is pinned for
+     ones (they stay their maker's, and only the maker may stop sharing
+     one: canShareView). A pinned shared view is pinned for
      everyone; each person may hide one for themselves and order the
      sidebar their own way (per-viewer, localStorage "kanbo-views-order:<userId>"
      and "kanbo-views-hidden:<userId>").
@@ -79,6 +80,10 @@ const S = {
   scopes: new Map<string, ScopeState>(),
   /** writes in flight per id: a refetch never puts back a value that's being changed */
   writes: new Map<string, number>(),
+  /** a counter that moves on every create / delete made here; `touched` holds each id's stamp, so a
+   *  fetch that began earlier neither drops a view just made nor brings back one just deleted */
+  seq: 0,
+  touched: new Map<string, number>(),
   prefs: null as ViewerPrefs | null,
   /** adopt_saved_searches, once a session per person (lib/savedViews/remote) */
   adoption: null as { uid: string; done: Promise<boolean> } | null,
@@ -98,7 +103,7 @@ export function viewInScope(v: Pick<SavedView, "workspaceId" | "kind">, ws: stri
 }
 
 function clear(): void {
-  S.byId.clear(); S.legacy.clear(); S.pendingDelete.clear(); S.scopes.clear(); S.writes.clear();
+  S.byId.clear(); S.legacy.clear(); S.pendingDelete.clear(); S.scopes.clear(); S.writes.clear(); S.touched.clear();
   S.prefs = null; S.adoption = null; S.demoSeeded = false;
 }
 /** Start afresh for another person (sign-out / sign-in as someone else). */
@@ -193,15 +198,18 @@ export function orderViews<T extends Pick<SavedView, "id" | "position" | "create
 
 /* ---------- loading a scope ---------- */
 
-/** Load a scope (once; again on reload / a realtime change — one that lands mid-load runs once more after it). */
+/** Load a scope (once; again on reload / a realtime change — one that lands mid-load runs once more after it).
+ *  A reload of a scope that's already on screen is quiet: readers hear about it only if something changed. */
 function ensureScope(ws: string | null, force = false): Promise<void> {
   const key = scopeKey(ws);
   const cur = S.scopes.get(key);
   if (cur?.promise) { if (force) cur.again = true; return cur.promise; }
   if (cur && !force && cur.status === "ready") return Promise.resolve();
+  const was = { status: cur?.status, error: cur?.error ?? null };
   const state: ScopeState = { status: cur?.status === "ready" ? "ready" : "loading", error: null, promise: null };
   S.scopes.set(key, state);
   const owner = S.owner;
+  const since = S.seq;
   const settle = () => {
     state.promise = null;
     if (state.again && S.owner === owner) { state.again = false; void ensureScope(ws, true); }
@@ -211,7 +219,8 @@ function ensureScope(ws: string | null, force = false): Promise<void> {
     if (S.owner !== owner) return;
     state.status = "ready"; state.error = null;
     settle();
-    m.mergeScope(ws, views, legacyIds);
+    const changed = m.mergeScope(ws, views, legacyIds, since);
+    if (!changed && (was.status !== "ready" || was.error !== null)) emit();
   }).catch((e: unknown) => {
     if (S.owner !== owner) return;
     // (mapped by the network layer; a failure to load that layer itself reads as offline)
@@ -219,8 +228,18 @@ function ensureScope(ws: string | null, force = false): Promise<void> {
     settle();
     emit();
   });
-  emit();
+  if (state.status !== was.status || was.error !== null) emit();
   return state.promise;
+}
+
+/** Arriving in a scope: load it — or, when it was loaded on an earlier visit, show that at once and
+ *  look again in the background (the realtime channel only listens to the scope on screen, so
+ *  teammates' changes made while you were elsewhere arrive this way). Several readers arriving
+ *  together share one load. */
+function enterScope(ws: string | null): Promise<void> {
+  const cur = S.scopes.get(scopeKey(ws));
+  if (cur?.promise) return cur.promise;
+  return ensureScope(ws, cur?.status === "ready");
 }
 
 /* ============================================================
@@ -247,7 +266,7 @@ export function useSavedViews(workspaceId: string | null, currentUserId: string,
   const version = useSyncExternalStore(subscribeStore, getVersion, getVersion);
   useEffect(() => {
     if (!enabled) return;
-    void ensureScope(workspaceId);
+    void enterScope(workspaceId);
     let t = 0;
     const off = subscribeSavedViews(workspaceId, () => {
       window.clearTimeout(t);
@@ -278,11 +297,13 @@ export function useSavedViews(workspaceId: string | null, currentUserId: string,
   }, [version, workspaceId, enabled, currentUserId]);
 }
 
+/** The marks as one string: a reader re-renders only when they change, not on every store update. */
+const marksKey = () => `${prefs().hidden.join(",")}|${[...S.legacy].join(",")}`;
 /** This viewer's hidden views and the old saved searches, kept live (the Sidebar's marks). */
 export function useViewerMarks(): { hiddenIds: ReadonlySet<string>; legacyIds: ReadonlySet<string> } {
-  const version = useSyncExternalStore(subscribeStore, getVersion, getVersion);
+  const key = useSyncExternalStore(subscribeStore, marksKey, marksKey);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(() => ({ hiddenIds: new Set(prefs().hidden), legacyIds: new Set(S.legacy) }), [version]);
+  return useMemo(() => ({ hiddenIds: new Set(prefs().hidden), legacyIds: new Set(S.legacy) }), [key]);
 }
 
 /** One view by id, from the store (App resolving ?view= / /search/list/:id). */
@@ -473,13 +494,15 @@ export function viewCounts(views: readonly SavedView[], ctx: ViewContext): Recor
   return out;
 }
 
-/** Where the view opens. */
+/** Where the view opens. My tasks: its tab (Waiting on / Done), or its due focus (a view saved from Due today,
+ *  Overdue or Due this week opens there, ?due=, as those lists do). */
 export function viewRoute(view: SavedView): Route {
   const q = view.query ?? { v: 1 };
   if (view.kind === "search") return { view: "search", list: view.id };
   if (view.kind === "project") return q.projectId ? { view: "project", projectId: q.projectId, tab: q.viewType ?? "list", savedViewId: view.id } : { view: "projects" };
-  const tab = q.list === "waiting" || q.list === "done" ? q.list : undefined;
-  return tab ? { view: "tasks", tab, savedViewId: view.id } : { view: "tasks", savedViewId: view.id };
+  if (q.list === "waiting" || q.list === "done") return { view: "tasks", tab: q.list, savedViewId: view.id };
+  if (q.list === "today" || q.list === "overdue" || q.list === "week") return { view: "tasks", list: q.list, savedViewId: view.id };
+  return { view: "tasks", savedViewId: view.id };
 }
 
 /** Is this view the page on screen? */
@@ -495,6 +518,12 @@ export function canEditView(view: Pick<SavedView, "userId" | "shared" | "workspa
 /** May this person share views here? (writers in a team workspace; never Personal, never guests)  [final] */
 export function canShareViews(role: Role | null, workspaceId: string | null): boolean {
   return workspaceId !== null && (role === "owner" || role === "admin" || role === "member");
+}
+/** May this person share this view, or stop sharing it? Only its maker, where they may share. An owner/admin
+ *  may rename, unpin or delete a teammate's shared view, but the database never lets them make it private
+ *  (it would then be a row they can't read). */
+export function canShareView(view: Pick<SavedView, "userId" | "workspaceId">, me: { userId: string; role: Role | null }): boolean {
+  return !!me.userId && view.userId === me.userId && canShareViews(me.role, view.workspaceId);
 }
 
 /* ============================================================

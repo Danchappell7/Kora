@@ -141,6 +141,27 @@ describe("Sidebar › Views", () => {
     expect(rowNames()).toEqual(["Urgent and mine", "Blocked in the launch", "Design in review"]);
   });
 
+  it("an owner/admin can't make a teammate's shared view private: no Stop sharing (the database would refuse it)", async () => {
+    for (const myRole of ["admin", "owner"] as const) {
+      const r = await renderViews({ myRole });
+      openMenu("Blocked in the launch");
+      const items = within(screen.getByRole("menu")).getAllByRole("menuitem").map((m) => m.textContent?.replace(/[⌥↑↓]|F2/g, "").trim());
+      expect(items).toEqual(["Rename", "Edit view…", "Change icon…", "Unpin for everyone", "Hide from my sidebar", "Move up", "Move down", "Copy link", "Delete view"]);
+      r.unmount();
+      resetSavedViewsForTests();
+    }
+  });
+
+  it("its maker stops sharing it: the toast comes once it's done", async () => {
+    await renderViews({ myRole: "member", currentUserId: "m-3" });
+    openMenu("Blocked in the launch");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stop sharing" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(getSavedView("sv-demo-blocked")!.shared).toBe(false);
+    expect(screen.getByRole("status")).toHaveTextContent("“Blocked in the launch” is just yours again");
+    expect(screen.getByRole("button", { name: "Blocked in the launch, 1 task" })).toBeInTheDocument();
+  });
+
   it("renames in place: Enter saves, Escape keeps the old name, focus comes back to the row", async () => {
     await renderViews();
     openMenu("Urgent and mine");
@@ -247,6 +268,16 @@ describe("Sidebar › Views (lazy sheets)", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit view…" }));
     expect(await screen.findByRole("dialog", { name: "Edit view" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "View name" })).toHaveValue("Urgent and mine");
+  });
+
+  it("an admin editing a teammate's shared view gets no Share switch, and is told who can stop sharing it", async () => {
+    await renderViews({ myRole: "admin" });
+    openMenu("Blocked in the launch");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit view…" }));
+    const dlg = await screen.findByRole("dialog", { name: "Edit view" });
+    expect(within(dlg).queryByRole("switch", { name: /^Share with/ })).not.toBeInTheDocument();
+    expect(within(dlg).getByRole("switch", { name: "Pin to sidebar" })).toBeInTheDocument();
+    expect(dlg).toHaveTextContent(/Made by Sana.*Only Sana.* can stop sharing it\./);
   });
 
   it("“Change icon…” opens the editor on its icon picker", async () => {

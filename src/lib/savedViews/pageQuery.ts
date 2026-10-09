@@ -10,15 +10,18 @@
      grouping and sort. "@me" (assigned to whoever is looking) becomes the
      viewer's id.
    suggestViewName: "Urgent · Design", "Blocked in Q3 Product Launch".
-   applyViewToTasksPageStorage: arriving on a view, write its filters,
-     grouping and sort where TasksPage (and App's per-project prefs) read
-     them on mount, so keying the page by the view id shows it at once.
+   viewPageStart: arriving on a view, the state TasksPage starts from —
+     its filters, title filter, grouping and sort, as the page's own
+     values. A view has its own state: nothing is written to the keys
+     where the page keeps the person's own filters, grouping and sort
+     ("kanbo-filters:<my | project>", "kanbo-groupby-my",
+     "kanbo-board-group", "kanbo-pview-<id>", "kanbo-sort"), so plain My
+     tasks or the project is as they left it once they leave the view.
    Pure; used by the toolbars (lazy chunks) and the editor.
    ============================================================ */
 import type { SavedView, SavedViewKind, SavedViewQuery, SavedViewType } from "../../data/types";
 import { getMember, getProject, PRIORITY_META, STATUS_META, TAGS } from "../../data/data";
 import { VIEW_CUSTOM_PREFIX, VIEW_ME } from "../views";
-import { filtersKey } from "../taskOps";
 
 /** What a tasks page is showing. Missing or "all" = no filter. */
 export interface PageViewState {
@@ -124,26 +127,51 @@ export function suggestViewName(state: Pick<PageViewState, "scope" | "projectId"
 const LIST_GROUPS = ["status", "section", "priority", "project", "due", "none"];
 const BOARD_GROUPS = ["status", "priority", "project", "assignee"];
 const SORTS = ["manual", "due", "priority", "title"];
-const put = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+const DUE_FOCUS = ["today", "overdue", "week"] as const;
 
-/** Arriving on a saved view (route.savedViewId): write its filters (lib/taskOps filtersKey: "my" or the project id),
- *  grouping and sort into the keys TasksPage reads when it mounts (My tasks: "kanbo-groupby-my"; a board:
- *  "kanbo-board-group"; a project's list: App's "kanbo-pview-<id>" groupBy; "kanbo-sort"). Returns the page state
- *  (its tab and title filter, which aren't stored: hand them to the page). */
-export function applyViewToTasksPageStorage(view: Pick<SavedView, "kind" | "query">, currentUserId: string): PageViewState & { filters: PageFilters } {
+/** What a tasks page starts from on a saved view (TasksPage's `viewStart`). */
+export interface ViewPageStart {
+  /** the view: key the page by it, so every arrival starts afresh */
+  viewId: string;
+  scope: "my" | "project";
+  projectId?: string;
+  /** My tasks: "open" | "waiting" | "done"; a project: its view type */
+  tab: string;
+  /** My tasks: a view saved from Due today / Overdue / Due this week opens on that group */
+  dueFocus?: "today" | "overdue" | "week";
+  /** the title filter */
+  text: string;
+  filters: PageFilters;
+  /** My tasks' grouping (in place of "kanbo-groupby-my") */
+  myGroup?: string;
+  /** a project board's columns (in place of "kanbo-board-group") */
+  boardGroup?: string;
+  /** a project list's grouping (in place of App's "kanbo-pview-<id>" groupBy) */
+  listGroup?: string;
+  /** in place of "kanbo-sort" */
+  sort?: string;
+  sortDir?: "asc" | "desc";
+}
+
+/** Arriving on a saved view (route.savedViewId): the state the page starts from. Writes nothing — the
+ *  page holds it while the view is open (changes there are the view's, to Update or Save as new) and
+ *  leaves the person's own stored filters, grouping and sort alone. Groupings and sorts the page doesn't
+ *  know are left out (the page's own default applies). "@me" becomes the viewer. */
+export function viewPageStart(view: Pick<SavedView, "id" | "kind" | "query">, currentUserId: string): ViewPageStart {
   const state = pageStateFromView(view, currentUserId);
-  const scope = state.scope === "project" ? state.projectId ?? "" : "my";
-  if (scope) put(filtersKey(scope), JSON.stringify(state.filters));
   const g = state.groupBy;
-  if (g) {
-    if (state.scope === "my" && LIST_GROUPS.includes(g)) put("kanbo-groupby-my", g);
-    else if (state.scope === "project" && state.tab === "board" && BOARD_GROUPS.includes(g)) put("kanbo-board-group", g);
-    else if (state.scope === "project" && state.projectId && LIST_GROUPS.includes(g)) {
-      let prev: Record<string, unknown> = {};
-      try { prev = JSON.parse(localStorage.getItem(`kanbo-pview-${state.projectId}`) || "{}") as Record<string, unknown>; } catch { /* bad JSON */ }
-      put(`kanbo-pview-${state.projectId}`, JSON.stringify({ ...prev, view: state.tab ?? "list", groupBy: g }));
-    }
-  }
-  if (state.sort && SORTS.includes(state.sort)) put("kanbo-sort", state.sort);
-  return state;
+  const project = state.scope === "project";
+  const list = view.query?.list;
+  const start: ViewPageStart = {
+    viewId: view.id, scope: state.scope, tab: project ? state.tab ?? "list" : list === "waiting" || list === "done" ? list : "open",
+    text: state.text ?? "", filters: state.filters,
+  };
+  if (project && state.projectId) start.projectId = state.projectId;
+  if (!project && (DUE_FOCUS as readonly string[]).includes(list ?? "")) start.dueFocus = list as ViewPageStart["dueFocus"];
+  if (g && !project && LIST_GROUPS.includes(g)) start.myGroup = g;
+  if (g && project && state.tab === "board" && BOARD_GROUPS.includes(g)) start.boardGroup = g;
+  if (g && project && state.tab !== "board" && LIST_GROUPS.includes(g)) start.listGroup = g;
+  if (state.sort && SORTS.includes(state.sort)) start.sort = state.sort;
+  if (state.sortDir) start.sortDir = state.sortDir;
+  return start;
 }

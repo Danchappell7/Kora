@@ -5,8 +5,10 @@ import {
   viewMatchesTask, viewCount, viewCountOrNull, viewCounts, viewRoute, isViewActive, viewInScope, orderViews,
   useSavedViews, createSavedView, updateSavedView, deleteSavedView, stageDeleteSavedView, reorderSavedViews, setViewHidden,
   listSavedViews, resetSavedViewsForTests, getSavedView, DEMO_SAVED_VIEWS, VIEW_ME, SAVED_VIEW_COLUMNS, warmSavedViews,
-  viewBucketOf, viewWaitingIds,
+  viewBucketOf, viewWaitingIds, canEditView, canShareView, savedViewFailure,
 } from "./views";
+import { positionChanges } from "./savedViews/remote";
+import { pathOf, routeOf } from "./nav";
 import { bucketWaiting, openBucketOf } from "./myTaskBuckets";
 import { savedViewMessage } from "./savedViews/messages";
 
@@ -146,10 +148,21 @@ describe("where a view opens", () => {
   it("My tasks (its tab), a project's view type, or Search's list", () => {
     expect(viewRoute(view("my_tasks", { v: 1, list: "open" }))).toEqual({ view: "tasks", savedViewId: "v1" });
     expect(viewRoute(view("my_tasks", { v: 1, list: "waiting" }))).toEqual({ view: "tasks", tab: "waiting", savedViewId: "v1" });
+    expect(viewRoute(view("my_tasks", { v: 1, list: "done" }))).toEqual({ view: "tasks", tab: "done", savedViewId: "v1" });
     expect(viewRoute(view("project", { v: 1, projectId: "p-launch", viewType: "board" }))).toEqual({ view: "project", projectId: "p-launch", tab: "board", savedViewId: "v1" });
     expect(viewRoute(view("project", { v: 1, projectId: "p-launch" }))).toEqual({ view: "project", projectId: "p-launch", tab: "list", savedViewId: "v1" });
     expect(viewRoute(view("project", { v: 1 }))).toEqual({ view: "projects" });
     expect(viewRoute(view("search", { v: 1 }))).toEqual({ view: "search", list: "v1" });
+  });
+  it("a My tasks view saved from Due today / Overdue / Due this week keeps its due focus, in the link too", () => {
+    for (const list of ["today", "overdue", "week"] as const) {
+      const r = viewRoute(view("my_tasks", { v: 1, list }));
+      expect(r).toEqual({ view: "tasks", list, savedViewId: "v1" });
+      // Copy link goes through pathOf: the address carries both, and reads back the same
+      expect(pathOf(r)).toBe(`/tasks?due=${list}&view=v1`);
+      const [path, qs] = pathOf(r).split("?");
+      expect(routeOf(path, `?${qs}`)).toEqual(r);
+    }
   });
   it("knows when it's the page on screen", () => {
     expect(isViewActive(view("search", { v: 1 }), { view: "search", list: "v1" })).toBe(true);
@@ -166,6 +179,16 @@ describe("where a view opens", () => {
     const a = view("search", { v: 1 }, { id: "a", position: 3 }), b = view("search", { v: 1 }, { id: "b", position: 1 }), c = view("search", { v: 1 }, { id: "c", position: null });
     expect(orderViews([a, b, c], []).map((v) => v.id)).toEqual(["b", "a", "c"]);
     expect(orderViews([a, b, c], ["c"]).map((v) => v.id)).toEqual(["c", "b", "a"]);
+  });
+  it("only its maker shares a view or stops sharing it; an owner/admin may still edit a teammate's shared one", () => {
+    const sanas = view("my_tasks", { v: 1 }, { userId: "sana", shared: true });
+    const admin = { userId: "me", role: "admin" as const };
+    expect(canEditView(sanas, admin)).toBe(true);
+    expect(canShareView(sanas, admin)).toBe(false);
+    expect(canShareView(sanas, { userId: "sana", role: "member" })).toBe(true);
+    expect(canShareView(view("my_tasks", { v: 1 }), { userId: "me", role: "guest" })).toBe(false);
+    expect(canShareView(view("search", { v: 1 }, { workspaceId: null }), { userId: "me", role: "owner" })).toBe(false);
+    expect(canShareView(view("my_tasks", { v: 1 }, { userId: "" }), { userId: "", role: "owner" })).toBe(false);
   });
   it("explains failures in a sentence", () => {
     expect(savedViewMessage("too_many")).toMatch(/300 saved views/);
@@ -234,7 +257,9 @@ describe("the store, in demo mode", () => {
     await act(async () => { await reorderSavedViews(["sv-demo-design", "sv-demo-blocked", "sv-demo-urgent"]); });
     expect(result.current.pinned.map((v) => v.id)).toEqual(["sv-demo-design", "sv-demo-blocked", "sv-demo-urgent"]);
     expect(JSON.parse(localStorage.getItem("kanbo-views-order:m-self")!).slice(0, 3)).toEqual(["sv-demo-design", "sv-demo-blocked", "sv-demo-urgent"]);
-    expect(getSavedView("sv-demo-design")!.position).toBe(1024);
+    // only the view that moved is written: it goes before yours that it now leads
+    expect(getSavedView("sv-demo-urgent")!.position).toBe(1024);
+    expect(getSavedView("sv-demo-design")!.position).toBeLessThan(1024);
     // Sana's shared view keeps its position (not yours to move for everyone)
     expect(getSavedView("sv-demo-blocked")!.position).toBe(2048);
     act(() => setViewHidden("sv-demo-blocked", true));
@@ -242,6 +267,21 @@ describe("the store, in demo mode", () => {
     expect(result.current.hiddenIds.has("sv-demo-blocked")).toBe(true);
     act(() => setViewHidden("sv-demo-blocked", false));
     expect(result.current.pinned).toHaveLength(3);
+  });
+
+  it("refuses an owner/admin making a teammate's shared view private, as the database does (renaming is fine)", async () => {
+    const { result } = hook();
+    await flush();
+    let err: unknown = null;
+    await act(async () => { await updateSavedView("sv-demo-blocked", { shared: false }).catch((e: unknown) => { err = e; }); });
+    expect(savedViewFailure(err)).toBe("not_allowed");
+    expect(result.current.views.find((v) => v.id === "sv-demo-blocked")!.shared).toBe(true);
+    await act(async () => { await updateSavedView("sv-demo-blocked", { name: "Launch blockers", pinned: false }); });
+    expect(getSavedView("sv-demo-blocked")).toMatchObject({ name: "Launch blockers", pinned: false, shared: true });
+    // your own: share and unshare as you like
+    await act(async () => { await updateSavedView("sv-demo-urgent", { shared: true }); });
+    await act(async () => { await updateSavedView("sv-demo-urgent", { shared: false }); });
+    expect(getSavedView("sv-demo-urgent")!.shared).toBe(false);
   });
 
   it("someone else signing in starts afresh", async () => {
@@ -284,5 +324,34 @@ describe("the first download's own copies of My tasks' rules agree with lib/myTa
   it("Waiting on", () => {
     expect([...viewWaitingIds(list, "me")].sort()).toEqual([...bucketWaiting(list, "me").reasons.keys()].sort());
     expect(viewWaitingIds(list, "").size).toBe(0);
+  });
+});
+
+describe("positions after a reorder: the fewest writes", () => {
+  const at = (ids: string[], positions: (number | null)[]) => ids.map((id, i) => ({ id, position: positions[i] }));
+  it("moving one view writes one position, between its new neighbours", () => {
+    // 40 old saved searches adopted at their creation time (seconds since 1970)
+    const list = Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`, position: 1727000000 + i }));
+    const swapped = [list[1], list[0], ...list.slice(2)];
+    const w = positionChanges(swapped);
+    expect(w.size).toBe(1);
+    const [[id, pos]] = [...w];
+    const after = swapped.map((v) => (v.id === id ? { ...v, position: pos } : v));
+    for (let i = 1; i < after.length; i++) expect(after[i].position!).toBeGreaterThan(after[i - 1].position!);
+    // to the end, to the front
+    expect([...positionChanges([...list.slice(1), list[0]])]).toEqual([["s0", 1727000039 + 1024]]);
+    expect([...positionChanges([list[39], ...list.slice(0, 39)])]).toEqual([["s39", 1727000000 - 1024]]);
+  });
+  it("nothing to write when they're already in order; unplaced ones (no position) fill in", () => {
+    expect(positionChanges(at(["a", "b", "c"], [1, 2, 3])).size).toBe(0);
+    expect([...positionChanges(at(["a", "b", "c"], [1024, null, 3072]))]).toEqual([["b", 2048]]);
+    expect([...positionChanges(at(["a", "b"], [null, null]))]).toEqual([["a", 1024], ["b", 2048]]);
+    // equal positions can't say which comes first
+    expect(positionChanges(at(["a", "b"], [5, 5])).size).toBe(1);
+  });
+  it("renumbers everything only when there's no room left between two neighbours", () => {
+    expect([...positionChanges(at(["a", "c", "b"], [1, 3, 2]))]).toEqual([["c", 1.5]]);
+    const tight = positionChanges(at(["a", "c", "b"], [1, 1.0004, 1.0002]));
+    expect([...tight]).toEqual([["a", 1024], ["c", 2048], ["b", 3072]]);
   });
 });

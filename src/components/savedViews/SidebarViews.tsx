@@ -8,10 +8,11 @@
      opens the view), or ⌥↑ / ⌥↓ on a focused row, or the ⋯ menu's
      Move up / Move down (the way on touch); a polite live region says
      where it went. The order is yours (this device; your own views'
-     positions follow).
+     positions follow — only the moved one is written, as a rule).
    • ⋯ or a right-click (Shift+F10, the context-menu key, a long press on
      Android): rename in place (also F2), edit, change the icon, share /
-     stop sharing, unpin (for everyone, on a shared view), hide a
+     stop sharing (your own views only), unpin (for everyone, on a shared
+     view), hide a
      teammate's from your sidebar, copy its link, delete with Undo.
      Guests and anyone else who can't change a view get only what's theirs
      to do: details, hide, order, link.
@@ -173,10 +174,10 @@ export function SidebarViews({ views, counts: hostCounts, tasks, route, currentU
     warm();
     setMenuFor(v.id);
   };
+  // the sidebar's rows in their new order (the views off the sidebar keep their places after them)
   const commitOrder = (shownIds: string[]) => {
-    const rest = views.map((v) => v.id).filter((id) => !shownIds.includes(id));
     let result: void | Promise<unknown>;
-    try { result = (onReorderViews ?? reorderSavedViews)([...shownIds, ...rest]); } catch (e) { result = Promise.reject(e); }
+    try { result = (onReorderViews ?? reorderSavedViews)(shownIds); } catch (e) { result = Promise.reject(e); }
     Promise.resolve(result).catch(fail);
   };
   const moveBy = (v: SavedView, delta: -1 | 1) => {

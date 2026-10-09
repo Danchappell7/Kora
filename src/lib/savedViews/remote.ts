@@ -112,37 +112,76 @@ export async function fetchScope(workspaceId: string | null): Promise<{ views: S
   return { views: [...views, ...fromLegacy], legacyIds: new Set(fromLegacy.map((v) => v.id)) };
 }
 
-/** Replace a scope's views with what the server returned (keeping values that are being written). */
-export function mergeScope(ws: string | null, rows: SavedView[], legacyIds: Set<string>): void {
+/** The same view, field for field? (a reload that changed nothing keeps every object, and tells no one) */
+const sameView = (a: SavedView, b: SavedView) => a === b || JSON.stringify(a) === JSON.stringify(b);
+
+/** Replace a scope's views with what the server returned (keeping values that are being written, and anything
+ *  made or deleted here since the fetch began: `since` is S.seq when it started). Readers hear about it only
+ *  when something changed; returns whether it did. */
+export function mergeScope(ws: string | null, rows: SavedView[], legacyIds: Set<string>, since = Infinity): boolean {
+  const newer = (id: string) => (S.touched.get(id) ?? -1) > since;
   const incoming = new Map(rows.map((v) => [v.id, v]));
+  let changed = false;
   for (const [id, v] of S.byId) {
-    if (viewInScope(v, ws) && !incoming.has(id) && !S.writes.get(id)) { S.byId.delete(id); S.legacy.delete(id); }
+    if (viewInScope(v, ws) && !incoming.has(id) && !S.writes.get(id) && !newer(id)) { S.byId.delete(id); S.legacy.delete(id); changed = true; }
   }
   for (const v of rows) {
     if (S.writes.get(v.id)) continue;
-    S.byId.set(v.id, v);
+    const cur = S.byId.get(v.id);
+    if (!cur && newer(v.id)) continue;   // deleted here after the fetch read it
+    if (!cur || !sameView(cur, v)) { S.byId.set(v.id, v); changed = true; }
+    const wasLegacy = S.legacy.has(v.id);
     if (legacyIds.has(v.id)) S.legacy.add(v.id); else S.legacy.delete(v.id);
+    if (wasLegacy !== S.legacy.has(v.id)) changed = true;
   }
-  store.emit();
+  if (changed) store.emit();
+  return changed;
 }
 
 /** Your views + the workspace's shared ones (workspaceId null: Personal's). Adopts old saved searches once. */
 export async function listSavedViews(workspaceId: string | null): Promise<SavedView[]> {
+  const since = S.seq;
   const { views, legacyIds } = await fetchScope(workspaceId);
-  mergeScope(workspaceId, views, legacyIds);
+  mergeScope(workspaceId, views, legacyIds, since);
   return orderViews(views);
 }
 
-/** Realtime: any change to saved_views you may see (RLS decides; a DELETE carries only the id, so it means "look again"). */
+/** Realtime: the changes to this scope's views — the workspace's rows, and your own (your personal searches
+ *  follow you everywhere). Each listener is filtered on the server: a client never hears about other
+ *  workspaces' views. A DELETE can't be filtered (it carries only the id, and Postgres doesn't check row
+ *  security for it), so one counts only when it's a view held here. */
+type RowChange = { eventType?: string; new?: Record<string, unknown> | null; old?: Record<string, unknown> | null };
 let channelSeq = 0;
 export function subscribeSavedViews(workspaceId: string | null, onChange: () => void): () => void {
   const client = supabase;
   if (!client) return () => undefined;
   let off = false;
   const fire = () => { if (!off) onChange(); };
-  const ch = client.channel(`saved-views-${workspaceId ?? "personal"}-${++channelSeq}`)
-    .on("postgres_changes", { event: "*", schema: "public", table: "saved_views" }, fire)
-    .subscribe();
+  const ws = workspaceId !== null && safeId(workspaceId) ? workspaceId : null;
+  const uid = S.owner && safeId(S.owner) ? S.owner : null;
+  const row = (p: RowChange) => {
+    const r = p?.new;
+    const id = r && typeof r.id === "string" ? r.id : null;
+    // your own view in another workspace: not this sidebar's business (unless it's one held here)
+    if (id && !S.byId.has(id) && !viewInScope({ workspaceId: typeof r!.workspace_id === "string" ? r!.workspace_id : null, kind: r!.kind as SavedView["kind"] }, workspaceId)) return;
+    fire();
+  };
+  const gone = (p: RowChange) => {
+    const id = p?.old && typeof p.old.id === "string" ? p.old.id : null;
+    if (id && S.byId.has(id)) fire();
+  };
+  const table = { schema: "public", table: "saved_views" } as const;
+  let ch = client.channel(`saved-views-${workspaceId ?? "personal"}-${++channelSeq}`);
+  if (ws) {
+    ch = ch.on("postgres_changes", { event: "INSERT", ...table, filter: `workspace_id=eq.${ws}` }, row)
+      .on("postgres_changes", { event: "UPDATE", ...table, filter: `workspace_id=eq.${ws}` }, row);
+  }
+  if (uid) {
+    ch = ch.on("postgres_changes", { event: "INSERT", ...table, filter: `user_id=eq.${uid}` }, row)
+      .on("postgres_changes", { event: "UPDATE", ...table, filter: `user_id=eq.${uid}` }, row);
+  }
+  ch = ch.on("postgres_changes", { event: "DELETE", ...table }, gone);
+  ch.subscribe();
   return () => { off = true; void client.removeChannel(ch); };
 }
 
@@ -167,6 +206,11 @@ const touch = (id: string, d: 1 | -1) => {
   const n = (S.writes.get(id) ?? 0) + d;
   if (n > 0) S.writes.set(id, n); else S.writes.delete(id);
 };
+/** A view made or deleted here: a fetch that began before this keeps our version (lib/views mergeScope's `since`). */
+const stamp = (id: string) => { S.seq += 1; S.touched.set(id, S.seq); };
+
+/** What the database says when someone other than its maker shares a view or stops sharing it. */
+const SHARING_REFUSED = 'new row violates row-level security policy for table "saved_views"';
 
 /** The next position: after every view in that scope. */
 function nextPosition(ws: string | null): number {
@@ -187,7 +231,7 @@ export async function createSavedView(input: SavedViewInput): Promise<SavedView>
     store.seedDemo();
     const at = nowIso();
     const view: SavedView = { id: `sv-${Date.now().toString(36)}-${++S.demoSeq}`, userId: S.owner ?? "m-self", ...base, createdAt: at, updatedAt: at };
-    S.byId.set(view.id, view);
+    stamp(view.id); S.byId.set(view.id, view);
     store.emit();
     return view;
   }
@@ -201,13 +245,13 @@ export async function createSavedView(input: SavedViewInput): Promise<SavedView>
     if (old.error) throw old.error;
     const v = legacyView(old.data as LegacyRow, uid, 0);
     if (!v) throw new Error("not found");
-    S.byId.set(v.id, { ...v, position: base.position }); S.legacy.add(v.id);
+    stamp(v.id); S.byId.set(v.id, { ...v, position: base.position }); S.legacy.add(v.id);
     store.emit();
     return v;
   }
   const view = parseSavedView(data);
   if (!view) throw new Error("not found");
-  S.byId.set(view.id, view);
+  stamp(view.id); S.byId.set(view.id, view);
   store.emit();
   return view;
 }
@@ -224,6 +268,10 @@ export async function updateSavedView(id: string, patch: SavedViewPatch): Promis
   if (clean.name !== undefined) clean.name = clean.name.trim();
   if (clean.query) clean.query = { ...clean.query, v: 1 };
   if (clean.shared && prev && prev.workspaceId === null) clean.shared = false;
+  // only its maker shares a view or stops sharing it (an owner/admin unsharing a teammate's view would make
+  // a row they can't read, which the database refuses): refused here first, in demo mode too, so nothing flashes
+  const me = supabase ? S.owner : S.owner ?? "m-self";
+  if (prev && me && prev.userId !== me && clean.shared !== undefined && clean.shared !== prev.shared) throw new Error(SHARING_REFUSED);
   const optimistic: SavedView | null = prev ? { ...prev, ...clean, updatedAt: nowIso() } : null;
   if (optimistic) { S.byId.set(id, optimistic); store.emit(); }
   if (!supabase) return optimistic!;
@@ -265,7 +313,7 @@ export async function deleteSavedView(id: string): Promise<void> {
   if (!supabase) store.seedDemo();
   const prev = S.byId.get(id);
   const wasLegacy = S.legacy.has(id);
-  S.byId.delete(id); S.pendingDelete.delete(id);
+  stamp(id); S.byId.delete(id); S.pendingDelete.delete(id);
   store.emit();
   if (!supabase) return;
   try {
@@ -311,18 +359,64 @@ export function setViewHidden(id: string, hidden: boolean): void {
   savePrefs({ ...p, hidden: hidden ? [...p.hidden, id] : p.hidden.filter((x) => x !== id) });
 }
 
-/** Your own views' positions in this order (shared ones you don't own: per-viewer order, local). */
+/** Spacing between positions when there's nothing either side to fit between. */
+const STEP = 1024;
+/** Below this gap a midpoint stops being distinct enough: renumber instead. */
+const MIN_GAP = 1e-3;
+
+/** The indexes of the longest run already in ascending position order (they stay put). */
+function inOrder(pos: readonly (number | null)[]): Set<number> {
+  const tails: number[] = [];        // tails[k]: index ending the best run of length k + 1
+  const prev: number[] = pos.map(() => -1);
+  pos.forEach((p, i) => {
+    if (p === null) return;
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if ((pos[tails[mid]] as number) < p) lo = mid + 1; else hi = mid; }
+    prev[i] = lo > 0 ? tails[lo - 1] : -1;
+    tails[lo] = i;
+  });
+  const keep = new Set<number>();
+  for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) keep.add(i);
+  return keep;
+}
+
+/** The fewest position changes that put `list` in ascending order: the longest run already in order stays,
+ *  each other view goes evenly between its new neighbours, and only when there's no room left between two
+ *  is the whole list renumbered. Moving one view is one write. */
+export function positionChanges(list: readonly Pick<SavedView, "id" | "position">[]): Map<string, number> {
+  const pos = list.map((v) => (typeof v.position === "number" && Number.isFinite(v.position) ? v.position : null));
+  const keep = inOrder(pos);
+  const out = new Map<string, number>();
+  for (let i = 0; i < list.length;) {
+    if (keep.has(i)) { i += 1; continue; }
+    let j = i;
+    while (j < list.length && !keep.has(j)) j += 1;
+    const lo = i > 0 ? (pos[i - 1] as number) : null, hi = j < list.length ? (pos[j] as number) : null;
+    const k = j - i;
+    if (lo !== null && hi !== null && (hi - lo) / (k + 1) < MIN_GAP) {
+      const all = new Map<string, number>();
+      list.forEach((v, n) => { if (v.position !== (n + 1) * STEP) all.set(v.id, (n + 1) * STEP); });
+      return all;
+    }
+    for (let t = 1; t <= k; t += 1) {
+      out.set(list[i + t - 1].id, lo === null && hi === null ? t * STEP
+        : lo === null ? (hi as number) - (k + 1 - t) * STEP
+        : hi === null ? lo + t * STEP
+        : lo + ((hi - lo) * t) / (k + 1));
+    }
+    i = j;
+  }
+  return out;
+}
+
+/** Your order for these views (this device: the ids first, then the rest as they were), and your own views'
+ *  positions to match (so your other devices follow) — only the ones that have to move. Shared views you
+ *  don't own keep their maker's position; old saved searches only order here. */
 export async function reorderSavedViews(ids: string[]): Promise<void> {
   const p = store.prefs();
-  savePrefs({ ...p, order: [...ids, ...p.order.filter((id) => !ids.includes(id))] });
-  const writes: Promise<unknown>[] = [];
-  ids.forEach((id, i) => {
-    const v = S.byId.get(id);
-    const pos = (i + 1) * 1024;
-    if (!v || v.position === pos || (S.owner && v.userId !== S.owner)) return;
-    if (S.legacy.has(id)) { S.byId.set(id, { ...v, position: pos }); return; }
-    writes.push(updateSavedView(id, { position: pos }));
-  });
-  store.emit();
-  await Promise.all(writes);
+  const moved = new Set(ids);
+  savePrefs({ ...p, order: [...ids, ...p.order.filter((id) => !moved.has(id))] });
+  const own = ids.map((id) => S.byId.get(id)).filter((v): v is SavedView => !!v && !S.legacy.has(v.id) && (!S.owner || v.userId === S.owner));
+  const changes = positionChanges(own);
+  await Promise.all([...changes].map(([id, position]) => updateSavedView(id, { position })));
 }

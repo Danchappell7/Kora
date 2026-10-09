@@ -2,8 +2,9 @@
    KANBO — a saved view's ⋯ menu (the sidebar row's ⋯, or a right-click
    on it) and the actions it shares with All views. What it offers
    follows who you are: the view's maker (and owners/admins, for a
-   shared one) may rename, edit, change its icon, share or stop sharing,
-   unpin (for everyone, when shared) and delete — with Undo; anyone may
+   shared one) may rename, edit, change its icon, unpin (for everyone,
+   when shared) and delete — with Undo; only the maker shares it or stops
+   sharing it (the database refuses anyone else); anyone may
    hide a teammate's pinned view from their own sidebar, move a view up
    or down in their sidebar, and copy its link. Lazy: loaded the first
    time a menu opens (warmed when the pointer or focus reaches a ⋯).
@@ -16,7 +17,7 @@ import { useToast } from "../Toast";
 import type { Role, SavedView } from "../../data/types";
 import { pathOf } from "../../lib/nav";
 import {
-  canEditView, canShareViews, savedViewFailure, setViewHidden, stageDeleteSavedView, updateSavedView, viewRoute,
+  canEditView, canShareView, savedViewFailure, setViewHidden, stageDeleteSavedView, updateSavedView, viewRoute,
 } from "../../lib/views";
 import { savedViewMessage } from "../../lib/savedViews/messages";
 
@@ -33,10 +34,12 @@ export function useViewActions(opts: { currentUserId: string; shareName: (v: Sav
       setViewHidden(v.id, hidden);
       if (hidden) toast.action(`Hid “${v.name}” from your sidebar`, "Undo", () => setViewHidden(v.id, false));
     },
+    /** (yours only: lib/views canShareView) — the toast waits for the database's answer */
     share(v: SavedView, shared: boolean) {
-      updateSavedView(v.id, { shared }).catch((e: unknown) => fail(e));
-      toast.toast(shared ? `Shared “${v.name}” with ${opts.shareName(v)}`
-        : v.userId === opts.currentUserId ? `“${v.name}” is just yours again` : `“${v.name}” is back to being private to its maker`);
+      updateSavedView(v.id, { shared }).then(
+        () => toast.toast(shared ? `Shared “${v.name}” with ${opts.shareName(v)}` : `“${v.name}” is just yours again`),
+        (e: unknown) => fail(e),
+      );
     },
     remove(v: SavedView) {
       const staged = stageDeleteSavedView(v.id);
@@ -92,6 +95,7 @@ export interface ViewMenuProps {
 export function ViewMenu({ view: v, anchorRef, onClose, currentUserId, myRole, legacy, shareName, index, count, onRename, onEdit, onMove, onDeleted }: ViewMenuProps) {
   const act = useViewActions({ currentUserId, shareName });
   const editable = canEditView(v, { userId: currentUserId, role: myRole });
+  const shareable = !legacy && canShareView(v, { userId: currentUserId, role: myRole });
   const mine = v.userId === currentUserId;
   const run = (fn: () => void) => () => { onClose(); fn(); };
   return (
@@ -99,7 +103,7 @@ export function ViewMenu({ view: v, anchorRef, onClose, currentUserId, myRole, l
       {editable && <Item icon={PENCIL} label="Rename" kbd="F2" onClick={run(onRename)} />}
       <Item icon={<Icon name="sliders" size={16} sw={1.75} />} label={editable ? "Edit view…" : "About this view…"} onClick={run(() => onEdit())} />
       {editable && !legacy && <Item icon={<Icon name="sparkles" size={16} sw={1.75} />} label="Change icon…" onClick={run(() => onEdit(true))} />}
-      {editable && !legacy && canShareViews(myRole, v.workspaceId) && (
+      {shareable && (
         <Item icon={<Icon name="users" size={16} sw={1.75} />} label={v.shared ? "Stop sharing" : `Share with ${shareName(v)}`} onClick={run(() => act.share(v, !v.shared))} />
       )}
       {editable && !legacy && v.pinned && (

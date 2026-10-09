@@ -36,7 +36,8 @@ export interface SavedViewEditorProps {
   /** the scope it's saved in (null = Personal) and its name ("Share with Foundrise") */
   workspaceId: string | null;
   workspaceName?: string;
-  /** writers in a team workspace (lib/views canShareViews) */
+  /** writers in a team workspace (lib/views canShareViews). The Share toggle shows on a new view or your own
+   *  (`currentUserId` says whose): never on a teammate's, whoever is editing it. */
   canShare: boolean;
   /** owner/admin editing someone else's shared view, or your own (lib/views canEditView) */
   canEdit?: boolean;
@@ -72,7 +73,10 @@ export function SavedViewEditor({ open, view, draft, workspaceId, workspaceName,
   const query: SavedViewQuery = view?.query ?? draft?.query ?? { v: 1 };
   const scope = view ? view.workspaceId : workspaceId;
   const wsName = workspaceName || "your workspace";
-  const shareHere = canShare && scope !== null && !legacy;
+  // a new view, or your own: only its maker shares a view or stops sharing it (an owner/admin editing a
+  // teammate's shared view may rename, re-pin or delete it, never make it private — the database refuses)
+  const ownView = !view || (!!currentUserId && view.userId === currentUserId);
+  const shareHere = canShare && scope !== null && !legacy && ownView;
 
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState<string | null>(null);
@@ -223,7 +227,7 @@ export function SavedViewEditor({ open, view, draft, workspaceId, workspaceName,
           {legacy ? (
             <p className="ksv-note"><Icon name="alert" size={14} sw={1.75} />An older saved search: you can rename it here. Icons, pinning and sharing arrive once your workspace is updated.</p>
           ) : maker ? (
-            <p className="ksv-note"><Icon name="users" size={14} sw={1.75} />Made by {maker}. {readOnly ? `Shared with ${wsName}.` : `Your changes apply for everyone in ${wsName}.`}</p>
+            <p className="ksv-note"><Icon name="users" size={14} sw={1.75} />Made by {maker}. {readOnly ? `Shared with ${wsName}.` : `Your changes apply for everyone in ${wsName}. Only ${maker === "a teammate" ? "its maker" : maker} can stop sharing it.`}</p>
           ) : scope === null ? (
             <p className="ksv-note"><Icon name="lock" size={14} sw={1.75} />Personal views are only for you.</p>
           ) : !canShare && !readOnly ? (

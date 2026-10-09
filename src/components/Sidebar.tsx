@@ -486,7 +486,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onOpenView?: (view: SavedView) => void;
   /** "Edit view…" (default: the sidebar's own SavedViewEditor sheet) */
   onEditView?: (view: SavedView) => void;
-  /** the views in their new order (default: lib/views reorderSavedViews) */
+  /** the sidebar's view rows in their new order — the views off the sidebar keep their places after them
+   *  (default: lib/views reorderSavedViews, which writes only the positions that have to move) */
   onReorderViews?: (ids: string[]) => void | Promise<unknown>;
   /** tasks dropped on a project row (lib/dnd): move them (lib/dropActions moveTasksToProject).
    *  Without it, or for guests, the rows take no drops. */

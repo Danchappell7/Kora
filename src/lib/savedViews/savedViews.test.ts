@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { pageViewQuery, pageStateFromView, suggestViewName, applyViewToTasksPageStorage } from "./pageQuery";
+import { describe, it, expect, vi } from "vitest";
+import { pageViewQuery, pageStateFromView, suggestViewName, viewPageStart } from "./pageQuery";
 import { describeView, describeViewLine } from "./describe";
 
 describe("a tasks page as a view, and back", () => {
@@ -26,19 +26,27 @@ describe("a tasks page as a view, and back", () => {
     expect(pageStateFromView({ kind: "my_tasks", query: { v: 1 } }, "u").tab).toBe("open");
   });
 
-  it("arriving on a view writes what TasksPage and App read on mount", () => {
+  it("arriving on a view: the page's starting state, and nothing written over the person's own", () => {
     localStorage.clear();
-    localStorage.setItem("kanbo-pview-p-launch", JSON.stringify({ view: "list", groupBy: "status" }));
-    const s = applyViewToTasksPageStorage({ kind: "project", query: { v: 1, projectId: "p-launch", viewType: "list", filters: { priority: "high", text: "deck" }, groupBy: "section", sort: "due" } }, "u");
-    expect(s.text).toBe("deck");
-    expect(JSON.parse(localStorage.getItem("kanbo-filters:p-launch")!)).toMatchObject({ priority: "high", status: "all", showArchived: false });
-    expect(JSON.parse(localStorage.getItem("kanbo-pview-p-launch")!)).toEqual({ view: "list", groupBy: "section" });
-    expect(localStorage.getItem("kanbo-sort")).toBe("due");
-    applyViewToTasksPageStorage({ kind: "project", query: { v: 1, projectId: "p-launch", viewType: "board", groupBy: "assignee" } }, "u");
-    expect(localStorage.getItem("kanbo-board-group")).toBe("assignee");
-    applyViewToTasksPageStorage({ kind: "my_tasks", query: { v: 1, filters: { assignee: "@me" }, groupBy: "priority" } }, "u-me");
-    expect(localStorage.getItem("kanbo-groupby-my")).toBe("priority");
-    expect(JSON.parse(localStorage.getItem("kanbo-filters:my")!).assignee).toBe("u-me");
+    const own = { "kanbo-filters:my": JSON.stringify({ priority: "low" }), "kanbo-filters:p-launch": "{}", "kanbo-groupby-my": "due",
+      "kanbo-board-group": "status", "kanbo-pview-p-launch": JSON.stringify({ view: "list", groupBy: "status" }), "kanbo-sort": "manual" };
+    for (const [k, v] of Object.entries(own)) localStorage.setItem(k, v);
+    const set = vi.spyOn(Storage.prototype, "setItem");
+    const list = viewPageStart({ id: "v1", kind: "project", query: { v: 1, projectId: "p-launch", viewType: "list", filters: { priority: "high", text: "deck" }, groupBy: "section", sort: "due" } }, "u");
+    expect(list).toMatchObject({ viewId: "v1", scope: "project", projectId: "p-launch", tab: "list", text: "deck", listGroup: "section", sort: "due" });
+    expect(list.filters).toMatchObject({ priority: "high", status: "all", showArchived: false });
+    expect(list).not.toHaveProperty("boardGroup");
+    const board = viewPageStart({ id: "v2", kind: "project", query: { v: 1, projectId: "p-launch", viewType: "board", groupBy: "assignee", sort: "nonsense" } }, "u");
+    expect(board).toMatchObject({ tab: "board", boardGroup: "assignee" });
+    expect(board).not.toHaveProperty("sort");
+    const my = viewPageStart({ id: "v3", kind: "my_tasks", query: { v: 1, list: "overdue", filters: { assignee: "@me" }, groupBy: "priority", sortDir: "desc" } }, "u-me");
+    expect(my).toMatchObject({ scope: "my", tab: "open", dueFocus: "overdue", myGroup: "priority", sortDir: "desc" });
+    expect(my.filters.assignee).toBe("u-me");
+    expect(viewPageStart({ id: "v4", kind: "my_tasks", query: { v: 1, list: "waiting" } }, "u")).toMatchObject({ tab: "waiting", text: "" });
+    // the person's own filters, grouping and sort are as they were
+    expect(set).not.toHaveBeenCalled();
+    for (const [k, v] of Object.entries(own)) expect(localStorage.getItem(k)).toBe(v);
+    set.mockRestore();
   });
 
   it("suggests a short name from the filters", () => {
