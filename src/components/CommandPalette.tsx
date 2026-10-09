@@ -3,8 +3,13 @@
    an action, or ask Kanbo. One field; an ARIA combobox driving a
    listbox, announced to screen readers.
 
-   Typing shows, in order: Ask Kanbo · Tasks · Projects · Go to ·
-   Actions. The Ask row is picked for you when the text reads like a
+   Typing shows, in order: Ask Kanbo · Tasks · Projects · Docs ·
+   Comments · People · Go to · Actions. Search (0048, package u2): the
+   words are read like the Search page reads them ("Maya's overdue
+   tasks", "docs mentioning pricing"); what the app holds answers at
+   once, the server's full-text search_all joins after a short pause
+   (SEARCH_DEBOUNCE_MS; a newer keystroke cancels it), matches marked.
+   The Ask row is picked for you when the text reads like a
    question or an instruction ("…?", "move …", "what …"), or when
    nothing matches; otherwise the first result is. Tab swaps the two.
    Enter on it asks: the model when Kanbo AI is on and reachable, the
@@ -17,7 +22,7 @@
    lead and the Ask row is always the pick.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
-import { AiMark, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from "./primitives";
+import { AiMark, Avatar, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from "./primitives";
 import { AskKanbo, type AskKanboHandle, type AskSummary, type AskView, type AskVia } from "./AskKanbo";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProject, getMember, MEMBERS, PROJECTS, STATUS_META, todayISO } from "../data/data";
@@ -27,7 +32,14 @@ import { localAsk } from "../lib/askFallback";
 import { fmtDay } from "../lib/askActions";
 import type { AiOutcome, AskAction, AskContext, AskResult } from "../lib/askTypes";
 import type { Route } from "../app-types";
-import type { IconName, Task, Status, Project, Workspace } from "../data/types";
+import type { IconName, Task, Status, Project, Workspace, Comment, Member, SearchHit } from "../data/types";
+import { mergeSearchHits, SEARCH_DEBOUNCE_MS, SEARCH_PALETTE_LIMIT, type LocalSearchInput } from "../lib/searchApi";
+import { splitHighlights } from "../lib/searchRows";
+import { highlightRuns } from "../lib/search/highlight";
+import { EMPTY_PANEL, resolveSearch } from "../lib/search/searchSpec";
+import { useUniversalSearch, localReasonText } from "../lib/search/useUniversalSearch";
+import { useDemoCorpus } from "../lib/search/demoCorpus";
+import { supabase } from "../lib/supabase";
 
 export interface Suggestion {
   id: string;
@@ -98,11 +110,24 @@ type Item =
   | { kind: "task"; id: string; label: string; status: Status; where?: string; due?: string; overdue?: boolean }
   | { kind: "project"; id: string; label: string; color: string; emoji?: string; where?: string }
   | { kind: "search"; label: string }
+  /* universal search (0048): a comment, a doc or a person found by the words */
+  | { kind: "comment" | "doc" | "person"; hit: SearchHit; label: string; where?: string }
   | { kind: "action"; s: Suggestion }
   | { kind: "go"; target: GoTarget; crumb?: string; project?: { id: string; name: string; color: string; emoji?: string } };
 interface Group { key: string; heading?: string; items: Item[] }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+/** a row's identity across renders (so the highlight can follow it when rows are added above) */
+const itemKey = (it: Item): string => {
+  switch (it.kind) {
+    case "task": case "project": return `${it.kind}:${it.id}`;
+    case "comment": case "doc": case "person": return `${it.kind}:${it.hit.id}`;
+    case "ask": return `ask:${it.example ? "x" : ""}${it.text}`;
+    case "search": return "search";
+    case "action": return `action:${it.s.id}`;
+    case "go": return `go:${it.target.id}`;
+  }
+};
 /** Touch first (a phone): no hardware keyboard, and the on-screen return key must never apply anything. */
 const coarsePointer = () => typeof window !== "undefined" && !!window.matchMedia?.("(hover: none) and (pointer: coarse)").matches;
 
@@ -158,6 +183,10 @@ const PALETTE_CSS = `
 .kcmd-opt[data-kind="ask"] .kcmd-label { color: var(--ink-2); }
 .kcmd-opt[data-example="true"] .kcmd-label { color: var(--ink-2); }
 .kcmd-empty { margin: 2px 12px 8px 40px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+/* search matches: a tint of the accent, the ink unchanged */
+.kcmd mark.kcmd-hl { color: inherit; background: var(--accent-tint, var(--accent-dim)); border-radius: 3px; box-shadow: 0 0 0 1px var(--accent-tint, var(--accent-dim)); font-weight: 600; }
+.kcmd-ico .kcmd-emoji { font-size: 13px; line-height: 16px; }
+.kcmd-note { margin-left: auto; font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-4); white-space: nowrap; }
 
 /* footer: the keys, and today's AI use */
 .kcmd-foot { display: flex; align-items: center; gap: 16px; flex-shrink: 0; height: 40px; padding: 0 16px; border-top: 1px solid var(--hairline);
@@ -179,6 +208,7 @@ const PALETTE_CSS = `
 export function CommandPalette({
   open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true,
   ai, askContext, onApplyAsk, canAct, onGo, recent, recentTaskIds, initialQuery, personal, askFirst = false,
+  comments, docs, onOpenDoc, onOpenPerson, onOpenComment, serverSearch, demoCorpus,
 }: {
   open: boolean;
   onClose: () => void;
@@ -218,6 +248,20 @@ export function CommandPalette({
   /** opened to ask (an "Ask Kanbo" button): the example questions lead, and
    *  whatever is typed goes to Kanbo unless another row is picked */
   askFirst?: boolean;
+  /* ---- universal search (0048; all optional) ---- */
+  /** comments the app has loaded; docs it knows (titles, and their text when on hand) */
+  comments?: Comment[];
+  docs?: LocalSearchInput["docs"];
+  /** open a doc (default: onGo to the project's Docs tab) */
+  onOpenDoc?: (docId: string, projectId: string) => void;
+  /** open a person (default: onGo to Team › People) */
+  onOpenPerson?: (userId: string) => void;
+  /** open a comment: its task, at the comment (default: onOpenTask) */
+  onOpenComment?: (taskId: string, commentId: string) => void;
+  /** ask the server's search_all (default: when a server is configured) */
+  serverSearch?: boolean;
+  /** also search the demo docs' text and comments (default: when there's no server) */
+  demoCorpus?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -259,6 +303,28 @@ export function CommandPalette({
   const canApply = !guest && !!onApplyAsk;
   // read when the palette opens: a phone never applies from its return key
   const coarse = useMemo(() => open && coarsePointer(), [open]);
+
+  /* ---------------- universal search: the device at once, the server after a pause ---------------- */
+  const people = useMemo<Member[]>(() => ctx.members.map((m) => getMember(m.id) ?? { id: m.id, name: m.name, email: "", type: "team", color: "" }), [ctx.members]);
+  const resolved = useMemo(() => resolveSearch(open ? q : "", EMPTY_PANEL, {
+    members: ctx.members, projects: ctx.projects, currentUserId: ctx.me, today: ctx.today,
+  }, ctx.today), [open, q, ctx]);
+  const corpus = useDemoCorpus(open && (demoCorpus ?? !supabase), useMemo(() => (projects ?? []).map((p) => p.id), [projects]), useMemo(() => tasks.map((t) => t.id), [tasks]));
+  const searchComments = useMemo(() => [...(comments ?? []), ...(corpus?.comments ?? []).filter((c) => !comments?.some((x) => x.id === c.id))], [comments, corpus]);
+  const searchDocs = useMemo(() => [...(docs ?? []), ...(corpus?.docs ?? []).filter((d) => !docs?.some((x) => x.id === d.id))], [docs, corpus]);
+  const found = useUniversalSearch({
+    active: open && !ask && resolved.active, text: resolved.text, filters: resolved.filters, limit: SEARCH_PALETTE_LIMIT, debounceMs: SEARCH_DEBOUNCE_MS,
+    server: serverSearch, local: { tasks, projects: projects ?? [], members: people, comments: searchComments, docs: searchDocs, currentUserId: ctx.me },
+  });
+  // the device's hits keep their places; the server's own join after them (rows never jump under the cursor)
+  const hits = useMemo(() => {
+    const local = mergeSearchHits(found.local, [], { text: resolved.text, limitPerKind: SEARCH_PALETTE_LIMIT });
+    const seen = new Set(local.map((h) => `${h.kind}:${h.id}`));
+    const extra = (found.server ?? []).filter((h) => !seen.has(`${h.kind}:${h.id}`));
+    // the server's snippets (stems, whole bodies) still win for rows both found
+    const better = new Map((found.server ?? []).map((h) => [`${h.kind}:${h.id}`, h]));
+    return [...local.map((h) => { const s = better.get(`${h.kind}:${h.id}`); return s?.snippet ? { ...h, snippet: s.snippet } : h; }), ...extra];
+  }, [found.local, found.server, resolved.text]);
 
   const query = q.trim().toLowerCase();
   const spans = useMemo<NlpSpan[]>(() => {
@@ -324,24 +390,23 @@ export function CommandPalette({
       return askFirst ? [tryGroup, recentGroup, goGroup, actionGroup] : [recentGroup, goGroup, tryGroup, actionGroup];
     }
 
-    // ---- tasks: title, project name, assignee name or tag; best matches and open work first ----
-    const taskScore = (t: Task): number => {
-      const title = t.title.toLowerCase();
-      let s = title.startsWith(query) ? 6 : title.includes(query) ? 4 : 0;
-      if (!s) {
-        if (projectName(t.projectId)?.toLowerCase().includes(query)) s = 2;
-        else if (getMember(t.assigneeId)?.name?.toLowerCase().includes(query)) s = 2;
-        else if ((t.tags || []).some((tg) => tg.toLowerCase().includes(query))) s = 1;
+    // ---- tasks, comments, docs, people: universal search (the words, read as the Search page reads them) ----
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const taskItems: Item[] = hits.filter((h) => h.kind === "task").slice(0, SEARCH_PALETTE_LIMIT)
+      .map((h) => byId.get(h.id)).filter((t): t is Task => !!t && !t.archivedAt).map(taskItem);
+    const hitItem = (h: SearchHit): Item => {
+      if (h.kind === "comment") {
+        const runs = splitHighlights(h.snippet);
+        return { kind: "comment", hit: h, label: runs.map((r) => r.text).join("") || h.title, where: [h.comment?.authorName, h.title].filter(Boolean).join(" · ") };
       }
-      return s && t.status !== "done" ? s + 0.5 : s;
+      if (h.kind === "doc") return { kind: "doc", hit: h, label: h.title || "Untitled", where: (h.projectId && projectName(h.projectId)) || h.doc?.projectName || undefined };
+      return { kind: "person", hit: h, label: h.title, where: h.person?.email || undefined };
     };
-    const taskItems: Item[] = tasks
-      .filter((t) => !t.archivedAt)
-      .map((t) => ({ t, score: taskScore(t) }))
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8)
-      .map(({ t }) => taskItem(t));
+    const can = { doc: !!(onOpenDoc || onGo), person: !!(onOpenPerson || onGo), comment: !!(onOpenComment || onOpenTask) };
+    const kindItems = (kind: "comment" | "doc" | "person", max: number): Item[] => (can[kind] ? hits.filter((h) => h.kind === kind).slice(0, max).map(hitItem) : []);
+    const commentItems = kindItems("comment", 3);
+    const docItems = kindItems("doc", 3);
+    const personItems = kindItems("person", 3);
     const searchItems: Item[] = onSearchAll ? [{ kind: "search", label: `See all results for “${q.trim()}” in Search` }] : [];
     const projectItems: Item[] = !onOpenProject || !projects ? [] : projects
       .filter((p) => !p.archivedAt)
@@ -350,6 +415,15 @@ export function CommandPalette({
       .sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name))
       .slice(0, 5)
       .map(({ p }) => ({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) }));
+    // projects whose description has the words (the device's or the server's), after the ones named so
+    if (onOpenProject && projects) {
+      for (const h of hits) {
+        if (h.kind !== "project" || projectItems.length >= 5 || projectItems.some((it) => it.kind === "project" && it.id === h.id)) continue;
+        const p = projects.find((x) => x.id === h.id);
+        if (!p || p.archivedAt) continue;
+        projectItems.push({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) });
+      }
+    }
 
     // places and actions keep their curated order on ties; the best-named match rises
     const ranked = <T,>(list: T[], score: (x: T) => number, max: number): T[] => list
@@ -371,10 +445,14 @@ export function CommandPalette({
       // "See all results" follows the tasks; with none, it stands alone where they'd be
       { key: "tasks", heading: taskItems.length ? "Tasks" : undefined, items: [...taskItems, ...searchItems] },
       { key: "projects", heading: "Projects", items: projectItems },
+      { key: "docs", heading: "Docs", items: docItems },
+      { key: "comments", heading: "Comments", items: commentItems },
+      { key: "people", heading: "People", items: personItems },
       { key: "go", heading: "Go to", items: goItems },
       { key: "actions", heading: "Actions", items: actionItems },
     ];
-  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today]);
+  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today,
+    hits, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo]);
 
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   // real matches: tasks, projects, places and actions (not the Ask row, and not "See all results")
@@ -390,6 +468,17 @@ export function CommandPalette({
   if (open && selFor !== q) {
     setSelFor(q);
     setSel(hasResults && !askFirst && !looksLikeAsk(q) ? firstResult : 0);
+  }
+  // the same words, more rows (the server's answer, the demo docs): the highlight stays on the row it was on
+  const prevItems = useRef<Item[]>(items);
+  if (prevItems.current !== items) {
+    const before = prevItems.current;
+    prevItems.current = items;
+    if (open && selFor === q && before[sel]) {
+      const k = itemKey(before[sel]);
+      const j = items.findIndex((x) => itemKey(x) === k);
+      if (j >= 0 && j !== sel) setSel(j);
+    }
   }
 
   // on a phone, asking puts the keyboard away so the answer has the screen
@@ -458,10 +547,19 @@ export function CommandPalette({
       return;
     }
     if (it.kind === "task") { remember(it.id); onOpenTask?.(it.id); }
+    else if (it.kind === "comment") {
+      const h = it.hit;
+      if (h.taskId) { remember(h.taskId); if (onOpenComment) onOpenComment(h.taskId, h.id); else onOpenTask?.(h.taskId); }
+    }
+    else if (it.kind === "doc") {
+      const h = it.hit;
+      if (h.projectId) { if (onOpenDoc) onOpenDoc(h.id, h.projectId); else go({ view: "project", projectId: h.projectId, tab: "docs", docId: h.id }); }
+    }
+    else if (it.kind === "person") { if (onOpenPerson) onOpenPerson(it.hit.id); else go({ view: "team" }); }
     else if (it.kind === "project") onOpenProject?.(it.id);
     else if (it.kind === "search") onSearchAll?.(q.trim());
     else if (it.kind === "action") onAction(it.s);
-    else go(it.target.route);
+    else if (it.kind === "go") go(it.target.route);
     close();
   };
 
@@ -495,11 +593,12 @@ export function CommandPalette({
   const keys = (hint: string) => (
     <span className="kcmd-keys" aria-hidden="true">{hint.split(" ").map((k, i) => <Kbd key={i}>{k}</Kbd>)}</span>
   );
-  const row = (it: Item, content: ReactNode, opts: { icon: ReactNode; hint?: string; kind?: string; example?: boolean }) => {
+  const row = (it: Item, content: ReactNode, opts: { icon: ReactNode; hint?: string; kind?: string; example?: boolean; name?: string }) => {
     idx += 1; const i = idx; const isActive = i === sel;
     const hint = opts.hint || (isActive ? "⏎" : "");
     return (
-      <div key={`${it.kind}-${i}`} id={optId(i)} role="option" aria-selected={isActive} className="kcmd-opt"
+      // a row with marked words carries its name whole (marks would split it into pieces for some readers)
+      <div key={`${it.kind}-${i}`} id={optId(i)} role="option" aria-selected={isActive} className="kcmd-opt" aria-label={opts.name}
         data-kind={opts.kind} data-example={opts.example || undefined}
         onMouseMove={() => { if (sel !== i) setSel(i); }}
         onMouseDown={(e) => e.preventDefault() /* keep focus in the input */}
@@ -510,6 +609,12 @@ export function CommandPalette({
       </div>
     );
   };
+  /** a title with the searched words marked */
+  const marked = (label: string): ReactNode => {
+    const runs = resolved.text ? highlightRuns(label, resolved.text) : [];
+    if (!runs.some((r) => r.hit)) return label;
+    return runs.map((r, i) => (r.hit ? <mark key={i} className="kcmd-hl">{r.text}</mark> : <span key={i}>{r.text}</span>));
+  };
   const renderItem = (it: Item): ReactNode => {
     switch (it.kind) {
       case "ask":
@@ -519,10 +624,13 @@ export function CommandPalette({
         { icon: <AiMark size={it.example ? 14 : 16} />, kind: "ask", example: it.example, hint: !it.example && tabTo > 0 && sel !== 0 ? "Tab" : undefined });
       case "task":
         return row(it, <>
-          <span className="kcmd-label">{it.label}<span className="sr-only">, {STATUS_META[it.status]?.label}</span></span>
+          <span className="kcmd-label">{marked(it.label)}<span className="sr-only">, {STATUS_META[it.status]?.label}</span></span>
           {it.where && <span className="kcmd-meta">{it.where}</span>}
           {it.due && <span className="kcmd-due" data-tone={it.overdue ? "overdue" : undefined}>{it.due}</span>}
-        </>, { icon: <StatusGlyph status={it.status} size={14} /> });
+        </>, {
+          icon: <StatusGlyph status={it.status} size={14} />,
+          name: [it.label, STATUS_META[it.status]?.label, it.where, it.due && `${it.overdue ? "overdue, " : ""}due ${it.due}`].filter(Boolean).join(", "),
+        });
       case "project":
         return row(it, <>
           <span className="kcmd-label">{it.label}{it.where && <span className="sr-only">, project in {it.where}</span>}{!it.where && <span className="sr-only">, project</span>}</span>
@@ -530,6 +638,36 @@ export function CommandPalette({
         </>, { icon: <ProjectTile project={{ id: it.id, color: it.color, name: it.label, emoji: it.emoji }} size={16} /> });
       case "search":
         return row(it, <span className="kcmd-label">{it.label}</span>, { icon: <Icon name="search" size={16} sw={1.75} /> });
+      case "comment": {
+        const runs = splitHighlights(it.hit.snippet);
+        const author = it.hit.comment?.authorId && getMember(it.hit.comment.authorId) ? it.hit.comment.authorId : null;
+        return row(it, <>
+          <span className="kcmd-label">
+            {runs.length ? <>“{runs.map((r, i) => (r.hit ? <mark key={i} className="kcmd-hl">{r.text}</mark> : <span key={i}>{r.text}</span>))}”</> : it.label}
+            <span className="sr-only">, comment by {it.hit.comment?.authorName || "someone"} on {it.hit.title}</span>
+          </span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, {
+          icon: author ? <Avatar id={author} size={16} /> : <Icon name="message" size={16} sw={1.75} />,
+          name: `“${it.label}”, comment by ${it.hit.comment?.authorName || "someone"} on ${it.hit.title}`,
+        });
+      }
+      case "doc":
+        return row(it, <>
+          <span className="kcmd-label">{marked(it.label)}<span className="sr-only">, doc{it.where ? ` in ${it.where}` : ""}</span></span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, {
+          icon: it.hit.doc?.icon ? <span className="kcmd-emoji">{it.hit.doc.icon}</span> : <Icon name="notes" size={16} sw={1.75} />,
+          name: `${it.label}, doc${it.where ? ` in ${it.where}` : ""}`,
+        });
+      case "person":
+        return row(it, <>
+          <span className="kcmd-label">{marked(it.label)}<span className="sr-only">, person</span></span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, {
+          icon: getMember(it.hit.id) ? <Avatar id={it.hit.id} size={16} /> : <Icon name="user" size={16} sw={1.75} />,
+          name: `${it.label}, person${it.where ? `, ${it.where}` : ""}`,
+        });
       case "action":
         return row(it, <span className="kcmd-label">{it.s.label}</span>, {
           icon: it.s.ai ? <AiMark size={16} /> : <Icon name={it.s.icon} size={16} sw={1.75} />,
@@ -638,6 +776,9 @@ export function CommandPalette({
           {!inAsk && tabTo > 0 && <span className="kcmd-hint"><Kbd>Tab</Kbd>{sel === 0 ? "results" : "ask Kanbo"}</span>}
           {inAsk && askVerb && <span className="kcmd-hint"><Kbd>⏎</Kbd>{askVerb}</span>}
           <span className="kcmd-hint"><Kbd>Esc</Kbd>{ask?.phase === "loading" ? "cancel" : "close"}</span>
+          {!inAsk && query && found.reason && found.reason !== "not_allowed" && (
+            <span className="kcmd-note" title={localReasonText(found.reason) ?? undefined}>{found.reason === "offline" ? "Offline: this device only" : "Searching this device"}</span>
+          )}
           {usage && <span className="kcmd-usage">Kanbo AI · {usage.used} of {usage.limit} today</span>}
         </div>
       </div>

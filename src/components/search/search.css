@@ -1,0 +1,181 @@
+/* ============================================================
+   KANBO — universal search (the Search page; ⌘K keeps its own sheet).
+   Built on the task views' search page (taskViews.css .ktv-search…)
+   and the Inbox's two-line rows: Paper & Navy tokens only, so both
+   themes follow; 44px touch targets on phones; no motion when reduced.
+   ============================================================ */
+
+/* ---------------- the box: the words, and the ones read as filters tinted behind them ---------------- */
+.ksr-box {
+  position: relative; display: flex; align-items: center; gap: 4px; height: var(--h-lg, 40px); padding: 0 4px 0 38px;
+  border: 1px solid var(--field-border); border-radius: var(--r-md, 8px); background: var(--field-bg);
+  transition: border-color var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease);
+}
+.ksr-box:hover { border-color: var(--field-border-hover); }
+.ksr-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ksr-box > .ksr-ico { position: absolute; left: 12px; top: 50%; translate: 0 -50%; color: var(--tv-quiet); pointer-events: none; }
+.ksr-box[data-busy="true"] > .ksr-ico { color: var(--accent-text, var(--accent)); }
+.ksr-field { position: relative; flex: 1; min-width: 0; height: 100%; overflow: hidden; }
+.ksr-input, .ksr-mirror { font: 500 15px/24px var(--tv-ui); letter-spacing: 0; }
+.ksr-input {
+  position: relative; z-index: 1; width: 100%; height: 100%; padding: 0; margin: 0; border: 0; outline: none;
+  background: transparent; color: var(--ink); caret-color: var(--accent);
+}
+.ksr-input::placeholder { color: var(--ink-4); }
+.ksr-input { -webkit-appearance: none; appearance: none; }
+.ksr-input::-webkit-search-cancel-button, .ksr-input::-webkit-search-decoration { display: none; -webkit-appearance: none; }
+.ksr-mirror { position: absolute; left: 0; top: 50%; translate: 0 -50%; white-space: pre; color: transparent; pointer-events: none; }
+.ksr-tok { color: transparent; background: var(--accent-tint, var(--accent-dim)); border-radius: var(--r-xs, 4px); box-shadow: 0 0 0 2px var(--accent-tint, var(--accent-dim)); }
+.ksr-box .kibtn { flex-shrink: 0; }
+
+/* ---------------- what the words were read as ---------------- */
+.ksr-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 28px; margin-top: 10px; }
+.ksr-chips-label { font: 500 12px/16px var(--tv-ui); color: var(--ink-3); margin-right: 2px; }
+.ksr-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: var(--h-sm, 28px); padding: 0 2px 0 10px; border-radius: 999px;
+  border: 1px solid var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background: var(--tv-selected);
+  font: 600 13px/1 var(--tv-ui); color: var(--accent-text, var(--accent)); white-space: nowrap;
+}
+.ksr-chip > svg { flex-shrink: 0; }
+.ksr-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ksr-chip-x {
+  display: grid; place-items: center; flex-shrink: 0; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: inherit; cursor: pointer; opacity: 0.8;
+}
+.ksr-chip-x:hover { background: color-mix(in oklch, var(--accent) 14%, transparent); opacity: 1; }
+.ksr-link {
+  height: 24px; padding: 0 8px; border: 0; border-radius: var(--r-sm, 6px); background: transparent; cursor: pointer;
+  font: 600 12px/16px var(--tv-ui); color: var(--ink-3); white-space: nowrap;
+}
+.ksr-link:hover { background: var(--tv-hover); color: var(--ink); }
+
+/* ---------------- the toolbar: Show (kinds), Filters ---------------- */
+.ksr-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; }
+.ksr-kinds { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.ksr-kinds::-webkit-scrollbar { display: none; }
+.ksr-segn { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.kseg-btn[data-active="true"] .ksr-segn { color: var(--ink-3); }
+.kseg-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.ksr-bar-end { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.ksr-filters-btn[aria-expanded="true"] { background: var(--tv-hover); color: var(--ink); }
+.ksr-count {
+  display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin-left: 6px; padding: 0 4px; border-radius: 999px;
+  font: 600 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; background: var(--accent-fill, var(--accent)); color: var(--on-accent);
+}
+
+/* ---------------- the filters panel ---------------- */
+.ksr-panel {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 12px 16px;
+  margin-top: 12px; padding: 14px 16px 16px; border-radius: var(--r-lg, 12px); background: var(--bg-sunken, var(--bg-deep));
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.ksr-field-row { display: grid; gap: 6px; min-width: 0; }
+.ksr-field-row > label, .ksr-field-row > .ksr-flabel { font: 600 12px/16px var(--tv-ui); color: var(--ink-3); }
+.ksr-panel .ktv-search-select { width: 100%; height: var(--h-md, 32px); font-size: 13px; }
+.ksr-panel-foot { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ksr-panel-foot .ksr-link { margin-left: auto; }
+
+/* ---------------- status line ---------------- */
+.ksr-note { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/16px var(--tv-ui); color: var(--ink-3); }
+.ksr-note svg { color: var(--tv-quiet); flex-shrink: 0; }
+.ksr-dots { display: inline-flex; gap: 3px; }
+.ksr-dots > i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.35; animation: ksrDot 1s var(--ease) infinite; }
+.ksr-dots > i:nth-child(2) { animation-delay: 0.15s; }
+.ksr-dots > i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ksrDot { 50% { opacity: 1; } }
+
+/* ---------------- groups ---------------- */
+.ksr-group { padding-bottom: 20px; }
+.ksr-group > .ksr-ghead { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 var(--tv-gutter); }
+.ksr-ghead h3 { display: inline-flex; align-items: baseline; gap: 6px; margin: 0; font: 600 12px/16px var(--tv-ui); color: var(--ink-3); }
+.ksr-ghead .ksr-gcount { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.ksr-ghead .ksr-more { margin-left: auto; }
+
+/* a task row with a matching description shows it underneath */
+.ksr .ktv-row[data-snippet="true"] { height: auto; min-height: var(--tv-row); align-items: flex-start; padding-top: 7px; padding-bottom: 7px; }
+.ksr .ktv-row[data-snippet="true"] .ktv-lead { padding-top: 2px; }
+.ksr .ktv-row[data-snippet="true"] .ktv-cluster { padding-top: 0; }
+.ksr .ktv-main { display: flex; flex-direction: column; min-width: 0; }
+.ksr-snip {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+  font: 400 13px/20px var(--tv-ui); color: var(--ink-3);
+}
+
+/* comments, docs, projects, people: the Inbox's two-line row */
+.ksr-hits { display: flex; flex-direction: column; gap: 2px; padding: 0 calc(var(--tv-gutter) - 12px); }
+.ksr-hit {
+  position: relative; display: flex; align-items: flex-start; gap: 12px; min-height: 56px; padding: 8px 12px; border-radius: var(--r-sm, 6px);
+  transition: background var(--d-1, 90ms) var(--ease);
+}
+.ksr-hit:hover { background: var(--tv-hover); }
+/* the keyboard cursor (J / K, ↑ ↓): fill + an accent edge, as the Inbox and the task rows have it */
+.ksr-hit[data-cursor="true"] { background: var(--tv-hover); box-shadow: inset 2px 0 0 var(--accent); }
+.ksr-av {
+  flex-shrink: 0; display: grid; place-items: center; width: 28px; height: 28px; margin-top: 2px; border-radius: 50%;
+  font: 600 12px/1 var(--tv-ui); color: var(--ink-2); background: var(--surface-2);
+}
+.ksr-av[data-kind="icon"] { border-radius: var(--r-sm, 6px); color: var(--ink-3); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); font-size: 15px; }
+.ksr-main {
+  display: flex; flex-direction: column; flex: 1; min-width: 0; margin: 0; padding: 0; border: 0; background: none;
+  text-align: left; font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.ksr-main::before { content: ""; position: absolute; inset: 0; border-radius: var(--r-sm, 6px); }
+.ksr-main:focus-visible { outline: none; }
+.ksr-main:focus-visible::before { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ksr-hit[data-cursor="true"] .ksr-main:focus-visible::before { outline: none; }
+.ksr-say { display: flex; align-items: baseline; gap: 8px; min-width: 0; font: 500 14px/20px var(--tv-ui); color: var(--ink); }
+.ksr-say > .ksr-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ksr-say strong { font-weight: 600; }
+.ksr-say .ksr-dim { color: var(--ink-3); font-weight: 500; }
+.ksr-sub { display: flex; align-items: center; gap: 6px; min-width: 0; font: 400 13px/20px var(--tv-ui); color: var(--ink-3); }
+.ksr-sub .ksr-snip { -webkit-line-clamp: 2; }
+.ksr-sub-meta { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ksr-when { flex-shrink: 0; margin-left: auto; padding-top: 2px; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); white-space: nowrap; }
+.ksr-hit .kpill { margin-top: 2px; }
+
+/* the matches: a tint of the accent, the ink unchanged (AA on both themes). Titles are painted by the
+   CSS Custom Highlight API (lib/search/useTextHighlights), excerpts carry <mark>s. */
+::highlight(kanbo-search) { background-color: var(--accent-tint, var(--accent-dim)); color: inherit; }
+mark.ksr-hl { color: inherit; background: var(--accent-tint, var(--accent-dim)); border-radius: 3px; box-shadow: 0 0 0 1px var(--accent-tint, var(--accent-dim)); font-weight: 600; }
+.ktv-row[data-done="true"] mark.ksr-hl { font-weight: inherit; }
+
+/* ---------------- nothing typed: recent searches, ways to ask ---------------- */
+.ksr-start { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 32px; margin-top: 24px; }
+.ksr-start h3 { margin: 0 0 6px; font: 600 12px/16px var(--tv-ui); color: var(--ink-3); display: flex; align-items: center; gap: 8px; }
+.ksr-start h3 .ksr-link { margin-left: auto; }
+.ksr-start ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ksr-start li { position: relative; display: flex; align-items: center; }
+.ksr-pick {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 0 36px 0 10px; border: 0; border-radius: var(--r-sm, 6px);
+  background: transparent; color: var(--ink-2); cursor: pointer; text-align: left; font: 500 14px/20px var(--tv-ui);
+}
+.ksr-pick > svg { flex-shrink: 0; color: var(--tv-quiet); }
+.ksr-pick > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ksr-pick:hover { background: var(--tv-hover); color: var(--ink); }
+.ksr-forget { position: absolute; right: 4px; opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
+.ksr-start li:hover .ksr-forget, .ksr-forget:focus-visible, .ksr-start li:has(:focus-visible) .ksr-forget { opacity: 1; }
+.ksr-tip { margin: 10px 10px 0; font: 500 12px/18px var(--tv-ui); color: var(--ink-3); }
+.ksr-tip q { quotes: "“" "”"; color: var(--ink-2); }
+
+@media (hover: none) { .ksr-forget { opacity: 1; } }
+
+/* ---------------- phones ---------------- */
+@media (max-width: 859px) {
+  .ksr-box { height: var(--h-touch, 44px); }
+  .ksr-input, .ksr-mirror { font-size: 16px; }   /* no iOS zoom on focus */
+  .ksr-chip { height: 32px; }
+  .ksr-chip-x { width: 28px; height: 28px; }
+  .ksr-bar { gap: 8px; }
+  .ksr-kinds { order: 2; flex: 1 1 100%; }
+  .ksr-bar-end { margin-left: 0; }
+  .ksr-panel { grid-template-columns: 1fr 1fr; padding: 12px; gap: 10px 12px; }
+  .ksr-hit { min-height: 64px; }
+  .ksr-pick { min-height: 44px; }
+  .ksr .ktv-row[data-snippet="true"] { padding-top: 10px; padding-bottom: 10px; }
+}
+@media (max-width: 420px) { .ksr-panel { grid-template-columns: 1fr; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ksr-box, .ksr-hit, .ksr-forget { transition: none; }
+  .ksr-dots > i { animation: none; opacity: 0.7; }
+}

@@ -25,7 +25,7 @@ const task = (id: string, title: string, extra: Partial<Task> = {}): Task => ({
 });
 
 const open = (props: Partial<React.ComponentProps<typeof CommandPalette>> = {}) =>
-  render(<CommandPalette open onClose={() => {}} onAction={() => {}} {...props} />);
+  render(<CommandPalette open onClose={() => {}} onAction={() => {}} demoCorpus={false} {...props} />);
 const input = () => screen.getByRole("combobox", { name: "Search or ask Kanbo" });
 const type = (text: string) => fireEvent.change(input(), { target: { value: text } });
 const selected = () => screen.getAllByRole("option").find((o) => o.getAttribute("aria-selected") === "true");
@@ -210,7 +210,7 @@ describe("CommandPalette", () => {
       return (
         <>
           <button onClick={() => setCmd(true)}>Board card</button>
-          <CommandPalette open={cmd} onClose={() => setCmd(false)} onAction={(s) => { if (s.id === "new-project") setNp(true); }} />
+          <CommandPalette open={cmd} onClose={() => setCmd(false)} onAction={(s) => { if (s.id === "new-project") setNp(true); }} demoCorpus={false} />
           <NewProjectModal open={np} onClose={() => setNp(false)} onCreate={() => {}} workspaceId={null} />
         </>
       );
@@ -485,14 +485,14 @@ describe("Ask Kanbo", () => {
       ] },
     }));
     const props = { open: true, onClose: () => {}, onAction: () => {}, tasks: week, ai, onApplyAsk };
-    const { rerender } = render(<CommandPalette {...props} askContext={withBrand} />);
+    const { rerender } = render(<CommandPalette {...props} demoCorpus={false} askContext={withBrand} />);
     type("shuffle them?");
     fireEvent.keyDown(input(), { key: "Enter" });
     await screen.findByText("Shuffling.");
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Include “Approve token naming”" }));
     // Brand Refresh is archived by someone else meanwhile: nothing on screen shifts, and what was left out stays out
-    rerender(<CommandPalette {...props} askContext={{ ...ctx }} />);
+    rerender(<CommandPalette {...props} demoCorpus={false} askContext={{ ...ctx }} />);
     expect(within(screen.getByRole("list", { name: "Proposed changes" })).getAllByRole("listitem")).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: /Apply 2 changes/ }));
     expect(onApplyAsk).toHaveBeenCalledWith([
