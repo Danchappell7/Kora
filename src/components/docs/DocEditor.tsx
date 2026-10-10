@@ -22,13 +22,27 @@
    Markdown, ⌘⇧↑/↓ moves, Enter edits). One tab stop: Tab indents a list
    item and otherwise leaves the editor; task chips are links in between.
    Data: lib/docs (saveProjectDoc via docSaver, subscribeProjectDocs).
+
+   Live co-editing (0048, u5 — lib/presence useDocCollab): every change
+   you make goes out as block operations a moment later and others'
+   come in as they type: different blocks merge, the same block is last
+   writer wins (the block flashes "Sana" — RemoteCarets — and your caret
+   keeps its place in the words). Their carets and selections show in
+   their colours; who's here sits beside the title. Undo only ever takes
+   back your own edits (their changes are carried into every undo step).
+   Saving is unchanged — each editor saves its own work with the version
+   check — but when someone else's save lands (the realtime ping, a
+   conflict answer, a "saved" notice), the editor merges it three ways
+   (mergeDocVersions) and the banner only shows for a block both sides
+   changed without seeing each other's words. Alone (demo, offline, no
+   realtime) it's the editor it always was.
    ============================================================ */
 import {
   forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
   type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { DocBlock, DocBlockType, DocMark, DocSaveState, DocSpan, Member, ProjectDoc, Task } from "../../data/types";
+import type { DocBlock, DocBlockType, DocMark, DocSaveState, DocSpan, Member, PresencePeer, ProjectDoc, Task } from "../../data/types";
 import { Avatar, Button, EmojiPicker, Icon, IconButton, Kbd } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { getMember } from "../../data/data";
@@ -39,6 +53,12 @@ import {
   toggleMark, withSpans, type SlashCommand,
 } from "../../lib/docBlocks";
 import { blocksToMarkdown, docErrorText, getProjectDoc, markdownToBlocks, saveProjectDoc, subscribeProjectDocs } from "../../lib/docs";
+import {
+  applyDocOps, diffDocBlocks, docSig, hashText, mapTextOffset, mergeDocVersions, useDocCollab, type DocCollab, type PresenceMe,
+} from "../../lib/presence";
+import { shortNames } from "../presence/core";
+import { PresenceAvatars } from "../presence/PresenceAvatars";
+import { FLASH_MS, RemoteCarets, type RemoteEdit } from "../presence/RemoteCarets";
 import { copyText } from "../rituals/shared";
 import { caretOnEdgeLine, caretRect, getSelectionOffsets, readSpans, renderSpans, setSelectionOffsets } from "./docDom";
 import { draftWhen, forgetDocDraft, keepDocDraft, peekDocDraft, takeDocDraft, type DocDraft } from "./docDrafts";
@@ -64,6 +84,8 @@ export interface DocEditorProps {
   onSaveState?: (state: DocSaveState) => void;
   onMakeTask: DocMakeTask;
   onOpenTask: (taskId: string) => void;
+  /** you on the presence channel (name + avatar colour); defaults to your entry in `members`. null: don't join */
+  me?: PresenceMe | null;
 }
 
 /** What a host (DocPage) can ask of the editor. */
@@ -176,7 +198,7 @@ const BlockText = memo(function BlockText({ block, editable, label, placeholder,
 /* ------------------------------------------------------------ the editor */
 
 export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function DocEditor(
-  { doc, members, tasks, currentUserId, readOnly, onSaved, onSaveState, onMakeTask, onOpenTask }, ref,
+  { doc, members, tasks, currentUserId, readOnly, onSaved, onSaveState, onMakeTask, onOpenTask, me }, ref,
 ) {
   const editable = !readOnly && doc.canEdit;
   const [content, setContent] = useState<{ title: string; blocks: DocBlock[] }>(() => ({ title: doc.title, blocks: ensureEditable(doc.body) }));
@@ -241,16 +263,21 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   /* ---- autosave ---- */
   const cb = useRef({ onSaved, onSaveState });
   cb.current = { onSaved, onSaveState };
+  // the server's copy the saver's base is (the three-way merge's base); and the live layer's hooks into the saver
+  const savedRef = useRef<{ title: string; blocks: DocBlock[] }>(content);
+  const collabRef = useRef<DocCollab | null>(null);
+  const liveCb = useRef({ saved: (_d: ProjectDoc) => {}, conflict: (theirs: ProjectDoc) => setConflict(theirs) });
   const saverRef = useRef<DocSaver | null>(null);
   if (!saverRef.current) {
     saverRef.current = createDocSaver(doc.updatedAt, {
       docId: doc.id,
       projectId: doc.projectId,
-      save: saveProjectDoc,
+      // (what's waiting to go out live goes first: the others have every word this save holds)
+      save: (input) => { collabRef.current?.flushNow(); return saveProjectDoc(input); },
       draft: () => ({ title: contentRef.current.title, body: contentRef.current.blocks }),
       onState: (s) => { setSaveState(s); cb.current.onSaveState?.(s); if (s === "saved") setFailure(null); },
-      onSaved: (d) => cb.current.onSaved?.(d),
-      onConflict: (theirs) => setConflict(theirs),
+      onSaved: (d) => { liveCb.current.saved(d); cb.current.onSaved?.(d); },
+      onConflict: (theirs) => liveCb.current.conflict(theirs),
       onGone: () => setGone(true),
       onError: (_why, e) => setFailure(docErrorText(e)),
       keep: (d) => { keptId.current = keepDocDraft(currentUserId, doc.id, d); },
@@ -299,36 +326,221 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     return () => { window.removeEventListener("beforeunload", onLeave); document.removeEventListener("visibilitychange", onHide); };
   }, [saver]);
 
+  /* ---- live: the others in this doc (lib/presence useDocCollab) ---- */
+  const meOnWire = useMemo<PresenceMe | null>(() => {
+    if (me !== undefined) return me;
+    const m = members.find((x) => x.id === currentUserId) ?? getMember(currentUserId);
+    return m?.name ? { userId: currentUserId, name: m.name, color: m.color } : null;
+  }, [me, members, currentUserId]);
+  const colorOf = (id: string | null | undefined) => (id ? members.find((m) => m.id === id)?.color ?? getMember(id)?.color ?? "" : "");
+
+  // "edited by Sana": the blocks others just changed, for FLASH_MS
+  const [edits, setEdits] = useState<RemoteEdit[]>([]);
+  const editTimers = useRef<number[]>([]);
+  const flash = useCallback((changed: { blockId: string; by: PresencePeer }[]) => {
+    if (!changed.length) return;
+    const at = Date.now();
+    setEdits((list) => [...list.filter((e) => !changed.some((c) => c.blockId === e.blockId)), ...changed.map((c) => ({ ...c, at }))]);
+    editTimers.current.push(window.setTimeout(() => setEdits((list) => list.filter((e) => e.at !== at)), FLASH_MS));
+  }, []);
+  // what screen readers hear about the others, at most once a while per person and kind
+  const said = useRef(new Map<string, number>());
+  const sayOnce = useCallback((key: string, words: string, everyMs = 60_000) => {
+    const t = Date.now();
+    if (t - (said.current.get(key) ?? -Infinity) < everyMs) return;
+    said.current.set(key, t);
+    announce(words);
+  }, [announce]);
+  const pendingTitleSel = useRef<[number, number] | null>(null);
+
+  /** Someone else's changes (live, or merged from a save) onto the screen: your caret keeps its place in the words,
+   *  undo keeps only your own edits (their change is carried into every step), and the blocks they changed flash
+   *  their name. Never a commit: nothing here is yours to send or save. */
+  const applyRemote = (next: { title: string; blocks: DocBlock[] }, changed: { blockId: string; by: PresencePeer }[]) => {
+    const prev = contentRef.current;
+    const blocks = next.blocks.length ? next.blocks : prev.blocks;
+    if (prev.title === next.title && prev.blocks === blocks) return;
+    const n = { title: next.title, blocks };
+    const active = document.activeElement;
+    let caret: Caret | null = null;
+    if (active && rootRef.current?.contains(active)) {
+      for (const [id, el] of els.current) { const sel = getSelectionOffsets(el); if (sel) { caret = { id, start: sel.start, end: sel.end }; break; } }
+    }
+    const ops = diffDocBlocks(prev.blocks, n.blocks);
+    const titleMoved = prev.title !== n.title;
+    if (ops.length || titleMoved) {
+      const h = history.current;
+      const carry = (snap: Snap): Snap => {
+        const b = ops.length ? applyDocOps(snap.blocks, ops) : snap.blocks;
+        return { ...snap, title: titleMoved ? n.title : snap.title, blocks: b.length ? b : snap.blocks };
+      };
+      h.past = h.past.map(carry);
+      h.future = h.future.map(carry);
+      h.lastKind = "";
+    }
+    if (titleMoved && active && active === titleRef.current) {
+      const t = titleRef.current;
+      pendingTitleSel.current = [mapTextOffset(prev.title, n.title, t.selectionStart ?? 0), mapTextOffset(prev.title, n.title, t.selectionEnd ?? 0)];
+    }
+    contentRef.current = n;
+    setContent(n);
+    if (caret) {
+      const c = caret;
+      const was = prev.blocks.find((b) => b.id === c.id);
+      const now = n.blocks.find((b) => b.id === c.id);
+      if (!now) {
+        // the block you were in went: the end of the one before it
+        const i = prev.blocks.findIndex((b) => b.id === c.id);
+        const near = n.blocks[Math.min(Math.max(0, i - 1), n.blocks.length - 1)];
+        if (near) pendingCaret.current = { id: near.id, start: near.type === "divider" ? 0 : spansLength(near.spans) };
+      } else if (was && now !== was && JSON.stringify(was.spans ?? []) !== JSON.stringify(now.spans ?? [])) {
+        // its words changed under you (repainted): the same place in the words
+        const a = blockText(was), b = blockText(now);
+        pendingCaret.current = { id: c.id, start: mapTextOffset(a, b, c.start), end: mapTextOffset(a, b, c.end ?? c.start) };
+      }
+    }
+    flash(changed.filter((c) => n.blocks.some((b) => b.id === c.blockId)));
+    const who = new Map(changed.map((c) => [c.by.userId, c.by]));
+    for (const by of who.values()) if (by.userId) sayOnce(`edit:${by.userId}`, `${shortNames([by])[0]} is making changes to this doc.`, 120_000);
+  };
+
+  const collab = useDocCollab(doc.id, {
+    me: meOnWire,
+    getBlocks: () => contentRef.current.blocks,
+    getTitle: () => contentRef.current.title,
+    setBlocks: (blocks, changed) => applyRemote({ title: contentRef.current.title, blocks }, changed),
+    setTitle: (title) => applyRemote({ title, blocks: contentRef.current.blocks }, []),
+    baseVersion: saver.base,
+    readOnly: !editable,
+    projectId: doc.projectId,
+    onPeerSaved: (p) => live.current.peerSaved(p),
+    onBehind: () => live.current.catchUp(),
+    onConflicts: (_ids, by) => sayOnce(`clash:${by.userId}`, `${shortNames([by])[0]} changed the line you were writing at the same moment. Their version is in.`, 30_000),
+  });
+  collabRef.current = collab;
+
+  /** Someone else's save, merged three ways with what's here (the base: the copy the saver's base is). Their
+   *  changes come in; yours stay and save on top of their copy. The banner only for blocks both sides changed
+   *  without seeing each other's words. */
+  const reconcile = (theirs: ProjectDoc): "merged" | "same" | "conflict" => {
+    const base = savedRef.current;
+    const mine = contentRef.current;
+    const theirsC = { title: theirs.title, blocks: ensureEditable(theirs.body) };
+    const c = collabRef.current;
+    const r = mergeDocVersions(base, mine, theirsC, { seen: c?.seen, seenTitle: c?.seenTitle, remoteAuthored: c?.remoteAuthored, mineUnsent: c?.unsent });
+    if (r.conflicts.length || r.titleConflict) {
+      saver.hold();
+      setConflict(theirs);
+      return "conflict";
+    }
+    const merged = { title: r.title, blocks: r.blocks.length ? r.blocks : [emptyBlock()] };
+    const wasDirty = saver.dirty || saver.held;
+    // their copy is what the server holds now: the saver's base (it reads the draft as the server's contents)…
+    contentRef.current = theirsC;
+    saver.adopt(theirs.updatedAt);
+    contentRef.current = mine;
+    savedRef.current = theirsC;
+    c?.remember(theirsC.blocks, theirsC.title);
+    // …and the merge goes on screen as their change
+    const moved = docSig(mine.title, mine.blocks) !== docSig(merged.title, merged.blocks);
+    if (moved) {
+      const name = theirs.updatedByName ?? nameOf(theirs.updatedBy ?? "") ?? "Someone";
+      const by: PresencePeer = { userId: theirs.updatedBy ?? "", name, color: colorOf(theirs.updatedBy), state: "editing", at: Date.now() };
+      c?.absorb(mine, merged);
+      applyRemote(merged, r.theirsChanged.map((blockId) => ({ blockId, by })));
+      if (!wasDirty) announce(`Updated with ${name}'s changes.`);
+    }
+    // what's yours still goes, on their copy
+    if (editable && docSig(merged.title, merged.blocks) !== docSig(theirsC.title, theirsC.blocks)) saver.touch();
+    setConflict(null);
+    return moved ? "merged" : "same";
+  };
+
+  /** fetch the server's copy and merge it (a batch made on a newer save, blocks we've never had, a "saved" notice
+   *  that doesn't match what's here) — a moment later, once */
+  const catching = useRef({ timer: 0, busy: false });
+  const catchUp = () => {
+    const k = catching.current;
+    window.clearTimeout(k.timer);
+    k.timer = window.setTimeout(() => {
+      if (k.busy || saver.saving || saver.gone || closedRef.current) return;
+      k.busy = true;
+      getProjectDoc(doc.id).then((theirs) => {
+        if (!theirs || closedRef.current || saver.saving) return;
+        if (new Date(theirs.updatedAt).getTime() === new Date(saver.base).getTime()) return;
+        live.current.reconcile(theirs);
+      }, () => { /* the next save will tell */ }).finally(() => { k.busy = false; });
+    }, 400);
+  };
+
+  /** someone saved live: if what they saved is what's here, that's the base now (no fetch, nothing to save) */
+  const peerSaved = ({ version, key }: { version: string; key: string }) => {
+    if (saver.saving || saver.gone) return;
+    if (!(Date.parse(version) > Date.parse(saver.base))) return;
+    const cur = contentRef.current;
+    if (hashText(docSig(cur.title, cur.blocks)) !== key) { catchUp(); return; }
+    saver.adopt(version);
+    savedRef.current = cur;
+    collabRef.current?.remember(cur.blocks, cur.title);
+    setConflict(null);
+  };
+
+  const live = useRef({ reconcile, catchUp, peerSaved });
+  live.current = { reconcile, catchUp, peerSaved };
+  liveCb.current = {
+    saved: (d) => {
+      savedRef.current = { title: d.title, blocks: d.body };
+      collabRef.current?.remember(d.body, d.title);
+      collabRef.current?.sendSaved(d.updatedAt, hashText(docSig(d.title, d.body)));
+    },
+    // someone saved first: merge theirs, and save what's yours on top straight away
+    conflict: (theirs) => {
+      if (live.current.reconcile(theirs) !== "conflict" && saver.dirty) void saver.flush();
+    },
+  };
+  useEffect(() => () => {
+    editTimers.current.forEach((t) => window.clearTimeout(t));
+    window.clearTimeout(catching.current.timer);
+  }, []);
+  // ops that named blocks this copy never had: the server's copy has them
+  useEffect(() => { if (collab.unmerged > 0) live.current.catchUp(); }, [collab.unmerged]);
+  // who's here, said once in a while
+  const peerSeen = useRef(new Map<string, string>());
+  useEffect(() => {
+    const next = new Map(collab.peers.map((p) => [p.userId, p.name]));
+    const prev = peerSeen.current;
+    peerSeen.current = next;
+    const joined = collab.peers.filter((p) => !prev.has(p.userId));
+    const left = [...prev].filter(([id]) => !next.has(id)).map(([userId, name]) => ({ userId, name }));
+    for (const p of joined) sayOnce(`in:${p.userId}`, `${shortNames([p])[0]} opened this doc.`);
+    for (const p of left) sayOnce(`out:${p.userId}`, `${shortNames([p])[0]} left this doc.`);
+  }, [collab.peers, sayOnce]);
+  useLayoutEffect(() => {
+    const sel = pendingTitleSel.current;
+    const t = titleRef.current;
+    if (!sel || !t) return;
+    pendingTitleSel.current = null;
+    try { t.setSelectionRange(sel[0], sel[1]); } catch { /* not focusable now */ }
+  });
+
   /* ---- someone else's save (realtime ping) ---- */
   useEffect(() => {
-    let live = true;
+    let alive = true;
     const off = subscribeProjectDocs(doc.projectId, (c) => {
-      if (!live || c.docId !== doc.id) return;
+      if (!alive || c.docId !== doc.id) return;
       if (c.type === "DELETE") { setGone(true); saver.markGone(); return; }
       if (c.updatedBy === currentUserId || (c.updatedAt && new Date(c.updatedAt).getTime() === new Date(saver.base).getTime())) return;
       if (saver.saving) return; // its answer will say
       getProjectDoc(doc.id).then((theirs) => {
-        if (!live || !theirs) return;
+        if (!alive || !theirs) return;
         if (new Date(theirs.updatedAt).getTime() === new Date(saver.base).getTime()) return;
-        if (!saver.dirty) {
-          // nothing unsaved here: take their copy quietly, keeping the caret where it was. Undo starts
-          // again from their copy (stepping back past it would save over their words, unannounced).
-          const caret = lastCaret.current;
-          const next = { title: theirs.title, blocks: ensureEditable(theirs.body) };
-          contentRef.current = next;
-          setContent(next);
-          history.current = { past: [], future: [], lastKind: "", lastBlock: "", lastAt: 0 };
-          saver.adopt(theirs.updatedAt);
-          if (caret && next.blocks.some((b) => b.id === caret.id) && document.activeElement && rootRef.current?.contains(document.activeElement)) pendingCaret.current = caret;
-          announce(`Updated with ${theirs.updatedByName ?? nameOf(theirs.updatedBy ?? "") ?? "someone"}'s changes.`);
-        } else {
-          saver.hold();
-          setConflict(theirs);
-        }
+        // nothing unsaved here: their copy comes in quietly, your caret where it was; unsaved words: merged with
+        // theirs (the banner only when the same lines changed on both sides)
+        live.current.reconcile(theirs);
       }, () => { /* the next save will tell */ });
     });
-    return () => { live = false; off(); };
-  }, [doc.id, doc.projectId, currentUserId, saver, announce, nameOf]);
+    return () => { alive = false; off(); };
+  }, [doc.id, doc.projectId, currentUserId, saver]);
 
   /* ---- the caret ---- */
   const register = useCallback((id: string, el: HTMLElement | null) => {
@@ -378,6 +590,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     setContent(next);
     if (opts.caret) pendingCaret.current = opts.caret;
     saver.touch();
+    collabRef.current?.broadcast(diffDocBlocks(prev.blocks, next.blocks));
   }, [saver]);
 
   const setBlocks = useCallback((blocks: DocBlock[], opts: { caret?: Caret | null; kind?: "type" | "edit"; blockId?: string } = {}) => {
@@ -389,9 +602,12 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     const h = history.current;
     const from = dir === "undo" ? h.past : h.future;
     const to = dir === "undo" ? h.future : h.past;
-    const snap = from.pop();
-    if (!snap) { announce(dir === "undo" ? "Nothing to undo." : "Nothing to redo."); return; }
     const cur = contentRef.current;
+    // (a step someone else's change has made the same as what's here is no step at all)
+    const here = docSig(cur.title, cur.blocks);
+    let snap = from.pop();
+    while (snap && docSig(snap.title, snap.blocks) === here) snap = from.pop();
+    if (!snap) { announce(dir === "undo" ? "Nothing to undo." : "Nothing to redo."); return; }
     to.push({ title: cur.title, blocks: cur.blocks, caret: currentCaret() });
     h.lastKind = "";
     contentRef.current = { title: snap.title, blocks: snap.blocks };
@@ -399,6 +615,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     const caret = snap.caret && snap.blocks.some((b) => b.id === snap.caret!.id) ? snap.caret : { id: snap.blocks[0].id, start: 0 };
     pendingCaret.current = caret;
     saver.touch();
+    collabRef.current?.broadcast(diffDocBlocks(cur.blocks, snap.blocks));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editable, saver, announce]);
 
@@ -1082,12 +1299,31 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editable]);
 
+  /* ---- your caret, for the others (throttled in lib/presence) ---- */
+  useEffect(() => {
+    if (!editable) return;
+    const onSel = () => {
+      const root = rootRef.current;
+      const sel = document.getSelection();
+      if (!root || !sel || !sel.rangeCount || !sel.anchorNode || !root.contains(sel.anchorNode)) return;
+      for (const [id, el] of els.current) {
+        const s = getSelectionOffsets(el);
+        if (s) { collabRef.current?.setCaret(s.end > s.start ? { blockId: id, offset: s.start, extent: s.end - s.start } : { blockId: id, offset: s.start }); return; }
+      }
+      // in the title (or between blocks): no caret in the text
+      collabRef.current?.setCaret(null);
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, [editable]);
+
   /* ---- leaving the editor: save now ---- */
   const onBlurCapture = (e: React.FocusEvent<HTMLDivElement>) => {
     const next = e.relatedTarget as Node | null;
     if (next && rootRef.current?.contains(next)) return;
     if (next && (next as HTMLElement).closest?.("[data-kpop], .ksheet-layer")) return; // our own menus
     closeMenu();
+    collabRef.current?.setCaret(null);
     void saver.flush();
   };
 
@@ -1107,6 +1343,10 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     setContent(next);
     history.current = { past: [], future: [], lastKind: "", lastBlock: "", lastAt: 0 };
     saver.adopt(conflict.updatedAt);
+    savedRef.current = next;
+    collabRef.current?.remember(next.blocks, next.title);
+    // anyone here live still has your words: their version goes out to them too
+    collabRef.current?.broadcast([]);
     setConflict(null);
     announce("Showing their version.");
   };
@@ -1167,6 +1407,15 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     announce(`Restored the version from ${when}.`);
   };
 
+  /* where the others' carets go: a block's text element (the editor), or the nth block of the read-only view */
+  const locateText = useCallback((id: string) => els.current.get(id) ?? null, []);
+  const locateRow = useCallback((id: string) => rootRef.current?.querySelector<HTMLElement>(rowSel(id)) ?? null, []);
+  const locateInView = useCallback((id: string) => {
+    const i = contentRef.current.blocks.findIndex((b) => b.id === id);
+    const row = i >= 0 ? rootRef.current?.querySelectorAll<HTMLElement>(".kdoc-view .kdoc-block")[i] : undefined;
+    return row?.querySelector<HTMLElement>(".kdoc-text") ?? row ?? null;
+  }, []);
+
   /* stable wrappers, so BlockText (memo) doesn't re-render on every keystroke */
   const onFocusBlock = (id: string) => { setFocusId(id); if (selection) setSelection(null); };
   const handlersRef = useRef({ onInput, onKeyDown, onFocus: onFocusBlock, onPaste });
@@ -1184,12 +1433,18 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   const showOwnIndicator = !onSaveState;
   const firstEmpty = blocks.length === 1 && isBlockEmpty(blocks[0]) && blocks[0].type === "p";
 
+  const presence = collab.peers.length > 0 && <PresenceAvatars peers={collab.peers} size="md" max={4} />;
   if (!editable) {
     return (
       <div className="kdoc-editor" data-readonly="true" ref={rootRef}>
-        <h2 className="kdoc-title" data-readonly="true">{content.title || "Untitled"}</h2>
+        <div className="kdoc-title-row">
+          <h2 className="kdoc-title" data-readonly="true">{content.title || "Untitled"}</h2>
+          {presence}
+        </div>
         <DocBlocksView blocks={blocks} nameOf={nameOf} tasks={taskById} onOpenTask={onOpenTask}
           emptyText={readOnly ? "Nothing written here yet." : "Nothing written yet."} />
+        <RemoteCarets rootRef={rootRef} peers={collab.peers} edits={edits} locate={locateInView} layoutKey={content} />
+        <p className="sr-only" role="status" aria-live="polite">{notice}</p>
         <VersionHistory open={historyOpen} onClose={() => setHistoryOpen(false)} docId={doc.id} members={members} nameOf={nameOf}
           tasks={taskById} canRestore={false} onRestore={() => {}} />
       </div>
@@ -1203,6 +1458,8 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   return (
     <div ref={rootRef} className="kdoc-editor" tabIndex={-1} data-focus-ring="none" data-selecting={selection ? "true" : undefined}
       aria-label={selection ? "Doc blocks" : undefined} onKeyDown={onRootKeyDown} onBlurCapture={onBlurCapture}
+      onCompositionStartCapture={() => collab.hold()}
+      onCompositionEndCapture={() => { window.setTimeout(() => collabRef.current?.release(), 0); }}
       onMouseDown={(e) => { if (selection && e.target === rootRef.current) setSelection(null); }}>
       {conflict && (
         <div className="kdoc-banner" data-tone="warn" role="alert">
@@ -1259,6 +1516,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
               e.preventDefault(); focusBlock(contentRef.current.blocks[0].id, "start");
             }
           }} />
+        {presence}
         {showOwnIndicator && <DocSaveIndicator state={saveState} />}
       </div>
 
@@ -1451,6 +1709,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
       <VersionHistory open={historyOpen} onClose={() => setHistoryOpen(false)} docId={doc.id} members={members} nameOf={nameOf}
         tasks={taskById} canRestore={editable && !gone} onRestore={(v) => void restoreVersion(v)} />
 
+      <RemoteCarets rootRef={rootRef} peers={collab.peers} edits={edits} locate={locateText} locateRow={locateRow} layoutKey={content} />
       <p className="sr-only" role="status" aria-live="polite">{notice}</p>
     </div>
   );

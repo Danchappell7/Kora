@@ -32,7 +32,8 @@
    the demo launch project, with versions), the words for failures, and
    the pure block model — it lives in lib/docBlocks (thoroughly tested)
    and is re-exported here under the contract's names. Parsers and limits
-   above are final.
+   above are final. 0048 (u5): demoSaveAs — the demo's scripted teammate
+   saving as herself, so live co-editing shows end to end in demo mode.
    ============================================================ */
 import type {
   Activity, DocBlock, DocBlockType, DocFailure, DocSaveInput, DocSaveResult, DocSpan, DocTemplateId, ProjectDoc, ProjectDocListItem, ProjectDocVersion,
@@ -507,6 +508,26 @@ function demo() {
 
 /** Forget the demo docs (tests). */
 export function resetDemoDocs(): void { demoState = null; }
+
+/** Demo only (0048 presence, the scripted teammates): save a doc as someone else — `mutate` gets the stored body
+ *  and returns the new one. Same rules as a save (a new updatedAt, a version, the realtime ping), so an open
+ *  editor merges it as it would a real teammate's save. Null when there's no such doc, or with Supabase. */
+export async function demoSaveAs(docId: string, mutate: (body: DocBlock[]) => DocBlock[], by: string): Promise<ProjectDoc | null> {
+  if (supabase) return null;
+  const st = (demoState ??= seedDemo());
+  const cur = st.docs.get(docId);
+  if (!cur) return null;
+  const body = mutate(clone(cur.body));
+  const updatedAt = new Date(Math.max(Date.now(), new Date(cur.updatedAt).getTime() + 1)).toISOString();
+  const d: ProjectDoc = { ...cur, body: clone(body), updatedBy: by, updatedAt };
+  st.docs.set(docId, d);
+  const list = st.versions.get(docId) ?? [];
+  st.versions.set(docId, [{ id: `dv-${++demoSeq}-${Date.now().toString(36)}`, docId, title: d.title, body: clone(body), savedBy: by, savedAt: updatedAt }, ...list].slice(0, DOC_LIMITS.versions));
+  const ls = st.listeners.get(d.projectId);
+  const change: DocChange = { type: "UPDATE", docId, updatedAt, updatedBy: by, item: parseProjectDocListItem(d) };
+  if (ls) queueMicrotask(() => ls.forEach((l) => l(change)));
+  return { ...clone(d), createdByName: nameOf(d.createdBy), updatedByName: nameOf(d.updatedBy), canEdit: true };
+}
 
 /* the demo's docs, written in the voice of the Foundrise team */
 function seedDemo(): DemoState {
