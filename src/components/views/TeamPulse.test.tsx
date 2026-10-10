@@ -4,6 +4,8 @@ import { TeamPulse } from "./TeamPulse";
 import { dayOffset, refreshClock } from "../../data/data";
 import type { Task, WorkspaceMember, WorkspaceEvent } from "../../data/types";
 import * as slack from "../../lib/slack";
+import { resetKudosDemo } from "../../lib/momentum";
+import type { Kudos } from "../../data/types";
 
 const WS = "ws-foundrise";
 let n = 0;
@@ -365,5 +367,53 @@ describe("TeamPulse › Post to Slack", () => {
     await ready();
     await act(async () => { await slack.getSlackStatus(WS); });
     expect(screen.queryByRole("button", { name: /Post to Slack/ })).toBeNull();
+  });
+});
+
+describe("TeamPulse › kudos (0048)", () => {
+  beforeEach(() => { resetKudosDemo({ demoDelayMs: 0 }); });
+  const kudo = (o: Partial<Kudos>): Kudos => ({
+    id: "k-" + (++n), taskId: "audit", workspaceId: WS, fromUser: "m-1", toUser: "m-2", emoji: "👏", note: null, createdAt: new Date().toISOString(), ...o,
+  });
+
+  it("a teammate's finished task takes one-tap kudos; the host hears the task's kudos", async () => {
+    const onGiveKudos = vi.fn();
+    pulse({ workspaceId: WS, onGiveKudos });
+    await ready();
+    const theo = screen.getByRole("row", { name: /Theo Vance/ });
+    const btn = within(theo).getByRole("button", { name: "Kudos for Theo" });
+    expect(btn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(btn);
+    await ready();
+    expect(within(theo).getByRole("button", { name: "Kudos for Theo, 1 so far" })).toHaveAttribute("aria-pressed", "true");
+    expect(onGiveKudos).toHaveBeenCalledWith("audit", [expect.objectContaining({ taskId: "audit", fromUser: "m-self", toUser: "m-2", emoji: "🎉" })]);
+    // …and Theo's row counts it (with the demo's own kudos for his video: Pulse read them itself)
+    expect(theo).toHaveTextContent("2 kudos since yesterday");
+  });
+
+  it("counts kudos per person for the period, from the host's list", async () => {
+    const kudos = [kudo({}), kudo({ fromUser: "m-3" }), kudo({ createdAt: "2026-09-01T10:00:00Z", fromUser: "m-self" })];
+    pulse({ workspaceId: WS, kudos });
+    await ready();
+    const theo = screen.getByRole("row", { name: /Theo Vance/ });
+    expect(theo).toHaveTextContent("2 kudos since yesterday");
+    // the button shows every kudos on the task (the old one too: it's still there)
+    expect(within(theo).getByRole("button", { name: "Kudos for Theo, 3 so far" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("your own finished work shows what you got, read only; guests may give kudos", async () => {
+    const tasks = [...demoTasks(), task({ id: "mine", title: "Book the venue", status: "done", assigneeId: "m-self", completedAt: dayOffset(0) })];
+    pulse({ tasks, workspaceId: WS, readOnly: true, kudos: [kudo({ taskId: "mine", toUser: "m-self", fromUser: "m-1" })] });
+    await ready();
+    const me = screen.getByRole("row", { name: /Daniel Okai/ });
+    expect(within(me).queryByRole("button", { name: /^Kudos for/ })).toBeNull();
+    expect(me).toHaveTextContent("1 kudos, from Maya");
+    // a guest (readOnly) still sees Theo's kudos button
+    expect(within(screen.getByRole("row", { name: /Theo Vance/ })).getByRole("button", { name: "Kudos for Theo" })).toBeEnabled();
+  });
+
+  it("in Personal: no kudos at all", () => {
+    pulse({ personal: true });
+    expect(screen.queryByRole("button", { name: /^Kudos for/ })).toBeNull();
   });
 });

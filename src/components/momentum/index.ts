@@ -1,4 +1,9 @@
-/* KANBO — momentum & kudos (0048, u10). One import site for the integrator. */
+/* KANBO — momentum & kudos (0048). One import site for the integrator: lazy-load this module
+   (lazyViews.ts) and every piece here comes with it, lib/momentum included. */
 export { WinsRecap, type WinsRecapProps } from "./WinsRecap";
 export { StreakChip, type StreakChipProps } from "./StreakChip";
-export { KudosButton, type KudosButtonProps } from "./KudosButton";
+export { KudosButton, KudosTally, KUDOS_EMOJI_NAMES, type KudosButtonProps } from "./KudosButton";
+export { TodayStreak, TodayWins, TaskKudos } from "./TodayMomentum";
+export { MomentumSettings } from "./MomentumSettings";
+export { DaysOffEditor } from "./DaysOffEditor";
+export { useWorkspaceKudos, type WorkspaceKudos } from "./useKudos";
