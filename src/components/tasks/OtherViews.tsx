@@ -3,13 +3,11 @@
    Matrix and Files views
    ============================================================ */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, memo, type ReactNode, type CSSProperties } from "react";
-import { createPortal } from "react-dom";
 import {
-  Icon, Avatar, wasJustLanded, markJustLanded, Segmented,
+  Icon, Avatar, wasJustLanded, markJustLanded, Segmented, Meter, ProjectCover,
   StatusGlyph, PriorityGlyph, DateChip, ProjectTile, projectPaint, Button, IconButton, EmptyState,
 } from "../primitives";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useListKeyboard, type ListKeyAction } from "../../hooks/useListKeyboard";
 import { BulkMenuButton, CustomChips, useFloatBounds } from "./ListView";
 import { parseDateText } from "../../lib/nlp";
@@ -17,17 +15,29 @@ import {
   getProject, getMember, dueState, fmtDue, TAGS,
   STATUS_META, STATUS_ORDER, PRIORITY_META, KANBO_TODAY, toLocalISO,
 } from "../../data/data";
-import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Attachment, CustomFieldDef } from "../../data/types";
+import type { Task, Status, Priority, Project, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Attachment, CustomFieldDef, BoardSettings } from "../../data/types";
 import { calendarLegend, eventCalendarKey, eventColour, loadHiddenCalendars, saveHiddenCalendars, type LegendEntry } from "../../lib/calendars";
 import { store } from "../../data/store";
 import { reportError } from "../../lib/monitoring";
+import { useTaskDragSource, useTaskDropTarget, type TaskDragPayload, type TaskDropEvent } from "../../lib/dnd";
 import {
   addDaysISO, daysBetweenISO, mondayOf, switchCalendarPeriod, type CalendarPeriod,
   hideNestedSubtasks, assigneeColumnKey, UNASSIGNED_COL, FORMER_COL, NO_PROJECT_COL,
-  planReorder, barSpan, clipSpan, effectiveStartISO, timelineMovePatch, timelineStartPatch,
-  wipKeyFor, loadWipLimits, parseWipLimit, chunk, type BarSpan,
+  planReorder, planInsertMany, barSpan, clipSpan, effectiveStartISO, timelineMovePatch, timelineStartPatch,
+  wipKeyFor, loadWipLimits, readWipLimits, wipStorageKey, chunk, type BarSpan,
+  VIRTUALISE_AFTER, SWIMLANE_OPTIONS, swimlanes, lanePatch, effectiveSwimlane, swimlaneStorageKey, laneCollapseStorageKey, readSwimlane,
+  wipSettingKey, wipToShare, wipBreachMessage, wipState, cardProgress, cardHeightEstimate,
+  type SwimlaneBy, type Swimlane, type SwimlaneCtx, type BoardSettingsChange,
 } from "./otherViewsLogic";
+import { Popover, MenuItem } from "../board/AnchoredPopover";
+import { ColumnMenu } from "../board/ColumnMenu";
+import { CardMoveMenu, type MoveColumn } from "../board/CardMoveMenu";
+import { VirtualCards } from "../board/VirtualCards";
+import { useCoverUrls } from "../board/useCoverUrls";
+import { currentBoardSettings, demoAwareBoardSettings, effectiveCoverId, nextBoardSettings } from "../board/boardDemo";
+import { useOptionalToast } from "../rituals/shared";
 import "./taskViews.css";
+import "../board/board.css";
 import { TaskApprovalBadge } from "../approvals/ApprovalSummaries";
 
 export type BoardGroup = "status" | "priority" | "project" | "assignee";
@@ -56,183 +66,190 @@ const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.g
 /** Keyboard (not mouse) focus — browsers without :focus-visible just treat all focus as visible. */
 const isFocusVisible = (el: Element) => { try { return el.matches(":focus-visible"); } catch { return true; } };
 
-/* ---------------- anchored popover ----------------
-   Menus render into <body> with fixed positioning taken from the trigger's
-   rect, so they float above neighbouring cards and scroll containers instead
-   of being drawn underneath the next card. They flip above the trigger when
-   there's no room below and are clamped to the viewport. Menus get arrow-key
-   navigation; dialogs trap focus. Escape closes and focus returns to the
-   trigger. */
-function Popover({ anchor, onClose, label, role = "menu", align = "start", minWidth = 160, maxWidth, children }: {
-  anchor: HTMLElement | null; onClose: () => void; label: string;
-  role?: "menu" | "dialog"; align?: "start" | "end"; minWidth?: number; maxWidth?: number; children: ReactNode;
-}) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const panelRef = useFocusTrap<HTMLDivElement>(role === "dialog", onClose);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  const [ready, setReady] = useState(false);
-
-  const place = useCallback(() => {
-    const box = boxRef.current, panel = panelRef.current, bd = backdropRef.current;
-    if (!box || !panel || !bd || !anchor || !anchor.isConnected) return;
-    // calibrate CSS px against client px — Appearance → text size applies `zoom` to <html>
-    box.style.left = "0px"; box.style.top = "0px"; panel.style.maxHeight = "";
-    const r0 = box.getBoundingClientRect();
-    box.style.left = "100px";
-    const k = (box.getBoundingClientRect().left - r0.left) / 100 || 1;
-    const view = bd.getBoundingClientRect(), a = anchor.getBoundingClientRect();
-    const gap = 6 * k, pad = 8 * k;
-    const below = view.bottom - a.bottom - gap - pad, above = a.top - view.top - gap - pad;
-    const flip = r0.height > below && above > below;
-    const room = Math.max(120 * k, flip ? above : below);
-    let x = align === "end" ? a.right - r0.width : a.left;
-    x = Math.max(view.left + pad, Math.min(x, view.right - r0.width - pad));
-    const y = flip ? a.top - gap - Math.min(r0.height, room) : a.bottom + gap;
-    box.style.left = `${(x - r0.left) / k}px`;
-    box.style.top = `${(y - r0.top) / k}px`;
-    panel.style.maxHeight = `${room / k}px`;
-    panel.style.transformOrigin = flip ? "50% 100%" : "50% 0";
-  }, [anchor, align, panelRef]);
-
-  useLayoutEffect(() => { place(); setReady(true); }, [place]);
-  useEffect(() => {
-    const onScroll = (e: Event) => { if (!boxRef.current?.contains(e.target as Node)) place(); };
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", onScroll, true);
-    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", onScroll, true); };
-  }, [place]);
-  // initial focus: an explicit target, else the current choice, else the first control
-  useEffect(() => {
-    if (!ready) return;
-    const p = panelRef.current;
-    const target = p?.querySelector<HTMLElement>("[data-autofocus]")
-      ?? p?.querySelector<HTMLElement>('[aria-checked="true"]')
-      ?? p?.querySelector<HTMLElement>('[role^="menuitem"], button:not([disabled]), input, a[href]');
-    target?.focus({ preventScroll: true });
-  }, [ready, panelRef]);
-  // hand focus back to the trigger on close (when it's still on the page)
-  useEffect(() => () => {
-    const ae = document.activeElement;
-    if (anchor?.isConnected && (!ae || ae === document.body)) anchor.focus({ preventScroll: true });
-  }, [anchor]);
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    e.stopPropagation(); // keep keys away from the card underneath and global shortcuts
-    if (role === "dialog") return; // useFocusTrap handles Escape + Tab
-    if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); closeRef.current(); return; }
-    const items = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? []);
-    if (!items.length) return;
-    const i = items.indexOf(document.activeElement as HTMLElement);
-    const go = (n: number) => { e.preventDefault(); items[(n + items.length) % items.length].focus(); };
-    if (e.key === "ArrowDown") go(i + 1);
-    else if (e.key === "ArrowUp") go(i < 0 ? items.length - 1 : i - 1);
-    else if (e.key === "Home") go(0);
-    else if (e.key === "End") go(items.length - 1);
-  };
-
-  return createPortal(
-    <>
-      <div ref={backdropRef} data-kpop="" onClick={(e) => { e.stopPropagation(); closeRef.current(); }} style={{ position: "fixed", inset: 0, zIndex: 80 }} />
-      <div ref={boxRef} style={{ position: "fixed", zIndex: 81, visibility: ready ? "visible" : "hidden" }}>
-        <div ref={panelRef} role={role} aria-label={label} aria-modal={role === "dialog" ? true : undefined} data-kpop-panel=""
-          onKeyDown={onKeyDown} onClick={(e) => e.stopPropagation()} className={ready ? "anim-scalein" : undefined}
-          style={{ minWidth, maxWidth, overflowY: "auto", padding: 4, borderRadius: "var(--r-lg, 12px)", background: "var(--surface-raised)", boxShadow: "var(--e2, var(--shadow-lg))", border: "1px solid var(--hairline)" }}>
-          {children}
-        </div>
-      </div>
-    </>,
-    document.body,
-  );
-}
-
-function MenuItem({ checked, onSelect, children }: { checked?: boolean; onSelect: () => void; children: ReactNode }) {
-  return (
-    <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className="ktv-mi"
-      onClick={onSelect} onMouseEnter={(e) => e.currentTarget.focus({ preventScroll: true })}>
-      {children}
-      {checked && <span className="ktv-mi-end"><Icon name="check" size={14} sw={2.2} /></span>}
-    </button>
-  );
-}
-
-/* ---------------- KANBAN ---------------- */
+/* ---------------- KANBAN ----------------
+   Cards: an optional cover (one of the task's images, or the project's
+   identity cover when the board shows project covers), the title renamed
+   in place (click it, or E / F2), status / priority / assignee / due
+   edited from the card, a sub-task (or checklist) progress bar, and a
+   due chip that says when it's overdue. Rows (swimlanes) by assignee,
+   priority or project, folding away with their counts. WIP limits per
+   column, edited in the column's menu: shared on a project board (its
+   board_settings), kept on this device on My tasks; a column past its
+   limit wears the warn token, and a move that takes it past says so.
+   Cards are drag sources for the drag kit (lib/dnd: onto Today, the
+   sidebar's projects…) and move between columns and rows with it; while
+   the kit is inert the board keeps its own HTML5 drag. Every drag has a
+   keyboard way: Alt+arrows, and the card's "Move to…" (M). Columns past
+   VIRTUALISE_AFTER cards render only what's near the screen. */
 /** the date picker's typed field ("fri", "in 2 weeks"); the chip's own parser covers the rest */
 const parseDue = (text: string) => parseDateText(text);
 type Half = "top" | "bottom";
 type CardMenu = null | "priority" | "assignee" | "status" | "move";
-const CARD_CAP = 50; // cards rendered per column before "Show more"
 const EMPTY_COLUMN: Record<string, string> = {
   todo: "Nothing to do", progress: "Nothing in progress", review: "Nothing in review", blocked: "Nothing blocked", done: "Nothing done yet",
 };
+const PRIORITIES_INLINE: Priority[] = ["urgent", "high", "medium", "low"];
+/** a cell = a column within a row (no rows: the column) */
+const cellKeyOf = (colKey: string, laneKey: string | null) => (laneKey == null ? colKey : `${colKey}␟${laneKey}`);
 
 interface KanbanCardProps {
-  task: Task; subDone: number; subTotal: number; blocked: boolean;
+  task: Task; index: number;
+  progressDone: number; progressTotal: number; progressKind: "subtasks" | "checklist";
+  blocked: boolean;
+  /** the cover image's link, or the project whose identity cover stands in */
+  coverUrl?: string; coverProject?: Project;
   onOpen: (id: string) => void;
-  /** tap-to-move on touch screens; omitted when read-only */
-  onMove?: (id: string, status: Status) => void;
-  /** inline status / priority / due / assignee edits; omitted when read-only */
+  /** inline status / priority / due / assignee / title edits; omitted when read-only */
   onPatch?: (id: string, patch: Partial<Task>) => void;
-  isMobile: boolean; canDrag: boolean; acceptsDrop: boolean; dragging: boolean; dropHint: Half | null;
+  isMobile: boolean;
+  /** the board's own HTML5 drag (used while the drag kit is inert) */
+  nativeDrag: boolean;
+  /** a drag-kit source (lib/dnd); off when read-only */
+  kitDrag: boolean;
+  acceptsDrop: boolean; dragging: boolean; dropHint: Half | null;
   onPickup: (id: string) => void; onDragDone: () => void;
   onHoverCard: (id: string, half: Half) => void; onCardDrop: (draggedId: string, targetId: string, half: Half) => void;
-  selected: boolean; selectionActive: boolean; onSelect?: (id: string) => void;
+  /** what a drag of this card carries: every selected card when it's selected */
+  dragIds: (id: string) => string[];
+  selected: boolean; onSelect?: (id: string) => void;
   customFields: CustomFieldDef[]; members: { id: string; name: string }[];
   onKeyMove?: (id: string, key: string) => void; onMenuDone: (id: string) => void; hintId?: string;
   showProject: boolean; cursor: boolean;
   /** open in the task panel */
   active?: boolean;
+  canRename: boolean;
+  /** bumped by E / F2 (rename) and M (move) from the board's keyboard */
+  renameNonce: number; moveNonce: number;
+  getMoveColumns?: (id: string) => { columns: MoveColumn[]; current: string | undefined };
+  onMoveToColumn?: (id: string, colKey: string) => void;
+  onToggleToday?: (id: string) => void;
+  onAnnounce: (text: string) => void;
 }
 
 const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
   const { task, onPatch, members } = p;
   const proj = getProject(task.projectId);
   const [menu, setMenu] = useState<CardMenu>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const statusBtn = useRef<HTMLButtonElement>(null);
   const prioBtn = useRef<HTMLButtonElement>(null);
   const assignBtn = useRef<HTMLButtonElement>(null);
   const moveBtn = useRef<HTMLButtonElement>(null);
-  const PRIORITIES_INLINE: Priority[] = ["urgent", "high", "medium", "low"];
+  const titleInput = useRef<HTMLTextAreaElement>(null);
   // a settle when this card was just dropped (survives a re-mount into a new column)
   const [landed, setLanded] = useState(() => wasJustLanded(task.id));
   useEffect(() => { if (wasJustLanded(task.id)) setLanded(true); }, [task.id, task.position]);
   useEffect(() => { if (!landed) return; const t = window.setTimeout(() => setLanded(false), 520); return () => window.clearTimeout(t); }, [landed]);
+
+  /* ---- rename in place ---- */
+  const [editing, setEditing] = useState(false);
+  const editingRef = useRef(false);
+  const [draft, setDraft] = useState(task.title);
+  const startRename = useCallback(() => {
+    if (!p.canRename) return;
+    setMenu(null);
+    setDraft(task.title); editingRef.current = true; setEditing(true);
+  }, [p.canRename, task.title]);
+  // where focus goes when the field closes: back to the card after Enter / Escape (the field it was in is
+  // gone), or after the window itself lost focus; a click elsewhere keeps what was clicked
+  const refocusCard = useRef(false);
+  const finishRename = (save: boolean, how: "key" | "blur") => {
+    if (!editingRef.current) return;
+    editingRef.current = false;
+    refocusCard.current = how === "key" || (typeof document.hasFocus === "function" && !document.hasFocus());
+    setEditing(false);
+    const next = draft.replace(/\s+/g, " ").trim();
+    if (save && next && next !== task.title) { onPatch?.(task.id, { title: next }); p.onAnnounce(`Renamed to ${next}`); }
+    else if (save && !next) p.onAnnounce(`A task needs a title, so it's still ${task.title}`);
+    p.onMenuDone(task.id);
+  };
+  useLayoutEffect(() => {
+    const el = titleInput.current;
+    if (!editing || !el) return;
+    el.style.height = "0px"; el.style.height = `${el.scrollHeight}px`;
+  }, [editing, draft]);
+  // the field just closed: put focus back on the card itself, not on the page (WCAG 2.4.3)
+  useLayoutEffect(() => {
+    if (editing || !refocusCard.current) return;
+    refocusCard.current = false;
+    const card = cardRef.current;
+    const ae = document.activeElement;
+    if (!card || (ae && ae !== document.body && !card.contains(ae))) return;
+    card.querySelector<HTMLElement>("[data-card-open]")?.focus({ preventScroll: true });
+  }, [editing]);
+  useEffect(() => { if (editing) { titleInput.current?.focus({ preventScroll: true }); titleInput.current?.select(); } }, [editing]);
+  // E / F2 and M from the board's keyboard; a card that re-mounts (moved to another column) never re-runs an old request
+  const seen = useRef({ rename: p.renameNonce, move: p.moveNonce });
+  useEffect(() => {
+    if (!p.renameNonce || p.renameNonce === seen.current.rename) return;
+    seen.current.rename = p.renameNonce; startRename();
+  }, [p.renameNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!p.moveNonce || p.moveNonce === seen.current.move) return;
+    seen.current.move = p.moveNonce; if (p.getMoveColumns) setMenu("move");
+  }, [p.moveNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---- dragging: the kit (lib/dnd) when it's live, else the board's HTML5 drag ---- */
+  const src = useTaskDragSource({
+    taskIds: () => p.dragIds(task.id), source: "board", originId: task.id, label: task.title,
+    disabled: !p.kitDrag || editing,
+    onDragStart: () => p.onPickup(task.id), onDragEnd: () => p.onDragDone(),
+  });
+  const kitLive = !!src.bind.onPointerDown;
+  const native = p.nativeDrag && !kitLive && !editing;
   const halfFrom = (e: React.DragEvent): Half => {
     const r = e.currentTarget.getBoundingClientRect();
     return e.clientY < r.top + r.height / 2 ? "top" : "bottom";
   };
+
+  /* ---- cover ---- */
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  const coverUrl = p.coverUrl && p.coverUrl !== brokenUrl ? p.coverUrl : undefined;
+  const coverKind = coverUrl ? "image" : p.coverProject ? "project" : null;
+
   const choose = (apply: () => void) => { setMenu(null); apply(); p.onMenuDone(task.id); };
   const toggle = (m: Exclude<CardMenu, null>) => setMenu((cur) => (cur === m ? null : m));
   const assignee = getMember(task.assigneeId);
   const dueText = task.dueDate ? fmtDue(task.dueDate) : null;
+  const due = task.dueDate ? dueState(task.dueDate, task.status) : "none";
   const done = task.status === "done";
   const loud = task.priority === "urgent" || task.priority === "high";
   const tags = (task.tags || []).filter((id) => TAGS[id]);
+  const progressNoun = p.progressKind === "subtasks" ? "sub-tasks" : "checklist items";
   const label = [task.title, STATUS_META[task.status].label, `${PRIORITY_META[task.priority].label} priority`,
-    dueText ? `due ${dueText}` : null, assignee ? `assigned to ${assignee.name}` : null, p.blocked ? "blocked" : null].filter(Boolean).join(", ");
+    dueText ? `due ${dueText}${due === "overdue" ? ", overdue" : ""}` : null, assignee ? `assigned to ${assignee.name}` : null,
+    p.progressTotal > 0 ? `${p.progressDone} of ${p.progressTotal} ${progressNoun} done` : null,
+    p.blocked ? "blocked" : null].filter(Boolean).join(", ");
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   // keyboard focus on the card's open button rings the whole card
   const [ring, setRing] = useState(false);
+  const moveMenu = menu === "move" && p.getMoveColumns ? p.getMoveColumns(task.id) : null;
 
   return (
     // a labelled group, not a button: it holds its own buttons and a date chip, which a
     // role="button" would flatten for screen readers. Mouse clicks anywhere open the task;
     // keyboard and screen-reader users get the real button below.
-    <div data-card-id={task.id} role="group" aria-label={task.title}
-      onClick={() => p.onOpen(task.id)}
-      className={"ktv-card" + (landed ? " kland" : "")} draggable={p.canDrag}
+    <div ref={cardRef} data-card-id={task.id} data-index={p.index} role="group" aria-label={task.title}
+      onClick={() => { if (!editingRef.current) p.onOpen(task.id); }}
+      className={"ktv-card kbd-card" + (landed ? " kland" : "")} draggable={native}
+      data-kdnd-source={src.bind["data-kdnd-source"]} data-kdnd-dragging={src.bind["data-kdnd-dragging"]}
+      // a press inside one of the card's menus (portalled, but React bubbles it here) never picks the card up
+      onPointerDown={kitLive ? (e) => { if (e.currentTarget.contains(e.target as Node)) src.bind.onPointerDown?.(e); } : undefined}
       data-selected={p.selected || undefined} data-ring={ring || undefined} data-cursor={p.cursor || undefined} data-active={p.active || undefined}
-      data-drag={p.dragging || undefined} data-drop={p.dropHint ?? undefined} data-draggable={p.canDrag || undefined} data-done={done || undefined}
-      onDragStart={p.canDrag ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; p.onPickup(task.id); } : undefined}
-      onDragEnd={p.canDrag ? p.onDragDone : undefined}
-      onDragOver={p.canDrag && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); p.onHoverCard(task.id, halfFrom(e)); } : undefined}
-      onDrop={p.canDrag && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); p.onCardDrop(id, task.id, halfFrom(e)); } : undefined}>
-      {/* first in the tab order: Enter / Space opens, Alt+arrows move. Visually hidden (so it
+      data-drag={p.dragging || src.isDragging || undefined} data-drop={p.dropHint ?? undefined} data-draggable={native || kitLive || undefined} data-done={done || undefined}
+      data-cover={coverKind ?? undefined} data-editing={editing || undefined}
+      onDragStart={native ? (e) => { e.dataTransfer.setData("text/kanbo-task", task.id); e.dataTransfer.effectAllowed = "move"; p.onPickup(task.id); } : undefined}
+      onDragEnd={native ? p.onDragDone : undefined}
+      onDragOver={native && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); p.onHoverCard(task.id, halfFrom(e)); } : undefined}
+      onDrop={native && p.acceptsDrop ? (e) => { if (!e.dataTransfer.types.includes("text/kanbo-task")) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData("text/kanbo-task"); p.onCardDrop(id, task.id, halfFrom(e)); } : undefined}>
+      {/* first in the tab order: Enter / Space opens, Alt+arrows move, F2 renames. Visually hidden (so it
           never gets in the way of dragging the card) — the card shows its focus ring instead. */}
       <button type="button" data-card-open className="sr-only" aria-label={label} aria-describedby={p.hintId}
         onClick={(e) => { e.stopPropagation(); p.onOpen(task.id); }}
-        onKeyDown={(e) => { if (e.altKey && p.onKeyMove && e.key.startsWith("Arrow")) { e.preventDefault(); e.stopPropagation(); p.onKeyMove(task.id, e.key); } }}
+        onKeyDown={(e) => {
+          if (e.altKey && p.onKeyMove && e.key.startsWith("Arrow")) { e.preventDefault(); e.stopPropagation(); p.onKeyMove(task.id, e.key); }
+          else if (e.key === "F2" && p.canRename) { e.preventDefault(); e.stopPropagation(); startRename(); }
+        }}
         onFocus={(e) => setRing(isFocusVisible(e.currentTarget))} onBlur={() => setRing(false)} />
       {p.onSelect && (
         <button type="button" className="ktv-sel ksel" role="checkbox" aria-checked={p.selected} onClick={(e) => { e.stopPropagation(); p.onSelect?.(task.id); }}
@@ -240,6 +257,12 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
           {p.selected && <Icon name="check" size={11} sw={3} />}
         </button>
       )}
+      {coverKind === "image" && (
+        <div className="kbd-cover" aria-hidden="true">
+          <img src={coverUrl} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setBrokenUrl(p.coverUrl ?? null)} />
+        </div>
+      )}
+      {coverKind === "project" && <ProjectCover project={p.coverProject} height={24} surface="raised" className="kbd-pcover" />}
       <div className="ktv-card-top">
         {onPatch ? (
           <span style={{ display: "inline-flex" }} onClick={stop}>
@@ -257,7 +280,21 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
           </span>
         ) : <span style={{ display: "inline-flex", padding: 3 }} title={STATUS_META[task.status].label}><StatusGlyph status={task.status} size={14} readOnly /></span>}
         {task.isMilestone && <span className="ktv-milestone" title="Milestone" style={{ marginTop: 6 }} />}
-        <span className="ktv-card-title">{task.title}</span>
+        {editing ? (
+          <textarea ref={titleInput} className="kbd-rename" aria-label={`Rename ${task.title}`} value={draft} maxLength={500} rows={1}
+            data-kdnd-ignore="" spellCheck
+            onChange={(e) => setDraft(e.target.value.replace(/[\r\n]+/g, " "))}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); finishRename(true, "key"); }
+              else if (e.key === "Escape") { e.preventDefault(); finishRename(false, "key"); }
+            }}
+            onBlur={() => finishRename(true, "blur")} onClick={stop} onPointerDown={stop} onDragStart={(e) => e.preventDefault()} />
+        ) : (
+          <span className="ktv-card-title" data-card-title data-rename={p.canRename || undefined}
+            title={p.canRename ? "Click to rename" : undefined}
+            onClick={p.canRename ? (e) => { e.stopPropagation(); startRename(); } : undefined}>{task.title}</span>
+        )}
       </div>
       {(tags.length > 0 || (p.customFields.length > 0 && task.custom && Object.keys(task.custom).length > 0)) && (
         <div className="ktv-card-tags">
@@ -266,14 +303,20 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
           {p.customFields.length > 0 && <CustomChips task={task} fields={p.customFields} members={members} />}
         </div>
       )}
+      {p.progressTotal > 0 && (
+        <div className="kbd-progress" data-complete={p.progressDone >= p.progressTotal || undefined} title={`${p.progressDone} of ${p.progressTotal} ${progressNoun} done`}>
+          <Meter value={p.progressDone} max={p.progressTotal} height={4} tone={p.progressDone >= p.progressTotal ? "ok" : "grad"} label={`${p.progressDone} of ${p.progressTotal} ${progressNoun} done`} />
+          <span className="ktv-mono" aria-hidden="true">{p.progressDone}/{p.progressTotal}</span>
+        </div>
+      )}
       <div className="ktv-card-meta">
-        <span onClick={stop} data-card-due style={{ display: "inline-flex" }}>
+        <span onClick={stop} data-card-due className="kbd-due" data-tone={due === "overdue" || due === "today" ? due : undefined} style={{ display: "inline-flex" }}>
+          {due === "overdue" && <Icon name="alert" size={12} sw={2} className="kbd-due-icon" />}
           {onPatch
             ? <DateChip value={task.dueDate} time={task.dueTime} withTime size="sm" status={task.status} label={`Due date for ${task.title}`} placeholder="Add date" parse={parseDue}
                 onChange={(date, time) => onPatch(task.id, { dueDate: date, dueTime: date ? time : undefined })} />
             : task.dueDate ? <DateChip value={task.dueDate} time={task.dueTime} size="sm" status={task.status} label="Due" readOnly onChange={() => {}} /> : null}
         </span>
-        {p.subTotal > 0 && <span className="ktv-m ktv-mono" title={`${p.subDone} of ${p.subTotal} sub-tasks done`}><Icon name="layers" size={12} />{p.subDone}/{p.subTotal}</span>}
         {p.blocked && <span className="ktv-m ktv-m-signal" role="img" aria-label="Blocked" title="Blocked"><Icon name="lock" size={12} /></span>}
         <TaskApprovalBadge taskId={task.id} />
         <span className="ktv-card-end">
@@ -312,19 +355,19 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
               )}
             </span>
           ) : <Avatar id={task.assigneeId} size={20} />}
-          {/* touch devices can't drag between columns — give a tap-to-move menu */}
-          {p.isMobile && p.onMove && (
+          {/* Move to…: another column, Today, or a place elsewhere on screen (the keyboard and tap way to drag) */}
+          {p.getMoveColumns && (
             <span style={{ display: "inline-flex" }} onClick={stop}>
-              <button ref={moveBtn} type="button" className="ktv-trig" aria-label={`Move ${task.title} to another status`} aria-haspopup="menu" aria-expanded={menu === "move"}
-                onClick={() => toggle("move")}><Icon name="layers" size={16} /></button>
-              {menu === "move" && (
-                <Popover anchor={moveBtn.current} align="end" label={`Move ${task.title} to`} onClose={() => setMenu(null)} minWidth={184}>
-                  <div className="ktv-mlabel" aria-hidden>Move to</div>
-                  {STATUS_ORDER.map((s) => (
-                    <MenuItem key={s} checked={task.status === s} onSelect={() => choose(() => { if (s !== task.status) p.onMove?.(task.id, s); })}>
-                      <StatusGlyph status={s} size={14} readOnly /> {STATUS_META[s].label}
-                    </MenuItem>
-                  ))}
+              <button ref={moveBtn} type="button" className="ktv-trig" data-card-move data-hidden={p.isMobile ? undefined : true}
+                aria-label={`Move ${task.title}`} aria-haspopup="menu" aria-expanded={menu === "move"} title="Move to…"
+                onClick={() => toggle("move")}><Icon name="arrowRight" size={14} /></button>
+              {moveMenu && (
+                <Popover anchor={moveBtn.current ?? cardRef.current} align="end" label={`Move ${task.title} to`} onClose={() => setMenu(null)} minWidth={208} maxWidth={300}>
+                  <CardMoveMenu task={task} columns={moveMenu.columns} currentKey={moveMenu.current}
+                    onPickColumn={(k) => p.onMoveToColumn?.(task.id, k)}
+                    onToggleToday={p.onToggleToday && !done ? () => p.onToggleToday?.(task.id) : undefined}
+                    onDone={() => { setMenu(null); p.onMenuDone(task.id); }}
+                    onMoved={(where) => p.onAnnounce(`${task.title} moved to ${where}`)} />
                 </Popover>
               )}
             </span>
@@ -335,38 +378,120 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
   );
 });
 
-/** Small dialog for a column's work-in-progress limit (replaces window.prompt). */
-function WipLimitEditor({ column, current, perBoard, onSave, onClose }: { column: string; current?: number; perBoard: boolean; onSave: (n: number | null) => void; onClose: () => void }) {
-  const [draft, setDraft] = useState(current != null ? String(current) : "");
-  const [error, setError] = useState("");
-  const inputId = useId();
-  const submit = () => {
-    const v = parseWipLimit(draft);
-    if (v === "invalid") { setError("Enter a whole number from 1 to 999, or leave it blank."); return; }
-    onSave(v); onClose();
-  };
-  return (
-    <form noValidate onSubmit={(e) => { e.preventDefault(); submit(); }} style={{ padding: 8, width: 248, display: "flex", flexDirection: "column", gap: 8 }}>
-      <label htmlFor={inputId} style={{ font: "600 12px/16px var(--font-ui, var(--font-display))", color: "var(--ink-2)" }}>WIP limit for {column}</label>
-      <input id={inputId} data-autofocus type="number" inputMode="numeric" min={1} max={999} value={draft} className="kdp-field"
-        onChange={(e) => { setDraft(e.target.value); setError(""); }} placeholder="No limit" aria-invalid={!!error} aria-describedby={`${inputId}-help`}
-        style={{ fontFamily: "var(--font-mono)", borderColor: error ? "var(--signal, var(--prio-urgent))" : undefined }} />
-      <p id={`${inputId}-help`} role={error ? "alert" : undefined} style={{ margin: 0, font: "500 12px/16px var(--font-ui, var(--font-display))", color: error ? "var(--signal, var(--prio-urgent))" : "var(--ink-3)" }}>
-        {error || `The count turns red when the column holds more than this. Saved ${perBoard ? "for this board " : ""}on this device.`}
-      </p>
-      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-        {current != null && <Button variant="ghost" size="sm" onClick={() => { onSave(null); onClose(); }} style={{ marginRight: "auto" }}>Remove</Button>}
-        <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" size="sm" type="submit">Save</Button>
-      </div>
-    </form>
-  );
-}
-
 interface BoardCol { key: string; label: string; status?: Status; project?: Project; avatar?: string; accepts: boolean; hint?: string }
 const BOARD_GROUPS: { value: BoardGroup; label: string }[] = [{ value: "status", label: "Status" }, { value: "priority", label: "Priority" }, { value: "project", label: "Project" }, { value: "assignee", label: "Assignee" }];
 
-export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle, activeId }: {
+/** A column's (or a row's) mark: status glyph, avatar, project tile, priority glyph, else a dot. */
+function groupLead(g: { key: string; status?: Status; avatar?: string; project?: Project }, by: string) {
+  if (g.status) return <StatusGlyph status={g.status} size={14} readOnly />;
+  if (by === "assignee" || g.avatar) {
+    const id = g.avatar ?? g.key;
+    if (getMember(id)) return <Avatar id={id} size={20} />;
+    if (id === UNASSIGNED_COL) return <span className="ktv-unassigned"><Icon name="user" size={11} /></span>;
+  }
+  if (g.project) return <ProjectTile project={g.project} size={20} />;
+  if (by === "project" && getProject(g.key)) return <ProjectTile project={getProject(g.key)} size={20} />;
+  if (g.key in PRIORITY_META) return <PriorityGlyph priority={g.key as Priority} />;
+  return <span className="ktv-dot" style={{ background: "var(--icon-quiet, var(--ink-4))" }} />;
+}
+
+/** One column of cards (or a column within a row): a drop target for both drags, virtualised when long. */
+function BoardCell({ cellKey, col, laneKey, laneLabel, items, nativeOk, kitOk, isOverNative, accepts, onNativeOver, onNativeLeave, onNativeDrop, onKitOver, onKitLeave, onKitDrop, renderCard, estimate, pinIds, projectId, wip }: {
+  cellKey: string; col: BoardCol; laneKey: string | null; laneLabel?: string; items: Task[];
+  nativeOk: boolean; kitOk: boolean; isOverNative: boolean;
+  accepts: (payload: TaskDragPayload) => boolean;
+  onNativeOver: (cellKey: string) => void; onNativeLeave: (cellKey: string) => void; onNativeDrop: (id: string, cellKey: string) => void;
+  onKitOver: (cellKey: string, lane: HTMLElement | null, e: TaskDropEvent) => void; onKitLeave: (cellKey: string) => void;
+  onKitDrop: (cellKey: string, lane: HTMLElement | null, e: TaskDropEvent) => void;
+  renderCard: (t: Task, index: number) => ReactNode;
+  estimate: (t: Task) => number;
+  pinIds: (string | null | undefined)[];
+  projectId?: string;
+  wip: "ok" | "at" | "over";
+}) {
+  const laneRef = useRef<HTMLDivElement | null>(null);
+  const name = laneLabel ? `${col.label}, ${laneLabel}` : col.label;
+  const target = useTaskDropTarget({
+    target: { kind: "board-column", id: cellKey, label: name, data: { column: col.key, lane: laneKey, status: col.status ?? null, projectId: projectId ?? null, listed: laneKey == null } },
+    accepts, disabled: !kitOk,
+    onOver: (e) => onKitOver(cellKey, laneRef.current, e),
+    onLeave: () => onKitLeave(cellKey),
+    onDrop: (e) => onKitDrop(cellKey, laneRef.current, e),
+  });
+  // one stable ref for both (the kit's own ref is told again if it changes, e.g. a board turning editable)
+  const kitRef = useRef(target.bind.ref);
+  kitRef.current = target.bind.ref;
+  const setRef = useCallback((el: HTMLDivElement | null) => { laneRef.current = el; kitRef.current(el); }, []);
+  useLayoutEffect(() => { target.bind.ref(laneRef.current); }, [target.bind.ref]);
+  return (
+    // (not .klane: kanbo.css paints that class's light well with !important, which would hide the drop and WIP states)
+    <div ref={setRef} className="ktv-lane kbd-lane" role={laneLabel ? "group" : undefined} aria-label={laneLabel ? `${col.label}, ${laneLabel}` : undefined}
+      data-kdnd-target={target.bind["data-kdnd-target"]} data-kdnd-over={target.bind["data-kdnd-over"]}
+      data-drop={isOverNative || target.isOver || undefined} data-can-drop={target.canDrop || undefined} data-wip={wip !== "ok" ? wip : undefined}
+      onDragOver={nativeOk ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; onNativeOver(cellKey); } } : undefined}
+      onDragLeave={nativeOk ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onNativeLeave(cellKey); } : undefined}
+      onDrop={nativeOk ? (e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); onNativeDrop(id, cellKey); } : undefined}>
+      {items.length > VIRTUALISE_AFTER
+        ? <VirtualCards items={items} laneRef={laneRef} renderCard={renderCard} estimate={estimate} pinIds={pinIds} label={name} />
+        : items.map((t, i) => renderCard(t, i))}
+      {items.length === 0 && (laneKey == null
+        ? <div className="ktv-lane-empty">{col.status ? EMPTY_COLUMN[col.status] : "Nothing here"}</div>
+        : <span className="sr-only">No cards</span>)}
+    </div>
+  );
+}
+
+/** The board's own bar, for what the page doesn't choose itself: Columns, Rows, project covers. */
+function BoardBar({ group, onGroup, lanes, onLanes, covers, onCovers, hintId }: {
+  group: BoardGroup; onGroup?: (g: BoardGroup) => void;
+  lanes: SwimlaneBy; onLanes?: (s: SwimlaneBy) => void;
+  covers: boolean; onCovers?: (on: boolean) => void; hintId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
+  const current = SWIMLANE_OPTIONS.find((o) => o.value === lanes) ?? SWIMLANE_OPTIONS[0];
+  return (
+    <div className="ktv-viewbar kbd-bar">
+      {onGroup && (
+        <>
+          <span className="ktv-mlabel" style={{ padding: 0 }} id={`${hintId}-cols`}>Columns</span>
+          <Segmented options={BOARD_GROUPS} value={group} onChange={onGroup} ariaLabel="Columns" />
+        </>
+      )}
+      <span className="kbd-bar-end">
+        {onLanes && (
+          <>
+            <Button ref={btn} variant="ghost" size="sm" icon="layers" iconRight="chevronDown" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+              {lanes === "none" ? "Rows" : `Rows: ${current.label}`}
+            </Button>
+            {open && (
+              <Popover anchor={btn.current} align="end" label="Rows" onClose={() => setOpen(false)} minWidth={200}>
+                <div className="ktv-mlabel" aria-hidden>Rows, just for you</div>
+                {SWIMLANE_OPTIONS.map((o) => {
+                  const same = o.value !== "none" && o.value === group;
+                  return (
+                    <MenuItem key={o.value} checked={lanes === o.value} disabled={same} title={same ? `The columns are already by ${o.label.toLowerCase()}` : undefined}
+                      onSelect={() => { setOpen(false); onLanes(o.value); }}>
+                      <span className="truncate">{o.label}</span>
+                    </MenuItem>
+                  );
+                })}
+              </Popover>
+            )}
+          </>
+        )}
+        {onCovers && (
+          <button type="button" className="ktv-chip kbd-covers" aria-pressed={covers} onClick={() => onCovers(!covers)}
+            title="Show the project's cover on cards without a cover image, for everyone on this board">
+            <Icon name="palette" size={14} /> Project covers
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+export interface BoardViewProps {
   tasks: Task[]; allTasks: Task[]; onOpen: (id: string) => void; onAdd: (status: Status) => void;
   onMove: (taskId: string, status: Status, position?: number) => void;
   onPatch?: (id: string, patch: Partial<Task>) => void;
@@ -376,7 +501,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   customFields?: CustomFieldDef[];
   /** view-only board (guests): cards open, but no drag, inline menus, add or bulk actions */
   readOnly?: boolean;
-  /** which board this is (e.g. a project id, or "__my" for My tasks) — WIP limits are saved per board */
+  /** which board this is (e.g. "project:<id>", or "my:<workspace>" for My tasks) — rows and device WIP limits are kept per board */
   scopeKey?: string;
   /** the columns, when the page chooses them (Display › Columns); otherwise the board's own switch */
   group?: BoardGroup;
@@ -387,13 +512,38 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   onToggle?: (id: string) => void;
   /** the task open in the task panel */
   activeId?: string;
-}) {
+  /* ---- 0048 (u8) ---- */
+  /** a project board's settings (projects.board_settings; pass {} when it has none): its WIP limits are
+   *  then everyone's, and "Show project covers" applies. Without it (My tasks) limits stay on this device. */
+  boardSettings?: BoardSettings;
+  /** project writers: save the board's settings. `next` is the whole object (for the app's own copy), built
+   *  from the freshest copy when the change is made; `change` is just what changed, for the database to merge
+   *  (merge_board_settings), so a teammate's edit made meanwhile is never overwritten. */
+  onChangeBoardSettings?: (next: BoardSettings, change: BoardSettingsChange) => void;
+  /** the board's project (default: read from scopeKey "project:<id>") */
+  projectId?: string;
+  /** attachment id → signed image link for cover images; without it the board fetches the ones it needs */
+  coverUrls?: Record<string, string>;
+  /** rows (swimlanes), when the page chooses them (Display › Rows, via BoardDisplayOptions); otherwise the board's own bar */
+  swimlane?: SwimlaneBy;
+  onSwimlaneChange?: (s: SwimlaneBy) => void;
+}
+
+const readLS = (k: string): string | null => { try { return localStorage.getItem(k); } catch { return null; } };
+const writeLS = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+const readSet = (k: string): Set<string> => { try { const s = localStorage.getItem(k); const a = s ? JSON.parse(s) : []; return new Set(Array.isArray(a) ? a.filter((x): x is string => typeof x === "string") : []); } catch { return new Set(); } };
+/** this device's limits for a project board were offered up to it once (never again, whatever the answer) */
+const wipCopiedKey = (scope: string) => `kanbo-board-wip-copied:${scope}`;
+
+export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onBulkPatch, onBulkDelete, members = [], customFields = [], readOnly = false, scopeKey, group: groupProp, onGroupChange, showProject = true, onToggle, activeId,
+  boardSettings, onChangeBoardSettings, projectId: projectIdProp, coverUrls: coverUrlsProp, swimlane: swimlaneProp, onSwimlaneChange }: BoardViewProps) {
   const isMobile = useMediaQuery("(max-width: 860px)");
   const editable = !readOnly;
   const patch = editable ? onPatch : undefined;
   const canDrag = editable && !isMobile;
   const bulkEnabled = editable && !!onBulkPatch;
   const rootRef = useRef<HTMLDivElement>(null);
+  const toast = useOptionalToast();
   // phones, or a column squeezed by the docked task panel: the bulk bar's buttons are icons
   const iconBulk = useFloatBounds(rootRef, 620) || isMobile;
   const hintId = useId();
@@ -403,58 +553,120 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const toggleSelect = useCallback((id: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
   const clearSel = () => { setSelected(new Set()); setBulkMenu(null); };
   const selIds = [...selected].filter((id) => tasks.some((t) => t.id === id));
+  // a selected card that leaves the board (a filter, a move elsewhere, a teammate) leaves the selection too
+  useEffect(() => {
+    if (!selected.size) return;
+    const shown = new Set(tasks.map((t) => t.id));
+    const kept = [...selected].filter((id) => shown.has(id));
+    if (kept.length === selected.size) return;
+    setSelected(new Set(kept));
+    if (!kept.length) setBulkMenu(null);
+  }, [tasks]); // eslint-disable-line react-hooks/exhaustive-deps
   const applyBulk = (p: Partial<Task>) => { onBulkPatch?.(selIds, p); clearSel(); };
   const BULK_PRIORITIES: Priority[] = ["urgent", "high", "medium", "low"];
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ id: string; half: Half } | null>(null);
-  const [shown, setShown] = useState<Record<string, number>>({});
   const [announce, setAnnounce] = useState("");
-  const [wipEdit, setWipEdit] = useState<{ key: string; label: string; anchor: HTMLElement } | null>(null);
+  const [colMenu, setColMenu] = useState<{ key: string; anchor: HTMLElement } | null>(null);
+  const [renameReq, setRenameReq] = useState<{ id: string; n: number } | null>(null);
+  const [moveReq, setMoveReq] = useState<{ id: string; n: number } | null>(null);
+  const [movedId, setMovedId] = useState<string | null>(null);
   const focusReq = useRef<{ id: string; force: boolean } | null>(null);
   const [ownGroup, setOwnGroup] = useState<BoardGroup>(() => {
-    try { const s = localStorage.getItem("kanbo-board-group") as BoardGroup | null; if (s && ["status", "priority", "project", "assignee"].includes(s)) return s; } catch { /* ignore */ }
-    return "status";
+    const s = readLS("kanbo-board-group") as BoardGroup | null;
+    return s && ["status", "priority", "project", "assignee"].includes(s) ? s : "status";
   });
   const group = groupProp ?? ownGroup;
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try { const s = localStorage.getItem("kanbo-board-collapsed"); if (s) return new Set(JSON.parse(s)); } catch { /* ignore */ }
-    return new Set();
-  });
-  useEffect(() => { if (!groupProp) { try { localStorage.setItem("kanbo-board-group", ownGroup); } catch { /* ignore */ } } }, [ownGroup, groupProp]);
-  useEffect(() => { try { localStorage.setItem("kanbo-board-collapsed", JSON.stringify([...collapsed])); } catch { /* ignore */ } }, [collapsed]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => readSet("kanbo-board-collapsed"));
+  useEffect(() => { if (!groupProp) writeLS("kanbo-board-group", ownGroup); }, [ownGroup, groupProp]);
+  useEffect(() => { writeLS("kanbo-board-collapsed", JSON.stringify([...collapsed])); }, [collapsed]);
 
-  // per-column WIP limits, saved per board when the page says which board this is (scopeKey);
-  // never guessed from the visible tasks, so a filter can't swap one board's limits for another's.
-  // Without a scopeKey the board keeps the device-wide limits it always had.
-  const wipStore = wipKeyFor(scopeKey);
-  const [wipCache, setWipCache] = useState<Record<string, Record<string, number>>>({});
-  const wip = useMemo(() => wipCache[wipStore] ?? (() => { try { return loadWipLimits((k) => localStorage.getItem(k), scopeKey); } catch { return {}; } })(), [wipCache, wipStore, scopeKey]);
-  const wipKey = (k: string) => `${group}:${k}`;
-  const saveLimit = (k: string, n: number | null) => {
-    const next = { ...wip };
-    if (n == null) delete next[wipKey(k)]; else next[wipKey(k)] = n;
-    setWipCache((c) => ({ ...c, [wipStore]: next }));
-    try { localStorage.setItem(wipStore, JSON.stringify(next)); } catch { /* ignore */ }
+  /* ---- rows (swimlanes): per person, per board ---- */
+  const [ownLanes, setOwnLanes] = useState<{ scope: string | undefined; by: SwimlaneBy }>(() => ({ scope: scopeKey, by: readSwimlane(readLS(swimlaneStorageKey(scopeKey))) }));
+  const ownLanesBy = ownLanes.scope === scopeKey ? ownLanes.by : readSwimlane(readLS(swimlaneStorageKey(scopeKey)));
+  const lanesBy = effectiveSwimlane(swimlaneProp ?? ownLanesBy, group);
+  const setLanes = (by: SwimlaneBy) => {
+    if (onSwimlaneChange) { onSwimlaneChange(by); return; }
+    setOwnLanes({ scope: scopeKey, by });
+    writeLS(swimlaneStorageKey(scopeKey), by);
+  };
+  const [lanesFolded, setLanesFolded] = useState<{ scope: string | undefined; set: Set<string> }>(() => ({ scope: scopeKey, set: readSet(laneCollapseStorageKey(scopeKey)) }));
+  const foldedLanes = lanesFolded.scope === scopeKey ? lanesFolded.set : readSet(laneCollapseStorageKey(scopeKey));
+  const toggleLane = (key: string) => {
+    const next = new Set(foldedLanes);
+    const k = `${lanesBy}:${key}`;
+    if (next.has(k)) next.delete(k); else next.add(k);
+    setLanesFolded({ scope: scopeKey, set: next });
+    writeLS(laneCollapseStorageKey(scopeKey), JSON.stringify([...next]));
   };
 
-  // one pass over allTasks for sub-task counts and blockers (not one scan per card); the board's
+  /* ---- WIP limits: the project's (shared) on a project board, else this device's per board ---- */
+  const ownProjectId = projectIdProp ?? (scopeKey?.startsWith("project:") ? scopeKey.slice("project:".length) : undefined);
+  const teamWip = !!onChangeBoardSettings || boardSettings !== undefined;
+  const settings = teamWip ? demoAwareBoardSettings(ownProjectId, boardSettings) : undefined;
+  const wipStore = wipKeyFor(scopeKey);
+  const [wipCache, setWipCache] = useState<Record<string, Record<string, number>>>({});
+  const localWip = useMemo(() => wipCache[wipStore] ?? (() => { try { return loadWipLimits((k) => localStorage.getItem(k), scopeKey); } catch { return {}; } })(), [wipCache, wipStore, scopeKey]);
+  const limitOf = (colKey: string): number | undefined => (teamWip ? settings?.wip?.[wipSettingKey(group, colKey)] : localWip[`${group}:${colKey}`]);
+  /** one change to the project's settings, never a stale whole copy (see nextBoardSettings) */
+  const saveChange = (change: BoardSettingsChange) => {
+    if (!onChangeBoardSettings) return;
+    onChangeBoardSettings(nextBoardSettings(ownProjectId, boardSettings, change), change);
+  };
+  const saveLimit = (colKey: string, n: number | null) => {
+    if (teamWip) { saveChange({ wip: { [wipSettingKey(group, colKey)]: n == null ? null : Math.max(1, Math.min(999, Math.round(n))) } }); return; }
+    const next = { ...localWip };
+    const k = `${group}:${colKey}`;
+    if (n == null) delete next[k]; else next[k] = n;
+    setWipCache((c) => ({ ...c, [wipStore]: next }));
+    writeLS(wipStore, JSON.stringify(next));
+  };
+  const wipNote = teamWip ? "Shared with everyone on this board." : scopeKey ? "Saved for this board on this device." : "Saved on this device.";
+  // The first time a writer opens a project board that shares no limits, limits this device kept for this
+  // very board (never the old device-wide ones) are offered up, once: nothing is written unless they say yes.
+  useEffect(() => {
+    if (!onChangeBoardSettings || readOnly || !scopeKey || !toast) return;
+    const flag = wipCopiedKey(scopeKey);
+    if (readLS(flag)) return;
+    writeLS(flag, "1");
+    const own = readWipLimits(readLS(wipStorageKey(scopeKey)));
+    if (Object.keys(currentBoardSettings(ownProjectId, boardSettings)?.wip ?? {}).length || !Object.keys(wipToShare(own, undefined)).length) return;
+    // bound to this board: the offer outlives a switch to another project's board
+    const pid = ownProjectId, fallback = boardSettings, save = onChangeBoardSettings;
+    toast.action("You set WIP limits for this board on this device. Share them with everyone on it?", "Share limits", () => {
+      // only the limits the board still doesn't have (a teammate may have set some since)
+      const add = wipToShare(own, currentBoardSettings(pid, fallback)?.wip);
+      if (!Object.keys(add).length) return;
+      const change: BoardSettingsChange = { wip: add };
+      save(nextBoardSettings(pid, fallback, change), change);
+      toast.toast("WIP limits shared with everyone on this board.", "success");
+    }, { key: `kanbo-wip-share:${scopeKey}` });
+  }, [scopeKey, !!onChangeBoardSettings, readOnly, !!toast]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---- covers ---- */
+  const coversFor = useCallback((pid: string): boolean => {
+    if (pid === ownProjectId && teamWip) return !!settings?.covers;
+    return !!demoAwareBoardSettings(pid, getProject(pid)?.boardSettings)?.covers;
+  }, [ownProjectId, teamWip, settings]);
+
+  // one pass over allTasks for sub-tasks and blockers (not one scan per card); the board's
   // own tasks are added because allTasks leaves out archived ones ("Show archived")
   const byId = useMemo(() => new Map([...allTasks, ...tasks].map((t) => [t.id, t])), [allTasks, tasks]);
-  const kidCounts = useMemo(() => {
-    const m = new Map<string, { done: number; total: number }>();
+  const children = useMemo(() => {
+    const m = new Map<string, Task[]>();
     for (const c of allTasks) {
       if (!c.parentId) continue;
-      const e = m.get(c.parentId) ?? { done: 0, total: 0 };
-      e.total++; if (c.status === "done") e.done++;
-      m.set(c.parentId, e);
+      const list = m.get(c.parentId);
+      if (list) list.push(c); else m.set(c.parentId, [c]);
     }
     return m;
   }, [allTasks]);
   const isBlocked = (t: Task) => (t.dependencies ?? []).some((d) => { const x = byId.get(d); return !!x && x.status !== "done"; });
 
   // sub-tasks hide only when their parent is on this board too (they're reachable from it)
-  const boardTasks = hideNestedSubtasks(tasks);
+  const boardTasks = useMemo(() => hideNestedSubtasks(tasks), [tasks]);
+  const coverUrls = useCoverUrls(boardTasks, coverUrlsProp);
 
   // columns — plus catch-all columns so no task silently drops off the board
   const memberList = members.length ? members
@@ -483,9 +695,69 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
         ...(colItems[FORMER_COL]?.length ? [{ key: FORMER_COL, label: "Former members", accepts: false, hint: "Assigned to people no longer in this workspace. Drag a card onto a person to reassign it." }] : []),
       ];
 
+  // rows: the lanes, each task's lane, and every cell's cards in column order
+  const memberNames = new Map(memberList.map((m) => [m.id, m.name]));
+  const laneCtx: SwimlaneCtx = { memberName: (id) => (memberNames.has(id) ? memberNames.get(id) || getMember(id)?.name || "Someone" : undefined), projectName: (id) => getProject(id)?.name, memberOrder: memberList.map((m) => m.id) };
+  const lanes = lanesBy === "none" ? null : swimlanes(boardTasks, lanesBy, laneCtx);
+  const laneOf = new Map<string, string>();
+  if (lanes) for (const l of lanes) for (const id of l.taskIds) laneOf.set(id, l.key);
+  const cells = new Map<string, Task[]>();
+  for (const col of columns) for (const t of colItems[col.key] ?? []) {
+    const ck = cellKeyOf(col.key, lanes ? laneOf.get(t.id) ?? null : null);
+    const list = cells.get(ck);
+    if (list) list.push(t); else cells.set(ck, [t]);
+  }
+  const cellOf = (id: string): string | undefined => { const c = colOf.get(id); return c === undefined ? undefined : cellKeyOf(c, lanes ? laneOf.get(id) ?? null : null); };
+
   // the latest render's data for the stable (memo-friendly) handlers below
-  const live = useRef(null as unknown as { columns: BoardCol[]; colItems: Record<string, Task[]>; colOf: Map<string, string>; shown: Record<string, number>; collapsed: Set<string>; group: BoardGroup; byId: Map<string, Task>; onMove: typeof onMove; patch?: typeof onPatch });
-  live.current = { columns, colItems, colOf, shown, collapsed, group, byId, onMove, patch };
+  const live = useRef(null as unknown as {
+    columns: BoardCol[]; colItems: Record<string, Task[]>; colOf: Map<string, string>; laneOf: Map<string, string>; cells: Map<string, Task[]>;
+    lanes: Swimlane[] | null; lanesBy: SwimlaneBy; collapsed: Set<string>; group: BoardGroup; byId: Map<string, Task>;
+    onMove: typeof onMove; patch?: typeof onPatch; limitOf: (k: string) => number | undefined; selected: Set<string>; editable: boolean;
+  });
+  live.current = { columns, colItems, colOf, laneOf, cells, lanes, lanesBy, collapsed, group, byId, onMove, patch, limitOf, selected, editable };
+  const say = useCallback((text: string) => setAnnounce(text), []);
+
+  /** Moves cards into a cell at `index` (counting the cards that stay); false when the cell can't take them. */
+  const moveCards = useCallback((ids: string[], cellKey: string, index: number): { ok: boolean; wip: string | null } => {
+    const L = live.current;
+    const [colKey, laneKey = null] = cellKey.split("␟") as [string, string?];
+    const col = L.columns.find((c) => c.key === colKey);
+    const moving = ids.map((id) => L.byId.get(id)).filter((t): t is Task => !!t);
+    if (!col || !moving.length) return { ok: false, wip: null };
+    const laneFields = laneKey != null && L.lanesBy !== "none" ? lanePatch(L.lanesBy, laneKey) : null;
+    for (const t of moving) {
+      if (!col.accepts && L.colOf.get(t.id) !== colKey) return { ok: false, wip: null };
+      if (laneKey != null && L.laneOf.get(t.id) !== laneKey && !laneFields) return { ok: false, wip: null };
+    }
+    const list = L.cells.get(cellKey) ?? [];
+    const plan = moving.length === 1 ? planReorder(list, moving[0].id, index) : planInsertMany(list, moving.map((t) => t.id), index);
+    const pos = new Map(plan.map((x) => [x.id, x.position]));
+    const movingIds = new Set(moving.map((t) => t.id));
+    for (const x of plan) if (!movingIds.has(x.id)) L.patch?.(x.id, { position: x.position });
+    let entered = 0;
+    for (const t of moving) {
+      const position = pos.get(t.id);
+      if (position === undefined) continue;
+      markJustLanded(t.id);
+      const sameCol = L.colOf.get(t.id) === colKey;
+      if (!sameCol) entered++;
+      const laneField = laneKey != null && L.laneOf.get(t.id) !== laneKey ? laneFields : null;
+      if (L.group === "status") {
+        // a reorder within a column only touches position (never re-stamps completedAt)
+        if (sameCol && L.patch) L.patch(t.id, { ...(laneField ?? {}), position });
+        else { L.onMove(t.id, col.status!, position); if (laneField) L.patch?.(t.id, laneField); }
+      } else {
+        const field: Partial<Task> = sameCol ? {} : L.group === "priority" ? { priority: col.key as Priority } : L.group === "project" ? { projectId: col.key } : { assigneeId: col.key };
+        L.patch?.(t.id, { ...field, ...(laneField ?? {}), position });
+      }
+    }
+    setMovedId(moving[moving.length - 1].id);
+    // a move that takes the column past its WIP limit says so
+    const wip = entered ? wipBreachMessage(col.label, (L.colItems[colKey]?.length ?? 0) + entered, L.limitOf(colKey)) : null;
+    if (wip) toast?.toast(wip, "info");
+    return { ok: true, wip };
+  }, [toast]);
 
   const endHover = useCallback(() => { setDragId(null); setHover(null); setDragOver(null); }, []);
   // only re-render when the hovered card or half actually changes (dragover fires ~20×/s)
@@ -493,76 +765,121 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     setDragOver(null);
     setHover((h) => (h && h.id === id && h.half === half ? h : { id, half }));
   }, []);
-  /** Applies a move; false when nothing could be moved (so callers don't announce one). */
-  const moveTo = useCallback((draggedId: string, colKey: string, index: number): boolean => {
-    const L = live.current;
-    const col = L.columns.find((c) => c.key === colKey);
-    const task = L.byId.get(draggedId);
-    if (!col || !col.accepts || !task) return false;
-    const plan = planReorder(L.colItems[colKey] ?? [], draggedId, index);
-    const mine = plan.find((x) => x.id === draggedId);
-    if (!mine) return false;
-    const sameCol = L.colOf.get(draggedId) === colKey;
-    markJustLanded(draggedId);
-    for (const x of plan) if (x.id !== draggedId) L.patch?.(x.id, { position: x.position });
-    if (L.group === "status") {
-      // a reorder within a column only touches position (never re-stamps completedAt)
-      if (sameCol && L.patch) L.patch(draggedId, { position: mine.position });
-      else L.onMove(draggedId, col.status!, mine.position);
-    } else {
-      const field: Partial<Task> = sameCol ? {} : L.group === "priority" ? { priority: col.key as Priority } : L.group === "project" ? { projectId: col.key } : { assigneeId: col.key };
-      L.patch?.(draggedId, { ...field, position: mine.position });
+  /** where a drop next to a card lands, counting only the cards that stay */
+  const indexNear = (cellKey: string, targetId: string, half: Half, moving: ReadonlySet<string>): number => {
+    const list = live.current.cells.get(cellKey) ?? [];
+    const ti = list.findIndex((t) => t.id === targetId);
+    let n = 0;
+    for (let i = 0; i < list.length; i++) {
+      if (moving.has(list[i].id)) continue;
+      if (i < ti || (i === ti && half === "bottom")) n++;
     }
-    // keep the moved card inside the rendered part of a long column
-    const cap = L.shown[colKey] ?? CARD_CAP;
-    if (index >= cap) setShown((s) => ({ ...s, [colKey]: index + 1 }));
-    return true;
-  }, []);
+    return n;
+  };
+  const dropAnnounce = (ids: string[], cellKey: string, r: { ok: boolean; wip: string | null }) => {
+    if (!r.ok) return;
+    const L = live.current;
+    const [colKey, laneKey] = cellKey.split("␟");
+    const col = L.columns.find((c) => c.key === colKey);
+    const lane = laneKey ? L.lanes?.find((l) => l.key === laneKey) : null;
+    const what = ids.length === 1 ? L.byId.get(ids[0])?.title ?? "Task" : `${ids.length} tasks`;
+    say(`${what} moved to ${col?.label ?? "the column"}${lane ? `, ${lane.label}` : ""}${r.wip ? `. ${r.wip}` : ""}`);
+  };
+  const cellOfRef = useRef(cellOf);
+  cellOfRef.current = cellOf;
   const onCardDrop = useCallback((draggedId: string, targetId: string, half: Half) => {
     endHover();
     if (!draggedId || draggedId === targetId) return;
-    const L = live.current;
-    const colKey = L.colOf.get(targetId);
-    if (!colKey) return;
-    const rest = (L.colItems[colKey] ?? []).filter((t) => t.id !== draggedId);
-    const ti = rest.findIndex((t) => t.id === targetId);
-    moveTo(draggedId, colKey, half === "top" ? ti : ti + 1);
-  }, [endHover, moveTo]);
-  const onColumnDrop = (draggedId: string, colKey: string) => {
+    const cellKey = cellOfRef.current(targetId);
+    if (!cellKey) return;
+    const r = moveCards([draggedId], cellKey, indexNear(cellKey, targetId, half, new Set([draggedId])));
+    dropAnnounce([draggedId], cellKey, r);
+  }, [endHover, moveCards]); // eslint-disable-line react-hooks/exhaustive-deps
+  const onNativeDrop = (draggedId: string, cellKey: string) => {
     endHover();
-    const list = colItems[colKey] ?? [];
-    // land after the last card that's actually rendered, not behind "Show more"
-    const vis = list.slice(0, shown[colKey] ?? CARD_CAP).filter((t) => t.id !== draggedId).length;
-    moveTo(draggedId, colKey, vis);
+    if (!draggedId) return;
+    const list = cells.get(cellKey) ?? [];
+    const r = moveCards([draggedId], cellKey, list.filter((t) => t.id !== draggedId).length);
+    dropAnnounce([draggedId], cellKey, r);
   };
-  // keyboard alternative to drag-and-drop: Alt+↑/↓ reorders, Alt+←/→ moves between columns
+  /** the card under a pointer in a column: the drop goes before it (top half) or after it */
+  const pointAt = (lane: HTMLElement | null, y: number): { id: string; half: Half } | null => {
+    if (!lane) return null;
+    const cards = Array.from(lane.querySelectorAll<HTMLElement>(":scope > [data-card-id]"));
+    for (const el of cards) {
+      const r = el.getBoundingClientRect();
+      if (y < r.top + r.height / 2) return { id: el.dataset.cardId!, half: "top" };
+    }
+    const last = cards[cards.length - 1];
+    return last ? { id: last.dataset.cardId!, half: "bottom" } : null;
+  };
+  const onKitOver = (cellKey: string, lane: HTMLElement | null, e: TaskDropEvent) => {
+    const at = e.point ? pointAt(lane, e.point.y) : null;
+    if (at && !e.payload.taskIds.includes(at.id)) { setDragOver(null); setHover((h) => (h && h.id === at.id && h.half === at.half ? h : at)); }
+    else { setHover(null); setDragOver((d) => (d === cellKey ? d : cellKey)); }
+  };
+  const onKitLeave = (cellKey: string) => { setDragOver((d) => (d === cellKey ? null : d)); setHover(null); };
+  const onKitDrop = (cellKey: string, lane: HTMLElement | null, e: TaskDropEvent) => {
+    endHover();
+    const ids = e.payload.taskIds.filter((id) => live.current.colOf.has(id));
+    if (!ids.length) return;
+    const moving = new Set(ids);
+    const at = e.point ? pointAt(lane, e.point.y) : null;
+    const list = live.current.cells.get(cellKey) ?? [];
+    const index = at ? indexNear(cellKey, at.id, at.half, moving) : list.filter((t) => !moving.has(t.id)).length;
+    const r = moveCards(ids, cellKey, index);
+    dropAnnounce(ids, cellKey, r);
+    if (r.ok) focusReq.current = { id: ids[ids.length - 1], force: false };
+  };
+  /** which drags a cell takes: this board's own cards, into a column (and row) that can take them */
+  const acceptsFor = (cellKey: string) => (payload: TaskDragPayload): boolean => {
+    const L = live.current;
+    if (!L.editable || payload.source !== "board" || !payload.taskIds.length) return false;
+    const [colKey, laneKey] = cellKey.split("␟");
+    const col = L.columns.find((c) => c.key === colKey);
+    if (!col) return false;
+    const laneOk = laneKey == null || L.lanesBy === "none" || !!lanePatch(L.lanesBy, laneKey);
+    return payload.taskIds.every((id) => L.colOf.has(id) && (col.accepts || L.colOf.get(id) === colKey) && (laneOk || L.laneOf.get(id) === laneKey));
+  };
+  // only cards on this board right now: a selected card a filter has since hidden never travels unseen
+  const dragIds = useCallback((id: string) => {
+    const L = live.current;
+    return L.selected.has(id) ? [id, ...[...L.selected].filter((x) => x !== id && L.colOf.has(x))] : [id];
+  }, []);
+
+  // keyboard alternative to drag-and-drop: Alt+↑/↓ reorders, Alt+←/→ moves between columns (within its row)
   const onKeyMove = useCallback((id: string, key: string) => {
     const L = live.current;
     const colKey = L.colOf.get(id);
     const ci = L.columns.findIndex((c) => c.key === colKey);
     if (!colKey || ci < 0) return;
     const col = L.columns[ci];
+    const laneKey = L.lanes ? L.laneOf.get(id) ?? null : null;
+    const lane = laneKey ? L.lanes?.find((l) => l.key === laneKey) : null;
+    const where = (c: BoardCol) => `${c.label}${lane ? `, ${lane.label}` : ""}`;
     const title = L.byId.get(id)?.title ?? "Task";
-    const list = L.colItems[colKey] ?? [];
+    const list = L.cells.get(cellKeyOf(colKey, laneKey)) ?? [];
     const i = list.findIndex((t) => t.id === id);
     if (key === "ArrowUp" || key === "ArrowDown") {
       const up = key === "ArrowUp";
-      if (!col.accepts) { setAnnounce(`${col.label} can't be reordered. Move the card to another column first.`); return; }
+      if (!col.accepts) { say(`${col.label} can't be reordered. Move the card to another column first.`); return; }
       const to = up ? i - 1 : i + 1;
-      if (to < 0 || to >= list.length) { setAnnounce(`${title} is already at the ${up ? "top" : "bottom"} of ${col.label}`); return; }
-      if (!moveTo(id, colKey, to)) return;
-      setAnnounce(`${title} moved ${up ? "up" : "down"}, ${to + 1} of ${list.length} in ${col.label}`);
+      if (to < 0 || to >= list.length) { say(`${title} is already at the ${up ? "top" : "bottom"} of ${where(col)}`); return; }
+      if (!moveCards([id], cellKeyOf(colKey, laneKey), to).ok) return;
+      say(`${title} moved ${up ? "up" : "down"}, ${to + 1} of ${list.length} in ${where(col)}`);
     } else if (key === "ArrowLeft" || key === "ArrowRight") {
       const dir = key === "ArrowLeft" ? -1 : 1;
       let j = ci + dir;
       while (j >= 0 && j < L.columns.length && (!L.columns[j].accepts || L.collapsed.has(L.columns[j].key))) j += dir;
-      if (j < 0 || j >= L.columns.length) { setAnnounce(`There's no column to the ${dir < 0 ? "left" : "right"} of ${col.label}`); return; }
+      if (j < 0 || j >= L.columns.length) { say(`There's no column to the ${dir < 0 ? "left" : "right"} of ${col.label}`); return; }
       const dest = L.columns[j];
-      if (!moveTo(id, dest.key, Math.min((L.colItems[dest.key] ?? []).length, L.shown[dest.key] ?? CARD_CAP))) return;
-      setAnnounce(`${title} moved to ${dest.label}`);
+      const destCell = cellKeyOf(dest.key, laneKey);
+      const r = moveCards([id], destCell, (L.cells.get(destCell) ?? []).length);
+      if (!r.ok) return;
+      say(`${title} moved to ${where(dest)}${r.wip ? `. ${r.wip}` : ""}`);
     } else return;
     focusReq.current = { id, force: true };
-  }, [moveTo]);
+  }, [moveCards, say]);
   const onMenuDone = useCallback((id: string) => { focusReq.current = { id, force: false }; }, []);
   // after a keyboard move (or an inline edit that re-mounts the card in another column) keep focus on it
   useEffect(() => {
@@ -577,7 +894,40 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   });
   const toggleCollapse = (key: string) => setCollapsed((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
 
-  // J/K through the cards (column by column), X selects, S/P/D/A edit, ⌘↵ completes
+  /* ---- the card's Move to… menu and Today ---- */
+  const getMoveColumns = useCallback((id: string) => {
+    const L = live.current;
+    return {
+      current: L.colOf.get(id),
+      columns: L.columns.map((c) => ({ key: c.key, label: c.label, accepts: c.accepts, lead: groupLead(c, L.group) })),
+    };
+  }, []);
+  const onMoveToColumn = useCallback((id: string, colKey: string) => {
+    const L = live.current;
+    const laneKey = L.lanes ? L.laneOf.get(id) ?? null : null;
+    const cell = cellKeyOf(colKey, laneKey);
+    const r = moveCards([id], cell, (L.cells.get(cell) ?? []).filter((t) => t.id !== id).length);
+    dropAnnounce([id], cell, r);
+  }, [moveCards]); // eslint-disable-line react-hooks/exhaustive-deps
+  const onToggleToday = useCallback((id: string) => {
+    const L = live.current;
+    const t = L.byId.get(id);
+    if (!t || !L.patch) return;
+    L.patch(id, { planToday: !t.planToday });
+    say(t.planToday ? `Took ${t.title} off Today` : `Added ${t.title} to Today`);
+  }, [say]);
+  // a status change from the card's own menu can take a column past its limit too
+  const patchFromCard = useMemo(() => (patch ? (id: string, p: Partial<Task>) => {
+    const L = live.current;
+    const t = L.byId.get(id);
+    patch(id, p);
+    if (!t || L.group !== "status" || !p.status || p.status === t.status) return;
+    const col = L.columns.find((c) => c.key === p.status);
+    const msg = col ? wipBreachMessage(col.label, (L.colItems[col.key]?.length ?? 0) + 1, L.limitOf(col.key)) : null;
+    if (msg) { toast?.toast(msg, "info"); say(msg); }
+  } : undefined), [patch, toast, say]);
+
+  // J/K through the cards (column by column), X selects, S/P/D/A edit, E renames, M moves, T plans for today, ⌘↵ completes
   const kb = useListKeyboard({
     rootRef, itemSelector: "[data-card-id]", idOf: (el) => el.dataset.cardId,
     focusTargetOf: (el) => el.querySelector<HTMLElement>("[data-card-open]"),
@@ -585,96 +935,159 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
     onComplete: editable ? (id) => { const t = byId.get(id); if (!t) return; if (onToggle) onToggle(id); else if (t.status !== "done") onMove(id, "done"); focusReq.current = { id, force: true }; } : undefined,
     onToggleSelect: bulkEnabled ? toggleSelect : undefined,
     onClear: clearSel,
-    onAction: editable ? (action: ListKeyAction, _id: string, el: HTMLElement) => {
+    onAction: editable ? (action: ListKeyAction, id: string, el: HTMLElement) => {
+      if (action === "rename") { if (patch && !isMobile) setRenameReq((r) => ({ id, n: (r?.n ?? 0) + 1 })); return; }
+      if (action === "move") { setMoveReq((r) => ({ id, n: (r?.n ?? 0) + 1 })); return; }
+      if (action === "today") { onToggleToday(id); return; }
       const sel = action === "status" ? "[data-card-status]" : action === "priority" ? "[data-card-priority]" : action === "due" ? "[data-card-due] button" : action === "assign" ? "[data-card-assignee]" : null;
       if (sel) el.querySelector<HTMLElement>(sel)?.click();
     } : undefined,
   });
 
+  const estimate = useCallback((t: Task) => cardHeightEstimate({
+    cover: effectiveCoverId(t) && coverUrls[effectiveCoverId(t)!] ? "image" : coversFor(t.projectId) ? "project" : null,
+    tags: (t.tags?.length ?? 0) > 0, progress: (children.get(t.id)?.length ?? 0) + (t.subtasks?.length ?? 0) > 0, titleLength: t.title.length,
+  }), [coverUrls, coversFor, children]);
+  const pinIds = [activeId, kb.cursor, movedId];
+
+  const renderCard = (t: Task, index: number, acceptsDrop: boolean) => {
+    const prog = cardProgress(t, children.get(t.id) ?? []);
+    const coverId = effectiveCoverId(t);
+    const coverUrl = coverId ? coverUrls[coverId] : undefined;
+    return (
+      <KanbanCard key={t.id} task={t} index={index}
+        progressDone={prog?.done ?? 0} progressTotal={prog?.total ?? 0} progressKind={(children.get(t.id)?.length ?? 0) > 0 ? "subtasks" : "checklist"}
+        blocked={isBlocked(t)} coverUrl={coverUrl} coverProject={coversFor(t.projectId) ? getProject(t.projectId) : undefined}
+        onOpen={onOpen} onPatch={patchFromCard}
+        isMobile={isMobile} nativeDrag={canDrag} kitDrag={editable} acceptsDrop={acceptsDrop} dragging={dragId === t.id}
+        dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
+        onPickup={setDragId} onDragDone={endHover} onHoverCard={onHoverCard} onCardDrop={onCardDrop} dragIds={dragIds}
+        selected={selected.has(t.id)} onSelect={bulkEnabled ? toggleSelect : undefined}
+        customFields={customFields} members={members}
+        onKeyMove={editable ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId}
+        showProject={showProject} cursor={kb.cursor === t.id} active={activeId === t.id}
+        canRename={!!patch && !isMobile} renameNonce={renameReq?.id === t.id ? renameReq.n : 0} moveNonce={moveReq?.id === t.id ? moveReq.n : 0}
+        getMoveColumns={editable ? getMoveColumns : undefined} onMoveToColumn={editable ? onMoveToColumn : undefined}
+        onToggleToday={patch ? onToggleToday : undefined} onAnnounce={say} />
+    );
+  };
+
+  /* ---- columns ---- */
+  const colState = (col: BoardCol) => {
+    const items = colItems[col.key] ?? [];
+    const limit = limitOf(col.key);
+    return { items, limit, state: wipState(items.length, limit) };
+  };
+  const head = (col: BoardCol) => {
+    const { items, limit, state } = colState(col);
+    const countLabel = `${items.length} task${items.length === 1 ? "" : "s"} in ${col.label}${limit != null ? `, WIP limit ${limit}${state === "over" ? ", over the limit" : state === "at" ? ", at the limit" : ""}` : ""}`;
+    const count = <>{state === "over" && <Icon name="alert" size={12} sw={2} />}{items.length}{limit != null ? `/${limit}` : ""}</>;
+    return (
+      <div className="ktv-col-head kbd-colhead" data-wip={state !== "ok" ? state : undefined}>
+        {groupLead(col, group)}
+        <span className="ktv-col-name">{col.label}</span>
+        {editable
+          ? <button type="button" className="ktv-wip kbd-count" data-wip={state} onClick={(e) => setColMenu({ key: col.key, anchor: e.currentTarget })} title="Set WIP limit" aria-label={`${countLabel}. Set WIP limit`} aria-haspopup="dialog">{count}</button>
+          : <span className="ktv-wip kbd-count" data-wip={state} aria-label={countLabel}>{count}</span>}
+        <span className="ktv-col-tools">
+          {col.status && editable && <IconButton icon="plus" size="sm" label={`Add task to ${col.label}`} onClick={() => onAdd(col.status!)} />}
+          {editable && <IconButton icon="more" size="sm" label={`Options for ${col.label} column`} aria-haspopup="dialog" onClick={(e) => setColMenu({ key: col.key, anchor: e.currentTarget })} />}
+          <IconButton icon="chevronLeft" size="sm" label={`Collapse ${col.label} column`} aria-expanded onClick={() => toggleCollapse(col.key)} />
+        </span>
+      </div>
+    );
+  };
+  const rail = (col: BoardCol, compact: boolean) => {
+    const n = (colItems[col.key] ?? []).length;
+    return (
+      <button key={col.key} type="button" className="ktv-colrail" data-compact={compact || undefined} onClick={() => toggleCollapse(col.key)} aria-expanded={false}
+        aria-label={`Expand ${col.label} column, ${n} task${n === 1 ? "" : "s"}`} title={compact ? col.label : undefined}>
+        <Icon name="chevronRight" size={14} />
+        {!compact && groupLead(col, group)}
+        <span className="ktv-mono">{n}</span>
+        {!compact && <b>{col.label}</b>}
+      </button>
+    );
+  };
+  const cell = (col: BoardCol, lane: Swimlane | null) => {
+    const ck = cellKeyOf(col.key, lane?.key ?? null);
+    const items = cells.get(ck) ?? [];
+    const laneTakes = !lane || !!lanePatch(lanesBy, lane.key);
+    return (
+      <BoardCell key={ck} cellKey={ck} col={col} laneKey={lane?.key ?? null} laneLabel={lane?.label} items={items}
+        nativeOk={canDrag && col.accepts && laneTakes} kitOk={editable} isOverNative={dragOver === ck && !hover}
+        accepts={acceptsFor(ck)} onNativeOver={(k) => { setDragOver(k); setHover(null); }} onNativeLeave={(k) => setDragOver((d) => (d === k ? null : d))} onNativeDrop={onNativeDrop}
+        onKitOver={onKitOver} onKitLeave={onKitLeave} onKitDrop={onKitDrop}
+        renderCard={(t, i) => renderCard(t, i, col.accepts && laneTakes)} estimate={estimate} pinIds={pinIds} projectId={ownProjectId}
+        wip={colState(col).state} />
+    );
+  };
+  const menuCol = colMenu ? columns.find((c) => c.key === colMenu.key) : undefined;
+  const showBar = !onGroupChange || !onSwimlaneChange;
+
   return (
     <div ref={rootRef} className="ktv" style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
       <div role="status" aria-live="polite" className="sr-only">{announce}</div>
-      {!onGroupChange && (
-        <div className="ktv-viewbar">
-          <span className="ktv-mlabel" style={{ padding: 0 }} id={`${hintId}-cols`}>Columns</span>
-          <Segmented options={BOARD_GROUPS} value={group} onChange={(g) => setOwnGroup(g)} ariaLabel="Columns" />
-        </div>
+      {showBar && (
+        <BoardBar group={group} onGroup={onGroupChange ? undefined : (g) => setOwnGroup(g)} lanes={lanesBy} onLanes={onSwimlaneChange ? undefined : setLanes}
+          covers={!!settings?.covers} onCovers={onChangeBoardSettings && !onSwimlaneChange && editable ? (on) => saveChange({ covers: on }) : undefined} hintId={hintId} />
       )}
-      <p id={hintId} className="sr-only">{editable ? "Press Enter to open. Alt plus the arrow keys moves the card up, down or to the next column." : "Press Enter to open."}</p>
-      <div className="ktv-board" data-selecting={selectionActive || undefined}>
-        {columns.map((col) => {
-          const items = colItems[col.key] ?? [];
-          const cap = shown[col.key] ?? CARD_CAP;
-          const visible = items.length > cap ? items.slice(0, cap) : items;
-          const hiddenCount = items.length - visible.length;
-          const isCollapsed = collapsed.has(col.key);
-          const dropOk = canDrag && col.accepts;
-          const lead = col.status ? <StatusGlyph status={col.status} size={14} readOnly />
-            : col.avatar && getMember(col.avatar) ? <Avatar id={col.avatar} size={20} />
-            : col.project ? <ProjectTile project={col.project} size={20} />
-            : col.key in PRIORITY_META ? <PriorityGlyph priority={col.key as Priority} />
-            : <span className="ktv-dot" style={{ background: "var(--icon-quiet, var(--ink-4))" }} />;
-          if (isCollapsed) {
+      <p id={hintId} className="sr-only">{editable
+        ? `Press Enter to open, E to rename, M to move it, T to add it to Today. Alt plus the arrow keys moves the card up, down or to the next column${lanes ? " in its row" : ""}.`
+        : "Press Enter to open."}</p>
+      {!lanes ? (
+        <div className="ktv-board" data-selecting={selectionActive || undefined}>
+          {columns.map((col) => {
+            if (collapsed.has(col.key)) return rail(col, false);
+            const { state } = colState(col);
             return (
-              <button key={col.key} type="button" className="ktv-colrail" onClick={() => toggleCollapse(col.key)} aria-expanded={false}
-                aria-label={`Expand ${col.label} column, ${items.length} task${items.length === 1 ? "" : "s"}`}>
-                <Icon name="chevronRight" size={14} />
-                {lead}
-                <span className="ktv-mono">{items.length}</span>
-                <b>{col.label}</b>
-              </button>
-            );
-          }
-          const limit = wip[wipKey(col.key)];
-          const over = limit != null && items.length > limit;
-          const countLabel = `${items.length} task${items.length === 1 ? "" : "s"} in ${col.label}${limit != null ? `, WIP limit ${limit}${over ? ", over the limit" : ""}` : ""}`;
-          return (
-            <div key={col.key} role="group" aria-label={`${col.label} column`} className="ktv-col"
-              onDragOver={dropOk ? (e) => { if (e.dataTransfer.types.includes("text/kanbo-task")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(col.key); setHover(null); } } : undefined}
-              onDragLeave={dropOk ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => d === col.key ? null : d); } : undefined}
-              onDrop={dropOk ? (e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/kanbo-task"); if (id) onColumnDrop(id, col.key); else endHover(); } : undefined}>
-              <div className="ktv-col-head">
-                {lead}
-                <span className="ktv-col-name">{col.label}</span>
-                {editable
-                  ? <button type="button" className="ktv-wip" data-over={over || undefined} onClick={(e) => setWipEdit({ key: col.key, label: col.label, anchor: e.currentTarget })} title="Set WIP limit" aria-label={`${countLabel}. Set WIP limit`} aria-haspopup="dialog">{items.length}{limit != null ? `/${limit}` : ""}</button>
-                  : <span className="ktv-wip" data-over={over || undefined} aria-label={countLabel}>{items.length}{limit != null ? `/${limit}` : ""}</span>}
-                <span className="ktv-col-tools">
-                  {col.status && editable && <IconButton icon="plus" size="sm" label={`Add task to ${col.label}`} onClick={() => onAdd(col.status!)} />}
-                  <IconButton icon="chevronLeft" size="sm" label={`Collapse ${col.label} column`} aria-expanded onClick={() => toggleCollapse(col.key)} />
-                </span>
+              <div key={col.key} role="group" aria-label={`${col.label} column`} className="ktv-col" data-wip={state !== "ok" ? state : undefined}>
+                {head(col)}
+                {col.hint && <p className="ktv-col-hint">{col.hint}</p>}
+                {cell(col, null)}
               </div>
-              {col.hint && <p className="ktv-col-hint">{col.hint}</p>}
-              <div className="klane ktv-lane" data-drop={(dragOver === col.key && !hover) || undefined}>
-                {visible.map((t) => {
-                  const kc = kidCounts.get(t.id);
-                  return (
-                    <KanbanCard key={t.id} task={t} subDone={(kc?.done ?? 0) + (t.subtasks ?? []).filter((s) => s.done).length} subTotal={(kc?.total ?? 0) + (t.subtasks?.length ?? 0)} blocked={isBlocked(t)}
-                      onOpen={onOpen} onMove={editable ? onMove : undefined} onPatch={patch}
-                      isMobile={isMobile} canDrag={canDrag} acceptsDrop={col.accepts} dragging={dragId === t.id}
-                      dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
-                      onPickup={setDragId} onDragDone={endHover} onHoverCard={onHoverCard} onCardDrop={onCardDrop}
-                      selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? toggleSelect : undefined}
-                      customFields={customFields} members={members}
-                      onKeyMove={editable ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId}
-                      showProject={showProject} cursor={kb.cursor === t.id} active={activeId === t.id} />
-                  );
-                })}
-                {items.length === 0 && <div className="ktv-lane-empty">{col.status ? EMPTY_COLUMN[col.status] : "Nothing here"}</div>}
-                {hiddenCount > 0 && (
-                  <button type="button" className="ktv-morecards" onClick={() => setShown((s) => ({ ...s, [col.key]: cap + CARD_CAP }))} aria-label={`Show ${Math.min(CARD_CAP, hiddenCount)} more tasks in ${col.label}`}>
-                    <Icon name="chevronDown" size={14} /> Show {Math.min(CARD_CAP, hiddenCount)} more{hiddenCount > CARD_CAP ? <span style={{ color: "var(--ink-4)" }}> · {hiddenCount} hidden</span> : null}
+            );
+          })}
+        </div>
+      ) : (
+        <div className="kbd-grid" data-selecting={selectionActive || undefined}>
+          <div className="kbd-heads">
+            {columns.map((col) => collapsed.has(col.key) ? rail(col, true) : (
+              <div key={col.key} className="ktv-col kbd-headcell" data-wip={colState(col).state !== "ok" ? colState(col).state : undefined}>{head(col)}</div>
+            ))}
+          </div>
+          {lanes.length === 0 && <div className="ktv-lane-empty kbd-nolanes">Nothing on this board yet</div>}
+          {lanes.map((lane) => {
+            const folded = foldedLanes.has(`${lanesBy}:${lane.key}`);
+            const bodyId = `${hintId}-lane-${lane.key}`;
+            return (
+              <div key={lane.key} role="group" className="kbd-swim" aria-label={`${lane.label}, ${lane.taskIds.length} task${lane.taskIds.length === 1 ? "" : "s"}`} data-folded={folded || undefined}>
+                <h3 className="kbd-swim-head">
+                  <button type="button" aria-expanded={!folded} aria-controls={folded ? undefined : bodyId} onClick={() => toggleLane(lane.key)}>
+                    <Icon name={folded ? "chevronRight" : "chevronDown"} size={14} />
+                    {groupLead({ key: lane.key }, lanesBy)}
+                    <span className="kbd-swim-name">{lane.label}</span>
+                    <span className="ktv-mono kbd-swim-count">{lane.taskIds.length}</span>
                   </button>
+                </h3>
+                {!folded && (
+                  <div id={bodyId} className="kbd-swim-row">
+                    {columns.map((col) => collapsed.has(col.key)
+                      ? <div key={col.key} className="kbd-railcell" aria-hidden="true" />
+                      : <div key={col.key} className="ktv-col kbd-cellwrap">{cell(col, lane)}</div>)}
+                  </div>
                 )}
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
-      {wipEdit && (
-        <Popover anchor={wipEdit.anchor} role="dialog" label={`WIP limit for ${wipEdit.label}`} onClose={() => setWipEdit(null)} minWidth={0}>
-          <WipLimitEditor column={wipEdit.label} current={wip[wipKey(wipEdit.key)]} perBoard={!!scopeKey} onSave={(n) => saveLimit(wipEdit.key, n)} onClose={() => setWipEdit(null)} />
+      {colMenu && menuCol && (
+        <Popover anchor={colMenu.anchor} role="dialog" label={`Options for ${menuCol.label}`} onClose={() => setColMenu(null)} minWidth={0}>
+          <ColumnMenu column={menuCol.label} count={(colItems[menuCol.key] ?? []).length} limit={limitOf(menuCol.key)} scopeNote={wipNote}
+            canEditWip={editable && (!teamWip || !!onChangeBoardSettings)} onSaveLimit={(n) => saveLimit(menuCol.key, n)} onClose={() => setColMenu(null)}
+            onCollapse={() => toggleCollapse(menuCol.key)} onAdd={menuCol.status && editable ? () => onAdd(menuCol.status!) : undefined} />
         </Popover>
       )}
 

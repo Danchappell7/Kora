@@ -4,8 +4,8 @@
    Dates are local "YYYY-MM-DD" strings, parsed at local midnight
    (never via toISOString) so DST and UTC offsets can't shift a day.
    ============================================================ */
-import { toLocalISO } from "../../data/data";
-import type { Task } from "../../data/types";
+import { toLocalISO, PRIORITY_META } from "../../data/data";
+import type { BoardSettings, Priority, Task } from "../../data/types";
 
 const DAY_MS = 86400000;
 
@@ -259,11 +259,14 @@ export function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+
 /* ---------------- board upgrade (0048)            [0048 contract → u8] ----------------
    WIP limits move to projects.board_settings.wip (team-wide, writers set
-   them; lib/profileState parseBoardSettings). The per-browser limits above
-   (kanbo-board-wip) stay readable as the fallback and are copied up the
-   first time a writer opens the board. Swimlane grouping is per person
+   them, one change at a time: BoardSettingsChange, merged by
+   merge_board_settings; lib/profileState parseBoardSettings). The
+   per-browser limits above (kanbo-board-wip) stay in use on My tasks; the
+   ones a device kept for a project board itself are offered up, once, the
+   first time a writer opens it. Swimlane grouping is per person
    per board (localStorage). Columns past VIRTUALISE_AFTER cards render a
    window of them (no dependency). */
 
@@ -272,9 +275,149 @@ export const VIRTUALISE_AFTER = 50;
 export type SwimlaneBy = "none" | "assignee" | "priority" | "project";
 export interface Swimlane { key: string; label: string; taskIds: string[] }
 
-/** Group a board's tasks into lanes (each lane's tasks keep their board order; "none" = one lane). */
-export function swimlanes(tasks: Pick<Task, "id" | "assigneeId" | "priority" | "projectId">[], by: SwimlaneBy, _ctx: { memberName: (id: string) => string | undefined; projectName: (id: string) => string | undefined }): Swimlane[] {
-  return [{ key: "all", label: "", taskIds: tasks.map((t) => t.id) }];
+/** The row groupings, in the order the Rows control offers them. */
+export const SWIMLANE_OPTIONS: { value: SwimlaneBy; label: string }[] = [
+  { value: "none", label: "None" }, { value: "assignee", label: "Assignee" }, { value: "priority", label: "Priority" }, { value: "project", label: "Project" },
+];
+const SWIMLANE_VALUES: readonly SwimlaneBy[] = ["none", "assignee", "priority", "project"];
+const PRIORITY_LANES: Priority[] = ["urgent", "high", "medium", "low"];
+
+export interface SwimlaneCtx {
+  /** a member of this board's workspace (undefined = not a member any more → "Former members") */
+  memberName: (id: string) => string | undefined;
+  /** a project you can see (undefined → "Other projects") */
+  projectName: (id: string) => string | undefined;
+  /** members in the board's own order (the Assignee columns' order); others follow by name */
+  memberOrder?: readonly string[];
+}
+
+type LaneTask = Pick<Task, "id" | "assigneeId" | "priority" | "projectId">;
+
+/** The lane a task sits in. */
+export function swimlaneKeyOf(t: LaneTask, by: SwimlaneBy, ctx: SwimlaneCtx): string {
+  if (by === "assignee") return !t.assigneeId || t.assigneeId === "—" ? UNASSIGNED_COL : ctx.memberName(t.assigneeId) !== undefined ? t.assigneeId : FORMER_COL;
+  if (by === "priority") return PRIORITY_LANES.includes(t.priority) ? t.priority : "medium";
+  if (by === "project") return ctx.projectName(t.projectId) !== undefined ? t.projectId : NO_PROJECT_COL;
+  return "all";
+}
+
+/** Group a board's tasks into lanes (each lane's tasks keep their board order; "none" = one lane).
+ *  Only lanes with tasks: people in the board's order, then Unassigned, then Former members;
+ *  priorities urgent → low; projects by name, then Other projects. */
+export function swimlanes(tasks: LaneTask[], by: SwimlaneBy, ctx: SwimlaneCtx): Swimlane[] {
+  if (by === "none" || !SWIMLANE_VALUES.includes(by)) return [{ key: "all", label: "", taskIds: tasks.map((t) => t.id) }];
+  const groups = new Map<string, string[]>();
+  for (const t of tasks) {
+    const k = swimlaneKeyOf(t, by, ctx);
+    const g = groups.get(k);
+    if (g) g.push(t.id); else groups.set(k, [t.id]);
+  }
+  const lane = (key: string, label: string): Swimlane => ({ key, label, taskIds: groups.get(key) ?? [] });
+  const byName = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label, "en-GB", { sensitivity: "base" });
+  const tail = (special: [string, string][]) => special.filter(([k]) => groups.has(k)).map(([k, l]) => lane(k, l));
+  if (by === "priority") return PRIORITY_LANES.filter((p) => groups.has(p)).map((p) => lane(p, PRIORITY_META[p].label));
+  if (by === "assignee") {
+    const order = ctx.memberOrder ?? [];
+    const rank = new Map(order.map((id, i) => [id, i]));
+    const people = [...groups.keys()].filter((k) => k !== UNASSIGNED_COL && k !== FORMER_COL)
+      .map((k) => lane(k, ctx.memberName(k) || "Someone"))
+      .sort((a, b) => ((rank.get(a.key) ?? Infinity) - (rank.get(b.key) ?? Infinity)) || byName(a, b));
+    return [...people, ...tail([[UNASSIGNED_COL, "Unassigned"], [FORMER_COL, "Former members"]])];
+  }
+  const projects = [...groups.keys()].filter((k) => k !== NO_PROJECT_COL).map((k) => lane(k, ctx.projectName(k) || "Untitled project")).sort(byName);
+  return [...projects, ...tail([[NO_PROJECT_COL, "Other projects"]])];
+}
+
+/** What dropping a task into a lane writes; null when the lane can't take tasks from another lane
+ *  (Unassigned, Former members, Other projects — move a card out of them, never into them). */
+export function lanePatch(by: SwimlaneBy, laneKey: string): Partial<Task> | null {
+  if (by === "none" || laneKey === UNASSIGNED_COL || laneKey === FORMER_COL || laneKey === NO_PROJECT_COL) return null;
+  if (by === "assignee") return { assigneeId: laneKey };
+  if (by === "priority") return PRIORITY_LANES.includes(laneKey as Priority) ? { priority: laneKey as Priority } : null;
+  if (by === "project") return { projectId: laneKey };
+  return null;
+}
+
+/** Rows by the same thing as the columns would repeat the columns: that's no rows. */
+export function effectiveSwimlane(by: SwimlaneBy, columns: string): SwimlaneBy {
+  return by === columns ? "none" : by;
+}
+
+/** Where a board's row grouping is kept (per person, per board, on this device). */
+export const swimlaneStorageKey = (scope: string | null | undefined): string => `kanbo-board-lanes:${scope || "all"}`;
+/** A board's lanes that are folded away (keys are "<by>:<lane key>"). */
+export const laneCollapseStorageKey = (scope: string | null | undefined): string => `kanbo-board-lanes-collapsed:${scope || "all"}`;
+
+export function readSwimlane(raw: string | null): SwimlaneBy {
+  return raw && (SWIMLANE_VALUES as readonly string[]).includes(raw) ? (raw as SwimlaneBy) : "none";
+}
+
+/* ---------------- WIP limits on the board's settings ---------------- */
+
+/** A column's key in board_settings.wip: a status column by its status (the contract's "column key"),
+ *  other groupings qualified ("priority:urgent", "assignee:<id>") so they can never collide. */
+export function wipSettingKey(group: string, colKey: string): string {
+  return group === "status" ? colKey : `${group}:${colKey}`;
+}
+
+/** This device's limits ("status:todo" → 3) in board_settings' shape ("todo" → 3). */
+export function localWipToSettings(local: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(local)) {
+    if (!(typeof v === "number" && Number.isInteger(v) && v >= 1)) continue;
+    out[k.startsWith("status:") ? k.slice("status:".length) : k] = Math.min(v, 999);
+  }
+  return out;
+}
+
+/**
+ * One change to a project's board settings, never the whole object, so two
+ * writers (or a tab that missed a live update) change only what they touched.
+ * Merged one level deep, as merge_board_settings (0048) stores it: wip keys
+ * merge (a null removes that limit; wip: null removes them all), covers on or
+ * off (false / null removes it).
+ */
+export interface BoardSettingsChange {
+  wip?: Record<string, number | null> | null;
+  covers?: boolean | null;
+}
+
+/** The settings with a change merged in (the client's copy of merge_board_settings). An empty wip disappears. */
+export function applyBoardSettingsChange(settings: BoardSettings | undefined, change: BoardSettingsChange): BoardSettings {
+  const next: BoardSettings = { ...(settings ?? {}) };
+  if ("wip" in change) {
+    const wip: Record<string, number> = change.wip === null ? {} : { ...(settings?.wip ?? {}) };
+    for (const [k, v] of Object.entries(change.wip ?? {})) {
+      if (v == null || !Number.isFinite(v)) delete wip[k];
+      else wip[k] = Math.max(1, Math.min(999, Math.round(v)));
+    }
+    if (Object.keys(wip).length) next.wip = wip; else delete next.wip;
+  }
+  if ("covers" in change) { if (change.covers) next.covers = true; else delete next.covers; }
+  return next;
+}
+
+/** The settings with one limit set (n) or cleared (null). An empty wip disappears. */
+export function withWipLimit(settings: BoardSettings | undefined, key: string, n: number | null): BoardSettings {
+  return applyBoardSettingsChange(settings, { wip: { [key]: n } });
+}
+
+/** The settings with "Show project covers" on or off. */
+export function withCovers(settings: BoardSettings | undefined, on: boolean): BoardSettings {
+  return applyBoardSettingsChange(settings, { covers: on });
+}
+
+/** The limits a device kept for a board that the board doesn't share yet (never overriding one it does). */
+export function wipToShare(local: Record<string, number>, shared: Record<string, number> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(localWipToSettings(local))) if (shared?.[k] == null) out[k] = v;
+  return out;
+}
+
+/** Said (toast + screen reader) when a move takes a column past its limit; null when it doesn't. */
+export function wipBreachMessage(column: string, count: number, limit: number | null | undefined): string | null {
+  if (wipState(count, limit) !== "over") return null;
+  return `${column} is over its WIP limit: ${count} of ${limit}`;
 }
 
 /** A column against its WIP limit: under it, at it, or over it.  [final] */
@@ -283,7 +426,105 @@ export function wipState(count: number, limit: number | null | undefined): "ok" 
   return count > limit ? "over" : count === limit ? "at" : "ok";
 }
 
+/* ---------------- cards ---------------- */
+
 /** A card's progress bar: sub-tasks done / total, else the legacy checklist; null when it has neither. */
-export function cardProgress(_task: Pick<Task, "subtasks">, _children: Pick<Task, "status">[]): { done: number; total: number } | null {
+export function cardProgress(task: Pick<Task, "subtasks">, children: Pick<Task, "status">[]): { done: number; total: number } | null {
+  if (children.length > 0) return { done: children.filter((c) => c.status === "done").length, total: children.length };
+  const list = Array.isArray(task.subtasks) ? task.subtasks : [];
+  if (list.length > 0) return { done: list.filter((s) => s.done).length, total: list.length };
   return null;
+}
+
+/** How tall a card will probably be (px) before it's been measured: virtualising needs a guess. */
+export function cardHeightEstimate(c: { cover?: "image" | "project" | null; tags?: boolean; progress?: boolean; titleLength?: number }): number {
+  let h = 92; // padding, one title line, the meta row
+  if ((c.titleLength ?? 0) > 30) h += 20; // titles wrap to two lines
+  if (c.tags) h += 24;
+  if (c.progress) h += 14;
+  if (c.cover === "image") h += 104;
+  else if (c.cover === "project") h += 26;
+  return h;
+}
+
+/* ---------------- moving several cards ---------------- */
+
+/** Like planReorder for a run of cards: puts `ids` (in that order) at `index` of `list` (index counts
+ *  the cards that aren't moving). Every write the run needs, at most one per card. */
+export function planInsertMany(list: Positioned[], ids: string[], index: number): { id: string; position: number }[] {
+  const moving = [...new Set(ids)];
+  const set = new Set(moving);
+  const order = (a: Positioned, b: Positioned) => (sortPos(a) - sortPos(b)) || a.id.localeCompare(b.id);
+  let work: Positioned[] = list.filter((t) => !set.has(t.id)).map((t) => ({ id: t.id, position: t.position })).sort(order);
+  const at = Math.max(0, Math.min(work.length, index));
+  const writes = new Map<string, number>();
+  moving.forEach((id, k) => {
+    const plan = planReorder(work, id, at + k);
+    const pos = new Map(plan.map((p) => [p.id, p.position]));
+    work = [...work.map((t) => (pos.has(t.id) ? { id: t.id, position: pos.get(t.id) } : t)), { id, position: pos.get(id) }].sort(order);
+    for (const p of plan) writes.set(p.id, p.position);
+  });
+  return [...writes].map(([id, position]) => ({ id, position }));
+}
+
+/* ---------------- virtual window ---------------- */
+
+export interface VirtualRange { start: number; end: number }
+/** A virtual column, top to bottom: spacers standing in for cards that aren't rendered, and runs of cards that are. */
+export type VirtualSegment = { kind: "space"; height: number } | { kind: "cards"; start: number; end: number };
+
+/** Top of each card in a stack with `gap` between cards, and the stack's height. */
+export function stackOffsets(heights: readonly number[], gap: number): { offsets: number[]; total: number } {
+  const offsets: number[] = new Array(heights.length);
+  let y = 0;
+  for (let i = 0; i < heights.length; i++) { offsets[i] = y; y += Math.max(0, heights[i]) + (i < heights.length - 1 ? gap : 0); }
+  return { offsets, total: y };
+}
+
+/**
+ * The cards to render in a long column: the ones within `overscan` px of the part of the column on
+ * screen (view = px from the column's top, may be negative or past its end), plus `pinned` cards
+ * (focused, open, just moved) and one each side of them, so keyboard moves always find a neighbour.
+ * Ranges are [start, end), sorted and merged.
+ */
+export function virtualRanges(heights: readonly number[], gap: number, viewTop: number, viewBottom: number, overscan: number, pinned: readonly number[] = []): VirtualRange[] {
+  const n = heights.length;
+  if (n === 0) return [];
+  const { offsets } = stackOffsets(heights, gap);
+  const lo = viewTop - overscan, hi = viewBottom + overscan;
+  // first card whose bottom reaches lo; last card whose top is above hi
+  let a = 0, b = n - 1;
+  while (a < b) { const m = (a + b) >> 1; if (offsets[m] + heights[m] < lo) a = m + 1; else b = m; }
+  const start = a;
+  a = start; b = n - 1;
+  while (a < b) { const m = (a + b + 1) >> 1; if (offsets[m] > hi) b = m - 1; else a = m; }
+  const ranges: VirtualRange[] = [];
+  if (offsets[start] <= hi && offsets[start] + heights[start] >= lo) ranges.push({ start, end: a + 1 });
+  for (const p of pinned) if (Number.isInteger(p) && p >= 0 && p < n) ranges.push({ start: Math.max(0, p - 1), end: Math.min(n, p + 2) });
+  if (ranges.length === 0) ranges.push({ start: Math.min(start, n - 1), end: Math.min(start, n - 1) + 1 }); // never nothing at all
+  ranges.sort((x, y) => x.start - y.start);
+  const merged: VirtualRange[] = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
+/** The ranges as a column's children: a spacer before, between and after them sized so every
+ *  rendered card sits exactly where it would in the full column (the column's flex gap included). */
+export function virtualSegments(heights: readonly number[], gap: number, ranges: readonly VirtualRange[]): VirtualSegment[] {
+  const n = heights.length;
+  const { offsets, total } = stackOffsets(heights, gap);
+  const out: VirtualSegment[] = [];
+  let cursor = 0; // the next card not yet accounted for
+  for (const r of ranges) {
+    if (r.start >= r.end || r.start < cursor) continue;
+    if (r.start > cursor) out.push({ kind: "space", height: Math.max(0, offsets[r.start] - (cursor > 0 ? offsets[cursor] : 0) - gap) });
+    out.push({ kind: "cards", start: r.start, end: Math.min(n, r.end) });
+    cursor = Math.min(n, r.end);
+  }
+  if (cursor < n) out.push({ kind: "space", height: Math.max(0, total - (cursor > 0 ? offsets[cursor] : 0)) });
+  return out;
 }

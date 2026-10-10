@@ -44,11 +44,15 @@ describe("BoardView", () => {
     expect(within(former).getByRole("button", { name: /^Old work, / })).toBeInTheDocument();
   });
 
-  it("caps each column at 50 cards with Show more", () => {
-    board(Array.from({ length: 60 }, (_, i) => mk({ id: `t${i}`, title: `Task ${i}`, position: i })));
-    expect(cardIds()).toHaveLength(50);
-    fireEvent.click(screen.getByRole("button", { name: "Show 10 more tasks in To do" }));
-    expect(cardIds()).toHaveLength(60);
+  it("renders a long column as a window of cards with spacers, not a Show more button", () => {
+    board(Array.from({ length: 120 }, (_, i) => mk({ id: `t${i}`, title: `Task ${i}`, position: i })));
+    const ids = cardIds();
+    expect(ids.length).toBeGreaterThan(5);
+    expect(ids.length).toBeLessThan(120);
+    expect(ids[0]).toBe("t0"); // the top of the column first
+    expect(document.querySelectorAll(".kbd-vspace").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Show \d+ more/ })).toBeNull();
+    expect(screen.getByText(/Showing \d+ of 120 cards in To do/)).toBeInTheDocument();
   });
 
   it("opens cards from a real button, and the card isn't a button wrapping other controls", () => {
@@ -139,7 +143,7 @@ describe("BoardView", () => {
   it("sets a WIP limit from the dialog and rejects nonsense", () => {
     board([mk({ id: "a" })], { scopeKey: "project:p-launch" });
     fireEvent.click(screen.getByRole("button", { name: /1 task in To do\. Set WIP limit/ }));
-    const dialog = screen.getByRole("dialog", { name: "WIP limit for To do" });
+    const dialog = screen.getByRole("dialog", { name: "Options for To do" });
     const input = within(dialog).getByLabelText("WIP limit for To do");
     fireEvent.change(input, { target: { value: "0" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));

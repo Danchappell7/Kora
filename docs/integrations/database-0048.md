@@ -15,7 +15,7 @@ straight afterwards (see the end of this page).
 | Search | `project_docs.plain_text` (kept by a trigger), four GIN indexes (`kanbo_fts`), `search_all(q, filters, lim)` | `search_all` runs **as the caller** (SECURITY INVOKER), under every row-level policy, so it can never return a row the caller couldn't read. Tasks, comments, docs, projects and people; English stems and as-you-type prefixes; highlighted snippets. |
 | Saved views | `saved_views`, `adopt_saved_searches()` | You read your own and the shared ones of workspaces you're in (guests too). Writers share; you edit your own; owners and admins also rename, unpin or delete shared ones (they stay their maker's). Old saved searches move across (same ids). |
 | Template library | `task_templates` | The same rules as saved views. |
-| Board | `tasks.cover_attachment_id`, `projects.board_settings` | A cover must be an image file on the same task (cleared when the file is deleted; comes back with a task restored from the bin). Board settings (WIP limits, "show project covers") — writers of the project. |
+| Board | `tasks.cover_attachment_id`, `projects.board_settings` | A cover must be an image file on the same task (cleared when the file is deleted; comes back with a task restored from the bin). Board settings (WIP limits, "show project covers") — writers of the project; `merge_board_settings(project, patch)` saves one change atomically (one level deep, two for `wip`; null removes), so two writers never overwrite each other. |
 | Snoozes | `notification_snoozes` | Your own rows, for tasks you can see (guests too). Snoozed threads send no push or email. |
 | Notify queue | `notify_queue`, `notify_queue_claim()`, `notify_queue_finish()` | Service only. Push and email held back for bundling, quiet hours and digests. |
 | Kudos | `kudos`, `give_kudos()`, `take_back_kudos()` | Anyone who can see the task reads them. Anyone who can see a finished team task gives one (guests too; never yourself; one per person per task; 100 a day). The recipient gets an Inbox item (kind `kudos`, pref `kudos`); webhooks get `kudos.given`. |
@@ -50,7 +50,9 @@ select
   not has_table_privilege('authenticated', 'public.notify_queue', 'select')                       as notify_queue_service_only,
   exists (select 1 from pg_constraint where conname = 'tasks_cover_attachment_id_fkey' and condeferrable) as task_covers,
   exists (select 1 from information_schema.columns where table_schema = 'public'
-    and table_name = 'projects' and column_name = 'board_settings')                               as board_settings,
+    and table_name = 'projects' and column_name = 'board_settings')
+  and exists (select 1 from pg_proc p where p.oid = to_regprocedure('public.merge_board_settings(uuid, jsonb)')
+    and not p.prosecdef)                                                                         as board_settings,
   'kudos.given' = any (public.webhook_event_names())                                               as kudos_event,
   (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
     and tablename in ('saved_views', 'kudos', 'notification_snoozes')) = 3                         as realtime,
