@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   docMentionInWorkspace, docMentionLine, docMentionRoute,
-  deleteProjectDoc, docAgo, docErrorText, docFailure, docFileName, DOC_COPY, DOC_LIMITS, getDocVersion, getProjectDoc, listDocVersions,
+  deleteProjectDoc, demoSaveAs, docAgo, docErrorText, docFailure, docFileName, DOC_COPY, DOC_LIMITS, getDocVersion, getProjectDoc, listDocVersions,
   listProjectDocs, mentionsIn, resetDemoDocs, saveProjectDoc, setProjectDocProps, subscribeProjectDocs, taskLinksIn,
 } from "./docs";
 import { parseDocBody } from "./docs";
@@ -66,7 +66,7 @@ describe("demo docs", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("versions: one per ten minutes of one person's editing; newest first, bodies on request", async () => {
+  it("versions: one per ten minutes of the doc's editing, whoever saves; newest first, bodies on request", async () => {
     const before = await listDocVersions("doc-launch-brief");
     expect(before.map((v) => v.savedBy)).toEqual(["m-3", "m-self", "m-1", "m-self"]);
     expect(before.every((v) => v.body === null)).toBe(true);
@@ -74,7 +74,7 @@ describe("demo docs", () => {
     const s1 = await saveProjectDoc({ id: d.id, projectId: d.projectId, title: "One", body: d.body, baseUpdatedAt: d.updatedAt });
     await saveProjectDoc({ id: d.id, projectId: d.projectId, title: "Two", body: d.body, baseUpdatedAt: s1.doc.updatedAt });
     const after = await listDocVersions(d.id);
-    expect(after).toHaveLength(5);                  // Sana saved last, so mine starts a new one, then folds in
+    expect(after).toHaveLength(5);                  // the last one is two hours old, so mine starts a new one, then folds in
     const top = (await getDocVersion(after[0].id))!;
     expect(top.title).toBe("Two");
     expect(top.body).toEqual(d.body);
@@ -88,6 +88,13 @@ describe("demo docs", () => {
     // and the next ordinary save folds into it as usual
     await saveProjectDoc({ id: d.id, projectId: d.projectId, title: "Restored, then typed", body: [], baseUpdatedAt: s3.doc.updatedAt });
     expect((await listDocVersions(d.id)).map((v) => v.title).slice(0, 2)).toEqual(["Restored, then typed", "Two"]);
+    // someone else saving within the ten minutes (writing together live) folds in too, named for them: the older
+    // history isn't pushed out by people saving in turn
+    await demoSaveAs(d.id, (b) => [...b, { id: "sana-line", type: "p", spans: [{ text: "Sana's line" }] }], "m-3");
+    const together = await listDocVersions(d.id);
+    expect(together).toHaveLength(6);
+    expect(together[0]).toMatchObject({ title: "Restored, then typed", savedBy: "m-3" });
+    expect((await getDocVersion(together[0].id))!.body!.map((b) => b.id)).toContain("sana-line");
   });
 
   it("icon, order and archive don't count as an edit (updatedAt stays)", async () => {

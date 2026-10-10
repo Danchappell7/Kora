@@ -17,7 +17,9 @@
          with THEIR doc; keep mine = save again with base = their updatedAt.
          p_mentions: everyone the doc @mentions now (newly mentioned people get one
          Inbox notice: kind 'doc_mention', meta { doc_id, project_id }).
-         A version is cut per 10 minutes of one person's editing; the last 50 are kept.
+         A version is cut per 10 minutes of the doc's editing, whoever saves (named for
+         who saved it last: 0048 — people writing together live save in turn); the
+         last 50 are kept.
          p_checkpoint: this save is a version of its own, never folded into your last
          one (a restore, keep mine), so what the doc said just before stays in history.
      rpc set_project_doc_props(p_doc, p_icon?, p_position?, p_archived?) → doc JSON
@@ -32,7 +34,8 @@
    the demo launch project, with versions), the words for failures, and
    the pure block model — it lives in lib/docBlocks (thoroughly tested)
    and is re-exported here under the contract's names. Parsers and limits
-   above are final.
+   above are final. 0048 (u5): demoSaveAs — the demo's scripted teammate
+   saving as herself, so live co-editing shows end to end in demo mode.
    ============================================================ */
 import type {
   Activity, DocBlock, DocBlockType, DocFailure, DocSaveInput, DocSaveResult, DocSpan, DocTemplateId, ProjectDoc, ProjectDocListItem, ProjectDocVersion,
@@ -387,8 +390,8 @@ export function subscribeProjectDocs(projectId: string, onChange: (change: DocCh
    Three docs on the demo launch project (a brief with @mentions and Make-task
    lines, last week's meeting notes, a decision log), each with a few versions.
    Same rules as the server: optimistic concurrency on updatedAt, a version per
-   10 minutes of one person's editing (a checkpoint always starts one; the
-   last 50), 200 docs a project. */
+   10 minutes of the doc's editing whoever saves (a checkpoint always starts
+   one; the last 50), 200 docs a project. */
 
 type Listener = (c: DocChange) => void;
 interface DemoState {
@@ -398,6 +401,19 @@ interface DemoState {
 }
 let demoState: DemoState | null = null;
 let demoSeq = 0;
+
+/** as save_project_doc (0048): one version per 10 minutes of the doc's editing whoever saves (named for the last
+ *  saver); a checkpoint starts its own; the last 50 */
+function cutDemoVersion(st: DemoState, d: ProjectDoc, by: string, checkpoint = false): void {
+  const list = st.versions.get(d.id) ?? [];
+  const last = list[0];
+  if (!checkpoint && last && Date.now() - new Date(last.savedAt).getTime() < 10 * 60000) {
+    list[0] = { ...last, title: d.title, body: clone(d.body), savedBy: by };
+  } else {
+    list.unshift({ id: `dv-${++demoSeq}-${Date.now().toString(36)}`, docId: d.id, title: d.title, body: clone(d.body), savedBy: by, savedAt: d.updatedAt });
+  }
+  st.versions.set(d.id, list.slice(0, DOC_LIMITS.versions));
+}
 
 const isTest = (() => { try { return import.meta.env?.MODE === "test"; } catch { return false; } })();
 /** a beat, so Saving… shows in the demo as it would for real (none in tests) */
@@ -415,16 +431,7 @@ function demo() {
   const stamp = (prev?: string) => new Date(Math.max(Date.now(), prev ? new Date(prev).getTime() + 1 : 0)).toISOString();
   const named = (d: ProjectDoc): ProjectDoc => ({ ...clone(d), createdByName: nameOf(d.createdBy), updatedByName: nameOf(d.updatedBy), canEdit: true });
   const item = (d: ProjectDoc): ProjectDocListItem => parseProjectDocListItem(d)!;
-  const cutVersion = (d: ProjectDoc, me: string, checkpoint = false) => {
-    const list = st.versions.get(d.id) ?? [];
-    const last = list[0];
-    if (!checkpoint && last && last.savedBy === me && Date.now() - new Date(last.savedAt).getTime() < 10 * 60000) {
-      list[0] = { ...last, title: d.title, body: clone(d.body) };
-    } else {
-      list.unshift({ id: `dv-${++demoSeq}-${Date.now().toString(36)}`, docId: d.id, title: d.title, body: clone(d.body), savedBy: me, savedAt: d.updatedAt });
-    }
-    st.versions.set(d.id, list.slice(0, DOC_LIMITS.versions));
-  };
+  const cutVersion = (d: ProjectDoc, me: string, checkpoint = false) => cutDemoVersion(st, d, me, checkpoint);
   const find = (id: string) => {
     const d = st.docs.get(id);
     if (!d) throw new Error("doc not found");
@@ -507,6 +514,25 @@ function demo() {
 
 /** Forget the demo docs (tests). */
 export function resetDemoDocs(): void { demoState = null; }
+
+/** Demo only (0048 presence, the scripted teammates): save a doc as someone else — `mutate` gets the stored body
+ *  and returns the new one. Same rules as a save (a new updatedAt, a version, the realtime ping), so an open
+ *  editor merges it as it would a real teammate's save. Null when there's no such doc, or with Supabase. */
+export async function demoSaveAs(docId: string, mutate: (body: DocBlock[]) => DocBlock[], by: string): Promise<ProjectDoc | null> {
+  if (supabase) return null;
+  const st = (demoState ??= seedDemo());
+  const cur = st.docs.get(docId);
+  if (!cur) return null;
+  const body = mutate(clone(cur.body));
+  const updatedAt = new Date(Math.max(Date.now(), new Date(cur.updatedAt).getTime() + 1)).toISOString();
+  const d: ProjectDoc = { ...cur, body: clone(body), updatedBy: by, updatedAt };
+  st.docs.set(docId, d);
+  cutDemoVersion(st, d, by);
+  const ls = st.listeners.get(d.projectId);
+  const change: DocChange = { type: "UPDATE", docId, updatedAt, updatedBy: by, item: parseProjectDocListItem(d) };
+  if (ls) queueMicrotask(() => ls.forEach((l) => l(change)));
+  return { ...clone(d), createdByName: nameOf(d.createdBy), updatedByName: nameOf(d.updatedBy), canEdit: true };
+}
 
 /* the demo's docs, written in the voice of the Foundrise team */
 function seedDemo(): DemoState {

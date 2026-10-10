@@ -20,6 +20,8 @@ straight afterwards (see the end of this page).
 | Notify queue | `notify_queue`, `notify_queue_claim()`, `notify_queue_finish()` | Service only. Push and email held back for bundling, quiet hours and digests. |
 | Kudos | `kudos`, `give_kudos()`, `take_back_kudos()` | Anyone who can see the task reads them. Anyone who can see a finished team task gives one (guests too; never yourself; one per person per task; 100 a day). The recipient gets an Inbox item (kind `kudos`, pref `kudos`); webhooks get `kudos.given`. |
 | Account deletion | `trg_before_user_delete_0048` | Shared views and templates in team workspaces move to the workspace's owner. |
+| Live presence | `kanbo_realtime_allowed()`, policies "kanbo presence: read" / "kanbo presence: write" on `realtime.messages` | Realtime Authorization for the private `kanbo:task / doc / project:<id>` channels (who's viewing, "typing…", doc co-editing). Anyone who can see the object reads and says they're there; on a task anyone who can see it may type (guests comment); on a doc only people who can edit its project send edits (never guests; not on an archived doc); on a project nobody broadcasts. The suspended, the unapproved and the signed-out get nothing. **Without these policies every join is refused and presence stays off.** Nothing is stored. See [presence.md](presence.md). |
+| Doc versions | `save_project_doc()` (0047's, one rule changed) | A version now covers 10 minutes of a doc's editing **whoever saves** (it names who saved it last), so two people writing together live no longer push the older history out of the last 50. A restore or "Keep mine" still starts a version of its own. |
 
 Realtime streams `saved_views`, `kudos` and `notification_snoozes`.
 
@@ -56,8 +58,17 @@ select
   'kudos.given' = any (public.webhook_event_names())                                               as kudos_event,
   (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
     and tablename in ('saved_views', 'kudos', 'notification_snoozes')) = 3                         as realtime,
+  (to_regclass('realtime.messages') is null or (select count(*) from pg_policies where schemaname = 'realtime'
+    and tablename = 'messages' and policyname in ('kanbo presence: read', 'kanbo presence: write')) = 2) as live_presence,
+  position('saved_by = me where id = lastv.id' in (select p.prosrc from pg_proc p
+    where p.oid = 'public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean)'::regprocedure)) > 0 as doc_versions,
   exists (select 1 from pg_trigger where tgname = 'trg_before_user_delete_0048')                  as account_deletion;
 ```
+
+`live_presence` is the one that turns live presence on: if it says `false`,
+the policies didn't go in and nobody will see anyone else live (the app
+says so once in the browser console). (On a database whose Realtime has no
+Authorization table it reads `true`: there's nothing to install there.)
 
 Nothing new to schedule for the migration itself. The calmer-notifications
 work (bundling, quiet hours, the daily digest) adds one scheduled job for
@@ -70,7 +81,7 @@ takes a few seconds, during which saving tasks waits.
 
 | Run again | What changes until 0048 runs again |
 |---|---|
-| 0046 or 0047 | Their `webhooks` check doesn't know `kudos.given`, so they **stop with an error** while any webhook subscribes to it (take it off that webhook, run them, run 0048, put it back). Until 0048 runs again, nobody can subscribe to `kudos.given`. |
+| 0046 or 0047 | Their `webhooks` check doesn't know `kudos.given`, so they **stop with an error** while any webhook subscribes to it (take it off that webhook, run them, run 0048, put it back). Until 0048 runs again, nobody can subscribe to `kudos.given`. 0047 also puts back its `save_project_doc()`: a version per person per save, so people writing together fill Version history again (VERIFY's `doc_versions` turns false). |
 | 0037 | `notif_on()` goes back to the version that throws on a malformed pref. |
 
 In every case: run 0048 again straight afterwards.
@@ -91,3 +102,11 @@ tasks, with a bad emoji, note or recipient, past the daily cap; covers that
 aren't images on the same task. Legit — every feature end to end, including
 a task with a cover deleted to the bin and restored, a project with board
 settings restored, and account deletion handing shared rows to the owner.
+
+Live presence and doc versions (u5) have their own PGlite suites: the
+Realtime policies against a stubbed `realtime.messages`, joined the way
+Realtime asks (members, guests, the suspended, the unapproved, outsiders,
+the signed-out, a personal task, an archived doc, odd topics; applied
+twice, before Realtime exists and after a re-run of 0048), and versions
+under two people saving in turn (older history kept, a checkpoint still
+its own version, a new version after 10 minutes).

@@ -1,0 +1,100 @@
+/* ============================================================
+   KANBO — live presence (0048, u5): who else is here, who's typing,
+   and the other people's carets in a doc. Paper & Navy tokens only;
+   each person's colour is their avatar hue (--kp-h), at the same
+   lightness the project / avatar rings use (--pl), so it reads in both
+   themes. Nothing here moves with reduced motion.
+   ============================================================ */
+
+/* ---------- the avatar stack ---------- */
+.kpres {
+  position: relative; display: inline-flex; align-items: center; gap: 3px; flex: none; vertical-align: middle;
+  border-radius: var(--r-pill, 999px); outline: none;
+}
+.kpres[data-size="xs"] { gap: 2px; }
+.kpres:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.kpres:focus-visible[data-tip]::after { opacity: 1; transform: translate(-50%, 0); }
+.kpres-face {
+  position: relative; display: inline-grid; place-items: center; flex: none; overflow: hidden;
+  width: var(--kp-size); height: var(--kp-size); border-radius: 999px;
+  font: 600 var(--kp-type) / 1 var(--font-ui); letter-spacing: 0.02em;
+  background: oklch(var(--av-bg-l) var(--av-bg-c) var(--kp-h)); color: oklch(var(--av-fg-l) var(--av-fg-c) var(--kp-h));
+  box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 var(--kp-ring) oklch(var(--pl) 0.14 var(--kp-h));
+  animation: kpres-join 1.1s var(--ease) 1;
+}
+.kpres-face > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.kpres-more {
+  display: inline-grid; place-items: center; min-width: var(--kp-size); height: var(--kp-size); padding: 0 4px; flex: none;
+  border-radius: 999px; background: var(--fill-1); color: var(--ink-3);
+  font: 600 var(--kp-type) / 1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+/* a soft ring that settles when someone arrives */
+@keyframes kpres-join {
+  0% { box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 calc(var(--kp-ring) + 5px) oklch(var(--pl) 0.14 var(--kp-h) / 0); }
+  35% { box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 calc(var(--kp-ring) + 3px) oklch(var(--pl) 0.14 var(--kp-h) / 0.45); }
+  100% { box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 var(--kp-ring) oklch(var(--pl) 0.14 var(--kp-h)); }
+}
+
+/* ---------- "Theo is typing…" ---------- */
+.ktyping { position: relative; min-height: 0; }
+.ktyping-vis {
+  display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 6px;
+  font: 500 12px/16px var(--font-ui); color: var(--ink-3);
+}
+.ktyping-vis > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktyping-dots { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 16px; padding: 0 5px; border-radius: 999px; background: var(--fill-1); }
+.ktyping-dots > i {
+  width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.35;
+  animation: ktyping-breathe 1.2s var(--ease) infinite;
+}
+.ktyping-dots > i:nth-child(2) { animation-delay: 0.15s; }
+.ktyping-dots > i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ktyping-breathe { 0%, 70%, 100% { opacity: 0.3; transform: none; } 35% { opacity: 1; transform: translateY(-1px); } }
+
+/* ---------- other people in a doc: carets, selections, "edited by" ---------- */
+.kpres-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: visible; }
+.kpres-sel { position: absolute; border-radius: 2px; background: oklch(var(--pl) 0.14 var(--kp-h) / 0.2); }
+.kpres-caret { position: absolute; width: 2px; margin-left: -1px; border-radius: 1px; background: oklch(var(--pl) 0.14 var(--kp-h)); }
+/* the name, while the caret's moving (a dot on its top otherwise) */
+.kpres-caret::before {
+  content: ""; position: absolute; top: -3px; left: -2px; width: 6px; height: 6px; border-radius: 50%;
+  background: oklch(var(--pl) 0.14 var(--kp-h));
+}
+.kpres-flag {
+  position: absolute; bottom: 100%; left: -1px; margin-bottom: 2px; padding: 1px 6px; border-radius: 4px 4px 4px 0; white-space: nowrap;
+  font: 600 11px/16px var(--font-ui); letter-spacing: 0;
+  background: oklch(var(--av-bg-l) var(--av-bg-c) var(--kp-h)); color: oklch(var(--av-fg-l) var(--av-fg-c) var(--kp-h));
+  box-shadow: inset 0 0 0 1px oklch(var(--pl) 0.14 var(--kp-h));
+  opacity: 0; transform: translateY(2px); transition: opacity var(--d-2) var(--ease), transform var(--d-2) var(--ease);
+}
+.kpres-caret[data-below] .kpres-flag { bottom: auto; top: 100%; margin: 2px 0 0; border-radius: 0 4px 4px 4px; }
+.kpres-caret[data-recent] .kpres-flag { opacity: 1; transform: none; }
+.kpres-caret[data-recent]::before { opacity: 0; }
+/* a block someone else just changed */
+.kpres-edit {
+  position: absolute; border-radius: var(--r-sm, 6px);
+  background: oklch(var(--pl) 0.14 var(--kp-h) / 0.1); box-shadow: inset 2px 0 0 oklch(var(--pl) 0.14 var(--kp-h));
+  animation: kpres-edit var(--kp-flash, 2600ms) var(--ease) 1 forwards;
+}
+.kpres-edit-tag {
+  position: absolute; top: 2px; right: 4px; padding: 0 6px; border-radius: 4px; white-space: nowrap;
+  font: 600 11px/16px var(--font-ui);
+  background: oklch(var(--av-bg-l) var(--av-bg-c) var(--kp-h)); color: oklch(var(--av-fg-l) var(--av-fg-c) var(--kp-h));
+}
+@keyframes kpres-edit { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .kpres-face, .kpres-edit { animation: none; }
+  .ktyping-dots > i { animation: none; opacity: 0.6; }
+  .kpres-flag { transition: none; }
+}
+@media (forced-colors: active) {
+  .kpres-face { forced-color-adjust: none; }
+  .kpres-caret, .kpres-caret::before { background: Highlight; }
+  .kpres-sel { background: Highlight; opacity: 0.3; }
+  .kpres-edit { box-shadow: inset 2px 0 0 Highlight; }
+}
+
+/* beside a doc's title (DocEditor) */
+.kdoc-title-row > .kpres { margin-top: 6px; }
+@media (max-width: 859px) { .kdoc-title-row > .kpres { margin-top: 5px; } }
