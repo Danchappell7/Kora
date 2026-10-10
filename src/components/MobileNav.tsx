@@ -4,6 +4,9 @@
    overlaps content. More opens the sidebar drawer (projects, Team,
    Search, Settings, the workspace switcher). 56px plus the safe
    area, on --bg-deep, with no blur.
+   The centre + opens the phone's quick add (QuickAddSheet, through
+   onQuickAdd) when the app gives one, else Quick capture. Neither for
+   read-only people: the app passes neither, and the + isn't drawn.
    ============================================================ */
 import { Icon } from "./primitives";
 import type { Route } from "../app-types";
@@ -43,12 +46,16 @@ const MOBILE_CSS = `
 
 const place = (id: PlaceId) => PLACES.find((p) => p.id === id)!;
 
-export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore, moreOpen = false }: {
+export function MobileNav({ route, setRoute, inboxCount, onCapture, onQuickAdd, onQuickAddIntent, onMore, moreOpen = false }: {
   route: Route;
   setRoute: (r: Route) => void;
   inboxCount: number;
-  /** the centre +: quick capture (hidden without it, e.g. for guests) */
+  /** the centre +: quick capture (hidden without it and onQuickAdd, e.g. for guests) */
   onCapture?: () => void;
+  /** the centre +: the phone's quick add sheet (QuickAddSheet). Wins over onCapture when both are given. */
+  onQuickAdd?: () => void;
+  /** a finger landed on the + (fetch the quick add sheet's code before the tap ends) */
+  onQuickAddIntent?: () => void;
   /** More: opens the sidebar drawer (hidden without it) */
   onMore?: () => void;
   /** the drawer More opens is open (More's aria-expanded) */
@@ -81,7 +88,11 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onMore, more
       <style>{MOBILE_CSS}</style>
       {slot("today")}
       {slot("tasks")}
-      {onCapture && (
+      {onQuickAdd ? (
+        <button type="button" className="kmnav-slot" aria-label="Add a task" aria-haspopup="dialog" onClick={onQuickAdd} onPointerDown={onQuickAddIntent}>
+          <span className="kmnav-plus"><Icon name="plus" size={22} sw={2} /></span>
+        </button>
+      ) : onCapture && (
         <button type="button" className="kmnav-slot" aria-label="Quick capture" aria-keyshortcuts="Q" onClick={onCapture} onPointerDown={prefetchCapture}>
           <span className="kmnav-plus"><Icon name="plus" size={22} sw={2} /></span>
         </button>
