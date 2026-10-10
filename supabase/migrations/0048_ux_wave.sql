@@ -1,7 +1,8 @@
 -- ============================================================
 -- KANBO — the UX wave (2026-10-09): first run, universal search, calmer
 -- notifications, shared views, board covers and WIP limits, a template
--- library and kudos. Additive: nothing the app does today changes shape.
+-- library, kudos and live presence. Additive: nothing the app does today
+-- changes shape.
 --
 --   1. profiles.onboarding (jsonb): the guided tour, the "Get set up"
 --      checklist, the sample project and gentle-nudge settings (streak),
@@ -59,6 +60,14 @@
 --   9. Account deletion: shared views and templates in team workspaces move
 --      to the workspace's owner (personal ones go with the person).
 --  10. Realtime: saved_views, kudos and notification_snoozes.
+--  15. Live presence (u5): Realtime Authorization for the private
+--      "kanbo:task|doc|project:<id>" channels — who's viewing, typing, doc
+--      co-editing. kanbo_realtime_allowed() and two policies on
+--      realtime.messages (skipped where Realtime has no Authorization).
+--      Without them every join is refused and presence stays off.
+--  16. Doc versions: one per 10 minutes of a doc's editing whoever saves
+--      (save_project_doc), so people writing together live don't push the
+--      older history out of the last 50.
 --
 -- Needs 0047. Idempotent: safe to run more than once (re-running keeps
 -- every view, template, snooze, queued notice and kudos). RUN IT LAST:
@@ -966,6 +975,165 @@ begin
   end loop;
 end $rt$;
 
+-- ---------- 15. live presence: who may use the kanbo:* Realtime channels (u5) ----------
+-- Presence rides Supabase Realtime on PRIVATE channels, one per object: "kanbo:task:<id>",
+-- "kanbo:doc:<id>", "kanbo:project:<id>" (lib/presence). Realtime Authorization asks these policies on
+-- realtime.messages when someone joins (and again when their token refreshes). Nothing is stored.
+--   read  (see who's there; receive typing, doc edits, carets): anyone who can see the object.
+--   write, extension 'presence' (say you're there): the same people.
+--   write, extension 'broadcast': on a task, anyone who can see it (guests comment, so they may type);
+--     on a doc, people who can edit its project (never guests) while it isn't archived — edits, carets,
+--     "saved" notices and the order check; on a project, nobody (it's presence only).
+-- Suspended or unapproved people: nothing (can_act). Signed out: nothing. Only uuids after the prefix.
+-- A Realtime without Authorization (no realtime.messages) skips the policies: presence then stays off,
+-- because the app only ever joins these channels as private ones.
+create or replace function public.kanbo_realtime_allowed(p_topic text, p_extension text, p_write boolean)
+returns boolean language plpgsql stable security definer set search_path = public as $$
+declare
+  v_kind text;
+  v_id uuid;
+  v_project uuid;
+  v_archived timestamptz;
+begin
+  if auth.uid() is null or p_topic is null or not public.can_act() then return false; end if;
+  if p_topic !~ '^kanbo:(task|doc|project):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+    return false;
+  end if;
+  if p_write and p_extension is distinct from 'presence' and p_extension is distinct from 'broadcast' then return false; end if;
+  v_kind := split_part(p_topic, ':', 2);
+  v_id := split_part(p_topic, ':', 3)::uuid;
+  if v_kind = 'task' then
+    return public.can_see_task(v_id);
+  elsif v_kind = 'project' then
+    if p_write and p_extension <> 'presence' then return false; end if;
+    return public.can_see_project(v_id);
+  end if;
+  select d.project_id, d.archived_at into v_project, v_archived from public.project_docs d where d.id = v_id;
+  if v_project is null then return false; end if;
+  if p_write and p_extension = 'broadcast' then
+    return v_archived is null and public.can_edit_project(v_project);
+  end if;
+  return public.can_see_project(v_project);
+end; $$;
+revoke all on function public.kanbo_realtime_allowed(text, text, boolean) from public, anon;
+grant execute on function public.kanbo_realtime_allowed(text, text, boolean) to authenticated;
+
+do $live$
+begin
+  if to_regclass('realtime.messages') is null or to_regprocedure('realtime.topic()') is null then return; end if;
+  execute 'drop policy if exists "kanbo presence: read" on realtime.messages';
+  execute 'drop policy if exists "kanbo presence: write" on realtime.messages';
+  execute $p$create policy "kanbo presence: read" on realtime.messages for select to authenticated
+    using (public.kanbo_realtime_allowed(realtime.topic(), extension, false))$p$;
+  execute $p$create policy "kanbo presence: write" on realtime.messages for insert to authenticated
+    with check (public.kanbo_realtime_allowed(realtime.topic(), extension, true))$p$;
+end $live$;
+
+-- ---------- 16. doc versions while people write together (u5) ----------
+-- Live co-editing (lib/presence) has everyone in a doc autosaving their own
+-- work in turn. 0047 cut a new version whenever the saver changed, so two
+-- people writing together filled the last 50 within minutes and pushed out
+-- every older version: the history that "Keep mine" and lost words point
+-- to. A version now covers 10 minutes of the doc's editing whoever saves
+-- (it names who saved it last); a checkpoint (a restore, keep mine) still
+-- starts one of its own. Otherwise save_project_doc is 0047's, unchanged.
+create or replace function public.save_project_doc(p_doc uuid, p_project uuid, p_title text, p_body jsonb,
+                                                   p_base_updated_at timestamptz default null, p_icon text default null,
+                                                   p_mentions uuid[] default null, p_checkpoint boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  me      uuid := auth.uid();
+  d       public.project_docs;
+  p       record;
+  ttl     text := btrim(coalesce(p_title, ''));
+  ic      text := case when p_icon is null then null else nullif(btrim(p_icon), '') end;
+  ts      timestamptz := date_trunc('milliseconds', clock_timestamp());
+  oldm    uuid[];
+  newm    uuid[];
+  m       uuid;
+  me_name text;
+  lastv   record;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  if p_doc is null then raise exception 'invalid doc'; end if;
+  if p_body is null or jsonb_typeof(p_body) <> 'array' then raise exception 'invalid body'; end if;
+  if octet_length(p_body::text) > 1048576 then raise exception 'doc too large'; end if;
+  if length(ttl) > 200 then raise exception 'invalid title'; end if;
+  if ic is not null and length(ic) > 64 then raise exception 'invalid icon'; end if;
+  select * into d from public.project_docs where id = p_doc for update;
+  if d.id is null then
+    if p_base_updated_at is not null then raise exception 'doc not found'; end if;   -- deleted while open: don't bring it back
+    if p_project is null or not public.can_edit_project(p_project) then raise exception 'project not found'; end if;
+    -- a doc of a project in the bin keeps its id for the restore (the guard trigger refuses it too)
+    if exists (select 1 from public.trash_ids r where r.id = p_doc) then raise exception 'invalid doc'; end if;
+    perform pg_advisory_xact_lock(hashtext('kanbo:docs:' || p_project::text));
+    if (select count(*) from public.project_docs x where x.project_id = p_project) >= 200 then raise exception 'too many docs'; end if;
+    select x.workspace_id into p from public.projects x where x.id = p_project;
+    insert into public.project_docs (id, project_id, workspace_id, title, body, icon, position, created_by, updated_by, created_at, updated_at)
+    values (p_doc, p_project, p.workspace_id, ttl, p_body, ic,
+            coalesce((select max(x.position) from public.project_docs x where x.project_id = p_project), 0) + 1,
+            me, me, ts, ts)
+    returning * into d;
+    oldm := '{}';
+  else
+    if not public.can_edit_project(d.project_id) then
+      if public.can_see_project(d.project_id) then raise exception 'not allowed'; end if;
+      raise exception 'doc not found';
+    end if;
+    if p_project is not null and p_project <> d.project_id then raise exception 'invalid doc'; end if;
+    if p_base_updated_at is null
+       or date_trunc('milliseconds', d.updated_at) <> date_trunc('milliseconds', p_base_updated_at) then
+      return jsonb_build_object('status', 'conflict', 'doc', public.project_doc_json(d));
+    end if;
+    oldm := d.mentions;
+    update public.project_docs
+       set title = ttl, body = p_body, icon = case when p_icon is null then icon else ic end,
+           updated_by = me, updated_at = greatest(ts, date_trunc('milliseconds', d.updated_at) + interval '1 millisecond')
+     where id = d.id
+    returning * into d;
+  end if;
+
+  -- versions (0048): one per 10 minutes of the doc's editing, whoever saves,
+  -- naming who saved it last; the last 50. (People writing together live
+  -- save in turn: a version per person per save would push every older
+  -- version out of the 50 within minutes.) A checkpoint always starts a new
+  -- one (the newest version always holds what the doc said before this
+  -- save: every save writes it). A new one is stamped with the doc's
+  -- updated_at, which always moves on, so it sorts after every earlier
+  -- version even when two saves share a millisecond.
+  select v.id, v.saved_by, v.saved_at into lastv from public.project_doc_versions v
+   where v.doc_id = d.id order by v.saved_at desc, v.id desc limit 1;
+  if not coalesce(p_checkpoint, false)
+     and lastv.id is not null and lastv.saved_at > now() - interval '10 minutes' then
+    update public.project_doc_versions set title = d.title, body = d.body, saved_by = me where id = lastv.id;
+  else
+    insert into public.project_doc_versions (doc_id, title, body, saved_by, saved_at) values (d.id, d.title, d.body, me, d.updated_at);
+    delete from public.project_doc_versions
+     where id in (select v.id from public.project_doc_versions v where v.doc_id = d.id
+                   order by v.saved_at desc, v.id desc offset 50);
+  end if;
+
+  -- mentions: notify the people newly mentioned, once each
+  if p_mentions is not null then
+    select coalesce(array_agg(x), '{}') into newm
+      from (select distinct x from unnest(p_mentions) x where x is not null limit 100) q;
+    me_name := public.kanbo_person_name(me);
+    select x.workspace_id, x.user_id into p from public.projects x where x.id = d.project_id;
+    for m in select x from unnest(newm) x where not (x = any (coalesce(oldm, '{}'))) loop
+      if m = me or not public.is_task_audience(p.workspace_id, p.user_id, m) or not public.notif_on(m, 'mention') then
+        continue;
+      end if;
+      insert into public.activity (user_id, task_id, task_title, kind, detail, meta)
+      values (m, null, coalesce(nullif(d.title, ''), 'Untitled'), 'doc_mention', me_name,
+              jsonb_build_object('doc_id', d.id, 'project_id', d.project_id));
+    end loop;
+    update public.project_docs set mentions = newm where id = d.id returning * into d;
+  end if;
+  return jsonb_build_object('status', 'saved', 'doc', public.project_doc_json(d));
+end; $$;
+revoke execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean) from public, anon;
+grant execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean) to authenticated;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0048') on conflict (version) do nothing;
 
@@ -993,5 +1161,9 @@ insert into public.schema_migrations (version) values ('0048') on conflict (vers
 --   'kudos.given' = any (public.webhook_event_names())                                               as kudos_event,
 --   (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
 --     and tablename in ('saved_views', 'kudos', 'notification_snoozes')) = 3                         as realtime,
+--   (to_regclass('realtime.messages') is null or (select count(*) from pg_policies where schemaname = 'realtime'
+--     and tablename = 'messages' and policyname in ('kanbo presence: read', 'kanbo presence: write')) = 2) as live_presence,
+--   position('saved_by = me where id = lastv.id' in (select p.prosrc from pg_proc p
+--     where p.oid = 'public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean)'::regprocedure)) > 0 as doc_versions,
 --   exists (select 1 from pg_trigger where tgname = 'trg_before_user_delete_0048')                  as account_deletion;
 -- ============================================================

@@ -46,6 +46,21 @@
      (mergeDocVersions: the last saved copy, yours, theirs). A copy of a
      block you've already seen (live) isn't a conflict; only a block both
      sides changed without seeing each other's version shows the banner.
+   • Cut off and back: broadcasts aren't replayed, so a tab whose channel
+     dropped (or that has just joined) has missed what was sent meanwhile.
+     Nothing it typed goes out until it has caught up with the server's
+     copy (the editor's resync: fetch and merge three ways — the banner
+     if its words clash with saved ones it never saw); edits the server
+     already holds then count as shared (they came by the save), and
+     only what's left goes out live. Nothing goes out while the conflict
+     banner is up either. Each batch names the content every edited
+     block had before (prev): a batch made on an older save than yours
+     never overwrites words saved since that its sender hadn't seen —
+     those edits are refused and the sender is told to catch up (stale).
+   • Rates: ops at most every DOC_OP_THROTTLE_MS with one other tab, slower
+     with more (docOpThrottleMs); the caret rides in the ops batch while
+     you type and goes on its own (CARET_THROTTLE_MS) only when it moves
+     without an edit; with no other tab on the channel nothing is sent.
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DocBlock, DocOp, DocOpBatch, PresencePeer } from "../data/types";
@@ -303,8 +318,10 @@ export function mapTextOffset(before: string, after: string, offset: number): nu
    the wire
    ====================================================================== */
 
-/** What goes out on a doc channel as "ops": the contract's batch + the sender's colour and, when it changed, the title. */
-export interface WireBatch extends DocOpBatch { color?: string; title?: string }
+/** What goes out on a doc channel as "ops": the contract's batch + the sender's colour, the title when it changed,
+ *  the sender's caret (it rides along while typing), and for each block updated or deleted, a hash of the content it
+ *  had before (prev: what the edit was made on — see DocReplica.receive). */
+export interface WireBatch extends DocOpBatch { color?: string; title?: string; caret?: PresencePeer["caret"]; prev?: Record<string, string> }
 
 const MAX_OPS = 2000;
 const MAX_BLOCK_TEXT = 100_000;
@@ -312,6 +329,7 @@ const MAX_BLOCK_TEXT = 100_000;
 export const MAX_BATCH_BYTES = 200_000;
 const ID_RE = /^[A-Za-z0-9_:.@-]{1,80}$/;
 const isId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v);
+const HASH_RE = /^[0-9a-z]{1,16}$/;
 
 function parseBlock(raw: unknown): DocBlock | null {
   const [b] = parseDocBody([raw]);
@@ -348,6 +366,16 @@ export function parseWireBatch(raw: unknown): WireBatch | null {
     at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : 0,
   };
   if (typeof r.title === "string") out.title = r.title.replace(/\n/g, " ").slice(0, 200);
+  if (r.prev !== undefined) {
+    if (!r.prev || typeof r.prev !== "object" || Array.isArray(r.prev)) return null;
+    const entries = Object.entries(r.prev as Record<string, unknown>);
+    if (entries.length > MAX_OPS) return null;
+    // (no prototype: a block id is only ever a key here)
+    const prev = Object.create(null) as Record<string, string>;
+    for (const [k, v] of entries) { if (!isId(k) || typeof v !== "string" || !HASH_RE.test(v)) return null; prev[k] = v; }
+    out.prev = prev;
+  }
+  if (r.caret !== undefined) out.caret = parseCaret(r.caret);
   return out;
 }
 
@@ -381,6 +409,9 @@ type Item = { op: DocOp; s: Stamp };
 interface Slot { b: DocBlock; dead: boolean }
 const visible = (seq: readonly Slot[]): DocBlock[] => seq.filter((x) => !x.dead).map((x) => x.b);
 
+/** what this copy knows the server holds: its version and each block's content (hashed), its order and title */
+interface SavedBase { v: string; ms: number; sigs: Map<string, string>; ids: string; title: string }
+
 export class DocReplica {
   clock = 0;
   /** what everyone has: the visible blocks of the sequence */
@@ -388,6 +419,10 @@ export class DocReplica {
   shadowTitle: string;
   /** edits of blocks this copy has never had, given up on (we joined after they were made): the next save brings them */
   missing = 0;
+  /** blocks whose edits in the last batch received were refused (made on an older save, over saved words its sender
+   *  hadn't seen): the sender should catch up */
+  refused: string[] = [];
+  private savedBase: SavedBase | null = null;
   private seq: Slot[];
   /** content, position and delete stamps (last writer wins, each on its own) */
   private cs = new Map<string, Stamp>();
@@ -405,13 +440,15 @@ export class DocReplica {
 
   /** how long an op waits for what it's anchored on (ORPHAN_WAIT_MS) */
   private orphanWait: number;
-  constructor(readonly clientId: string, blocks: DocBlock[], title: string, opts: { orphanWaitMs?: number } = {}) {
+  /** `version`: the save these blocks are (the editor's base), if they are one */
+  constructor(readonly clientId: string, blocks: DocBlock[], title: string, opts: { orphanWaitMs?: number; version?: string | null } = {}) {
     this.orphanWait = opts.orphanWaitMs ?? ORPHAN_WAIT_MS;
     this.seq = blocks.map((b) => ({ b, dead: false }));
     this.shadow = blocks.slice();
     this.shadowTitle = title;
     for (const b of blocks) this.see(b);
     this.seeTitle(title);
+    if (opts.version) this.setBase(opts.version, blocks, title);
   }
 
   /* ---- clocks and memory ---- */
@@ -426,6 +463,24 @@ export class DocReplica {
     if (list.length > SEEN_PER_BLOCK) list.shift();
     this.seenH.set(b.id, list);
   }
+  /** a copy the server has: known, but never moved later in this block's history (what came live keeps its place) */
+  private note(b: DocBlock): void {
+    const h = hashText(blockSig(b));
+    const list = this.seenH.get(b.id) ?? [];
+    if (list.includes(h)) return;
+    list.push(h);
+    if (list.length > SEEN_PER_BLOCK) list.shift();
+    this.seenH.set(b.id, list);
+  }
+  /** how late this content came to this block here (-1: never) — a later one is newer as far as this copy knows */
+  private rank(id: string, hash: string): number { return this.seenH.get(id)?.lastIndexOf(hash) ?? -1; }
+  private setBase(version: string, blocks: readonly DocBlock[], title: string): void {
+    const ms = Date.parse(version);
+    if (!Number.isFinite(ms)) return;
+    this.savedBase = { v: version, ms, sigs: new Map(blocks.map((b) => [b.id, hashText(blockSig(b))])), ids: blocks.map((b) => b.id).join(","), title };
+  }
+  /** the save this copy's base is (what goes out as a batch's baseVersion) */
+  get baseVersion(): string | null { return this.savedBase?.v ?? null; }
   private seeTitle(t: string): void {
     if (this.seenT[this.seenT.length - 1] === t) return;
     this.seenT.push(t);
@@ -548,7 +603,7 @@ export class DocReplica {
 
   /* ---- local edits → a batch ---- */
   /** what you've changed since the last batch (null: nothing); the shadow moves on */
-  flush(current: DocBlock[], title: string, now: number): { seq: number; ops: DocOp[]; title?: string } | null {
+  flush(current: DocBlock[], title: string, now: number): { seq: number; ops: DocOp[]; title?: string; prev: Record<string, string> } | null {
     const ops = diffDocBlocks(this.shadow, current);
     const titleChanged = title !== this.shadowTitle;
     if (!ops.length && !titleChanged) return null;
@@ -556,6 +611,8 @@ export class DocReplica {
     // your own ops go through exactly the rules everyone else applies them with (the newest stamp: nothing skips them)
     const work = this.seq.map((x) => ({ ...x }));
     const sent: DocOp[] = [];
+    // what each block you changed or deleted held before (the receiver judges a batch made on an older save by it)
+    const prev: Record<string, string> = {};
     for (const op of ops) if (op.t === "update" || op.t === "insert") this.mineAt.set(op.block.id, now);
     for (const raw of ops) {
       let op = raw;
@@ -569,6 +626,11 @@ export class DocReplica {
           if (pred === raw.afterId) op = { t: "update", block: raw.block };
         }
       }
+      if (op.t === "update" || op.t === "delete") {
+        const id = opId(op);
+        const slot = id in prev ? undefined : work.find((x) => x.b.id === id);
+        if (slot) prev[id] = hashText(blockSig(slot.b));
+      }
       this.one(work, { op, s }, true);
       sent.push(op);
     }
@@ -576,15 +638,39 @@ export class DocReplica {
     if (titleChanged) { this.titleStamp = s; this.seeTitle(title); }
     this.shadow = current.slice();
     this.shadowTitle = title;
-    return { seq: s[0], ops: sent, ...(titleChanged ? { title } : {}) };
+    return { seq: s[0], ops: sent, prev, ...(titleChanged ? { title } : {}) };
   }
 
   /* ---- a remote batch ---- */
+  /** A batch made on an older save than this copy's base (its sender missed a save) doesn't get to overwrite words
+   *  saved since that its sender never had: an update or delete of a block whose saved content here differs from the
+   *  content the sender edited (prev), when that content came here before the saved one (or never), is refused
+   *  (`refused`: the sender should catch up — its editor merges the save and shows the banner if they clash). Its
+   *  other ops (new blocks, moves, blocks nobody saved over) apply as usual. A batch on the same or a newer save is
+   *  live typing: last writer wins, as ever. */
   receive(batch: WireBatch, current: DocBlock[], curTitle: string, now: number): ReplicaChange | null {
+    this.refused = [];
     if (batch.clientId === this.clientId || batch.seq > Math.max(now, Date.now()) + MAX_SKEW_MS) return null;
     this.observe(batch.seq);
     const s: Stamp = [batch.seq, batch.clientId];
-    return this.process(batch.ops.map((op) => ({ op, s })), batch.title !== undefined ? { title: batch.title, s } : null, current, curTitle, now);
+    let ops = batch.ops;
+    const base = this.savedBase;
+    const theirs = Date.parse(batch.baseVersion);
+    if (base && batch.prev && Number.isFinite(theirs) && theirs < base.ms) {
+      const prev = batch.prev;
+      const refused: string[] = [];
+      ops = ops.filter((op) => {
+        if (op.t !== "update" && op.t !== "delete") return true;
+        const id = opId(op);
+        const saved = base.sigs.get(id);
+        const was = Object.prototype.hasOwnProperty.call(prev, id) ? prev[id] : undefined;
+        if (saved === undefined || was === undefined || was === saved || this.rank(id, was) >= this.rank(id, saved)) return true;
+        if (!refused.includes(id)) refused.push(id);
+        return false;
+      });
+      this.refused = refused;
+    }
+    return this.process(ops.map((op) => ({ op, s })), batch.title !== undefined ? { title: batch.title, s } : null, current, curTitle, now);
   }
   /** ops that waited too long for their anchor: placed at the end */
   expire(current: DocBlock[], curTitle: string, now: number): ReplicaChange | null {
@@ -705,6 +791,11 @@ export class DocReplica {
   /* ---- changes that came from a save (the editor's three-way merge) ---- */
   /** the editor took these changes from the server: everyone live does the same, so the shared copy follows */
   absorb(before: { title: string; blocks: DocBlock[] }, after: { title: string; blocks: DocBlock[] }): void {
+    this.take(before, after);
+    this.missing = 0;
+  }
+  /** before → after onto the shared copy, as a change nobody sends (everyone has it, or will, from a save) */
+  private take(before: { title: string; blocks: DocBlock[] }, after: { title: string; blocks: DocBlock[] }): void {
     const ops = diffDocBlocks(before.blocks, after.blocks);
     // (newer than anything here: it's what the server holds now, decided by the editor's three-way merge)
     const s: Stamp = [this.tick(Date.now()), "~"];
@@ -724,10 +815,38 @@ export class DocReplica {
     this.seq = work;
     this.shadow = visible(work);
     if (after.title !== before.title) { this.shadowTitle = after.title; this.seeTitle(after.title); }
-    this.missing = 0;
   }
-  /** a copy the server has (loaded, saved or reloaded): remember its blocks as seen */
-  remember(blocks: DocBlock[], title: string): void { for (const b of blocks) this.see(b); this.seeTitle(title); }
+  /** Your unsent edits that the server already holds (they're in the save this copy's base is: saved while you were
+   *  cut off, or the copy you reloaded) become shared without going out — the others have them from that save, and
+   *  sending them now, stamped new, would write over anything newer the others typed since. What's left (words the
+   *  server hasn't got) still goes. `keepOwn` (a reload): a block whose shared copy is your own live words still goes
+   *  out — the others show your words and need the saved ones. */
+  settleSaved(current: DocBlock[], title: string, opts: { keepOwn?: boolean } = {}): boolean {
+    const base = this.savedBase;
+    if (!base) return false;
+    const ops = diffDocBlocks(this.shadow, current);
+    // (the others show what you sent: your words in a block, your delete of it, where you put it)
+    const yours = (m: Map<string, Stamp>, id: string) => !!opts.keepOwn && m.get(id)?.[1] === this.clientId;
+    const sameOrder = current.map((b) => b.id).join(",") === base.ids;
+    const settled = ops.filter((op) => {
+      const id = opId(op);
+      if (op.t === "move") return sameOrder && !yours(this.ps, id);
+      if (op.t === "delete") return !base.sigs.has(id) && !yours(this.cs, id);
+      if (op.t === "update" ? yours(this.cs, id) : yours(this.ds, id)) return false;
+      return base.sigs.get(id) === hashText(blockSig(op.block));
+    });
+    const titleSaved = title !== this.shadowTitle && title.trim() === base.title.trim() && !(opts.keepOwn && this.titleStamp[1] === this.clientId);
+    if (!settled.length && !titleSaved) return false;
+    this.take({ title: this.shadowTitle, blocks: this.shadow }, { title: titleSaved ? title : this.shadowTitle, blocks: applyDocOps(this.shadow, settled) });
+    return true;
+  }
+  /** a copy the server has (loaded, saved or reloaded): remember its blocks as seen; `version`: it's the save this
+   *  copy's base is now */
+  remember(blocks: DocBlock[], title: string, version?: string | null): void {
+    for (const b of blocks) this.note(b);
+    this.seeTitle(title);
+    if (version) this.setBase(version, blocks, title);
+  }
   /** start again from this copy (Reload after a conflict): nothing of yours is unsent */
   reset(blocks: DocBlock[], title: string): void {
     const dead = this.seq.filter((x) => x.dead);
@@ -767,6 +886,13 @@ export interface DocCollabOptions {
   onBehind?: () => void;
   /** same-block conflicts (remote won) — for a quiet announcement */
   onConflicts?: (ids: string[], by: PresencePeer) => void;
+  /** Catch up with the server's copy (fetch it and merge three ways; remember it with its version). Asked when the
+   *  channel comes up — the first time and after every drop, since broadcasts aren't replayed — and when someone
+   *  says a batch of yours was made on an old save. Nothing you type goes out until it resolves true (false: it's
+   *  asked again shortly). Without it, the channel coming up is enough. */
+  resync?: () => Promise<boolean>;
+  /** false while your words mustn't go out live (the conflict banner is up): they wait */
+  canSend?: () => boolean;
 }
 export interface DocCollab {
   peers: PresencePeer[];
@@ -788,8 +914,10 @@ export interface DocCollab {
   absorb: (before: { title: string; blocks: DocBlock[] }, after: { title: string; blocks: DocBlock[] }) => void;
   /** start again from this copy (Reload) */
   reset: (blocks: DocBlock[], title: string) => void;
-  /** remember a copy the server has */
-  remember: (blocks: DocBlock[], title: string) => void;
+  /** remember a copy the server has (`version`: the save the editor's base is now) */
+  remember: (blocks: DocBlock[], title: string, version?: string | null) => void;
+  /** your unsent edits the server already holds count as shared, without going out (DocReplica.settleSaved) */
+  settleSaved: (opts?: { keepOwn?: boolean }) => void;
   /** tell the others a save landed */
   sendSaved: (version: string, key: string) => void;
   /** for mergeDocVersions */
@@ -818,11 +946,42 @@ interface Runtime {
   held: boolean;
   queue: WireBatch[];
   orderTimer: ReturnType<typeof setTimeout> | undefined;
+  /** caught up since the channel last came up: what you type may go out */
+  synced: boolean;
+  syncing: boolean;
+  syncTimer: ReturnType<typeof setTimeout> | undefined;
+  /** moves on whenever this copy may have missed something (cut off, or told it's behind): a catch-up that started
+   *  before that doesn't count */
+  gen: number;
+  /** the order check: until then this copy takes the others' order and says nothing of its own */
+  orderFrom: number;
+  /** when each sender was last told it's behind (stale) */
+  toldStale: Map<string, number>;
+  /** your caret moved since it last went out (alone, or in a batch, or on its own) */
+  caretDirty: boolean;
 }
+/** nobody else on the channel (faded tabs count: they still receive) — nothing needs sending */
+const aloneOn = (r: Runtime): boolean => r.conn?.others === 0;
+/** what goes out with a batch as its base: the save this copy is based on */
+const baseOf = (r: Runtime, o: DocCollabOptions): string => r.replica.baseVersion ?? o.baseVersion ?? "";
 /** quiet this long after a structural change, an editor tells the others its block order (the order check) */
 export const ORDER_CHECK_MS = 1500;
+/** after catching up (joining, or back from a drop) a copy defers in the order check this long: a move someone made
+ *  while it was away reaches it with their save, and its old order mustn't undo the move meanwhile */
+export const ORDER_GRACE_MS = 10_000;
+/** a catch-up that failed (offline) is tried again after this */
+export const RESYNC_RETRY_MS = 4000;
+/** a sender is told it's behind at most this often */
+const STALE_REPLY_MS = 3000;
 const MAX_ORDER_IDS = 5000;
 const structural = (ops: readonly DocOp[]) => ops.some((o) => o.t !== "update");
+
+/** How often ops go out with this many other tabs in the doc: every DOC_OP_THROTTLE_MS with one, slower with more
+ *  (everyone receives everyone's: n typists cost n × (n − 1) deliveries per batch interval). */
+export function docOpThrottleMs(others: number | null): number {
+  const n = others ?? 1;
+  return n <= 1 ? DOC_OP_THROTTLE_MS : n === 2 ? DOC_OP_THROTTLE_MS * 2 : DOC_OP_THROTTLE_MS * 3 + 50;
+}
 
 export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocCollab {
   const client = usePresenceClient();
@@ -835,9 +994,10 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
   const rtRef = useRef<Runtime | null>(null);
   if (docId && (!rtRef.current || rtRef.current.docId !== docId)) {
     rtRef.current = {
-      docId, replica: new DocReplica(client?.clientId ?? "local", opts.getBlocks(), opts.getTitle?.() ?? ""),
+      docId, replica: new DocReplica(client?.clientId ?? "local", opts.getBlocks(), opts.getTitle?.() ?? "", { version: opts.baseVersion }),
       conn: null, entries: [], carets: new Map(), colors: new Map(), myCaret: null, caretSentAt: 0, caretTimer: undefined,
       lastSent: 0, flushTimer: undefined, expireTimer: undefined, held: false, queue: [], orderTimer: undefined,
+      synced: false, syncing: false, syncTimer: undefined, gen: 0, orderFrom: 0, toldStale: new Map(), caretDirty: false,
     };
   }
   const rt = docId ? rtRef.current : null;
@@ -895,7 +1055,9 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
     r.orderTimer = setTimeout(() => {
       r.orderTimer = undefined;
       const o = optsRef.current;
-      if (!r.conn?.live || !me || !client || o.readOnly) return;
+      if (!r.conn?.live || !me || !client || o.readOnly || !r.synced || aloneOn(r)) return;
+      // (just caught up: the others' order stands for now; say yours once that's over)
+      if (Date.now() < r.orderFrom) { r.orderTimer = setTimeout(() => scheduleOrderRef.current(), r.orderFrom - Date.now()); return; }
       if (!r.replica.quiet(o.getBlocks())) { scheduleOrderRef.current(); return; }
       const ids = r.replica.orderIds();
       if (ids.length <= MAX_ORDER_IDS) r.conn.send("order", { userId: me.userId, name: me.name, color: me.color, clientId: client.clientId, ids });
@@ -913,14 +1075,95 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
     const o = optsRef.current;
     const current = o.getBlocks();
     if (!r.replica.quiet(current)) return; // (the next announcement will do)
-    if (!o.readOnly && !(s.clientId > client.clientId)) {
+    // a viewer, or a copy that has only just caught up, takes theirs whoever outranks whom
+    const defer = !!o.readOnly || !r.synced || Date.now() < r.orderFrom;
+    if (!defer && !(s.clientId > client.clientId)) {
       // you outrank them: if your orders differ, say yours so they take it
       if (hashText(ids.join(",")) !== r.replica.orderHash()) scheduleOrder();
       return;
     }
-    const res = r.replica.adoptOrder(ids, s.clientId, current, o.getTitle?.() ?? "", { force: !!o.readOnly });
+    const res = r.replica.adoptOrder(ids, s.clientId, current, o.getTitle?.() ?? "", { force: defer });
     if (res) o.setBlocks(res.blocks, []);
   }, [client, scheduleOrder]);
+
+  const flushNow = useCallback(() => {
+    const r = rtRef.current;
+    if (!r) return;
+    clearTimeout(r.flushTimer);
+    r.flushTimer = undefined;
+    const o = optsRef.current;
+    // nothing goes out before this copy has caught up, nor while the conflict banner is up: it waits, unsent
+    if (o.readOnly || !r.conn?.live || !r.synced || (o.canSend && !o.canSend()) || !me || !client) return;
+    const out = r.replica.flush(o.getBlocks(), o.getTitle?.() ?? "", Date.now());
+    // (nothing to send after all: a caret that moved meanwhile goes on its own)
+    if (!out) { if (r.caretDirty && r.caretTimer === undefined) sendCaretRef.current(); return; }
+    r.lastSent = Date.now();
+    // alone on the channel: the shared copy moves on, nothing is sent (a newcomer loads the save)
+    if (aloneOn(r)) return;
+    const payload: WireBatch = {
+      docId: r.docId, clientId: client.clientId, userId: me.userId, name: me.name, color: me.color,
+      seq: out.seq, baseVersion: baseOf(r, o), ops: out.ops, at: r.lastSent, ...(out.title !== undefined ? { title: out.title } : {}),
+      caret: r.myCaret ?? null, prev: out.prev,
+    };
+    let size = 0;
+    try { size = JSON.stringify(payload).length; } catch { return; }
+    // too big for a realtime message (a huge paste): the others catch up from the save
+    if (size > MAX_BATCH_BYTES) return;
+    r.conn.send("ops", payload as unknown as Record<string, unknown>);
+    // (the caret went with it)
+    clearTimeout(r.caretTimer);
+    r.caretTimer = undefined;
+    r.caretSentAt = r.lastSent;
+    r.caretDirty = false;
+    if (structural(out.ops)) scheduleOrder();
+  }, [client, me, scheduleOrder]);
+
+  const broadcast = useCallback((_ops: DocOp[]) => {
+    const r = rtRef.current;
+    if (!r || optsRef.current.readOnly) return;
+    if (r.flushTimer !== undefined) return;
+    const wait = Math.max(0, r.lastSent + docOpThrottleMs(r.conn?.others ?? null) - Date.now());
+    r.flushTimer = setTimeout(flushNow, wait);
+  }, [flushNow]);
+
+  /** caught up (or nothing to catch up with): what the server already holds counts as shared, the rest goes */
+  const openGate = useCallback(() => {
+    const r = rtRef.current;
+    if (!r) return;
+    const o = optsRef.current;
+    if (!o.readOnly) r.replica.settleSaved(o.getBlocks(), o.getTitle?.() ?? "");
+    r.synced = true;
+    r.orderFrom = Date.now() + ORDER_GRACE_MS;
+    r.lastSent = 0;
+    broadcast([]);
+  }, [broadcast]);
+
+  /** catch up with the server's copy before anything typed meanwhile goes out (DocCollabOptions.resync) */
+  const startSync = useCallback(() => {
+    const r = rtRef.current;
+    if (!r) return;
+    clearTimeout(r.syncTimer);
+    r.syncTimer = undefined;
+    r.synced = false;
+    if (r.syncing) return; // (the one under way goes again when it lands, if it's out of date by then)
+    const resync = optsRef.current.resync;
+    if (!resync) { openGate(); return; }
+    r.syncing = true;
+    const gen = r.gen;
+    const done = (ok: boolean) => {
+      r.syncing = false;
+      if (rtRef.current !== r || !r.conn?.live) return;
+      // cut off again (or told it's behind) while it fetched: what it fetched may be old already — once more
+      if (gen !== r.gen) { startSyncRef.current(); return; }
+      if (ok) { openGate(); return; }
+      r.syncTimer = setTimeout(() => startSyncRef.current(), RESYNC_RETRY_MS);
+    };
+    let p: Promise<boolean>;
+    try { p = resync(); } catch { p = Promise.resolve(false); }
+    p.then(done, () => done(false));
+  }, [openGate]);
+  const startSyncRef = useRef(startSync);
+  startSyncRef.current = startSync;
 
   const takeBatch = useCallback((b: WireBatch) => {
     const r = rtRef.current;
@@ -931,48 +1174,30 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
     applyChange(res, byOf(b));
     scheduleExpire();
     if (structural(b.ops)) scheduleOrder();
-    const base = o.baseVersion ? Date.parse(o.baseVersion) : NaN;
+    // their edits over words saved since their base were refused: tell them to catch up (once in a while)
+    if (r.replica.refused.length && me && client && !o.readOnly) {
+      const t = Date.now();
+      if (t - (r.toldStale.get(b.clientId) ?? -Infinity) >= STALE_REPLY_MS) {
+        r.toldStale.set(b.clientId, t);
+        r.conn?.send("stale", { userId: me.userId, name: me.name, color: me.color, clientId: client.clientId, to: b.clientId, version: baseOf(r, optsRef.current) });
+      }
+    }
+    const base = Date.parse(baseOf(r, optsRef.current));
     const theirs = b.baseVersion ? Date.parse(b.baseVersion) : NaN;
     if (r.replica.missing > missingBefore || (Number.isFinite(base) && Number.isFinite(theirs) && theirs > base)) o.onBehind?.();
-  }, [applyChange, byOf, scheduleExpire, scheduleOrder]);
-
-  const flushNow = useCallback(() => {
-    const r = rtRef.current;
-    if (!r) return;
-    clearTimeout(r.flushTimer);
-    r.flushTimer = undefined;
-    const o = optsRef.current;
-    if (o.readOnly || !r.conn?.live || !me || !client) return;
-    const out = r.replica.flush(o.getBlocks(), o.getTitle?.() ?? "", Date.now());
-    if (!out) return;
-    r.lastSent = Date.now();
-    const payload: WireBatch = {
-      docId: r.docId, clientId: client.clientId, userId: me.userId, name: me.name, color: me.color,
-      seq: out.seq, baseVersion: o.baseVersion ?? "", ops: out.ops, at: r.lastSent, ...(out.title !== undefined ? { title: out.title } : {}),
-    };
-    let size = 0;
-    try { size = JSON.stringify(payload).length; } catch { return; }
-    // too big for a realtime message (a huge paste): the others catch up from the save
-    if (size > MAX_BATCH_BYTES) return;
-    r.conn.send("ops", payload as unknown as Record<string, unknown>);
-    if (structural(out.ops)) scheduleOrder();
-  }, [client, me, scheduleOrder]);
-
-  const broadcast = useCallback((_ops: DocOp[]) => {
-    const r = rtRef.current;
-    if (!r || optsRef.current.readOnly) return;
-    if (r.flushTimer !== undefined) return;
-    const wait = Math.max(0, r.lastSent + DOC_OP_THROTTLE_MS - Date.now());
-    r.flushTimer = setTimeout(flushNow, wait);
-  }, [flushNow]);
+  }, [applyChange, byOf, scheduleExpire, scheduleOrder, me, client]);
 
   const sendCaret = useCallback(() => {
     const r = rtRef.current;
     if (!r || !me || !client) return;
     r.caretTimer = undefined;
+    // (an edit is on its way: the caret goes with it)
+    if (r.flushTimer !== undefined || aloneOn(r)) return;
     r.caretSentAt = Date.now();
-    r.conn?.send("caret", { userId: me.userId, name: me.name, color: me.color, clientId: client.clientId, caret: r.myCaret ?? null });
+    if (r.conn?.send("caret", { userId: me.userId, name: me.name, color: me.color, clientId: client.clientId, caret: r.myCaret ?? null })) r.caretDirty = false;
   }, [client, me]);
+  const sendCaretRef = useRef(sendCaret);
+  sendCaretRef.current = sendCaret;
   const setCaret = useCallback((caret: PresencePeer["caret"]) => {
     const r = rtRef.current;
     if (!r || optsRef.current.readOnly) return;
@@ -980,8 +1205,10 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
     const same = (prev ?? null) === (caret ?? null) || (!!prev && !!caret && prev.blockId === caret.blockId && prev.offset === caret.offset && (prev.extent ?? 0) === (caret.extent ?? 0));
     if (same) return;
     r.myCaret = caret ?? null;
+    r.caretDirty = true;
     if (!prev !== !caret) r.conn?.retrack(); // editing ↔ viewing
-    if (r.caretTimer !== undefined) return;
+    // typing: the ops batch on its way carries it; alone: nobody to tell (presence has it for a newcomer)
+    if (r.caretTimer !== undefined || r.flushTimer !== undefined || aloneOn(r)) return;
     const wait = Math.max(0, r.caretSentAt + CARET_THROTTLE_MS - Date.now());
     if (wait === 0) sendCaret();
     else r.caretTimer = setTimeout(sendCaret, wait);
@@ -1003,6 +1230,10 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
           const b = parseWireBatch(payload);
           if (!b || b.docId !== docId || b.clientId === client.clientId) return;
           if (b.color) r.colors.set(b.userId, b.color);
+          if (b.caret !== undefined) {
+            r.carets.set(b.clientId, { userId: b.userId, caret: b.caret ?? null, at: Date.now() });
+            publishPeers();
+          }
           if (r.held) { r.queue.push(b); return; }
           takeBatch(b);
         } else if (event === "caret") {
@@ -1018,11 +1249,29 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
           const p = payload as { version?: unknown; key?: unknown };
           if (!s || s.clientId === client.clientId || typeof p.version !== "string" || typeof p.key !== "string" || p.version.length > 64 || p.key.length > 32) return;
           optsRef.current.onPeerSaved?.({ version: p.version, key: p.key, by: byOf(s) });
+        } else if (event === "stale") {
+          // someone refused a batch of yours (made on an old save): catch up before anything else goes out
+          const s = parseSender(payload);
+          const p = payload as { to?: unknown; version?: unknown };
+          if (!s || s.clientId === client.clientId || p.to !== client.clientId || optsRef.current.readOnly) return;
+          const theirs = typeof p.version === "string" && p.version.length <= 64 ? Date.parse(p.version) : NaN;
+          const mine = Date.parse(baseOf(r, optsRef.current));
+          if (Number.isFinite(theirs) && Number.isFinite(mine) && theirs <= mine) return; // (caught up already)
+          r.gen++;
+          startSync();
         }
       },
       onLive: (l) => {
         setLive(l);
-        if (l && !optsRef.current.readOnly) { r.lastSent = 0; broadcast([]); }
+        if (!l) {
+          // cut off: what was sent meanwhile is lost to this copy; it catches up when the channel comes back
+          r.gen++;
+          r.synced = false;
+          clearTimeout(r.syncTimer);
+          r.syncTimer = undefined;
+          return;
+        }
+        startSync();
       },
     });
     r.conn = conn;
@@ -1033,14 +1282,17 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
       clearTimeout(r.caretTimer); r.caretTimer = undefined;
       clearTimeout(r.expireTimer); r.expireTimer = undefined;
       clearTimeout(r.orderTimer); r.orderTimer = undefined;
+      clearTimeout(r.syncTimer); r.syncTimer = undefined;
       conn.leave();
       pconn?.leave();
       r.conn = null;
       r.entries = [];
+      r.synced = false;
+      r.gen++; // (a catch-up under way spans the switch to a new channel: it goes again)
       setPeers(NO_PEERS);
       setLive(false);
     };
-  }, [client, docId, me, projectId, publishPeers, takeBatch, takeOrder, flushNow, broadcast, byOf]);
+  }, [client, docId, me, projectId, publishPeers, takeBatch, takeOrder, flushNow, startSync, byOf]);
 
   // a read-only viewer who becomes an editor (or back) says so
   useEffect(() => { rtRef.current?.conn?.retrack(); }, [readOnly]);
@@ -1061,23 +1313,28 @@ export function useDocCollab(docId: string | null, opts: DocCollabOptions): DocC
     setUnmerged(0);
   }, []);
   const reset = useCallback((blocks: DocBlock[], title: string) => { rtRef.current?.replica.reset(blocks, title); setUnmerged(0); }, []);
-  const remember = useCallback((blocks: DocBlock[], title: string) => { rtRef.current?.replica.remember(blocks, title); }, []);
+  const remember = useCallback((blocks: DocBlock[], title: string, version?: string | null) => { rtRef.current?.replica.remember(blocks, title, version); }, []);
+  const settleSaved = useCallback((o?: { keepOwn?: boolean }) => {
+    const r = rtRef.current;
+    if (!r || optsRef.current.readOnly) return;
+    r.replica.settleSaved(optsRef.current.getBlocks(), optsRef.current.getTitle?.() ?? "", o);
+  }, []);
   const sendSaved = useCallback((version: string, key: string) => {
     const r = rtRef.current;
-    if (!r || !me || !client || optsRef.current.readOnly) return;
+    if (!r || !me || !client || optsRef.current.readOnly || aloneOn(r)) return;
     r.conn?.send("saved", { userId: me.userId, name: me.name, color: me.color, clientId: client.clientId, version, key });
   }, [client, me]);
 
   return useMemo<DocCollab>(() => (rt ? {
-    peers, broadcast, setCaret, unmerged, live, flushNow, hold, release, absorb, reset, remember, sendSaved,
+    peers, broadcast, setCaret, unmerged, live, flushNow, hold, release, absorb, reset, remember, settleSaved, sendSaved,
     seen: (id, b) => rt.replica.seen(id, b),
     seenTitle: (t) => rt.replica.seenTitle(t),
     remoteAuthored: (id) => rt.replica.remoteAuthored(id),
     unsent: (id) => rt.replica.unsent(id, optsRef.current.getBlocks()),
   } : {
     peers: NO_PEERS, broadcast: NOOP, setCaret: NOOP, unmerged: 0, live: false, flushNow: NOOP, hold: NOOP, release: NOOP, absorb: NOOP,
-    reset: NOOP, remember: NOOP, sendSaved: NOOP, seen: FALSE, seenTitle: FALSE, remoteAuthored: FALSE, unsent: FALSE,
-  }), [rt, peers, broadcast, setCaret, unmerged, live, flushNow, hold, release, absorb, reset, remember, sendSaved]);
+    reset: NOOP, remember: NOOP, settleSaved: NOOP, sendSaved: NOOP, seen: FALSE, seenTitle: FALSE, remoteAuthored: FALSE, unsent: FALSE,
+  }), [rt, peers, broadcast, setCaret, unmerged, live, flushNow, hold, release, absorb, reset, remember, settleSaved, sendSaved]);
 }
 
 /** "Sana is viewing" / "Sana and Theo are viewing" / "Sana, Theo and 2 others are viewing" — re-exported above. */

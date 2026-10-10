@@ -4,8 +4,8 @@
 import { describe, expect, it } from "vitest";
 import type { DocBlock, DocOp, DocOpBatch } from "../data/types";
 import {
-  applyDocOps, blockSig, diffDocBlocks, docSig, DocReplica, hashText, mapTextOffset, mergeDocVersions, mergeRemoteBatch, parseWireBatch,
-  presenceKey, presenceSentence,
+  applyDocOps, blockSig, diffDocBlocks, docOpThrottleMs, docSig, DocReplica, hashText, mapTextOffset, mergeDocVersions, mergeRemoteBatch, parseWireBatch,
+  presenceKey, presenceSentence, type WireBatch,
 } from "./presence";
 
 const p = (id: string, text: string, extra: Partial<DocBlock> = {}): DocBlock => ({ id, type: "p", spans: text ? [{ text }] : [], ...extra });
@@ -147,6 +147,20 @@ describe("the wire", () => {
     expect(b.ops[0]).toEqual({ t: "update", block: { id: "b1", type: "p", spans: [{ text: "click" }] } });
     expect(parseWireBatch({ ...ok, title: "A\ntitle" })!.title).toBe("A title");
   });
+  it("what each block held before (prev) and the caret ride along; a malformed one drops the batch", () => {
+    const b = parseWireBatch({ ...ok, prev: { b1: "1x2y3z" }, caret: { blockId: "b1", offset: 2 } })!;
+    expect(b.prev).toEqual({ b1: "1x2y3z" });
+    expect(b.caret).toEqual({ blockId: "b1", offset: 2 });
+    expect(parseWireBatch({ ...ok, caret: null })!.caret).toBeNull();
+    expect(parseWireBatch({ ...ok, caret: { blockId: "../x", offset: 1 } })!.caret).toBeNull();
+    expect(parseWireBatch({ ...ok, prev: ["1x"] })).toBeNull();
+    expect(parseWireBatch({ ...ok, prev: { b1: "NOT A HASH" } })).toBeNull();
+    expect(parseWireBatch({ ...ok, prev: { "bad id!": "1x" } })).toBeNull();
+    // (a block id is only ever a key: "__proto__" is just a name)
+    const proto = parseWireBatch(JSON.parse(JSON.stringify(ok).replace('"at":1', '"at":1,"prev":{"__proto__":"1x"}')))!;
+    expect(Object.getPrototypeOf(proto.prev)).toBeNull();
+    expect(proto.prev!["__proto__"]).toBe("1x");
+  });
 });
 
 describe("small things", () => {
@@ -250,5 +264,89 @@ describe("clocks from the wire", () => {
     expect(r.receive(far, [A], "Doc", now)).toBeNull();
     r.observe(now + 2 * 86_400_000);
     expect(r.clock).toBeLessThan(now + 86_400_000);
+  });
+});
+
+describe("a batch made on an older save (its sender was cut off)", () => {
+  const V0 = "2026-10-09T09:00:00.000Z", V1 = "2026-10-09T09:01:00.000Z";
+  const sig = (b: DocBlock) => hashText(blockSig(b));
+  const from = (ops: WireBatch["ops"], prev: Record<string, string>, baseVersion = V0, seq = 5000): WireBatch =>
+    ({ docId: "d", clientId: "c-sana", userId: "u-sana", name: "Sana", seq, baseVersion, ops, prev, at: 0 });
+  /** Daniel: loaded at V0, wrote "alpha, Daniel's careful wording" and saved it as V1 */
+  const daniel = () => {
+    const r = new DocReplica("c-dan", [A, B, C], "Doc", { version: V0 });
+    const mine = [p("a", "alpha, Daniel's careful wording"), B, C];
+    r.flush(mine, "Doc", 1000);
+    r.remember(mine, "Doc", V1);
+    return { r, mine };
+  };
+  it("its edit over words saved since, that it never had, is refused; its other edits come in", () => {
+    const { r, mine } = daniel();
+    const res = r.receive(from([{ t: "update", block: p("a", "Alpha") }, { t: "update", block: p("b", "bravo, Sana's") }], { a: sig(A), b: sig(B) }), mine, "Doc", 2000)!;
+    expect(r.refused).toEqual(["a"]);
+    expect(texts(res.blocks)).toBe("a:alpha, Daniel's careful wording | b:bravo, Sana's | c:charlie");
+    // nor may it delete them
+    r.receive(from([{ t: "delete", blockId: "a" }], { a: sig(A) }, V0, 5001), res.blocks, "Doc", 2001);
+    expect(r.refused).toEqual(["a"]);
+  });
+  it("…but an edit made on the saved words (it had them live) is ordinary typing: it comes in", () => {
+    const { r, mine } = daniel();
+    const res = r.receive(from([{ t: "update", block: p("a", "alpha, Daniel's careful wording, and Sana's") }], { a: sig(mine[0]) }), mine, "Doc", 2000)!;
+    expect(r.refused).toEqual([]);
+    expect(texts(res.blocks)).toContain("a:alpha, Daniel's careful wording, and Sana's");
+    // as do words newer than the save (Daniel typed on after it; she built on that)
+    const later = [p("a", "alpha, Daniel's careful wording. More"), B, C];
+    r.flush(later, "Doc", 2500);
+    r.receive(from([{ t: "update", block: p("a", "alpha, Daniel's careful wording. More, Sana's") }], { a: sig(later[0]) }, V0, 5002), later, "Doc", 3000);
+    expect(r.refused).toEqual([]);
+  });
+  it("on the same save (or with no prev: an older client) it's live typing as ever — last writer wins", () => {
+    const { r, mine } = daniel();
+    r.receive(from([{ t: "update", block: p("a", "Alpha") }], { a: sig(A) }, V1), mine, "Doc", 2000);
+    expect(r.refused).toEqual([]);
+    const { r: r2, mine: m2 } = daniel();
+    r2.receive({ ...from([{ t: "update", block: p("a", "Alpha") }], {}), prev: undefined }, m2, "Doc", 2000);
+    expect(r2.refused).toEqual([]);
+  });
+  it("what you send names what each block held before", () => {
+    const r = new DocReplica("c-a", [A, B, C], "Doc", { version: V0 });
+    const out = r.flush([p("a", "alpha!"), C], "Doc", 1000)!;
+    expect(out.prev).toEqual({ a: sig(A), b: sig(B) });
+    expect(r.baseVersion).toBe(V0);
+  });
+});
+
+describe("settling what the server already holds", () => {
+  const V0 = "2026-10-09T09:00:00.000Z", V1 = "2026-10-09T09:01:00.000Z";
+  it("unsent edits that are in the save count as shared (they don't go out); the rest still does", () => {
+    const r = new DocReplica("c-a", [A, B, C], "Doc", { version: V0 });
+    // typed while cut off; the first two lines were saved meanwhile
+    const cur = [p("a", "alpha, saved"), p("b", "bravo, saved"), p("c", "charlie, not yet")];
+    r.remember([cur[0], cur[1], C], "Doc", V1);
+    expect(r.settleSaved(cur, "Doc")).toBe(true);
+    expect(r.flush(cur, "Doc", 2000)!.ops).toEqual([{ t: "update", block: p("c", "charlie, not yet") }]);
+  });
+  it("Reload: where the others show your words (sent live), the saved copy goes out to them; elsewhere it settles", () => {
+    const r = new DocReplica("c-a", [A, B, C], "Doc", { version: V0 });
+    r.flush([p("a", "mine, sent"), B, C], "Doc", 1000);
+    // the saved copy (theirs) changed b too; you reload it
+    const theirs = [A, p("b", "bravo, theirs"), C];
+    r.remember(theirs, "Doc", V1);
+    r.settleSaved(theirs, "Doc", { keepOwn: true });
+    expect(r.flush(theirs, "Doc", 2000)!.ops).toEqual([{ t: "update", block: A }]);
+  });
+  it("nothing to settle without a known save", () => {
+    const r = new DocReplica("c-a", [A], "Doc");
+    expect(r.settleSaved([p("a", "x")], "Doc")).toBe(false);
+  });
+});
+
+describe("rates", () => {
+  it("ops go out every 150 ms with one other tab, slower as more join", () => {
+    expect(docOpThrottleMs(null)).toBe(150);
+    expect(docOpThrottleMs(1)).toBe(150);
+    expect(docOpThrottleMs(2)).toBe(300);
+    expect(docOpThrottleMs(3)).toBe(500);
+    expect(docOpThrottleMs(9)).toBe(500);
   });
 });

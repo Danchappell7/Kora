@@ -34,8 +34,12 @@
    check — but when someone else's save lands (the realtime ping, a
    conflict answer, a "saved" notice), the editor merges it three ways
    (mergeDocVersions) and the banner only shows for a block both sides
-   changed without seeing each other's words. Alone (demo, offline, no
-   realtime) it's the editor it always was.
+   changed without seeing each other's words. Joining, and coming back
+   after the channel dropped, the editor catches up first (resync: fetch
+   and merge) and nothing typed meanwhile goes out live before that, nor
+   while the banner is up — so words typed on an old copy never write
+   over saved ones unseen. Alone (demo, offline, no realtime) it's the
+   editor it always was.
    ============================================================ */
 import {
   forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
@@ -378,7 +382,9 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
       };
       h.past = h.past.map(carry);
       h.future = h.future.map(carry);
-      h.lastKind = "";
+      // typing on where they didn't touch stays one undo step; their change to the line you're typing in starts a new one
+      const touched = (o: (typeof ops)[number]) => (o.t === "insert" || o.t === "update" ? o.block.id : o.blockId) === h.lastBlock;
+      if (h.lastKind === "title" ? titleMoved : ops.some(touched)) h.lastKind = "";
     }
     if (titleMoved && active && active === titleRef.current) {
       const t = titleRef.current;
@@ -417,9 +423,16 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     projectId: doc.projectId,
     onPeerSaved: (p) => live.current.peerSaved(p),
     onBehind: () => live.current.catchUp(),
+    resync: () => live.current.resync(),
+    // (the banner is up: your words wait until it's answered)
+    canSend: () => !saver.held && !saver.gone,
     onConflicts: (_ids, by) => sayOnce(`clash:${by.userId}`, `${shortNames([by])[0]} changed the line you were writing at the same moment. Their version is in.`, 30_000),
   });
   collabRef.current = collab;
+
+  /** a copy of the server's newer than the one this editor is based on (a fetch that comes back late can hold an
+   *  older one than a save that has landed since: that's never merged — it would wind the base back) */
+  const newer = (theirs: ProjectDoc) => new Date(theirs.updatedAt).getTime() > new Date(saver.base).getTime();
 
   /** Someone else's save, merged three ways with what's here (the base: the copy the saver's base is). Their
    *  changes come in; yours stay and save on top of their copy. The banner only for blocks both sides changed
@@ -442,7 +455,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     saver.adopt(theirs.updatedAt);
     contentRef.current = mine;
     savedRef.current = theirsC;
-    c?.remember(theirsC.blocks, theirsC.title);
+    c?.remember(theirsC.blocks, theirsC.title, theirs.updatedAt);
     // …and the merge goes on screen as their change
     const moved = docSig(mine.title, mine.blocks) !== docSig(merged.title, merged.blocks);
     if (moved) {
@@ -452,10 +465,28 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
       applyRemote(merged, r.theirsChanged.map((blockId) => ({ blockId, by })));
       if (!wasDirty) announce(`Updated with ${name}'s changes.`);
     }
-    // what's yours still goes, on their copy
+    // what's yours still goes, on their copy (and live, now the banner's down)
     if (editable && docSig(merged.title, merged.blocks) !== docSig(theirsC.title, theirsC.blocks)) saver.touch();
     setConflict(null);
+    c?.broadcast([]);
     return moved ? "merged" : "same";
+  };
+
+  /** Catch up with the server's copy before anything typed here goes out live: when the channel comes up (joining,
+   *  and back after a drop — what was sent meanwhile isn't replayed) and when someone refused a batch of yours made
+   *  on an old save. Their saved changes merge in three ways; your words that clash with saved ones you never saw
+   *  put the banner up (and wait). True once this copy knows what the server holds; false: try again shortly. */
+  const resync = async (): Promise<boolean> => {
+    if (closedRef.current) return false;
+    if (saver.gone) return true;
+    // (a save under way answers with the server's copy, or a conflict to merge)
+    if (saver.saving) await saver.flush();
+    let theirs: ProjectDoc | null;
+    try { theirs = await getProjectDoc(doc.id); } catch { return false; }
+    if (closedRef.current) return false;
+    if (!theirs || saver.saving) return true;
+    if (newer(theirs)) live.current.reconcile(theirs);
+    return true;
   };
 
   /** fetch the server's copy and merge it (a batch made on a newer save, blocks we've never had, a "saved" notice
@@ -469,7 +500,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
       k.busy = true;
       getProjectDoc(doc.id).then((theirs) => {
         if (!theirs || closedRef.current || saver.saving) return;
-        if (new Date(theirs.updatedAt).getTime() === new Date(saver.base).getTime()) return;
+        if (!newer(theirs)) return;
         live.current.reconcile(theirs);
       }, () => { /* the next save will tell */ }).finally(() => { k.busy = false; });
     }, 400);
@@ -483,16 +514,16 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     if (hashText(docSig(cur.title, cur.blocks)) !== key) { catchUp(); return; }
     saver.adopt(version);
     savedRef.current = cur;
-    collabRef.current?.remember(cur.blocks, cur.title);
+    collabRef.current?.remember(cur.blocks, cur.title, version);
     setConflict(null);
   };
 
-  const live = useRef({ reconcile, catchUp, peerSaved });
-  live.current = { reconcile, catchUp, peerSaved };
+  const live = useRef({ reconcile, catchUp, peerSaved, resync });
+  live.current = { reconcile, catchUp, peerSaved, resync };
   liveCb.current = {
     saved: (d) => {
       savedRef.current = { title: d.title, blocks: d.body };
-      collabRef.current?.remember(d.body, d.title);
+      collabRef.current?.remember(d.body, d.title, d.updatedAt);
       collabRef.current?.sendSaved(d.updatedAt, hashText(docSig(d.title, d.body)));
     },
     // someone saved first: merge theirs, and save what's yours on top straight away
@@ -531,11 +562,10 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     const off = subscribeProjectDocs(doc.projectId, (c) => {
       if (!alive || c.docId !== doc.id) return;
       if (c.type === "DELETE") { setGone(true); saver.markGone(); return; }
-      if (c.updatedBy === currentUserId || (c.updatedAt && new Date(c.updatedAt).getTime() === new Date(saver.base).getTime())) return;
+      if (c.updatedBy === currentUserId || (c.updatedAt && new Date(c.updatedAt).getTime() <= new Date(saver.base).getTime())) return;
       if (saver.saving) return; // its answer will say
       getProjectDoc(doc.id).then((theirs) => {
-        if (!alive || !theirs) return;
-        if (new Date(theirs.updatedAt).getTime() === new Date(saver.base).getTime()) return;
+        if (!alive || !theirs || !newer(theirs)) return;
         // nothing unsaved here: their copy comes in quietly, your caret where it was; unsaved words: merged with
         // theirs (the banner only when the same lines changed on both sides)
         live.current.reconcile(theirs);
@@ -1346,8 +1376,10 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
     history.current = { past: [], future: [], lastKind: "", lastBlock: "", lastAt: 0 };
     saver.adopt(conflict.updatedAt);
     savedRef.current = next;
-    collabRef.current?.remember(next.blocks, next.title);
-    // anyone here live still has your words: their version goes out to them too
+    collabRef.current?.remember(next.blocks, next.title, conflict.updatedAt);
+    // the others have their version from the save (and maybe newer words since): only where they show your words,
+    // sent live before, does it go out to them too
+    collabRef.current?.settleSaved({ keepOwn: true });
     collabRef.current?.broadcast([]);
     setConflict(null);
     announce("Showing their version.");
@@ -1355,6 +1387,8 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   const keepMine = () => {
     if (!conflict) return;
     const at = conflict.updatedAt;
+    // (yours goes on top of their copy: what goes out live is made on it, as the save is)
+    collabRef.current?.remember(ensureEditable(conflict.body), conflict.title, at);
     setConflict(null);
     // (a version of its own: the other copy stays in Version history, even when it was you in another tab)
     void saver.keepMine(at).then(() => { if (saver.state === "saved") announce("Saved your version. The other one is in Version history."); });

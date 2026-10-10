@@ -1,7 +1,8 @@
 /* The presence hub and its hooks over an in-memory Realtime: who's here (never you, one face per person),
    leaving, fading, the shared channel, the project channel's "who has which task", typing, and being alone. */
-import { act, renderHook } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { act, render, renderHook } from "@testing-library/react";
+import { memo, type ReactNode } from "react";
+import type { PresencePeer } from "../../data/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPresenceClient, parseCaret, parseWirePresence, peerHue, PRESENCE_HEARTBEAT_MS, PRESENCE_LEAVE_GRACE_MS, PRESENCE_STALE_MS,
@@ -118,6 +119,31 @@ describe("usePresence", () => {
     expect(h.result.current.peers.map((p) => p.userId)).toEqual(["u-dan"]);
   });
 
+  it("a connection knows how many other tabs are there — faded ones too (they still receive) — once the channel has said", async () => {
+    const key = presenceKey("doc", "d9");
+    const silent: PresenceTransport = {
+      open(topic, h) {
+        const real = bus.transport().open(topic, h);
+        let once = false;
+        return { ...real, track: (s) => { if (!once) { once = true; real.track(s); } } };
+      },
+    };
+    const me = tab("me");
+    const conn = me.join(key, { me: sana, contribute: () => ({ state: "viewing" }) });
+    expect(conn.others).toBeNull(); // (not up yet)
+    await settle();
+    expect(conn.others).toBe(0);
+    const ghost = createPresenceClient(silent, { clientId: "ghost", visibility: false });
+    ghost.join(key, { me: theo, contribute: () => ({ state: "viewing" }) });
+    await settle();
+    expect(conn.others).toBe(1);
+    // its beat stops: it fades from the faces, but it's still on the channel
+    for (let t = 0; t < PRESENCE_STALE_MS + PRESENCE_HEARTBEAT_MS; t += PRESENCE_HEARTBEAT_MS / 3) await settle(PRESENCE_HEARTBEAT_MS / 3);
+    expect(conn.others).toBe(1);
+    conn.leave();
+    expect(conn.others).toBeNull();
+  });
+
   it("one channel per object per tab, shared by every hook; a quick close and re-open keeps it", async () => {
     const a = tab("one");
     const key = presenceKey("task", "t3");
@@ -157,6 +183,33 @@ describe("the project channel: who has which task open", () => {
     expect(list.result.current.viewersOf("t1")).toEqual([]);
     expect(list.result.current.peers.map((p) => p.userId).sort()).toEqual(["u-sana", "u-theo"]);
   });
+  it("a heartbeat that changes nothing visible re-renders neither the list nor its rows; someone else's task leaves a row alone", async () => {
+    const counts = { list: 0, t1: 0, t2: 0 };
+    const Row = memo(function Row({ id, viewers }: { id: string; viewers: PresencePeer[] }) {
+      counts[id as "t1" | "t2"]++;
+      return <li>{id}:{viewers.length}</li>;
+    });
+    function List() {
+      counts.list++;
+      const { viewersOf } = useProjectPresence("p9", daniel, { watchOnly: true });
+      return <ul>{["t1", "t2"].map((id) => <Row key={id} id={id} viewers={viewersOf(id)} />)}</ul>;
+    }
+    render(<PresenceContext.Provider value={tab("dan")}><List /></PresenceContext.Provider>);
+    const theoOn = (taskId: string) => renderHook(() => usePresence(presenceKey("task", taskId), theo, { projectId: "p9" }), { wrapper: wrap(tab("theo")) });
+    theoOn("t1");
+    await settle(10);
+    await settle(1000); // (everyone's first track has gone round)
+    const before = { ...counts };
+    for (let i = 0; i < 4; i++) await settle(PRESENCE_HEARTBEAT_MS);
+    expect(counts).toEqual(before);
+    // Sana opens t2: the list and t2's row change; t1's row (Theo, still) doesn't
+    renderHook(() => usePresence(presenceKey("task", "t2"), sana, { projectId: "p9" }), { wrapper: wrap(tab("sana")) });
+    await settle(10);
+    expect(counts.list).toBeGreaterThan(before.list);
+    expect(counts.t2).toBeGreaterThan(before.t2);
+    expect(counts.t1).toBe(before.t1);
+  });
+
   it("rows elsewhere (My tasks, Today) watch without saying you're in the project", async () => {
     const panel = renderHook(() => useProjectPresence("p3", sana), { wrapper: wrap(tab("p3-sana")) });
     const rows = renderHook(() => useProjectPresence("p3", theo, { watchOnly: true }), { wrapper: wrap(tab("p3-theo")) });

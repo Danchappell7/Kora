@@ -31,8 +31,10 @@ export const PRESENCE_HEARTBEAT_MS = 15_000;
 export const PRESENCE_STALE_MS = 45_000;
 export const TYPING_THROTTLE_MS = 1_500;
 export const TYPING_TTL_MS = 4_000;
+/** doc ops go out at most this often with one other tab in the doc (more people: slower — lib/presence docOpThrottleMs) */
 export const DOC_OP_THROTTLE_MS = 150;
-export const CARET_THROTTLE_MS = 100;
+/** a caret that moves without an edit (while typing it rides in the ops batch) */
+export const CARET_THROTTLE_MS = 250;
 /** a channel nobody uses any more closes after this (a re-open inside it reuses the channel) */
 export const PRESENCE_LEAVE_GRACE_MS = 600;
 
@@ -252,6 +254,9 @@ export interface PresenceConn {
   retrack(): void;
   leave(): void;
   readonly live: boolean;
+  /** how many other tabs are on the channel now — faded ones too (a background tab still receives); null until
+   *  the channel has said who's there since it came up */
+  readonly others: number | null;
 }
 export interface PresenceClient {
   readonly clientId: string;
@@ -272,6 +277,8 @@ interface Topic {
   tracked: boolean;
   /** the client ids last handed to the hooks as fresh */
   shown: string;
+  /** a presence sync arrived since the channel came up (entries is who's there) */
+  heard: boolean;
 }
 
 const RANK: Record<PeerState, number> = { viewing: 1, editing: 2, typing: 3 };
@@ -406,7 +413,7 @@ export function createPresenceClient(
     if (t.live === live) return;
     t.live = live;
     if (!live) {
-      t.tracked = false; t.lastTrack = "";
+      t.tracked = false; t.lastTrack = ""; t.heard = false;
       if (t.entries.size) { t.entries.clear(); t.sigs.clear(); deliver(t); }
     }
     for (const s of [...t.subs]) { try { s.onLive?.(live); } catch { /* ignore */ } }
@@ -421,6 +428,7 @@ export function createPresenceClient(
           self: clientId,
           onSync: (raw) => {
             if (topics.get(t.key) !== t) return;
+            t.heard = true;
             const seen = new Set<string>();
             let changed = false;
             const at = now();
@@ -475,7 +483,7 @@ export function createPresenceClient(
     join(key, sub) {
       let t = topics.get(key);
       if (!t) {
-        t = { key, subs: new Set(), ch: null, live: false, refused: false, entries: new Map(), sigs: new Map(), leaveTimer: undefined, trackQueued: false, lastTrack: "", tracked: false, shown: "" };
+        t = { key, subs: new Set(), ch: null, live: false, refused: false, entries: new Map(), sigs: new Map(), leaveTimer: undefined, trackQueued: false, lastTrack: "", tracked: false, shown: "", heard: false };
         topics.set(key, t);
         t.subs.add(sub);
         open(t);
@@ -507,6 +515,7 @@ export function createPresenceClient(
           topic.leaveTimer = setTimeout(() => { topic.leaveTimer = undefined; if (!topic.subs.size) close(topic); }, PRESENCE_LEAVE_GRACE_MS);
         },
         get live() { return !left && topic.live; },
+        get others() { return !left && topic.live && topic.heard ? topic.entries.size : null; },
       };
     },
   };
@@ -563,6 +572,9 @@ const peersKey = (list: readonly PresencePeer[]) => list.map((p) => `${p.userId}
 export function samePeers(a: readonly PresencePeer[], b: readonly PresencePeer[]): boolean {
   return a === b || (a.length === b.length && peersKey(a) === peersKey(b));
 }
+
+/** what a project's rows and header show of its entries (a heartbeat that only moves seenAt changes none of it) */
+const entriesKey = (list: readonly PeerEntry[]) => list.map((e) => `${e.clientId}|${e.userId}|${e.name}|${e.color}|${e.state}|${e.taskId ?? ""}|${e.docId ?? ""}`).join(",");
 
 const meKeyOf = (me: PresenceMe | null | undefined) => (me ? `${me.userId}\u0000${me.name}\u0000${me.color}` : "");
 /** the same PresenceMe object while its fields stay the same (callers often build it inline) */
@@ -624,32 +636,46 @@ export function useProjectPresence(projectId: string | null, me: PresenceMe | nu
   taskRef.current = opts?.taskId ?? null;
   const watchOnly = !!opts?.watchOnly;
   const conn = useRef<PresenceConn | null>(null);
+  const shownKey = useRef("");
   useEffect(() => {
-    if (!client || !projectId || !stableMe) { setEntries([]); return; }
+    if (!client || !projectId || !stableMe) { shownKey.current = ""; setEntries([]); return; }
     const c = client.join(presenceKey("project", projectId), {
       me: stableMe,
       contribute: watchOnly ? undefined : () => ({ state: "viewing", taskId: taskRef.current }),
-      onPeers: (list) => setEntries(list),
+      // (each peer's heartbeat delivers again: only a change the rows can show re-renders anything)
+      onPeers: (list) => {
+        const k = entriesKey(list);
+        if (k === shownKey.current) return;
+        shownKey.current = k;
+        setEntries(list);
+      },
     });
     conn.current = c;
-    return () => { c.leave(); conn.current = null; setEntries([]); };
+    return () => { c.leave(); conn.current = null; shownKey.current = ""; setEntries([]); };
   }, [client, projectId, stableMe, watchOnly]);
   useEffect(() => { conn.current?.retrack(); }, [opts?.taskId]);
   const peersRef = useRef<PresencePeer[]>(NO_PEERS);
+  // (a row whose viewers didn't change keeps the same array: memoised rows don't re-render for someone else's)
+  const groupsRef = useRef({ tasks: new Map<string, PresencePeer[]>(), docs: new Map<string, PresencePeer[]>() });
   return useMemo(() => {
     const uid = stableMe?.userId;
     const all = toPeers(entries, uid);
     const peers = samePeers(peersRef.current, all) ? peersRef.current : all;
     peersRef.current = peers;
-    const group = (pick: (e: PeerEntry) => string | null | undefined) => {
+    const group = (pick: (e: PeerEntry) => string | null | undefined, before: Map<string, PresencePeer[]>) => {
       const m = new Map<string, PeerEntry[]>();
       for (const e of entries) { const k = pick(e); if (k) m.set(k, [...(m.get(k) ?? []), e]); }
       const out = new Map<string, PresencePeer[]>();
-      for (const [k, list] of m) out.set(k, toPeers(list, uid));
+      for (const [k, list] of m) {
+        const next = toPeers(list, uid);
+        const old = before.get(k);
+        out.set(k, old && samePeers(old, next) ? old : next);
+      }
       return out;
     };
-    const tasks = group((e) => e.taskId);
-    const docs = group((e) => e.docId);
+    const tasks = group((e) => e.taskId, groupsRef.current.tasks);
+    const docs = group((e) => e.docId, groupsRef.current.docs);
+    groupsRef.current = { tasks, docs };
     return {
       peers,
       viewersOf: (taskId: string) => tasks.get(taskId) ?? NO_PEERS,

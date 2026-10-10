@@ -18,7 +18,7 @@ the docs chunk), `src/components/presence/*` (`PresenceAvatars`,
 | Channel | Presence (`track`) | Broadcast events |
 |---|---|---|
 | `kanbo:task:<uuid>` | everyone with the task panel open (`state` viewing) | `typing` `{userId, name, color, clientId, on}` — at most one per 1.5 s; a typer drops off after 4 s of silence |
-| `kanbo:doc:<uuid>` | everyone with the doc open (`state` viewing / editing, `caret`, `clk`) | `ops` (a `DocOpBatch` + `color`, `title`), `caret`, `saved` `{version, key}`, `order` `{ids}` |
+| `kanbo:doc:<uuid>` | everyone with the doc open (`state` viewing / editing, `caret`, `clk`) | `ops` (a `DocOpBatch` + `color`, `title`, the sender's `caret`, and `prev`: a hash of what each updated or deleted block held before), `caret`, `saved` `{version, key}`, `order` `{ids}`, `stale` `{to, version}` |
 | `kanbo:project:<uuid>` | the project page, and every task panel / doc of the project (`taskId` / `docId` they have open) | none |
 
 Each tab tracks one object per channel —
@@ -33,8 +33,12 @@ a stored body, so links stay http(s)/mailto).
 
 * Local edits become block operations (`insert` / `update` / `delete` /
   `move`) by diffing the editor against the shared copy, sent at most every
-  150 ms (carets every 100 ms). A batch over 200 kB (a huge paste) isn't sent:
-  the others get it from the save.
+  150 ms with one other tab in the doc, 300 ms with two, 500 ms with three or
+  more. While you type, your caret rides in the batch; it goes on its own
+  (at most every 250 ms) only when it moves without an edit. With no other
+  tab on the channel nothing is sent at all (a background tab counts: it
+  still receives). A batch over 200 kB (a huge paste) isn't sent: the others
+  get it from the save.
 * Every write is stamped `[n, clientId]` (`n` a hybrid logical clock, ahead of
   every stamp seen and published in presence). Content and position are
   separate last-writer-wins registers per block, so different blocks never
@@ -56,90 +60,88 @@ a stored body, so links stay http(s)/mailto).
   conflict banner shows only for a block both sides changed **without seeing
   each other's words** (one of you offline, say). A `saved` notice whose hash
   matches the screen just moves the base (no fetch, nothing to save).
+* Cut off and back. Realtime doesn't replay broadcasts, so a tab whose
+  channel dropped (wifi, a sleeping laptop) — or one that has just joined —
+  has missed what was sent meanwhile. Nothing it typed goes out live until
+  it has caught up with the server's copy (fetch, then the three-way merge:
+  the banner if its words clash with saved ones it never saw). Edits the
+  server already holds (saved while it was cut off) then count as shared and
+  are never sent again over newer words; only what's left goes out. Nothing
+  goes out while the conflict banner is up; Reload sends the saved copy only
+  where the others show your words, Keep mine sends yours on top of theirs.
+  For a few seconds after catching up a tab takes the others' block order
+  rather than imposing its own (a move made while it was away arrives with
+  its maker's save).
+* Belt and braces: a batch made on an older save than yours never overwrites
+  words saved since that its sender hadn't seen. Each batch names, per
+  block, a hash of the content its edit was made on (`prev`); if that's
+  older here than the saved content, the edit (or delete) is refused, the
+  rest of the batch applies, and the sender is told (`stale`) to catch up —
+  where the banner shows if they clash.
 * Undo only takes back your own edits: others' changes are carried into every
-  undo step.
+  undo step, and typing on in a line they didn't touch stays one undo step.
+* Version history: 0048 keeps one version per 10 minutes of a doc's editing
+  whoever saves (it names who saved it last), so people writing together —
+  who autosave in turn — don't push the older history out of the last 50.
+  A restore or Keep mine is still a version of its own.
 * Alone (demo without its script, offline, a refused channel) the editor is
   exactly what it was, with the three-way merge on top.
 
 Convergence is tested with a seeded fuzz (`src/lib/presence.fuzz.test.ts`):
 2–5 people, random inserts / deletes / moves / edits / titles, every delivery
-interleaving Realtime allows; every copy ends identical.
+interleaving Realtime allows; every copy ends identical. Another fuzz cuts
+one editor off while the others write and save, then brings it back (and, in
+a race variant, lets its stale batch out before it catches up): everyone
+converges, a saved block it didn't touch ends as saved, and every saved block
+it did touch was a conflict it answered (Reload or Keep mine) — never a silent
+overwrite.
 
-## Database: Realtime Authorization (append to 0048)
+## Message budget
+
+What goes over Realtime for one doc (presence heartbeats aside: one per tab
+per channel every 15 s):
+
+| Who's in the doc | Sent per second | Delivered per second |
+|---|---|---|
+| One person typing, alone | 0 | 0 |
+| Two, both typing | ≈ 13 (6.7 each) | ≈ 13 |
+| Three, all typing | ≈ 10 (3.3 each) | ≈ 20 |
+| Five, all typing | ≈ 10 (2 each) | ≈ 40 |
+| Anyone moving the caret without typing | ≤ 4 each | × the others |
+
+(Before this, every typist sent ≈ 17 a second — ops every 150 ms plus a caret
+every 100 ms — whatever the company: three typists were ≈ 50 sent and 100
+delivered a second.) These are worst cases — people type in bursts — and
+task-comment typing adds at most one message per typist every 1.5 s.
+
+Supabase limits Realtime messages per second per project, by plan, and
+counts a broadcast both when it's sent and for each client it reaches (at
+the time of writing: 100 a second on Free, 500 on Pro, 2,500 on Team —
+check the current figures for this project's plan on the dashboard). On
+Pro, that's room for a dozen docs with three people all typing flat out at
+once, alongside everything else the app streams (task and comment changes).
+If usage nears the limit, the first lever is `docOpThrottleMs` in
+`src/lib/presence.ts`.
+
+## Database: Realtime Authorization (0048, section 15)
 
 The app joins these channels as **private** channels, so Realtime asks the
-policies below on `realtime.messages` when someone joins (and when their token
-refreshes). Without them every join is refused and presence quietly stays off
-(one console note). Read = see who's there and receive; write = `presence`
-(say you're there) or `broadcast` (typing on a task; edits, carets, "saved"
-and the order check on a doc; nothing on a project). Guests read docs live
-and show as there, but never send edits; an archived doc sends nothing;
-suspended or unapproved people get nothing. Append it to
-`0048_ux_wave.sql` just before `-- ---------- done: record it ----------`, and
-regenerate the paste copy.
+policies on `realtime.messages` when someone joins (and when their token
+refreshes). They're in `supabase/migrations/0048_ux_wave.sql`, section 15:
+`public.kanbo_realtime_allowed(topic, extension, write)` (security definer;
+anon can't call it) and the policies "kanbo presence: read" (select) and
+"kanbo presence: write" (insert). Without them every join is refused and
+presence quietly stays off (one console note) — 0048's VERIFY has a
+`live_presence` column for exactly this. Read = see who's there and
+receive; write = `presence` (say you're there) or `broadcast` (typing on a
+task; edits, carets, "saved", "stale" and the order check on a doc; nothing
+on a project). Guests read docs live and show as there, but never send
+edits; an archived doc sends nothing; suspended or unapproved people get
+nothing. Where Realtime has no Authorization (no `realtime.messages`) the
+section skips the policies.
 
-```sql
--- ---------- 15. live presence: who may use the kanbo:* Realtime channels (u5) ----------
--- Presence rides Supabase Realtime on PRIVATE channels, one per object: "kanbo:task:<id>",
--- "kanbo:doc:<id>", "kanbo:project:<id>" (lib/presence). Realtime Authorization asks these policies on
--- realtime.messages when someone joins (and again when their token refreshes). Nothing is stored.
---   read  (see who's there; receive typing, doc edits, carets): anyone who can see the object.
---   write, extension 'presence' (say you're there): the same people.
---   write, extension 'broadcast': on a task, anyone who can see it (guests comment, so they may type);
---     on a doc, people who can edit its project (never guests) while it isn't archived — edits, carets,
---     "saved" notices and the order check; on a project, nobody (it's presence only).
--- Suspended or unapproved people: nothing (can_act). Signed out: nothing. Only uuids after the prefix.
--- A Realtime without Authorization (no realtime.messages) skips the policies: presence then stays off,
--- because the app only ever joins these channels as private ones.
-create or replace function public.kanbo_realtime_allowed(p_topic text, p_extension text, p_write boolean)
-returns boolean language plpgsql stable security definer set search_path = public as $$
-declare
-  v_kind text;
-  v_id uuid;
-  v_project uuid;
-  v_archived timestamptz;
-begin
-  if auth.uid() is null or p_topic is null or not public.can_act() then return false; end if;
-  if p_topic !~ '^kanbo:(task|doc|project):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
-    return false;
-  end if;
-  if p_write and p_extension is distinct from 'presence' and p_extension is distinct from 'broadcast' then return false; end if;
-  v_kind := split_part(p_topic, ':', 2);
-  v_id := split_part(p_topic, ':', 3)::uuid;
-  if v_kind = 'task' then
-    return public.can_see_task(v_id);
-  elsif v_kind = 'project' then
-    if p_write and p_extension <> 'presence' then return false; end if;
-    return public.can_see_project(v_id);
-  end if;
-  select d.project_id, d.archived_at into v_project, v_archived from public.project_docs d where d.id = v_id;
-  if v_project is null then return false; end if;
-  if p_write and p_extension = 'broadcast' then
-    return v_archived is null and public.can_edit_project(v_project);
-  end if;
-  return public.can_see_project(v_project);
-end; $$;
-revoke all on function public.kanbo_realtime_allowed(text, text, boolean) from public, anon;
-grant execute on function public.kanbo_realtime_allowed(text, text, boolean) to authenticated;
-
-do $live$
-begin
-  if to_regclass('realtime.messages') is null or to_regprocedure('realtime.topic()') is null then return; end if;
-  execute 'drop policy if exists "kanbo presence: read" on realtime.messages';
-  execute 'drop policy if exists "kanbo presence: write" on realtime.messages';
-  execute $p$create policy "kanbo presence: read" on realtime.messages for select to authenticated
-    using (public.kanbo_realtime_allowed(realtime.topic(), extension, false))$p$;
-  execute $p$create policy "kanbo presence: write" on realtime.messages for insert to authenticated
-    with check (public.kanbo_realtime_allowed(realtime.topic(), extension, true))$p$;
-end $live$;
-```
-
-A line for the 0048 VERIFY (and the same in `database-0048.md`):
-
-```sql
---   (select count(*) from pg_policies where schemaname = 'realtime' and tablename = 'messages'
---     and policyname in ('kanbo presence: read', 'kanbo presence: write')) = 2                    as live_presence,
-```
+Section 16 changes `save_project_doc()`'s version rule (above); VERIFY's
+`doc_versions` column checks it.
 
 Tested in PGlite (`scratchpad/pgtest-u5/run.mjs`, 12 cases, with Realtime's
 `realtime.messages` and `realtime.topic()` stubbed and joins checked the way
@@ -147,8 +149,12 @@ Realtime checks them): members, guests, the suspended, the unapproved,
 outsiders, the signed-out, a personal task, an archived doc, a doc that
 doesn't exist, a removed member, a member demoted to guest, odd topics and
 extensions; applied twice, before Realtime exists, and after a re-run of 0048.
-The architect's 0048 suite still passes with the section appended (all but
-"the paste copy matches the repo file", until the paste is regenerated).
+Versions (`scratchpad/pgtest-u5/versions.mjs`, 7 cases): two people saving in
+turn keep last week's history, a checkpoint is its own version, a new one
+after 10 minutes, the last 50, who saved it, guests and outsiders still
+refused, and a re-run of 0047 (VERIFY turns false) then 0048. The 0048 suite
+passes with both sections in, on the file and on its comment-free paste copy
+(its VERIFY now has 16 columns).
 
 Realtime settings: nothing to change — private channels work alongside the
 public ones the app already uses (database changes, the old task-panel
