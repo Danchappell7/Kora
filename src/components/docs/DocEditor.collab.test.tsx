@@ -89,14 +89,16 @@ describe("two people in one doc", () => {
     await tick();
     expect([dan.text(0), dan.text(1)]).toEqual(["start, Daniel's", "second, Sana's"]);
     expect([sana.text(0), sana.text(1)]).toEqual(["start, Daniel's", "second, Sana's"]);
-    expect(dan.container.querySelector(".kpres-edit-tag")).toHaveTextContent("Sana");
-    expect(sana.container.querySelector(".kpres-edit-tag")).toHaveTextContent("Daniel");
+    // the block flashes, and the name shows (on the tag, or on their caret's flag while it's still there)
+    expect(dan.container.querySelector(".kpres-edit")).toBeInTheDocument();
+    expect(dan.container.querySelector(".kpres-layer")).toHaveTextContent("Sana");
+    expect(sana.container.querySelector(".kpres-edit")).toBeInTheDocument();
     expect(dan.blocks()[1]).toHaveAttribute("aria-description", "Edited by Sana Rao just now");
     expect(dan.status()).toMatch(/Sana (opened this doc|is making changes to this doc)\./);
     expect(screen.queryByRole("alert")).toBeNull();
     // the highlight fades
     await tick(3000);
-    expect(dan.container.querySelector(".kpres-edit-tag")).toBeNull();
+    expect(dan.container.querySelector(".kpres-edit")).toBeNull();
   });
 
   it("the same block at the same moment: one version wins on both screens, and the loser hears why", async () => {
@@ -115,7 +117,7 @@ describe("two people in one doc", () => {
     const won = lost === dan ? sana : dan;
     expect(lost.status()).toMatch(/changed the line you were writing at the same moment\. Their version is in\./);
     expect(won.status()).not.toMatch(/changed the line you were writing/);
-    expect(lost.container.querySelector(".kpres-edit-tag")).toBeInTheDocument();
+    expect(lost.container.querySelector(".kpres-edit")).toBeInTheDocument();
   });
 
   it("someone's save merges into the other editor without the banner, and what's only theirs saves on top", async () => {

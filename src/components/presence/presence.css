@@ -97,4 +97,4 @@
 
 /* beside a doc's title (DocEditor) */
 .kdoc-title-row > .kpres { margin-top: 6px; }
-@media (max-width: 859px) { .kdoc-title-row > .kpres { margin-top: 3px; } }
+@media (max-width: 859px) { .kdoc-title-row > .kpres { margin-top: 5px; } }

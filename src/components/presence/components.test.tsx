@@ -117,6 +117,12 @@ describe("RemoteCarets", () => {
     rerender([], []);
     expect(text).not.toHaveAttribute("aria-description");
   });
+  it("the edit's name tag gives way to the same person's caret in that block (one \"Sana\" is enough)", () => {
+    const { container } = setup([peer("m-2", "Theo Vance", "editing", { blockId: "b1", offset: 3 })], [{ blockId: "b1", by: theo, at: 1 }]);
+    expect(container.querySelector(".kpres-edit")).toBeInTheDocument();
+    expect(container.querySelector(".kpres-edit-tag")).toBeNull();
+    expect(container.querySelector(".kpres-flag")).toHaveTextContent("Theo");
+  });
   it("a caret in a block that isn't on screen is skipped", () => {
     const { container } = setup([peer("m-3", "Sana Rao", "editing", { blockId: "gone", offset: 2 })]);
     expect(container.querySelector(".kpres-caret")).toBeNull();

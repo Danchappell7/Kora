@@ -40,7 +40,7 @@ export interface RemoteCaretsProps {
 
 type Rect = { top: number; left: number; width: number; height: number };
 interface CaretBox { userId: string; name: string; hue: number; caret: Rect; sel: Rect[]; recent: boolean; below: boolean }
-interface EditBox { blockId: string; name: string; hue: number; box: Rect; at: number }
+interface EditBox { blockId: string; name: string; hue: number; box: Rect; at: number; tag: boolean }
 
 const rel = (r: DOMRect | Rect, root: DOMRect): Rect => ({ top: r.top - root.top, left: r.left - root.left, width: r.width, height: r.height });
 
@@ -149,7 +149,9 @@ export function RemoteCarets({ rootRef, peers, edits, locate, locateRow, layoutK
     for (const e of edits) {
       const row = locateRow?.(e.blockId) ?? locate(e.blockId);
       if (!row || !root.contains(row)) continue;
-      eb.push({ blockId: e.blockId, name: shortNames([e.by])[0], hue: peerHue(e.by.color), box: rel(row.getBoundingClientRect(), rr), at: e.at });
+      // (their caret's flag already says who, when they're still in the block)
+      const caretHere = peers.some((p) => p.userId === e.by.userId && p.caret?.blockId === e.blockId);
+      eb.push({ blockId: e.blockId, name: shortNames([e.by])[0], hue: peerHue(e.by.color), box: rel(row.getBoundingClientRect(), rr), at: e.at, tag: !caretHere });
     }
     setBoxes(eb);
   }, [rootRef, peers, edits, locate, locateRow, layoutKey, size, clock, again]);
@@ -171,7 +173,7 @@ export function RemoteCarets({ rootRef, peers, edits, locate, locateRow, layoutK
     <div className="kpres-layer" aria-hidden="true">
       {boxes.map((b) => (
         <div key={`${b.blockId}-${b.at}`} className="kpres-edit" style={{ "--kp-h": b.hue, "--kp-flash": `${FLASH_MS}ms`, top: b.box.top, left: b.box.left - 6, width: b.box.width + 12, height: b.box.height } as CSSProperties}>
-          <span className="kpres-edit-tag">{b.name}</span>
+          {b.tag && <span className="kpres-edit-tag">{b.name}</span>}
         </div>
       ))}
       {carets.map((c) => (

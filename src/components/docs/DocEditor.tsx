@@ -59,6 +59,7 @@ import {
 import { shortNames } from "../presence/core";
 import { PresenceAvatars } from "../presence/PresenceAvatars";
 import { FLASH_MS, RemoteCarets, type RemoteEdit } from "../presence/RemoteCarets";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { copyText } from "../rituals/shared";
 import { caretOnEdgeLine, caretRect, getSelectionOffsets, readSpans, renderSpans, setSelectionOffsets } from "./docDom";
 import { draftWhen, forgetDocDraft, keepDocDraft, peekDocDraft, takeDocDraft, type DocDraft } from "./docDrafts";
@@ -327,6 +328,7 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   }, [saver]);
 
   /* ---- live: the others in this doc (lib/presence useDocCollab) ---- */
+  const narrow = useMediaQuery("(max-width: 859px)");
   const meOnWire = useMemo<PresenceMe | null>(() => {
     if (me !== undefined) return me;
     const m = members.find((x) => x.id === currentUserId) ?? getMember(currentUserId);
@@ -1433,7 +1435,8 @@ export const DocEditor = forwardRef<DocEditorHandle, DocEditorProps>(function Do
   const showOwnIndicator = !onSaveState;
   const firstEmpty = blocks.length === 1 && isBlockEmpty(blocks[0]) && blocks[0].type === "p";
 
-  const presence = collab.peers.length > 0 && <PresenceAvatars peers={collab.peers} size="md" max={4} />;
+  // (a phone keeps the title wide: two small faces, the rest in "+n")
+  const presence = collab.peers.length > 0 && <PresenceAvatars peers={collab.peers} size={narrow ? "sm" : "md"} max={narrow ? 2 : 4} />;
   if (!editable) {
     return (
       <div className="kdoc-editor" data-readonly="true" ref={rootRef}>
