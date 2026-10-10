@@ -1,59 +1,79 @@
 /* ============================================================
-   KANBO — Search: every task, by text and field filters, plus the
-   team-wide presets and your saved searches. Reads tasks already in
-   memory (instant). Results are the same 36px rows as My tasks: the
-   status glyph is the completion checkbox (it never opens the task),
-   then the title, then project · due · priority · assignee.
-   J / K move, X selects, Enter opens, ⌘↵ completes.
+   KANBO — Search: everything, from one box. Tasks, comments, docs,
+   projects and people; type plainly ("Maya's overdue tasks in Launch",
+   "docs mentioning pricing", "blocked this week") and the names,
+   projects, statuses and dates are read as filters — tinted in the
+   box, listed as chips you can remove — and the rest is searched for.
+   What the app holds answers at once (offline and in demo mode too);
+   the server's full-text search (search_all, which only ever returns
+   what you can see) follows a moment later and is merged in.
+   Results come grouped (Tasks, Comments, Docs, Projects, People) with
+   the matching words marked. Tasks are the same 36px rows as My tasks
+   (the status glyph is the completion checkbox; bulk actions, CSV and
+   PDF as before); the other kinds are the Inbox's two-line rows.
+   Nothing typed: recent searches and ways to ask. The smart lists and
+   saved searches open here too, with the filters panel showing what
+   they apply. Keys: ↓ from the box into the results, ↑ / ↓ through
+   every group (↑ from the first goes back), Home / End, Esc back to
+   the box (Esc in the box clears it); J / K move a cursor, X selects,
+   Enter opens, ⌘↵ completes.
    ============================================================ */
-import { useMemo, useState, useEffect, useRef, useId } from "react";
+import { useMemo, useState, useEffect, useRef, useId, useCallback } from "react";
 import { Icon, Avatar, StatusGlyph, PriorityGlyph, DateChip, ProjectTile, EmptyState, Button, IconButton, Kbd } from "../primitives";
 import { getProject, getMember, fmtDue, STATUS_META, PRIORITY_META, toLocalISO, presetDate, todayISO } from "../../data/data";
 import { exportTasksCsv, printTasks } from "../../lib/exportTasks";
-import { taskMatchesQuery, searchRank, isQueryActive, hasSearchText, inArchivedProject, queriesEqual, toQuery, EMPTY_QUERY as EMPTY, type Query } from "../../lib/searchQuery";
+import { hasSearchText, inArchivedProject } from "../../lib/searchQuery";
 import { smartListById } from "../../lib/smartLists";
+import { removeChipFromInput, todayIn, type SearchNLContext } from "../../lib/searchNL";
+import {
+  mergeSearchHits, titleTier, recentSearches, rememberSearch, forgetRecentSearch, forgetRecentSearches,
+  SEARCH_GROUPS, SEARCH_LIMIT_MAX, SEARCH_VIEW_LIMIT, type LocalSearchInput,
+} from "../../lib/searchApi";
+import {
+  EMPTY_PANEL, panelActive, panelCount, panelsEqual, resolveSearch, localTaskMatches, searchFromPreset, searchFromViewQuery,
+  searchToViewQuery, toLegacyQuery, suggestSearchName, type SearchPanel,
+} from "../../lib/search/searchSpec";
+import { useUniversalSearch, localReasonText } from "../../lib/search/useUniversalSearch";
+import { useDemoCorpus } from "../../lib/search/demoCorpus";
+import { useTextHighlights } from "../../lib/search/useTextHighlights";
+import { makeSnippet } from "../../lib/search/highlight";
+import { splitHighlights } from "../../lib/searchRows";
+import { supabase } from "../../lib/supabase";
 import { useListKeyboard } from "../../hooks/useListKeyboard";
+import { useTaskDragSource } from "../../lib/dnd";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef } from "../../data/types";
 import { useEntrance } from "../../hooks/useEntrance";
+import { SaveViewButton } from "./SavedViewEditor";
+import {
+  SearchBox, SearchChips, FiltersPanel, HitRow, SearchStart, Highlighted, HighlightTitle, withCurrent,
+  type Opt, type PanelField,
+} from "../search/SearchParts";
+import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef, Comment, SavedView, SavedViewQuery, SearchHit, SearchHitKind, Member } from "../../data/types";
+import type { Route } from "../../app-types";
 import "../tasks/taskViews.css";
+import "../search/search.css";
 
-/** rows rendered at once; the count, "Select all" and exports say so */
+/** task rows rendered at once; the count, "Select all" and exports say so */
 const DISPLAY_CAP = 200;
-
-type Opt = { value: string; label: string; group?: string };
-
-/** A select must never read "Any …" while a filter is applied. When the active
- *  value isn't one of the offered options (a saved search's colleague from
- *  another workspace, a tag nobody uses any more…), offer it as an extra. */
-function withCurrent(opts: Opt[], value: string, label: (v: string) => string): Opt[] {
-  return value === "all" || opts.some((o) => o.value === value) ? opts : [...opts, { value, label: label(value) }];
-}
-
-/** A filter that is narrowing the results is tinted, so an applied filter reads at a glance. */
-function FilterSelect({ label, anyLabel, value, options, onChange }: { label: string; anyLabel: string; value: string; options: Opt[]; onChange: (v: string) => void }) {
-  const plain = options.filter((o) => !o.group);
-  const groups = [...new Set(options.filter((o) => o.group).map((o) => o.group!))];
-  return (
-    <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className="ktv-search-select" data-on={value !== "all" || undefined}>
-      <option value="all">{anyLabel}</option>
-      {plain.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      {groups.map((g) => (
-        <optgroup key={g} label={g}>
-          {options.filter((o) => o.group === g).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </optgroup>
-      ))}
-    </select>
-  );
-}
+/** with several kinds on screen, each group shows a few and offers the rest */
+const PREVIEW: Record<SearchHitKind, number> = { task: 8, comment: 4, doc: 4, project: 4, person: 4 };
+const FILTERS_OPEN_KEY = "kanbo-search-filters-open";
+/** the device's Tasks are listed here in full (localTaskMatches); localSearch answers for the rest */
+const NOT_TASKS: SearchHitKind[] = ["comment", "doc", "project", "person"];
 
 /** primary pointer is a mouse/trackpad (not a touchscreen) */
 const finePointer = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches;
 const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
-
 const unknownLabel = (v: string) => `${v.charAt(0).toUpperCase()}${v.slice(1)} (unknown)`;
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const KIND_WORDS: Record<SearchHitKind, [string, string]> = {
+  task: ["task", "tasks"], comment: ["comment", "comments"], doc: ["doc", "docs"], project: ["project", "projects"], person: ["person", "people"],
+};
+const readFiltersPref = (): boolean | null => {
+  try { const v = window.localStorage.getItem(FILTERS_OPEN_KEY); return v === "1" ? true : v === "0" ? false : null; } catch { return null; }
+};
 
-export function SearchView({ tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch, onBulkDelete, sections, customFields, onToggle, activeId }: {
+export interface SearchViewProps {
   tasks: Task[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -73,212 +93,409 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
   onToggle?: (id: string) => void;
   /** the task open in the task panel: its row stays marked */
   activeId?: string;
-}) {
+
+  /* ---- 0048: universal search (all optional) ---- */
+  /** a saved search view to open (with presetKey = its id) */
+  presetView?: SavedViewQuery;
+  /** the workspace you're in; and the ones you can search (Filters › Search in) */
+  workspaceId?: string | null;
+  workspaces?: { id: string | null; name: string }[];
+  /** comments the app has loaded; docs it knows (titles, and their text when on hand) */
+  comments?: Comment[];
+  docs?: LocalSearchInput["docs"];
+  onOpenDoc?: (docId: string, projectId: string) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenPerson?: (userId: string) => void;
+  /** a comment: its task, at the comment (default: onOpen(taskId)) */
+  onOpenComment?: (taskId: string, commentId: string) => void;
+  /** go anywhere: what opens a doc, project or person when their own handler isn't given */
+  onGo?: (route: Route) => void;
+  /** save as a view (lib/views) instead of the old saved search */
+  views?: { workspaceId: string | null; workspaceName?: string; canShare: boolean; onSaved?: (v: SavedView) => void };
+  /** the person's timezone for "today", "friday"… (default: the device's day) */
+  timezone?: string;
+  /** also search the demo docs' text and the demo comments (default: when there's no server) */
+  demoCorpus?: boolean;
+  /** ask search_all (default: when a server is configured) */
+  serverSearch?: boolean;
+  /** read-only here (guests): task rows aren't drag sources (the bulk bar and task panel stay the non-drag way) */
+  readOnly?: boolean;
+}
+
+export function SearchView(props: SearchViewProps) {
+  const {
+    tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch,
+    onBulkDelete, sections, customFields, onToggle, activeId, presetView, workspaces, onOpenDoc, onOpenProject, onOpenPerson,
+    onOpenComment, onGo, views, timezone,
+  } = props;
+  const uid = currentUserId ?? "";
   const entrance = useEntrance(presetKey);
   const isMobile = useMediaQuery("(max-width: 860px)");
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const presetQuery = useMemo<Query | null>(() => (preset ? toQuery(preset) : null), [preset ? JSON.stringify(preset) : ""]);
-  const [q, setQ] = useState<Query>(presetQuery ?? EMPTY);
+  const panelId = useId(), helpId = useId(), resultsId = useId(), saveHintId = useId();
+
+  // the day relative words count from: the device's day (as the sidebar counts), or the person's timezone
+  const today = timezone ? todayIn(new Date(), timezone) : todayISO();
+  // App builds `members` (and `comments` / `docs`, if it passes them) afresh on every render: hold on to the
+  // last ones while their content is the same, so a presence tick or a realtime change elsewhere doesn't
+  // re-read the words, rescan every task and re-render every row
+  const membersKey = members.map((m) => `${m.id}\u0001${m.name}`).join("\u0002");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const people0 = useMemo(() => members, [membersKey]);
+  const comments = useSameItems(props.comments);
+  const docs = useSameItems(props.docs);
+  const everyone = useMemo<Member[]>(() => people0.map((m) => getMember(m.id) ?? { id: m.id, name: m.name, email: "", type: "team", color: "" }), [people0]);
+  const nlCtx = useMemo<SearchNLContext>(() => ({
+    members: people0.filter((m) => m.name),
+    // live projects first: "in launch" means the live one when an archived one shares the word
+    projects: [...projects.filter((p) => !p.archivedAt), ...projects.filter((p) => p.archivedAt)],
+    currentUserId: uid, today, timezone,
+  }), [people0, projects, uid, today, timezone]);
+
+  /* ---------------- state: the words, the panel ---------------- */
+  const presetKeyJSON = JSON.stringify(presetView ?? preset ?? null);
+  // an old saved search's words stay words; words handed over from ⌘K ("See all results") are read as typed
+  const fromSavedSearch = !!presetKey && savedSearches.some((s) => s.id === presetKey);
+  const presetSearch = useMemo(() => (presetView ? searchFromViewQuery(presetView, nlCtx)
+    : preset ? searchFromPreset(preset, nlCtx, { literal: fromSavedSearch }) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [presetKeyJSON, fromSavedSearch]);
+  const [input, setInput] = useState(presetSearch?.input ?? "");
+  const [panel, setPanel] = useState<SearchPanel>(presetSearch?.panel ?? EMPTY_PANEL);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const toggleSel = (id: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const clearSel = () => setSelected(new Set());
-  // apply a smart-list / saved-search preset when selected (or when its content
-  // changes, e.g. the signed-in user resolves); reset to EMPTY on plain Search
-  // so a stale smart-list filter doesn't linger when you leave it. A preset
-  // that merely disappears under the same key (you deleted the saved search
-  // you're looking at, or its temporary id was swapped for the real one) keeps
-  // the current search on screen instead of wiping it.
+  const reset = useCallback(() => { setInput(""); setPanel(EMPTY_PANEL); }, []);
+  // apply a smart-list / saved-search preset when selected (or when its content changes, e.g. the signed-in
+  // user resolves); reset on plain Search so a stale filter doesn't linger. A preset that merely disappears
+  // under the same key (you deleted the saved search you're on) keeps the current search on screen.
   const lastPresetKey = useRef(presetKey);
   useEffect(() => {
     const keyChanged = lastPresetKey.current !== presetKey;
     lastPresetKey.current = presetKey;
-    if (presetQuery) setQ(presetQuery);
-    else if (keyChanged) setQ(EMPTY);
-  }, [presetKey, presetQuery]);
-  // Put the cursor in the box only for a plain Search on a mouse/trackpad
-  // device. Opening a smart list (or anything on a phone) shows results
-  // instead of throwing the on-screen keyboard over them.
+    if (presetSearch) { setInput(presetSearch.input); setPanel(presetSearch.panel); }
+    else if (keyChanged) reset();
+  }, [presetKey, presetSearch, reset]);
+  // the cursor goes in the box only for a plain Search on a mouse/trackpad device; a smart list (or a phone)
+  // shows results instead of throwing the keyboard over them
   useEffect(() => {
-    if (preset) return;
+    if (preset || presetView) return;
     if (finePointer()) inputRef.current?.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetKey]);
-  // dropping a selected task out of the current results shouldn't keep it selected
-  useEffect(() => { clearSel(); }, [presetKey, q]);
-  const set = (patch: Partial<Query>) => setQ((p) => ({ ...p, ...patch }));
-  const allTags = useMemo(() => [...new Set(tasks.flatMap((t) => t.tags || []))].sort((a, b) => a.localeCompare(b)), [tasks]);
-  const hasArchivedProjects = projects.some((p) => p.archivedAt);
-  // one-click cross-project presets (combine + save your own). My tasks is
-  // personal; the "All …" chips here are the team-wide views.
-  const presets: { label: string; q: Partial<Query> }[] = [
-    ...(currentUserId ? [{ label: "Assigned to me", q: { assignee: currentUserId, status: "open" } as Partial<Query> }] : []),
-    ...(currentUserId ? [{ label: "My work this week", q: { assignee: currentUserId, due: "week", status: "open" } as Partial<Query> }] : []),
-    { label: "All due today", q: { due: "today" } },
-    { label: "All due this week", q: { due: "week", status: "open" } },
-    { label: "All overdue", q: { due: "overdue" } },
-    { label: "Urgent", q: { priority: "urgent", status: "open" } },
-  ];
+  const setP = (patch: Partial<SearchPanel>) => setPanel((p) => ({ ...p, ...patch }));
 
-  const active = isQueryActive(q);
-  // due = today / overdue / this week read the date, so the results move at
-  // midnight with the sidebar counts instead of disagreeing with them
-  const today = todayISO();
-  const { matched, hiddenArchived } = useMemo(() => {
-    // nothing is listed until there's a search, so don't scan every task for it
-    if (!active) return { matched: [] as Task[], hiddenArchived: 0 };
-    // one pass with archived projects included: the default view then drops
-    // those tasks, and how many it dropped is offered as a one-click widen
-    const wide = tasks.filter((t) => taskMatchesQuery(t, { ...q, includeArchived: true }));
-    const hits = q.includeArchived ? wide : wide.filter((t) => !inArchivedProject(t));
-    const hidden = wide.length - hits.length;
-    if (!hasSearchText(q.text)) return { matched: hits, hiddenArchived: hidden };
-    // text search: best matches (title hits, open work) first; stable otherwise
-    const ranked = hits.map((t, i) => ({ t, i, r: searchRank(t, q) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
-    return { matched: ranked, hiddenArchived: hidden };
+  /* ---------------- what it means ---------------- */
+  const resolved = useMemo(() => resolveSearch(input, panel, nlCtx, today), [input, panel, nlCtx, today]);
+  const { parsed, text } = resolved;
+  const active = resolved.active;
+  useEffect(() => { clearSel(); }, [input, panel, presetKey]);
+
+  /* ---------------- the device's answer: tasks (complete), the rest through localSearch ---------------- */
+  const projectById = useMemo(() => { const m = new Map(projects.map((p) => [p.id, p])); return (id: string) => m.get(id) ?? getProject(id); }, [projects]);
+  const { taskHits, hiddenArchived } = useMemo(() => {
+    if (!active || !resolved.kinds.includes("task")) return { taskHits: [] as Task[], hiddenArchived: 0 };
+    // one pass with archived included: the default view drops those, and offers them as a one-click widen
+    const wide = localTaskMatches(tasks, { ...resolved, filters: { ...resolved.filters, includeArchived: true } }, projectById);
+    const hits = resolved.filters.includeArchived ? wide : wide.filter((t) => !t.archivedAt && !inArchivedProject(t) && !projectById(t.projectId)?.archivedAt);
+    if (!hasSearchText(text)) return { taskHits: hits, hiddenArchived: wide.length - hits.length };
+    // words: best title matches first, open work above finished, stable otherwise
+    const ranked = hits.map((t, i) => ({ t, i, tier: titleTier(t.title, text), done: t.status === "done" ? 1 : 0 }))
+      .sort((a, b) => b.tier - a.tier || a.done - b.done || a.i - b.i).map((x) => x.t);
+    return { taskHits: ranked, hiddenArchived: wide.length - hits.length };
     // projects: archiving/restoring one changes what matches without touching tasks
+  }, [tasks, resolved, active, text, projectById]);
+
+  const corpus = useDemoCorpus(props.demoCorpus ?? !supabase, useMemo(() => projects.map((p) => p.id), [projects]), useMemo(() => tasks.map((t) => t.id), [tasks]));
+  const allComments = useMemo(() => dedupe([...(comments ?? []), ...(corpus?.comments ?? [])]), [comments, corpus]);
+  const allDocs = useMemo(() => dedupe([...(docs ?? []), ...(corpus?.docs ?? [])]), [docs, corpus]);
+  // (booleans, so handlers passed as fresh arrows each render don't redo the merge below)
+  const canOpenDoc = !!(onOpenDoc || onGo), canOpenProject = !!(onOpenProject || onGo), canOpenPerson = !!(onOpenPerson || onGo);
+  const openable = (k: SearchHitKind) => k === "task" || k === "comment" || (k === "doc" ? canOpenDoc : k === "project" ? canOpenProject : canOpenPerson);
+  const singleKind = resolved.kinds.length === 1 ? resolved.kinds[0] : null;
+  const limit = singleKind && singleKind !== "task" ? SEARCH_LIMIT_MAX : SEARCH_VIEW_LIMIT;
+  const search = useUniversalSearch({
+    active, text, filters: resolved.filters, limit, debounceMs: 200, server: props.serverSearch, localKinds: NOT_TASKS,
+    local: { tasks, projects, members: everyone, comments: allComments, docs: allDocs, currentUserId: uid },
+  });
+
+  // server-only task matches (found by stem: "prices" → "pricing") join the device's, if they still pass here
+  const serverTasks = useMemo(() => (search.server ?? []).filter((h) => h.kind === "task"), [search.server]);
+  const taskRows = useMemo<{ task: Task; snippet: string | null }[]>(() => {
+    if (!active || !resolved.kinds.includes("task")) return [];
+    const snippets = new Map(serverTasks.map((h) => [h.id, h.snippet]));
+    const rows = taskHits.map((t) => ({ task: t, snippet: snippets.get(t.id) ?? (hasSearchText(text) ? makeSnippet(t.description, text) : null) }));
+    const have = new Set(taskHits.map((t) => t.id));
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    for (const h of serverTasks) {
+      if (have.has(h.id)) continue;
+      const t = byId.get(h.id);
+      if (!t) continue;    // not loaded here (yet): its row would have nothing live to show
+      const passes = localTaskMatches([t], { ...resolved, text: "", active: true }, projectById).length === 1;
+      if (passes) { rows.push({ task: t, snippet: h.snippet }); have.add(h.id); }
+    }
+    return rows;
+  }, [active, resolved, taskHits, serverTasks, tasks, text, projectById]);
+  const matchedTasks = useMemo(() => taskRows.map((r) => r.task), [taskRows]);
+
+  const others = useMemo(() => {
+    if (!active) return [] as SearchHit[];
+    const local = search.local.filter((h) => h.kind !== "task");
+    const server = (search.server ?? []).filter((h) => h.kind !== "task");
+    return mergeSearchHits(local, server, { text, limitPerKind: limit }).filter((h) => resolved.kinds.includes(h.kind) && openable(h.kind));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, q, active, projects, today]);
-  const results = matched.slice(0, DISPLAY_CAP);   // rows rendered (capped)
-  const capped = matched.length > results.length;  // more matched than shown
-  // only tasks still in the current results count as selected — a selection
-  // that left the view (bulk action, external update) is ignored.
+  }, [active, search.local, search.server, text, limit, resolved.kinds, canOpenDoc, canOpenProject, canOpenPerson]);
+
+  const counts = useMemo(() => {
+    const c: Record<SearchHitKind, number> = { task: matchedTasks.length, comment: 0, doc: 0, project: 0, person: 0 };
+    for (const h of others) c[h.kind] += 1;
+    return c;
+  }, [matchedTasks, others]);
+  const total = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0);
+  const kindsWithHits = SEARCH_GROUPS.filter((g) => counts[g.kind] > 0).map((g) => g.kind);
+  const fullGroup = (k: SearchHitKind) => singleKind === k || kindsWithHits.length === 1;
+  const results = matchedTasks.slice(0, fullGroup("task") ? DISPLAY_CAP : PREVIEW.task);   // task rows rendered
+  const capped = fullGroup("task") && matchedTasks.length > results.length;
   const selectedVisible = results.filter((t) => selected.has(t.id));
   const bulk = !!(onBulkPatch || onBulkDelete);
 
-  // context line for an open smart list / saved search
+  /* ---------------- presets, context line ---------------- */
   const smart = smartListById(presetKey);
   const saved = !smart && presetKey ? savedSearches.find((s) => s.id === presetKey) : undefined;
   const presetName = smart?.label ?? saved?.name;
-  const onPreset = !!presetQuery && queriesEqual(q, presetQuery);
+  const onPreset = !!presetSearch && input.trim() === presetSearch.input.trim() && panelsEqual(panel, presetSearch.panel);
+  // one-click cross-project presets: My tasks is personal; the "All …" chips are the team-wide views
+  const quick: { label: string; panel: Partial<SearchPanel> }[] = [
+    ...(uid ? [{ label: "Assigned to me", panel: { assignee: uid, status: "open" } }] : []),
+    ...(uid ? [{ label: "My work this week", panel: { assignee: uid, due: "week", status: "open" } }] : []),
+    { label: "All due today", panel: { due: "today" } },
+    { label: "All due this week", panel: { due: "week", status: "open" } },
+    { label: "All overdue", panel: { due: "overdue" } },
+    { label: "Urgent", panel: { priority: "urgent", status: "open" } },
+  ];
 
-  // filter options — every select can always show its active value
-  const statusOpts = withCurrent([{ value: "open", label: "Open (not done)" }, ...(Object.keys(STATUS_META) as Status[]).map((s) => ({ value: s, label: STATUS_META[s].label }))], q.status, unknownLabel);
-  const priorityOpts = withCurrent((["urgent", "high", "medium", "low"] as Priority[]).map((p) => ({ value: p, label: PRIORITY_META[p].label })), q.priority, unknownLabel);
-  const memberName = (id: string) => getMember(id)?.name || (id === currentUserId ? "You" : "Unknown member");
-  const assigneeOpts = withCurrent(members.map((m) => ({ value: m.id, label: m.name })), q.assignee, memberName);
-  const projectOpts = withCurrent([
-    ...projects.filter((p) => !p.archivedAt).map((p) => ({ value: p.id, label: p.name })),
-    ...projects.filter((p) => p.archivedAt && (q.includeArchived || p.id === q.projectId)).map((p) => ({ value: p.id, label: p.name, group: "Archived projects" })),
-  ], q.projectId, (id) => getProject(id)?.name || "Unknown project");
-  const tagOpts = withCurrent(allTags.map((t) => ({ value: t, label: t })), q.tag, (t) => t);
-  const dueOpts = withCurrent([
-    { value: "today", label: "Due today" }, { value: "week", label: "Due this week" }, { value: "overdue", label: "Overdue" },
-    { value: "has", label: "Has a due date" }, { value: "none", label: "No due date" },
-  ], q.due, unknownLabel);
+  /* ---------------- the filters panel ---------------- */
+  const [filtersPref, setFiltersPref] = useState<boolean | null>(readFiltersPref);
+  const filtersOpen = filtersPref ?? panelActive(panel);
+  const toggleFilters = () => {
+    const next = !filtersOpen;
+    setFiltersPref(next);
+    try { window.localStorage.setItem(FILTERS_OPEN_KEY, next ? "1" : "0"); } catch { /* per-device nicety only */ }
+  };
+  const allTags = useMemo(() => [...new Set(tasks.flatMap((t) => t.tags || []))].sort((a, b) => a.localeCompare(b)), [tasks]);
+  const hasArchived = projects.some((p) => p.archivedAt) || tasks.some((t) => t.archivedAt);
+  const memberName = (id: string) => getMember(id)?.name || members.find((m) => m.id === id)?.name || (id === uid ? "You" : "Unknown member");
+  const people = members.map((m) => ({ value: m.id, label: m.id === uid ? `${m.name} (you)` : m.name }));
+  // the workspace you're in comes first
+  const teamSpaces = (workspaces ?? []).filter((w) => w.id !== null)
+    .sort((a, b) => (a.id === props.workspaceId ? -1 : b.id === props.workspaceId ? 1 : 0));
+  const fields: PanelField[] = [
+    ...(teamSpaces.length > 0 ? [{
+      key: "scope", title: "Search in", label: "Search in", anyLabel: "Everywhere", value: panel.scope,
+      options: withCurrent([
+        ...teamSpaces.map((w) => ({ value: w.id as string, label: w.id === props.workspaceId ? `${w.name} (this workspace)` : w.name })),
+        { value: "personal", label: props.workspaceId === null ? "Personal (this workspace)" : "Personal" },
+      ], panel.scope, () => "A workspace you've left"),
+      onChange: (v: string) => setP({ scope: v }),
+    }] : []),
+    { key: "status", title: "Status", label: "Filter by status", anyLabel: "Any status", value: panel.status,
+      options: withCurrent([{ value: "open", label: "Open (not done)" }, ...(Object.keys(STATUS_META) as Status[]).map((s) => ({ value: s, label: STATUS_META[s].label }))], panel.status, unknownLabel),
+      onChange: (v) => setP({ status: v }) },
+    { key: "priority", title: "Priority", label: "Filter by priority", anyLabel: "Any priority", value: panel.priority,
+      options: withCurrent((["urgent", "high", "medium", "low"] as Priority[]).map((p) => ({ value: p, label: PRIORITY_META[p].label })), panel.priority, unknownLabel),
+      onChange: (v) => setP({ priority: v }) },
+    { key: "assignee", title: "Assignee", label: "Filter by assignee or collaborator", anyLabel: "Anyone", value: panel.assignee,
+      options: withCurrent(people, panel.assignee, memberName), onChange: (v) => setP({ assignee: v }) },
+    { key: "project", title: "Project", label: "Filter by project", anyLabel: "Any project", value: panel.projectId,
+      options: withCurrent([
+        ...projects.filter((p) => !p.archivedAt).map((p) => ({ value: p.id, label: p.name })),
+        ...projects.filter((p) => p.archivedAt && (panel.includeArchived || p.id === panel.projectId)).map((p) => ({ value: p.id, label: p.name, group: "Archived projects" })),
+      ] as Opt[], panel.projectId, (id) => getProject(id)?.name || "Unknown project"),
+      onChange: (v) => setP({ projectId: v }) },
+    ...((allTags.length > 0 || panel.tag !== "all") ? [{ key: "tag", title: "Tag", label: "Filter by tag", anyLabel: "Any tag", value: panel.tag,
+      options: withCurrent(allTags.map((t) => ({ value: t, label: t })), panel.tag, (t) => t), onChange: (v: string) => setP({ tag: v }) }] : []),
+    { key: "due", title: "Due", label: "Filter by due date", anyLabel: "Any due date", value: panel.due,
+      options: withCurrent([
+        { value: "today", label: "Due today" }, { value: "week", label: "Due this week" }, { value: "overdue", label: "Overdue" },
+        { value: "has", label: "Has a due date" }, { value: "none", label: "No due date" },
+      ], panel.due, unknownLabel),
+      onChange: (v) => setP({ due: v }) },
+    { key: "author", title: "Comments by", label: "Filter comments by author", anyLabel: "Anyone", value: panel.author,
+      options: withCurrent(people, panel.author, memberName), onChange: (v) => setP({ author: v }) },
+  ];
 
-  // save the current search under a name typed in place (no prompt)
+  /* ---------------- recent searches ---------------- */
+  const [recents, setRecents] = useState<string[]>(() => recentSearches(uid));
+  useEffect(() => { setRecents(recentSearches(uid)); }, [uid]);
+  const remember = (t = input) => { if (!hasSearchText(t)) return; rememberSearch(uid, t); setRecents(recentSearches(uid)); };
+  const teammate = members.find((m) => m.id !== uid && m.name)?.name.split(/\s+/)[0];
+  const liveProject = projects.find((p) => !p.archivedAt && p.workspaceId)?.name ?? projects.find((p) => !p.archivedAt)?.name;
+  const examples = [
+    "Assigned to me due Friday",
+    teammate ? `${teammate}'s overdue tasks` : "Overdue tasks",
+    "Blocked this week",
+    "Docs mentioning pricing",
+    liveProject ? `Due next week in ${liveProject}` : "Comments about the launch",
+  ];
+
+  /* ---------------- opening ---------------- */
+  const openHit = (h: SearchHit) => {
+    remember();
+    if (h.kind === "task") onOpen(h.id);
+    else if (h.kind === "comment" && h.taskId) (onOpenComment ? onOpenComment(h.taskId, h.id) : onOpen(h.taskId));
+    else if (h.kind === "doc" && h.projectId) (onOpenDoc ? onOpenDoc(h.id, h.projectId) : onGo?.({ view: "project", projectId: h.projectId, tab: "docs", docId: h.id }));
+    else if (h.kind === "project") (onOpenProject ? onOpenProject(h.id) : onGo?.({ view: "project", projectId: h.id }));
+    else if (h.kind === "person") (onOpenPerson ? onOpenPerson(h.id) : onGo?.({ view: "team" }));
+  };
+  const openTask = (id: string) => { remember(); onOpen(id); };
+  const hitByRowId = (rowId: string) => others.find((h) => `${h.kind}:${h.id}` === rowId);
+  const openRow = (rowId: string) => { const h = hitByRowId(rowId); if (h) openHit(h); else openTask(rowId); };
+
+  /* ---------------- saving ---------------- */
   const [saving, setSaving] = useState<string | null>(null);
-  const saveHintId = useId();
   useEffect(() => { if (!active) setSaving(null); }, [active]);
+  const suggested = suggestSearchName(resolved);
   const saveNow = () => {
     const name = (saving ?? "").trim();
     if (!name) return;
-    onSaveSearch(name, q as unknown as Record<string, unknown>);
+    onSaveSearch(name, toLegacyQuery(input, panel, nlCtx, today));
+    remember();
     setSaving(null);
   };
 
-  // keyboard: ↓ from the search box into the results, ↑/↓ between them
+  // the words, painted over the titles in the results (excerpts carry their own <mark>s)
+  useTextHighlights(listRef, active ? text : "");
+
+  /* ---------------- keys ---------------- */
   const resultButtons = () => Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-search-result]") ?? []);
   const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "ArrowDown") { const first = resultButtons()[0]; if (first) { e.preventDefault(); first.focus(); } }
-    // results are already live; on a phone the "Search" key just puts the
-    // keyboard away so they can be seen
-    else if (e.key === "Enter" && !e.nativeEvent.isComposing && !finePointer()) e.currentTarget.blur();
+    else if (e.key === "Escape" && input) { e.preventDefault(); e.stopPropagation(); setInput(""); }
+    else if (e.key === "Enter") {
+      remember();
+      // results are already live; on a phone the "Search" key just puts the keyboard away so they can be seen
+      if (!finePointer()) e.currentTarget.blur();
+    }
   };
   const onListKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    if (e.key === "Escape" && !e.defaultPrevented) {
+      const i = resultButtons().indexOf(document.activeElement as HTMLButtonElement);
+      if (i >= 0 && selectedVisible.length === 0) { e.preventDefault(); inputRef.current?.focus(); }
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
     const btns = resultButtons();
     const i = btns.indexOf(document.activeElement as HTMLButtonElement);
     if (i < 0) return;
     e.preventDefault();
-    if (e.key === "ArrowDown") btns[Math.min(i + 1, btns.length - 1)]?.focus();
+    if (e.key === "Home") btns[0]?.focus();
+    else if (e.key === "End") btns[btns.length - 1]?.focus();
+    else if (e.key === "ArrowDown") btns[Math.min(i + 1, btns.length - 1)]?.focus();
     else if (i === 0) inputRef.current?.focus();
     else btns[i - 1]?.focus();
   };
-  // J / K through the results (↑ ↓ keep their own path back to the box), X selects, ⌘↵ completes
+  // J / K through every result (↑ ↓ keep their own path back to the box), X selects tasks, ⌘↵ completes one
+  const isTaskRow = (id: string) => !id.includes(":");
   const kb = useListKeyboard({
     rootRef: listRef, itemSelector: "[data-row-id]", idOf: (el) => el.dataset.rowId,
     focusTargetOf: (el) => el.querySelector<HTMLElement>("[data-search-result]"),
-    onOpen,
-    onComplete: onToggle,
-    onToggleSelect: bulk ? toggleSel : undefined,
+    onOpen: openRow,
+    onComplete: onToggle ? (id) => { if (isTaskRow(id)) onToggle(id); } : undefined,
+    onToggleSelect: bulk ? (id) => { if (isTaskRow(id)) toggleSel(id); } : undefined,
     onClear: clearSel,
-    enabled: active && results.length > 0,
+    enabled: active && total > 0,
   });
 
-  const n = matched.length;
+  /* ---------------- the kind switcher ---------------- */
+  const kindChip = parsed.chips.find((c) => c.kind === "kind");
+  const showValue: "all" | SearchHitKind = kindChip ? (kindChip.patch.kinds?.length === 1 ? kindChip.patch.kinds[0] : "all") : panel.kind;
+  const pickKind = (k: "all" | SearchHitKind) => {
+    if (kindChip) setInput(removeChipFromInput(parsed, kindChip.id));
+    setP({ kind: k });
+  };
+
+  /* ---------------- words ---------------- */
+  const n = matchedTasks.length;
   const exportScope = n === 1 ? "this task" : `all ${n} tasks`;
   const doneKey = isMac() ? "⌘↵" : "Ctrl ↵";
+  const spans = useMemo(() => Object.values(parsed.spans).flat(), [parsed]);
+  const breakdown = kindsWithHits.length > 1 ? `: ${kindsWithHits.map((k) => plural(counts[k], ...KIND_WORDS[k])).join(", ")}` : "";
+  const statusText = !active ? "Type or pick a filter to search"
+    : `${plural(total, "result", "results")}${breakdown}${capped ? ` · showing first ${results.length}` : ""}`;
+  const reasonText = active ? localReasonText(search.reason) : null;
+  const searching = active && search.phase === "searching";
+  const panelN = panelCount(panel);
 
   return (
-    <div className="ktv ktv-search">
+    <div className="ktv ktv-search ksr">
       <div className="ktv-search-in">
-        <div className="ktv-search-box">
-          <Icon name="search" size={16} sw={1.75} />
-          <input ref={inputRef} value={q.text} onChange={(e) => set({ text: e.target.value })} onKeyDown={onInputKey}
-            placeholder="Search every task…" aria-label="Search tasks" enterKeyHint="search" autoComplete="off" spellCheck={false} />
-        </div>
+        <SearchBox value={input} onChange={setInput} onKeyDown={onInputKey} spans={spans} inputRef={inputRef}
+          label="Search tasks" placeholder="Search tasks, comments, docs, projects and people…" busy={searching}
+          onClear={() => { setInput(""); inputRef.current?.focus(); }} describedBy={helpId} controls={resultsId} />
+        <span id={helpId} className="sr-only">
+          Type words to search for. Names, projects, statuses and dates, such as “Maya's overdue tasks in Launch”, become filters you can remove.
+          Press the down arrow to move into the results.
+        </span>
 
-        {presetName && presetQuery && (
+        <SearchChips chips={parsed.chips} onRemove={(id) => { setInput(removeChipFromInput(parsed, id)); inputRef.current?.focus({ preventScroll: true }); }}
+          onClearAll={() => setInput(parsed.text)} />
+
+        {presetName && presetSearch && (
           <div className="ktv-search-ctx">
             <Icon name={smart?.icon ?? "filter"} size={14} sw={1.75} />
             <span style={{ minWidth: 0 }}>
               <strong>{presetName}</strong>
               {onPreset ? (smart ? ` · ${smart.description}` : " · Saved search") : " · Filters changed"}
             </span>
-            {!onPreset && <Button variant="ghost" size="sm" onClick={() => setQ(presetQuery)}>Reset to {presetName}</Button>}
+            {!onPreset && <Button variant="ghost" size="sm" onClick={() => { setInput(presetSearch.input); setPanel(presetSearch.panel); }}>Reset to {presetName}</Button>}
           </div>
         )}
 
-        <div className="ktv-search-row" role="group" aria-label="Quick searches">
-          {presets.map((p) => {
-            const on = queriesEqual(q, { ...EMPTY, ...p.q });
-            return <button key={p.label} type="button" className="ktv-chip" aria-pressed={on} onClick={() => setQ(on ? EMPTY : { ...EMPTY, ...p.q })}>{p.label}</button>;
+        <div className="ktv-search-row ksr-quick" role="group" aria-label="Quick searches">
+          {quick.map((p) => {
+            const target = { ...EMPTY_PANEL, ...p.panel };
+            const on = !input.trim() && panelsEqual(panel, target);
+            return <button key={p.label} type="button" className="ktv-chip" aria-pressed={on} onClick={() => { setInput(""); setPanel(on ? EMPTY_PANEL : target); }}>{p.label}</button>;
           })}
         </div>
 
-        <div className="ktv-search-row">
-          <FilterSelect label="Filter by status" anyLabel="Any status" value={q.status} options={statusOpts} onChange={(v) => set({ status: v })} />
-          <FilterSelect label="Filter by priority" anyLabel="Any priority" value={q.priority} options={priorityOpts} onChange={(v) => set({ priority: v })} />
-          <FilterSelect label="Filter by assignee or collaborator" anyLabel="Anyone" value={q.assignee} options={assigneeOpts} onChange={(v) => set({ assignee: v })} />
-          <FilterSelect label="Filter by project" anyLabel="Any project" value={q.projectId} options={projectOpts} onChange={(v) => set({ projectId: v })} />
-          {tagOpts.length > 0 && <FilterSelect label="Filter by tag" anyLabel="Any tag" value={q.tag} options={tagOpts} onChange={(v) => set({ tag: v })} />}
-          <FilterSelect label="Filter by due date" anyLabel="Any due date" value={q.due} options={dueOpts} onChange={(v) => set({ due: v })} />
-          {(hasArchivedProjects || q.includeArchived) && (
-            <button type="button" className="ktv-chip ktv-chip-lg" aria-pressed={!!q.includeArchived} onClick={() => set({ includeArchived: !q.includeArchived })}
-              title="Tasks in archived projects are hidden unless this is on">
-              <Icon name="archive" size={14} sw={1.75} /><span>Include archived projects</span>
-            </button>
-          )}
-          {active && (
-            <span className="ktv-search-name">
-              {saving === null ? (
-                <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")} title="Save this search to your sidebar">Save</Button>
-              ) : (
-                <span className="ktv-save-wrap">
-                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                  <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder="Name this search" aria-label="Name this search"
-                    aria-describedby={saveHintId}
-                    onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveNow(); else if (e.key === "Escape") setSaving(null); }}
-                    onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
-                  <span id={saveHintId} className="ktv-save-kbd"><span className="sr-only">Press Enter to save, Escape to cancel</span><Kbd>↵</Kbd></span>
-                </span>
-              )}
-              <Button variant="ghost" size="sm" onClick={() => setQ(EMPTY)}>Clear</Button>
-            </span>
-          )}
+        <div className="ksr-bar">
+          <div className="kseg ksr-kinds" role="group" aria-label="Show">
+            {(["all", ...SEARCH_GROUPS.map((g) => g.kind)] as ("all" | SearchHitKind)[]).map((k) => {
+              const label = k === "all" ? "All" : SEARCH_GROUPS.find((g) => g.kind === k)!.label;
+              const count = k === "all" ? null : active && resolved.kinds.includes(k) ? counts[k] : null;
+              return (
+                <button key={k} type="button" className="kseg-btn" data-active={showValue === k} aria-pressed={showValue === k} onClick={() => pickKind(k)}>
+                  {label}
+                  {count ? <span className="ksr-segn">{count}{(k !== "task" && count >= limit) ? "+" : ""}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+          <div className="ksr-bar-end">
+            <Button variant="ghost" size="sm" icon="sliders" className="ksr-filters-btn" aria-expanded={filtersOpen} aria-controls={panelId} onClick={toggleFilters}>
+              Filters{panelN > 0 && <><span className="ksr-count" aria-hidden="true">{panelN}</span><span className="sr-only">, {panelN} on</span></>}
+            </Button>
+          </div>
         </div>
+
+        {filtersOpen && (
+          <FiltersPanel id={panelId} fields={fields}
+            archived={hasArchived || panel.includeArchived ? { on: panel.includeArchived, onToggle: () => setP({ includeArchived: !panel.includeArchived }) } : null}
+            onReset={panelN > 0 || panel.kind !== "all" ? () => setPanel(EMPTY_PANEL) : undefined} />
+        )}
 
         {savedSearches.length > 0 && (
           <div className="ktv-search-row" role="group" aria-label="Saved searches">
             <span className="ktv-mlabel">Saved</span>
             {savedSearches.map((s) => {
-              const sq = toQuery(s.query);
-              const on = queriesEqual(q, sq);
+              const sq = searchFromPreset(s.query, nlCtx);
+              const on = input.trim() === sq.input.trim() && panelsEqual(panel, sq.panel);
               return (
                 <span key={s.id} className="ktv-saved" data-on={on || undefined}>
-                  <button type="button" aria-pressed={on} onClick={() => setQ(sq)}>{s.name}</button>
+                  <button type="button" aria-pressed={on} onClick={() => { setInput(sq.input); setPanel(sq.panel); }}>{s.name}</button>
                   <button type="button" onClick={() => onDeleteSavedSearch(s.id)} aria-label={`Delete saved search ${s.name}`} title="Delete saved search"><Icon name="x" size={12} sw={2} /></button>
                 </span>
               );
@@ -287,26 +504,44 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
         )}
 
         <div className="ktv-search-status">
-          <span role="status" aria-live="polite" aria-atomic="true">
-            {active ? `${n} result${n === 1 ? "" : "s"}${capped ? ` · showing first ${results.length}` : ""}` : "Type or pick a filter to search"}
-          </span>
+          <span role="status" aria-live="polite" aria-atomic="true">{statusText}</span>
+          {searching && <span className="ksr-note" aria-hidden="true"><span className="ksr-dots"><i /><i /><i /></span>Searching everything…</span>}
+          {reasonText && <span className="ksr-note"><Icon name={search.reason === "offline" ? "alert" : "eye"} size={13} sw={1.75} />{reasonText}</span>}
           {hiddenArchived > 0 && (
-            <Button variant="ghost" size="sm" icon="archive" onClick={() => set({ includeArchived: true })}>
-              {hiddenArchived === 1 ? "Show 1 task from an archived project" : `Show ${hiddenArchived} tasks from archived projects`}
+            <Button variant="ghost" size="sm" icon="archive" onClick={() => setP({ includeArchived: true })}>
+              {hiddenArchived === 1 ? "Show 1 archived task" : `Show ${hiddenArchived} archived tasks`}
             </Button>
           )}
-          {active && results.length > 0 && (
+          {active && (
             <span className="ktv-search-actions">
-              {bulk && (
+              {views ? (
+                <SaveViewButton kind="search" query={searchToViewQuery(input, panel)} active={active} workspaceId={views.workspaceId}
+                  workspaceName={views.workspaceName} canShare={views.canShare} suggestedName={suggested} size="sm" onSaved={views.onSaved} />
+              ) : saving === null ? (
+                <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")} title="Save this search to your sidebar">Save</Button>
+              ) : (
+                <span className="ktv-save-wrap ktv-search-name">
+                  {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+                  <input autoFocus className="ktv-save-field" value={saving} onChange={(e) => setSaving(e.target.value)} placeholder={suggested.length < 30 ? suggested : "Name this search"}
+                    aria-label="Name this search" aria-describedby={saveHintId}
+                    onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") saveNow(); else if (e.key === "Escape") setSaving(null); }}
+                    onBlur={() => { if (!(saving ?? "").trim()) setSaving(null); }} />
+                  <span id={saveHintId} className="ktv-save-kbd"><span className="sr-only">Press Enter to save, Escape to cancel</span><Kbd>↵</Kbd></span>
+                </span>
+              )}
+              {bulk && results.length > 0 && (
                 <Button variant="ghost" size="sm" onClick={() => setSelected(selectedVisible.length === results.length ? new Set() : new Set(results.map((t) => t.id)))}>
-                  {selectedVisible.length === results.length ? "Clear" : capped ? `Select ${results.length} shown` : "Select all"}
+                  {selectedVisible.length === results.length ? "Clear" : capped || results.length < n ? `Select ${results.length} shown` : "Select all"}
                 </Button>
               )}
-              {/* exports always cover every match, not just the rows rendered */}
-              <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={() => exportTasksCsv(matched, "search", { allTasks: tasks, sections, customFields, members })}
-                aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`}>CSV</Button>
-              <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={() => printTasks(matched, presetName && onPreset ? presetName : "Search results")}
-                aria-label={`Print or save ${exportScope} as PDF`} title={`Print or save ${exportScope} as PDF`}>PDF</Button>
+              {/* exports always cover every task match, not just the rows rendered */}
+              {n > 0 && <>
+                <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={() => exportTasksCsv(matchedTasks, "search", { allTasks: tasks, sections, customFields, members })}
+                  aria-label={`Export ${exportScope} as CSV`} title={`Export ${exportScope} as CSV`}>CSV</Button>
+                <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={() => printTasks(matchedTasks, presetName && onPreset ? presetName : "Search results")}
+                  aria-label={`Print or save ${exportScope} as PDF`} title={`Print or save ${exportScope} as PDF`}>PDF</Button>
+              </>}
+              <Button variant="ghost" size="sm" onClick={reset}>Clear</Button>
             </span>
           )}
         </div>
@@ -326,63 +561,61 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
           );
         })()}
 
-        <div ref={listRef} onKeyDown={onListKey} className={"ktv-search-results " + entrance} role="region" aria-label="Search results"
+        <div ref={listRef} id={resultsId} onKeyDown={onListKey} className={"ktv-search-results " + entrance} role="region" aria-label="Search results"
           data-selecting={selectedVisible.length > 0 || undefined}>
-          {active && results.map((t) => {
-            const proj = getProject(t.projectId);
-            const sel = selected.has(t.id);
-            const due = fmtDue(t.dueDate);
-            const done = t.status === "done";
-            const title = t.title || "Untitled task";
-            const openLabel = `Open ${title} (${[STATUS_META[t.status]?.label, proj && `${proj.name}${proj.archivedAt ? ", archived project" : ""}`, due && `due ${due}`].filter(Boolean).join(", ")})`;
-            return (
-              <div key={t.id} role="group" aria-label={title} data-row-id={t.id} className="ktv-row" data-done={done || undefined}
-                data-selected={sel || undefined} data-cursor={kb.cursor === t.id || undefined} data-active={activeId === t.id || undefined} onClick={() => onOpen(t.id)}>
-                {bulk && (
-                  <button type="button" role="checkbox" aria-checked={sel} aria-label={`Select ${title}`} className="ktv-sel"
-                    onClick={(e) => { e.stopPropagation(); toggleSel(t.id); }}>
-                    {sel && <Icon name="check" size={11} sw={3} />}
-                  </button>
-                )}
-                <span className="ktv-lead">
-                  {onToggle
-                    ? <StatusGlyph status={t.status} size={isMobile ? 20 : 16} label={title} celebrateKey={t.id} onToggle={() => onToggle(t.id)} />
-                    : <StatusGlyph status={t.status} size={isMobile ? 20 : 16} readOnly />}
-                </span>
-                <div className="ktv-main">
-                  {/* a real button: Tab reaches it, Enter/Space open the task */}
-                  <button type="button" data-search-result className="ktv-title" onClick={(e) => { e.stopPropagation(); onOpen(t.id); }} aria-label={openLabel} title={title}>
-                    {title}
-                  </button>
-                </div>
-                <div className="ktv-cluster">
-                  {proj && (
-                    <span className="ktv-proj" title={proj.archivedAt ? `${proj.name} (archived project)` : proj.name}>
-                      {proj.archivedAt ? <Icon name="archive" size={12} sw={1.75} /> : <ProjectTile project={proj} size={16} />}
-                      <span>{proj.name}</span>
-                    </span>
-                  )}
-                  <span className="ktv-due">{t.dueDate && <DateChip value={t.dueDate} time={t.dueTime} size="sm" status={t.status} label="Due" readOnly onChange={() => {}} />}</span>
-                  <span className="ktv-trig" style={{ cursor: "inherit" }}><PriorityGlyph priority={t.priority} /></span>
-                  <span className="ktv-avatar"><Avatar id={t.assigneeId} size={20} /></span>
-                </div>
+          {active && SEARCH_GROUPS.map((g) => {
+            if (!counts[g.kind]) return null;
+            const full = fullGroup(g.kind);
+            const headId = `${resultsId}-${g.kind}`;
+            const more = g.kind === "task" ? (full ? 0 : counts.task - results.length) : full ? 0 : counts[g.kind] - PREVIEW[g.kind];
+            const head = (
+              <div className="ksr-ghead">
+                <h3 id={headId}>{g.label}<span className="ksr-gcount">{counts[g.kind]}</span></h3>
+                {more > 0 && <Button className="ksr-more" variant="ghost" size="sm" onClick={() => pickKind(g.kind)}>Show all {plural(counts[g.kind], ...KIND_WORDS[g.kind])}</Button>}
               </div>
             );
+            if (g.kind === "task") {
+              return (
+                <section key="task" className="ksr-group" aria-labelledby={headId}>
+                  {kindsWithHits.length > 1 && head}
+                  {taskRows.slice(0, results.length).map(({ task: t, snippet }) => (
+                    <TaskRow key={t.id} t={t} snippet={snippet} isMobile={isMobile} bulk={bulk} selected={selected.has(t.id)} cursor={kb.cursor === t.id}
+                      active={activeId === t.id} onToggleSel={toggleSel} onOpen={openTask} onToggle={onToggle}
+                      dragIds={() => (selected.has(t.id) ? selectedVisible.map((x) => x.id) : [t.id])} readOnly={!!props.readOnly} />
+                  ))}
+                </section>
+              );
+            }
+            const list = others.filter((h) => h.kind === g.kind);
+            return (
+              <section key={g.kind} className="ksr-group" aria-labelledby={headId}>
+                {head}
+                <div className="ksr-hits">
+                  {list.slice(0, full ? list.length : PREVIEW[g.kind]).map((h) => {
+                    const rowId = `${h.kind}:${h.id}`;
+                    return <HitRow key={rowId} hit={h} rowId={rowId} cursor={kb.cursor === rowId} onOpen={openHit}
+                      projectOf={(id) => (id ? projectById(id) : undefined)} workspaceName={(id) => (workspaces ?? []).find((w) => w.id === id)?.name} />;
+                  })}
+                </div>
+              </section>
+            );
           })}
-          {active && results.length === 0 && (
+          {active && total === 0 && !searching && (
             <div className="ktv-empty">
-              <EmptyState art="search" title={smart && onPreset && hiddenArchived === 0 ? "All clear" : "No tasks match"}
-                body={hiddenArchived > 0 ? (hiddenArchived === 1 ? "1 task in an archived project matches." : `${hiddenArchived} tasks in archived projects match.`)
+              <EmptyState art="search" title={smart && onPreset && hiddenArchived === 0 ? "All clear" : "Nothing matches"}
+                body={hiddenArchived > 0 ? (hiddenArchived === 1 ? "1 archived task matches." : `${hiddenArchived} archived tasks match.`)
                   : smart && onPreset ? "Nothing of yours is in this list right now."
-                  : "Try loosening a filter, or clear them to start over."}
-                action={!(smart && onPreset) && <Button variant="secondary" icon="x" onClick={() => setQ(EMPTY)}>Clear search</Button>} />
+                  : parsed.chips.length ? "Try removing a filter, or search for fewer words."
+                  : "Try fewer words, or loosen a filter."}
+                action={!(smart && onPreset) && <Button variant="secondary" icon="x" onClick={reset}>Clear search</Button>} />
             </div>
           )}
+          {active && total === 0 && searching && <p className="ksr-note" style={{ padding: "8px 0" }}>Searching everything…</p>}
           {!active && (
-            <div className="ktv-empty">
-              <EmptyState art="search" title="Find anything, instantly"
-                body={<>Search by text, status, priority, assignee, project, tag or due date. Words can be in any order; use "quotes" for an exact phrase.</>} />
-            </div>
+            <SearchStart recents={recents} examples={examples}
+              onPick={(t) => { setInput(t); remember(t); inputRef.current?.focus({ preventScroll: true }); }}
+              onForget={(t) => { forgetRecentSearch(uid, t); setRecents(recentSearches(uid)); }}
+              onForgetAll={() => { forgetRecentSearches(uid); setRecents([]); }} />
           )}
         </div>
       </div>
@@ -397,6 +630,72 @@ export function SearchView({ tasks, projects, members, currentUserId, onOpen, sa
           <IconButton icon="x" size="sm" label="Hide these hints" onClick={kb.dismissHint} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** The array from last render while its items are the same ones (by identity): a prop rebuilt on every
+ *  render with the same items stays one array, so what's memoised on it isn't redone. */
+function useSameItems<T>(xs: T[] | undefined): T[] | undefined {
+  const ref = useRef(xs);
+  const prev = ref.current;
+  if (prev !== xs && !(prev && xs && prev.length === xs.length && prev.every((x, i) => x === xs[i]))) ref.current = xs;
+  return ref.current;
+}
+
+function dedupe<T extends { id: string }>(xs: T[]): T[] {
+  const seen = new Set<string>();
+  return xs.filter((x) => (seen.has(x.id) ? false : (seen.add(x.id), true)));
+}
+
+/** One task: the same 36px row as My tasks (two lines when its description matches the words). */
+function TaskRow({ t, snippet, isMobile, bulk, selected, cursor, active, onToggleSel, onOpen, onToggle, dragIds, readOnly }: {
+  t: Task; snippet: string | null; isMobile: boolean; bulk: boolean; selected: boolean; cursor: boolean; active: boolean;
+  onToggleSel: (id: string) => void; onOpen: (id: string) => void; onToggle?: (id: string) => void;
+  /** what a drag from this row carries (the selection, when the row is in it) */
+  dragIds: () => string[];
+  readOnly: boolean;
+}) {
+  // a result can be dragged to Today, a day, a project or a person (lib/dnd); the bulk bar and the task panel do the same without a drag
+  const drag = useTaskDragSource({ taskIds: dragIds, source: "search", originId: t.id, disabled: readOnly, label: t.title });
+  const proj = getProject(t.projectId);
+  const due = fmtDue(t.dueDate);
+  const done = t.status === "done";
+  const title = t.title || "Untitled task";
+  const runs = splitHighlights(snippet);
+  const openLabel = `Open ${title} (${[STATUS_META[t.status]?.label, proj && `${proj.name}${proj.archivedAt ? ", archived project" : ""}`, due && `due ${due}`].filter(Boolean).join(", ")})`;
+  return (
+    <div {...drag.bind} role="group" aria-label={title} data-row-id={t.id} className="ktv-row" data-done={done || undefined} data-snippet={runs.length > 0 || undefined}
+      data-selected={selected || undefined} data-cursor={cursor || undefined} data-active={active || undefined} onClick={() => onOpen(t.id)}>
+      {bulk && (
+        <button type="button" role="checkbox" aria-checked={selected} aria-label={`Select ${title}`} className="ktv-sel"
+          onClick={(e) => { e.stopPropagation(); onToggleSel(t.id); }}>
+          {selected && <Icon name="check" size={11} sw={3} />}
+        </button>
+      )}
+      <span className="ktv-lead">
+        {onToggle
+          ? <StatusGlyph status={t.status} size={isMobile ? 20 : 16} label={title} celebrateKey={t.id} onToggle={() => onToggle(t.id)} />
+          : <StatusGlyph status={t.status} size={isMobile ? 20 : 16} readOnly />}
+      </span>
+      <div className="ktv-main">
+        {/* a real button: Tab reaches it, Enter/Space open the task */}
+        <button type="button" data-search-result className="ktv-title" onClick={(e) => { e.stopPropagation(); onOpen(t.id); }} aria-label={openLabel} title={title}>
+          <HighlightTitle text={title} />
+        </button>
+        {runs.length > 0 && <Highlighted className="ksr-snip" runs={runs} />}
+      </div>
+      <div className="ktv-cluster">
+        {proj && (
+          <span className="ktv-proj" title={proj.archivedAt ? `${proj.name} (archived project)` : proj.name}>
+            {proj.archivedAt ? <Icon name="archive" size={12} sw={1.75} /> : <ProjectTile project={proj} size={16} />}
+            <span>{proj.name}</span>
+          </span>
+        )}
+        <span className="ktv-due">{t.dueDate && <DateChip value={t.dueDate} time={t.dueTime} size="sm" status={t.status} label="Due" readOnly onChange={() => {}} />}</span>
+        <span className="ktv-trig" style={{ cursor: "inherit" }}><PriorityGlyph priority={t.priority} /></span>
+        <span className="ktv-avatar"><Avatar id={t.assigneeId} size={20} /></span>
+      </div>
     </div>
   );
 }

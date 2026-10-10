@@ -3,8 +3,17 @@
    an action, or ask Kanbo. One field; an ARIA combobox driving a
    listbox, announced to screen readers.
 
-   Typing shows, in order: Ask Kanbo · Tasks · Projects · Go to ·
-   Actions. The Ask row is picked for you when the text reads like a
+   Typing shows, in order: Ask Kanbo · Tasks · Projects · Docs ·
+   Comments · People · Go to · Actions. Search (0048, package u2): the
+   words are read like the Search page reads them ("Maya's overdue
+   tasks", "docs mentioning pricing"), and what they were read as is on
+   show — tinted in the field and listed as removable chips under it
+   (Shift+Tab reaches them). A task whose title has every word typed is
+   always offered first, whatever the words were read as. What the app
+   holds answers at once; the server's full-text search_all joins after
+   a short pause (SEARCH_DEBOUNCE_MS; a newer keystroke cancels it)
+   without moving the rows already shown; matches marked.
+   The Ask row is picked for you when the text reads like a
    question or an instruction ("…?", "move …", "what …"), or when
    nothing matches; otherwise the first result is. Tab swaps the two.
    Enter on it asks: the model when Kanbo AI is on and reachable, the
@@ -17,7 +26,7 @@
    lead and the Ask row is always the pick.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
-import { AiMark, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from "./primitives";
+import { AiMark, Avatar, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from "./primitives";
 import { AskKanbo, type AskKanboHandle, type AskSummary, type AskView, type AskVia } from "./AskKanbo";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProject, getMember, MEMBERS, PROJECTS, STATUS_META, todayISO } from "../data/data";
@@ -27,7 +36,17 @@ import { localAsk } from "../lib/askFallback";
 import { fmtDay } from "../lib/askActions";
 import type { AiOutcome, AskAction, AskContext, AskResult } from "../lib/askTypes";
 import type { Route } from "../app-types";
-import type { IconName, Task, Status, Project, Workspace } from "../data/types";
+import type { IconName, Task, Status, Project, Workspace, Comment, Member, SearchHit } from "../data/types";
+import { mergeSearchHits, titleTier, SEARCH_DEBOUNCE_MS, SEARCH_PALETTE_LIMIT, type LocalSearchInput } from "../lib/searchApi";
+import { hasSearchText } from "../lib/searchQuery";
+import { removeChipFromInput } from "../lib/searchNL";
+import { CHIP_ICON, chipSpoken } from "../lib/search/chips";
+import { splitHighlights } from "../lib/searchRows";
+import { highlightRuns } from "../lib/search/highlight";
+import { EMPTY_PANEL, resolveSearch } from "../lib/search/searchSpec";
+import { useUniversalSearch, localReasonText } from "../lib/search/useUniversalSearch";
+import { useDemoCorpus } from "../lib/search/demoCorpus";
+import { supabase } from "../lib/supabase";
 
 export interface Suggestion {
   id: string;
@@ -98,11 +117,24 @@ type Item =
   | { kind: "task"; id: string; label: string; status: Status; where?: string; due?: string; overdue?: boolean }
   | { kind: "project"; id: string; label: string; color: string; emoji?: string; where?: string }
   | { kind: "search"; label: string }
+  /* universal search (0048): a comment, a doc or a person found by the words */
+  | { kind: "comment" | "doc" | "person"; hit: SearchHit; label: string; where?: string }
   | { kind: "action"; s: Suggestion }
   | { kind: "go"; target: GoTarget; crumb?: string; project?: { id: string; name: string; color: string; emoji?: string } };
 interface Group { key: string; heading?: string; items: Item[] }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+/** a row's identity across renders (so the highlight can follow it when rows are added above) */
+const itemKey = (it: Item): string => {
+  switch (it.kind) {
+    case "task": case "project": return `${it.kind}:${it.id}`;
+    case "comment": case "doc": case "person": return `${it.kind}:${it.hit.id}`;
+    case "ask": return `ask:${it.example ? "x" : ""}${it.text}`;
+    case "search": return "search";
+    case "action": return `action:${it.s.id}`;
+    case "go": return `go:${it.target.id}`;
+  }
+};
 /** Touch first (a phone): no hardware keyboard, and the on-screen return key must never apply anything. */
 const coarsePointer = () => typeof window !== "undefined" && !!window.matchMedia?.("(hover: none) and (pointer: coarse)").matches;
 
@@ -132,6 +164,23 @@ const PALETTE_CSS = `
 .kcmd-mirror { position: absolute; left: 0; top: 50%; translate: 0 -50%; white-space: pre; color: transparent; pointer-events: none; will-change: transform; }
 .kcmd-tok { color: transparent; background: var(--accent-tint, var(--accent-dim)); border-radius: var(--r-xs, 4px); box-shadow: 0 0 0 2px var(--accent-tint, var(--accent-dim)); }
 .kcmd-esc { flex-shrink: 0; }
+
+/* what the words were read as (search filters): removable chips under the field */
+.kcmd-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex-shrink: 0; padding: 8px 12px 0 18px; }
+.kcmd-chips-label { margin-right: 2px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kcmd-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 24px; padding: 0 2px 0 8px; border-radius: 999px;
+  border: 1px solid var(--accent-line, color-mix(in oklab, var(--accent) 45%, transparent)); background: var(--bg-selected, var(--accent-dim));
+  font: 600 12px/1 var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); white-space: nowrap;
+}
+.kcmd-chip > svg { flex-shrink: 0; }
+.kcmd-chip-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kcmd-chip-x {
+  display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: inherit; cursor: pointer; opacity: 0.8;
+}
+.kcmd-chip-x:hover { opacity: 1; background: color-mix(in oklch, var(--accent) 14%, transparent); }
+.kcmd-chip-x:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 .kcmd-close { display: none; }
 @media (hover: none) and (pointer: coarse) { .kcmd-esc { display: none; } .kcmd-close { display: inline-grid; } }
 
@@ -158,6 +207,10 @@ const PALETTE_CSS = `
 .kcmd-opt[data-kind="ask"] .kcmd-label { color: var(--ink-2); }
 .kcmd-opt[data-example="true"] .kcmd-label { color: var(--ink-2); }
 .kcmd-empty { margin: 2px 12px 8px 40px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+/* search matches: a tint of the accent, the ink unchanged */
+.kcmd mark.kcmd-hl { color: inherit; background: var(--accent-tint, var(--accent-dim)); border-radius: 3px; box-shadow: 0 0 0 1px var(--accent-tint, var(--accent-dim)); font-weight: 600; }
+.kcmd-ico .kcmd-emoji { font-size: 13px; line-height: 16px; }
+.kcmd-note { margin-left: auto; font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-4); white-space: nowrap; }
 
 /* footer: the keys, and today's AI use */
 .kcmd-foot { display: flex; align-items: center; gap: 16px; flex-shrink: 0; height: 40px; padding: 0 16px; border-top: 1px solid var(--hairline);
@@ -172,6 +225,9 @@ const PALETTE_CSS = `
   .kcmd-list { max-height: none; }
   .kcmd-foot .kcmd-hint { display: none; }
   .kcmd-foot:not(:has(.kcmd-usage)) { display: none; }
+  .kcmd-chips { padding: 8px 12px 0; }
+  .kcmd-chip { height: 32px; padding-left: 10px; }
+  .kcmd-chip-x { width: 28px; height: 28px; }
 }
 @media (prefers-reduced-motion: reduce) { .kcmd, .kcmd-layer::before { animation: none; } }
 `;
@@ -179,6 +235,7 @@ const PALETTE_CSS = `
 export function CommandPalette({
   open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true,
   ai, askContext, onApplyAsk, canAct, onGo, recent, recentTaskIds, initialQuery, personal, askFirst = false,
+  comments, docs, onOpenDoc, onOpenPerson, onOpenComment, serverSearch, demoCorpus,
 }: {
   open: boolean;
   onClose: () => void;
@@ -218,6 +275,20 @@ export function CommandPalette({
   /** opened to ask (an "Ask Kanbo" button): the example questions lead, and
    *  whatever is typed goes to Kanbo unless another row is picked */
   askFirst?: boolean;
+  /* ---- universal search (0048; all optional) ---- */
+  /** comments the app has loaded; docs it knows (titles, and their text when on hand) */
+  comments?: Comment[];
+  docs?: LocalSearchInput["docs"];
+  /** open a doc (default: onGo to the project's Docs tab) */
+  onOpenDoc?: (docId: string, projectId: string) => void;
+  /** open a person (default: onGo to Team › People) */
+  onOpenPerson?: (userId: string) => void;
+  /** open a comment: its task, at the comment (default: onOpenTask) */
+  onOpenComment?: (taskId: string, commentId: string) => void;
+  /** ask the server's search_all (default: when a server is configured) */
+  serverSearch?: boolean;
+  /** also search the demo docs' text and comments (default: when there's no server) */
+  demoCorpus?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -233,6 +304,7 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const answerRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const firstChipRef = useRef<HTMLButtonElement>(null);
   const askRef = useRef<AskKanboHandle>(null);
   const askSeq = useRef(0);
   const limitRef = useRef<number | null>(null);
@@ -260,15 +332,55 @@ export function CommandPalette({
   // read when the palette opens: a phone never applies from its return key
   const coarse = useMemo(() => open && coarsePointer(), [open]);
 
+  /* ---------------- universal search: the device at once, the server after a pause ---------------- */
+  const people = useMemo<Member[]>(() => ctx.members.map((m) => getMember(m.id) ?? { id: m.id, name: m.name, email: "", type: "team", color: "" }), [ctx.members]);
+  const resolved = useMemo(() => resolveSearch(open ? q : "", EMPTY_PANEL, {
+    members: ctx.members, projects: ctx.projects, currentUserId: ctx.me, today: ctx.today,
+  }, ctx.today), [open, q, ctx]);
+  const corpus = useDemoCorpus(open && (demoCorpus ?? !supabase), useMemo(() => (projects ?? []).map((p) => p.id), [projects]), useMemo(() => tasks.map((t) => t.id), [tasks]));
+  const searchComments = useMemo(() => [...(comments ?? []), ...(corpus?.comments ?? []).filter((c) => !comments?.some((x) => x.id === c.id))], [comments, corpus]);
+  const searchDocs = useMemo(() => [...(docs ?? []), ...(corpus?.docs ?? []).filter((d) => !docs?.some((x) => x.id === d.id))], [docs, corpus]);
+  const found = useUniversalSearch({
+    active: open && !ask && resolved.active, text: resolved.text, filters: resolved.filters, limit: SEARCH_PALETTE_LIMIT, debounceMs: SEARCH_DEBOUNCE_MS,
+    server: serverSearch, local: { tasks, projects: projects ?? [], members: people, comments: searchComments, docs: searchDocs, currentUserId: ctx.me },
+  });
+  // one ranked list per kind, capped after ranking: the device's rows keep their order when the server's answer
+  // arrives (nothing jumps under the cursor), its own rows slot in by how well their titles match, and its
+  // snippets (stems, whole bodies) win for rows both found
+  const hits = useMemo(() => mergeSearchHits(found.local, found.server ?? [], { text: resolved.text, limitPerKind: SEARCH_PALETTE_LIMIT, keepOrder: true }),
+    [found.local, found.server, resolved.text]);
+  // a task whose title has every word typed is always offered (first), whatever the words were read as:
+  // "closed beta" finds "Closed beta invite list" even if "closed" had been read as a status
+  const archivedProjects = useMemo(() => new Set((projects ?? []).filter((p) => p.archivedAt).map((p) => p.id)), [projects]);
+  const literal = useMemo<Task[]>(() => {
+    if (!open || !hasSearchText(q)) return [];
+    const widen = !!resolved.filters.includeArchived;
+    return tasks
+      .map((t, i) => ({ t, i, tier: titleTier(t.title, q) }))
+      .filter((x) => x.tier >= 2 && !x.t.archivedAt && (widen || !archivedProjects.has(x.t.projectId)))
+      .sort((a, b) => b.tier - a.tier || (a.t.status === "done" ? 1 : 0) - (b.t.status === "done" ? 1 : 0) || a.i - b.i)
+      .slice(0, SEARCH_PALETTE_LIMIT)
+      .map((x) => x.t);
+  }, [open, q, tasks, archivedProjects, resolved.filters.includeArchived]);
+  // the filters the words were read as (shown as chips, so nothing narrows the list unseen)
+  const chips = open && !ask ? resolved.parsed.chips : [];
+  const removeChip = (id: string) => { setQ(removeChipFromInput(resolved.parsed, id)); inputRef.current?.focus({ preventScroll: true }); };
+
   const query = q.trim().toLowerCase();
   const spans = useMemo<NlpSpan[]>(() => {
     if (!open || !q.trim()) return [];
     try { return parseTask(q, { projects: ctx.projects, members: ctx.members }).spans.filter((s) => s.end > s.start && s.start >= 0 && s.end <= q.length); }
     catch { return []; }
   }, [open, q, ctx]);
+  // tinted behind the text: the words read as search filters, then what the task grammar recognises (Ask) where they don't overlap
+  const tints = useMemo<[number, number][]>(() => {
+    const out: [number, number][] = Object.values(resolved.parsed.spans).flat().filter(([a, b]) => b > a && a >= 0 && b <= q.length);
+    for (const s of spans) if (!out.some(([a, b]) => s.start < b && s.end > a)) out.push([s.start, s.end]);
+    return out.sort((x, y) => x[0] - y[0]);
+  }, [resolved.parsed.spans, spans, q]);
   // the mirror follows the field when the text scrolls sideways
   const syncMirror = () => { const el = inputRef.current, m = mirrorRef.current; if (el && m) m.style.transform = `translateX(${-el.scrollLeft}px)`; };
-  useLayoutEffect(syncMirror, [q, spans]);
+  useLayoutEffect(syncMirror, [q, tints]);
 
   // keep the highlighted row visible when navigating by keyboard
   useEffect(() => { if (open && !ask) document.getElementById(optId(sel))?.scrollIntoView?.({ block: "nearest" }); }, [sel, open, ask]);
@@ -324,24 +436,30 @@ export function CommandPalette({
       return askFirst ? [tryGroup, recentGroup, goGroup, actionGroup] : [recentGroup, goGroup, tryGroup, actionGroup];
     }
 
-    // ---- tasks: title, project name, assignee name or tag; best matches and open work first ----
-    const taskScore = (t: Task): number => {
-      const title = t.title.toLowerCase();
-      let s = title.startsWith(query) ? 6 : title.includes(query) ? 4 : 0;
-      if (!s) {
-        if (projectName(t.projectId)?.toLowerCase().includes(query)) s = 2;
-        else if (getMember(t.assigneeId)?.name?.toLowerCase().includes(query)) s = 2;
-        else if ((t.tags || []).some((tg) => tg.toLowerCase().includes(query))) s = 1;
+    // ---- tasks, comments, docs, people: universal search (the words, read as the Search page reads them) ----
+    // titles with every word typed first, then the search's own ranked rows
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const taskRows: Task[] = [...literal];
+    for (const h of hits) {
+      if (taskRows.length >= SEARCH_PALETTE_LIMIT) break;
+      if (h.kind !== "task" || taskRows.some((t) => t.id === h.id)) continue;
+      const t = byId.get(h.id);
+      if (t && !t.archivedAt) taskRows.push(t);
+    }
+    const taskItems: Item[] = taskRows.map(taskItem);
+    const hitItem = (h: SearchHit): Item => {
+      if (h.kind === "comment") {
+        const runs = splitHighlights(h.snippet);
+        return { kind: "comment", hit: h, label: runs.map((r) => r.text).join("") || h.title, where: [h.comment?.authorName, h.title].filter(Boolean).join(" · ") };
       }
-      return s && t.status !== "done" ? s + 0.5 : s;
+      if (h.kind === "doc") return { kind: "doc", hit: h, label: h.title || "Untitled", where: (h.projectId && projectName(h.projectId)) || h.doc?.projectName || undefined };
+      return { kind: "person", hit: h, label: h.title, where: h.person?.email || undefined };
     };
-    const taskItems: Item[] = tasks
-      .filter((t) => !t.archivedAt)
-      .map((t) => ({ t, score: taskScore(t) }))
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8)
-      .map(({ t }) => taskItem(t));
+    const can = { doc: !!(onOpenDoc || onGo), person: !!(onOpenPerson || onGo), comment: !!(onOpenComment || onOpenTask) };
+    const kindItems = (kind: "comment" | "doc" | "person", max: number): Item[] => (can[kind] ? hits.filter((h) => h.kind === kind).slice(0, max).map(hitItem) : []);
+    const commentItems = kindItems("comment", 3);
+    const docItems = kindItems("doc", 3);
+    const personItems = kindItems("person", 3);
     const searchItems: Item[] = onSearchAll ? [{ kind: "search", label: `See all results for “${q.trim()}” in Search` }] : [];
     const projectItems: Item[] = !onOpenProject || !projects ? [] : projects
       .filter((p) => !p.archivedAt)
@@ -350,6 +468,15 @@ export function CommandPalette({
       .sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name))
       .slice(0, 5)
       .map(({ p }) => ({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) }));
+    // projects whose description has the words (the device's or the server's), after the ones named so
+    if (onOpenProject && projects) {
+      for (const h of hits) {
+        if (h.kind !== "project" || projectItems.length >= 5 || projectItems.some((it) => it.kind === "project" && it.id === h.id)) continue;
+        const p = projects.find((x) => x.id === h.id);
+        if (!p || p.archivedAt) continue;
+        projectItems.push({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) });
+      }
+    }
 
     // places and actions keep their curated order on ties; the best-named match rises
     const ranked = <T,>(list: T[], score: (x: T) => number, max: number): T[] => list
@@ -371,10 +498,14 @@ export function CommandPalette({
       // "See all results" follows the tasks; with none, it stands alone where they'd be
       { key: "tasks", heading: taskItems.length ? "Tasks" : undefined, items: [...taskItems, ...searchItems] },
       { key: "projects", heading: "Projects", items: projectItems },
+      { key: "docs", heading: "Docs", items: docItems },
+      { key: "comments", heading: "Comments", items: commentItems },
+      { key: "people", heading: "People", items: personItems },
       { key: "go", heading: "Go to", items: goItems },
       { key: "actions", heading: "Actions", items: actionItems },
     ];
-  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today]);
+  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today,
+    hits, literal, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo]);
 
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   // real matches: tasks, projects, places and actions (not the Ask row, and not "See all results")
@@ -390,6 +521,17 @@ export function CommandPalette({
   if (open && selFor !== q) {
     setSelFor(q);
     setSel(hasResults && !askFirst && !looksLikeAsk(q) ? firstResult : 0);
+  }
+  // the same words, more rows (the server's answer, the demo docs): the highlight stays on the row it was on
+  const prevItems = useRef<Item[]>(items);
+  if (prevItems.current !== items) {
+    const before = prevItems.current;
+    prevItems.current = items;
+    if (open && selFor === q && before[sel]) {
+      const k = itemKey(before[sel]);
+      const j = items.findIndex((x) => itemKey(x) === k);
+      if (j >= 0 && j !== sel) setSel(j);
+    }
   }
 
   // on a phone, asking puts the keyboard away so the answer has the screen
@@ -458,10 +600,19 @@ export function CommandPalette({
       return;
     }
     if (it.kind === "task") { remember(it.id); onOpenTask?.(it.id); }
+    else if (it.kind === "comment") {
+      const h = it.hit;
+      if (h.taskId) { remember(h.taskId); if (onOpenComment) onOpenComment(h.taskId, h.id); else onOpenTask?.(h.taskId); }
+    }
+    else if (it.kind === "doc") {
+      const h = it.hit;
+      if (h.projectId) { if (onOpenDoc) onOpenDoc(h.id, h.projectId); else go({ view: "project", projectId: h.projectId, tab: "docs", docId: h.id }); }
+    }
+    else if (it.kind === "person") { if (onOpenPerson) onOpenPerson(it.hit.id); else go({ view: "team" }); }
     else if (it.kind === "project") onOpenProject?.(it.id);
     else if (it.kind === "search") onSearchAll?.(q.trim());
     else if (it.kind === "action") onAction(it.s);
-    else go(it.target.route);
+    else if (it.kind === "go") go(it.target.route);
     close();
   };
 
@@ -479,6 +630,8 @@ export function CommandPalette({
     if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => items.length ? (s + 1) % items.length : 0); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => items.length ? (s - 1 + items.length) % items.length : 0); }
     else if (e.key === "Enter") { e.preventDefault(); if (!e.repeat && items[sel]) activate(items[sel]); }
+    // Shift+Tab: to the filters the words were read as (each one removable)
+    else if (e.key === "Tab" && e.shiftKey && chips.length > 0 && firstChipRef.current) { e.preventDefault(); firstChipRef.current.focus(); }
     // Tab swaps between the Ask row and the first result
     else if (e.key === "Tab" && tabTo > 0) { e.preventDefault(); setSel((s) => (s === 0 ? tabTo : 0)); }
   };
@@ -495,11 +648,12 @@ export function CommandPalette({
   const keys = (hint: string) => (
     <span className="kcmd-keys" aria-hidden="true">{hint.split(" ").map((k, i) => <Kbd key={i}>{k}</Kbd>)}</span>
   );
-  const row = (it: Item, content: ReactNode, opts: { icon: ReactNode; hint?: string; kind?: string; example?: boolean }) => {
+  const row = (it: Item, content: ReactNode, opts: { icon: ReactNode; hint?: string; kind?: string; example?: boolean; name?: string }) => {
     idx += 1; const i = idx; const isActive = i === sel;
     const hint = opts.hint || (isActive ? "⏎" : "");
     return (
-      <div key={`${it.kind}-${i}`} id={optId(i)} role="option" aria-selected={isActive} className="kcmd-opt"
+      // a row with marked words carries its name whole (marks would split it into pieces for some readers)
+      <div key={`${it.kind}-${i}`} id={optId(i)} role="option" aria-selected={isActive} className="kcmd-opt" aria-label={opts.name}
         data-kind={opts.kind} data-example={opts.example || undefined}
         onMouseMove={() => { if (sel !== i) setSel(i); }}
         onMouseDown={(e) => e.preventDefault() /* keep focus in the input */}
@@ -510,6 +664,13 @@ export function CommandPalette({
       </div>
     );
   };
+  /** a title with the searched words marked (or, for a title matched as typed, the words typed) */
+  const marked = (label: string): ReactNode => {
+    let runs = resolved.text ? highlightRuns(label, resolved.text) : [];
+    if (!runs.some((r) => r.hit)) runs = highlightRuns(label, q);
+    if (!runs.some((r) => r.hit)) return label;
+    return runs.map((r, i) => (r.hit ? <mark key={i} className="kcmd-hl">{r.text}</mark> : <span key={i}>{r.text}</span>));
+  };
   const renderItem = (it: Item): ReactNode => {
     switch (it.kind) {
       case "ask":
@@ -519,10 +680,13 @@ export function CommandPalette({
         { icon: <AiMark size={it.example ? 14 : 16} />, kind: "ask", example: it.example, hint: !it.example && tabTo > 0 && sel !== 0 ? "Tab" : undefined });
       case "task":
         return row(it, <>
-          <span className="kcmd-label">{it.label}<span className="sr-only">, {STATUS_META[it.status]?.label}</span></span>
+          <span className="kcmd-label">{marked(it.label)}<span className="sr-only">, {STATUS_META[it.status]?.label}</span></span>
           {it.where && <span className="kcmd-meta">{it.where}</span>}
           {it.due && <span className="kcmd-due" data-tone={it.overdue ? "overdue" : undefined}>{it.due}</span>}
-        </>, { icon: <StatusGlyph status={it.status} size={14} /> });
+        </>, {
+          icon: <StatusGlyph status={it.status} size={14} />,
+          name: [it.label, STATUS_META[it.status]?.label, it.where, it.due && `${it.overdue ? "overdue, " : ""}due ${it.due}`].filter(Boolean).join(", "),
+        });
       case "project":
         return row(it, <>
           <span className="kcmd-label">{it.label}{it.where && <span className="sr-only">, project in {it.where}</span>}{!it.where && <span className="sr-only">, project</span>}</span>
@@ -530,6 +694,36 @@ export function CommandPalette({
         </>, { icon: <ProjectTile project={{ id: it.id, color: it.color, name: it.label, emoji: it.emoji }} size={16} /> });
       case "search":
         return row(it, <span className="kcmd-label">{it.label}</span>, { icon: <Icon name="search" size={16} sw={1.75} /> });
+      case "comment": {
+        const runs = splitHighlights(it.hit.snippet);
+        const author = it.hit.comment?.authorId && getMember(it.hit.comment.authorId) ? it.hit.comment.authorId : null;
+        return row(it, <>
+          <span className="kcmd-label">
+            {runs.length ? <>“{runs.map((r, i) => (r.hit ? <mark key={i} className="kcmd-hl">{r.text}</mark> : <span key={i}>{r.text}</span>))}”</> : it.label}
+            <span className="sr-only">, comment by {it.hit.comment?.authorName || "someone"} on {it.hit.title}</span>
+          </span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, {
+          icon: author ? <Avatar id={author} size={16} /> : <Icon name="message" size={16} sw={1.75} />,
+          name: `“${it.label}”, comment by ${it.hit.comment?.authorName || "someone"} on ${it.hit.title}`,
+        });
+      }
+      case "doc":
+        return row(it, <>
+          <span className="kcmd-label">{marked(it.label)}<span className="sr-only">, doc{it.where ? ` in ${it.where}` : ""}</span></span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, {
+          icon: it.hit.doc?.icon ? <span className="kcmd-emoji">{it.hit.doc.icon}</span> : <Icon name="notes" size={16} sw={1.75} />,
+          name: `${it.label}, doc${it.where ? ` in ${it.where}` : ""}`,
+        });
+      case "person":
+        return row(it, <>
+          <span className="kcmd-label">{marked(it.label)}<span className="sr-only">, person</span></span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, {
+          icon: getMember(it.hit.id) ? <Avatar id={it.hit.id} size={16} /> : <Icon name="user" size={16} sw={1.75} />,
+          name: `${it.label}, person${it.where ? `, ${it.where}` : ""}`,
+        });
       case "action":
         return row(it, <span className="kcmd-label">{it.s.label}</span>, {
           icon: it.s.ai ? <AiMark size={16} /> : <Icon name={it.s.icon} size={16} sw={1.75} />,
@@ -552,6 +746,7 @@ export function CommandPalette({
   // what the answer on screen would do, as AskKanbo counted it (after its checks and the person's edits)
   const sum = ask?.phase === "done" && summary?.seq === ask.seq ? summary : null;
   const enterTo = (label: string) => (coarse ? "" : ` Press Enter to ${label.charAt(0).toLowerCase()}${label.slice(1)}.`);
+  const readAs = chips.length ? ` Read as: ${chips.map(chipSpoken).join(", ")}.` : "";
   const announcement = ask
     ? ask.phase === "loading" ? `Kanbo is reading ${ask.sent.length} ${plural(ask.sent.length, "task", "tasks")}.${coarse ? "" : " Press Escape to cancel."}`
       : !sum ? ""
@@ -561,7 +756,7 @@ export function CommandPalette({
             : sum.follow ? enterTo(sum.follow).trim() : "",
           sum.leftOut ? `Kanbo left out ${sum.leftOut} ${plural(sum.leftOut, "change", "changes")}.` : "",
         ].filter(Boolean).join(" ")
-    : query ? (hasResults ? `${resultCount} ${plural(resultCount, "result", "results")}` : "No results. Press Enter to ask Kanbo.") : "";
+    : query ? (hasResults ? `${resultCount} ${plural(resultCount, "result", "results")}.${readAs}` : `No results.${readAs} Press Enter to ask Kanbo.`) : "";
   const askVerb = !sum ? "" : sum.selected ? "apply" : !sum.changes && sum.follow ? "open" : "";
 
   return (
@@ -575,16 +770,16 @@ export function CommandPalette({
         <div className="kcmd-bar">
           <AiMark size={16} thinking={ask?.phase === "loading"} />
           <div className="kcmd-field">
-            {spans.length > 0 && (
+            {tints.length > 0 && (
               <div ref={mirrorRef} className="kcmd-mirror" aria-hidden="true">
                 {(() => {
                   const out: ReactNode[] = [];
                   let at = 0;
-                  [...spans].sort((a, b) => a.start - b.start).forEach((s, i) => {
-                    if (s.start < at) return;                 // overlapping: keep the first
-                    if (s.start > at) out.push(q.slice(at, s.start));
-                    out.push(<mark key={i} className="kcmd-tok">{q.slice(s.start, s.end)}</mark>);
-                    at = s.end;
+                  tints.forEach(([a, b], i) => {
+                    if (a < at) return;                       // overlapping: keep the first
+                    if (a > at) out.push(q.slice(at, a));
+                    out.push(<mark key={i} className="kcmd-tok">{q.slice(a, b)}</mark>);
+                    at = b;
                   });
                   out.push(q.slice(at));
                   return out;
@@ -602,7 +797,25 @@ export function CommandPalette({
           <span className="kcmd-esc" aria-hidden="true"><Kbd>Esc</Kbd></span>
           <IconButton className="kcmd-close" icon="x" label="Close" size="sm" onClick={close} />
         </div>
-        <span id="kcmd-help" className="sr-only">Use the up and down arrow keys to move through results and Enter to choose. Tab switches between asking Kanbo and the first result.</span>
+        {!inAsk && chips.length > 0 && (
+          <div className="kcmd-chips" role="group" aria-label="Filters read from your search">
+            <span className="kcmd-chips-label" aria-hidden="true">Read as</span>
+            {chips.map((c, i) => (
+              <span key={c.id} className="kcmd-chip" data-kind={c.kind}>
+                <Icon name={CHIP_ICON[c.kind]} size={12} sw={2} />
+                <span className="kcmd-chip-t">{c.label}</span>
+                <button ref={i === 0 ? firstChipRef : undefined} type="button" className="kcmd-chip-x" aria-label={`Remove filter: ${chipSpoken(c)}`} title="Remove this filter"
+                  onMouseDown={(e) => e.preventDefault() /* keep focus in the field */} onClick={() => removeChip(c.id)}>
+                  <Icon name="x" size={11} sw={2.25} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <span id="kcmd-help" className="sr-only">
+          Use the up and down arrow keys to move through results and Enter to choose. Tab switches between asking Kanbo and the first result.
+          {chips.length > 0 && " Shift+Tab reaches the filters your words were read as, to remove one."}
+        </span>
         <div className="sr-only" aria-live="polite">{announcement}</div>
 
         {inAsk ? (
@@ -626,7 +839,9 @@ export function CommandPalette({
               <div key={g.key} role="presentation">
                 {g.items.map(renderItem)}
                 {/* nothing matches: say so under the Ask row, which Enter will use */}
-                {g.key === "ask" && onlyAsk && <p role="presentation" className="kcmd-empty">No tasks, projects or pages match “{q.trim()}”. Press Enter to ask Kanbo.</p>}
+                {g.key === "ask" && onlyAsk && <p role="presentation" className="kcmd-empty">{chips.length
+                  ? "Nothing matches with these filters. Remove one above, or press Enter to ask Kanbo."
+                  : <>No tasks, projects or pages match “{q.trim()}”. Press Enter to ask Kanbo.</>}</p>}
               </div>
             )))}
           </div>
@@ -638,6 +853,9 @@ export function CommandPalette({
           {!inAsk && tabTo > 0 && <span className="kcmd-hint"><Kbd>Tab</Kbd>{sel === 0 ? "results" : "ask Kanbo"}</span>}
           {inAsk && askVerb && <span className="kcmd-hint"><Kbd>⏎</Kbd>{askVerb}</span>}
           <span className="kcmd-hint"><Kbd>Esc</Kbd>{ask?.phase === "loading" ? "cancel" : "close"}</span>
+          {!inAsk && query && found.reason && found.reason !== "not_allowed" && (
+            <span className="kcmd-note" title={localReasonText(found.reason) ?? undefined}>{found.reason === "offline" ? "Offline: this device only" : "Searching this device"}</span>
+          )}
           {usage && <span className="kcmd-usage">Kanbo AI · {usage.used} of {usage.limit} today</span>}
         </div>
       </div>
