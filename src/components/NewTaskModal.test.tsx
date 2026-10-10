@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { useState } from "react";
 import { NewTaskModal } from "./NewTaskModal";
-import { saveTemplate } from "../lib/templates";
+import { resetLibraryTemplates, saveTemplate } from "../lib/templates";
 import { parseDateText } from "../lib/nlp";
 import { presetDate } from "../data/data";
 import type { Project, TagDef, Task } from "../data/types";
@@ -42,7 +42,7 @@ const escape = () => {
   expect(screen.getByTestId("state")).toHaveTextContent("closed");
 };
 
-beforeEach(() => { localStorage.clear(); vi.useFakeTimers({ shouldAdvanceTime: true }); });
+beforeEach(() => { localStorage.clear(); resetLibraryTemplates({ demoDelayMs: 0 }); vi.useFakeTimers({ shouldAdvanceTime: true }); });
 // restore only our own spies — restoreAllMocks would also wipe the global
 // matchMedia mock from src/test/setup.ts
 const spies: { mockRestore: () => void }[] = [];
@@ -154,42 +154,45 @@ describe("NewTaskModal", () => {
     expect(title().value).toBe("");
   });
 
-  it("applies a template's description and skips tags that no longer exist", () => {
-    saveTemplate({ name: "Client onboarding", title: "Onboard: ", priority: "high", tags: ["tag-design", "tag-gone"], focusMin: 45, recurrence: "none", description: "**Checklist**\n- kickoff" });
+  it("applies a template from the library: its description, and only the tags that still exist", async () => {
+    saveTemplate({ name: "Client kickoff", title: "Onboard: ", priority: "high", tags: ["tag-design", "tag-gone"], focusMin: 45, recurrence: "none", description: "**Checklist**\n- kickoff" });
     const onCreate = vi.fn();
     render(<Harness onCreate={onCreate} />);
     fireEvent.click(screen.getByRole("button", { name: "Ops" })); // picked before the template — must survive it
-    const picker = screen.getByRole("combobox", { name: /start from template/i });
-    const tplId = Array.from((picker as HTMLSelectElement).options).find((o) => o.text === "Client onboarding")!.value;
-    fireEvent.change(picker, { target: { value: tplId } });
-    expect(title().value).toBe("Onboard: ");
+    fireEvent.click(screen.getByRole("button", { name: "Template" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Client kickoff/ }));
+    expect(title().value).toBe("Onboard: ");   // as it was saved: typed on from
     expect((screen.getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement).value).toBe("**Checklist**\n- kickoff");
+    expect(screen.getByRole("group", { name: "Template: Client kickoff" })).toBeInTheDocument();
     typeTitle("Onboard: Acme");
     fireEvent.click(screen.getByRole("button", { name: /create task/i }));
+    expect(onCreate).toHaveBeenCalledTimes(1);   // no sub-tasks in this one
     expect(onCreate.mock.calls[0][0]).toMatchObject({ title: "Onboard: Acme", description: "**Checklist**\n- kickoff", priority: "high", tags: ["tag-ops", "tag-design"], focusMin: 45 });
   });
 
-  it("never overwrites a title the user already typed when a template is picked", () => {
+  it("never overwrites a title the user already typed when a template is picked; Remove undoes the rest", async () => {
     render(<Harness />);
     typeTitle("Login button broken");
-    const picker = screen.getByRole("combobox", { name: /start from template/i });
-    fireEvent.change(picker, { target: { value: "builtin-bug" } });
+    fireEvent.click(screen.getByRole("button", { name: "Template" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Bug report/ }));
     expect(title().value).toBe("Login button broken");
     expect((screen.getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement).value).toContain("Steps to reproduce");
     expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("high");
-    // switching back to Blank undoes the template's settings but keeps the typed title
-    fireEvent.change(picker, { target: { value: "" } });
+    // taking the template off undoes its settings but keeps the typed title
+    fireEvent.click(screen.getByRole("button", { name: "Remove template “Bug report”" }));
     expect(title().value).toBe("Login button broken");
     expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("medium");
     act(() => { vi.advanceTimersByTime(400); }); // description collapses away
     expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
   });
 
-  it("lists each built-in template exactly once", () => {
+  it("lists each built-in template exactly once, with this browser's own", async () => {
     saveTemplate({ name: "A", title: "A", priority: "medium", tags: [], focusMin: 30, recurrence: "none", description: "" });
     saveTemplate({ name: "B", title: "B", priority: "medium", tags: [], focusMin: 30, recurrence: "none", description: "" });
     render(<Harness />);
-    const opts = Array.from((screen.getByRole("combobox", { name: /start from template/i }) as HTMLSelectElement).options).map((o) => o.text);
+    fireEvent.click(screen.getByRole("button", { name: "Template" }));
+    await screen.findByRole("option", { name: /Bug report/ });
+    const opts = within(screen.getByRole("listbox", { name: "Templates" })).getAllByRole("option").map((o) => o.querySelector(".ktpl-pick-name")!.textContent);
     expect(opts.filter((t) => t === "Bug report")).toHaveLength(1);
     expect(opts).toEqual(expect.arrayContaining(["A", "B"]));
   });
