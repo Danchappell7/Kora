@@ -5,13 +5,20 @@
    history), the Radar from lib/radar. "Write it up" asks Kanbo for five
    lines when AI is on, and otherwise fills in the same facts as a
    Slack-ready template — it never waits on the network to be useful.
+   Kudos (0048, u10): a teammate's finished task carries a one-tap
+   KudosButton (guests may give them; your own tasks show what you got),
+   and each person's row says how many kudos they've had in the period.
+   Pulse reads the workspace's kudos itself (live) unless the host passes
+   `kudos`. Person rows take task drops (lib/dropActions
+   usePersonDropTarget) when the host passes onDropTasksOnPerson; the
+   keyboard way is each task's own assignee picker / "Move to…" menu.
    ============================================================ */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AiMark, Avatar, Button, EmptyState, Meter, Segmented, Sheet, StatusGlyph, Vellum } from "../primitives";
 import { useToast } from "../Toast";
 import { getMember, KANBO_TODAY, toLocalISO } from "../../data/data";
 import { ROLE_META } from "../../lib/permissions";
-import type { Task, WorkspaceMember, WorkspaceEvent } from "../../data/types";
+import type { Kudos, Task, WorkspaceMember, WorkspaceEvent } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { buildPulse, periodStart, plainText, pulseFactsForAi, pulseMarkdown, pulseSentence, pulseSentenceParts, pulseTaskCount, sinceWords, type PulsePeriod, type PulsePerson } from "../../lib/pulse";
 import { computeRisks, loadTone, readCapacities } from "../../lib/radar";
@@ -19,6 +26,10 @@ import { addDays, fmtDayMonth, localDay } from "./reportingUtils";
 import { RadarPanel } from "./RadarPanel";
 import { SlackPostButton } from "../integrations";
 import { risksSlackText } from "../../lib/slack";
+import { kudosCounts, kudosOnTask } from "../../lib/momentum";
+import { usePersonDropTarget } from "../../lib/dropActions";
+import { KudosButton, KudosTally } from "../momentum/KudosButton";
+import { useWorkspaceKudos } from "../momentum/useKudos";
 
 function useOptionalToast() { try { return useToast(); } catch { return null; } }
 
@@ -56,7 +67,7 @@ const rowsFor = (text: string) =>
 type Person = { id: string; name: string; role?: string; guest?: boolean };
 type WriteUp = { status: "loading" } | { status: "ready"; text: string; ai: boolean; note?: string };
 
-export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople }: {
+export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, onDropTasksOnPerson }: {
   tasks: Task[];
   members: WorkspaceMember[];
   currentUserId: string;
@@ -76,6 +87,12 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   onNewWorkspace?: () => void;
   /** Team › People, where the team is invited (the action on an empty team) */
   onOpenPeople?: () => void;
+  /** (0048) the workspace's kudos, when the host keeps them; otherwise Pulse reads them itself (live) */
+  kudos?: Kudos[];
+  /** (0048) told after this person gives or takes back kudos: the task's kudos now */
+  onGiveKudos?: (taskId: string, next: Kudos[]) => void;
+  /** (0048) tasks dropped on a person's row (lib/dnd): reassign them (lib/dropActions reassignTasks) */
+  onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
 }) {
   const toast = useOptionalToast();
   const [period, setPeriod] = useState<PulsePeriod>("day");
@@ -115,6 +132,15 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
     return { events, since: day && toLocalISO(day) > historyStart ? toLocalISO(day) : historyStart };
   }, [events, failed, historyStart]);
 
+  /* ---- kudos (0048): read here unless the host keeps them ---- */
+  const historySince = useMemo(() => (localDay(historyStart) ?? new Date(KANBO_TODAY)).toISOString(), [historyStart]);
+  const ownKudos = useWorkspaceKudos(personal || kudosProp ? null : workspaceId, { since: historySince });
+  const kudos = kudosProp ?? ownKudos.kudos;
+  const onKudos = (taskId: string, next: Kudos[]) => {
+    if (!kudosProp) ownKudos.replaceFor(taskId, next);
+    onGiveKudos?.(taskId, next);
+  };
+
   /* ---- who's on the team ---- */
   const people: Person[] = useMemo(() => {
     const rows = members.filter((m) => m.status === "active" && m.userId).map((m) => {
@@ -142,6 +168,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   }, [members, tasks, currentUserId]);
 
   const since = periodStart(period, todayISO);
+  const kudosSince = useMemo(() => (localDay(since) ?? new Date(KANBO_TODAY)).toISOString(), [since]);
+  const kudosBy = useMemo(() => kudosCounts(kudos, kudosSince), [kudos, kudosSince]);
   const facts = useMemo(() => buildPulse({ tasks, members: people, events: history?.events, today: todayISO, capacities, since, period }),
     [tasks, people, history, todayISO, capacities, since, period]);
   const risks = useMemo(() => computeRisks({ tasks, events: history?.events, eventsSince: history?.since, members: people, capacities, today: todayISO }),
@@ -278,7 +306,11 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
                   <span className="kpt-skel kpt-num"><span className="skel" style={{ width: 72, marginLeft: "auto" }} /></span>
                 </div>
               ))
-              : facts.people.map((p) => <PulseRow key={p.id} p={p} tasks={tasks} people={people} doneLabel={doneLabel} onOpen={onOpen} />)}
+              : facts.people.map((p) => (
+                <PulseRow key={p.id} p={p} tasks={tasks} people={people} doneLabel={doneLabel} onOpen={onOpen}
+                  currentUserId={currentUserId} kudos={kudos} received={kudosBy[p.id]?.received ?? 0} kudosWhen={period === "week" ? "this week" : `since ${sinceWord}`}
+                  onKudos={onKudos} readOnly={readOnly} onDropTasksOnPerson={onDropTasksOnPerson} />
+              ))}
           </div>
         </div>
         )}
@@ -314,8 +346,31 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   );
 }
 
-/** One person's row: what they finished, what's on today (blocked work first), and their week. */
-function PulseRow({ p, tasks, people, doneLabel, onOpen }: { p: PulsePerson; tasks: Task[]; people: Person[]; doneLabel: string; onOpen: (id: string) => void }) {
+/** One person's row: what they finished (with kudos), what's on today (blocked work first), and their week. */
+function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, received, kudosWhen, onKudos, readOnly, onDropTasksOnPerson }: {
+  p: PulsePerson; tasks: Task[]; people: Person[]; doneLabel: string; onOpen: (id: string) => void;
+  currentUserId: string; kudos: Kudos[]; received: number; kudosWhen: string;
+  onKudos: (taskId: string, next: Kudos[]) => void;
+  readOnly: boolean;
+  onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
+}) {
+  // a drop target for tasks dragged from anywhere (binds nothing for guests, or when the host doesn't reassign)
+  const drop = usePersonDropTarget({ userId: p.id, name: p.name }, {
+    readOnly: readOnly || !onDropTasksOnPerson,
+    onDrop: (ids, userId) => onDropTasksOnPerson?.(ids, userId),
+  });
+  const me = p.id === currentUserId;
+  // kudos: beneath a finished task once it has some (like reactions); until then, on a mouse,
+  // the button has its own column at the item's end (never over the item) and shows on hover
+  // or focus (touch: always beneath)
+  const kudosFor = (t: Task): Trailing | null => {
+    const list = kudosOnTask(kudos, t.id);
+    if (me) return list.length ? { node: <KudosTally kudos={list} taskId={t.id} people={people} /> } : null;
+    return {
+      float: list.length === 0,
+      node: <KudosButton task={t} currentUserId={currentUserId} recipientName={p.name} kudos={list} people={people} onChange={(next) => onKudos(t.id, next)} />,
+    };
+  };
   const today = [...p.blocked, ...p.onToday];
   const waitingOn = (t: Task): string => {
     const blocker = (t.dependencies ?? []).map((id) => tasks.find((x) => x.id === id)).find((x) => x && x.status !== "done");
@@ -325,16 +380,22 @@ function PulseRow({ p, tasks, people, doneLabel, onOpen }: { p: PulsePerson; tas
   };
   const tone = loadTone(p.loadHours, p.capacity);
   return (
-    <div className="kpt-row" role="row">
+    <div className="kpt-row" role="row" {...drop.bind}>
       <span className="kpt-who" role="rowheader">
         {getMember(p.id) ? <Avatar id={p.id} size={28} /> : <span className="kpt-initial" aria-hidden="true">{firstName(p.name).charAt(0).toUpperCase()}</span>}
         <span className="kpt-who-text">
           <span className="kpt-name">{p.name}</span>
           {p.role && <span className="kpt-role">{p.role}</span>}
+          {received > 0 && (
+            <span className="kpt-kudos" title={`${received} kudos ${kudosWhen}`}>
+              <span className="kkudos-emoji" aria-hidden="true">🎉</span><span aria-hidden="true">{received}</span>
+              <span className="sr-only">{received} kudos {kudosWhen}</span>
+            </span>
+          )}
         </span>
       </span>
       <span role="cell" data-label={doneLabel}>
-        <ItemList items={p.done} empty="Nothing yet" onOpen={onOpen} />
+        <ItemList items={p.done} empty="Nothing yet" onOpen={onOpen} trailing={kudosFor} />
       </span>
       <span role="cell" data-label="On today">
         <ItemList items={today} empty="Nothing on today" onOpen={onOpen}
@@ -372,10 +433,15 @@ function dueNote(iso: string): { text: string; tone?: "signal" } | null {
   return null;
 }
 
-/** Up to three tasks, then "+n more" to show the rest. */
-function ItemList({ items, empty, onOpen, note }: {
+/** Something under a task in the list (kudos); `float`: on a mouse it sits in its own column at
+ *  the item's end (never over the item), shown on hover / focus; on touch it's beneath. */
+type Trailing = { node: ReactNode; float?: boolean };
+
+/** Up to three tasks, then "+n more" to show the rest. `trailing`: something under each (kudos). */
+function ItemList({ items, empty, onOpen, note, trailing }: {
   items: Task[]; empty: string; onOpen: (id: string) => void;
   note?: (t: Task) => { text: string; tone?: "signal" } | null;
+  trailing?: (t: Task) => Trailing | null;
 }) {
   const [all, setAll] = useState(false);
   if (!items.length) return <span className="kpt-none">{empty}</span>;
@@ -384,7 +450,7 @@ function ItemList({ items, empty, onOpen, note }: {
     <span className="kpt-items">
       {shown.map((t) => {
         const n = note?.(t);
-        return (
+        const item = (
           <button key={t.id} type="button" className="kpt-item" onClick={() => onOpen(t.id)}>
             <StatusGlyph status={t.status} size={14} />
             <span className="kpt-item-text">
@@ -393,6 +459,10 @@ function ItemList({ items, empty, onOpen, note }: {
             </span>
           </button>
         );
+        const extra = trailing?.(t);
+        return extra
+          ? <span key={t.id} className="kpt-item-wrap" data-float={extra.float ? "" : undefined}>{item}<span className="kpt-item-trail">{extra.node}</span></span>
+          : item;
       })}
       {items.length > SHOWN && (
         <button type="button" className="kpt-more" aria-expanded={all} onClick={() => setAll((a) => !a)}>
