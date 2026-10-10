@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Project, Task } from "../../data/types";
-import { setReferenceData } from "../../data/data";
+import { refreshClock, setReferenceData } from "../../data/data";
 import { taskMatchesQuery, toQuery } from "../searchQuery";
 import { smartListQuery, SMART_LISTS } from "../smartLists";
 import { localSearch } from "../searchApi";
@@ -38,9 +38,10 @@ const TASKS: Task[] = [
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-09T10:00:00+01:00"));
+  refreshClock(new Date("2026-10-09T10:00:00+01:00"));   // KANBO_TODAY is read from the real clock when data.ts loads
   setReferenceData({ projects: PROJECTS, members: CTX.members.map((m) => ({ ...m, email: `${m.id}@x.test`, type: "team" as const, color: "#888" })) });
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); refreshClock(); });
 
 /** the Search view's task rule for a panel (no words) */
 const viaPanel = (panel: SearchPanel) => {
