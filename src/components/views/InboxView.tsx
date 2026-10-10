@@ -1,21 +1,30 @@
 /* ============================================================
    KANBO — Inbox: a triage queue you empty.
    Needs your reply · New to you · FYI, with one-key actions
-   (J/K move · ↵ open · R reply · A add to Today · D schedule ·
-   H snooze · E archive), an inline reply, snooze and archive,
-   and Inbox zero at the end of it.
+   (J/K move · ↵ open · →/← show or hide a group · R reply ·
+   A add to Today · D schedule · H snooze · E archive), an inline
+   reply, snooze and archive, and Inbox zero at the end of it.
+   0048 (u4): related items fold into one row ("3 comments on Launch
+   deck from Sana and Theo", open it for the items; nothing that asks
+   something of you is ever folded); snooze is per thread (notification_snoozes, every device:
+   1 hour · Tomorrow 09:00 · Next week · a date and time) and a snoozed
+   thread sends no push or email; kudos rows; quiet hours say so; rows
+   with a task can be dragged to Today or a day (Add to Today / Schedule
+   do the same from the keyboard).
    ============================================================ */
-import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
-import { createPortal } from "react-dom";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties, type HTMLAttributes, type PointerEvent, type ReactNode } from "react";
 import { Icon, EmptyArt, EmptyState, Avatar, Button, DateChip, Kbd, ProjectTile, SectionLabel } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { timeAgo, getProject, getMember, MEMBERS, todayISO, toLocalISO } from "../../data/data";
-import type { Task, Activity, ActivityKind, IconName, ApprovalWithTask, Member, Project } from "../../data/types";
+import type { Task, Activity, ActivityKind, IconName, ApprovalWithTask, Member, NotificationSnooze, NotifyPrefs, Project } from "../../data/types";
 import { ApprovalsInboxGroup } from "../approvals/ApprovalsInboxGroup";
 import { approvalInboxLine, shownInApprovalsGroup } from "../../lib/approvals";
 import { docMentionRoute } from "../../lib/docs";
-import { triage, requestSource, isRequestTask, TRIAGE_GROUPS, type TriageGroup } from "../../lib/inboxTriage";
+import { triage, requestSource, isRequestTask, TRIAGE_GROUPS, bundleInbox, actorList, type BundleFamily, type InboxBundle, type TriageGroup } from "../../lib/inboxTriage";
+import { deviceTimeZone, planLegacySnoozeMigration, quietNow, readNotifyPrefs, snoozeFailureMessage, zoneLabel } from "../../lib/notifyPrefs";
+import { useTaskDragSource } from "../../lib/dnd";
+import { useThreadSnoozes } from "../inbox/useThreadSnoozes";
+import { SnoozeMenu } from "../inbox/SnoozeMenu";
 import { dayLabel } from "../../lib/rituals";
 import { prefersReducedMotion, useOptionalToast } from "../rituals/shared";
 import { useEntrance } from "../../hooks/useEntrance";
@@ -34,7 +43,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   // 0047: approvals (meta.event picks the words: approvalInboxLine) and doc mentions (no task: they open the doc)
   approval:    { icon: "check", verb: "asked for your approval on" },
   doc_mention: { icon: "notes", verb: "mentioned you in" },
-  kudos:       { icon: "sparkles", verb: "sent you kudos for" },   // 0048 placeholder (u4 / u10 finish the row)
+  kudos:       { icon: "sparkles", verb: "sent you kudos for" },   // 0048: "Theo sent you 👏 for Launch deck — “Great work”"
 };
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -67,7 +76,7 @@ const REPLY_WORDS = new Set([
    their name quoted as if it were the comment. */
 function actorOf(a: Activity): string | null {
   if (a.kind === "assigned" || a.kind === "mention" || a.kind === "doc_mention") return a.detail?.trim() || "Someone";
-  if (a.kind === "approval") return a.detail?.trim() || "Someone";
+  if (a.kind === "approval" || a.kind === "kudos") return a.detail?.trim() || "Someone";
   if (a.kind !== "comment") return null;
   const d = (a.detail || "").trim();
   if (!d || d === "Someone" || EMAIL_RE.test(d)) return d || "Someone";
@@ -88,6 +97,7 @@ const ACTOR_VERB: Partial<Record<ActivityKind, string>> = {
   mention: "mentioned you in",
   comment: "commented on",
   doc_mention: "mentioned you in",
+  kudos: "sent you kudos for",
 };
 
 /* Work that arrived through a request form reads "New request: {title}",
@@ -131,7 +141,11 @@ const ownsKeys = (el: EventTarget | null): boolean => {
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/* ---------- snoozes (per device) ----------
+/* ---------- snoozes on this device ----------
+   Since 0048 a snooze is per thread and lives on the server (useThreadSnoozes);
+   the per-device ones that are left are for items without a task (a doc
+   mention, an integration notice), the old ones that have ended, and every
+   snooze while the server can't keep them yet (0048 not run).
    Storage holds id → wake time for every account and workspace used in this
    browser, but the inbox only ever sees the current workspace's activity, so
    everything here touches only ids that are in `activity`. A snooze that has
@@ -142,6 +156,8 @@ const SNOOZE_KEY = "kanbo-inbox-snooze";
 const ZERO_KEY = "kanbo-inbox-zero-day";
 const MAX_TIMEOUT = 2 ** 31 - 1;
 const WAKE_WINDOW = 7 * 86400000;
+/** an ended thread snooze put back by Undo: 0048's snooze_guard takes nothing over a day old */
+const UNDO_ENDED_FLOOR = 23 * 3600000;
 type SnoozeState = {
   until: Record<string, number>;   // persisted: id → wake time (ms), including ended snoozes not yet flagged
   woke: Record<string, number>;    // this visit: came back during/just before it, flagged until acted on
@@ -176,19 +192,6 @@ function withoutIds(s: Set<string>, ids: string[]): Set<string> {
   return next;
 }
 
-function snoozeOptions(from: Date): { label: string; hint: string; until: number }[] {
-  const later = new Date(from.getTime() + 3 * 3600000);
-  const tomorrow = new Date(from); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(9, 0, 0, 0);
-  const monday = new Date(from); monday.setDate(monday.getDate() + (((8 - monday.getDay()) % 7) || 7)); monday.setHours(9, 0, 0, 0);
-  if (monday.getTime() === tomorrow.getTime()) monday.setDate(monday.getDate() + 7); // Sunday: "next week" ≠ tomorrow
-  const time = (d: Date) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  return [
-    { label: "In 3 hours", hint: time(later), until: later.getTime() },
-    { label: "Tomorrow, 9am", hint: tomorrow.toLocaleDateString("en-GB", { weekday: "short" }), until: tomorrow.getTime() },
-    { label: "Next week", hint: monday.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }), until: monday.getTime() },
-  ];
-}
-
 // one formatter for every row (toLocaleString builds a new one per call)
 const FULL_DATE = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const WAKE_TIME = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -196,98 +199,17 @@ function fullDate(iso: string | number): string | undefined {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? undefined : FULL_DATE.format(d);
 }
+/** "07:00" in a timezone */
+function timeIn(d: Date, tz: string): string {
+  try { return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(d); }
+  catch { return WAKE_TIME.format(d); }
+}
 /** "15:42" today, "Tomorrow 09:00", else "Mon 5 Oct 09:00" */
 function wakeLabel(ms: number): string {
   const d = new Date(ms), now = new Date();
   const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86400000);
   const t = WAKE_TIME.format(d);
   return days <= 0 ? t : days === 1 ? `Tomorrow ${t}` : `${dayLabel(toLocalISO(d))} ${t}`;
-}
-
-/* Snooze menu — portalled to <body> with fixed positioning so no card, scroll
-   container or sticky ancestor can clip it; opens upward when the trigger
-   sits near the bottom of the viewport. Menu-button keyboard model: focus
-   lands on the first option, arrows move, Escape/Tab close and return focus
-   to the trigger. */
-function SnoozeMenu({ anchor, itemTitle, onPick, onClose }: {
-  anchor: HTMLElement;
-  itemTitle: string;
-  onPick: (until: number) => void;
-  onClose: (refocus: boolean) => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number; up: boolean } | null>(null);
-  const options = useMemo(() => snoozeOptions(new Date()), []);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = anchor.getBoundingClientRect();
-    const mh = el.offsetHeight, mw = el.offsetWidth, gap = 6, edge = 8;
-    const vh = window.innerHeight, vw = window.innerWidth;
-    const below = vh - r.bottom;
-    const up = below < mh + gap + edge && r.top > below;
-    const top = up ? Math.max(edge, r.top - gap - mh) : Math.max(edge, Math.min(vh - edge - mh, r.bottom + gap));
-    const left = Math.max(edge, Math.min(vw - edge - mw, r.right - mw));
-    setPos({ top, left, up });
-  }, [anchor]);
-
-  const placed = pos !== null;
-  useEffect(() => {
-    if (placed) ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
-  }, [placed]);
-
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      const t = e.target as Node | null;
-      if (t && (ref.current?.contains(t) || anchor.contains(t))) return;
-      closeRef.current(false);
-    };
-    const onScroll = (e: Event) => {
-      if (e.target instanceof Node && ref.current?.contains(e.target)) return;
-      closeRef.current(false);
-    };
-    const onResize = () => closeRef.current(false);
-    document.addEventListener("pointerdown", onDown, true);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [anchor]);
-
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
-    const i = items.indexOf(document.activeElement as HTMLButtonElement);
-    const go = (n: number) => { e.preventDefault(); items[(n + items.length) % items.length]?.focus(); };
-    if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); closeRef.current(true); }
-    else if (e.key === "ArrowDown") go(i + 1);
-    else if (e.key === "ArrowUp") go(i < 0 ? items.length - 1 : i - 1);
-    else if (e.key === "Home") go(0);
-    else if (e.key === "End") go(items.length - 1);
-  };
-
-  return createPortal(
-    <div ref={ref} role="menu" aria-label={`Snooze “${itemTitle}” until`} onKeyDown={onKeyDown}
-      className="kinbox-menu" data-up={pos?.up || undefined}
-      style={{
-        position: "fixed", top: pos?.top ?? 0, left: pos?.left ?? 0, zIndex: 1100,
-        visibility: placed ? "visible" : "hidden", transformOrigin: pos?.up ? "100% 100%" : "100% 0",
-      }}>
-      <div className="kinbox-menu-label" aria-hidden="true">Snooze until</div>
-      {options.map((o) => (
-        <button key={o.label} type="button" role="menuitem" tabIndex={-1} className="kinbox-mi" onClick={() => onPick(o.until)}>
-          <span>{o.label}</span>
-          <span className="kinbox-mi-hint">{o.hint}</span>
-        </button>
-      ))}
-    </div>,
-    document.body,
-  );
 }
 
 /* Who the row is from: their avatar, initials for someone the workspace
@@ -308,6 +230,37 @@ type Segment = "inbox" | "snoozed" | "archived";
 type ConfirmScope = "all" | "fyi";
 type ReplyState = { id: string; sending: boolean; error?: string };
 type RowAct = { act: string; icon: IconName; label: string; tip: string; kbd?: string; run: (anchor: HTMLElement) => void; pressed?: boolean; menu?: boolean };
+/** A line in the list: one item, a bundle of related items (its head, `a` = the newest),
+ *  or one of an open bundle's items (`parent` = the bundle's key). */
+interface Row { id: string; a: Activity; items: Activity[]; bundle: InboxBundle | null; parent?: string }
+
+const BUNDLE_NOUN: Record<BundleFamily, [string, string, string]> = {
+  comment: ["comment", "comments", "on"], kudos: ["kudos", "kudos", "for"], history: ["update", "updates", "to"],
+};
+const domId = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+/* A row that can be picked up and dropped on Today / a day of the week (u3's
+   targets). Never the only way: Add to Today (A) and Schedule (D) do the same. */
+function RowFrame({ rowRef, dragTaskId, dragOrigin, dragDisabled, dragLabel, children, ...div }: HTMLAttributes<HTMLDivElement> & {
+  rowRef: (el: HTMLDivElement | null) => void;
+  dragTaskId: string | null;
+  dragOrigin: string;
+  dragDisabled: boolean;
+  dragLabel: string;
+  children: ReactNode;
+}) {
+  const src = useTaskDragSource({
+    taskIds: dragTaskId ? [dragTaskId] : [], source: "inbox", originId: dragOrigin, meta: { activityId: dragOrigin },
+    disabled: dragDisabled || !dragTaskId, label: dragLabel,
+  });
+  // picked up by the row itself, never from its buttons, date chip or reply box
+  const down = src.bind.onPointerDown;
+  const onPointerDown = down && ((e: PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement | null)?.closest?.(".kinbox-acts, .kinbox-due, .kinbox-expand, .kinbox-compose")) return;
+    down(e);
+  });
+  return <div {...div} {...src.bind} onPointerDown={onPointerDown} ref={rowRef}>{children}</div>;
+}
 
 export interface InboxViewProps {
   activity: Activity[];
@@ -315,7 +268,7 @@ export interface InboxViewProps {
   onOpen: (id: string) => void;
   onArchive: (id: string) => void;
   /** Archive the given items — "Archive all" passes exactly what the inbox is
-      currently showing (minus snoozed items). */
+      currently showing (minus snoozed items); archiving a bundle passes its items. */
   onClearAll: (ids?: string[]) => void;
   /** the signed-in user: "New to you" requests are the ones assigned to them */
   currentUserId?: string;
@@ -332,7 +285,7 @@ export interface InboxViewProps {
   onSchedule?: (taskId: string, dueDate: string) => void;
   /** ⋯ › Mark task done */
   onComplete?: (taskId: string) => void;
-  /** guests: no Add to Today, scheduling or completing (they can still reply) */
+  /** guests: no Add to Today, scheduling or completing (they can still reply, snooze and archive) */
   readOnly?: boolean;
   /** the Archived filter's items; without it, what was archived on this visit */
   archived?: Activity[];
@@ -354,12 +307,26 @@ export interface InboxViewProps {
   approvals?: { toReview: ApprovalWithTask[]; projects: Project[]; members: Member[]; onDecided?: () => void };
   /** 0047: a doc mention (no task) opens its doc (/p/:projectId/docs/:docId) */
   onOpenDoc?: (a: Activity) => void;
+  /** 0048 thread snoozes (notification_snoozes, your own rows). Absent: the Inbox reads
+   *  and writes them itself through lib/notifyPrefs (demo: in memory). Pass App's copy
+   *  with onSnooze / onUnsnooze to share it. */
+  snoozes?: NotificationSnooze[];
+  /** snooze, move or (with a time now) end a thread's snooze — used with `snoozes` */
+  onSnooze?: (taskId: string, until: Date) => Promise<unknown> | void;
+  /** forget a thread's snooze once it's been dealt with — used with `snoozes` */
+  onUnsnooze?: (taskId: string) => Promise<unknown> | void;
+  /** 0048 profiles.notify_prefs: "bundle" off shows every item on its own; quiet hours
+   *  show a quiet line above the list */
+  notifyPrefs?: NotifyPrefs;
+  /** the quiet line's "Change" (Settings › Notifications) */
+  onOpenNotificationSettings?: () => void;
 }
 
 export function InboxView({
   activity, tasks, onOpen, onArchive, onClearAll,
   currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
   loading, loadError, onRetry, onNewCount, onOpenIntegration, approvals, onOpenDoc,
+  snoozes: snoozesProp, onSnooze, onUnsnooze, notifyPrefs, onOpenNotificationSettings,
 }: InboxViewProps) {
   const entrance = useEntrance();
   const toast = useOptionalToast();
@@ -372,13 +339,15 @@ export function InboxView({
   const [confirm, setConfirm] = useState<ConfirmScope | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [reply, setReply] = useState<ReplyState | null>(null);
-  // what you've written, per item, for this visit: moving to another row (or
+  // what you've written, per row, for this visit: moving to another row (or
   // putting the composer away) never throws a half-written reply away
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [replied, setReplied] = useState<Set<string>>(() => new Set());
   const [onToday, setOnToday] = useState<Set<string>>(() => new Set());
   const [visitArchived, setVisitArchived] = useState<Activity[]>([]);
   const [sweep, setSweep] = useState(false);
+  // bundles opened to their items (by bundle key)
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   // Unread snapshot: App marks everything read the moment the inbox opens, so
   // capture what was unread on arrival (and anything that lands while it's
   // open) to keep the dots for this visit.
@@ -403,6 +372,18 @@ export function InboxView({
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
+  /* ---------- 0048: thread snoozes, prefs ---------- */
+  const threads = useThreadSnoozes(currentUserId, snoozesProp ? { snoozes: snoozesProp, onSnooze, onUnsnooze } : undefined);
+  // the server keeps thread snoozes; until it can (0048 not run), this device does, per item
+  const threadsOn = threads.mode === "server";
+  const threadUntil = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of threads.snoozes) { const t = Date.parse(s.until); if (Number.isFinite(t)) m.set(s.taskId, t); }
+    return m;
+  }, [threads.snoozes]);
+  const prefs = useMemo(() => readNotifyPrefs(notifyPrefs), [notifyPrefs]);
+  const zone = useMemo(() => deviceTimeZone(), []);
+
   useEffect(() => {
     const known = knownRef.current!;
     const fresh: string[] = [];
@@ -414,10 +395,38 @@ export function InboxView({
     if (fresh.length) setUnread((s) => { const n = new Set(s); fresh.forEach((id) => n.add(id)); return n; });
   }, [activity]);
 
-  // persist snoozes (a woken one leaves storage once it's flagged here, so it's flagged once)
+  // persist this device's snoozes (a woken one leaves storage once it's flagged here, so it's flagged once)
   useEffect(() => {
     try { localStorage.setItem(SNOOZE_KEY, JSON.stringify(snz.until)); } catch { /* private mode */ }
   }, [snz.until]);
+
+  // the old per-device snoozes move to their threads (once the server answers); the
+  // rest stay here: items without a task, ended ones, and other workspaces' items.
+  // They leave this device in the same moment their threads are snoozed (optimistic),
+  // and come back to it if the server says no.
+  const snoozeThreadRef = useRef(threads.snooze);
+  snoozeThreadRef.current = threads.snooze;
+  // threads the server refused this visit: they stay on this device (no retry loop)
+  const refusedMoves = useRef(new Set<string>());
+  useEffect(() => {
+    if (!threadsOn || !threads.ready) return;
+    const plan = planLegacySnoozeMigration(snz.until, activity, Date.now());
+    const moves = plan.threads.filter((t) => !refusedMoves.current.has(t.taskId));
+    if (!moves.length) return;
+    const taskOfItem = new Map(activity.map((a) => [a.id, a.taskId]));
+    const movingTasks = new Set(moves.map((t) => t.taskId));
+    const moving = Object.keys(snz.until).filter((id) => !(id in plan.keep) && movingTasks.has(taskOfItem.get(id) ?? ""));
+    const stored = Object.fromEntries(moving.map((id) => [id, snz.until[id]]));
+    setSnz((s) => ({ ...s, until: omit(s.until, moving) }));
+    for (const t of moves) {
+      void snoozeThreadRef.current(t.taskId, new Date(t.until)).then((r) => {
+        if (r.ok || !mounted.current) return;
+        refusedMoves.current.add(t.taskId);
+        const keep = Object.fromEntries(Object.entries(stored).filter(([id]) => taskOfItem.get(id) === t.taskId));
+        setSnz((s) => ({ ...s, until: { ...keep, ...s.until } }));
+      });
+    }
+  }, [threadsOn, threads.ready, activity, snz.until]);
 
   // wake snoozed items on time, even while the inbox stays open. Only items in
   // THIS inbox are flagged; an ended snooze for another workspace's item stays
@@ -439,10 +448,14 @@ export function InboxView({
       }));
       return;
     }
+    // threads wake too, and quiet hours end
+    for (const u of threadUntil.values()) if (u > t) next = Math.min(next, u);
+    const quiet = notifyPrefs ? quietNow(prefs) : null;
+    if (quiet) next = Math.min(next, quiet.until.getTime());
     if (!Number.isFinite(next)) return;
     const id = window.setTimeout(() => setTick((x) => x + 1), Math.min(MAX_TIMEOUT, next - t + 50));
     return () => window.clearTimeout(id);
-  }, [snz.until, activityIds, tick]);
+  }, [snz.until, activityIds, tick, threadUntil, prefs, notifyPrefs]);
 
   // keyboard continuity: after archiving/snoozing a row, focus its neighbour
   useEffect(() => {
@@ -465,12 +478,24 @@ export function InboxView({
 
   /* ---------- what's on screen ---------- */
   const now = Date.now();
-  const isSnoozed = (id: string) => (snz.until[id] ?? 0) > now;
+  const threadOf = (a: Activity) => (a.taskId ? threadUntil.get(a.taskId) ?? 0 : 0);
+  /** when the item comes back (0: it isn't snoozed): its thread's snooze, or this device's for the item */
+  const snoozedUntil = (a: Activity) => {
+    const local = snz.until[a.id] ?? 0, thread = threadOf(a);
+    return Math.max(local > now ? local : 0, thread > now ? thread : 0);
+  };
+  const isSnoozed = (a: Activity) => snoozedUntil(a) > 0;
+  /** when it came back from a snooze, while that still needs saying (0: it didn't) */
+  const backAt = (a: Activity) => {
+    const local = snz.woke[a.id] ?? (a.id in snz.until && snz.until[a.id] <= now ? snz.until[a.id] : 0);
+    const t = threadOf(a);
+    return Math.max(local, t && t <= now && t > now - WAKE_WINDOW ? t : 0);
+  };
   // a request still waiting in "Approvals for you" shows there (with its buttons), not twice
   const toReview = approvals?.toReview ?? [];
   const reviewCount = toReview.filter((r) => r.status === "pending" && r.canDecide !== false).length;
-  const visible = activity.filter((a) => !isSnoozed(a.id) && !shownInApprovalsGroup(a, toReview));
-  const snoozedItems = activity.filter((a) => isSnoozed(a.id)).sort((x, y) => snz.until[x.id] - snz.until[y.id]);
+  const visible = activity.filter((a) => !isSnoozed(a) && !shownInApprovalsGroup(a, toReview));
+  const snoozedItems = activity.filter(isSnoozed).sort((x, y) => snoozedUntil(x) - snoozedUntil(y));
   const snoozedCount = snoozedItems.length;
   const archivedItems = useMemo(() => {
     const src = archived ?? visitArchived;
@@ -478,30 +503,42 @@ export function InboxView({
   }, [archived, visitArchived, activityIds]);
   // items back from a snooze lead, so the reminder actually reminds (an ended
   // snooze counts before the wake effect has moved it, so nothing jumps)
-  const backAt = (id: string) => snz.woke[id] ?? (id in snz.until && snz.until[id] <= now ? snz.until[id] : 0);
-  const back = visible.filter((a) => backAt(a.id)).sort((x, y) => backAt(y.id) - backAt(x.id));
-  const groups = triage(visible.filter((a) => !backAt(a.id)), { me: currentUserId, tasks: taskById });
+  const back = visible.filter((a) => backAt(a)).sort((x, y) => backAt(y) - backAt(x));
+  const groups = triage(visible.filter((a) => !backAt(a)), { me: currentUserId, tasks: taskById });
   const sections: { id: TriageGroup | "back"; label: string; items: Activity[] }[] = segment === "inbox"
     ? [{ id: "back" as const, label: "Back from snooze", items: back }, ...TRIAGE_GROUPS.map((g) => ({ id: g.id, label: g.label, items: groups[g.id] }))]
         .filter((s) => s.items.length > 0)
     : [];
-  const ordered = segment === "inbox" ? sections.flatMap((s) => s.items) : segment === "snoozed" ? snoozedItems : archivedItems;
+  // related items fold into one row (never a mention): "3 comments on Launch deck from Sana and Theo"
+  const toRows = (items: Activity[], group: string, bundle = prefs.bundle): Row[] => {
+    const out: Row[] = [];
+    for (const b of bundleInbox(items, { tasks: taskById, group, actorOf, bundle })) {
+      if (b.items.length === 1) { out.push({ id: b.items[0].id, a: b.items[0], items: b.items, bundle: null }); continue; }
+      out.push({ id: b.key, a: b.items[0], items: b.items, bundle: b });
+      if (expanded.has(b.key)) for (const a of b.items) out.push({ id: a.id, a, items: [a], bundle: null, parent: b.key });
+    }
+    return out;
+  };
+  const sectionRows = sections.map((s) => ({ ...s, rows: toRows(s.items, s.id) }));
+  const rows: Row[] = segment === "inbox" ? sectionRows.flatMap((s) => s.rows)
+    : segment === "snoozed" ? toRows(snoozedItems, "snoozed") : toRows(archivedItems, "archived", false);
+  const rowById = new Map(rows.map((r) => [r.id, r]));
   // new on this visit and still here: the dots, and the number App shows beside them
   // (+ a request's own unread notice, which shows as its row in "Approvals for you" rather than here)
-  const inGroupNew = activity.reduce((n, a) => (!isSnoozed(a.id) && unread.has(a.id) && shownInApprovalsGroup(a, toReview) ? n + 1 : n), 0);
-  const newCount = visible.reduce((n, a) => (unread.has(a.id) || backAt(a.id) > 0 ? n + 1 : n), 0) + inGroupNew;
+  const inGroupNew = activity.reduce((n, a) => (!isSnoozed(a) && unread.has(a.id) && shownInApprovalsGroup(a, toReview) ? n + 1 : n), 0);
+  const newCount = visible.reduce((n, a) => (unread.has(a.id) || backAt(a) > 0 ? n + 1 : n), 0) + inGroupNew;
   useEffect(() => { onNewCount?.(newCount); }, [newCount, onNewCount]);
   const fyiShown = segment === "inbox" ? groups.fyi : [];
 
-  // the snoozed/archived item vanished (filter change, realtime archive…) → drop its menus
-  const menuOpenFor = menu && ordered.some((a) => a.id === menu.id) ? menu : null;
+  // the snoozed/archived row vanished (filter change, realtime archive, a bundle closing…) → drop its menus
+  const menuOpenFor = menu && rowById.has(menu.id) ? menu : null;
   useEffect(() => { if (menu && !menuOpenFor) setMenu(null); }, [menu, menuOpenFor]);
-  const moreOpenFor = more && ordered.some((a) => a.id === more) ? more : null;
+  const moreOpenFor = more && rowById.has(more) ? more : null;
   useEffect(() => { if (more && !moreOpenFor) setMore(null); }, [more, moreOpenFor]);
   const confirmCount = confirm === "fyi" ? fyiShown.length : visible.length;
   useEffect(() => { if (confirm && (segment !== "inbox" || confirmCount === 0)) setConfirm(null); }, [confirm, segment, confirmCount]);
-  const cursorOn = cursor && ordered.some((a) => a.id === cursor) ? cursor : null;
-  const replyOn = reply && ordered.some((a) => a.id === reply.id) ? reply : null;
+  const cursorOn = cursor && rowById.has(cursor) ? cursor : null;
+  const replyOn = reply && rowById.has(reply.id) ? reply : null;
 
   /* Inbox zero. Only a feed that has loaded can be empty: while it loads (or
      if it failed) there's no zero state and no sweep. The gradient sweeps the
@@ -527,53 +564,90 @@ export function InboxView({
 
   /* ---------- actions ---------- */
   const neighbourOf = (id: string) => {
-    const i = ordered.findIndex((a) => a.id === id);
-    return i < 0 ? null : (ordered[i + 1] ?? ordered[i - 1])?.id ?? null;
+    const i = rows.findIndex((r) => r.id === id);
+    if (i < 0) return null;
+    const gone = new Set([id, ...rows.filter((r) => r.parent === id).map((r) => r.id)]);
+    const after = rows.slice(i + 1).find((r) => !gone.has(r.id));
+    const before = rows.slice(0, i).reverse().find((r) => !gone.has(r.id) && r.id !== rows[i].parent);
+    return (after ?? before)?.id ?? null;
   };
-  // acted on (opened/archived): no longer new, no longer back from snooze.
-  // Only ever called with shown ids, so any stored snooze for them has ended.
-  const forget = (ids: string[]) => {
+  // acted on (opened/archived/replied): no longer new, no longer back from snooze —
+  // a thread that came back is settled, so it stops coming back on every device
+  const forget = (items: Activity[]) => {
+    const ids = items.map((a) => a.id);
     setUnread((s) => withoutIds(s, ids));
     setSnz((s) => {
       const woke = omit(s.woke, ids), until = omit(s.until, ids);
       return woke === s.woke && until === s.until ? s : { until, woke };
     });
+    const settle = new Set(items.filter((a) => a.taskId && threadOf(a) && threadOf(a) <= Date.now()).map((a) => a.taskId!));
+    for (const t of settle) void threads.settle(t);
   };
-  const openItem = (a: Activity) => {
+  const openRow = (row: Row) => {
+    const a = row.a;
     if (a.kind === "doc_mention") {
       if (!onOpenDoc || !docMentionRoute(a)) return;
-      forget([a.id]);
+      forget(row.items);
       onOpenDoc(a);
       return;
     }
     if (a.kind === "integration" && !a.taskId) {
       if (!onOpenIntegration) return;
-      forget([a.id]);
+      forget(row.items);
       onOpenIntegration(a);
       return;
     }
     if (!a.taskId || !taskById.has(a.taskId)) return;
-    forget([a.id]);
+    forget(row.items);
     onOpen(a.taskId);
   };
   const noteArchived = (items: Activity[]) => {
     if (archived || !items.length) return;
     setVisitArchived((xs) => [...items, ...xs.filter((x) => !items.some((i) => i.id === x.id))]);
   };
-  const archiveItem = (id: string) => {
-    focusNextRef.current = neighbourOf(id);
-    if (reply?.id === id) setReply(null);
-    noteArchived(activity.filter((a) => a.id === id));
-    forget([id]);
-    onArchive(id);
+  const archiveRow = (row: Row) => {
+    focusNextRef.current = neighbourOf(row.id);
+    if (reply?.id === row.id) setReply(null);
+    const items = row.items.filter((a) => activityIds.has(a.id));
+    noteArchived(items);
+    forget(items);
+    if (items.length === 1) onArchive(items[0].id);
+    else if (items.length > 1) onClearAll(items.map((a) => a.id));
   };
-  const snoozeItem = (id: string, until: number) => {
-    focusNextRef.current = neighbourOf(id);
+  /** Undo a thread's snooze: put back what it had. A running snooze comes back as it was. One that
+   *  had ended (the thread was "Back from snooze") ends again, keeping that flag — no further back
+   *  than the database takes (a day). One the Inbox no longer flagged, or none, is settled. */
+  const undoThreadSnooze = (taskId: string, before: number | undefined) => {
+    const t = Date.now();
+    if (before === undefined || before <= t - WAKE_WINDOW) return threads.settle(taskId);
+    if (before > t) return threads.snooze(taskId, new Date(before));
+    return threads.snooze(taskId, new Date(Math.max(before, t - UNDO_ENDED_FLOOR)));
+  };
+  const snoozeRow = (row: Row, until: number) => {
+    focusNextRef.current = neighbourOf(row.id);
     setMenu(null);
-    if (reply?.id === id) setReply(null);
-    setUnread((s) => withoutIds(s, [id]));
+    if (reply?.id === row.id) setReply(null);
+    const ids = row.items.map((a) => a.id);
+    setUnread((s) => withoutIds(s, ids));
+    const taskId = row.a.taskId;
+    if (taskId && threadsOn) {
+      // the whole thread: everything on this task now and while it's snoozed
+      const before = threadUntil.get(taskId);
+      setSnz((s) => ({ ...s, woke: omit(s.woke, ids) }));
+      void threads.snooze(taskId, new Date(until)).then((r) => {
+        if (!mounted.current) return;
+        if (!r.ok) { toast?.error(snoozeFailureMessage(r.failure)); return; }
+        toast?.action(`Snoozed until ${wakeLabel(until)}`, "Undo", () => {
+          void undoThreadSnooze(taskId, before).then((u) => {
+            if (u.ok || !mounted.current) return;
+            toast?.error(u.failure === "network" || u.failure === "unavailable" ? snoozeFailureMessage(u.failure) : "Couldn't undo that snooze. Try again.");
+          });
+        });
+      });
+      return;
+    }
     // self-pruning drops only stale entries: ended snoozes for other inboxes wait their turn
-    setSnz((s) => ({ until: { ...withoutStale(s.until), [id]: until }, woke: omit(s.woke, [id]) }));
+    setSnz((s) => ({ until: { ...withoutStale(s.until), ...Object.fromEntries(ids.map((id) => [id, until])) }, woke: omit(s.woke, ids) }));
   };
   const closeMenu = (refocus: boolean) => {
     const m = menu;
@@ -581,17 +655,29 @@ export function InboxView({
     if (refocus) m?.anchor.focus();
   };
   // only the snoozes counted in "{n} snoozed" (this inbox), which come back at the top
-  const unsnooze = (only?: string[]) => setSnz((s) => {
+  const unsnooze = (only?: Activity[]) => {
     const t = Date.now();
-    const ids = (only ?? activity.map((a) => a.id)).filter((id) => (s.until[id] ?? 0) > t);
-    if (!ids.length) return s;
-    return { until: omit(s.until, ids), woke: { ...s.woke, ...Object.fromEntries(ids.map((id) => [id, t])) } };
-  });
-  const bringBack = (id: string) => {
-    focusNextRef.current = neighbourOf(id);
-    unsnooze([id]);
+    const items = only ?? activity;
+    const threadsNow = new Set(items.filter((a) => a.taskId && threadOf(a) > t).map((a) => a.taskId!));
+    for (const taskId of threadsNow) void threads.snooze(taskId, new Date(t));
+    setSnz((s) => {
+      const ids = items.map((a) => a.id).filter((id) => (s.until[id] ?? 0) > t);
+      if (!ids.length) return s;
+      return { until: omit(s.until, ids), woke: { ...s.woke, ...Object.fromEntries(ids.map((id) => [id, t])) } };
+    });
+  };
+  const bringBack = (row: Row) => {
+    focusNextRef.current = neighbourOf(row.id);
+    unsnooze(row.items);
     toast?.toast("Back in your Inbox");
   };
+  const toggleExpand = (id: string, open?: boolean) => setExpanded((s) => {
+    const on = open ?? !s.has(id);
+    if (on === s.has(id)) return s;
+    const n = new Set(s);
+    if (on) n.add(id); else n.delete(id);
+    return n;
+  });
   const cancelConfirm = () => { restoreConfirmFocus.current = confirm; setConfirm(null); };
   const archiveShown = () => {
     const items = confirm === "fyi" ? fyiShown : visible;
@@ -599,16 +685,17 @@ export function InboxView({
     restoreConfirmFocus.current = confirm;
     setConfirm(null);
     if (!ids.length) return;
-    if (reply && ids.includes(reply.id)) setReply(null);
+    if (reply && rows.some((r) => r.id === reply.id && r.items.some((a) => ids.includes(a.id)))) setReply(null);
     noteArchived(items);
-    forget(ids);
+    forget(items);
     onClearAll(ids);
   };
-  const moveBack = (id: string) => {
+  const moveBack = (row: Row) => {
     if (!onUnarchive) return;
-    focusNextRef.current = neighbourOf(id);
-    onUnarchive([id]);
-    setVisitArchived((xs) => xs.filter((x) => x.id !== id));
+    focusNextRef.current = neighbourOf(row.id);
+    const ids = row.items.map((a) => a.id);
+    onUnarchive(ids);
+    setVisitArchived((xs) => xs.filter((x) => !ids.includes(x.id)));
   };
 
   const taskOf = (a: Activity) => (a.taskId ? taskById.get(a.taskId) : undefined);
@@ -618,10 +705,10 @@ export function InboxView({
   const canSchedule = (a: Activity) => { const t = taskOf(a); return !!onSchedule && !readOnly && !!t && t.status !== "done"; };
   const canComplete = (a: Activity) => { const t = taskOf(a); return !!onComplete && !readOnly && !!t && t.status !== "done"; };
 
-  const startReply = (a: Activity) => {
-    if (!canReply(a)) return;
-    setCursor(a.id);
-    setReply((r) => (r?.id === a.id ? r : { id: a.id, sending: false }));
+  const startReply = (row: Row) => {
+    if (!canReply(row.a)) return;
+    setCursor(row.id);
+    setReply((r) => (r?.id === row.id ? r : { id: row.id, sending: false }));
   };
   const cancelReply = (refocus = true) => {
     const id = reply?.id;
@@ -630,12 +717,13 @@ export function InboxView({
   };
   const sendReply = async () => {
     const r = reply;
-    const a = r && activity.find((x) => x.id === r.id);
+    const row = r && rowById.get(r.id);
+    const a = row?.a;
     const t = a && taskOf(a);
     const body = r ? (drafts[r.id] ?? "").trim() : "";
-    if (!r || !a || !t || !body || !onReply || r.sending) return;
+    if (!r || !row || !a || !t || !body || !onReply || r.sending) return;
     // a reply to a mention goes back to whoever mentioned you; anything else is a plain comment
-    const mentionId = a.kind === "mention" ? memberIdByName(actorOf(a) ?? "", members) : null;
+    const mentionId = a.kind === "mention" && !row.bundle ? memberIdByName(actorOf(a) ?? "", members) : null;
     const mentions = mentionId && mentionId !== currentUserId ? [mentionId] : undefined;
     setReply({ ...r, sending: true, error: undefined });
     let ok = false;
@@ -648,7 +736,7 @@ export function InboxView({
     setReply((cur) => (cur?.id === r.id ? null : cur));
     setDrafts((d) => omit(d, [r.id]));
     setReplied((s) => new Set(s).add(r.id));
-    forget([r.id]);
+    forget(row.items);
     toast?.success("Replied");
     window.setTimeout(() => rowRefs.current.get(r.id)?.focus({ preventScroll: true }), 0);
   };
@@ -661,29 +749,31 @@ export function InboxView({
     setOnToday((s) => new Set(s).add(t.id));
     toast?.success("Added to Today");
   };
-  const schedule = (a: Activity) => {
-    if (!canSchedule(a)) return;
-    rowEls.current.get(a.id)?.querySelector<HTMLButtonElement>(".kinbox-due button.kdate")?.click();
+  const schedule = (row: Row) => {
+    if (!canSchedule(row.a)) return;
+    rowEls.current.get(row.id)?.querySelector<HTMLButtonElement>(".kinbox-due button.kdate")?.click();
   };
   // H: the menu hangs off the row's Snooze button, or (touch screens, where
   // only ⋯ and Archive show) off ⋯, or the row itself
-  const openSnooze = (a: Activity) => {
+  const openSnooze = (row: Row) => {
     const shown = (el: HTMLElement | null | undefined): el is HTMLElement =>
       !!el && el.isConnected && window.getComputedStyle(el).display !== "none";
-    const anchor = [snoozeRefs.current.get(a.id), moreRefs.current.get(a.id), rowEls.current.get(a.id)].find(shown);
-    if (anchor) setMenu({ id: a.id, anchor });
+    const anchor = [snoozeRefs.current.get(row.id), moreRefs.current.get(row.id), rowEls.current.get(row.id)].find(shown);
+    if (anchor) setMenu({ id: row.id, anchor });
   };
 
-  /* ---------- keyboard: J/K move · ↵ open · R · A · D · H · E ---------- */
+  /* ---------- keyboard: J/K move · ↵ open · → / ← open or close a bundle · R · A · D · H · E ---------- */
   const moveCursor = (dir: 1 | -1) => {
-    if (!ordered.length) return;
-    const i = cursorOn ? ordered.findIndex((a) => a.id === cursorOn) : -1;
-    const next = ordered[i < 0 ? (dir > 0 ? 0 : ordered.length - 1) : Math.max(0, Math.min(ordered.length - 1, i + dir))];
-    setCursor(next.id);
-    const el = rowRefs.current.get(next.id);
-    el?.focus({ preventScroll: true });
+    if (!rows.length) return;
+    const i = cursorOn ? rows.findIndex((r) => r.id === cursorOn) : -1;
+    const next = rows[i < 0 ? (dir > 0 ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, i + dir))];
+    focusRow(next.id);
+  };
+  const focusRow = (id: string) => {
+    setCursor(id);
+    rowRefs.current.get(id)?.focus({ preventScroll: true });
     // instant: a smooth scroll still running would close a menu opened next (H)
-    rowEls.current.get(next.id)?.scrollIntoView?.({ block: "nearest", behavior: "instant" as ScrollBehavior });
+    rowEls.current.get(id)?.scrollIntoView?.({ block: "nearest", behavior: "instant" as ScrollBehavior });
   };
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   const gAt = useRef(0);
@@ -704,20 +794,25 @@ export function InboxView({
     const onRow = !!target?.classList?.contains("kinbox-main");
     if (k === "j" || (k === "ArrowDown" && onRow)) { e.preventDefault(); moveCursor(1); return; }
     if (k === "k" || (k === "ArrowUp" && onRow)) { e.preventDefault(); moveCursor(-1); return; }
-    const a = cursorOn ? ordered.find((x) => x.id === cursorOn) : undefined;
-    if (!a) return;
+    const row = cursorOn ? rowById.get(cursorOn) : undefined;
+    if (!row) return;
+    if (onRow && (k === "ArrowRight" || k === "ArrowLeft")) {
+      if (row.bundle && (k === "ArrowRight") !== expanded.has(row.id)) { e.preventDefault(); toggleExpand(row.id, k === "ArrowRight"); return; }
+      if (row.parent && k === "ArrowLeft") { e.preventDefault(); focusRow(row.parent); return; }
+      return;
+    }
     const onButton = !!target?.closest?.("button, a, [role='menuitem']");
-    if (k === "Enter") { if (!onButton) { e.preventDefault(); openItem(a); } return; }
+    if (k === "Enter") { if (!onButton) { e.preventDefault(); openRow(row); } return; }
     if (e.repeat) return;
     if (segment === "inbox") {
-      if (k === "r" && canReply(a)) { e.preventDefault(); startReply(a); return; }
-      if (k === "a" && onAcceptToday && !readOnly) { e.preventDefault(); acceptToday(a); return; }
-      if (k === "d" && canSchedule(a)) { e.preventDefault(); schedule(a); return; }
-      if (k === "h") { e.preventDefault(); openSnooze(a); return; }
-      if (k === "e") { e.preventDefault(); archiveItem(a.id); return; }
+      if (k === "r" && canReply(row.a)) { e.preventDefault(); startReply(row); return; }
+      if (k === "a" && onAcceptToday && !readOnly) { e.preventDefault(); acceptToday(row.a); return; }
+      if (k === "d" && canSchedule(row.a)) { e.preventDefault(); schedule(row); return; }
+      if (k === "h") { e.preventDefault(); openSnooze(row); return; }
+      if (k === "e") { e.preventDefault(); archiveRow(row); return; }
     } else if (segment === "snoozed") {
-      if (k === "h") { e.preventDefault(); bringBack(a.id); return; }
-      if (k === "e") { e.preventDefault(); archiveItem(a.id); return; }
+      if (k === "h") { e.preventDefault(); bringBack(row); return; }
+      if (k === "e") { e.preventDefault(); archiveRow(row); return; }
     }
   };
   useEffect(() => {
@@ -727,51 +822,58 @@ export function InboxView({
   }, []);
 
   /* ---------- rows ---------- */
-  const actsFor = (a: Activity, title: string): RowAct[] => {
+  const actsFor = (row: Row, title: string): RowAct[] => {
+    const a = row.a;
+    const what = row.bundle ? `${row.bundle.items.length} updates on “${title}”` : `“${title}”`;
     if (segment === "snoozed") return [
-      { act: "back", icon: "undo", label: `Bring back “${title}”`, tip: "Bring back now", kbd: "H", run: () => bringBack(a.id) },
-      { act: "archive", icon: "archive", label: `Archive “${title}”`, tip: "Archive", kbd: "E", run: () => archiveItem(a.id) },
+      { act: "back", icon: "undo", label: `Bring back ${what}`, tip: "Bring back now", kbd: "H", run: () => bringBack(row) },
+      { act: "archive", icon: "archive", label: `Archive ${what}`, tip: "Archive", kbd: "E", run: () => archiveRow(row) },
     ];
     if (segment === "archived") return onUnarchive
-      ? [{ act: "back", icon: "undo", label: `Move “${title}” back to Inbox`, tip: "Move back to Inbox", run: () => moveBack(a.id) }]
+      ? [{ act: "back", icon: "undo", label: `Move “${title}” back to Inbox`, tip: "Move back to Inbox", run: () => moveBack(row) }]
       : [];
     const acts: RowAct[] = [];
-    if (canReply(a)) acts.push({ act: "reply", icon: "message", label: `Reply to “${title}”`, tip: "Reply", kbd: "R", run: () => startReply(a), pressed: replyOn?.id === a.id });
+    if (canReply(a)) acts.push({ act: "reply", icon: "message", label: `Reply to “${title}”`, tip: "Reply", kbd: "R", run: () => startReply(row), pressed: replyOn?.id === row.id });
     if (canToday(a)) acts.push({ act: "today", icon: "sun", label: `Add “${title}” to Today`, tip: "Add to Today", kbd: "A", run: () => acceptToday(a) });
-    if (canSchedule(a)) acts.push({ act: "schedule", icon: "calendar", label: `Schedule “${title}”`, tip: "Schedule", kbd: "D", run: () => schedule(a) });
+    if (canSchedule(a)) acts.push({ act: "schedule", icon: "calendar", label: `Schedule “${title}”`, tip: "Schedule", kbd: "D", run: () => schedule(row) });
     acts.push({ act: "snooze", icon: "clock", label: `Snooze “${title}”`, tip: "Snooze", kbd: "H", menu: true,
-      run: (el) => { if (menuOpenFor?.id === a.id) setMenu(null); else setMenu({ id: a.id, anchor: el }); } });
-    acts.push({ act: "archive", icon: "archive", label: `Archive “${title}”`, tip: "Archive", kbd: "E", run: () => archiveItem(a.id) });
+      run: (el) => { if (menuOpenFor?.id === row.id) setMenu(null); else setMenu({ id: row.id, anchor: el }); } });
+    acts.push({ act: "archive", icon: "archive", label: `Archive ${what}`, tip: "Archive", kbd: "E", run: () => archiveRow(row) });
     acts.push({ act: "more", icon: "more", label: `More actions for “${title}”`, tip: "More", menu: true,
-      run: (el) => { moreAnchor.current = el; setMore((m) => (m === a.id ? null : a.id)); } });
+      run: (el) => { moreAnchor.current = el; setMore((m) => (m === row.id ? null : row.id)); } });
     return acts;
   };
 
-  const renderRow = (a: Activity) => {
+  const renderRow = (row: Row, asItem = true) => {
+    const a = row.a;
+    const b = row.bundle;
     const task = taskOf(a);
     const proj = task ? getProject(task.projectId) : undefined;
-    const via = viaRequest(a, task);
+    const via = b ? null : viaRequest(a, task);
     const actor = via ? null : actorOf(a);
     const meta = KIND_META[a.kind] ?? KIND_META.status;
-    const isUnread = unread.has(a.id) || backAt(a.id) > 0;
+    const isUnread = row.items.some((x) => unread.has(x.id) || backAt(x) > 0);
     const title = a.taskTitle || "a task";
-    const isCursor = cursorOn === a.id;
-    const composing = replyOn?.id === a.id ? replyOn : null;
-    const acts = actsFor(a, title);
-    const snoozedUntil = segment === "snoozed" ? snz.until[a.id] : undefined;
+    const isCursor = cursorOn === row.id;
+    const composing = replyOn?.id === row.id ? replyOn : null;
+    const acts = actsFor(row, title);
+    const snoozedUntilAt = segment === "snoozed" ? Math.max(...row.items.map(snoozedUntil)) : undefined;
     const integ = a.kind === "integration" && !a.taskId;
     const docRoute = docMentionRoute(a);
     const isDoc = a.kind === "doc_mention";
     const openable = !!task || (integ && !!onOpenIntegration) || (!!docRoute && !!onOpenDoc);
     const apv = a.kind === "approval" ? approvalInboxLine(a) : null;
-    const excerpt = apv?.quote ? `“${apv.quote}”`
+    const kudosNote = a.kind === "kudos" && !b ? (a.meta?.note?.trim() || null) : null;
+    const excerpt = b ? null : kudosNote ? `“${kudosNote}”` : apv?.quote ? `“${apv.quote}”`
       : !actor && !via && a.detail && (a.kind === "comment" || a.kind === "status" || integ)
       ? (a.kind === "comment" ? `“${a.detail}”` : a.detail) : null;
     const docProj = docRoute ? getProject(docRoute.projectId) : undefined;
     // the row's description: where it's from, its marks, its date (when it has
     // one) and its age; never the empty "Schedule" chip
-    const subId = `kinbox-sub-${a.id}`;
-    const draft = segment === "inbox" && !composing && !!drafts[a.id]?.trim();
+    const subId = `kinbox-sub-${domId(row.id)}`;
+    const kidsId = `kinbox-kids-${domId(row.id)}`;
+    const open = !!b && expanded.has(row.id);
+    const draft = segment === "inbox" && !composing && !!drafts[row.id]?.trim();
     const onTodayMark = !!task && segment === "inbox" && isOnToday(task) && task.status !== "done";
     const ctx = via
       ? <span id={`${subId}-ctx`} className="truncate">via {via}</span>
@@ -782,78 +884,95 @@ export function InboxView({
           : null;
     const describedBy = [
       ctx && `${subId}-ctx`,
-      replied.has(a.id) && `${subId}-replied`,
+      replied.has(row.id) && `${subId}-replied`,
       draft && `${subId}-draft`,
       onTodayMark && `${subId}-today`,
       task?.dueDate && segment === "inbox" && `${subId}-due`,
       `${subId}-when`,
     ].filter(Boolean).join(" ");
-    const when = snoozedUntil
-      ? <time id={`${subId}-when`} dateTime={new Date(snoozedUntil).toISOString()} title={fullDate(snoozedUntil)} className="kinbox-when">Back {wakeLabel(snoozedUntil)}</time>
+    const when = snoozedUntilAt
+      ? <time id={`${subId}-when`} dateTime={new Date(snoozedUntilAt).toISOString()} title={fullDate(snoozedUntilAt)} className="kinbox-when">Back {wakeLabel(snoozedUntilAt)}</time>
       : <time id={`${subId}-when`} dateTime={a.createdAt} title={fullDate(a.createdAt)} className="kinbox-when">{timeAgo(a.createdAt)}</time>;
-    const due = task && segment === "inbox" && (task.dueDate || canSchedule(a)) ? (
+    const due = task && segment === "inbox" && !row.parent && (task.dueDate || canSchedule(a)) ? (
       // one Tab stop per row: the chip joins the tab order on the cursor row
       // only, like the row's actions (D reaches it from anywhere)
       <span className="kinbox-due" id={`${subId}-due`} data-empty={!task.dueDate || undefined}
-        ref={(el) => { const b = el?.querySelector<HTMLButtonElement>("button.kdate"); if (b) b.tabIndex = isCursor ? 0 : -1; }}>
+        ref={(el) => { const btn = el?.querySelector<HTMLButtonElement>("button.kdate"); if (btn) btn.tabIndex = isCursor ? 0 : -1; }}>
         <DateChip value={task.dueDate} time={task.dueTime} label={`Due date for “${title}”`} status={task.status} placeholder="Schedule"
           readOnly={!canSchedule(a)}
           onChange={(d) => {
             if (!onSchedule) return;
             // the picker's "No date": the Inbox only ever sets dates; clearing one is the task's business
-            if (!d) { if (task.dueDate) toast?.action("To remove a due date, open the task", "Open", () => openItem(a)); return; }
+            if (!d) { if (task.dueDate) toast?.action("To remove a due date, open the task", "Open", () => openRow(row)); return; }
             if (d === task.dueDate) return;
             onSchedule(task.id, d);
             toast?.success(`Scheduled for ${dayLabel(d)}`);
           }} />
       </span>
     ) : null;
+    const [one, many] = b?.family ? BUNDLE_NOUN[b.family] : ["update", "updates"];
+    const expand = b ? (
+      <button type="button" className="kinbox-expand" aria-expanded={open} aria-controls={kidsId} tabIndex={isCursor ? 0 : -1}
+        aria-label={open ? `Hide the ${b.items.length} ${many} on “${title}”` : `Show all ${b.items.length} ${many} on “${title}”`}
+        onClick={() => toggleExpand(row.id)}>
+        <Icon name={open ? "chevronDown" : "chevronRight"} size={12} sw={2} />
+        {open ? "Hide" : `Show all ${b.items.length}`}
+      </button>
+    ) : null;
     const marks = (
       <>
-        {replied.has(a.id) && <span id={`${subId}-replied`} className="kinbox-mark" data-tone="ok"><Icon name="check" size={12} sw={2} /> Replied</span>}
+        {replied.has(row.id) && <span id={`${subId}-replied`} className="kinbox-mark" data-tone="ok"><Icon name="check" size={12} sw={2} /> Replied</span>}
         {draft && <span id={`${subId}-draft`} className="kinbox-mark" data-tone="quiet"><Icon name="notes" size={12} sw={2} /> Draft</span>}
         {onTodayMark && <span id={`${subId}-today`} className="kinbox-mark"><Icon name="sun" size={12} sw={2} /> On Today</span>}
       </>
     );
+    const emoji = a.kind === "kudos" ? a.meta?.emoji?.trim() : undefined;
+    const say = b?.family
+      ? <>{b.items.length} {b.items.length === 1 ? one : many} {BUNDLE_NOUN[b.family][2]} <strong>{title}</strong>
+          {b.family !== "history" && b.actors.length > 0 && <> from <strong>{actorList(b.actors)}</strong></>}</>
+      : integ
+        ? <strong>{a.taskTitle || "An integration needs you"}</strong>
+        : via
+        ? <>New request: <strong>{title}</strong></>
+        : apv
+        ? <><strong>{apv.actor}</strong> {apv.verb} <strong>{title}</strong></>
+        : isDoc
+        ? <><strong>{actor}</strong> {ACTOR_VERB.doc_mention} <strong>{a.taskTitle || "a doc"}</strong></>
+        : a.kind === "kudos" && actor
+        ? <><strong>{actor}</strong> sent you {emoji ? <span className="kinbox-emoji">{emoji}</span> : "kudos"} for <strong>{title}</strong></>
+        : actor
+          ? <><strong>{actor}</strong> {ACTOR_VERB[a.kind]} <strong>{title}</strong></>
+          : <>You {meta.verb} <strong>{title}</strong></>;
     const style = { "--acts-w": `${Math.max(64, acts.length * 30)}px` } as CSSProperties;
     return (
-      <div key={a.id} role="listitem" className="kinbox-row" data-unread={isUnread || undefined} data-cursor={isCursor || undefined}
-        data-open={composing ? true : undefined} data-gone={task || integ || (isDoc && openable) ? undefined : true} style={style}
-        ref={(el) => { if (el) rowEls.current.set(a.id, el); else rowEls.current.delete(a.id); }}
-        onFocus={() => { if (cursorOn !== a.id) setCursor(a.id); }}>
-        <ActorMark actor={actor} kind={a.kind} request={!!via} members={members} />
+      <RowFrame key={row.id} role={asItem ? "listitem" : undefined} className="kinbox-row" data-unread={isUnread || undefined} data-cursor={isCursor || undefined}
+        data-open={composing ? true : undefined} data-gone={task || integ || (isDoc && openable) ? undefined : true}
+        data-child={row.parent ? true : undefined} data-bundle={b ? true : undefined} style={style}
+        rowRef={(el) => { if (el) rowEls.current.set(row.id, el); else rowEls.current.delete(row.id); }}
+        dragTaskId={task && task.status !== "done" ? task.id : null} dragOrigin={a.id} dragDisabled={!!readOnly} dragLabel={title}
+        onFocus={() => { if (cursorOn !== row.id) setCursor(row.id); }}>
+        <ActorMark actor={b && !b.actors.length ? null : actor} kind={a.kind} request={!!via} members={members} />
         <div className="kinbox-body">
           <button type="button" className="kinbox-main" aria-describedby={describedBy}
-            ref={(el) => { if (el) rowRefs.current.set(a.id, el); else rowRefs.current.delete(a.id); }}
-            onClick={() => openItem(a)} aria-disabled={openable ? undefined : true}
+            ref={(el) => { if (el) rowRefs.current.set(row.id, el); else rowRefs.current.delete(row.id); }}
+            onClick={() => openRow(row)} aria-disabled={openable ? undefined : true}
             title={openable || integ ? undefined : isDoc ? "This doc is no longer available" : "This task has been archived or is no longer available"}>
             {isUnread && <span className="sr-only">Unread: </span>}
             {/* two lines before clipping, so "who did what" survives a phone-width row */}
-            <span className="kinbox-say">
-              {integ
-                ? <strong>{a.taskTitle || "An integration needs you"}</strong>
-                : via
-                ? <>New request: <strong>{title}</strong></>
-                : apv
-                ? <><strong>{apv.actor}</strong> {apv.verb} <strong>{title}</strong></>
-                : isDoc
-                ? <><strong>{actor}</strong> {ACTOR_VERB.doc_mention} <strong>{a.taskTitle || "a doc"}</strong></>
-                : actor
-                  ? <><strong>{actor}</strong> {ACTOR_VERB[a.kind]} <strong>{title}</strong></>
-                  : <>You {meta.verb} <strong>{title}</strong></>}
-            </span>
+            <span className="kinbox-say">{say}</span>
           </button>
           <div className="kinbox-sub">
             {ctx}
+            {expand}
             {marks}
             {due}
             {narrow && when}
           </div>
           {composing && (
-            <ReplyComposer state={composing} text={drafts[a.id] ?? ""} to={actor} notifies={a.kind === "mention"}
+            <ReplyComposer state={composing} text={drafts[row.id] ?? ""} to={b ? null : actor} notifies={a.kind === "mention" && !b}
               onChange={(text) => {
-                setDrafts((d) => ({ ...d, [a.id]: text }));
-                setReply((r) => (r && r.id === a.id && r.error ? { ...r, error: undefined } : r));
+                setDrafts((d) => ({ ...d, [row.id]: text }));
+                setReply((r) => (r && r.id === row.id && r.error ? { ...r, error: undefined } : r));
               }}
               onSend={sendReply} onCancel={() => cancelReply()} />
           )}
@@ -869,11 +988,11 @@ export function InboxView({
                 <button key={x.act} type="button" className="kibtn kinbox-act" data-size="sm" data-act={x.act}
                   aria-label={x.label} data-tip={x.kbd ? `${x.tip} · ${x.kbd}` : x.tip} aria-keyshortcuts={x.kbd}
                   aria-haspopup={x.menu ? "menu" : undefined}
-                  aria-expanded={x.act === "snooze" ? menuOpenFor?.id === a.id : x.act === "more" ? moreOpenFor === a.id : undefined}
+                  aria-expanded={x.act === "snooze" ? menuOpenFor?.id === row.id : x.act === "more" ? moreOpenFor === row.id : undefined}
                   aria-pressed={x.act === "reply" ? !!x.pressed : undefined}
                   tabIndex={isCursor ? 0 : -1}
-                  ref={x.act === "snooze" ? (el) => { if (el) snoozeRefs.current.set(a.id, el); else snoozeRefs.current.delete(a.id); }
-                    : x.act === "more" ? (el) => { if (el) moreRefs.current.set(a.id, el); else moreRefs.current.delete(a.id); } : undefined}
+                  ref={x.act === "snooze" ? (el) => { if (el) snoozeRefs.current.set(row.id, el); else snoozeRefs.current.delete(row.id); }
+                    : x.act === "more" ? (el) => { if (el) moreRefs.current.set(row.id, el); else moreRefs.current.delete(row.id); } : undefined}
                   onClick={(e) => x.run(e.currentTarget)}>
                   <Icon name={x.icon} size={16} sw={1.75} />
                 </button>
@@ -881,23 +1000,45 @@ export function InboxView({
             </span>
           )}
         </div>
-      </div>
+      </RowFrame>
     );
   };
 
-  const moreItem = moreOpenFor ? ordered.find((a) => a.id === moreOpenFor) : undefined;
-  const moreMenu = moreItem && (() => {
-    const a = moreItem, title = a.taskTitle || "a task", task = taskOf(a);
+  /** a list entry: a row, or a bundle with (when open) its items in a list of their own */
+  const renderEntry = (row: Row) => {
+    if (!row.bundle) return renderRow(row);
+    const open = expanded.has(row.id);
+    const kids = open ? rows.filter((r) => r.parent === row.id) : [];
+    return (
+      <div key={row.id} role="listitem" className="kinbox-bundle" data-open={open || undefined}>
+        {renderRow(row, false)}
+        {open && (
+          <div role="list" id={`kinbox-kids-${domId(row.id)}`} className="kinbox-kids" aria-label={row.bundle.summary}>
+            {kids.map((k) => renderRow(k))}
+          </div>
+        )}
+      </div>
+    );
+  };
+  const topRows = (list: Row[]) => list.filter((r) => !r.parent).map(renderEntry);
+
+  const moreRow = moreOpenFor ? rowById.get(moreOpenFor) : undefined;
+  const moreMenu = moreRow && (() => {
+    const row = moreRow, a = row.a, title = a.taskTitle || "a task", task = taskOf(a);
     const run = (fn: () => void) => () => { setMore(null); fn(); };
     const items: { key: string; icon: IconName; label: string; kbd?: string; fn: () => void }[] = [];
-    if (task) items.push({ key: "open", icon: "arrowUpRight", label: "Open task", kbd: "↵", fn: () => openItem(a) });
-    else if (a.kind === "doc_mention" && onOpenDoc && docMentionRoute(a)) items.push({ key: "open", icon: "arrowUpRight", label: "Open doc", kbd: "↵", fn: () => openItem(a) });
-    if (canReply(a)) items.push({ key: "reply", icon: "message", label: "Reply", kbd: "R", fn: () => startReply(a) });
+    if (task) items.push({ key: "open", icon: "arrowUpRight", label: "Open task", kbd: "↵", fn: () => openRow(row) });
+    else if (a.kind === "doc_mention" && onOpenDoc && docMentionRoute(a)) items.push({ key: "open", icon: "arrowUpRight", label: "Open doc", kbd: "↵", fn: () => openRow(row) });
+    if (row.bundle) {
+      const open = expanded.has(row.id);
+      items.push({ key: "expand", icon: open ? "chevronDown" : "chevronRight", label: open ? "Hide the updates" : `Show all ${row.bundle.items.length}`, kbd: open ? "←" : "→", fn: () => toggleExpand(row.id) });
+    }
+    if (canReply(a)) items.push({ key: "reply", icon: "message", label: "Reply", kbd: "R", fn: () => startReply(row) });
     if (canToday(a)) items.push({ key: "today", icon: "sun", label: "Add to Today", kbd: "A", fn: () => acceptToday(a) });
-    if (canSchedule(a)) items.push({ key: "schedule", icon: "calendar", label: "Schedule…", kbd: "D", fn: () => schedule(a) });
-    items.push({ key: "snooze", icon: "clock", label: "Snooze…", kbd: "H", fn: () => { const el = moreRefs.current.get(a.id); if (el) setMenu({ id: a.id, anchor: el }); } });
+    if (canSchedule(a)) items.push({ key: "schedule", icon: "calendar", label: "Schedule…", kbd: "D", fn: () => schedule(row) });
+    items.push({ key: "snooze", icon: "clock", label: "Snooze…", kbd: "H", fn: () => { const el = moreRefs.current.get(row.id); if (el) setMenu({ id: row.id, anchor: el }); } });
     if (canComplete(a) && task) items.push({ key: "done", icon: "check", label: "Mark task done", fn: () => onComplete?.(task.id) });
-    items.push({ key: "archive", icon: "archive", label: "Archive", kbd: "E", fn: () => archiveItem(a.id) });
+    items.push({ key: "archive", icon: "archive", label: row.bundle ? `Archive all ${row.bundle.items.length}` : "Archive", kbd: "E", fn: () => archiveRow(row) });
     return (
       <Popover open anchorRef={moreAnchor} onClose={() => setMore(null)} role="menu" label={`Actions for “${title}”`} align="end" minWidth={220}
         style={{ padding: 4, borderRadius: "var(--r-lg, 12px)", boxShadow: "var(--e2, var(--shadow-lg))" }}>
@@ -937,10 +1078,12 @@ export function InboxView({
     );
   };
 
-  const keysHint = !narrow && segment === "inbox" && ordered.length > 0 && (
+  const hasBundles = rows.some((r) => r.bundle);
+  const keysHint = !narrow && segment === "inbox" && rows.length > 0 && (
     <div className="kinbox-keys" aria-hidden="true">
       <span><Kbd>J</Kbd><Kbd>K</Kbd> move</span>
       <span><Kbd>↵</Kbd> open</span>
+      {hasBundles && <span><Kbd>→</Kbd><Kbd>←</Kbd> show or hide a group</span>}
       {onReply && <span><Kbd>R</Kbd> reply</span>}
       {onAcceptToday && !readOnly && <span><Kbd>A</Kbd> add to Today</span>}
       {onSchedule && !readOnly && <span><Kbd>D</Kbd> schedule</span>}
@@ -954,6 +1097,19 @@ export function InboxView({
       <Icon name="clock" size={14} sw={1.75} />
       <span>{snoozedCount} snoozed · they'll come back here when their time is up</span>
       <button type="button" className="kinbox-link" onClick={() => unsnooze()}>Bring back now</button>
+    </p>
+  );
+
+  // quiet hours right now: push and email wait, the Inbox doesn't
+  const quiet = notifyPrefs && segment === "inbox" ? quietNow(prefs) : null;
+  const quietLine = quiet && (
+    <p className="kinbox-quiet">
+      <Icon name="moon" size={14} sw={1.75} />
+      <span>
+        Quiet hours until {timeIn(quiet.until, prefs.timezone)}{prefs.timezone !== zone ? ` ${zoneLabel(prefs.timezone)}` : ""}.
+        {" "}Push and email wait; your Inbox still updates.
+      </span>
+      {onOpenNotificationSettings && <button type="button" className="kinbox-link" onClick={onOpenNotificationSettings}>Change</button>}
     </p>
   );
 
@@ -1005,7 +1161,7 @@ export function InboxView({
   } else if (segment === "inbox") {
     body = (
       <>
-        {sections.map((s, i) => (
+        {sectionRows.map((s, i) => (
           <section key={s.id} className="kinbox-group" aria-label={s.label} data-tour={i === 0 ? "inbox-triage" : undefined}>
             <SectionLabel count={s.items.length}
               action={s.id === "fyi" && s.items.length > 1
@@ -1014,7 +1170,7 @@ export function InboxView({
                 : undefined}>
               {s.id === "back" && <Icon name="clock" size={12} sw={2} />}{s.label}
             </SectionLabel>
-            <div role="list" className={"kinbox-rows " + entrance}>{s.items.map(renderRow)}</div>
+            <div role="list" className={"kinbox-rows " + entrance}>{topRows(s.rows)}</div>
           </section>
         ))}
         {snoozeNote}
@@ -1025,17 +1181,18 @@ export function InboxView({
     body = snoozedItems.length ? (
       <section className="kinbox-group" aria-label="Snoozed">
         <SectionLabel count={snoozedItems.length}>Coming back later</SectionLabel>
-        <div role="list" className="kinbox-rows">{snoozedItems.map(renderRow)}</div>
+        <div role="list" className="kinbox-rows">{topRows(rows)}</div>
+        {threadsOn && <p className="kinbox-note">A snoozed thread sends no push or email until it's back.</p>}
       </section>
     ) : (
       <EmptyState art="calendar" title="Nothing snoozed" size="sm"
-        body={<p>Snooze an item with <Kbd>H</Kbd> and it comes back to your Inbox at the time you pick.</p>} />
+        body={<p>Snooze an item with <Kbd>H</Kbd> and it comes back to your Inbox at the time you pick. A snoozed thread sends no push or email meanwhile.</p>} />
     );
   } else {
     body = archivedItems.length ? (
       <section className="kinbox-group" aria-label="Archived">
         <SectionLabel count={archivedItems.length}>{archived ? "Archived" : "Archived this visit"}</SectionLabel>
-        <div role="list" className="kinbox-rows">{archivedItems.map(renderRow)}</div>
+        <div role="list" className="kinbox-rows">{topRows(rows)}</div>
         <p className="kinbox-note">Every update stays in its task's history.</p>
       </section>
     ) : (
@@ -1044,6 +1201,7 @@ export function InboxView({
     );
   }
 
+  const menuRow = menuOpenFor ? rowById.get(menuOpenFor.id) : undefined;
   return (
     <div ref={rootRef} className="kinbox">
       <style>{INBOX_CSS}</style>
@@ -1069,11 +1227,11 @@ export function InboxView({
         </div>
         <span className="kinbox-sweep" data-play={sweep || undefined} aria-hidden="true" />
       </div>
-      <div className="kinbox-wrap kinbox-list">{approvalsGroup}{body}</div>
-      {menuOpenFor && (
-        <SnoozeMenu key={menuOpenFor.id} anchor={menuOpenFor.anchor}
-          itemTitle={activity.find((a) => a.id === menuOpenFor.id)?.taskTitle || "this update"}
-          onPick={(until) => snoozeItem(menuOpenFor.id, until)} onClose={closeMenu} />
+      <div className="kinbox-wrap kinbox-list">{quietLine}{approvalsGroup}{body}</div>
+      {menuOpenFor && menuRow && (
+        <SnoozeMenu key={menuOpenFor.id} anchor={menuOpenFor.anchor} timeZone={zone}
+          itemTitle={menuRow.a.taskTitle || "this update"} thread={!!menuRow.a.taskId && threadsOn}
+          onPick={(until) => snoozeRow(menuRow, until)} onClose={closeMenu} />
       )}
       {moreMenu}
       <span className="sr-only" aria-live="polite">{cleared ? "Inbox zero" : ""}</span>
@@ -1233,6 +1391,35 @@ const INBOX_CSS = `
   .kinbox-row:is(:hover, :focus-within, [data-cursor="true"]) .kinbox-stamp { visibility: visible; }
 }
 
+/* bundles: a row for related items, opened to the items under it (0048) */
+.kinbox-bundle { display: flex; flex-direction: column; }
+.kinbox-kids { position: relative; display: flex; flex-direction: column; gap: 2px; margin: 0 0 4px 26px; padding-left: 14px; box-shadow: inset 1px 0 0 var(--hairline); }
+.kinbox-row[data-child="true"] { min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
+.kinbox-row[data-child="true"] > .kinbox-av { width: 24px; height: 24px; }
+.kinbox-row[data-child="true"] .kinbox-say { -webkit-line-clamp: 1; }
+.kinbox-expand {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; height: 24px; margin: -2px 0;
+  padding: 0 8px 0 6px; border: 0; border-radius: var(--r-pill, 999px); background: var(--fill-1); cursor: pointer;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); white-space: nowrap;
+  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease);
+}
+.kinbox-expand:hover { background: var(--fill-2); color: var(--ink); }
+.kinbox-expand[aria-expanded="true"] { color: var(--accent-text, var(--accent)); }
+.kinbox-expand:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kinbox-expand > svg { flex-shrink: 0; }
+.kinbox-emoji { font-weight: 400; }
+/* dragged to Today or a day (u3's kit): the row it came from stays, quieter */
+.kinbox-row[data-kdnd-dragging="true"] { opacity: 0.5; }
+@media (hover: hover) and (pointer: fine) { .kinbox-row[data-kdnd-source]:not([data-gone="true"]) { touch-action: pan-y; } }
+
+/* quiet hours: push and email wait */
+.kinbox-quiet {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; padding: 8px 12px; border-radius: var(--r-md, 8px);
+  background: var(--fill-1); font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2);
+}
+.kinbox-quiet > svg { flex-shrink: 0; color: var(--icon-quiet, var(--ink-3)); }
+.kinbox-quiet > span { flex: 1 1 220px; min-width: 0; }
+
 /* the inline reply */
 .kinbox-compose { position: relative; z-index: 1; display: grid; gap: 8px; margin-top: 8px; }
 .kinbox-compose textarea {
@@ -1303,6 +1490,20 @@ const INBOX_CSS = `
 .kinbox-mi .kkbd { margin-left: auto; }
 .kinbox-mi-hint { margin-left: auto; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
 .kinbox-msep { height: 1px; margin: 4px; background: var(--hairline); }
+/* "Pick a date and time…": the menu becomes a small form */
+.kinbox-menu[data-mode="custom"] { width: 280px; max-width: calc(100vw - 16px); }
+.kinbox-custom { display: grid; gap: 8px; padding: 0 4px 4px; }
+.kinbox-custom-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.kinbox-field { display: grid; gap: 4px; min-width: 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kinbox-field input {
+  box-sizing: border-box; width: 100%; min-width: 0; height: 36px; padding: 0 8px; border-radius: var(--r-md, 8px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface-solid)); color: var(--ink);
+  font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.kinbox-field input:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.kinbox-field input[aria-invalid="true"] { border-color: var(--signal, var(--st-blocked)); }
+.kinbox-custom-err { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--st-blocked)); }
+.kinbox-custom-foot { display: flex; justify-content: space-between; gap: 8px; }
 
 @media (prefers-reduced-motion: reduce) {
   .kinbox-sweep, .kinbox-menu { animation: none !important; }

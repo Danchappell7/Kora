@@ -90,11 +90,14 @@ export function unreadCount(activity: Activity[]): number {
   return n;
 }
 
-/* ---------- bundles (0048)                         [0048 contract → u4] ----------
+/* ---------- bundles (0048, u4) ----------
    Related items fold into one row: "3 comments on Launch deck from Sana and
-   Theo", expandable to the items. Same task + same kind family (comments and
-   replies together; a mention stays its own row so it's never buried),
-   newest first, within the triage group. */
+   Theo", expandable to the items. Same task + same kind family (comments
+   and replies together; kudos together; your own updates together), within
+   the triage group. Anything that asks something of you — a mention, an
+   assignment, an approval, a doc mention, a request — and an integration
+   notice is always its own row, so it's never buried. Each bundle sits at
+   its newest item's place (the feed is newest first). */
 
 export interface InboxBundle {
   /** stable: `${group}:${taskId}:${family}` (or the single item's id) */
@@ -108,9 +111,90 @@ export interface InboxBundle {
   actors: string[];
   unread: number;
   latestAt: string;
+  /** (u4) what the bundle holds; null for a bundle of one */
+  family?: BundleFamily | null;
+}
+
+/** what folds together */
+export type BundleFamily = "comment" | "kudos" | "history";
+
+const REQUEST_DETAIL = /^\s*Request via\b/i;
+
+/** The family an item folds into, or null: it always stands alone. */
+export function bundleFamily(a: Activity, actor: string | null): BundleFamily | null {
+  if (!a.taskId) return null;
+  if (REQUEST_DETAIL.test(a.detail || "")) return null;
+  if (a.kind === "comment") return actor ? "comment" : "history";
+  if (a.kind === "kudos") return "kudos";
+  if (SELF_KINDS.has(a.kind)) return a.kind === "created" ? null : "history";
+  return null;
+}
+
+const NOUN: Record<BundleFamily, [string, string, string]> = {
+  // one, many, preposition
+  comment: ["comment", "comments", "on"],
+  kudos: ["kudos", "kudos", "for"],
+  history: ["update", "updates", "to"],
+};
+const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const join = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+/** "Sana", "Sana and Theo", "Sana, Theo and Maya", "Sana, Theo and 2 others" — first names unless two share one. */
+export function actorList(actors: string[]): string {
+  const first = (n: string) => (EMAIL.test(n) ? n : n.trim().split(/\s+/)[0] || n);
+  const firsts = actors.map(first);
+  const names = new Set(firsts).size === firsts.length ? firsts : actors;
+  if (names.length <= 3) return join(names);
+  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
+}
+
+/** "3 comments on Launch deck from Sana and Theo" */
+export function bundleSummary(family: BundleFamily, count: number, title: string, actors: string[]): string {
+  const [one, many, prep] = NOUN[family];
+  const head = `${count} ${count === 1 ? one : many} ${prep} ${title || "a task"}`;
+  return family === "history" || !actors.length ? head : `${head} from ${actorList(actors)}`;
 }
 
 /** Fold one triage group's items into bundles (order: each bundle at its newest item's place). */
-export function bundleInbox(items: Activity[], _ctx: { tasks: Task[] | ReadonlyMap<string, Task> }): InboxBundle[] {
-  return items.map((a) => ({ key: a.id, taskId: a.taskId, items: [a], summary: a.taskTitle, actors: a.detail ? [a.detail] : [], unread: a.readAt ? 0 : 1, latestAt: a.createdAt }));
+export function bundleInbox(items: Activity[], ctx: {
+  tasks: Task[] | ReadonlyMap<string, Task>;
+  /** the triage group (part of each key); default "inbox" */
+  group?: string;
+  /** who an item is from (the Inbox knows a self-logged comment from a teammate's); default: its detail */
+  actorOf?: (a: Activity) => string | null;
+  /** false: every item on its own (the person's "bundle" pref) */
+  bundle?: boolean;
+}): InboxBundle[] {
+  const byId = taskLookup(ctx.tasks);
+  const group = ctx.group ?? "inbox";
+  const actorOf = ctx.actorOf ?? ((a: Activity) => (a.kind === "comment" || a.kind === "kudos" || a.kind === "assigned" ? a.detail?.trim() || null : null));
+  const out: InboxBundle[] = [];
+  const open = new Map<string, { b: InboxBundle; family: BundleFamily }>();
+  for (const a of items) {
+    const actor = actorOf(a);
+    const family = ctx.bundle === false ? null : bundleFamily(a, actor);
+    const key = family ? `${group}:${a.taskId}:${family}` : a.id;
+    const hit = family ? open.get(key) : undefined;
+    if (hit) {
+      hit.b.items.push(a);
+      if (actor && !hit.b.actors.includes(actor)) hit.b.actors.push(actor);
+      if (!a.readAt) hit.b.unread++;
+      continue;
+    }
+    const b: InboxBundle = {
+      key, taskId: a.taskId, items: [a], summary: "", actors: actor ? [actor] : [], unread: a.readAt ? 0 : 1,
+      latestAt: a.createdAt, family: null,
+    };
+    out.push(b);
+    if (family) open.set(key, { b, family });
+  }
+  for (const { b, family } of open.values()) {
+    if (b.items.length < 2) continue;
+    const title = (b.taskId && byId.get(b.taskId)?.title) || b.items[0].taskTitle;
+    b.family = family;
+    b.summary = bundleSummary(family, b.items.length, title, b.actors);
+  }
+  // a bundle of one is a plain row, keyed by its item
+  for (const b of out) if (b.items.length === 1) { b.key = b.items[0].id; b.summary = b.items[0].taskTitle; }
+  return out;
 }
