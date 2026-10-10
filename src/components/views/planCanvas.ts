@@ -331,3 +331,83 @@ export function writeGhostPrefs(key: string, prefs: GhostPrefs) {
   ghostMemory.set(key, prefs);
   try { localStorage.setItem(key, JSON.stringify(prefs)); } catch { /* blocked */ }
 }
+
+/* ---------- drag to plan (0048 · u3): the canvas maths behind lib/dnd's Today targets ---------- */
+
+/** A task's length for planning: its own (dur), else its focus time, else its estimate in
+ *  hours (to the quarter hour, 15m–8h), else half an hour. */
+export function estimateMinutes(t: Pick<Task, "dur" | "focusMin" | "effortHours">): number {
+  if (typeof t.dur === "number" && t.dur > 0) return t.dur;
+  if (typeof t.focusMin === "number" && t.focusMin > 0) return t.focusMin;
+  const h = t.effortHours;
+  if (typeof h === "number" && h > 0) return Math.min(480, Math.max(15, Math.round((h * 60) / 15) * 15));
+  return 30;
+}
+
+/** The patch that puts a task on today's plan at `start`: it joins today's list if it isn't
+ *  on it, and an estimate in hours becomes its length when it had none of its own. Its length
+ *  (tasks.dur) is the task's, not your plan's: pass `withLength` false for a task that isn't
+ *  yours, and only your plan (its slot, today's list) is written. */
+export function planPatch(t: Task, start: number, withLength = true): Partial<Task> {
+  const p: Partial<Task> = { scheduled: start };
+  if (!t.planToday) p.planToday = true;
+  const est = estimateMinutes(t);
+  if (withLength && est !== durOf(t)) p.dur = est;
+  return p;
+}
+
+export interface StackItem { id: string; dur: number }
+/** Several tasks dropped on one time: laid back to back from `start`, in the order they were
+ *  picked up. Whatever would run past `dayEnd` isn't given a time (it waits on today's list). */
+export function stackDrop(items: StackItem[], start: number, dayEnd: number): { placed: { id: string; start: number; end: number }[]; overflow: string[] } {
+  const placed: { id: string; start: number; end: number }[] = [];
+  const overflow: string[] = [];
+  let at = start;
+  for (const it of items) {
+    const dur = it.dur > 0 ? it.dur : 30;
+    if (at + dur > dayEnd) { overflow.push(it.id); continue; }
+    placed.push({ id: it.id, start: at, end: at + dur });
+    at += dur;
+  }
+  return { placed, overflow };
+}
+
+/** The start a pointer asks for on the canvas: `y` screen px below the canvas's top, less
+ *  where the block was grabbed (`grab`), at `pxm` px a minute and the page's zoom; snapped
+ *  to the quarter hour and kept inside [from, to − dur]. */
+export function canvasMinute(y: number, grab: number, win: { from: number; to: number; pxm: number }, dur: number, zoom = 1, step = 15): number {
+  const raw = win.from + (y - grab) / (win.pxm * (zoom > 0 ? zoom : 1));
+  const m = Math.round(raw / step) * step;
+  return Math.max(win.from, Math.min(Math.max(win.from, win.to - dur), m));
+}
+
+/** Dragging a block's bottom edge: its new length after `dy` screen px, in quarter hours,
+ *  at least 15 minutes, never past the end of the day. */
+export function resizeMinutes(dur0: number, dy: number, start: number, dayEnd: number, pxm: number, zoom = 1, step = 15): number {
+  const raw = dur0 + dy / (pxm * (zoom > 0 ? zoom : 1));
+  const m = Math.round(raw / step) * step;
+  return Math.max(step, Math.min(Math.max(step, dayEnd - start), m));
+}
+
+/** What a proposed stretch runs into (meetings, other blocks), earliest first: their titles. */
+export function clashesWith(span: Interval, items: (Interval & { title: string })[]): string[] {
+  return items.filter((i) => i.start < span.end && i.end > span.start).sort((a, b) => a.start - b.start).map((i) => i.title);
+}
+
+/** The quarter-hour slots of a day for the keyboard time picker: [from, to − dur]. */
+export function slotMinutes(from: number, to: number, dur: number, step = 15): number[] {
+  const out: number[] = [];
+  const first = Math.ceil(from / step) * step;
+  for (let m = first; m + Math.max(dur, 0) <= to; m += step) out.push(m);
+  return out;
+}
+
+/** Digits typed into the keyboard time picker, read as they come: the hour is the first two digits when
+ *  they make one ("14…", "09…"), else the first ("9…"); what follows is the minutes, a lone
+ *  digit standing for tens ("143" → 14:30). */
+export function typedTime(t: string): { h: number; mm: number } {
+  const two = t.length >= 2 && +t.slice(0, 2) <= 23;
+  const hText = t.length <= 1 ? t : two ? t.slice(0, 2) : t.slice(0, 1);
+  const rest = t.slice(hText.length, hText.length + 2);
+  return { h: +hText, mm: rest ? Math.min(59, +rest.padEnd(2, "0")) : 0 };
+}

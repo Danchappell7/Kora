@@ -5,7 +5,8 @@
    Daybeam shows its shape, and Kanbo's suggested plan sits on the
    canvas as dashed ghosts. "Plan my day" (P) asks Kanbo to order the
    work, then makes the ghosts solid — with one Undo. The canvas, the
-   drag engine and the Unplanned rail live in PlanView.
+   Unplanned rail and their drop targets (lib/dnd: drag to plan) live in
+   PlanView; the Daybeam's row here is a drop target too.
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PlanView, useDayClock, dayEventsFor } from "./PlanView";
@@ -508,7 +509,8 @@ function TodayDay({
       <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks}
         hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk} />
       <div className="ktoday-actions">
-        <div className="ktoday-beam">
+        {/* data-plan-beam: the beam's row takes a dragged task too (PlanView binds it as a drop target) */}
+        <div className="ktoday-beam" data-plan-beam="">
           {/* the working day, unless something's planned outside it */}
           <Daybeam segments={segments} nowMin={nowMin} planned={planned} free={free} drop={drop}
             compact={!segments.some((s) => s.start < 8 * 60 || s.end > 18 * 60)} />

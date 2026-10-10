@@ -473,7 +473,7 @@ describe("PlanView drag and drop", () => {
     const { btn, onUpdate } = setup();
     press(btn, 100, 130, { pointerType: "touch", pointerId: 7 });
     act(() => { on("pointermove", 103, 134, { pointerType: "touch", pointerId: 7 }); }); // 5px of finger wobble
-    act(() => { vi.advanceTimersByTime(260); });
+    act(() => { vi.advanceTimersByTime(360); });
     expect(dragging()).toBe(true);
     act(() => { on("pointerup", 103, 134, { pointerType: "touch", pointerId: 7 }); });
     expect(dragging()).toBe(false);
@@ -507,7 +507,7 @@ describe("PlanView drag and drop", () => {
     vi.useFakeTimers();
     const { btn, onUpdate } = setup();
     press(btn, 100, 130, { pointerType: "touch", pointerId: 7 });
-    act(() => { vi.advanceTimersByTime(260); });
+    act(() => { vi.advanceTimersByTime(360); });
     act(() => { on("pointermove", 100, 190, { pointerType: "touch", pointerId: 7 }); });
     act(() => { on("pointerup", 400, 700, { pointerType: "touch", pointerId: 8 }); });
     expect(dragging()).toBe(true);

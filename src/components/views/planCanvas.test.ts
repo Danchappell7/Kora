@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   layoutLanes, mergeIntervals, totalMinutes, durOf, energyMetaOf, energyKindOf,
   carryOver, recordSeen, markSeen, touchSeen, readSeen, writeSeen, planSeenKey, isMine, carryLabel, localDayKey, todaysEvents,
+  estimateMinutes, planPatch, stackDrop, canvasMinute, resizeMinutes, clashesWith, slotMinutes, typedTime,
 } from "./planCanvas";
 import type { SeenMap } from "./planCanvas";
 import { ENERGY } from "../../data/data";
@@ -203,5 +204,77 @@ describe("todaysEvents: every connected calendar's meetings, in their colours", 
     ]);
     expect(evs.every((e) => e.kind === "meeting")).toBe(true);
     expect(evs[1]).not.toHaveProperty("color");
+  });
+});
+
+/* ---------- drag to plan (0048 · u3) ---------- */
+
+describe("drag to plan: the canvas maths", () => {
+  const base = (o: Partial<Task> = {}): Task => ({
+    id: "t", title: "x", description: "", status: "todo", priority: "medium", projectId: "p", assigneeId: "me",
+    tags: [], dependencies: [], subtasks: [], focusMin: 0, comments: 0, aiScore: 0, ...o,
+  });
+
+  it("a task's length: its own, its focus time, its estimate in hours (to the quarter, 15m–8h), else 30m", () => {
+    expect(estimateMinutes(base({ dur: 50, focusMin: 25 }))).toBe(50);
+    expect(estimateMinutes(base({ focusMin: 25 }))).toBe(25);
+    expect(estimateMinutes(base({ effortHours: 1.4 }))).toBe(90);
+    expect(estimateMinutes(base({ effortHours: 0.1 }))).toBe(15);
+    expect(estimateMinutes(base({ effortHours: 20 }))).toBe(480);
+    expect(estimateMinutes(base())).toBe(30);
+  });
+
+  it("the plan patch: a time, today's list if it wasn't on it, and the estimate as its length when it had none", () => {
+    expect(planPatch(base({ focusMin: 30, planToday: true }), 540)).toEqual({ scheduled: 540 });
+    expect(planPatch(base({ focusMin: 30 }), 540)).toEqual({ scheduled: 540, planToday: true });
+    expect(planPatch(base({ effortHours: 2, planToday: true }), 600)).toEqual({ scheduled: 600, dur: 120 });
+    // someone else's task: only your plan, never its length (tasks.dur is the task's own)
+    expect(planPatch(base({ effortHours: 2 }), 600, false)).toEqual({ scheduled: 600, planToday: true });
+  });
+
+  it("several tasks land back to back; what runs past the day waits without a time", () => {
+    expect(stackDrop([{ id: "a", dur: 30 }, { id: "b", dur: 45 }, { id: "c", dur: 0 }], 540, 22 * 60)).toEqual({
+      placed: [{ id: "a", start: 540, end: 570 }, { id: "b", start: 570, end: 615 }, { id: "c", start: 615, end: 645 }], overflow: [],
+    });
+    expect(stackDrop([{ id: "a", dur: 60 }, { id: "b", dur: 90 }, { id: "c", dur: 30 }], 20 * 60 + 30, 22 * 60)).toEqual({
+      placed: [{ id: "a", start: 1230, end: 1290 }, { id: "c", start: 1290, end: 1320 }], overflow: ["b"],
+    });
+  });
+
+  it("the pointer's minute: less the grab, at the zoom, snapped and kept inside the day", () => {
+    const win = { from: 7 * 60, to: 22 * 60, pxm: 1 };
+    expect(canvasMinute(136, 10, win, 30)).toBe(540);       // 7:00 + 126 → 9:06 → 9:00
+    expect(canvasMinute(190, 10, win, 30)).toBe(600);
+    expect(canvasMinute(235, 10, win, 30, 1.25)).toBe(600); // 225 screen px at 1.25 = 180 minutes
+    expect(canvasMinute(-400, 0, win, 30)).toBe(420);
+    expect(canvasMinute(5000, 0, win, 90)).toBe(22 * 60 - 90);
+    expect(canvasMinute(120, 0, { from: 420, to: 1320, pxm: 56 / 60 }, 30)).toBe(555); // 120px at 56px an hour ≈ 2h08 → 09:15
+  });
+
+  it("a block's bottom edge: quarter hours, never under 15 minutes or past the day", () => {
+    expect(resizeMinutes(30, 22, 540, 1320, 1)).toBe(45);
+    expect(resizeMinutes(30, -60, 540, 1320, 1)).toBe(15);
+    expect(resizeMinutes(30, 2000, 1260, 1320, 1)).toBe(60);
+    expect(resizeMinutes(60, 75, 540, 1320, 1, 1.25)).toBe(120);
+  });
+
+  it("names what a stretch runs into, earliest first; lists the start times on offer", () => {
+    const busy = [{ start: 600, end: 630, title: "Standup" }, { start: 540, end: 600, title: "Deck" }, { start: 700, end: 720, title: "Lunch" }];
+    expect(clashesWith({ start: 570, end: 615 }, busy)).toEqual(["Deck", "Standup"]);
+    expect(clashesWith({ start: 630, end: 700 }, busy)).toEqual([]);
+    expect(slotMinutes(420, 480, 30)).toEqual([420, 435, 450]);
+    expect(slotMinutes(425, 480, 0)).toEqual([435, 450, 465, 480]);
+  });
+
+  it("a time typed into the picker, read as it comes", () => {
+    expect(typedTime("1")).toEqual({ h: 1, mm: 0 });
+    expect(typedTime("14")).toEqual({ h: 14, mm: 0 });
+    expect(typedTime("143")).toEqual({ h: 14, mm: 30 });
+    expect(typedTime("1430")).toEqual({ h: 14, mm: 30 });
+    expect(typedTime("9")).toEqual({ h: 9, mm: 0 });
+    expect(typedTime("930")).toEqual({ h: 9, mm: 30 });
+    expect(typedTime("0915")).toEqual({ h: 9, mm: 15 });
+    expect(typedTime("2359")).toEqual({ h: 23, mm: 59 });
+    expect(typedTime("199")).toEqual({ h: 19, mm: 59 });
   });
 });
