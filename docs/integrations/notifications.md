@@ -58,6 +58,16 @@ Open the SQL editor
 this box and press **Run**. It's safe to run again: it replaces the two jobs.
 
 ```sql
+-- first, what the jobs need: the scheduler and the cron secret (DEPLOYMENT.md step 5)
+do $check$ begin
+  if not exists (select 1 from pg_extension where extname = 'pg_cron') or not exists (select 1 from pg_extension where extname = 'pg_net') then
+    raise exception 'The scheduler is off: do DEPLOYMENT.md step 5a (pg_cron and pg_net), then run this box again.';
+  end if;
+  if not exists (select 1 from vault.decrypted_secrets where name = 'kanbo_cron_secret') then
+    raise exception 'The kanbo_cron_secret Vault secret is missing: do DEPLOYMENT.md step 5c (the same string as the CRON_SECRET function secret), then run this box again.';
+  end if;
+end $check$;
+
 select cron.unschedule(jobid) from cron.job where jobname in ('kanbo-notify-drain', 'kanbo-daily-digest');
 
 -- every minute: send what bundling and quiet hours held back

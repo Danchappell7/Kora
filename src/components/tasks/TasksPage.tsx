@@ -24,8 +24,9 @@ import { readSwimlane, swimlaneStorageKey, type BoardSettingsChange, type Swimla
 import { BoardDisplayOptions } from "../board/BoardDisplayOptions";
 import { demoAwareBoardSettings, nextBoardSettings } from "../board/boardDemo";
 import { SaveViewButton, sameViewQuery } from "../views/SavedViewEditor";
-import { pageViewQuery, suggestViewName, type ViewPageStart } from "../../lib/savedViews/pageQuery";
+import { pageViewQuery, suggestViewName, viewPageStart } from "../../lib/savedViews/pageQuery";
 import { canEditView } from "../../lib/views";
+import { PresenceAvatars, useProjectPresence, type PresenceMe } from "../presence";
 import "./taskViews.css";
 
 const VIEWS: { id: TaskView; label: string; icon: IconName }[] = [
@@ -82,7 +83,7 @@ function PopSection({ title, note, children }: { title: string; note?: string; c
 
 export function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts,
   tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId, waitingApproval,
-  viewStart, views, boardSettings, onChangeBoardSettings, onDeleteTask }: {
+  views, boardSettings, onChangeBoardSettings, onDeleteTask, presence }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -155,11 +156,10 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
    *  each with its line ("1 of 2 approved · waiting on Sana") */
   waitingApproval?: { label: string; items: Task[]; notes: Map<string, string> };
   /* ---- 0048 (all optional) ---- */
-  /** arriving on a saved view (route.savedViewId; lib/savedViews viewPageStart): the page starts from it, and while
-   *  it's applied nothing is written back to your own filters, grouping or sort (changes are the view's) */
-  viewStart?: ViewPageStart;
   /** "Save view" (lib/views) in place of the old saved search: where it's saved, whether it may be shared, and the
-   *  view the page shows (Update offered to whoever may change it) */
+   *  view the page shows (route.savedViewId). Arriving on a view, the page starts from it (lib/savedViews
+   *  viewPageStart): its filters, words, grouping and sort; while it's applied nothing is written back to your own
+   *  (changes are the view's, to Update or Save as new). The host keys the page by the view. */
   views?: { workspaceId: string | null; workspaceName?: string; canShare: boolean; appliedView?: SavedView | null; role?: Role | null; onSaved?: (v: SavedView) => void };
   /** a project board's settings ({} when it has none: its WIP limits are then everyone's) */
   boardSettings?: BoardSettings;
@@ -167,6 +167,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   onChangeBoardSettings?: (next: BoardSettings, change: BoardSettingsChange) => void;
   /** one task's Delete in a row's menu or sheet (App's deleteTask: "Deleted “X”" with Undo) */
   onDeleteTask?: (id: string) => void;
+  /** 0048 live presence: you on the project's channel; a project's rows then show who has each task open */
+  presence?: PresenceMe | null;
 }) {
   const isMy = filterScope === "my";
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -183,7 +185,13 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   /* ---------------- per-page state ---------------- */
   // (a saved view's own grouping, sort, filters and words start the page; while it's applied they're the view's,
   //  never written back over your own)
+  const [viewStart] = useState(() => (views?.appliedView ? viewPageStart(views.appliedView, currentUserId ?? "") : undefined));
   const onView = !!viewStart;
+  // a project list's grouping on a view is the view's (App's per-project grouping is left alone)
+  const [viewListGroup, setViewListGroup] = useState<GroupBy | null>(() => {
+    const g = viewStart?.listGroup;
+    return g && GROUPS.some((x) => x.id === g) ? (g as GroupBy) : null;
+  });
   const [myGroup, setMyGroupState] = useState<GroupBy>(() => {
     const v = viewStart?.myGroup;
     if (v && GROUPS.some((g) => g.id === v)) return v as GroupBy;
@@ -191,8 +199,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     return s && GROUPS.some((g) => g.id === s) ? s : "due";
   });
   const setMyGroup = (g: GroupBy) => { setMyGroupState(g); if (!onView) writeLocal(MY_GROUP_KEY, g); };
-  const group = isMy ? myGroup : groupBy;
-  const setGroup = isMy ? setMyGroup : setGroupBy;
+  const group = isMy ? myGroup : onView ? viewListGroup ?? groupBy : groupBy;
+  const setGroup = isMy ? setMyGroup : onView ? (g: GroupBy) => setViewListGroup(g) : setGroupBy;
   const [boardGroup, setBoardGroupState] = useState<BoardGroup>(() => {
     const v = viewStart?.boardGroup;
     if (v && BOARD_GROUPS.some((g) => g.id === v)) return v as BoardGroup;
@@ -311,8 +319,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const toolsRef = useRef<HTMLDivElement>(null);
   const saveRef = useRef<HTMLDivElement>(null);
   const fullToolsW = useRef(0);
-  // Saved views open Search (another page), so they are links after the tablist, never tabs in
-  // it: arrowing along the tabs (which selects as it goes, and wraps) must not leave the page.
+  // Saved views open on their own address (0048: My tasks with ?view=, or Search), so they are links after the
+  // tablist, never tabs in it: arrowing along the tabs (which selects as it goes, and wraps) must not leave the page.
   const shownSaved = isMy && onOpenSavedView ? (savedViews ?? []).slice(0, 4) : [];
   const savedKey = shownSaved.map((v) => `${v.id}:${v.name}:${v.count}`).join("|");
   const savedRef = useRef<HTMLElement>(null);
@@ -409,7 +417,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   // 0048: Save view (lib/views) — My tasks and project pages alike; guests may keep their own (never shared)
   const viewQuery = views ? pageViewQuery({
     scope: isMy ? "my" : "project", projectId: isMy ? undefined : sectionProjectId,
-    tab: isMy ? (dueFocus ?? myTab) : shownView, text: search, priority: priorityFilter, status: statusFilter, assignee: assigneeFilter,
+    tab: isMy ? (dueFocus ?? viewStart?.dueFocus ?? myTab) : shownView, text: search, priority: priorityFilter, status: statusFilter, assignee: assigneeFilter,
     tag: tagFilter, due: dueFilter, section: sectionFilter, hideDone, custom: customFilter,
     groupBy: shownView === "board" ? boardGroup : group, sort: smart ? undefined : sort,
   }) : null;
@@ -447,7 +455,7 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     <nav ref={savedRef} className="ktv-views" aria-label="Saved views">
       {shownSaved.map((v) => (
         <button key={v.id} type="button" className="ktab" onClick={() => onOpenSavedView?.(v.id)}
-          aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`} title="Opens in Search">
+          aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`} title={views ? undefined : "Opens in Search"}>
           <span className="ktab-label" data-label={v.name}>{v.name}</span>
           <span className="ktab-count">{v.count}</span>
         </button>
@@ -653,6 +661,12 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   );
 
   /* ---------------- the views ---------------- */
+  // 0048: on a project, who else has each task open (watching only: the project header already says you're here)
+  const livePeers = useProjectPresence(!isMy && presence && sectionProjectId && !sectionProjectId.startsWith("tmp-") ? sectionProjectId : null, presence ?? null, { watchOnly: true });
+  const presenceMeta = (t: Task): ReactNode => {
+    const peers = livePeers.viewersOf(t.id);
+    return peers.length ? <PresenceAvatars peers={peers} size="xs" max={2} /> : null;
+  };
   const nudged = useRef(new Set<string>());
   const [, bump] = useState(0);
   const waitingMeta = (t: Task): ReactNode => {
@@ -722,8 +736,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         members={members} sections={sections} onCreateSection={onCreateSection} onRenameSection={onRenameSection} onDeleteSection={onDeleteSection} customFields={customFields}
         sectionField={sectionField} sectionProjectId={sectionProjectId} filtered={narrowed || !!showArchived} onClearFilters={clearFilters} readOnly={readOnly}
         groups={listGroups} showProject={isMy} quietAssigneeFor={isMy && myTab !== "waiting" ? currentUserId : undefined}
-        renderMeta={isMy && myTab === "waiting" ? waitingMeta : undefined} renderAction={isMy && myTab === "waiting" ? waitingAction : undefined}
-        focusGroup={isMy && myTab === "open" && group === "due" ? dueFocusGroup(dueFocus) : undefined} focusKey={dueFocus}
+        renderMeta={isMy && myTab === "waiting" ? waitingMeta : !isMy && presence ? presenceMeta : undefined} renderAction={isMy && myTab === "waiting" ? waitingAction : undefined}
+        focusGroup={isMy && myTab === "open" && group === "due" ? dueFocusGroup(dueFocus ?? viewStart?.dueFocus) : undefined} focusKey={dueFocus ?? viewStart?.dueFocus}
         emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} activeId={activeTaskId}
         onDeleteTask={onDeleteTask} />
     );

@@ -214,6 +214,10 @@ would now fail every day.
 select cron.unschedule(jobid) from cron.job where command ilike '%daily-reminders%';
 ```
 
+> **After 0048 (Step 14):** this also removes the notification drain and the
+> daily digest, which call `daily-reminders` too. If you ever run 5b again,
+> run Step 14's schedule box again straight afterwards.
+
 **5c. Store the cron secret in the Vault.** Replace
 `PASTE-THE-CRON-SECRET-HERE` with the string from step 3b, keeping the quotes.
 
@@ -642,6 +646,45 @@ yet and everything else works as before. The details are in
    `VITE_SENTRY_TRACES_RATE`) on Vercel; see the table below. People are
    identified to Sentry only by a salted hash of their id.
 
+### Step 14: The UX wave (database update 0048)
+
+A guided first run (a three-minute tour, "Get set up" on Today, a sample
+project), universal search, calmer notifications (bundles, a daily digest,
+quiet hours, thread snoozes), saved views shared with your team, drag to plan,
+board covers and shared WIP limits, a template library, live presence and
+co-editing in docs, and momentum (your streak, the week's wins, kudos). Until
+14.1 has run the app works as before: each feature keeps to this device or
+says it isn't switched on yet. The details are in
+[docs/integrations/database-0048.md](docs/integrations/database-0048.md),
+[notifications.md](docs/integrations/notifications.md) and
+[presence.md](docs/integrations/presence.md).
+
+1. **Run 0048** (needs 0047; safe to re-run). Copy it from Terminal with
+   `pbcopy < ~/Downloads/kora-app/supabase/migrations/0048_ux_wave.sql`, paste
+   it into the SQL editor
+   (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>) and
+   press **Run**. Check it with the VERIFY query in database-0048.md (every
+   column `true`; `live_presence` is the one that turns live presence on).
+   Run it **last**: if 0046 or 0047 is ever run again, run 0048 again straight
+   afterwards.
+2. **Deploy four functions** (no new secrets). `notify` keeps the gateway's
+   JWT check; `daily-reminders`, `api` and `webhook-dispatch` run without it.
+   `notify` and `daily-reminders` hold, bundle and send notifications through
+   0048's queue (and `notify` now sends kudos by push and email); `api` and
+   `webhook-dispatch` know the new `kudos.given` webhook event.
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && R=htnchiljplrnjkwimgla && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && echo "All four functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   ```
+3. **Schedule the notification drain and the daily digest.** Paste the box in
+   [notifications.md › Owner steps › 2](docs/integrations/notifications.md)
+   into the SQL editor and press **Run**: every minute the drain sends what
+   bundling and quiet hours held back; every 15 minutes the digest goes to
+   whoever's time it is. Both reuse the `kanbo_cron_secret` Vault secret from
+   Step 5c (the box stops with a clear message if it's missing). The 07:30
+   `kanbo-daily-reminders` job stays as it is. Check them a few minutes later
+   with notifications.md › 3.
+
 ---
 
 ## Reference
@@ -653,13 +696,13 @@ This matches `supabase/config.toml`. Deploy the "no" rows with
 
 | Function | Gateway JWT check | Who calls it |
 |---|---|---|
-| `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify`, `slack-post` | yes | the signed-in app |
+| `ai-assist`, `approve-access`, `create-checkout`, `customer-portal`, `delete-account`, `invite-member`, `notify`, `slack-post` | yes | the signed-in app (`notify` `{kind:"drain"}` also takes the service-role key or `x-cron-secret`) |
 | `notion` | yes | the signed-in app; pg_cron every 10 minutes with the anon key (Vault `kanbo_anon_key`) and `x-cron-secret` |
 | `health` | no | GitHub Actions uptime (every 10 min) and /admin › System status; answers ok/timings only, no data (needs 0047) |
 | `api` | no | scripts and tools with a Kanbo API key (`kanbo_sk_…` / `kanbo_pk_…`), checked against its SHA-256; every query runs as the key's user under RLS |
 | `webhook-dispatch` | no | pg_cron every minute, and the database right after a change, with `x-cron-secret` (anyone else gets 401) |
 | `request-access`, `reset-password` | no | signed-out forms (throttled per email and per network) |
-| `daily-reminders`, `slack-standup` | no | pg_cron with `x-cron-secret` (anyone else gets 401) |
+| `daily-reminders`, `slack-standup` | no | pg_cron with `x-cron-secret` (anyone else gets 401). Since 0048 `daily-reminders` has three jobs: the 07:30 due list, `{"mode":"drain"}` every minute and `{"mode":"digest"}` every 15 minutes |
 | `ics-feed` | no | calendar apps, with the person's private feed token |
 | `public-form` | no | signed-out visitors to a public request form (token, honeypot and limits) |
 | `calendar` | no | Google/Microsoft redirect back without a JWT. Every other action checks the user itself |

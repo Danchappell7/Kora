@@ -93,6 +93,8 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   { key: "comment", label: "Comments on my tasks", hint: "New comments on tasks you own or follow." },
   // 0047: in-app pref "approval" (the database checks it), email "approval_email" (the notify function)
   APPROVAL_NOTIFY_ROW,
+  // 0048: in-app pref "kudos" (the database checks it), email "kudos_email" (the notify function)
+  { key: "kudos", label: "Kudos", hint: "A teammate thanks you for something you finished." },
   { key: "due", label: "Due-date reminders", hint: "Sent by email only." },
 ];
 /** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */

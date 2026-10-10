@@ -39,6 +39,7 @@ export const PUSH_KINDS: readonly { key: PushKind; label: string; hint: string }
   { key: "mention", label: "Mentions", hint: "Someone @mentions you in a comment." },
   { key: "comment", label: "Comments on my tasks", hint: "New comments on tasks you own or follow." },
   { key: "approval", label: "Approvals", hint: "Someone asks for your approval, or decides on a request you made." },
+  { key: "kudos", label: "Kudos", hint: "A teammate thanks you for something you finished." },
   { key: "due", label: "Due-date reminders", hint: "Your morning nudge about what's due." },
 ];
 

@@ -60,9 +60,7 @@ import {
   createTourSample, removeTourSample, checklistProgress, dismissSetupChecklist, startTour, type TourSampleDeps,
 } from "./lib/onboarding";
 import { useSavedViews, viewCounts, getSavedView, viewRoute, canShareViews } from "./lib/views";
-import { viewPageStart } from "./lib/savedViews/pageQuery";
 import { moveTasksToProject, reassignTasks, type MoveDeps } from "./lib/dropActions";
-import { recentProjectIds } from "./components/phone/quickAdd";
 import type { AppliedTemplatePlan } from "./lib/templatePlan";
 import type { BoardSettingsChange } from "./components/tasks/otherViewsLogic";
 import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
@@ -3558,11 +3556,20 @@ export default function App() {
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sv.views, tasksSeen, currentUserId, dayKey, searchSpec, projects, wsMembers]);
-  // the saved view the page shows (?view= on My tasks or a project): the page starts from it
+  // the saved view the page shows (?view= on My tasks or a project): TasksPage starts from it
   const appliedView = route.savedViewId ? getSavedView(route.savedViewId) : undefined;
-  const viewStart = useMemo(() => (appliedView ? viewPageStart(appliedView, currentUserId) : undefined), [appliedView, currentUserId]);
-  // a project list's grouping while a view is applied is the view's (never saved over the project's own)
-  const [viewGroup, setViewGroup] = useState<{ viewId: string; groupBy: GroupBy } | null>(null);
+  // the phone's quick add: your recent projects first (worked out when it opens; its code comes with it)
+  const [quickRecent, setQuickRecent] = useState<string[] | undefined>(undefined);
+  useEffect(() => {
+    if (!quickAddOpen) return;
+    let alive = true;
+    import("./components/phone/quickAdd").then((m) => {
+      if (!alive) return;
+      const live = projectsRef.current.filter((p) => (p.workspaceId ?? null) === workspaceRef.current && !p.archivedAt);
+      setQuickRecent(m.recentProjectIds(tasksRef.current ?? [], { userId: userIdRef.current, projects: live.map((p) => ({ id: p.id })) }));
+    }, () => undefined);
+    return () => { alive = false; };
+  }, [quickAddOpen]);
 
   // your tasks in every workspace (a streak and a week's wins are yours, not a team's): one array per change, not
   // per render — App re-renders every second while the focus timer runs
@@ -3856,7 +3863,9 @@ export default function App() {
             title: openProject.name,
             // its cover, and its tile (its emoji lives there, never beside the name as well)
             identity: { project: openProject, crumb: { label: "Projects", href: pathOf({ view: "projects" }), onClick: () => setRoute({ view: "projects" }) } },
-            titleAddon: <Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")} /></Suspense>,
+            // (0048: who else is in the project right now, beside its people)
+            titleAddon: <Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")}
+              me={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null} /></Suspense>,
             actions: (
               <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
@@ -4012,15 +4021,12 @@ export default function App() {
       case "project": {
         const inProject = !!openProject;
         // (keyed by the saved view too, and by whether it has loaded: arriving on one starts the page from it)
-        const viewKey = `${route.savedViewId ?? ""}:${viewStart ? 1 : 0}`;
-        const viewGroupBy = appliedView && viewGroup?.viewId === appliedView.id ? viewGroup.groupBy
-          : viewStart?.listGroup && isGroupBy(viewStart.listGroup) ? viewStart.listGroup : undefined;
+        const viewKey = `${route.savedViewId ?? ""}:${appliedView ? 1 : 0}`;
         return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
           tasks={scoped} allTasks={allTasks} projects={wsProjects} view={taskView} setView={inProject ? goProjectTab : setView}
-          groupBy={inProject ? viewGroupBy ?? openPrefs?.groupBy ?? "status" : groupBy}
-          setGroupBy={inProject ? (g: GroupBy) => { if (appliedView) setViewGroup({ viewId: appliedView.id, groupBy: g }); else saveProjectPrefs(openProject.id, { groupBy: g }); } : setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
+          groupBy={inProject ? openPrefs?.groupBy ?? "status" : groupBy} setGroupBy={inProject ? (g: GroupBy) => saveProjectPrefs(openProject.id, { groupBy: g }) : setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
             // a reorder within the same column is not a status change (completedAt stays put)
             const prev = tasksRef.current?.find((t) => t.id === id);
             const patch: Partial<Task> = {};
@@ -4039,7 +4045,8 @@ export default function App() {
           // rows follow Appearance's density (the Display menu changes it there), and the open task stays marked
           density={appearance.density} onDensity={(density) => setAppearance((a) => ({ ...a, density }))} activeTaskId={detailId ?? undefined}
           // 0048: a saved view's start, Save view, the single Delete
-          viewStart={viewStart} onDeleteTask={deleteTask}
+          onDeleteTask={deleteTask}
+          presence={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null}
           views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace), appliedView: appliedView ?? null, role: myRole ?? null }}
           {...(inProject ? {
             // a project: its views as tabs, then Updates · Requests · Rules · About, and its notice line
@@ -4064,7 +4071,7 @@ export default function App() {
           } satisfies Partial<React.ComponentProps<typeof TasksPage>> : {
             // My tasks: Open · Waiting on · Done, due-date anchors, saved views
             tab: route.tab ?? "open", onTab: (id: string) => setRoute({ view: "tasks", tab: id === "open" ? undefined : id }, { keepPanel: true }),
-            dueFocus: isDueFocus(route.list) ? route.list : viewStart?.dueFocus,
+            dueFocus: isDueFocus(route.list) ? route.list : undefined,
             // 0048: the pinned views (not project ones) as links beside the tabs; "mine" is the smart list
             savedViews: sv.pinned.filter((v) => v.kind !== "project").map((v) => ({ id: v.id, name: v.name, count: savedViewCounts[v.id] ?? 0 })),
             onOpenSavedView: (id: string) => { const v = getSavedView(id); setRoute(v ? viewRoute(v) : { view: "search", list: id }); },
@@ -4322,7 +4329,7 @@ export default function App() {
       {/* 0048 phone: the phone bar's + (live NL highlighting, recent projects); the same create path as Quick capture */}
       <Deferred when={quickAddOpen}><QuickAddSheet open={quickAddOpen} onClose={() => setQuickAddOpen(false)} projects={wsProjects} members={assignees} currentUserId={currentUserId}
         defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined}
-        recentProjectIds={quickAddOpen ? recentProjectIds(tasks, { userId: currentUserId, projects: wsProjects.map((p) => ({ id: p.id, archivedAt: p.archivedAt ?? undefined })) }) : undefined}
+        recentProjectIds={quickRecent}
         onCreate={quickAddTask} /></Deferred>
       {/* 0048 templates: the library (New task ▾ › From a template…), and Save as template (the task panel's ⋯) */}
       <Deferred when={templateLibrary.open}><TemplateLibrary open={templateLibrary.open} onClose={() => setTemplateLibrary({ open: false })} initialTemplateId={templateLibrary.initialTemplateId}

@@ -455,7 +455,7 @@ export interface PushSubscriptionRow {
 }
 /** Notification kinds that can push. Pref keys reuse notify_prefs with a
  *  "_push" suffix ("assigned_push"…); unset = ON, like every other pref. */
-export type PushKind = "assigned" | "mention" | "comment" | "approval" | "due";
+export type PushKind = "assigned" | "mention" | "comment" | "approval" | "kudos" | "due";
 /** Whether push can be offered on this device:
  *  unsupported (no service worker / PushManager / Notification), unconfigured
  *  (no VITE_VAPID_PUBLIC_KEY, or demo mode), denied (the browser blocked it),
