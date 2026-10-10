@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Kudos, Member, Project, Task } from "../../data/types";
 import { KudosButton, KudosTally, MomentumSettings, StreakChip, TaskKudos, TodayStreak, TodayWins, WinsRecap } from ".";
-import { listKudos, readPlannedDays, resetKudosDemo } from "../../lib/momentum";
+import { demoKudosActivity, KUDOS_REGIVES_PER_TASK, listKudos, readPlannedDays, resetKudosDemo } from "../../lib/momentum";
 
 const FRI_AFTERNOON = new Date("2026-10-09T15:00:00+01:00");
 const WED = new Date("2026-10-07T10:00:00+01:00");
@@ -95,6 +95,21 @@ describe("StreakChip", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Hide the streak" }));
     expect(onChangePrefs).toHaveBeenLastCalledWith({ daysOff: ["2026-10-30"], streakHidden: true });
   });
+  it("taking today off (or adding a day in Settings) keeps an old day off a long run stands on", () => {
+    const fri = new Date("2026-10-09T10:00:00+01:00");
+    const onChangePrefs = vi.fn();
+    const prefs = { daysOff: ["2026-07-27", "2026-12-24"] };
+    render(<StreakChip streak={{ days: 97, today: "pending", since: "2026-05-21" }} now={fri} prefs={prefs} onChangePrefs={onChangePrefs} />);
+    fireEvent.click(screen.getByRole("button", { name: /97-day streak/ }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Take today off" }));
+    expect(onChangePrefs).toHaveBeenLastCalledWith({ daysOff: ["2026-07-27", "2026-10-09", "2026-12-24"] });
+    cleanup();
+    const onChange = vi.fn();
+    render(<MomentumSettings prefs={prefs} onChange={onChange} now={fri} />);
+    fireEvent.change(screen.getByLabelText("Days off"), { target: { value: "2026-10-16" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenLastCalledWith({ daysOff: ["2026-07-27", "2026-10-16", "2026-12-24"] });
+  });
   it("a day you've taken off can be counted again", () => {
     const onChangePrefs = vi.fn();
     render(<StreakChip streak={{ days: 2, today: "off", since: "2026-10-05" }} now={WED} prefs={{ daysOff: ["2026-10-07"] }} onChangePrefs={onChangePrefs} />);
@@ -160,11 +175,36 @@ describe("KudosButton", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change or take back your kudos for Theo" }));
     const again = screen.getByRole("dialog");
     expect(within(again).getByRole("button", { name: "Update" })).toBeDisabled();
+    const sent = (onChange.mock.lastCall![0] as Kudos[])[0];
     fireEvent.click(within(again).getByRole("radio", { name: "Trophy" }));
     fireEvent.click(within(again).getByRole("button", { name: "Update" }));
+    // at once: the new emoji, still one kudos
+    expect(screen.getByRole("button", { name: "Kudos for Theo, 1 so far" })).toHaveTextContent("🏆");
     await flush();
-    expect(onChange).toHaveBeenLastCalledWith([expect.objectContaining({ emoji: "🏆", note: "Brilliant demo" })]);
+    // in place: the same kudos (no new Inbox item for Theo), the new emoji
+    expect(onChange).toHaveBeenLastCalledWith([expect.objectContaining({ id: sent.id, createdAt: sent.createdAt, emoji: "🏆", note: "Brilliant demo" })]);
+    expect((await listKudos("ws-foundrise", { taskIds: ["t-24"] })).filter((k) => k.fromUser === "m-self").map((k) => k.id)).toEqual([sent.id]);
     expect(screen.getByRole("status")).toHaveTextContent("Kudos updated for Theo");
+  });
+  it("giving on one task over and over (give, take back, give…) is held back, with a plain word", async () => {
+    const onChange = vi.fn();
+    render(<KudosButton task={theirs} currentUserId="m-self" recipientName="Theo" kudos={[]} onChange={onChange} />);
+    for (let i = 0; i < KUDOS_REGIVES_PER_TASK; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "Kudos for Theo" }));
+      await flush();
+      fireEvent.click(screen.getByRole("button", { name: "Kudos for Theo, 1 so far" }));
+      await flush();
+    }
+    onChange.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Kudos for Theo" }));
+    // nothing moves, nothing is sent
+    expect(screen.getByRole("button", { name: "Kudos for Theo" })).toHaveAttribute("aria-pressed", "false");
+    await flush();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("You've sent kudos for this a few times just now. Try again later.");
+    expect((await listKudos("ws-foundrise", { taskIds: ["t-24"] })).some((k) => k.fromUser === "m-self")).toBe(false);
+    // the demo Inbox is untouched by all that (kudos to Theo aren't yours to see)
+    expect(demoKudosActivity().map((a) => a.id)).toEqual(["a-kd-demo-1", "a-kd-demo-2"]);
   });
   it("a long press opens the picker (touch) and doesn't also send", async () => {
     vi.useRealTimers();
@@ -292,11 +332,22 @@ describe("WinsRecap", () => {
 });
 
 describe("the wrappers", () => {
-  it("TodayStreak records today once a task is planned, and shows the run", () => {
+  it("TodayStreak records today when you plan something today — never for a flag left from before", () => {
     vi.setSystemTime(new Date("2026-10-09T10:00:00+01:00"));
     const now = new Date("2026-10-09T10:00:00+01:00");
-    const tasks = [task({ id: "a", status: "todo", planToday: true, assigneeId: "u-1" }), task({ id: "b", completedAt: "2026-10-08", assigneeId: "u-1" })];
-    render(<TodayStreak currentUserId="u-1" tasks={tasks} now={now} />);
+    const tasks = [
+      task({ id: "a", status: "todo", planToday: true, assigneeId: "u-1" }),            // on Today since earlier in the week
+      task({ id: "old", status: "done", planToday: true, completedAt: "2026-10-01", assigneeId: "u-1" }),   // finished, the flag still set
+      task({ id: "c", status: "todo", planToday: false, assigneeId: "u-1" }),
+      task({ id: "b", completedAt: "2026-10-08", assigneeId: "u-1" }),
+      // a teammate finishing a task you only collaborate on isn't yours
+      task({ id: "theirs", completedAt: "2026-10-07", assigneeId: "u-2", collaborators: ["u-1"] }),
+    ];
+    const { rerender } = render(<TodayStreak currentUserId="u-1" tasks={tasks} now={now} />);
+    expect(readPlannedDays("u-1")).toEqual([]);
+    expect(screen.getByRole("button", { name: "1-day streak, today still open" })).toBeInTheDocument();
+    // you put "c" on Today
+    rerender(<TodayStreak currentUserId="u-1" tasks={tasks.map((t) => (t.id === "c" ? { ...t, planToday: true } : t))} now={now} />);
     expect(readPlannedDays("u-1")).toEqual(["2026-10-09"]);
     expect(screen.getByRole("button", { name: "2-day streak, today counts" })).toBeInTheDocument();
   });

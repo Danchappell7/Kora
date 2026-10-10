@@ -21,13 +21,21 @@
      suspended people can't. The recipient gets an Inbox item (kind
      "kudos", pref "kudos"); Pulse shows counts. Team tasks only; never to
      yourself. Kudos don't come back with a task restored from the bin.
+     Another emoji or note changes your kudos in place (update_kudos: no
+     new Inbox item, push or webhook); giving on one task over and over
+     (give, Undo, give…) is held to a few an hour (kudosCooldownLeft).
    Everything date-based is pure and takes `now` (pin it in tests); the
    person's timezone defaults to Europe/London.
    Where "you planned your day" comes from: the days recorded on this
-   device by markDayPlanned (Today records a day as soon as it sees one of
-   your tasks planned or scheduled for it; "Plan my day" should call it
-   too). Finishing something is read from the tasks (completedAt), so that
-   half follows you everywhere. Focus time comes from the focus timer's
+   device by markDayPlanned, only ever for a plan made that day — "Plan my
+   day" (the host calls it), or Today seeing you put one of your open tasks
+   on Today or give it a slot since it last looked that day (notePlans),
+   or a plan you keep for today on a teammate's task (lib/planOverlay,
+   which is kept day by day). An old "on Today" flag left on a task never
+   counts: tasks keep it until they're taken off, finished or not.
+   Finishing something is read from the tasks you own (assignee; done,
+   completedAt), so that half follows you everywhere; a teammate finishing
+   a task you only collaborate on isn't yours. Focus time comes from the focus timer's
    daily total, kept day by day here (noteFocusToday), or, when the timer
    wasn't used, from the time logged on / estimated for what you finished.
    Demo mode: fake kudos, a believable streak and a week of focus time
@@ -36,6 +44,8 @@
 import type { Activity, Kudos, KudosEmoji, KudosFailure, MomentumPrefs, Project, StreakInfo, Task, WinsMoment, WinsRecap } from "../data/types";
 import { MEMBERS, PROJECTS, TASKS } from "../data/data";
 import { kudosFailure, KUDOS_EMOJI, KUDOS_NOTE_MAX, parseKudos } from "./kudosRows";
+import { readPlanOverlay } from "./planOverlay";
+import { errText } from "./rowUtils";
 import { supabase } from "./supabase";
 
 export { parseKudos, kudosFailure, KUDOS_EMOJI, KUDOS_NOTE_MAX, KUDOS_PER_DAY } from "./kudosRows";
@@ -181,7 +191,13 @@ export interface StreakInput {
 }
 
 /** How far back a streak is counted (in calendar days). */
-const STREAK_LOOKBACK_DAYS = 800;
+export const STREAK_LOOKBACK_DAYS = 800;
+
+/** Your finished tasks as far as the streak goes: done and assigned to you (a task you only
+ *  collaborate on is someone else's to finish). */
+export function streakCompleted<T extends Pick<Task, "status" | "assigneeId">>(tasks: readonly T[], userId: string): T[] {
+  return userId ? tasks.filter((t) => !!t && t.status === "done" && t.assigneeId === userId) : [];
+}
 
 /** The days that count: planned, or something finished (in the person's timezone). */
 function activeDays(plannedDays: readonly string[], completed: readonly Pick<Task, "completedAt">[], timezone?: string): Set<string> {
@@ -386,7 +402,7 @@ export function buildWinsRecap(input: WinsInput): MomentumRecap | null {
 
   if (!done.length && !moments.length && !(focusFrom === "timer" && focusMinutes > 0)) return null;
 
-  const streak = computeStreak({ now, timezone, plannedDays: input.plannedDays ?? [], completed: mineDone, prefs });
+  const streak = computeStreak({ now, timezone, plannedDays: input.plannedDays ?? [], completed: streakCompleted(tasks, me), prefs });
   return {
     kind: win.kind, from: win.from, to: win.to, total: done.length, byProject, focusMinutes, streak,
     moments: moments.slice(0, 3), focusFrom, projectNames, kudosReceived: received.length,
@@ -568,9 +584,77 @@ export function markDayPlanned(userId: string, day?: string, now: Date = new Dat
   return next;
 }
 
-/** Did you plan today (any of your tasks planned or scheduled for it)? */
-export function plannedToday(tasks: readonly Pick<Task, "assigneeId" | "collaborators" | "planToday" | "scheduled">[], userId: string): boolean {
-  return tasks.some((t) => mineToFinish(t, userId) && (t.planToday === true || (typeof t.scheduled === "number" && Number.isFinite(t.scheduled))));
+/* ---------- did you plan your day? (only a plan made that day counts) ---------- */
+
+type PlanTask = Pick<Task, "id" | "assigneeId" | "status" | "archivedAt" | "planToday" | "scheduled">;
+/** What's planned on one task: "" (nothing), "p" (on Today), "s540" (a slot), "ps540" (both). */
+const planSig = (t: Pick<Task, "planToday" | "scheduled">) =>
+  `${t.planToday === true ? "p" : ""}${typeof t.scheduled === "number" && Number.isFinite(t.scheduled) ? `s${Math.round(t.scheduled)}` : ""}`;
+
+/** Your open tasks' plans — assigned to you, not done, not archived — as task id → what's
+ *  planned on it ("" for nothing yet, so a later plan on it can be told from a new task). */
+export function planSnapshot(tasks: readonly PlanTask[], userId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!userId) return out;
+  for (const t of tasks) if (t?.id && t.assigneeId === userId && t.status !== "done" && !t.archivedAt) out[t.id] = planSig(t);
+  return out;
+}
+
+/** Between two looks at your open tasks, did you plan something: put one on Today, or give one
+ *  a (new) slot? A task that has only just appeared (new, reopened, handed to you, or the list
+ *  arriving) and a plan taken away don't count. */
+export function plannedBetween(before: Readonly<Record<string, string>>, after: Readonly<Record<string, string>>): boolean {
+  for (const [id, now] of Object.entries(after)) {
+    if (!now || !Object.prototype.hasOwnProperty.call(before, id)) continue;
+    const was = before[id] ?? "";
+    if (now === was) continue;
+    const slot = /s(\d+)/.exec(now)?.[1], wasSlot = /s(\d+)/.exec(was)?.[1];
+    if ((now.startsWith("p") && !was.startsWith("p")) || (slot !== undefined && slot !== wasSlot)) return true;
+  }
+  return false;
+}
+
+/** Your own plan for today on teammates' tasks (lib/planOverlay keeps those day by day, so
+ *  one there was made for today). */
+function overlayPlannedFor(userId: string, day: string): boolean {
+  try {
+    return Object.values(readPlanOverlay(userId, day)).some((e) => e?.planToday === true || (typeof e?.scheduled === "number" && Number.isFinite(e.scheduled)));
+  } catch { return false; }
+}
+
+const plansSeenKey = (userId: string) => `kanbo-momentum-plans:${userId || "local"}`;
+const memPlansSeen = new Map<string, { day: string; plans: Record<string, string> }>();
+function readPlansSeen(key: string): { day: string; plans: Record<string, string> } | null {
+  const mem = memPlansSeen.get(key);
+  if (mem) return mem;
+  const v = readJson(key) as { day?: unknown; plans?: unknown } | null;
+  if (!v || typeof v.day !== "string" || !DAY_RE.test(v.day) || !v.plans || typeof v.plans !== "object" || Array.isArray(v.plans)) return null;
+  const plans: Record<string, string> = {};
+  for (const [id, s] of Object.entries(v.plans as Record<string, unknown>)) if (typeof s === "string" && /^p?(s\d+)?$/.test(s)) plans[id] = s;
+  return { day: v.day, plans };
+}
+
+/** Today looks at your tasks (whenever they change): when, since its last look on the same day
+ *  (this visit, or an earlier one on this device), you put one of your open tasks on Today or
+ *  gave it a slot — or you have a plan for today on a teammate's task — the day is recorded as
+ *  planned (markDayPlanned). A day's first look only remembers what's planned: an old "on
+ *  Today" flag never counts. True when today is (now) recorded. */
+export function notePlans(userId: string, tasks: readonly PlanTask[], now: Date = new Date(), timezone?: string): boolean {
+  if (!userId) return false;
+  const day = localMoment(now, timezone).date;
+  const key = plansSeenKey(userId);
+  const after = planSnapshot(tasks ?? [], userId);
+  const before = readPlansSeen(key);
+  const planned = (!!before && before.day === day && plannedBetween(before.plans, after)) || overlayPlannedFor(userId, day);
+  // (no open tasks yet — the list still loading — keeps the last look rather than forgetting it)
+  if (Object.keys(after).length && (!before || before.day !== day || JSON.stringify(before.plans) !== JSON.stringify(after))) {
+    const seen = { day, plans: after };
+    memPlansSeen.set(key, seen);
+    writeJson(key, seen);
+  }
+  if (!planned) return readPlannedDays(userId, now).includes(day);
+  markDayPlanned(userId, day, now, timezone);
+  return true;
 }
 
 /** Focus-timer minutes per local day (this device). */
@@ -603,19 +687,25 @@ export function noteFocusToday(userId: string, now: Date = new Date()): Record<s
   return trimmed;
 }
 
+/** The most days off kept (the oldest go first) — years of them, and well inside
+ *  profiles.onboarding's 16 KB. */
+export const DAYS_OFF_MAX = 400;
+
 /** The patch for profiles.onboarding (merge_onboarding replaces the whole `momentum` key, so send it all). */
 export function momentumPatch(next: MomentumPrefs): { momentum: MomentumPrefs } {
   const out: MomentumPrefs = {};
   if (next.streakHidden !== undefined) out.streakHidden = !!next.streakHidden;
   if (next.recapHidden !== undefined) out.recapHidden = !!next.recapHidden;
-  if (next.daysOff) out.daysOff = [...new Set(next.daysOff.filter((d) => DAY_RE.test(d)))].sort().slice(-120);
+  if (next.daysOff) out.daysOff = [...new Set(next.daysOff.filter((d) => typeof d === "string" && DAY_RE.test(d)))].sort().slice(-DAYS_OFF_MAX);
   return { momentum: out };
 }
 
-/** Days off with the long-gone ones dropped (kept: the last 60 days, so a streak can still look back past them). */
+/** Days off, tidied for saving: valid, once each, in order, and only those a streak can still
+ *  reach (it looks back STREAK_LOOKBACK_DAYS; older ones can never matter), at most
+ *  DAYS_OFF_MAX. Editing your days off never drops one a run still stands on. */
 export function tidyDaysOff(daysOff: readonly string[] | undefined, today: string): string[] {
-  const floor = addDaysISO(today, -60);
-  return [...new Set((daysOff ?? []).filter((d) => DAY_RE.test(d) && d >= floor))].sort();
+  const floor = addDaysISO(today, -STREAK_LOOKBACK_DAYS);
+  return [...new Set((daysOff ?? []).filter((d) => typeof d === "string" && DAY_RE.test(d) && d >= floor))].sort().slice(-DAYS_OFF_MAX);
 }
 
 /* ============================================================
@@ -625,12 +715,49 @@ export function tidyDaysOff(daysOff: readonly string[] | undefined, today: strin
 /** How many kudos listKudos reads at most (newest first). */
 export const KUDOS_LIST_LIMIT = 1000;
 let schemaMissing = false;
+/** 0048 without update_kudos: a change of emoji / note is a take back + give (this session) */
+let updateMissing = false;
 let channelSeq = 0;
+
 let DEMO_DELAY_MS = 180;
 const wait = (ms: number) => (ms > 0 ? new Promise<void>((r) => setTimeout(r, ms)) : Promise.resolve());
 const err = (message: string) => new Error(message);
 const listeners = new Set<{ ws: string; fn: () => void }>();
 const tell = (ws: string) => { for (const l of [...listeners]) if (l.ws === ws) { try { l.fn(); } catch { /* a listener's problem */ } } };
+
+/* ---------- the re-give cooldown (this session) ----------
+   Each give is a new Inbox item for the recipient, a push / email and a kudos.given webhook,
+   and taking it back only removes the Inbox item: so giving on one task again and again
+   (give, Undo, give…) is held to KUDOS_REGIVES_PER_TASK an hour. Changing the emoji or note
+   in place (updateKudos) isn't a give. The database keeps its own limits. */
+export const KUDOS_REGIVES_PER_TASK = 3;
+export const KUDOS_REGIVE_WINDOW_MS = 60 * 60_000;
+const gaveAt = new Map<string, number[]>();
+const recentGives = (taskId: string, now: number) => (gaveAt.get(taskId) ?? []).filter((t) => t > now - KUDOS_REGIVE_WINDOW_MS && t <= now);
+function noteGive(taskId: string): void {
+  const now = Date.now();
+  gaveAt.set(taskId, [...recentGives(taskId, now), now]);
+}
+/** How long until you may give kudos on this task again (ms); 0: now. */
+export function kudosCooldownLeft(taskId: string, now: number = Date.now()): number {
+  const recent = recentGives(taskId, now);
+  if (recent.length < KUDOS_REGIVES_PER_TASK) return 0;
+  return Math.max(0, recent[recent.length - KUDOS_REGIVES_PER_TASK] + KUDOS_REGIVE_WINDOW_MS - now);
+}
+const cooldownError = (ms: number) => Object.assign(err("kudos cooldown"), { code: "kudos_cooldown", retryInMs: ms });
+/** A give held back by the cooldown (this session's, or the database's 'kudos cooldown'). */
+export function isKudosCooldown(e: unknown): boolean {
+  return (e as { code?: unknown } | null)?.code === "kudos_cooldown" || /kudos cooldown/i.test(errText(e));
+}
+/** A change of emoji / note whose old kudos was taken back before the new one failed. */
+export function kudosTookBack(e: unknown): boolean {
+  return !!(e && typeof e === "object" && (e as { tookBack?: unknown }).tookBack === true);
+}
+/** What to say when giving, changing or taking back kudos fails (British English). */
+export function kudosProblemText(e: unknown): string {
+  if (isKudosCooldown(e)) return "You've sent kudos for this a few times just now. Try again later.";
+  return kudosErrorText(kudosFailure(e));
+}
 
 type DemoTask = { id: string; title: string; status: Task["status"]; assigneeId: string; workspaceId: string | null; collaborators: string[] };
 const demoTasks = new Map<string, DemoTask>();
@@ -686,7 +813,8 @@ export function demoKudosActivity(): Activity[] {
 
 /** Tests: forget the demo's changes (and, optionally, make it answer at once). */
 export function resetKudosDemo(opts: { demoDelayMs?: number } = {}): void {
-  demoRows = null; demoSeq = 0; demoTasks.clear(); schemaMissing = false; listeners.clear(); memPlanned.clear(); memFocus.clear();
+  demoRows = null; demoSeq = 0; demoTasks.clear(); schemaMissing = false; updateMissing = false; listeners.clear();
+  memPlanned.clear(); memFocus.clear(); memPlansSeen.clear(); gaveAt.clear();
   if (opts.demoDelayMs !== undefined) DEMO_DELAY_MS = opts.demoDelayMs;
 }
 
@@ -726,12 +854,19 @@ function notifyKudos(kudosId: string): void {
   } catch { /* not deployed: in-app still works */ }
 }
 
-/** rpc give_kudos (idempotent: a second call answers the first). */
-export async function giveKudos(taskId: string, emoji: KudosEmoji = "🎉", note?: string | null, to?: string | null): Promise<Kudos> {
+/** The emoji and note as the database takes them, or an "invalid …" error before asking. */
+function cleanKudos(emoji: KudosEmoji, note: string | null | undefined): { em: KudosEmoji; nt: string | null } {
   const em = (KUDOS_EMOJI as readonly string[]).includes(emoji) ? emoji : null;
   if (!em) throw err("invalid emoji");
   const nt = (note ?? "").trim() || null;
   if (nt && nt.length > KUDOS_NOTE_MAX) throw err("invalid note");
+  return { em, nt };
+}
+
+/** rpc give_kudos (idempotent: a second call answers the first). Held back (isKudosCooldown)
+ *  after KUDOS_REGIVES_PER_TASK gives on the same task within the hour. */
+export async function giveKudos(taskId: string, emoji: KudosEmoji = "🎉", note?: string | null, to?: string | null): Promise<Kudos> {
+  const { em, nt } = cleanKudos(emoji, note);
   if (!supabase) {
     await wait(DEMO_DELAY_MS);
     const t = demoTask(taskId);
@@ -743,12 +878,17 @@ export async function giveKudos(taskId: string, emoji: KudosEmoji = "🎉", note
     if (toUser === DEMO_ME) throw err("not for yourself");
     const mine = rows().find((k) => k.taskId === taskId && k.fromUser === DEMO_ME);
     if (mine) return withNames(mine);
+    const left = kudosCooldownLeft(taskId);
+    if (left > 0) throw cooldownError(left);
     const row: Kudos = { id: `kd-demo-new-${++demoSeq}`, taskId, workspaceId: t.workspaceId, fromUser: DEMO_ME, toUser, emoji: em, note: nt, createdAt: new Date().toISOString() };
     rows().push(row);
+    noteGive(taskId);
     tell(row.workspaceId);
     return withNames(row);
   }
   if (schemaMissing) throw Object.assign(err("could not find the function public.give_kudos"), { code: "PGRST202" });
+  const left = kudosCooldownLeft(taskId);
+  if (left > 0) throw cooldownError(left);
   const { data, error } = await supabase.rpc("give_kudos", { p_task: taskId, p_emoji: em, p_note: nt, p_to: to ?? null });
   if (error) {
     if (kudosFailure(error) === "unavailable") schemaMissing = true;
@@ -756,8 +896,53 @@ export async function giveKudos(taskId: string, emoji: KudosEmoji = "🎉", note
   }
   const k = parseKudos(data);
   if (!k) throw err("task not found");
+  noteGive(taskId);
   notifyKudos(k.id);
   return k;
+}
+
+/** Change your kudos on a task (another emoji, a new note) in place: rpc update_kudos — the
+ *  same kudos, so no new Inbox item (the recipient's shows the new emoji and note), no second
+ *  push / email and no second kudos.given webhook. `inPlace` false: you had none there, so it
+ *  was given (giveKudos), or the database has no update_kudos yet and it was taken back and
+ *  given again — held to the re-give cooldown first, and if the give then fails the error
+ *  says the earlier kudos is gone (kudosTookBack). */
+export async function updateKudos(taskId: string, emoji: KudosEmoji, note?: string | null): Promise<{ kudos: Kudos; inPlace: boolean }> {
+  const { em, nt } = cleanKudos(emoji, note);
+  if (!supabase) {
+    await wait(DEMO_DELAY_MS);
+    const mine = rows().find((k) => k.taskId === taskId && k.fromUser === DEMO_ME);
+    if (!mine) return { kudos: await giveKudos(taskId, em, nt), inPlace: false };
+    const t = demoTask(taskId);
+    if (!t) throw err("task not found");
+    if (t.status !== "done") throw err("task not done");
+    mine.emoji = em;
+    mine.note = nt;
+    tell(mine.workspaceId);
+    return { kudos: withNames(mine), inPlace: true };
+  }
+  if (schemaMissing) throw Object.assign(err("could not find the function public.update_kudos"), { code: "PGRST202" });
+  if (!updateMissing) {
+    const { data, error } = await supabase.rpc("update_kudos", { p_task: taskId, p_emoji: em, p_note: nt });
+    if (!error) {
+      if (data == null) return { kudos: await giveKudos(taskId, em, nt), inPlace: false };   // you had none there
+      const k = parseKudos(data);
+      if (!k) throw err("task not found");
+      return { kudos: k, inPlace: true };
+    }
+    if (kudosFailure(error) !== "unavailable") throw error;
+    updateMissing = true;   // 0048 without update_kudos: the old way, for this session
+  }
+  const left = kudosCooldownLeft(taskId);
+  if (left > 0) throw cooldownError(left);
+  const tookBack = await takeBackKudos(taskId);
+  try {
+    return { kudos: await giveKudos(taskId, em, nt), inPlace: false };
+  } catch (e) {
+    if (!tookBack) throw e;
+    const code = (e as { code?: unknown } | null)?.code;
+    throw Object.assign(err(errText(e)), { tookBack: true, cause: e, ...(code !== undefined ? { code } : {}) });
+  }
 }
 
 /** rpc take_back_kudos: true when there was one. */
@@ -780,8 +965,9 @@ export async function takeBackKudos(taskId: string): Promise<boolean> {
   return data === true;
 }
 
-/** Realtime: kudos in this workspace changed. Returns unsubscribe. (A delete carries only the
- *  row's id, so any delete is passed on; the caller reads the list again.) */
+/** Realtime: kudos in this workspace given, changed (update_kudos) or taken back. Returns
+ *  unsubscribe. (A delete carries only the row's id, so any delete is passed on; the caller
+ *  reads the list again.) */
 export function subscribeKudos(workspaceId: string, onChange: () => void): () => void {
   if (!workspaceId) return () => undefined;
   const entry = { ws: workspaceId, fn: onChange };
@@ -793,6 +979,7 @@ export function subscribeKudos(workspaceId: string, onChange: () => void): () =>
   try {
     ch = client.channel(`kudos-${workspaceId}-${++channelSeq}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "kudos", filter: `workspace_id=eq.${workspaceId}` }, () => onChange())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "kudos", filter: `workspace_id=eq.${workspaceId}` }, () => onChange())
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "kudos" }, () => onChange())
       .subscribe();
   } catch { ch = null; }

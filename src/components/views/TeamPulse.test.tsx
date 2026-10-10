@@ -391,6 +391,23 @@ describe("TeamPulse › kudos (0048)", () => {
     expect(theo).toHaveTextContent("2 kudos since yesterday");
   });
 
+  it("the kudos button has its own place beside the task, never over the button that opens it", async () => {
+    pulse({ workspaceId: WS });
+    await ready();
+    const theo = screen.getByRole("row", { name: /Theo Vance/ });
+    const btn = within(theo).getByRole("button", { name: "Kudos for Theo" });
+    const wrap = btn.closest(".kpt-item-wrap") as HTMLElement;
+    const open = wrap.querySelector(":scope > .kpt-item") as HTMLElement;
+    // no kudos yet: a column of its own at the item's end (momentum.css), a sibling of the item, not inside or over it
+    expect(wrap).toHaveAttribute("data-float", "");
+    expect(open.contains(btn)).toBe(false);
+    expect(btn.closest(".kpt-item-trail")?.parentElement).toBe(wrap);
+    fireEvent.click(btn);
+    await ready();
+    // once it has kudos: beneath, like reactions
+    expect(within(theo).getByRole("button", { name: "Kudos for Theo, 1 so far" }).closest(".kpt-item-wrap")).not.toHaveAttribute("data-float");
+  });
+
   it("counts kudos per person for the period, from the host's list", async () => {
     const kudos = [kudo({}), kudo({ fromUser: "m-3" }), kudo({ createdAt: "2026-09-01T10:00:00Z", fromUser: "m-self" })];
     pulse({ workspaceId: WS, kudos });

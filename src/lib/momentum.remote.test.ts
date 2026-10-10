@@ -1,6 +1,8 @@
 /* lib/momentum against a (mocked) real backend: the kudos table read, give_kudos /
-   take_back_kudos, the best-effort notify call, realtime — and how each fails (0048 not
-   run, refusals, offline). Fixtures are the JSON 0048 returned in the PGlite replay. */
+   take_back_kudos / update_kudos (and the take back + give it falls back to before the
+   database has it), the re-give cooldown, the best-effort notify call, realtime — and how
+   each fails (0048 not run, refusals, offline). Fixtures are the JSON 0048 returned in the
+   PGlite replay. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { rpc, invoke, from, channel, removeChannel } = vi.hoisted(() => ({
@@ -17,7 +19,10 @@ vi.mock("./supabase", () => ({
   isSupabaseConfigured: true,
 }));
 
-import { giveKudos, KUDOS_COLUMNS, kudosFailure, listKudos, readPlannedDays, resetKudosDemo, subscribeKudos, takeBackKudos } from "./momentum";
+import {
+  giveKudos, isKudosCooldown, KUDOS_COLUMNS, kudosFailure, kudosTookBack, listKudos, readPlannedDays, resetKudosDemo, subscribeKudos, takeBackKudos,
+  updateKudos,
+} from "./momentum";
 
 const GIVE_KUDOS = { "id": "f7fb9ef1-c395-4077-97c2-3405baa5b9e6", "note": "Great work", "emoji": "👏", "task_id": "610f3019-387f-44ec-9c9e-50613b791fe6", "to_name": "Sana Rao", "to_user": "a89a2412-b64a-49e4-bb75-10dc9466bba2", "from_name": "Theo Hart", "from_user": "56709045-a8fa-42c1-8c2b-80f424fe596e", "created_at": "2026-10-09T17:41:31.698+00:00", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0" };
 const KUDOS_ROW = { "id": "f7fb9ef1-c395-4077-97c2-3405baa5b9e6", "task_id": "610f3019-387f-44ec-9c9e-50613b791fe6", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0", "from_user": "56709045-a8fa-42c1-8c2b-80f424fe596e", "to_user": "a89a2412-b64a-49e4-bb75-10dc9466bba2", "emoji": "👏", "note": "Great work", "created_at": "2026-10-09T17:41:31.698Z" };
@@ -121,10 +126,76 @@ describe("giving and taking back", () => {
     rpc.mockRejectedValue(new TypeError("Failed to fetch"));
     expect(kudosFailure(await giveKudos(TASK).catch((x) => x))).toBe("network");
   });
+  it("giving on one task again and again is held back before asking (refusals don't count)", async () => {
+    rpc.mockResolvedValue(ok(GIVE_KUDOS));
+    for (let i = 0; i < 3; i++) await giveKudos(TASK);
+    rpc.mockClear(); invoke.mockClear();
+    const e = await giveKudos(TASK).catch((x) => x);
+    expect(isKudosCooldown(e)).toBe(true);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    // the database's own word for it reads the same
+    expect(isKudosCooldown({ message: "kudos cooldown", code: "P0001" })).toBe(true);
+  });
+});
+
+describe("changing your kudos (emoji, note)", () => {
+  const UPDATED = { ...GIVE_KUDOS, emoji: "🏆", note: "Even better" };
+  it("update_kudos: in place, no second notify", async () => {
+    rpc.mockResolvedValue(ok(UPDATED));
+    const r = await updateKudos(TASK, "🏆", "  Even better ");
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("update_kudos", { p_task: TASK, p_emoji: "🏆", p_note: "Even better" });
+    expect(r).toEqual({ inPlace: true, kudos: expect.objectContaining({ id: GIVE_KUDOS.id, emoji: "🏆", note: "Even better" }) });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+  it("none of yours there (null): it gives", async () => {
+    rpc.mockResolvedValueOnce(ok(null)).mockResolvedValueOnce(ok(GIVE_KUDOS));
+    const r = await updateKudos(TASK, "👏", "Great work");
+    expect(rpc.mock.calls.map((c) => c[0])).toEqual(["update_kudos", "give_kudos"]);
+    expect(r.inPlace).toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it("the server's refusals come back as they are (no take back)", async () => {
+    rpc.mockResolvedValueOnce(pgErr("task not done"));
+    expect(kudosFailure(await updateKudos(TASK, "🎉").catch((x) => x))).toBe("not_done");
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+  it("before update_kudos exists: take back + give, and it stops asking for update_kudos", async () => {
+    const missing = pgErr("Could not find the function public.update_kudos(p_emoji, p_note, p_task) in the schema cache", "PGRST202");
+    rpc.mockResolvedValueOnce(missing).mockResolvedValueOnce(ok(true)).mockResolvedValueOnce(ok(UPDATED))
+      .mockResolvedValueOnce(ok(true)).mockResolvedValueOnce(ok(GIVE_KUDOS));
+    expect(await updateKudos(TASK, "🏆", "Even better")).toMatchObject({ inPlace: false, kudos: { emoji: "🏆" } });
+    expect(await updateKudos(TASK, "👏", "Great work")).toMatchObject({ inPlace: false, kudos: { emoji: "👏" } });
+    expect(rpc.mock.calls.map((c) => c[0])).toEqual(["update_kudos", "take_back_kudos", "give_kudos", "take_back_kudos", "give_kudos"]);
+    // (kudos as a whole are still there: giving works)
+    rpc.mockResolvedValueOnce(ok(GIVE_KUDOS));
+    await expect(giveKudos("other-task")).resolves.toMatchObject({ id: GIVE_KUDOS.id });
+  });
+  it("the old way: when the give fails after the take back, the error says the earlier kudos went", async () => {
+    rpc.mockResolvedValueOnce(pgErr("Could not find the function public.update_kudos", "PGRST202"))
+      .mockResolvedValueOnce(ok(true)).mockResolvedValueOnce(pgErr("task not done"));
+    const e = await updateKudos(TASK, "🏆").catch((x) => x);
+    expect(kudosTookBack(e)).toBe(true);
+    expect(kudosFailure(e)).toBe("not_done");
+    // nothing was taken back (you had none): just the give's error
+    rpc.mockResolvedValueOnce(ok(false)).mockResolvedValueOnce(pgErr("task not done"));
+    const e2 = await updateKudos(TASK, "🏆").catch((x) => x);
+    expect(kudosTookBack(e2)).toBe(false);
+  });
+  it("the old way is held to the re-give cooldown before anything is taken back", async () => {
+    rpc.mockResolvedValue(ok(GIVE_KUDOS));
+    for (let i = 0; i < 3; i++) await giveKudos(TASK);
+    rpc.mockReset();
+    rpc.mockResolvedValueOnce(pgErr("Could not find the function public.update_kudos", "PGRST202"));
+    const e = await updateKudos(TASK, "🏆").catch((x) => x);
+    expect(isKudosCooldown(e)).toBe(true);
+    expect(rpc.mock.calls.map((c) => c[0])).toEqual(["update_kudos"]);   // no take_back_kudos
+  });
 });
 
 describe("realtime", () => {
-  it("inserts in the workspace and any delete; unsubscribing removes the channel", () => {
+  it("inserts and changes in the workspace, and any delete; unsubscribing removes the channel", () => {
     const handlers: [Record<string, unknown>, () => void][] = [];
     const ch = { on: vi.fn((_e: string, f: Record<string, unknown>, h: () => void) => { handlers.push([f, h]); return ch; }), subscribe: vi.fn(() => ch) };
     channel.mockReturnValue(ch);
@@ -132,10 +203,11 @@ describe("realtime", () => {
     const off = subscribeKudos(WS, heard);
     expect(handlers.map(([f]) => f)).toEqual([
       { event: "INSERT", schema: "public", table: "kudos", filter: `workspace_id=eq.${WS}` },
+      { event: "UPDATE", schema: "public", table: "kudos", filter: `workspace_id=eq.${WS}` },
       { event: "DELETE", schema: "public", table: "kudos" },
     ]);
-    handlers[0][1](); handlers[1][1]();
-    expect(heard).toHaveBeenCalledTimes(2);
+    handlers[0][1](); handlers[1][1](); handlers[2][1]();
+    expect(heard).toHaveBeenCalledTimes(3);
     off();
     expect(removeChannel).toHaveBeenCalledWith(ch);
   });

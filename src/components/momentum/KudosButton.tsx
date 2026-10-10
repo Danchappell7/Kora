@@ -12,13 +12,20 @@
    never reach the app; guests may give kudos (a reaction, not content).
    Optimistic: the count moves at once and goes back if the server says
    no (with the reason). onChange gets the task's kudos after each change.
+   "Update" in the picker changes your kudos in place (lib/momentum
+   updateKudos: no second Inbox item, push or webhook). Giving on one
+   task again and again (give, Undo, give…) is held to a few an hour
+   (kudosCooldownLeft), with a plain word rather than a silent no.
    ============================================================ */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import type { Kudos, KudosEmoji, Task } from "../../data/types";
 import { Avatar, Button, Icon } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useOptionalToast } from "../rituals/shared";
-import { canGiveKudos, giveKudos, kudosErrorText, kudosFailure, KUDOS_EMOJI, KUDOS_NOTE_MAX, nameList, rememberKudosTask, takeBackKudos } from "../../lib/momentum";
+import {
+  canGiveKudos, giveKudos, kudosCooldownLeft, kudosProblemText, kudosTookBack, KUDOS_EMOJI, KUDOS_NOTE_MAX, nameList,
+  rememberKudosTask, takeBackKudos, updateKudos,
+} from "../../lib/momentum";
 import { firstWord, nameFrom, trapTab } from "./shared";
 import "./momentum.css";
 
@@ -81,8 +88,17 @@ export function KudosButton({ task, currentUserId, recipientName, kudos, size = 
     else setSay(text);
   };
 
-  const give = async (emoji: KudosEmoji = "🎉", note: string | null = null, opts: { replace?: boolean } = {}) => {
+  const popNow = () => {
+    setPop(true);
+    clearTimeout(popTimer.current);
+    popTimer.current = setTimeout(() => { if (alive.current) setPop(false); }, POP_MS);
+  };
+  const remember = () => rememberKudosTask({ id: task.id, title: task.title, status: task.status, assigneeId: task.assigneeId, workspaceId: task.workspaceId ?? null });
+
+  const give = async (emoji: KudosEmoji = "🎉", note: string | null = null) => {
     if (busy || disabled) return;
+    // given here (and Undone) a few times already: say so before anything moves
+    if (kudosCooldownLeft(task.id) > 0) { tell(kudosProblemText({ code: "kudos_cooldown" }), "error"); return; }
     const before = shown;
     const rest = before.filter((k) => k.fromUser !== currentUserId);
     const provisional: Kudos = {
@@ -91,26 +107,52 @@ export function KudosButton({ task, currentUserId, recipientName, kudos, size = 
     };
     setBusy(true);
     setOverride({ base: baseSig, next: [...rest, provisional] });
-    rememberKudosTask({ id: task.id, title: task.title, status: task.status, assigneeId: task.assigneeId, workspaceId: task.workspaceId ?? null });
-    let tookBack = false;
+    remember();
     try {
-      if (opts.replace && before.some((k) => k.fromUser === currentUserId)) { await takeBackKudos(task.id); tookBack = true; }
       const k = await giveKudos(task.id, emoji, note);
       const next = [...rest, k];
       settle(next);
       if (!alive.current) return;
-      setPop(true);
-      clearTimeout(popTimer.current);
-      popTimer.current = setTimeout(() => { if (alive.current) setPop(false); }, POP_MS);
-      const msg = opts.replace ? `Kudos updated for ${who}` : `Kudos sent to ${who}`;
-      if (toast && !opts.replace) toast.action(msg, "Undo", () => { void takeBack({ quiet: true, from: next }); }, {});
+      popNow();
+      const msg = `Kudos sent to ${who}`;
+      if (toast) toast.action(msg, "Undo", () => { void takeBack({ quiet: true, from: next }); }, {});
       else tell(msg);
     } catch (e) {
-      // (a change whose old kudos was already taken back: say so, rather than show it still there)
-      if (tookBack) settle(rest);
-      else if (alive.current) setOverride({ base: baseSig, next: before });
+      if (alive.current) setOverride({ base: baseSig, next: before });
       if (!alive.current) return;
-      tell(kudosErrorText(kudosFailure(e)), "error");
+      tell(kudosProblemText(e), "error");
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  };
+
+  /** "Update" in the picker: another emoji or note on the kudos you sent, in place. */
+  const change = async (emoji: KudosEmoji, note: string | null) => {
+    if (busy || disabled) return;
+    const before = shown;
+    const own = before.find((k) => k.fromUser === currentUserId);
+    if (!own) { void give(emoji, note); return; }
+    const rest = before.filter((k) => k.fromUser !== currentUserId);
+    setBusy(true);
+    setOverride({ base: baseSig, next: [...rest, { ...own, emoji, note: note?.trim() || null }] });
+    remember();
+    try {
+      const { kudos: k } = await updateKudos(task.id, emoji, note);
+      settle([...rest, k]);
+      if (!alive.current) return;
+      popNow();
+      tell(`Kudos updated for ${who}`);
+    } catch (e) {
+      if (kudosTookBack(e)) {
+        // (the database without update_kudos: the old kudos went before the new one failed — show that, and say so)
+        settle(rest);
+        if (!alive.current) return;
+        tell(`Your earlier kudos for ${who} was taken back, and the new one wasn't sent. ${kudosProblemText(e)}`, "error");
+        return;
+      }
+      if (alive.current) setOverride({ base: baseSig, next: before });
+      if (!alive.current) return;
+      tell(kudosProblemText(e), "error");
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -130,7 +172,7 @@ export function KudosButton({ task, currentUserId, recipientName, kudos, size = 
     } catch (e) {
       if (!alive.current) return;
       setOverride({ base: baseSig, next: before });
-      tell(kudosErrorText(kudosFailure(e)), "error");
+      tell(kudosProblemText(e), "error");
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -181,7 +223,7 @@ export function KudosButton({ task, currentUserId, recipientName, kudos, size = 
       {open && (
         <KudosPicker anchorRef={moreRef} onClose={() => setOpen(false)} who={who} title={task.title} mine={mine ?? null} others={others}
           nameOf={(id) => nameFrom(people, id)} busy={busy}
-          onSend={(emoji, note) => { setOpen(false); void give(emoji, note, { replace: !!mine }); }}
+          onSend={(emoji, note) => { setOpen(false); void (mine ? change(emoji, note) : give(emoji, note)); }}
           onTakeBack={() => { setOpen(false); void takeBack(); }} />
       )}
     </span>

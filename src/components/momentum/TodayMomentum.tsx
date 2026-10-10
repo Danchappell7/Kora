@@ -1,10 +1,12 @@
 /* ============================================================
    KANBO — momentum, ready to mount: the pieces the host can lazy-load
    as they are, so lib/momentum never lands in Today's first download.
-   · TodayStreak — Today's header chip. Works the streak out from your
-     finished tasks and the days you planned (recording today as soon
-     as one of your tasks is planned or scheduled for it), and copies
-     the focus timer's total for the wins recap.
+   · TodayStreak — Today's header chip. Works the streak out from the
+     tasks you finished (yours: the assignee) and the days you planned —
+     recording today when it sees you put one of your open tasks on
+     Today or give it a slot (lib/momentum notePlans: an old "on Today"
+     flag never counts) — and copies the focus timer's total for the
+     wins recap.
    · TodayWins — Today's wins card on Friday afternoons / Monday
      mornings (the demo shows "your week so far" any day): reads the
      workspace's kudos and the days you planned.
@@ -19,7 +21,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Member, MomentumPrefs, Project, Task } from "../../data/types";
 import { isSupabaseConfigured } from "../../lib/backend";
 import {
-  activeDaysFor, addDaysISO, computeStreak, localMoment, markDayPlanned, noteFocusToday, plannedToday, readFocusLog, readPlannedDays, recapWindow,
+  activeDaysFor, addDaysISO, computeStreak, localMoment, noteFocusToday, notePlans, readFocusLog, readPlannedDays, recapWindow, streakCompleted,
 } from "../../lib/momentum";
 import { KudosButton, KudosTally } from "./KudosButton";
 import { StreakChip } from "./StreakChip";
@@ -27,21 +29,21 @@ import { WinsRecap } from "./WinsRecap";
 import { useWorkspaceKudos } from "./useKudos";
 import { useMinuteClock } from "./shared";
 
-const mine = (t: Pick<Task, "assigneeId" | "collaborators">, me: string) => t.assigneeId === me || (t.collaborators ?? []).includes(me);
+const sameDays = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((d, i) => d === b[i]);
 
-/** The days you planned (this device), recording today once Today shows a plan for it. */
+/** The days you planned (this device). Whenever your tasks change, notePlans looks for a plan
+ *  you made today (one of your open tasks put on Today or given a slot since its last look);
+ *  then the days are read again (Plan my day, or the other card, may have recorded today). */
 function usePlannedDays(currentUserId: string, tasks: readonly Task[], at: Date, timezone?: string): string[] {
   const today = localMoment(at, timezone).date;
   const [days, setDays] = useState(() => readPlannedDays(currentUserId, at));
-  const planned = plannedToday(tasks, currentUserId);
-  // a new person, or a new day: read them again
   useEffect(() => {
-    setDays(readPlannedDays(currentUserId, at));
+    if (currentUserId) notePlans(currentUserId, tasks, at, timezone);
+    const next = readPlannedDays(currentUserId, at);
+    setDays((prev) => (sameDays(prev, next) ? prev : next));
+    // (a new person, a new day, or the tasks changed; not every minute)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId, today]);
-  useEffect(() => {
-    if (planned && currentUserId) setDays(markDayPlanned(currentUserId, today));
-  }, [planned, currentUserId, today]);
+  }, [currentUserId, today, timezone, tasks]);
   return days;
 }
 
@@ -63,7 +65,7 @@ export function TodayStreak({ currentUserId, tasks, prefs, onChangePrefs, timezo
     if (currentUserId) noteFocusToday(currentUserId, at);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, fiveMinutes]);
-  const completed = useMemo(() => tasks.filter((t) => t.status === "done" && mine(t, currentUserId)), [tasks, currentUserId]);
+  const completed = useMemo(() => streakCompleted(tasks, currentUserId), [tasks, currentUserId]);
   const streak = useMemo(() => computeStreak({ now: at, timezone, plannedDays, completed, prefs }),
     // (the day, not the minute, moves a streak)
     // eslint-disable-next-line react-hooks/exhaustive-deps

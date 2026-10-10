@@ -6,9 +6,10 @@ import type { Kudos, Task } from "../data/types";
 import {
   activeDaysFor, addDaysISO, buildWinsRecap, canGiveKudos, computeStreak, dayLabel, dayOffReason, focusLabel, giveKudos, isBankHoliday,
   isoWeekday, isWorkingDay, kudosErrorText, kudosOnTask, listKudos, localDayOf, localMoment, markDayPlanned, momentumPatch, mondayOf, nameList,
-  noteFocusToday, plannedToday, rangeLabel, readFocusLog, readPlannedDays, recapHeadline, recapTitle, recapWindow, rememberKudosTask,
-  replaceTaskKudos, resetKudosDemo, streakWeek, subscribeKudos, takeBackKudos, tidyDaysOff, UK_BANK_HOLIDAYS, ukBankHolidays, winsRecapText,
-  demoKudosActivity, kudosCounts,
+  noteFocusToday, notePlans, planSnapshot, plannedBetween, rangeLabel, readFocusLog, readPlannedDays, recapHeadline, recapTitle, recapWindow,
+  rememberKudosTask, replaceTaskKudos, resetKudosDemo, streakCompleted, streakWeek, subscribeKudos, takeBackKudos, tidyDaysOff, UK_BANK_HOLIDAYS,
+  ukBankHolidays, winsRecapText, demoKudosActivity, kudosCounts, DAYS_OFF_MAX, STREAK_LOOKBACK_DAYS, updateKudos, kudosCooldownLeft,
+  isKudosCooldown, kudosProblemText, KUDOS_REGIVES_PER_TASK, KUDOS_REGIVE_WINDOW_MS,
 } from "./momentum";
 
 const at = (iso: string) => new Date(iso);
@@ -133,6 +134,16 @@ describe("the streak", () => {
     expect(computeStreak({ now: at("2026-10-30T10:00:00Z"), plannedDays: [], completed: [done("2026-10-29T23:30:00Z")] }).since).toBe("2026-10-29");
     expect(computeStreak({ now, plannedDays: [], completed: [done("2026-10-08T23:30:00Z")] })).toEqual({ days: 1, today: "done", since: "2026-10-09" });
   });
+  it("finishing counts only on tasks you own: a teammate finishing one you collaborate on isn't yours", () => {
+    const list = [
+      task({ id: "mine", status: "done", assigneeId: "me", completedAt: "2026-10-08" }),
+      task({ id: "theirs", status: "done", assigneeId: "theo", collaborators: ["me"], completedAt: "2026-10-07" }),
+      task({ id: "open", status: "todo", assigneeId: "me" }),
+    ];
+    expect(streakCompleted(list, "me").map((t) => t.id)).toEqual(["mine"]);
+    expect(streakCompleted(list, "")).toEqual([]);
+    expect(computeStreak({ now, plannedDays: [], completed: streakCompleted(list, "me") })).toEqual({ days: 1, today: "pending", since: "2026-10-08" });
+  });
   it("nothing at all: 0 days", () => {
     expect(computeStreak({ now, plannedDays: [], completed: [] })).toEqual({ days: 0, today: "pending", since: null });
     expect(computeStreak({ now, plannedDays: ["junk", "2026-13-45"], completed: [{ completedAt: undefined }] }).days).toBe(0);
@@ -218,8 +229,10 @@ describe("the wins recap", () => {
     expect(r.byProject[0].tasks.map((t) => t.id)).toEqual(["deck", "budget"]);   // newest first
     // no focus timer: logged time, else the focus estimate, to the quarter hour (90 + 20 + 45 + 120 = 275 → 270)
     expect([r.focusMinutes, r.focusFrom]).toEqual([270, "tasks"]);
-    // (last Friday's finished task carries the run across the weekend)
-    expect(r.streak).toEqual({ days: 6, today: "done", since: "2026-10-02" });
+    // the streak counts what you own: Sana's tokens (you only helped) leave Wednesday open, so the run is Thu–Fri
+    expect(r.streak).toEqual({ days: 2, today: "done", since: "2026-10-08" });
+    // …planned on Wednesday, last Friday's finished task carries it across the weekend
+    expect(buildWinsRecap({ ...input(), plannedDays: ["2026-10-07", "2026-10-09"] })!.streak).toEqual({ days: 6, today: "done", since: "2026-10-02" });
     expect(r.kudosReceived).toBe(2);
     expect(r.moments.map((m) => m.kind)).toEqual(["kudos_received", "kudos_received", "unblocked"]);
     expect(r.moments[0].text).toBe("Maya sent you 👏 for “Approve launch budget” — “So quick”");
@@ -270,7 +283,7 @@ describe("the wins recap", () => {
     expect(text.split("\n")[0]).toBe("*Daniel's week · 5–9 Oct*");
     expect(text).toContain("✅ 4 done across Q3 Product Launch (2), Brand Refresh (1) and Platform Infra (1)");
     expect(text).toContain("⏱️ 4h 30m of focus time");
-    expect(text).toContain("📅 6 working days in a row");
+    expect(text).toContain("📅 2 working days in a row");
     expect(text).toContain("🎉 2 kudos from the team");
     expect(text).toContain("• Q3 Product Launch: Finalise launch deck, Approve launch budget");
     expect(text).not.toContain("So quick");
@@ -299,10 +312,31 @@ describe("kudos helpers", () => {
     expect(kudosErrorText("too_many")).toMatch(/tomorrow/);
     expect(kudosErrorText("self")).toBe("Kudos are for your teammates.");
   });
-  it("the prefs patch and tidy days off", () => {
+  it("the prefs patch and tidy days off (only those no streak can reach go)", () => {
     expect(momentumPatch({ streakHidden: true, daysOff: ["2026-10-16", "x", "2026-10-16", "2026-10-02"] }))
       .toEqual({ momentum: { streakHidden: true, daysOff: ["2026-10-02", "2026-10-16"] } });
-    expect(tidyDaysOff(["2026-01-01", "2026-10-01", "2026-12-24", "bad"], "2026-10-09")).toEqual(["2026-10-01", "2026-12-24"]);
+    // a streak looks back STREAK_LOOKBACK_DAYS: a day off within that stays, however old
+    const floor = addDaysISO("2026-10-09", -STREAK_LOOKBACK_DAYS);
+    expect(tidyDaysOff([addDaysISO(floor, -1), floor, "2026-01-01", "2026-10-01", "2026-12-24", "bad", "2026-10-01"], "2026-10-09"))
+      .toEqual([floor, "2026-01-01", "2026-10-01", "2026-12-24"]);
+    // at most DAYS_OFF_MAX, the oldest going first (in the patch too)
+    const many = Array.from({ length: DAYS_OFF_MAX + 5 }, (_, i) => addDaysISO("2026-10-09", -i));
+    expect(tidyDaysOff(many, "2026-10-09")).toHaveLength(DAYS_OFF_MAX);
+    expect(tidyDaysOff(many, "2026-10-09")[0]).toBe(addDaysISO("2026-10-09", -(DAYS_OFF_MAX - 1)));
+    expect(momentumPatch({ daysOff: many }).momentum.daysOff).toHaveLength(DAYS_OFF_MAX);
+  });
+  it("a three-month streak with an old day off survives taking today off", () => {
+    const now = at("2026-10-09T10:00:00+01:00");   // Friday
+    const today = "2026-10-09";
+    const plannedDays: string[] = [];
+    for (let i = 1; i <= 140; i++) { const d = addDaysISO(today, -i); if (isWorkingDay(d) && d !== "2026-07-27") plannedDays.push(d); }
+    const prefs = { daysOff: ["2026-07-27"] };
+    const before = computeStreak({ now, plannedDays, completed: [], prefs });
+    expect(before.today).toBe("pending");
+    expect(before.since! < "2026-07-27").toBe(true);   // the run stands on that day off
+    // "Take today off" saves the tidied list plus today
+    const after = computeStreak({ now, plannedDays, completed: [], prefs: { daysOff: [...tidyDaysOff(prefs.daysOff, today), today].sort() } });
+    expect(after).toEqual({ ...before, today: "off" });
   });
 });
 
@@ -315,11 +349,64 @@ describe("this device: planned days and focus", () => {
     expect(readPlannedDays("u1")).toEqual(["2026-10-06", "2026-10-08"]);
     expect(markDayPlanned("u1", undefined, at("2026-10-09T23:30:00Z"))).toContain("2026-10-10");
   });
-  it("planned today = one of your tasks planned or scheduled", () => {
-    expect(plannedToday([{ assigneeId: "me", planToday: true }], "me")).toBe(true);
-    expect(plannedToday([{ assigneeId: "x", collaborators: ["me"], scheduled: 540 }], "me")).toBe(true);
-    expect(plannedToday([{ assigneeId: "me", scheduled: null, planToday: false }], "me")).toBe(false);
-    expect(plannedToday([{ assigneeId: "x", planToday: true }], "me")).toBe(false);
+  it("your open tasks' plans, and what counts as planning between two looks", () => {
+    const list = [
+      task({ id: "a", status: "todo", planToday: true, scheduled: 540 }),
+      task({ id: "b", status: "progress", planToday: false, scheduled: null }),
+      task({ id: "c", status: "done", planToday: true }),                        // finished: not open
+      task({ id: "d", status: "todo", planToday: true, archivedAt: "2026-10-01" }), // archived
+      task({ id: "e", status: "todo", planToday: true, assigneeId: "theo", collaborators: ["me"] }),   // theirs
+    ];
+    expect(planSnapshot(list, "me")).toEqual({ a: "ps540", b: "" });
+    expect(planSnapshot(list, "")).toEqual({});
+    expect(plannedBetween({ b: "" }, { b: "p" })).toBe(true);           // put on Today
+    expect(plannedBetween({ b: "" }, { b: "s600" })).toBe(true);        // given a slot
+    expect(plannedBetween({ a: "ps540" }, { a: "ps600" })).toBe(true);  // moved to another slot
+    expect(plannedBetween({ a: "ps540" }, { a: "p" })).toBe(false);     // slot taken away
+    expect(plannedBetween({ a: "p" }, { a: "" })).toBe(false);          // taken off Today
+    expect(plannedBetween({}, { n: "p" })).toBe(false);                 // a new task (on Today by default)
+    expect(plannedBetween({ a: "p" }, { a: "p" })).toBe(false);
+  });
+  it("a day counts as planned only for a plan made that day: a stale 'on Today' flag never does", () => {
+    const now = at("2026-10-09T10:00:00+01:00");
+    const stale = task({ id: "a", status: "todo", planToday: true });                 // on Today since last week
+    const finished = task({ id: "b", status: "done", planToday: true, scheduled: 540 });   // done, the flag still set
+    const idle = task({ id: "c", status: "todo", planToday: false, scheduled: null });
+    // the day's first look only remembers what's planned
+    expect(notePlans("me", [stale, finished, idle], now)).toBe(false);
+    expect(notePlans("me", [stale, finished, idle], now)).toBe(false);
+    // a new task (on Today by default), one reopened, one handed to you: they only appear
+    const fresh = task({ id: "n", status: "todo", planToday: true });
+    expect(notePlans("me", [stale, { ...finished, status: "todo" }, idle, fresh], now)).toBe(false);
+    // a teammate planning their own task isn't you
+    expect(notePlans("me", [stale, finished, idle, task({ id: "t", status: "todo", assigneeId: "theo", collaborators: ["me"], planToday: true })], now)).toBe(false);
+    expect(readPlannedDays("me")).toEqual([]);
+    // you put one on Today: today counts
+    expect(notePlans("me", [stale, finished, { ...idle, planToday: true }], now)).toBe(true);
+    expect(readPlannedDays("me")).toEqual(["2026-10-09"]);
+    expect(notePlans("me", [stale, finished, { ...idle, planToday: true }], now)).toBe(true);   // still recorded
+  });
+  it("the last look is kept on this device, for the same day only", () => {
+    const fri = at("2026-10-09T10:00:00+01:00");
+    const idle = task({ id: "c", status: "todo", planToday: false, scheduled: null });
+    notePlans("me", [idle], fri);
+    resetKudosDemo();   // (a reload: memory gone, this device's storage kept)
+    expect(notePlans("me", [{ ...idle, scheduled: 600 }], fri)).toBe(true);
+    // the next day, yesterday's look is only a baseline
+    const sat = at("2026-10-10T09:00:00+01:00");
+    expect(notePlans("me", [{ ...idle, scheduled: 600, planToday: true }], sat)).toBe(false);
+    expect(readPlannedDays("me")).toEqual(["2026-10-09"]);
+    // the list still loading (nothing open yet) doesn't wipe the last look
+    notePlans("me", [], sat);
+    expect(notePlans("me", [{ ...idle, scheduled: 660, planToday: true }], sat)).toBe(true);
+  });
+  it("a plan you keep for today on a teammate's task counts (those are kept day by day)", () => {
+    const now = at("2026-10-09T10:00:00+01:00");
+    localStorage.setItem("kanbo-plan-overlay:me", JSON.stringify({ "2026-10-08": { "t-x": { planToday: true } } }));
+    expect(notePlans("me", [], now)).toBe(false);   // yesterday's plan isn't today's
+    localStorage.setItem("kanbo-plan-overlay:me", JSON.stringify({ "2026-10-09": { "t-x": { planToday: false, scheduled: 600 } } }));
+    expect(notePlans("me", [], now)).toBe(true);
+    expect(readPlannedDays("me")).toEqual(["2026-10-09"]);
   });
   it("copies the focus timer's daily total into a day-by-day log", () => {
     localStorage.setItem("kanbo-focus-stat:u1", JSON.stringify({ date: "2026-10-9", cycles: 2, min: 50 }));
@@ -372,6 +459,48 @@ describe("kudos in the demo (no backend)", () => {
     expect((await giveKudos("t-new")).toUser).toBe("m-3");
     rememberKudosTask({ id: "t-mine", title: "Mine", status: "done", assigneeId: "m-1", workspaceId: null });
     await expect(giveKudos("t-mine")).rejects.toThrow("kudos need a team task");
+  });
+  it("changes your kudos in place: same kudos, no new Inbox item; none there yet: gives", async () => {
+    const heard = vi.fn();
+    const off = subscribeKudos("ws-foundrise", heard);
+    const first = await giveKudos("t-24", "🎉");
+    const changed = await updateKudos("t-24", "🏆", " Brilliant ");
+    expect(changed).toEqual({ inPlace: true, kudos: expect.objectContaining({ id: first.id, emoji: "🏆", note: "Brilliant", createdAt: first.createdAt }) });
+    expect((await listKudos("ws-foundrise", { taskIds: ["t-24"] })).filter((k) => k.fromUser === "m-self")).toHaveLength(1);
+    expect(heard).toHaveBeenCalledTimes(2);
+    // the demo's own kudos from you to Sana: changed where it is
+    const sana = await updateKudos("t-16", "🔥", null);
+    expect(sana).toMatchObject({ inPlace: true, kudos: { id: "kd-demo-3", emoji: "🔥", note: null } });
+    expect((await updateKudos("t-new-x", "🎉").catch((e) => e)).message).toBe("task not found");
+    // none of yours on that task: it gives
+    rememberKudosTask({ id: "t-fresh", title: "Fresh", status: "done", assigneeId: "m-3", workspaceId: "ws-foundrise" });
+    expect(await updateKudos("t-fresh", "⭐")).toMatchObject({ inPlace: false, kudos: { emoji: "⭐", toUser: "m-3" } });
+    // reopened since: the database's rule (kudos are for finished tasks)
+    rememberKudosTask({ id: "t-fresh", title: "Fresh", status: "progress", assigneeId: "m-3", workspaceId: "ws-foundrise" });
+    await expect(updateKudos("t-fresh", "💯")).rejects.toThrow("task not done");
+    await expect(updateKudos("t-24", "💩" as never)).rejects.toThrow("invalid emoji");
+    off();
+  });
+  it("giving on one task again and again is held back (a few an hour); changes in place aren't", async () => {
+    for (let i = 0; i < KUDOS_REGIVES_PER_TASK; i++) {
+      expect(kudosCooldownLeft("t-24")).toBe(0);
+      await giveKudos("t-24");
+      await updateKudos("t-24", "🚀");   // in place: not a give
+      await takeBackKudos("t-24");
+    }
+    const left = kudosCooldownLeft("t-24");
+    expect(left).toBe(KUDOS_REGIVE_WINDOW_MS);
+    const e = await giveKudos("t-24").catch((x) => x);
+    expect(isKudosCooldown(e)).toBe(true);
+    expect(kudosProblemText(e)).toBe("You've sent kudos for this a few times just now. Try again later.");
+    expect(kudosProblemText(new Error("too many kudos"))).toMatch(/tomorrow/);
+    expect((await listKudos("ws-foundrise", { taskIds: ["t-24"] })).some((k) => k.fromUser === "m-self")).toBe(false);
+    // other tasks aren't held back; and after the hour it's fine again
+    rememberKudosTask({ id: "t-other", title: "Other", status: "done", assigneeId: "m-3", workspaceId: "ws-foundrise" });
+    expect((await giveKudos("t-other")).taskId).toBe("t-other");
+    vi.setSystemTime(new Date(Date.now() + KUDOS_REGIVE_WINDOW_MS + 1));
+    expect(kudosCooldownLeft("t-24")).toBe(0);
+    expect((await giveKudos("t-24")).fromUser).toBe("m-self");
   });
   it("demo Inbox items for the kudos you got", () => {
     const items = demoKudosActivity();

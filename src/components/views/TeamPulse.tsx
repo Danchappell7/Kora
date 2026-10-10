@@ -361,7 +361,8 @@ function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, r
   });
   const me = p.id === currentUserId;
   // kudos: beneath a finished task once it has some (like reactions); until then, on a mouse,
-  // the button waits at the item's end and shows on hover or focus (touch: always beneath)
+  // the button has its own column at the item's end (never over the item) and shows on hover
+  // or focus (touch: always beneath)
   const kudosFor = (t: Task): Trailing | null => {
     const list = kudosOnTask(kudos, t.id);
     if (me) return list.length ? { node: <KudosTally kudos={list} taskId={t.id} people={people} /> } : null;
@@ -432,7 +433,8 @@ function dueNote(iso: string): { text: string; tone?: "signal" } | null {
   return null;
 }
 
-/** Something under a task in the list (kudos); `float`: it waits at the item's end until hover / focus. */
+/** Something under a task in the list (kudos); `float`: on a mouse it sits in its own column at
+ *  the item's end (never over the item), shown on hover / focus; on touch it's beneath. */
 type Trailing = { node: ReactNode; float?: boolean };
 
 /** Up to three tasks, then "+n more" to show the rest. `trailing`: something under each (kudos). */
@@ -459,7 +461,7 @@ function ItemList({ items, empty, onOpen, note, trailing }: {
         );
         const extra = trailing?.(t);
         return extra
-          ? <span key={t.id} className="kpt-item-wrap">{item}<span className="kpt-item-trail" data-float={extra.float ? "" : undefined}>{extra.node}</span></span>
+          ? <span key={t.id} className="kpt-item-wrap" data-float={extra.float ? "" : undefined}>{item}<span className="kpt-item-trail">{extra.node}</span></span>
           : item;
       })}
       {items.length > SHOWN && (
