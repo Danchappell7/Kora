@@ -30,8 +30,9 @@ import {
   TaskDetail, CommandPalette, SettingsModal, NewTaskModal, NewProjectModal, NewWorkspaceModal, DeleteProjectModal,
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
   FocusMode, PlannerHost, TrialBanner, UpgradeModal, Paywall, likelyNext, everyScreen, prefetchRoute,
+  TourHost, SetupChecklist, HelpMenu, QuickAddSheet, prefetchQuickAdd, TemplateLibrary, SaveAsTemplate, TodayStreak, TodayWins,
 } from "./lazyViews";
-import { prefetchWhenIdle } from "./lib/lazyLoad";
+import { canPrefetchAhead, prefetchWhenIdle, whenIdle } from "./lib/lazyLoad";
 import { useAuth } from "./auth/AuthProvider";
 import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
@@ -48,8 +49,22 @@ import { computeRisks, readCapacities } from "./lib/radar";
 import { shutdownDone } from "./lib/rituals";
 import { momentumCounts } from "./lib/brief";
 import type { AskAction, AskContext } from "./lib/askTypes";
-import { listenForPushMessages } from "./lib/push";
-import { takeNewTaskShortcut } from "./lib/install";
+import { isPushOnHere, listenForPushMessages } from "./lib/push";
+import { installState, isStandalone, promptInstall, takeNewTaskShortcut } from "./lib/install";
+// 0048 (the UX wave): drag to plan, the guided first run, shared views, drops on projects and people, quick add
+import { DragLayer } from "./lib/dnd";
+import { todayListPatches } from "./components/dnd/todayNav";
+import { prefetchPlanMenus } from "./components/dnd/lazy";
+import {
+  useOnboardingState, useTourWanted, tourRoleOf, shouldAutoStartTour, setupSignals, useShowSetupChecklist, demoOnboardingState,
+  createTourSample, removeTourSample, checklistProgress, dismissSetupChecklist, startTour, type TourSampleDeps,
+} from "./lib/onboarding";
+import { useSavedViews, viewCounts, getSavedView, viewRoute, canShareViews } from "./lib/views";
+import { viewPageStart } from "./lib/savedViews/pageQuery";
+import { moveTasksToProject, reassignTasks, type MoveDeps } from "./lib/dropActions";
+import { recentProjectIds } from "./components/phone/quickAdd";
+import type { AppliedTemplatePlan } from "./lib/templatePlan";
+import type { BoardSettingsChange } from "./components/tasks/otherViewsLogic";
 import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
 import { approvalFailure, approvalsInWorkspace, listApprovalSummaries, listMyApprovals, subscribeApprovals, waitingOnApproval } from "./lib/approvals";
 import type { BinUndoResult } from "./lib/trash";
@@ -59,16 +74,16 @@ import type { HistoryLogProps } from "./components/bin/HistoryLog";
 import type { InsightsNavProps } from "./components/views/InsightsSummary";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
-import { taskMatchesQuery, toQuery } from "./lib/searchQuery";
 import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan, NotifyPrefs } from "./data/types";
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan, NotifyPrefs,
+  BoardSettings, LibraryTemplate, MomentumPrefs, OnboardingState, SetupItemId } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
   unseenCreates, reloadProjects, reloadWorkspaces,
-  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, readFilters, type Limiter,
+  cloneTaskTree, pickFields, topLevelProgress, pickStartWorkspace, lastWorkspaceKey, type Limiter,
 } from "./lib/taskOps";
 
 // Settings › Workspace › History loads with that section: a chunk that can't be
@@ -105,6 +120,9 @@ type ArchivePart = { items: Activity[]; archived: Promise<void> };
 function RenderView({ render }: { render: () => React.ReactNode }) { return <>{render()}</>; }
 
 const TASK_VIEWS: readonly TaskView[] = ["list", "board", "timeline", "calendar", "files", "matrix"];
+/** (0048: Search saves views now — its old saved-search props get these) */
+const NO_SAVED_SEARCHES: SavedSearch[] = [];
+const noop = () => {};
 const isTaskView = (v: string | undefined): v is TaskView => !!v && (TASK_VIEWS as readonly string[]).includes(v);
 const GROUP_BYS: readonly GroupBy[] = ["status", "section", "due", "priority", "project", "none"];
 const isGroupBy = (v: unknown): v is GroupBy => typeof v === "string" && (GROUP_BYS as readonly string[]).includes(v);
@@ -126,7 +144,8 @@ const isDueFocus = (v: string | undefined): v is DueFocus => v === "today" || v 
 function addressFor(route: Route, opts: { task?: string | null; q?: string | null }, keep = ""): string {
   const [path, own = ""] = pathOf(route).split("?");
   const params = new URLSearchParams(own);
-  new URLSearchParams(keep).forEach((v, k) => { if (k !== "due" && k !== "task" && k !== "q") params.append(k, v); });
+  // (the route's own parameters — ?due=, a saved view's ?view= — come from the route, never from the old address)
+  new URLSearchParams(keep).forEach((v, k) => { if (k !== "due" && k !== "view" && k !== "task" && k !== "q") params.append(k, v); });
   if (opts.q && route.view === "search" && !route.list) params.set("q", opts.q);
   if (opts.task) params.set("task", opts.task);
   const qs = params.toString();
@@ -222,6 +241,17 @@ export default function App() {
   const [calSyncing, setCalSyncing] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
+  // 0048 first run: the first-run sheet opened this session (a brand-new account: the tour may start by itself)
+  const [firstRunHere, setFirstRunHere] = useState(false);
+  // 0048 phone: the quick add sheet (the phone bar's +)
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  // 0048 templates: the library (and the template it opens on), Save as template (for which task), and
+  // New task opened with a template applied (the library's "Use template")
+  const [templateLibrary, setTemplateLibrary] = useState<{ open: boolean; initialTemplateId?: string }>({ open: false });
+  const [saveTemplateFor, setSaveTemplateFor] = useState<string | null>(null);
+  const [newTaskTemplate, setNewTaskTemplate] = useState<LibraryTemplate | null>(null);
+  // 0048: the "Kanbo tour" sample project is being made or taken away (Help menu)
+  const [sampleBusy, setSampleBusy] = useState(false);
   const [unsavedIds, setUnsavedIds] = useState<string[]>([]); // creates that failed — kept on screen until retried
   // "What moved" is for people who knew the old layout: someone who has used the app
   // in this browser before (opened My tasks or a project, or been through onboarding)
@@ -306,6 +336,7 @@ export default function App() {
   // the tasks as this person sees them (their own plan on others' tasks); set where it's worked out below
   const seenRef = useRef<Task[] | null>(null);
   const userIdRef = useRef(currentUserId); userIdRef.current = currentUserId;
+  const profileRef = useRef<Profile | null>(null); profileRef.current = profile;
   const projectsRef = useRef<Project[]>([]); projectsRef.current = projects;
   const sectionsRef = useRef<Section[]>([]); sectionsRef.current = sections;
   const rulesRef = useRef<AutomationRule[]>([]); rulesRef.current = automationRules;
@@ -314,7 +345,6 @@ export default function App() {
   const workspaceRef = useRef<string | null>(null); workspaceRef.current = workspace;
   const wsMembersRef = useRef<WorkspaceMember[]>([]); wsMembersRef.current = wsMembers;
   const activityRef = useRef<Activity[]>([]); activityRef.current = activity;
-  const savedSearchesRef = useRef<SavedSearch[]>([]); savedSearchesRef.current = savedSearches;
   const signedInRef = useRef(false); signedInRef.current = !auth.configured || !!auth.user;
 
   /* ---- write bookkeeping ----
@@ -486,9 +516,9 @@ export default function App() {
         localStorage.setItem(mine, "1"); localStorage.removeItem("kanbo-onboarded");
       }
     } catch { /* private mode */ }
-    if (!done && projectsRef.current.filter((p) => p.id !== "p-personal").length === 0) setOnboardOpen(true);
+    if (!done && projectsRef.current.filter((p) => p.id !== "p-personal").length === 0) { setOnboardOpen(true); setFirstRunHere(true); }
   }, [tasks]);
-  // (the tour's last step is "Your five places", so "What moved" has nothing to add)
+  // (the sheet hands over to the guided tour, which shows the real places — "What moved" has nothing to add)
   const finishOnboarding = useCallback(() => { try { localStorage.setItem(`kanbo-onboarded:${userIdRef.current}`, "1"); } catch { /* ignore */ } markWhatMovedSeen(); setOnboardOpen(false); }, []);
 
   // My tasks' view and grouping (a project's are its own, below)
@@ -600,7 +630,7 @@ export default function App() {
     quick: quickCaptureOpen, cmd: cmdOpen, upgrade: upgradeOpen, deleteProject: !!deleteProjectId,
     newWorkspace: newWorkspaceOpen, newProject: newProjectOpen, newTask: newTaskOpen, focus: focusOpen, detail: !!detailId, sidebar: sidebarOpen,
     // these dialogs handle Escape themselves; the window handler must leave them (and what's under them) alone
-    selfManaged: settingsOpen || importOpen || welcomeOpen || onboardOpen,
+    selfManaged: settingsOpen || importOpen || welcomeOpen || onboardOpen || quickAddOpen || templateLibrary.open || !!saveTemplateFor,
   };
   const openNewTaskRef = useRef<() => void>(() => {});
   const openCaptureRef = useRef<() => void>(() => {});
@@ -791,6 +821,8 @@ export default function App() {
       setTasks(null); bootedRef.current = false; onboardCheckedRef.current = false;
       pendingTasksRef.current = []; createsRef.current.clear(); unsavedRef.current.clear(); setUnsavedIds([]);
       recentWritesRef.current.clear(); spawnedRef.current.clear(); readLocallyRef.current.clear(); archivedHereRef.current.clear();
+      // (0048: the Inbox's thread snoozes are kept per person; nothing of this one's stays for the next)
+      void import("./components/inbox/useThreadSnoozes").then((m) => m.forgetSnoozeCache(), () => undefined);
       return;
     }
     let cancelled = false;
@@ -932,6 +964,7 @@ export default function App() {
       setCmdOpen(false); setQuickCaptureOpen(false); setNewTaskOpen(false); setNewProjectOpen(false); setNewWorkspaceOpen(false);
       setImportOpen(false); setSettingsOpen(false); setSettingsSection(undefined); setUpgradeOpen(false); setDeleteProjectId(null); setFocusOpen(false);
       setExtract({ open: false }); setShutdownOpen(false); setWeeklyOpen(false); setSidebarOpen(false);
+      setQuickAddOpen(false); setTemplateLibrary({ open: false }); setSaveTemplateFor(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -1128,10 +1161,40 @@ export default function App() {
     toastSuccess("Profile saved");
   }, [auth.user?.email, toastSuccess]);
 
+  // The In-app / Email table and the push panel hand over the whole prefs object: only what changed is sent
+  // (merge_notify_prefs, 0048; null removes a key), so a stale tab never overwrites another device's change.
+  // Demo mode, and a database without 0048, save the whole object as before.
   const saveNotifyPrefs = useCallback((prefs: NotifyPrefs) => {
+    const before = profileRef.current?.notifyPrefs ?? {};
     setProfile((p) => p ? { ...p, notifyPrefs: prefs } : p);
-    store.updateNotifyPrefs(userIdRef.current, prefs).catch((e) => { reportError(e, { op: "updateNotifyPrefs" }); toastError("Couldn't save notification preferences."); });
+    const failed = (e: unknown) => { reportError(e, { op: "updateNotifyPrefs" }); toastError("Couldn't save notification preferences."); };
+    const whole = () => store.updateNotifyPrefs(userIdRef.current, prefs);
+    if (!store.configured) { whole().catch(failed); return; }
+    const diff: NotifyPrefs = {};
+    for (const k of new Set([...Object.keys(before), ...Object.keys(prefs)])) {
+      if (JSON.stringify(before[k] ?? null) !== JSON.stringify(prefs[k] ?? null)) diff[k] = (prefs[k] ?? null) as NotifyPrefs[string];
+    }
+    if (!Object.keys(diff).length) return;
+    import("./lib/notifyPrefs").then((m) => m.mergeNotifyPrefs(diff))
+      .then((stored) => setProfile((p) => (p ? { ...p, notifyPrefs: stored } : p)), (e: unknown) => {
+        const msg = String((e as { message?: unknown } | null)?.message ?? e);
+        if ((e as { code?: string } | null)?.code === "PGRST202" || /could not find the function|merge_notify_prefs/i.test(msg)) return whole();
+        throw e;
+      })
+      .catch(failed);
   }, [toastError]);
+  /** NotificationPrefsPanel saved a change itself (merge_notify_prefs): the app's copy follows. */
+  const notifyPrefsStored = useCallback((p: NotifyPrefs) => setProfile((x) => (x ? { ...x, notifyPrefs: p } : x)), []);
+
+  /* ---- 0048: the guided first run and the gentle nudges (profiles.onboarding: tour, checklist, sample, momentum) ---- */
+  // (the demo's own state, made once: a fresh one every render would look like a new profile each time)
+  const [demoOnboarding] = useState<OnboardingState | undefined>(() => (store.configured ? undefined : demoOnboardingState()));
+  const [onboarding, changeOnboarding, adoptOnboarding] = useOnboardingState(profile?.onboarding ?? demoOnboarding,
+    { onError: () => toastInfo("Couldn't save your progress just now.") });
+  const onboardingRef = useRef(onboarding); onboardingRef.current = onboarding;
+  const tourWanted = useTourWanted();
+  /** "Show my streak" / "Show my week's wins" / days off (onboarding.momentum). */
+  const saveMomentum = useCallback((momentum: MomentumPrefs) => changeOnboarding({ ...onboardingRef.current, momentum }), [changeOnboarding]);
 
   // download all of the user's data as JSON (user-initiated, their own data)
   const exportData = useCallback(() => {
@@ -2298,13 +2361,16 @@ export default function App() {
       });
   }, [denyGuest, applyProjects, settleTmp, noteCreated, toastError, persistTask]);
 
-  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => {
+  /** `boardSettingsChange` (0048): just what changed on the board, for the database to merge (merge_board_settings);
+   *  `boardSettings` is the whole object, for the app's own copy (and a database without that function). */
+  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange }) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
     if (denyGuest([p.workspaceId])) return;
-    const before = Object.fromEntries(Object.keys(patch).map((k) => [k, (p as unknown as Record<string, unknown>)[k]]));
-    applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, ...patch } : x));
-    if (deferTmp(id, patch)) return;
-    store.updateProject(id, patch).catch((e) => {
+    const { boardSettingsChange, ...local } = patch;
+    const before = Object.fromEntries(Object.keys(local).map((k) => [k, (p as unknown as Record<string, unknown>)[k]]));
+    applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, ...local } : x));
+    if (deferTmp(id, local)) return;
+    store.updateProject(id, boardSettingsChange ? { ...local, boardSettingsChange } : local).catch((e) => {
       reportError(e, { op: "updateProject" });
       applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, ...before } : x));
       toastError("Couldn't save the project — change undone.");
@@ -2606,29 +2672,7 @@ export default function App() {
     noteElsewhere(projs);
   }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
 
-  // ---- saved searches (personal) ----
-  const saveSearch = useCallback((name: string, query: Record<string, unknown>) => {
-    const tmp: SavedSearch = { id: "tmp-ss-" + Date.now(), name, query };
-    setSavedSearches((s) => [...s, tmp]);
-    store.createSavedSearch(name, query, userIdRef.current)
-      .then((ss) => {
-        const op = settleTmp(tmp.id, ss.id, () => Promise.resolve(), (id) => store.deleteSavedSearch(id));
-        setSavedSearches((s) => (op.deleted ? s.filter((x) => x.id !== tmp.id) : swapTmp(s, tmp.id, ss)));
-      })
-      .catch((e) => { reportError(e, { op: "saveSearch" }); setSavedSearches((s) => s.filter((x) => x.id !== tmp.id)); toastError("Couldn't save the search."); });
-  }, [settleTmp, toastError]);
-  // the Sidebar hides the row at once and calls this when its Undo window closes;
-  // a rejected promise brings the row back (the Sidebar says so), SearchView ignores it
-  const removeSavedSearch = useCallback((id: string): Promise<void> | undefined => {
-    const prev = savedSearchesRef.current.find((x) => x.id === id);
-    setSavedSearches((s) => s.filter((x) => x.id !== id));
-    if (deferTmp(id)) return undefined;
-    return store.deleteSavedSearch(id).catch((e) => {
-      reportError(e, { op: "deleteSavedSearch" });
-      if (prev) setSavedSearches((s) => (s.some((x) => x.id === id) ? s : [...s, prev]));
-      throw e;
-    });
-  }, [deferTmp]);
+  // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
 
   // ---- goals / OKRs ----
   type GoalPatch = Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
@@ -3134,6 +3178,13 @@ export default function App() {
     if (denyGuest([workspaceRef.current])) return;
     setQuickCaptureOpen(true);
   }, [denyGuest]);
+  /** 0048 phone: the phone bar's + opens the quick add sheet (never for guests). */
+  const openQuickAdd = useCallback(() => {
+    if (denyGuest([workspaceRef.current])) return;
+    setQuickAddOpen(true);
+  }, [denyGuest]);
+  /** Help › Take the tour (the TourHost mounts once a tour is wanted, and starts at step 1). */
+  const startTourNow = useCallback(() => { setSidebarOpen(false); startTour({ from: "help" }); }, []);
   openNewTaskRef.current = () => openNewTask();
   openCaptureRef.current = openCapture;
   /** Import tasks: empty, or with text already in it (a paste too long for Quick capture). */
@@ -3243,14 +3294,172 @@ export default function App() {
     void addComment(taskId, `@${first} — any update on this?`, [t.assigneeId]).then((c) => { if (c) toastSuccess(`Nudged ${first}`); });
   }, [addComment, toastSuccess]);
 
-  /** My tasks' "Save view": the view as My tasks describes it (its text, tab and
-   *  filters), else its saved filters, as a saved search (they span every workspace). */
-  const saveMyTasksView = useCallback((name: string, query?: Record<string, string>) => {
-    const f = readFilters("my");
-    saveSearch(name.trim() || "Saved view", query ?? {
-      assignee: f.assignee !== "all" ? f.assignee : userIdRef.current, priority: f.priority, tag: f.tag, due: f.due, status: "open",
-    });
-  }, [saveSearch]);
+  /* ---- 0048 drops (lib/dnd + lib/dropActions): tasks let go on a project, a person or Today ---- */
+  /** Per-task patches through App's own rules (as any edit): guests refused, the workspace follows the project,
+   *  sub-tasks go with their parent, a plan is released with the task. One save; the caller says it with Undo. */
+  const applyMovePatches = useCallback((list: { id: string; patch: Partial<Task> }[]) => {
+    const all = tasksRef.current ?? [];
+    const patches = new Map<string, Partial<Task>>();
+    const notes = new Set<string>();
+    const wsIds: (string | null | undefined)[] = [];
+    for (const { id, patch: given } of list) {
+      const prev = all.find((t) => t.id === id); if (!prev) continue;
+      const p: Partial<Task> = { ...given };
+      const note = retarget(prev, p); if (note) notes.add(note);
+      Object.assign(p, releasedPlan(prev, p));
+      wsIds.push(prev.workspaceId, "workspaceId" in p ? p.workspaceId : undefined);
+      if (Object.keys(p).length) { patches.set(id, p); cascadeToDescendants(prev, p, all, patches); }
+    }
+    if (!patches.size || denyGuest(wsIds)) return;
+    updateTasks(patches);
+    if (notes.size === 1) toastInfo([...notes][0]);
+  }, [retarget, cascadeToDescendants, denyGuest, updateTasks, toastInfo]);
+  const moveDeps = useCallback((): MoveDeps => ({
+    tasks: tasksRef.current ?? [], updateTasks: applyMovePatches,
+    toast: (m, undo) => { if (undo) toastAction(m, "Undo", undo, {}); else toastInfo(m); },
+    sections: sectionsRef.current, members: wsMembersRef.current,
+  }), [applyMovePatches, toastAction, toastInfo]);
+  const dropOnProject = useCallback((ids: string[], projectId: string) => {
+    const p = projectsRef.current.find((x) => x.id === projectId);
+    if (p) moveTasksToProject(ids, p, moveDeps());
+  }, [moveDeps]);
+  const dropOnPerson = useCallback((ids: string[], userId: string) => {
+    const name = getMember(userId)?.name || wsMembersRef.current.find((m) => m.userId === userId)?.name || "them";
+    reassignTasks(ids, { id: userId, name }, moveDeps());
+  }, [moveDeps]);
+  /** Today in the sidebar: on today's list (no time), your plan on teammates' tasks; one Undo for them all. */
+  const dropOnToday = useCallback((ids: string[]) => {
+    const me = userIdRef.current;
+    const mine = (seenRef.current ?? []).filter((t) => t.assigneeId === me || (t.collaborators ?? []).includes(me));
+    const r = todayListPatches(mine, ids);
+    if (!r.patches.length) { toastInfo(r.message); return; }
+    const undos = r.patches.map((x) => guardedWrite(x.id, x.patch)).filter((u): u is GuardedUndo => !!u);
+    if (undos.length) toastAction(r.message, "Undo", () => [...undos].reverse().forEach(undoGuarded), {});
+  }, [guardedWrite, undoGuarded, toastAction, toastInfo]);
+
+  /* ---- 0048 templates: a template's whole plan through App's create paths ---- */
+  /** The task (rules run, as for any new task), its sub-tasks under it (each waits for its insert), then its
+   *  checklist once it's saved. On Today a task of yours lands on today's plan; elsewhere it doesn't. */
+  const applyTemplatePlan = useCallback((plan: AppliedTemplatePlan) => {
+    import("./lib/templatePlan").then(({ templateTasks }) => {
+      const onToday = routeRef.current.view === "plan";
+      const { task, subtasks, checklist } = templateTasks(plan, (p) => buildNewTask(p));
+      const parent = unplanIfTheirs(applyAutomation({ ...task, planToday: onToday ? task.planToday : false }));
+      if (denyGuest([projectWs(parent.projectId)])) return;
+      const created = persistTask(parent);
+      subtasks.forEach((sub) => persistTask({ ...sub, projectId: parent.projectId, parentId: parent.id }, { log: false }));
+      copyChecklist(created, checklist);
+      noteElsewhere([parent.projectId]);
+    }, (e: unknown) => { reportError(e, { op: "applyTemplatePlan" }); toastError("Couldn't use that template. Check your connection and try again."); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildNewTask, unplanIfTheirs, applyAutomation, denyGuest, persistTask, copyChecklist, noteElsewhere, toastError]);
+  /** New task ▾ › From a template… (and the palette): the library. Never for guests. */
+  const openTemplateLibrary = useCallback((initialTemplateId?: string) => {
+    if (denyGuest([workspaceRef.current])) return;
+    setTemplateLibrary({ open: true, initialTemplateId });
+  }, [denyGuest]);
+  /** The library's "Use template": New task opens with it applied (it's checked, then created). */
+  const applyLibraryTemplate = useCallback((t: LibraryTemplate) => {
+    setTemplateLibrary({ open: false });
+    const r = routeRef.current;
+    const pid = r.view === "project" ? r.projectId : undefined;
+    if (denyGuest([pid ? projectWs(pid) : workspaceRef.current])) return;
+    setNewTaskProjectId(pid); setNewTaskStatus("todo"); setNewTaskTemplate(t); setNewTaskOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [denyGuest]);
+
+  /* ---- 0048 first run: the "Kanbo tour" sample project (Help menu) ---- */
+  // Made in Personal through the store, shown at once, kept through any reload already under way.
+  const sampleDeps = useMemo((): TourSampleDeps => ({
+    createProject: async (input) => {
+      const me = userIdRef.current;
+      const p = await store.createProject({ name: input.name, emoji: input.emoji, color: input.color, workspaceId: input.workspaceId }, me);
+      noteCreated(p.id);
+      let full: Project = p;
+      if (input.description) {
+        full = { ...p, description: input.description };
+        await store.updateProject(p.id, { description: input.description }).catch((e) => reportError(e, { op: "sampleDescription" }));
+      }
+      applyProjects([...projectsRef.current.filter((x) => x.id !== p.id), full]);
+      return full;
+    },
+    createTasks: async (rows) => {
+      const saved = await store.createTasksBatch(rows, userIdRef.current);
+      const until = Date.now() + 30000;
+      const ids = new Set(saved.map((t) => t.id));
+      pendingTasksRef.current = [...saved.map((t) => ({ id: t.id, task: t, until })), ...pendingTasksRef.current.filter((x) => !ids.has(x.id))];
+      setTasks((ts) => (ts ? [...saved.filter((t) => !ts.some((x) => x.id === t.id)), ...ts] : saved));
+      return saved;
+    },
+    addDependency: async (taskId, dependsOn) => {
+      await store.addDependency(taskId, dependsOn);
+      setTasks((ts) => ts && ts.map((t) => (t.id === taskId ? { ...t, dependencies: [...new Set([...(t.dependencies ?? []), dependsOn])] } : t)));
+    },
+    createDoc: async (projectId, title, body) => {
+      const { saveProjectDoc } = await import("./lib/docs");
+      const r = await saveProjectDoc({ id: newTaskId(), projectId, title, body, baseUpdatedAt: null });
+      return { id: r.doc.id };
+    },
+    deleteProject: async (projectId) => {
+      await store.deleteProject(projectId);
+      if (routeRef.current.view === "project" && routeRef.current.projectId === projectId) setRoute({ view: "plan" }, { replace: true });
+      const gone = new Set((tasksRef.current ?? []).filter((t) => t.projectId === projectId).map((t) => t.id));
+      applyProjects(projectsRef.current.filter((p) => p.id !== projectId));
+      setTasks((ts) => ts && ts.filter((t) => !gone.has(t.id)));
+      noteDelete([...gone]); dropPending(gone);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [noteCreated, applyProjects, noteDelete, dropPending]);
+  const trySample = useCallback(() => {
+    if (sampleBusy) return;
+    setSampleBusy(true);
+    createTourSample(sampleDeps, { today: new Date(KANBO_TODAY), currentUserId: userIdRef.current, workspaceId: null, current: onboardingRef.current })
+      .then((state) => {
+        adoptOnboarding(state);
+        const pid = state.sample?.projectId;
+        if (pid) { setWorkspace(null); setRoute({ view: "project", projectId: pid }); }
+        toastSuccess("The sample project “Kanbo tour” is in Personal");
+      }, (e: unknown) => {
+        // (checked by name, not instanceof: the sample's code stays in its own chunk)
+        const named = (e as { name?: string; message?: string } | null);
+        if (named?.name !== "TourSampleError") reportError(e, { op: "createTourSample" });
+        toastError(named?.name === "TourSampleError" && named.message ? named.message : "Couldn't make the sample project. Check your connection and try again.");
+      })
+      .finally(() => setSampleBusy(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sampleBusy, sampleDeps, adoptOnboarding, toastSuccess, toastError]);
+  const removeSample = useCallback(() => {
+    if (sampleBusy) return;
+    setSampleBusy(true);
+    removeTourSample(sampleDeps, onboardingRef.current)
+      .then((state) => { adoptOnboarding(state); toastSuccess("The sample project went to the recycle bin"); },
+        (e: unknown) => { reportError(e, { op: "removeTourSample" }); toastError("Couldn't remove the sample project. Try again, or delete “Kanbo tour” from its menu."); })
+      .finally(() => setSampleBusy(false));
+  }, [sampleBusy, sampleDeps, adoptOnboarding, toastSuccess, toastError]);
+
+  /** "Get set up": each item's button takes you where it's done. */
+  const onSetupAction = useCallback((id: SetupItemId) => {
+    switch (id) {
+      case "invite_team":
+        if (workspaceRef.current === null) setNewWorkspaceOpen(true); else setRoute({ view: "team" });
+        break;
+      // (the Slack panel lives in the same section as the calendars)
+      case "connect_calendar": case "connect_slack": openSettings("calendar"); break;
+      // company domains are a site admin's setting: the admin page (only offered to them)
+      case "add_domain": window.location.assign("/admin"); break;
+      case "plan_day": {
+        // the card is on Today: Plan my day itself (P), else Today
+        const btn = document.querySelector<HTMLButtonElement>('[data-tour="plan-day"]');
+        if (routeRef.current.view === "plan" && btn && !btn.disabled) btn.click(); else setRoute({ view: "plan" });
+        break;
+      }
+      case "complete_task": setRoute({ view: "tasks" }); break;
+      // the browser's own install prompt where it has one; otherwise Settings › Notifications › Kanbo app explains
+      case "install_app": void promptInstall().then((r) => { if (r === "unavailable") openSettings("notifications"); }, () => openSettings("notifications")); break;
+      case "set_notifications": openSettings("notifications"); break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setRoute]);
 
   /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
   const unarchiveInbox = useCallback((ids: string[]) => {
@@ -3316,17 +3525,90 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allTasks, wsMembers, workspace, dayKey]);
   const signalRisks = risks.filter((r) => r.severity === "signal").length;
-  // Smart-list counts are computed over the SAME global task set the Search
-  // view filters (search spans every workspace), so the sidebar badge and the
-  // results it opens always agree. Saved searches become user-defined smart
-  // lists with live counts over the same set (one predicate, always in sync).
-  const savedSearchCounts = useMemo(() => {
+  /* ---- 0048 saved views (lib/views): the Sidebar's Views, My tasks' links, ?view= and /search/list/:id ---- */
+  // (off until the real account is known: before bootstrap the id is the "m-self" placeholder)
+  const sv = useSavedViews(workspace, currentUserId, { enabled: tasks !== null && (!store.configured || currentUserId !== "m-self") });
+  // A search view's count is the Search view's own task rule (lib/search/searchSpec), fetched while the browser
+  // is idle so the search chunk stays out of the first download; until then its words count literally.
+  const [searchSpec, setSearchSpec] = useState<typeof import("./lib/search/searchSpec") | null>(null);
+  const wantsSearchSpec = sv.views.some((v) => v.kind === "search");
+  useEffect(() => {
+    if (!wantsSearchSpec || searchSpec) return;
+    let alive = true;
+    const cancel = whenIdle(() => { import("./lib/search/searchSpec").then((m) => { if (alive) setSearchSpec(m); }, () => undefined); }, 4000);
+    return () => { alive = false; cancel(); };
+  }, [wantsSearchSpec, searchSpec]);
+  // live counts over every task you can see (personal search views span workspaces), as Search counts them
+  const savedViewCounts = useMemo(() => {
     const all = tasksSeen ?? [];
-    const saved: Record<string, number> = {};
-    for (const ss of savedSearches) { const q = toQuery(ss.query); saved[ss.id] = all.filter((t) => taskMatchesQuery(t, q)).length; }
-    return saved;
+    const out: Record<string, number | null> = viewCounts(sv.views, { tasks: all, currentUserId, today: KANBO_TODAY });
+    if (searchSpec) {
+      const people = [...new Map([[currentUserId, getMember(currentUserId)?.name || "You"], ...wsMembers.filter((m) => m.status === "active" && m.userId).map((m) => [m.userId!, getMember(m.userId!)?.name || m.name || m.email] as [string, string])]).entries()].map(([id, name]) => ({ id, name }));
+      const ctx = { members: people, projects, currentUserId, today: dayKey };
+      const byId = new Map(projects.map((p) => [p.id, p]));
+      for (const v of sv.views) {
+        if (v.kind !== "search") continue;
+        try {
+          const { input, panel } = searchSpec.searchFromViewQuery(v.query, ctx);
+          const r = searchSpec.resolveSearch(input, panel, ctx, dayKey);
+          out[v.id] = r.active && r.kinds.includes("task") ? searchSpec.localTaskMatches(all, r, (id) => byId.get(id)).length : null;
+        } catch { /* keep the literal count */ }
+      }
+    }
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasksSeen, projects, savedSearches, currentUserId, dayKey]);
+  }, [sv.views, tasksSeen, currentUserId, dayKey, searchSpec, projects, wsMembers]);
+  // the saved view the page shows (?view= on My tasks or a project): the page starts from it
+  const appliedView = route.savedViewId ? getSavedView(route.savedViewId) : undefined;
+  const viewStart = useMemo(() => (appliedView ? viewPageStart(appliedView, currentUserId) : undefined), [appliedView, currentUserId]);
+  // a project list's grouping while a view is applied is the view's (never saved over the project's own)
+  const [viewGroup, setViewGroup] = useState<{ viewId: string; groupBy: GroupBy } | null>(null);
+
+  // your tasks in every workspace (a streak and a week's wins are yours, not a team's): one array per change, not
+  // per render — App re-renders every second while the focus timer runs
+  const myTasksEverywhere = useMemo(() => (tasksSeen ?? []).filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)), [tasksSeen, currentUserId]);
+
+  /* ---- 0048 first run: who the tour and the "Get set up" card are for, and what the app can see ---- */
+  const roleHere = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role ?? null;
+  const tourRole = tourRoleOf(roleHere, workspace === null);
+  // a brand-new account: the first-run sheet opened this session, or it was made in the last week
+  const createdAt = auth.user?.createdAt;
+  const isNewAccount = firstRunHere || (!!createdAt && Date.now() - Date.parse(createdAt) < 7 * 86_400_000);
+  // facts the card ticks itself from (each fetched only while the card can use it)
+  const setupLive = tasks !== null && !onboarding.checklist?.dismissedAt;
+  const [pushHere, setPushHere] = useState(false);
+  useEffect(() => { if (setupLive && tourRole !== "owner") isPushOnHere().then(setPushHere, () => undefined); }, [setupLive, tourRole]);
+  const [slackOn, setSlackOn] = useState(false);
+  useEffect(() => {
+    setSlackOn(false);
+    if (!setupLive || tourRole !== "owner" || workspace === null) return;
+    let alive = true, off = () => {};
+    import("./lib/slack").then((m) => {
+      if (!alive) return;
+      m.getSlackStatus(workspace).then((st) => { if (alive) setSlackOn(!!st?.connected); }, () => undefined);
+      off = m.onSlackStatusChange((ws, st) => { if (alive && ws === workspace) setSlackOn(!!st?.connected); });
+    }, () => undefined);
+    return () => { alive = false; off(); };
+  }, [setupLive, tourRole, workspace]);
+  const [companyDomains, setCompanyDomains] = useState(0);
+  useEffect(() => {
+    if (!setupLive || !adminByFlag || !store.configured) return;
+    store.listApprovedDomains().then((d) => setCompanyDomains(d.length), () => undefined);
+  }, [setupLive, adminByFlag]);
+  const setupFacts = setupSignals({
+    teammates: wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.userId !== currentUserId).length,
+    calendars: calConnections.length, companyDomains, slack: slackOn,
+    plannedToday: allSeen.some((t) => (t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)) && (t.scheduled != null || !!t.planToday)),
+    completedAny: allTasks.some((t) => t.status === "done" && t.assigneeId === currentUserId),
+    installed: isStandalone() || installState() === "installed",
+    notificationsChosen: pushHere || Object.keys(profile?.notifyPrefs ?? {}).length > 0,
+  });
+  // the company domain is a site admin's setting; Personal has no Slack
+  const setupHidden = useMemo<SetupItemId[]>(() => [...(adminByFlag ? [] : ["add_domain" as const]), ...(workspace === null ? ["connect_slack" as const] : [])], [adminByFlag, workspace]);
+  const showSetup = useShowSetupChecklist(tourRole, onboarding, setupFacts, { hidden: setupHidden });
+  // dismissed before it was finished: Help offers it back
+  const setupProgress = checklistProgress(tourRole, onboarding, setupFacts, { hidden: setupHidden });
+  const setupDismissedEarly = !!onboarding.checklist?.dismissedAt && setupProgress.total > 0 && !setupProgress.complete;
   useEffect(() => { if (route.view !== "search" && searchPrefill) setSearchPrefill(null); }, [route.view, searchPrefill]);
 
   // The app itself is on screen (not the sign-in site, a password link, the loader,
@@ -3342,7 +3624,10 @@ export default function App() {
     if (!shellShown || import.meta.env.MODE === "test") return;
     const wsId = workspaceRef.current, role = roleIn(wsId);
     const ctx = { personal: wsId === null, guest: role === "guest", admin: role === "owner" || role === "admin" };
-    return prefetchWhenIdle([...likelyNext(routeRef.current, ctx), ...everyScreen()]);
+    // (0048: the Schedule… / Move to… menus too, so the keyboard way to plan opens at once)
+    const menus = canPrefetchAhead() ? whenIdle(prefetchPlanMenus, 8000) : () => {};
+    const stop = prefetchWhenIdle([...likelyNext(routeRef.current, ctx), ...everyScreen()]);
+    return () => { menus(); stop(); };
   }, [shellShown, idlePlace, workspace, roleIn]);
   // …and a link (a tab in the page header, a crumb) starts fetching its page when
   // the pointer or focus lands on it (the sidebar and phone bar do this themselves)
@@ -3418,9 +3703,10 @@ export default function App() {
   // "Show archived" follows the page: this project's archived tasks, or mine in My tasks
   const wsArchived = seen.filter((t) => (t.workspaceId ?? null) === workspace && !!t.archivedAt);
   const archivedTasks = route.view === "project" && route.projectId ? wsArchived.filter((t) => t.projectId === route.projectId) : wsArchived.filter(isMine);
-  const savedActive = route.list ? savedSearches.find((s) => s.id === route.list) : undefined;
-  const searchPreset = smartListQuery(route.list, currentUserId) ?? (savedActive ? (toQuery(savedActive.query) as unknown as Record<string, string>) : undefined)
-    ?? (searchPrefill ? { text: searchPrefill.text } : undefined);
+  // /search/list/:id: a smart list, or a saved search view (lib/views; old saved searches were adopted into them)
+  const searchSaved = route.view === "search" && route.list ? getSavedView(route.list) : undefined;
+  const searchView = searchSaved?.kind === "search" ? searchSaved : undefined;
+  const searchPreset = smartListQuery(route.list, currentUserId) ?? (searchPrefill ? { text: searchPrefill.text } : undefined);
   const searchPresetKey = route.list ?? searchPrefill?.key;
 
   const activeWsName = workspaces.find((w) => w.id === workspace)?.name || "Personal";
@@ -3467,6 +3753,8 @@ export default function App() {
   const currentUser = getMember(currentUserId);
   const wsKey = workspace ?? "personal";
   const canManageProject = (p: Project) => !activeReadOnly && (isAdmin || p.ownerId === currentUserId || !p.ownerId);
+  // a project's board settings (WIP limits, project covers): its writers — everyone here but guests (the projects policies)
+  const canEditProjectBoard = (p: Project) => !activeReadOnly && !p.id.startsWith("tmp-");
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
   const planProjectId = wsProjects.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
   const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
@@ -3536,7 +3824,12 @@ export default function App() {
         const shutDown = shutdownDone(currentUserId, dayKey);
         return {
           title: "Today", meta: dayMeta(KANBO_TODAY),
-          switcher: { items: tabsFor("today", navCtx).map((t) => ({ id: t.id, label: t.label })), value: route.view, onChange: (id) => setRoute({ view: id as Route["view"] }), label: "Show your day, week or month",
+          // 0048: your streak, beside the title (hidden in Settings, or from its own popover)
+          titleAddon: route.view === "plan" && !onboarding.momentum?.streakHidden ? (
+            <Suspense fallback={null}><TodayStreak currentUserId={currentUserId} tasks={myTasksEverywhere} prefs={onboarding.momentum} onChangePrefs={saveMomentum} /></Suspense>
+          ) : undefined,
+          // (a task held over Day or Week while dragging opens it: lib/dnd spring-loading)
+          switcher: { items: tabsFor("today", navCtx).map((t) => ({ id: t.id, label: t.label, spring: t.id === "plan" || t.id === "myweek" })), value: route.view, onChange: (id) => setRoute({ view: id as Route["view"] }), label: "Show your day, week or month",
             onIntent: (id) => prefetchRoute({ view: id as Route["view"] }) },
           actions: activeReadOnly ? undefined
             : route.view === "plan" && lateDay
@@ -3552,7 +3845,7 @@ export default function App() {
       }
       case "tasks": {
         // a smart list or saved view names itself
-        if (route.view === "search") return { title: "Search", meta: route.list ? SMART_LISTS.find((l) => l.id === route.list)?.label ?? savedActive?.name : undefined };
+        if (route.view === "search") return { title: "Search", meta: route.list ? SMART_LISTS.find((l) => l.id === route.list)?.label ?? searchView?.name : undefined };
         const open = myTasks.filter((t) => t.status !== "done" && !t.parentId).length;
         return { title: "My tasks", meta: `${activeWsName} · ${open} open` };
       }
@@ -3600,7 +3893,7 @@ export default function App() {
     }
   })();
   const createMenu: PageHeaderProps["create"] = activeReadOnly ? null : {
-    onNewTask: () => openNewTask(), onQuickCapture: openCapture, onPasteNotes: () => openExtract(),
+    onNewTask: () => openNewTask(), onQuickCapture: openCapture, onFromTemplate: () => openTemplateLibrary(), onPasteNotes: () => openExtract(),
     onImport: () => openImport(), onNewProject: () => setNewProjectOpen(true),
   };
 
@@ -3635,7 +3928,15 @@ export default function App() {
         riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={activeReadOnly}
         members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
         risks={risks} onAsk={() => openPalette()}
-        dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })} />;
+        dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })}
+        // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
+        setupSlot={showSetup ? (
+          <Suspense fallback={null}><SetupChecklist role={tourRole} onboarding={onboarding} signals={setupFacts} hidden={setupHidden} onChange={changeOnboarding} onAction={onSetupAction} /></Suspense>
+        ) : null}
+        winsSlot={onboarding.momentum?.recapHidden ? null : (
+          <Suspense fallback={null}><TodayWins currentUserId={currentUserId} workspaceId={workspace} tasks={myTasksEverywhere} projects={projects} members={wsPeople}
+            prefs={onboarding.momentum} onOpenTask={setDetailId} onHide={() => saveMomentum({ ...(onboarding.momentum ?? {}), recapHidden: true })} userName={currentUser?.name} /></Suspense>
+        )} />;
       case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} readOnly={activeReadOnly} />;
       // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
       // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
@@ -3643,10 +3944,25 @@ export default function App() {
       case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} />;
       case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} {...insightsNav} />;
       case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNav} />;
-      case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId} savedSearches={savedSearches} onSaveSearch={saveSearch}
-        onDeleteSavedSearch={(id) => { removeSavedSearch(id)?.catch(() => toastError("Couldn't delete the saved search.")); }}
-        preset={searchPreset} presetKey={searchPresetKey} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields}
-        onToggle={toggleTask} activeId={detailId ?? undefined} />;
+      // 0048 universal search: tasks, comments, docs, projects and people; saved as views (lib/views)
+      case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId}
+        savedSearches={NO_SAVED_SEARCHES} onSaveSearch={noop} onDeleteSavedSearch={noop}
+        preset={searchPreset} presetKey={searchView ? searchView.id : searchPresetKey} presetView={searchView?.query}
+        onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields}
+        onToggle={toggleTask} activeId={detailId ?? undefined}
+        workspaceId={workspace} workspaces={workspaces} readOnly={activeReadOnly} onGo={(r) => setRoute(r)}
+        onOpenProject={(id) => {
+          const p = projects.find((x) => x.id === id);
+          if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null);
+          setRoute({ view: "project", projectId: id });
+        }}
+        onOpenDoc={(docId, projectId) => {
+          const p = projects.find((x) => x.id === projectId);
+          if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null);
+          setRoute({ view: "project", projectId, tab: "docs", docId });
+        }}
+        onOpenPerson={() => setRoute({ view: "team" })}
+        views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
@@ -3665,7 +3981,9 @@ export default function App() {
         onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")}
         // 0047: "Approvals for you" first (this workspace's), and doc @mentions open their doc
         approvals={{ toReview: approvalsInWorkspace(myApprovals.toReview, workspace), projects, members: wsPeople, onDecided: onApprovalsChange }}
-        onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }} />;
+        onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }}
+        // 0048: bundles and the quiet-hours line follow your prefs ("Change" opens them); snoozes look after themselves
+        notifyPrefs={profile?.notifyPrefs} onOpenNotificationSettings={() => openSettings("notifications")} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} warnings={calWarnings} syncing={calSyncing} readOnly={activeReadOnly}
         scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
@@ -3683,18 +4001,26 @@ export default function App() {
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
         onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
         onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
-        personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })} />;
+        personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
+        // 0048: a task dropped on a person is handed to them (Undo); kudos read live
+        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} />;
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
-        onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined} />;
+        onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined}
+        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} />;
       case "tasks":
       case "project": {
         const inProject = !!openProject;
-        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
+        // (keyed by the saved view too, and by whether it has loaded: arriving on one starts the page from it)
+        const viewKey = `${route.savedViewId ?? ""}:${viewStart ? 1 : 0}`;
+        const viewGroupBy = appliedView && viewGroup?.viewId === appliedView.id ? viewGroup.groupBy
+          : viewStart?.listGroup && isGroupBy(viewStart.listGroup) ? viewStart.listGroup : undefined;
+        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
           tasks={scoped} allTasks={allTasks} projects={wsProjects} view={taskView} setView={inProject ? goProjectTab : setView}
-          groupBy={inProject ? openPrefs?.groupBy ?? "status" : groupBy} setGroupBy={inProject ? (g: GroupBy) => saveProjectPrefs(openProject.id, { groupBy: g }) : setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
+          groupBy={inProject ? viewGroupBy ?? openPrefs?.groupBy ?? "status" : groupBy}
+          setGroupBy={inProject ? (g: GroupBy) => { if (appliedView) setViewGroup({ viewId: appliedView.id, groupBy: g }); else saveProjectPrefs(openProject.id, { groupBy: g }); } : setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
             // a reorder within the same column is not a status change (completedAt stays put)
             const prev = tasksRef.current?.find((t) => t.id === id);
             const patch: Partial<Task> = {};
@@ -3712,6 +4038,9 @@ export default function App() {
           currentUserId={currentUserId}
           // rows follow Appearance's density (the Display menu changes it there), and the open task stays marked
           density={appearance.density} onDensity={(density) => setAppearance((a) => ({ ...a, density }))} activeTaskId={detailId ?? undefined}
+          // 0048: a saved view's start, Save view, the single Delete
+          viewStart={viewStart} onDeleteTask={deleteTask}
+          views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace), appliedView: appliedView ?? null, role: myRole ?? null }}
           {...(inProject ? {
             // a project: its views as tabs, then Updates · Requests · Rules · About, and its notice line
             tab: projectTab, onTab: goProjectTab, extraTabs,
@@ -3729,12 +4058,16 @@ export default function App() {
                 rules={{ ...rulesProps(openProject!.id), readOnly: activeReadOnly }} forms={{ ...formsProps(openProject!.id), readOnly: activeReadOnly }} /></Suspense>
             ),
             notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
+            // 0048 board: the project's settings ({} when none: its WIP limits are then everyone's); writers save one change at a time
+            boardSettings: openProject!.boardSettings ?? {},
+            onChangeBoardSettings: canEditProjectBoard(openProject!) ? (next: BoardSettings, change: BoardSettingsChange) => updateProject(openProject!.id, { boardSettings: next, boardSettingsChange: change }) : undefined,
           } satisfies Partial<React.ComponentProps<typeof TasksPage>> : {
             // My tasks: Open · Waiting on · Done, due-date anchors, saved views
             tab: route.tab ?? "open", onTab: (id: string) => setRoute({ view: "tasks", tab: id === "open" ? undefined : id }, { keepPanel: true }),
-            dueFocus: isDueFocus(route.list) ? route.list : undefined,
-            savedViews: savedSearches.map((s) => ({ id: s.id, name: s.name, count: savedSearchCounts[s.id] ?? 0 })),
-            onOpenSavedView: (id: string) => setRoute({ view: "search", list: id }), onSaveView: saveMyTasksView,
+            dueFocus: isDueFocus(route.list) ? route.list : viewStart?.dueFocus,
+            // 0048: the pinned views (not project ones) as links beside the tabs; "mine" is the smart list
+            savedViews: sv.pinned.filter((v) => v.kind !== "project").map((v) => ({ id: v.id, name: v.name, count: savedViewCounts[v.id] ?? 0 })),
+            onOpenSavedView: (id: string) => { const v = getSavedView(id); setRoute(v ? viewRoute(v) : { view: "search", list: id }); },
             onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
             // 0047: Waiting on › "Waiting on approval" (your open requests)
             waitingApproval: waitingOnApproval(myApprovals, allTasks),
@@ -3749,7 +4082,17 @@ export default function App() {
     <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={newCount}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => openSettings()} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling}
-      savedSearches={savedSearches} savedSearchCounts={savedSearchCounts} onDeleteSavedSearch={removeSavedSearch}
+      // 0048: the Views group (pinned saved views, live counts); tasks dropped on a project row move there, on Today plan it
+      views={sv.views} viewCounts={savedViewCounts}
+      onDropTasksOnProject={activeReadOnly ? undefined : dropOnProject} onDropTasksOnToday={activeReadOnly ? undefined : dropOnToday}
+      help={(
+        <Suspense fallback={null}>
+          <HelpMenu onStartTour={() => startTourNow()} onOpenShortcuts={() => openSettings("shortcuts")}
+            // guests can't make projects; the sample lives in Personal
+            sample={activeReadOnly && workspace !== null ? null : { exists: !!onboarding.sample, busy: sampleBusy, onCreate: trySample, onRemove: removeSample }}
+            setup={setupDismissedEarly ? { ...setupProgress, onShow: () => { changeOnboarding(dismissSetupChecklist(onboarding, false)); setRoute({ view: "plan" }); } } : null} />
+        </Suspense>
+      )}
       myRole={myRole} guardRoute={false}
       theme={resolvedTheme} onToggleTheme={flipTheme} teamBadge={!personal && signalRisks > 0 ? signalRisks : undefined}
       onOpenSearch={() => openPalette()} onOpenShortcuts={() => openSettings("shortcuts")} />
@@ -3833,7 +4176,8 @@ export default function App() {
         {isMobile && (
           <div style={{ position: "sticky", bottom: 0, zIndex: "var(--z-header, 10)" }}>
             <MobileNav route={route} setRoute={setRoute} inboxCount={newCount} personal={personal}
-              onCapture={activeReadOnly ? undefined : openCapture} onMore={() => setSidebarOpen(true)} moreOpen={sidebarOpen} />
+              onCapture={activeReadOnly ? undefined : openCapture} onQuickAdd={activeReadOnly ? undefined : openQuickAdd} onQuickAddIntent={prefetchQuickAdd}
+              onMore={() => setSidebarOpen(true)} moreOpen={sidebarOpen} />
           </div>
         )}
       </main>
@@ -3883,21 +4227,26 @@ export default function App() {
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
           <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} />
+            readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
+            onSaveAsTemplate={(id) => setSaveTemplateFor(id)} />
           </Suspense>
         </ErrorBoundary>
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
       {focusOpen && <Suspense fallback={null}><FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} /></Suspense>}
-      <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => setNewTaskOpen(false)} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
-        tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length} /></Deferred>
+      <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => { setNewTaskOpen(false); setNewTaskTemplate(null); }} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
+        tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length}
+        // 0048 templates: "/" or Template ▾ in the form, the library's "Use template", the whole plan through App's create paths
+        workspaceId={workspace} initialTemplate={newTaskTemplate} onApplyTemplate={applyTemplatePlan}
+        onBrowseTemplates={() => { setNewTaskOpen(false); setNewTaskTemplate(null); openTemplateLibrary(); }} /></Deferred>
       <Deferred when={newProjectOpen}><NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects}
         // guests never create from a template (createFromTeamTemplate refuses them too)
         onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate}
         onPlanWithKanbo={activeReadOnly ? undefined : (typed) => openPlanner({ mode: "new", goal: typed || undefined })} /></Deferred>
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
+      {/* (tourAvailable: the TourHost below is mounted when a tour is asked for, so the sheet hands over to it) */}
       <Deferred when={onboardOpen && !welcomeOpen}><OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
-        onGoToday={() => setRoute({ view: "plan" })} /></Deferred>
+        onGoToday={() => setRoute({ view: "plan" })} tourAvailable /></Deferred>
       <Deferred when={newWorkspaceOpen}><NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} /></Deferred>
       {/* 0047: plan a project with Kanbo (loaded the first time it's opened) */}
       {planner && (() => {
@@ -3921,12 +4270,15 @@ export default function App() {
         canSkip={!!((profile?.firstName?.trim()) || (profile?.lastName?.trim()))}
         onSaveProfile={(firstName, lastName) => saveProfile({ firstName, lastName, pronouns: profile?.pronouns ?? "" })}
         name={currentUser?.name && !currentUser.name.includes("@") ? currentUser.name : undefined}
-        initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""} /></Deferred>
+        initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""}
+        // a new account the first-run sheet won't follow is offered the tour here
+        tourAvailable offerTour={isNewAccount && !onboardOpen && !onboarding.tour?.done && !onboarding.tour?.skipped} /></Deferred>
       <Deferred when={settingsOpen}><SettingsModal open={settingsOpen} onClose={closeSettings}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? SELF_COLOR}
         onUpload={uploadAvatar} onSave={saveProfile} onExport={exportData} onDeleteAccount={deleteAccount}
-        notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs}
+        notifyPrefs={profile?.notifyPrefs ?? {}} onSaveNotifyPrefs={saveNotifyPrefs} onNotifyPrefsStored={notifyPrefsStored}
+        momentum={{ prefs: onboarding.momentum, onChange: saveMomentum }}
         appearance={appearance} onChangeAppearance={setAppearance}
         theme={theme} onChangeTheme={setTheme}
         section={settingsSection} onSection={setSettingsSection} isAdmin={canWorkspaceSettings} isGuest={activeReadOnly}
@@ -3963,8 +4315,32 @@ export default function App() {
       <Deferred when={quickCaptureOpen}><QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsProjects} members={assignees}
         defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask} tags={tags}
         onPasteNotes={(text) => openExtract(text)} onImportRows={(rows) => importTasks(rows)}
+        // 0048: "/" picks a template; its whole plan goes through App's create paths
+        onApplyTemplate={applyTemplatePlan} currentUserId={currentUserId}
         // a paste longer than Quick capture takes goes to Import tasks, with the text in
         onOpenImport={(text) => { setQuickCaptureOpen(false); openImport(text); }} /></Deferred>
+      {/* 0048 phone: the phone bar's + (live NL highlighting, recent projects); the same create path as Quick capture */}
+      <Deferred when={quickAddOpen}><QuickAddSheet open={quickAddOpen} onClose={() => setQuickAddOpen(false)} projects={wsProjects} members={assignees} currentUserId={currentUserId}
+        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined}
+        recentProjectIds={quickAddOpen ? recentProjectIds(tasks, { userId: currentUserId, projects: wsProjects.map((p) => ({ id: p.id, archivedAt: p.archivedAt ?? undefined })) }) : undefined}
+        onCreate={quickAddTask} /></Deferred>
+      {/* 0048 templates: the library (New task ▾ › From a template…), and Save as template (the task panel's ⋯) */}
+      <Deferred when={templateLibrary.open}><TemplateLibrary open={templateLibrary.open} onClose={() => setTemplateLibrary({ open: false })} initialTemplateId={templateLibrary.initialTemplateId}
+        workspaceId={workspace} workspaceName={activeWsName} currentUserId={currentUserId} canShare={canShareViews(myRole ?? null, workspace)}
+        canManageShared={isAdmin} canApply={!activeReadOnly} onApply={applyLibraryTemplate} members={assignees} tags={tags} /></Deferred>
+      {saveTemplateFor && (() => {
+        const t = seen.find((x) => x.id === saveTemplateFor);
+        if (!t) return null;
+        const tWs = t.workspaceId ?? null;
+        return (
+          <Suspense fallback={null}>
+            <SaveAsTemplate open task={t} subtasks={seen.filter((x) => x.parentId === t.id)} workspaceId={tWs}
+              workspaceName={workspaces.find((w) => w.id === tWs)?.name || "Personal"} canShare={canShareViews(roleIn(tWs), tWs)}
+              currentUserId={currentUserId} projectOwnerId={getProject(t.projectId)?.ownerId ?? null} tags={tags}
+              onClose={() => setSaveTemplateFor(null)} />
+          </Suspense>
+        );
+      })()}
       <Deferred when={extract.open}><ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
         projects={wsProjects} members={assignees} defaultProjectId={openProject?.id} currentUserId={currentUserId}
         onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
@@ -3984,6 +4360,19 @@ export default function App() {
           onArchive={proj.archivedAt || !canArchiveProject(proj, { myRole: roleIn(proj.workspaceId) }) ? undefined : () => setProjectArchived(proj.id, true)}
           onConfirm={(mode, target) => { confirmDeleteProject(deleteProjectId, mode, target); }} onClose={() => setDeleteProjectId(null)} /></Suspense>;
       })()}
+      {/* 0048 drag to plan: what's under the pointer while a task is carried, and the live region for pick-up and drop */}
+      <DragLayer getTaskTitle={(id) => (seenRef.current ?? []).find((t) => t.id === id)?.title} />
+      {/* 0048 the guided tour: mounted while one can run (a new account, part-way through, or asked for from Help or the
+          first-run sheet); its coach marks sit above the task panel and below dialogs, ⌘K and toasts */}
+      {(tourWanted || shouldAutoStartTour(onboarding, { isNewAccount })) && profile?.suspended !== true && (
+        <ErrorBoundary inline floating name="tour">
+          <Suspense fallback={null}>
+            <TourHost role={tourRole} onboarding={onboarding} onChange={changeOnboarding} isNewAccount={isNewAccount}
+              onNavigate={(r) => setRoute(r)}
+              onOpenTask={(id) => { const t = (seenRef.current ?? []).find((x) => x.id === id); if (t) setWorkspace(t.workspaceId ?? null); setDetailId(id); }} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       {/* one time, for people who knew the old layout: where everything went (out of
           the way while a task panel is open, where the card would sit on its composer) */}
       {knewOldLayout && !onboardOpen && !welcomeOpen && <WhatMoved isMobile={isMobile} hidden={!!detailId} onShowMe={() => openPalette()} />}

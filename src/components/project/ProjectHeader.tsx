@@ -22,6 +22,7 @@ import { ComposerPanel, ComposerPopover, POP_STYLE, focusInPageComposer, useHasI
 import { DraftInput } from "./DraftInput";
 import { SlackPostButton } from "../integrations";
 import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
+import { PresenceAvatars, useProjectPresence, type PresenceMe } from "../presence";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
@@ -99,12 +100,16 @@ export function printProjectReport(project: Project, allProjectTasks: Task[]): v
 
 /** Under the project's name in its header: status pill (opens Updates), a
  *  progress ring with the count behind it, the next milestone, and the people. */
-export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates }: {
+export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates, me }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
   onOpenUpdates: () => void;
+  /** 0048 live presence: you on the project's channel (who else is here shows beside the people); null: alone */
+  me?: PresenceMe | null;
 }): JSX.Element {
+  // (temporary ids aren't on the server yet: nobody can be there)
+  const { peers: here } = useProjectPresence(me && !project.id.startsWith("tmp-") ? project.id : null, me ?? null);
   // the facts read today's date: recompute when the day rolls over in a tab left open
   const today = todayISO();
   const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates, today]);
@@ -128,6 +133,7 @@ export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates
           <span className="kpj-mono">{fmtShortDay(ms.dueDate, KANBO_TODAY)}</span>
         </span>
       )}
+      {here.length > 0 && <PresenceAvatars peers={here} size="sm" max={3} />}
       {people.length > 0 && (
         <span className="kpj-people" title={names} role="img" aria-label={`People: ${names}`}>
           <AvatarStack ids={people.slice(0, 3)} size={24} />

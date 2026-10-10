@@ -1,6 +1,6 @@
 // What a notification says: lone notices, bundles, the due list and the digest.
 import { describe, expect, it } from "vitest";
-import { composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, noticeLine, peopleList, type ComposeRow, type DigestItem } from "./notifyCompose";
+import { composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, kudosEmail, kudosPush, noticeLine, peopleList, type ComposeRow, type DigestItem } from "./notifyCompose";
 
 const T = "22222222-2222-4222-8222-222222222222";
 const row = (kind: string, actor: string, at: string, title = "Launch deck"): ComposeRow => ({
@@ -100,5 +100,28 @@ describe("the daily digest", () => {
     ];
     const kept = filterDigestItems(items, new Set(["deck", "budget"]), new Set(["budget"]), (k) => k !== "kudos");
     expect(kept.map((x) => x.id)).toEqual(["1", "4"]);
+  });
+});
+
+describe("kudos notices (0048: notify { kind: 'kudos' })", () => {
+  it("push: who, the emoji, the task and the note, opening the task", () => {
+    expect(kudosPush("Theo Vance", "👏", "Great work", "Launch deck", "t-1")).toEqual({
+      title: "Theo Vance sent you 👏", body: "For Launch deck: “Great work”", url: "/?task=t-1", tag: "kudos-t-1", kind: "kudos",
+    });
+    expect(kudosPush("", "🙌", null, "", "t-2")).toMatchObject({ title: "Someone sent you 🙌", body: "For a task" });
+  });
+  it("an emoji outside the ten reads 🎉; titles and notes stay on one line", () => {
+    const p = kudosPush("Sana", "<b>", "line one\nline two", "Deck\r\nv2", "t-3");
+    expect(p.title).toBe("Sana sent you 🎉");
+    expect(p.body).toBe("For Deck v2: “line one line two”");
+  });
+  it("email: escaped, with the note and a link", () => {
+    const m = kudosEmail("Theo <script>", "🏆", "You <b>nailed</b> it", "Q3 & launch", "https://kanbo.test/?task=t-1");
+    expect(m.subject).toBe("🏆 Kudos from Theo <script>: Q3 & launch");
+    expect(m.html).toContain("Theo &lt;script&gt;");
+    expect(m.html).toContain("“You &lt;b&gt;nailed&lt;/b&gt; it”");
+    expect(m.html).toContain("Q3 &amp; launch");
+    expect(m.html).toContain('href="https://kanbo.test/?task=t-1"');
+    expect(kudosEmail("Sana", "🎉", "", "Deck", "").html).not.toContain("Open in Kanbo");
   });
 });

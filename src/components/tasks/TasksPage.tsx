@@ -17,9 +17,15 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { readFilters, validFilters, filtersKey, EMPTY_FILTERS, type TaskFilters } from "../../lib/taskOps";
 import { bucketOpen, bucketWaiting, bucketDone, doneToday, dueFocusGroup, firstNameOf, type TaskBucket } from "../../lib/myTaskBuckets";
 import { dueState, getMember, KANBO_TODAY, STATUS_META, STATUS_ORDER, PRIORITY_META } from "../../data/data";
-import type { Task, Project, Status, TagDef, Section, CustomFieldDef, IconName } from "../../data/types";
+import type { Task, Project, Status, TagDef, Section, CustomFieldDef, IconName, BoardSettings, SavedView, Role } from "../../data/types";
 import type { TaskView, GroupBy } from "../../app-types";
 import { dueDateForBucket } from "./ListView";
+import { readSwimlane, swimlaneStorageKey, type BoardSettingsChange, type SwimlaneBy } from "./otherViewsLogic";
+import { BoardDisplayOptions } from "../board/BoardDisplayOptions";
+import { demoAwareBoardSettings, nextBoardSettings } from "../board/boardDemo";
+import { SaveViewButton, sameViewQuery } from "../views/SavedViewEditor";
+import { pageViewQuery, suggestViewName, type ViewPageStart } from "../../lib/savedViews/pageQuery";
+import { canEditView } from "../../lib/views";
 import "./taskViews.css";
 
 const VIEWS: { id: TaskView; label: string; icon: IconName }[] = [
@@ -75,7 +81,8 @@ function PopSection({ title, note, children }: { title: string; note?: string; c
 }
 
 export function TasksPage({ tasks, allTasks, projects = [], view, setView, groupBy, setGroupBy, smart, setSmart, onOpen, onToggle, onToggleSubtask, onAdd, onMove, onBulkPatch, onBulkDelete, onPatch, onQuickAdd, onOpenImport, members, allTags, archivedTasks = [], header, sections = [], onCreateSection, onRenameSection, onDeleteSection, customFields = [], sectionField = "sectionId", sectionProjectId, filterScope = "my", readOnly = false, boardScope, exportName = "my-tasks", exportOpts,
-  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId, waitingApproval }: {
+  tab: tabProp, onTab, extraTabs, renderExtra, notice, dueFocus, currentUserId, savedViews, onOpenSavedView, onSaveView, onNudge, onAdvancedSearch, onManageTags, density: densityProp, onDensity, loading = false, activeTaskId, waitingApproval,
+  viewStart, views, boardSettings, onChangeBoardSettings, onDeleteTask }: {
   tasks: Task[];
   allTasks: Task[];
   projects?: Project[];
@@ -147,6 +154,19 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   /** 0047 Waiting on › "Waiting on approval": your open requests' tasks (lib/approvals waitingOnApproval),
    *  each with its line ("1 of 2 approved · waiting on Sana") */
   waitingApproval?: { label: string; items: Task[]; notes: Map<string, string> };
+  /* ---- 0048 (all optional) ---- */
+  /** arriving on a saved view (route.savedViewId; lib/savedViews viewPageStart): the page starts from it, and while
+   *  it's applied nothing is written back to your own filters, grouping or sort (changes are the view's) */
+  viewStart?: ViewPageStart;
+  /** "Save view" (lib/views) in place of the old saved search: where it's saved, whether it may be shared, and the
+   *  view the page shows (Update offered to whoever may change it) */
+  views?: { workspaceId: string | null; workspaceName?: string; canShare: boolean; appliedView?: SavedView | null; role?: Role | null; onSaved?: (v: SavedView) => void };
+  /** a project board's settings ({} when it has none: its WIP limits are then everyone's) */
+  boardSettings?: BoardSettings;
+  /** project writers: save the board's settings (the whole object, and just the change for merge_board_settings) */
+  onChangeBoardSettings?: (next: BoardSettings, change: BoardSettingsChange) => void;
+  /** one task's Delete in a row's menu or sheet (App's deleteTask: "Deleted “X”" with Undo) */
+  onDeleteTask?: (id: string) => void;
 }) {
   const isMy = filterScope === "my";
   const isMobile = useMediaQuery("(max-width: 860px)");
@@ -161,31 +181,41 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   const shownView: TaskView = !isMy && isTaskView(rawTab) ? rawTab : view;
 
   /* ---------------- per-page state ---------------- */
+  // (a saved view's own grouping, sort, filters and words start the page; while it's applied they're the view's,
+  //  never written back over your own)
+  const onView = !!viewStart;
   const [myGroup, setMyGroupState] = useState<GroupBy>(() => {
+    const v = viewStart?.myGroup;
+    if (v && GROUPS.some((g) => g.id === v)) return v as GroupBy;
     const s = readLocal(MY_GROUP_KEY) as GroupBy | null;
     return s && GROUPS.some((g) => g.id === s) ? s : "due";
   });
-  const setMyGroup = (g: GroupBy) => { setMyGroupState(g); writeLocal(MY_GROUP_KEY, g); };
+  const setMyGroup = (g: GroupBy) => { setMyGroupState(g); if (!onView) writeLocal(MY_GROUP_KEY, g); };
   const group = isMy ? myGroup : groupBy;
   const setGroup = isMy ? setMyGroup : setGroupBy;
   const [boardGroup, setBoardGroupState] = useState<BoardGroup>(() => {
+    const v = viewStart?.boardGroup;
+    if (v && BOARD_GROUPS.some((g) => g.id === v)) return v as BoardGroup;
     const s = readLocal(BOARD_GROUP_KEY) as BoardGroup | null;
     return s && BOARD_GROUPS.some((g) => g.id === s) ? s : "status";
   });
-  const setBoardGroup = (g: BoardGroup) => { setBoardGroupState(g); writeLocal(BOARD_GROUP_KEY, g); };
+  const setBoardGroup = (g: BoardGroup) => { setBoardGroupState(g); if (!onView) writeLocal(BOARD_GROUP_KEY, g); };
+  // 0048 board rows (swimlanes): per person, per board — chosen in Display, beside Columns
+  const [lanes, setLanesState] = useState<SwimlaneBy>(() => readSwimlane(readLocal(swimlaneStorageKey(boardScope))));
+  const setLanes = (by: SwimlaneBy) => { setLanesState(by); writeLocal(swimlaneStorageKey(boardScope), by); };
   // Density belongs to Settings › Appearance (App's appearance state). The page only reads it,
   // and offers Display › Density when App hands it the setter: a copy of its own would be
   // overwritten by App's next appearance save and leave Settings showing a stale value.
   const density = densityProp ?? readDensity();
-  const [sort, setSort] = useState<string>(() => readLocal("kanbo-sort") || "manual");
-  useEffect(() => { writeLocal("kanbo-sort", sort); }, [sort]);
+  const [sort, setSort] = useState<string>(() => viewStart?.sort || readLocal("kanbo-sort") || "manual");
+  useEffect(() => { if (!onView) writeLocal("kanbo-sort", sort); }, [sort, onView]);
 
   // The page is keyed by route, so the title filter starts empty on every
   // project / My tasks switch. Filters persist per route (not app-wide), so a
   // filter set in one project can never hide every task in another.
-  const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<PageFilters>(() => readFilters(filterScope));
-  useEffect(() => { writeLocal(filtersKey(filterScope), JSON.stringify({ ...filters, showArchived: false })); }, [filters, filterScope]);
+  const [search, setSearch] = useState(() => viewStart?.text ?? "");
+  const [filters, setFilters] = useState<PageFilters>(() => (viewStart ? { ...viewStart.filters, custom: { ...viewStart.filters.custom } } : readFilters(filterScope)));
+  useEffect(() => { if (!onView) writeLocal(filtersKey(filterScope), JSON.stringify({ ...filters, showArchived: false })); }, [filters, filterScope, onView]);
   const setFilter = (patch: Partial<PageFilters>) => setFilters((f) => ({ ...f, ...patch }));
   const clearFilters = () => { setFilters({ ...EMPTY_FILTERS, custom: {} }); setSearch(""); };
   // ignore saved filters that can't apply here (another project's custom field,
@@ -376,7 +406,25 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     });
   };
 
-  const saveControl = isMy && onSaveView && !readOnly && (narrowed || saving !== null) ? (
+  // 0048: Save view (lib/views) — My tasks and project pages alike; guests may keep their own (never shared)
+  const viewQuery = views ? pageViewQuery({
+    scope: isMy ? "my" : "project", projectId: isMy ? undefined : sectionProjectId,
+    tab: isMy ? (dueFocus ?? myTab) : shownView, text: search, priority: priorityFilter, status: statusFilter, assignee: assigneeFilter,
+    tag: tagFilter, due: dueFilter, section: sectionFilter, hideDone, custom: customFilter,
+    groupBy: shownView === "board" ? boardGroup : group, sort: smart ? undefined : sort,
+  }) : null;
+  const applied = views?.appliedView ?? null;
+  const saveViewButton = views && viewQuery && !extraActive ? (
+    <div ref={saveRef} className="ktv-save">
+      <SaveViewButton kind={viewQuery.kind} query={viewQuery.query}
+        // something's filtered, or the view this page shows has been changed here (Update / Save as new)
+        active={viewQuery.active || (!!applied && applied.kind === viewQuery.kind && !sameViewQuery(applied.query, viewQuery.query))}
+        workspaceId={views.workspaceId} workspaceName={views.workspaceName} canShare={views.canShare} currentUserId={me || undefined}
+        suggestedName={suggestViewName({ scope: isMy ? "my" : "project", projectId: isMy ? undefined : sectionProjectId, priority: priorityFilter, status: statusFilter, assignee: assigneeFilter, tag: tagFilter, due: dueFilter, text: search })}
+        appliedView={applied} canEditApplied={!!applied && canEditView(applied, { userId: me, role: views.role ?? null })} onSaved={views.onSaved} />
+    </div>
+  ) : null;
+  const saveControl = views ? saveViewButton : isMy && onSaveView && !readOnly && (narrowed || saving !== null) ? (
     <div ref={saveRef} className="ktv-save">
       {saving === null ? (
         <Button variant="ghost" size="sm" icon="plus" onClick={() => setSaving("")}>Save view</Button>
@@ -584,9 +632,18 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         </>
       )}
       {shownView === "board" && (
-        <PopSection title="Columns">
-          <div className="ktv-chips">{BOARD_GROUPS.map((g) => <Chip key={g.id} on={boardGroup === g.id} onClick={() => setBoardGroup(g.id)}>{g.label}</Chip>)}</div>
-        </PopSection>
+        <>
+          <PopSection title="Columns">
+            <div className="ktv-chips">{BOARD_GROUPS.map((g) => <Chip key={g.id} on={boardGroup === g.id} onClick={() => setBoardGroup(g.id)}>{g.label}</Chip>)}</div>
+          </PopSection>
+          {/* 0048: rows (just for you) and "Show project covers" (a project board's writers) */}
+          <BoardDisplayOptions group={boardGroup} swimlane={lanes} onSwimlaneChange={setLanes}
+            covers={!!demoAwareBoardSettings(isMy ? undefined : sectionProjectId, boardSettings)?.covers}
+            onCoversChange={!isMy && onChangeBoardSettings && !readOnly ? (on) => {
+              const change: BoardSettingsChange = { covers: on };
+              onChangeBoardSettings(nextBoardSettings(sectionProjectId, boardSettings, change), change);
+            } : undefined} />
+        </>
       )}
       {!(isMy && myTab === "done") && (
         <Toggle checked={!hideDone} onChange={(v) => setFilter({ hideDone: !v })} label="Show done"
@@ -667,7 +724,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
         groups={listGroups} showProject={isMy} quietAssigneeFor={isMy && myTab !== "waiting" ? currentUserId : undefined}
         renderMeta={isMy && myTab === "waiting" ? waitingMeta : undefined} renderAction={isMy && myTab === "waiting" ? waitingAction : undefined}
         focusGroup={isMy && myTab === "open" && group === "due" ? dueFocusGroup(dueFocus) : undefined} focusKey={dueFocus}
-        emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} activeId={activeTaskId} />
+        emptyState={listEmpty} footer={doneFooter} allTags={allTags} label={isMy ? `My tasks: ${myTab === "open" ? "Open" : myTab === "waiting" ? "Waiting on" : "Done"}` : "Tasks"} activeId={activeTaskId}
+        onDeleteTask={onDeleteTask} />
     );
   } else {
     body = (
@@ -680,7 +738,9 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
           </div>
         )}
         {shownView === "board" && <BoardView tasks={shownTasks} allTasks={allTasks} onOpen={onOpen} onAdd={onAdd} onMove={onMove} onPatch={onPatch} onBulkPatch={onBulkPatch} onBulkDelete={onBulkDelete}
-          members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} group={boardGroup} onGroupChange={setBoardGroup} showProject={isMy} onToggle={onToggle} activeId={activeTaskId} />}
+          members={members} customFields={customFields} readOnly={readOnly} scopeKey={boardScope} group={boardGroup} onGroupChange={setBoardGroup} showProject={isMy} onToggle={onToggle} activeId={activeTaskId}
+          boardSettings={boardSettings} onChangeBoardSettings={onChangeBoardSettings} projectId={isMy ? undefined : sectionProjectId}
+          swimlane={lanes} onSwimlaneChange={setLanes} />}
         {shownView === "timeline" && <TimelineView tasks={shownTasks} allTasks={allTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
         {shownView === "calendar" && <CalendarView tasks={shownTasks} onOpen={onOpen} onPatch={onPatch} readOnly={readOnly} />}
         {shownView === "files" && <FilesView tasks={shownTasks} onOpen={onOpen} />}

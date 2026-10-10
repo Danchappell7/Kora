@@ -40,12 +40,17 @@ import {
   type MentionCandidate, type UnsavedField, type HistoryEvent,
 } from "./taskDetailHelpers";
 import { subscribeApprovals } from "../lib/approvals";
+import { PresenceAvatars, TypingIndicator, presenceKey, presenceMeFrom, usePresence, useTyping } from "./presence";
+import { CoverPicker } from "./tasks/CoverPicker";
+import { demoAwareBoardSettings, demoCoverAttachments } from "./board/boardDemo";
 
 // 0046: Notion pages on a task, loaded when a task first opens (it renders nothing until it knows there's something to show)
 // (if its code can't be fetched, the task simply shows no Notion section)
 const NotionLinkChip = lazy(() => import("./NotionLinkChip").then((m) => ({ default: m.NotionLinkChip }), () => ({ default: () => null })));
 // 0047: Approval on team tasks, loaded with the first task opened (if its code can't be fetched, no section)
 const ApprovalPanel = lazy(() => import("./approvals/ApprovalPanel").then((m) => ({ default: m.ApprovalPanel }), () => ({ default: () => null })));
+// 0048: kudos on a teammate's finished team task (or what you got on your own), with lib/momentum (if its code can't be fetched, none)
+const TaskKudos = lazy(() => import("./momentum/TodayMomentum").then((m) => ({ default: m.TaskKudos }), () => ({ default: () => null })));
 
 const REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅", "🚀"];
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };
@@ -837,6 +842,9 @@ export interface TaskDetailProps {
   ai?: boolean;
   /** 0047: after an approval request, decision or cancel here (App refreshes the row badges and the Inbox group) */
   onApprovalsChange?: () => void;
+  /** 0048: ⋯ › Save as template… opens the template library's Save as template (the host's sheet). Without it,
+   *  the task is kept as a template on this device (the old way). */
+  onSaveAsTemplate?: (taskId: string) => void;
 }
 
 /** A task opened from inside the panel (a sub-task, a blocker, the parent)
@@ -906,7 +914,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai, onApprovalsChange }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai, onApprovalsChange, onSaveAsTemplate }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -967,7 +975,6 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [events, setEvents] = useState<HistoryEvent[]>([]);
   const [eventsLoaded, setEventsLoaded] = useState(false);
-  const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
   const [posting, setPosting] = useState(false);
   // Title + description edit buffers. Each remembers the server value it was
   // loaded from (its base): only a real change is saved, a teammate's newer
@@ -1051,34 +1058,15 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   }, [panelRef]);
   const openTask = (id: string) => { markDrillIn(id, returnTo.current); onOpenTask?.(id); };
 
-  // live presence — who else is viewing this task right now. Depends on the
-  // viewer's name string, not the members array (whose identity changes on
-  // every realtime reload and used to tear the channel down each time).
-  // Re-opening a task hands back the same-topic channel if the old one is still
-  // leaving, and that one never joins. So: a short delay covers the quick case
-  // (StrictMode, a fast close/re-open), and if no presence sync has arrived a
-  // few seconds after subscribing we drop that channel and join again (by then
-  // the old one has gone), backing off — however slow the network is.
-  const meName = useMemo(() => members.find((m) => m.userId === currentUserId)?.name || "Someone", [members, currentUserId]);
-  useEffect(() => {
-    if (!store.configured) return;
-    let unsub: (() => void) | null = null;
-    let stopped = false, synced = false, tries = 0, timer = 0;
-    const join = () => {
-      if (stopped) return;
-      unsub?.();
-      synced = false;
-      unsub = store.subscribeToTaskPresence(taskId, { id: currentUserId, name: meName }, (people) => {
-        synced = true;
-        if (!stopped) setViewers(people.filter((p) => p.id !== currentUserId));
-      });
-      const wait = 3000 * 2 ** tries;
-      tries += 1;
-      if (tries < 4) timer = window.setTimeout(() => { if (!synced) join(); }, wait);
-    };
-    timer = window.setTimeout(join, 250);
-    return () => { stopped = true; window.clearTimeout(timer); setViewers([]); unsub?.(); };
-  }, [taskId, currentUserId, meName]);
+  // live presence (0048, components/presence): who else has this task open, and who's typing a comment. One
+  // private Realtime channel per task ("kanbo:task:<id>"), shared by both hooks; also said on the project's
+  // channel, so the project's header can show who's in it. Demo mode has scripted teammates; tests are alone.
+  const meName = useMemo(() => members.find((m) => m.userId === currentUserId)?.name || getMember(currentUserId)?.name || "Someone", [members, currentUserId]);
+  const meColor = getMember(currentUserId)?.color ?? "";
+  const presenceMe = useMemo(() => presenceMeFrom([{ id: currentUserId, name: meName, color: meColor }], currentUserId, meName), [currentUserId, meName, meColor]);
+  const presenceProject = task.projectId && !task.projectId.startsWith("tmp-") ? task.projectId : null;
+  const { peers: viewers } = usePresence(presenceKey("task", taskId), presenceMe, { projectId: presenceProject });
+  const { typers, notifyTyping, stopTyping } = useTyping(taskId, presenceMe);
 
   // live comments — append comments posted while the panel is open, including
   // your own from another device (one sent from here is already in the thread:
@@ -1335,6 +1323,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const onCommentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setComment(val);
+    if (val.trim()) notifyTyping(); else stopTyping();
     const caret = e.target.selectionStart ?? val.length;
     const m = val.slice(0, caret).match(/(?:^|\s)@([\w'’.-]*)$/);
     setMentionQuery(m ? m[1].toLowerCase() : null);
@@ -1380,6 +1369,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     const mentions = resolveMentions(v, picked, mentionable);
     // only reply to a comment that's really in this task's thread
     const parentId = replyingTo && thread.some((c) => c.id === replyingTo) ? replyingTo : undefined;
+    stopTyping();
     setPosting(true);
     let c: Comment | null = null;
     try { c = await onAddComment(forTask, v, mentions, parentId); }
@@ -1555,7 +1545,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const actions: MenuAction[] = [
     ...(onDuplicate && !readOnly ? [{ id: "duplicate", label: "Duplicate", name: "Duplicate task", icon: "copy" as IconName, title: "Duplicate task", run: () => { onDuplicate(task.id); onClose(); } }] : []),
     ...(!readOnly && projects.length > 1 ? [{ id: "move", label: "Move to project…", icon: "arrowRight" as IconName, run: () => projectMenu.current?.open() }] : []),
-    { id: "template", label: "Save as template", icon: "briefcase", run: saveAsTemplate },
+    { id: "template", label: onSaveAsTemplate ? "Save as template…" : "Save as template", icon: "briefcase", run: onSaveAsTemplate ? () => onSaveAsTemplate(task.id) : saveAsTemplate },
     ...(!readOnly ? [{ id: "attach", label: "Attach file", icon: "folder" as IconName, run: () => fileRef.current?.click() }] : []),
     ...(onToggleTaskReaction && !readOnly ? [{ id: "react", label: "Add reaction", icon: "message" as IconName, run: () => { setReactsOpen(true); requestAnimationFrame(() => reactsRef.current?.querySelector<HTMLElement>("button")?.focus()); } }] : []),
     ...(!readOnly && task.archivedAt && onUnarchive ? [{ id: "unarchive", label: "Unarchive", name: `Unarchive “${task.title}”`, icon: "refresh" as IconName, title: "Unarchive task", sepBefore: true, run: () => { onUnarchive(task.id); onClose(); } }] : []),
@@ -1752,11 +1742,12 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
           {proj && section && <><span className="kpchip-sep" aria-hidden="true"><Icon name="chevronRight" size={12} /></span><span className="ktd-crumb-text">{section.name}</span></>}
         </nav>
         {readOnly && <Pill tone="neutral" icon="lock" title="Guests can view this task and comment on it">View and comment</Pill>}
-        {viewers.length > 0 && (
-          <span className="ktd-presence" role="img" title={`Also viewing: ${viewers.map((v) => v.name).join(", ")}`} aria-label={`Also viewing: ${viewers.map((v) => v.name).join(", ")}`}>
-            {viewers.slice(0, 3).map((v) => <span key={v.id} style={{ display: "inline-flex", borderRadius: 99, boxShadow: "0 0 0 2px var(--bg), 0 0 0 3px var(--accent)" }}><Avatar id={v.id} size={20} /></span>)}
-            {viewers.length > 3 && <span className="ktd-presence-more">+{viewers.length - 3}</span>}
-          </span>
+        <PresenceAvatars peers={viewers} size="sm" max={3} />
+        {/* 0048: kudos on a teammate's finished team task (guests too: it's a reaction); your own shows what you got */}
+        {task.status === "done" && taskWs && task.assigneeId && (
+          <Suspense fallback={null}>
+            <TaskKudos task={task} currentUserId={currentUserId} recipientName={getMember(task.assigneeId)?.name || "them"} size="sm" people={members} />
+          </Suspense>
         )}
         {onToggleFollow && <IconButton icon="bell" size="sm" label="Follow task" pressed={following} onClick={() => onToggleFollow(task.id)} />}
         <IconButton icon={copied ? "check" : "link"} size="sm" label="Copy link to task" onClick={copyLink} />
@@ -2182,6 +2173,16 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
           </section>
         )}
 
+        {/* ================= cover: the board card's picture (0048) — once the task has an image (or a cover) ================= */}
+        {(images.length > 0 || !!task.coverAttachmentId || demoCoverAttachments(task.id).length > 0) && (
+          <div className="ktd-sec">
+            <CoverPicker task={task} attachments={files} project={proj} readOnly={readOnly}
+              projectCovers={!!demoAwareBoardSettings(proj?.id, proj?.boardSettings)?.covers}
+              onChange={(cover) => onPatch(task.id, { coverAttachmentId: cover })}
+              onUpload={readOnly ? undefined : () => fileRef.current?.click()} />
+          </div>
+        )}
+
         {/* ================= Notion: pages linked to this task (team tasks, once Notion is connected; guests read-only) ================= */}
         <Suspense fallback={null}>
           <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly} />
@@ -2329,6 +2330,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
           <IconButton icon="send" size="sm" label="Send comment" className="ktd-send" data-ready={comment.trim() && !posting ? "true" : undefined}
             onClick={sendComment} disabled={!comment.trim() || posting} aria-busy={posting || undefined} />
         </div>
+        {/* 0048: "Theo is typing…" (a polite live region, said once per person) */}
+        <TypingIndicator typers={typers} />
       </div>
     </div>
   );

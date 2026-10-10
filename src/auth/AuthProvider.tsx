@@ -42,7 +42,8 @@ interface AuthValue {
   /** verify the pending link (only ever on an explicit click) */
   verifyLink: () => Promise<{ error?: string }>;
   /** `providers`: how this account can sign in ("email", "google"), from Supabase's app_metadata */
-  user: { id: string; email?: string; name?: string; providers?: string[] } | null;
+  /** `createdAt`: when the account was made (a brand-new account may be offered the guided tour) */
+  user: { id: string; email?: string; name?: string; providers?: string[]; createdAt?: string } | null;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   /** needsConfirmation: the account exists but the email must be confirmed before signing in */
   signUp: (email: string, password: string) => Promise<{ error?: string; needsConfirmation?: boolean }>;
@@ -72,7 +73,7 @@ function providersOf(u: User): string[] | undefined {
 }
 function mapUser(u: User | null): AuthValue["user"] {
   if (!u) return null;
-  return { id: u.id, email: u.email ?? undefined, name: (u.user_metadata?.name as string) ?? u.email ?? undefined, providers: providersOf(u) };
+  return { id: u.id, email: u.email ?? undefined, name: (u.user_metadata?.name as string) ?? u.email ?? undefined, providers: providersOf(u), ...(u.created_at ? { createdAt: u.created_at } : {}) };
 }
 const sameUser = (a: AuthValue["user"], b: AuthValue["user"]) =>
   a === b || (!!a && !!b && a.id === b.id && a.email === b.email && a.name === b.name && (a.providers ?? []).join() === (b.providers ?? []).join());

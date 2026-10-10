@@ -82,6 +82,14 @@ const weekly = screen(() => import("./components/rituals/WeeklyReview"));
 const focus = screen(() => import("./components/views/FocusMode"));
 const planner = screen(() => import("./components/planner/PlannerHost"));
 const billing = screen(() => import("./components/Billing"));
+// 0048 (UX wave): each loads only when it's needed
+const tour = screen(() => import("./components/onboarding/TourHost"));                 // while a tour runs
+const setupCard = screen(() => import("./components/onboarding/SetupChecklist"));      // Today, until it's done
+const help = screen(() => import("./components/onboarding/HelpMenu"));                 // the sidebar's Help (?)
+const quickAdd = screen(() => import("./components/QuickAddSheet"));                   // the phone bar's +
+const templateLibrary = screen(() => import("./components/templates/TemplateLibrary"));
+const saveAsTemplate = screen(() => import("./components/templates/SaveAsTemplate"));
+const momentum = screen(() => import("./components/momentum/TodayMomentum"));          // Today's streak and wins
 
 export const TaskDetail = lazyComponent(taskDetail, (m) => m.TaskDetail, "TaskDetail");
 export const CommandPalette = lazyComponent(palette, (m) => m.CommandPalette, "CommandPalette");
@@ -102,6 +110,19 @@ export const PlannerHost = lazyComponent(planner, (m) => m.PlannerHost, "Planner
 export const TrialBanner = lazyComponent(billing, (m) => m.TrialBanner, "TrialBanner");
 export const UpgradeModal = lazyComponent(billing, (m) => m.UpgradeModal, "UpgradeModal");
 export const Paywall = lazyComponent(billing, (m) => m.Paywall, "Paywall");
+export const TourHost = lazyComponent(tour, (m) => m.TourHost, "TourHost");
+export const SetupChecklist = lazyComponent(setupCard, (m) => m.SetupChecklist, "SetupChecklist");
+export const HelpMenu = lazyComponent(help, (m) => m.HelpMenu, "HelpMenu");
+export const QuickAddSheet = lazyComponent(quickAdd, (m) => m.QuickAddSheet, "QuickAddSheet");
+export const TemplateLibrary = lazyComponent(templateLibrary, (m) => m.TemplateLibrary, "TemplateLibrary");
+export const SaveAsTemplate = lazyComponent(saveAsTemplate, (m) => m.SaveAsTemplate, "SaveAsTemplate");
+export const TodayStreak = lazyComponent(momentum, (m) => m.TodayStreak, "TodayStreak");
+export const TodayWins = lazyComponent(momentum, (m) => m.TodayWins, "TodayWins");
+
+/** A finger landed on the phone bar's +: fetch the quick add sheet before the tap ends. */
+export function prefetchQuickAdd(): void {
+  prefetch(quickAdd);
+}
 
 /* ---------- which chunks a route needs ---------- */
 const VIEW_CHUNKS: Record<ViewId, Chunk[]> = {

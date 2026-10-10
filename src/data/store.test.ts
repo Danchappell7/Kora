@@ -1607,10 +1607,11 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     await s.logActivity({ taskId: "t-2", taskTitle: "Ship onboarding", kind: "created", detail: "Task created" }, "m-self");
     await s.bootstrap({ id: "m-self" });
     let feed = await s.listActivity();
-    // 0047: the approvals waiting on you and a doc @mention ride along with every demo seed
-    const extra = new Set(["a-demo-ap-1", "a-demo-ap-2", "a-demo-ap-3", "a-demo-doc-1"]);
+    // 0047: the approvals waiting on you and a doc @mention ride along with every demo seed; 0048: a bundle of
+    // comments on the launch deck and a kudos (lib/notifyDemo)
+    const extra = new Set(["a-demo-ap-1", "a-demo-ap-2", "a-demo-ap-3", "a-demo-doc-1", "a-demo-n1", "a-demo-n2", "a-demo-n3"]);
     expect(feed.filter((a) => !extra.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
-    expect(feed.filter((a) => extra.has(a.id)).map((a) => a.kind).sort()).toEqual(["approval", "approval", "approval", "doc_mention"]);
+    expect(feed.filter((a) => extra.has(a.id)).map((a) => a.kind).sort()).toEqual(["approval", "approval", "approval", "comment", "comment", "doc_mention", "kudos"]);
     expect(feed[0].kind).toBe("created");                  // logged just now, kept
     await s.clearInbox(["a-new"]);
     await s.bootstrap({ id: "m-self" });                   // a reload doesn't bring it back

@@ -12,6 +12,8 @@ import { reportError } from "../lib/monitoring";
 import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
+import { demoNotifyActivity } from "../lib/notifyDemo";
+import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
@@ -378,6 +380,16 @@ let demoInboxSeeded = false;
 /** Deep copies of seed rows (plain data), so nothing the app does to its
  *  lists can reach back into the seed or into another load's copy. */
 const seedCopy = <T>(rows: readonly T[]): T[] => rows.map((r) => JSON.parse(JSON.stringify(r)) as T);
+/* 0048 search demo: the demo tasks' comment threads (their counts match each task's `comments`), fetched
+   the first time a thread is read so the shell stays flat. Comments added this visit keep their places. */
+let demoThreadsSeeded: Promise<void> | null = null;
+const seedDemoThreads = (): Promise<void> => (demoThreadsSeeded ??= import("../lib/search/demoCorpus").then(({ demoSearchComments }) => {
+  for (const c of demoSearchComments()) {
+    const list = (demoComments[c.taskId] ??= []);
+    if (!list.some((x) => x.id === c.id)) list.push(c);
+  }
+  for (const k in demoComments) demoComments[k].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}, () => { demoThreadsSeeded = null; }));
 const newestFirst = (a: { createdAt: string }, b: { createdAt: string }) => Date.parse(b.createdAt) - Date.parse(a.createdAt);
 
 /* camelCase patch -> snake_case task row. createdBy (tasks.user_id) is never
@@ -1406,7 +1418,8 @@ export const store = {
         // 0047: approvals waiting on you (and a decision on yours), and Sana's @mention in the launch brief (a doc: no task)
         const docMention: Activity = { id: "a-demo-doc-1", taskId: null, taskTitle: "Launch brief", kind: "doc_mention", detail: "Sana Rao",
           createdAt: new Date(Date.now() - 125 * 60_000).toISOString(), meta: { docId: "doc-launch-brief", projectId: "p-launch" } };
-        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention].filter((a) => !logged.has(a.id))].sort(newestFirst);
+        // 0048: a bundle of three comments on the launch deck and a kudos (lib/notifyDemo)
+        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity())].filter((a) => !logged.has(a.id))].sort(newestFirst);
       }
       return {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
@@ -1959,9 +1972,20 @@ export const store = {
     if (error && !/archived_at/.test(error.message)) throw error;  // ignore until 0039 is applied
   },
 
-  async updateProject(id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings }): Promise<void> {
+  /** `boardSettingsChange` (0048): just what changed on the board, merged in the database (merge_board_settings)
+   *  so a teammate's edit made meanwhile survives; `boardSettings` (the whole object) is written only where
+   *  that function isn't there yet. */
+  async updateProject(id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange }): Promise<void> {
     if (!supabase) return;
     let row: Record<string, unknown> = {};
+    if (patch.boardSettingsChange) {
+      const { error } = await supabase.rpc("merge_board_settings", { p_project: id, p_patch: patch.boardSettingsChange });
+      if (error) {
+        const missing = (error as { code?: string }).code === "PGRST202" || /could not find the function|merge_board_settings.*does not exist/i.test(error.message);
+        if (!missing) throw error;
+        row.board_settings = patch.boardSettings ?? {};
+      }
+    } else if ("boardSettings" in patch) row.board_settings = patch.boardSettings ?? {};   // 0048
     if ("name" in patch && patch.name?.trim()) row.name = patch.name.trim();
     if ("emoji" in patch) row.emoji = patch.emoji;
     if ("color" in patch) row.color = patch.color;
@@ -1969,7 +1993,6 @@ export const store = {
     if ("status" in patch) row.status = patch.status ?? null;
     if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
     if ("contributorIds" in patch) row.contributor_ids = patch.contributorIds ?? [];
-    if ("boardSettings" in patch) row.board_settings = patch.boardSettings ?? {};   // 0048
     if (Object.keys(row).length === 0) return;
     // Resilient update: projects.description/status arrive in migration 0015. If
     // it isn't applied yet, strip the unknown column and retry so the rest of the
@@ -2295,7 +2318,7 @@ export const store = {
 
   /* ---------- comments ---------- */
   async listComments(taskId: string): Promise<Comment[]> {
-    if (!supabase) return demoComments[taskId] ?? [];
+    if (!supabase) { await seedDemoThreads(); return [...(demoComments[taskId] ?? [])]; }
     const { data, error } = await supabase.from("comments").select("*").eq("task_id", taskId).order("created_at", { ascending: true });
     if (error) throw error;
     return (data as CommentRow[]).map(rowToComment);

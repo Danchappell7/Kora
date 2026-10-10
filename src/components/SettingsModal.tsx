@@ -34,6 +34,8 @@ import { BillingPanel } from "./Billing";
 import { CalendarAccountsPanel, CalendarFeedPanel, InstallPrompt, PushSettingsPanel, SetGroup, SlackSettingsPanel } from "./integrations";
 import type { DevWorkspace } from "./settings";
 import { disablePushEverywhere, isPushDemo, pushAvailability } from "../lib/push";
+import { NotificationPrefsPanel } from "./settings/NotificationPrefsPanel";
+import type { MomentumPrefs } from "../data/types";
 
 // 0046: loaded when first shown, so the API reference, webhooks and Notion stay out of the first download.
 // If the code can't be fetched (offline, or a tab left open across a new release), the section says so
@@ -122,6 +124,10 @@ const SHORTCUT_GROUPS: Shortcut["group"][] = ["General", "Create", "Navigate", "
 const DELETE_WORD = "DELETE";
 // Set in user_metadata once a Google-only account adds a password: Supabase
 // doesn't add "email" to app_metadata.providers when it does.
+/* Settings › Appearance › Streak and wins (u10): its rows, with lib/momentum, load with that section */
+type MomentumRowsProps = { prefs?: MomentumPrefs | null; onChange: (next: MomentumPrefs) => void; timezone?: string };
+const MomentumSettings = lazy<React.ComponentType<MomentumRowsProps>>(() => import("./momentum/MomentumSettings").then((m) => ({ default: m.MomentumSettings }), () => ({ default: () => null })));
+
 const PASSWORD_SET_FLAG = "kanbo_password_set";
 const EXIT_MS = 160;
 const SAVED_MS = 2400;
@@ -130,7 +136,8 @@ const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
 
 export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance, theme, onChangeTheme,
-  section, onSection, renderWorkspace, tagsPanel, calendar, slack, notion, developers, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut }: {
+  section, onSection, renderWorkspace, tagsPanel, calendar, slack, notion, developers, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut,
+  onNotifyPrefsStored, momentum }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -142,6 +149,10 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onDeleteAccount: () => Promise<void>;
   notifyPrefs?: NotifyPrefs;
   onSaveNotifyPrefs?: (prefs: NotifyPrefs) => void;
+  /** 0048: the notification panel saved a change itself (merge_notify_prefs) — the stored prefs, for the app's copy */
+  onNotifyPrefsStored?: (prefs: NotifyPrefs) => void;
+  /** 0048: "Show my streak", "Show my week's wins" and your days off (profiles.onboarding.momentum) */
+  momentum?: { prefs: MomentumPrefs | null | undefined; onChange: (next: MomentumPrefs) => void; timezone?: string };
   appearance?: Appearance;
   onChangeAppearance?: (a: Appearance) => void;
   /** light, dark, or follow the device ("system"); the choice shows only when both are given */
@@ -727,7 +738,12 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                 label="Use Kanbo AI" description="When off, Kanbo uses on-device rules only and sends nothing to the AI service." />
             </div>
           </Group>
-          <p className="kset-note">Changes apply straight away and are remembered on this device.</p>
+          {momentum && (
+            <Group title="Streak and wins">
+              <Suspense fallback={null}><MomentumSettings prefs={momentum.prefs} onChange={momentum.onChange} timezone={momentum.timezone} /></Suspense>
+            </Group>
+          )}
+          <p className="kset-note">{momentum ? "Changes apply straight away. Theme, layout and suggestions are remembered on this device; your streak settings go with your account." : "Changes apply straight away and are remembered on this device."}</p>
         </>
       )}
       {!appearance && !(theme && onChangeTheme) && <EmptyState size="sm" title="Nothing to change here yet" body="Appearance settings aren't available in this view." />}
@@ -764,6 +780,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
           a local stand-in in demo mode), then the installable app next to it: on
           iPhone, push needs the Home Screen app */}
       <PushSettingsPanel notifyPrefs={notifyPrefs} onSaveNotifyPrefs={onSaveNotifyPrefs} />
+      {/* 0048: delivery (as it happens or a daily digest), quiet hours, time zone, bundling */}
+      <NotificationPrefsPanel notifyPrefs={notifyPrefs} onSaveNotifyPrefs={onSaveNotifyPrefs} onNotifyPrefsStored={onNotifyPrefsStored} />
       <div className="kpush-app"><SetGroup title="Kanbo app"><InstallPrompt variant="settings" /></SetGroup></div>
     </>
   );

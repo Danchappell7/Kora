@@ -8,7 +8,7 @@
    Unplanned rail and their drop targets (lib/dnd: drag to plan) live in
    PlanView; the Daybeam's row here is a drop target too.
    ============================================================ */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PlanView, useDayClock, dayEventsFor } from "./PlanView";
 import { Daybeam, type BeamSegment } from "./Daybeam";
 import { BriefCard, NoticedCard, TomorrowCard, BRIEF_CSS, type RailFocus } from "./TodayBrief";
@@ -65,6 +65,11 @@ export interface TodayViewProps {
   dayClosed?: boolean;
   /** after a shut down, the evening's (quiet) next step: tomorrow in Today › Week */
   onPlanTomorrow?: () => void;
+  /* ---- 0048 (the host's cards; Today works without) ---- */
+  /** the "Get set up" card (u1 SetupChecklist), in place of the "2 of 4 set up" chip */
+  setupSlot?: ReactNode;
+  /** the week's wins card (u10 TodayWins), under the day's actions */
+  winsSlot?: ReactNode;
 }
 
 /** "Not now" on a noticed card lasts the day, per person, on this device. */
@@ -234,6 +239,7 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
+  setupSlot, winsSlot,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -527,7 +533,8 @@ function TodayDay({
           </span>
         )}
       </div>
-      {!readOnly && <SetupChip steps={setup} />}
+      {setupSlot !== undefined ? setupSlot : !readOnly && <SetupChip steps={setup} />}
+      {winsSlot}
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
     </section>
   );

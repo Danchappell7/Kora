@@ -75,6 +75,28 @@ export function eventEmail(kind: "assigned" | "mention" | "comment", actorName: 
   return { subject: c.subj(title), html };
 }
 
+/** Kudos, to the person thanked: "Theo sent you 👏 for Launch deck", and their note. The emoji is one of the ten
+ *  the database allows (anything else reads 🎉); the note is the giver's, escaped and one line. */
+const KUDOS_EMOJI = ["🎉", "👏", "🙌", "💪", "⭐", "🚀", "❤️", "🔥", "💯", "🏆"];
+export function kudosPush(fromName: string, emoji: string, note: string | null | undefined, taskTitle: string, taskId: string): PushMessage {
+  const em = KUDOS_EMOJI.includes(emoji) ? emoji : "🎉";
+  const n = oneLine(note ?? "", 140);
+  const title = oneLine(taskTitle, 120) || "a task";
+  return { title: `${who(fromName)} sent you ${em}`, body: n ? `For ${title}: “${n}”` : `For ${title}`, url: `/?task=${encodeURIComponent(taskId)}`, tag: `kudos-${taskId}`, kind: "kudos" };
+}
+export function kudosEmail(fromName: string, emoji: string, note: string | null | undefined, taskTitle: string, link: string): { subject: string; html: string } {
+  const em = KUDOS_EMOJI.includes(emoji) ? emoji : "🎉";
+  const n = oneLine(note ?? "", 140);
+  const title = oneLine(taskTitle, 140) || "a task";
+  const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;color:#1a1a1a">
+        <p style="font-size:15px"><strong>${esc(who(fromName))}</strong> sent you ${em} for <strong>${esc(title)}</strong>.</p>
+        ${n ? `<p style="font-size:15px;margin:0 0 12px">“${esc(n)}”</p>` : ""}
+        ${link ? `<p><a href="${esc(link)}" style="display:inline-block;background:#6a5cff;color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-size:14px">Open in Kanbo</a></p>` : ""}
+        <p style="font-size:12px;color:#888">Manage notification emails in Kanbo → Settings.</p>
+      </div>`;
+  return { subject: `${em} Kudos from ${who(fromName)}: ${title}`, html };
+}
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const listJoin = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 const firstName = (n: string) => (n.includes("@") ? n : n.trim().split(/\s+/)[0] || n);

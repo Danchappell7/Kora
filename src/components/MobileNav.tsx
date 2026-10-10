@@ -71,7 +71,9 @@ export function MobileNav({ route, setRoute, inboxCount, onCapture, onQuickAdd, 
     const unread = id === "inbox" && inboxCount > 0;
     return (
       <button key={id} type="button" className="kmnav-slot" data-active={active || undefined} aria-current={active ? "page" : undefined}
-        aria-label={unread ? `${label}, ${inboxCount} unread` : label} onClick={() => setRoute(to)} {...prefetchProps(to)}>
+        aria-label={unread ? `${label}, ${inboxCount} unread` : label} onClick={() => setRoute(to)} {...prefetchProps(to)}
+        // a task held over Today opens it (lib/dnd spring-loading)
+        data-kdnd-spring={id === "today" ? "" : undefined}>
         <span className="kmnav-ico">
           <Icon name={icon} size={22} sw={1.75} />
           {unread && <span className="kmnav-badge" aria-hidden="true">{inboxCount > 99 ? "99+" : inboxCount}</span>}

@@ -8,7 +8,7 @@
    Undo) and project rows that take dropped tasks (lib/dropActions).
    ============================================================ */
 import { useState, useMemo, useEffect, useRef, useId, Suspense } from "react";
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectTile, SectionLabel, projectIdentity } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { MenuItem, MenuSeparator } from "./Topbar";
@@ -19,6 +19,7 @@ import type { Route } from "../app-types";
 import { navItems, placeOf, type NavItem } from "../lib/nav";
 import { isViewActive, useViewerMarks, viewRoute } from "../lib/views";
 import { useProjectDropTarget } from "../lib/dropActions";
+import { useTodayNavDropTarget } from "./dnd/todayNav";
 import { chunk, lazyComponent, prefetch } from "../lib/lazyLoad";
 import { canDeleteProject, canArchiveProject } from "../lib/permissions";
 import { getMember } from "../data/data";
@@ -125,6 +126,8 @@ main[tabindex="-1"]:focus { outline: none; }
 
 /* a task dragged over a project row: the row lights up to take it; while any
    drag is in the air, every row that would take it shows a faint edge */
+/* drag to plan (lib/dnd): Today takes a task (no time), and opens itself while one is held over it */
+.ksb .knav[data-kdnd-over], .ksb .knav[data-kdnd-spring-armed] { background: var(--bg-selected, var(--accent-dim)); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .ksb .kproj-item[data-kdnd-over] > .kproj { background: var(--bg-selected, var(--accent-dim)); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .ksb .kproj-item[data-drop-ready] > .kproj { box-shadow: inset 0 0 0 1px var(--accent-line, var(--hairline-strong)); }
 
@@ -428,7 +431,7 @@ function FocusPill({ focus, onOpen, taskTitle }: { focus: FocusTimer; onOpen: ()
 const PLACE_ICON: Partial<Record<NavItem["id"], IconName>> = { projects: "kanbo" };
 
 export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole, guardRoute = true, theme, onToggleTheme, teamBadge, onOpenSearch, onOpenShortcuts,
-  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject }: {
+  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject, onDropTasksOnToday, help }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -492,6 +495,11 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   /** tasks dropped on a project row (lib/dnd): move them (lib/dropActions moveTasksToProject).
    *  Without it, or for guests, the rows take no drops. */
   onDropTasksOnProject?: (taskIds: string[], projectId: string) => void;
+  /** tasks dropped on Today (lib/dnd, pointer only; T in a list is the keyboard way): on today's list, no
+   *  time. Holding one over Today opens it (spring-loading), so it can land on a time. */
+  onDropTasksOnToday?: (taskIds: string[]) => void;
+  /** the footer's Help (?) menu, beside Settings (the host lazy-loads it) */
+  help?: ReactNode;
 }) {
   const toast = useToast();
   const uid = useId();
@@ -508,6 +516,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   const archivedProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && p.archivedAt);
   const activeWs: Workspace = workspaces.find((w) => w.id === workspace) || workspaces[0] || { id: null, name: "Personal", kind: "personal" };
   const guest = myRole === "guest";
+  const todayDrop = useTodayNavDropTarget({ readOnly: guest || !onDropTasksOnToday, onDrop: (ids) => onDropTasksOnToday?.(ids) });
   const ctx = { personal: activeWs.kind === "personal", guest, admin: myRole === "owner" || myRole === "admin" };
   const place = placeOf(route);
   const activeProjectId = route.view === "project" ? route.projectId : undefined;
@@ -695,7 +704,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     }
     return (
       <button key={n.id} type="button" className="knav" data-active={active || undefined} aria-current={active ? "page" : undefined}
-        aria-label={name} onClick={() => setRoute(n.route)} {...prefetchProps(n.route)}>
+        aria-label={name} onClick={() => setRoute(n.route)} {...prefetchProps(n.route)}
+        {...(n.id === "today" ? { ...todayDrop.bind, "data-kdnd-spring": "" } : {})}>
         <Icon name={PLACE_ICON[n.id] ?? n.icon} size={16} sw={1.75} className="knav-ico" />
         <span className="knav-label">{n.label}</span>
         {trailing}
@@ -896,6 +906,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
               : <span className="ksb-me-fallback" aria-hidden="true"><Icon name="user" size={14} sw={1.75} /></span>}
             <span className="ksb-me-name">{displayName}</span>
           </button>
+          {help}
           {theme && onToggleTheme && (
             <IconButton size="sm" icon={theme === "dark" ? "sun" : "moon"} label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={onToggleTheme} />
           )}

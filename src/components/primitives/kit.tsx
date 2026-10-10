@@ -1027,7 +1027,8 @@ export function Sheet({ open, onClose, label, title, side = "center", width, foo
   const closing = !open;
   const w = width ?? (side === "bottom" ? 640 : 480);
   return createPortal(
-    <div className="kbackdrop ksheet-layer" data-side={side} data-state={closing ? "closing" : "open"} aria-hidden={closing || undefined}
+    // data-kdnd-ignore: a press in a sheet never starts a task drag (lib/dnd) behind it
+    <div className="kbackdrop ksheet-layer" data-side={side} data-state={closing ? "closing" : "open"} aria-hidden={closing || undefined} data-kdnd-ignore=""
       // a press that starts inside (selecting text) and ends on the scrim must not close it
       onMouseDown={(e) => { downOnScrim.current = e.target === e.currentTarget; }}
       onClick={(e) => {

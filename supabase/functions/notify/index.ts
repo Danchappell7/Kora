@@ -83,7 +83,7 @@ import {
 import {
   APPROVAL_EVENT_WINDOW_SEC, approvalEmail, approvalNoticeText, approvalPush, planApprovalNotice, type ApprovalRow, type ReviewerRow,
 } from "../_shared/approvalNotify.ts";
-import { eventEmail, noticeLine } from "../_shared/notifyCompose.ts";
+import { eventEmail, kudosEmail, kudosPush, noticeLine } from "../_shared/notifyCompose.ts";
 import {
   DEFAULT_RECIPIENT, deliverNotice, drainQueue, readRecipient, readSnoozedUntil, rescheduleHeld, supabaseDrainDeps, supabaseQueueStore,
   type Notice, type SendOutcome,
@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
     if (kind === "test") return await testPush(supa, req, body, env.vapid);
     if (kind === "replan") return await replan(supa, req, env);
     if (kind === "approval") return await sideDrain(supa, env, await approvalNotice(supa, req, body, env));
+    if (kind === "kudos") return await sideDrain(supa, env, await kudosNotice(supa, req, body, env));
 
     if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
     const taskId = String(body?.taskId ?? "");
@@ -431,6 +432,70 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
     }
     if (!env.resendKey) continue;
     const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `approval:${plan.eventKey}`, payload: { v: 1, line, url: path, email: mail } }, {
+      store, now, prefs: person.prefs, snoozedUntil,
+      send: () => sendMail(supa, env, id, mail.subject, mail.html),
+    });
+    if (r.result === "sent") sent++;
+  }
+  return json({ ok: true, sent, pushed });
+}
+
+/** How fresh a kudos must be to be news (give_kudos answers, then the app asks straight away). */
+const KUDOS_FRESH_MS = 10 * 60 * 1000;
+
+/** kind "kudos" (0048): email + push to the person thanked, for kudos the caller just gave. Everything comes from
+ *  the kudos row (give_kudos made it, with its rules); only its giver may ask, once per kudos; the recipient's
+ *  kudos prefs, quiet hours, digest, snoozes and bundling apply as for any notice. */
+async function kudosNotice(supa: Supa, req: Request, body: Record<string, unknown>, env: Env): Promise<Response> {
+  if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
+  const kudosId = String(body?.kudosId ?? "");
+  if (!UUID.test(kudosId)) return json({ error: "bad kudosId" }, 400);
+  const actor = await signedInActor(supa, req);
+  if (actor instanceof Response) return actor;
+  const { actorId, who, ap } = actor;
+  const volume = await hit(supa, `${KEY_PREFIX}notify:${actorId}`, { windowSec: 600, max: 150 });
+  if (!volume.allowed) return json({ error: "too many notifications — slow down", retryAfter: volume.retryAfter }, 429);
+  const { data: k } = await supa.from("kudos").select("id,task_id,workspace_id,from_user,to_user,emoji,note,created_at")
+    .eq("id", kudosId).maybeSingle<{ id: string; task_id: string; workspace_id: string; from_user: string; to_user: string; emoji: string; note: string | null; created_at: string }>();
+  // someone else's kudos (or none): nothing to say, and nothing given away about which exist
+  if (!k || k.from_user !== actorId) return json({ error: "kudos not found" }, 404);
+  if (Date.now() - Date.parse(k.created_at) > KUDOS_FRESH_MS) return json({ ok: true, sent: 0, note: "not new" });
+  const { data: t } = await supa.from("tasks").select("id,title,archived_at,workspace_id").eq("id", k.task_id)
+    .maybeSingle<{ id: string; title: string | null; archived_at: string | null; workspace_id: string | null }>();
+  if (!t || t.archived_at) return json({ ok: true, sent: 0, note: "no task" });
+  const members = await teamMembers(supa, k.workspace_id);
+  if (!members.has(actorId) || !members.has(k.to_user) || k.to_user === actorId) return json({ ok: true, sent: 0, note: "not a member" });
+  const id = k.to_user;
+  const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
+  if (!person) return json({ ok: true, sent: 0, note: "recipient unavailable" });
+  // once per kudos, email and push alike (a replayed call tells nobody again; an Update changes the row, not this)
+  const once = await hit(supa, `${KEY_PREFIX}notify:kudos:${k.id}`, { windowSec: Math.ceil(KUDOS_FRESH_MS / 1000) + 60 });
+  if (!once.allowed) return json({ ok: true, sent: 0, note: "already told" });
+  const actorName = `${ap?.first_name ?? ""} ${ap?.last_name ?? ""}`.trim() || who?.user?.email || "Someone";
+  const taskTitle = t.title || "";
+  const path = `/?task=${encodeURIComponent(t.id)}`;
+  const link = env.appUrl ? `${env.appUrl}${path}` : "";
+  const line = noticeLine("kudos", actorName);
+  const store = supabaseQueueStore(supa);
+  const base = { kind: "kudos", bundleKey: `task:${t.id}`, taskId: t.id, actorId, actorName, title: oneLine(taskTitle || "a task") } as const;
+  const snoozedUntil = await readSnoozedUntil(supa, id, t.id).catch(() => null);
+  const now = new Date();
+  let sent = 0, pushed = 0;
+  if (env.vapid) {
+    const vapid = env.vapid;
+    const push = kudosPush(actorName, k.emoji, k.note, taskTitle, t.id);
+    const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `kudos:${k.id}`, payload: { v: 1, line, url: path, push } }, {
+      store, now, prefs: person.prefs, snoozedUntil,
+      send: async () => {
+        const res = await pushToUser(supa, id, push, vapid);
+        return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+      },
+    });
+    if (r.result === "sent") pushed++;
+  }
+  if (env.resendKey) {
+    const mail = kudosEmail(actorName, k.emoji, k.note, taskTitle, link);
+    const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `kudos:${k.id}`, payload: { v: 1, line, url: path, email: mail } }, {
       store, now, prefs: person.prefs, snoozedUntil,
       send: () => sendMail(supa, env, id, mail.subject, mail.html),
     });

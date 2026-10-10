@@ -13,6 +13,7 @@ import type { CSSProperties, ReactNode, RefObject } from "react";
 import { Icon, Avatar, KanboLogo, Segmented, Button, IconButton, Kbd, Tabs, ProjectCover, ProjectTile, projectIdentity, type TabItem, type ProjectLike } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { getMember } from "../data/data";
+import { FROM_TEMPLATE_MENU } from "./templates/menu";
 import type { IconName } from "../data/types";
 
 /** Under `query`, rows matching `row` show the search as its icon. */
@@ -254,7 +255,8 @@ export interface PageHeaderProps {
   meta?: string;
   leading?: ReactNode;
   titleAddon?: ReactNode;
-  switcher?: { items: { id: string; label: string }[]; value: string; onChange: (id: string) => void; label: string; onIntent?: (id: string) => void };
+  /** items with `spring`: a task dragged over one and held there picks it (Today's Day / Week) */
+  switcher?: { items: { id: string; label: string; spring?: boolean }[]; value: string; onChange: (id: string) => void; label: string; onIntent?: (id: string) => void };
   actions?: ReactNode;
   tabs?: TabItem[];
   tabValue?: string;
@@ -267,7 +269,7 @@ export interface PageHeaderProps {
   momentumLabel?: string;
   onSearch: () => void;
   /** null hides New task (guests). Menu items without a handler are left out. */
-  create: { onNewTask: () => void; onQuickCapture?: () => void; onPasteNotes?: () => void; onImport?: () => void; onNewProject?: () => void } | null;
+  create: { onNewTask: () => void; onQuickCapture?: () => void; onFromTemplate?: () => void; onPasteNotes?: () => void; onImport?: () => void; onNewProject?: () => void } | null;
   isMobile?: boolean;
   onOpenSettings?: () => void;
   userId?: string;
@@ -346,6 +348,7 @@ function CreateSplit({ create }: { create: NonNullable<PageHeaderProps["create"]
       <Popover open={open} anchorRef={moreRef} onClose={() => setOpen(false)} align="end" label="Create" minWidth={232} style={{ padding: 4 }}>
         <MenuItem icon="plus" label="New task" kbd="C" onClick={pick(create.onNewTask)} />
         {create.onQuickCapture && <MenuItem icon="zap" label="Quick capture" kbd="Q" onClick={pick(create.onQuickCapture)} />}
+        {create.onFromTemplate && <MenuItem icon={FROM_TEMPLATE_MENU.icon} label={FROM_TEMPLATE_MENU.label} onClick={pick(create.onFromTemplate)} />}
         {create.onPasteNotes && <MenuItem icon="notes" label="Paste notes → tasks" onClick={pick(create.onPasteNotes)} />}
         {create.onImport && <MenuItem icon="layers" label="Import tasks…" onClick={pick(create.onImport)} />}
         {create.onNewProject && (
@@ -379,7 +382,7 @@ export function PageHeader({ title, meta, leading, titleAddon, switcher, actions
   const hasTabs = !!tabs && tabs.length > 0;
   const hasMomentum = momentum != null;
   const segmented = switcher && (
-    <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} onIntent={switcher.onIntent} />
+    <Segmented options={switcher.items.map((i) => ({ value: i.id, label: i.label, spring: i.spring }))} value={switcher.value} onChange={switcher.onChange} ariaLabel={switcher.label} onIntent={switcher.onIntent} />
   );
   const tabsRow = (trailing: ReactNode) => hasTabs && (
     <div className="kph-tabs">

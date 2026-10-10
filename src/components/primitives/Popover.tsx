@@ -280,7 +280,8 @@ export function Popover({ open, anchorRef, onClose, children, side = "bottom", a
     // its task on click), so they stop here. data-focus-trap-ignore: the menu
     // manages its own focus, so a dialog's focus trap underneath (useFocusTrap)
     // must not pull focus back out of it — whatever role the panel has.
-    <div data-kpop="" data-focus-trap-ignore="" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) close(); }}
+    // (data-kdnd-ignore: a press in a menu never starts a task drag, lib/dnd)
+    <div data-kpop="" data-focus-trap-ignore="" data-kdnd-ignore="" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) close(); }}
       onContextMenu={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) { e.preventDefault(); close(); } }}
       onWheel={(e) => { if (e.target === e.currentTarget) close(); }}
       onTouchMove={(e) => { if (e.target === e.currentTarget) close(); }}
