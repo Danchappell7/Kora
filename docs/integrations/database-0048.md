@@ -18,7 +18,7 @@ straight afterwards (see the end of this page).
 | Board | `tasks.cover_attachment_id`, `projects.board_settings` | A cover must be an image file on the same task (cleared when the file is deleted; comes back with a task restored from the bin). Board settings (WIP limits, "show project covers") — writers of the project; `merge_board_settings(project, patch)` saves one change atomically (one level deep, two for `wip`; null removes), so two writers never overwrite each other. |
 | Snoozes | `notification_snoozes` | Your own rows, for tasks you can see (guests too). Snoozed threads send no push or email. |
 | Notify queue | `notify_queue`, `notify_queue_claim()`, `notify_queue_finish()` | Service only. Push and email held back for bundling, quiet hours and digests. |
-| Kudos | `kudos`, `give_kudos()`, `take_back_kudos()` | Anyone who can see the task reads them. Anyone who can see a finished team task gives one (guests too; never yourself; one per person per task; 100 a day). The recipient gets an Inbox item (kind `kudos`, pref `kudos`); webhooks get `kudos.given`. |
+| Kudos | `kudos`, `give_kudos()`, `take_back_kudos()`, `update_kudos()`, `kudos_gives` (service only) | Anyone who can see the task reads them. Anyone who can see a finished team task gives one (guests too; never yourself; one per person per task). The recipient gets an Inbox item (kind `kudos`, pref `kudos`); webhooks get `kudos.given`. `update_kudos` changes the emoji or note in place (no second Inbox item, push or webhook). Every give is logged for two days, so taking kudos back never resets the limits: 100 gives a day per person, and 3 an hour per person on one task. |
 | Account deletion | `trg_before_user_delete_0048` | Shared views and templates in team workspaces move to the workspace's owner. |
 | Live presence | `kanbo_realtime_allowed()`, policies "kanbo presence: read" / "kanbo presence: write" on `realtime.messages` | Realtime Authorization for the private `kanbo:task / doc / project:<id>` channels (who's viewing, "typing…", doc co-editing). Anyone who can see the object reads and says they're there; on a task anyone who can see it may type (guests comment); on a doc only people who can edit its project send edits (never guests; not on an archived doc); on a project nobody broadcasts. The suspended, the unapproved and the signed-out get nothing. **Without these policies every join is refused and presence stays off.** Nothing is stored. See [presence.md](presence.md). |
 | Doc versions | `save_project_doc()` (0047's, one rule changed) | A version now covers 10 minutes of a doc's editing **whoever saves** (it names who saved it last), so two people writing together live no longer push the older history out of the last 50. A restore or "Keep mine" still starts a version of its own. |
@@ -49,6 +49,9 @@ select
   exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'notification_snoozes') as snoozes,
   not has_table_privilege('authenticated', 'public.kudos', 'insert')
   and has_table_privilege('authenticated', 'public.kudos', 'select')                              as kudos_through_functions,
+  exists (select 1 from pg_proc where oid = 'public.update_kudos(uuid, text, text)'::regprocedure)
+  and not has_function_privilege('anon', 'public.update_kudos(uuid, text, text)', 'execute')     as kudos_update,
+  not has_table_privilege('authenticated', 'public.kudos_gives', 'select')                       as kudos_log_service_only,
   not has_table_privilege('authenticated', 'public.notify_queue', 'select')                       as notify_queue_service_only,
   exists (select 1 from pg_constraint where conname = 'tasks_cover_attachment_id_fkey' and condeferrable) as task_covers,
   exists (select 1 from information_schema.columns where table_schema = 'public'
@@ -102,6 +105,11 @@ tasks, with a bad emoji, note or recipient, past the daily cap; covers that
 aren't images on the same task. Legit — every feature end to end, including
 a task with a cover deleted to the bin and restored, a project with board
 settings restored, and account deletion handing shared rows to the owner.
+
+Kudos changed in place and the gives log have their own suite (u10): update
+in place (same row, Inbox item updated, no second notice or webhook),
+give → take back → give against the hourly and daily limits, the log
+unreadable to everyone but the service, applied twice.
 
 Live presence and doc versions (u5) have their own PGlite suites: the
 Realtime policies against a stubbed `realtime.messages`, joined the way

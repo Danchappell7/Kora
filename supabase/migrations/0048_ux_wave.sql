@@ -57,7 +57,11 @@
 --      reaction, not content) gives one through give_kudos(); the
 --      recipient gets an Inbox item (kind 'kudos', pref 'kudos') and the
 --      workspace's webhooks a 'kudos.given' event. take_back_kudos() undoes
---      it. Read by the task's audience. Kudos don't come back with a task
+--      it; update_kudos() changes the emoji / note in place (no second Inbox
+--      item, push or webhook). Every give is logged (kudos_gives, service
+--      only, two days kept) so give → take back → give can't get round the
+--      limits: 100 gives a day per giver, 3 an hour per giver on one task.
+--      Read by the task's audience. Kudos don't come back with a task
 --      restored from the bin.
 --   9. Account deletion: shared views and templates in team workspaces move
 --      to the workspace's owner (personal ones go with the person).
@@ -783,14 +787,34 @@ alter table public.kudos add constraint kudos_shape check (
   and (note is null or char_length(note) between 1 and 140)
   and from_user <> to_user);
 
+-- Every give, logged (service only; two days kept), so the limits count gives
+-- a take back can't undo. No FK to the task: deleting it doesn't reset the
+-- giver's count.
+create table if not exists public.kudos_gives (
+  id        bigint generated always as identity primary key,
+  from_user uuid not null references auth.users (id) on delete cascade,
+  task_id   uuid not null,
+  given_at  timestamptz not null default now()
+);
+create index if not exists kudos_gives_from_idx on public.kudos_gives (from_user, given_at desc);
+alter table public.kudos_gives enable row level security;
+revoke all on public.kudos_gives from anon, authenticated;
+-- (once) the last day's kudos seed the log, so the limits hold from the start
+insert into public.kudos_gives (from_user, task_id, given_at)
+select k.from_user, k.task_id, k.created_at from public.kudos k
+ where k.created_at > now() - interval '1 day'
+   and not exists (select 1 from public.kudos_gives);
+
 -- Give kudos for a finished team task (anyone who can see it; guests too).
 -- The recipient is the task's assignee, or p_to when it names the assignee or
 -- a collaborator; never yourself. Idempotent: a second call returns the
--- first. At most 100 a day per giver.
+-- first. At most 100 gives a day per giver, and 3 an hour per giver on one
+-- task (both counted on the gives log, so taking back doesn't reset them).
 -- Answers the kudos row + { from_name, to_name }.
 -- Errors: 'not authorized' · 'task not found' · 'kudos need a team task' ·
 --         'task not done' · 'invalid emoji' · 'invalid note' ·
---         'invalid recipient' · 'not for yourself' · 'too many kudos'
+--         'invalid recipient' · 'not for yourself' · 'too many kudos' ·
+--         'kudos cooldown'
 create or replace function public.give_kudos(p_task uuid, p_emoji text default '🎉', p_note text default null,
                                              p_to uuid default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -824,14 +848,24 @@ begin
 
   select * into k from public.kudos x where x.task_id = p_task and x.from_user = me;
   if k.id is null then
-    if (select count(*) from public.kudos x where x.from_user = me and x.created_at > now() - interval '1 day') >= 100 then
+    if greatest((select count(*) from public.kudos x where x.from_user = me and x.created_at > now() - interval '1 day'),
+                (select count(*) from public.kudos_gives g where g.from_user = me and g.given_at > now() - interval '1 day')) >= 100 then
       raise exception 'too many kudos';
+    end if;
+    if (select count(*) from public.kudos_gives g
+         where g.from_user = me and g.task_id = p_task and g.given_at > now() - interval '1 hour') >= 3 then
+      raise exception 'kudos cooldown';
     end if;
     insert into public.kudos (task_id, workspace_id, from_user, to_user, emoji, note)
     values (p_task, t.workspace_id, me, to_u, em, nt)
     on conflict on constraint kudos_once do nothing
     returning * into k;
-    if k.id is null then select * into k from public.kudos x where x.task_id = p_task and x.from_user = me; end if;
+    if k.id is null then
+      select * into k from public.kudos x where x.task_id = p_task and x.from_user = me;
+    else
+      insert into public.kudos_gives (from_user, task_id) values (me, p_task);
+      delete from public.kudos_gives g where g.from_user = me and g.given_at < now() - interval '2 days';
+    end if;
   end if;
   return to_jsonb(k) || jsonb_build_object('from_name', public.kanbo_person_name(k.from_user),
                                            'to_name', public.kanbo_person_name(k.to_user));
@@ -848,10 +882,42 @@ begin
   delete from public.activity a where a.user_id = k.to_user and a.kind = 'kudos' and a.meta ->> 'kudos_id' = k.id::text;
   return true;
 end; $$;
+
+-- Change your kudos' emoji and note in place: the same row, so no new Inbox
+-- item (the recipient's existing one shows the new emoji / note; its read
+-- state is left alone), no second 'kudos.given' webhook, no second push. null
+-- when you have none on that task. The same rules as give_kudos.
+create or replace function public.update_kudos(p_task uuid, p_emoji text default '🎉', p_note text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  st text;
+  em text := coalesce(nullif(btrim(coalesce(p_emoji, '')), ''), '🎉');
+  nt text := nullif(btrim(coalesce(p_note, '')), '');
+  k  public.kudos;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  select x.status into st from public.tasks x where x.id = p_task;
+  if st is null or not public.can_see_task(p_task) then raise exception 'task not found'; end if;
+  if st <> 'done' then raise exception 'task not done'; end if;
+  if em not in ('🎉', '👏', '🙌', '💪', '⭐', '🚀', '❤️', '🔥', '💯', '🏆') then raise exception 'invalid emoji'; end if;
+  if nt is not null and char_length(nt) > 140 then raise exception 'invalid note'; end if;
+  update public.kudos x set emoji = em, note = nt
+   where x.task_id = p_task and x.from_user = me
+  returning * into k;
+  if k.id is null then return null; end if;
+  update public.activity a
+     set meta = coalesce(a.meta, '{}'::jsonb) || jsonb_build_object('emoji', k.emoji, 'note', k.note)
+   where a.user_id = k.to_user and a.kind = 'kudos' and a.meta ->> 'kudos_id' = k.id::text;
+  return to_jsonb(k) || jsonb_build_object('from_name', public.kanbo_person_name(k.from_user),
+                                           'to_name', public.kanbo_person_name(k.to_user));
+end; $$;
 revoke execute on function public.give_kudos(uuid, text, text, uuid) from public, anon;
 revoke execute on function public.take_back_kudos(uuid) from public, anon;
+revoke execute on function public.update_kudos(uuid, text, text) from public, anon;
 grant execute on function public.give_kudos(uuid, text, text, uuid) to authenticated;
 grant execute on function public.take_back_kudos(uuid) to authenticated;
+grant execute on function public.update_kudos(uuid, text, text) to authenticated;
 
 -- the recipient's Inbox item (pref 'kudos') and the webhook event
 create or replace function public.kudos_after_insert() returns trigger
@@ -887,7 +953,7 @@ create trigger trg_kudos_after_insert after insert on public.kudos
 do $rls$
 declare t text; pol record;
 begin
-  foreach t in array array['saved_views', 'task_templates', 'notification_snoozes', 'notify_queue', 'kudos'] loop
+  foreach t in array array['saved_views', 'task_templates', 'notification_snoozes', 'notify_queue', 'kudos', 'kudos_gives'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     for pol in select policyname from pg_policies where schemaname = 'public' and tablename = t loop
@@ -931,12 +997,12 @@ create policy "snoozes: own, visible task" on public.notification_snoozes
   using (user_id = auth.uid() and public.can_see_task(task_id))
   with check (user_id = auth.uid() and public.can_see_task(task_id));
 
--- kudos: the task's audience reads; writes only through give_kudos / take_back_kudos
+-- kudos: the task's audience reads; writes only through give_kudos / take_back_kudos / update_kudos
 grant select on public.kudos to authenticated;
 create policy "kudos: task audience" on public.kudos
   for select to authenticated using (public.can_see_task(task_id));
 
--- notify_queue: service only (no grants, no policies)
+-- notify_queue, kudos_gives: service only (no grants, no policies)
 
 -- (one-time, and a re-run) the caller's old saved searches → saved views
 -- (same ids, pinned, kind 'search'); the old rows go. Runs as the caller.
@@ -1009,6 +1075,7 @@ begin
   grant select, insert, update, delete on public.notify_queue to service_role;
   grant select, insert, update, delete on public.notification_snoozes to service_role;
   grant select, insert, update, delete on public.kudos to service_role;
+  grant select, insert, update, delete on public.kudos_gives to service_role;
   grant select, insert, update, delete on public.saved_views to service_role;
   grant select, insert, update, delete on public.task_templates to service_role;
   grant execute on function public.notify_queue_claim(integer, integer) to service_role;
@@ -1209,6 +1276,9 @@ insert into public.schema_migrations (version) values ('0048') on conflict (vers
 --   exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'notification_snoozes') as snoozes,
 --   not has_table_privilege('authenticated', 'public.kudos', 'insert')
 --   and has_table_privilege('authenticated', 'public.kudos', 'select')                              as kudos_through_functions,
+--   exists (select 1 from pg_proc where oid = 'public.update_kudos(uuid, text, text)'::regprocedure)
+--   and not has_function_privilege('anon', 'public.update_kudos(uuid, text, text)', 'execute')     as kudos_update,
+--   not has_table_privilege('authenticated', 'public.kudos_gives', 'select')                       as kudos_log_service_only,
 --   not has_table_privilege('authenticated', 'public.notify_queue', 'select')                       as notify_queue_service_only,
 --   exists (select 1 from pg_constraint where conname = 'tasks_cover_attachment_id_fkey' and condeferrable) as task_covers,
 --   exists (select 1 from information_schema.columns where table_schema = 'public'
