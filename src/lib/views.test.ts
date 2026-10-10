@@ -2,11 +2,12 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vite
 import { act, renderHook } from "@testing-library/react";
 import type { SavedView, Task } from "../data/types";
 import {
-  viewMatchesTask, viewCount, viewCountOrNull, viewCounts, viewRoute, isViewActive, viewInScope, orderViews,
+  viewRoute, isViewActive, viewInScope, orderViews,
   useSavedViews, createSavedView, updateSavedView, deleteSavedView, stageDeleteSavedView, reorderSavedViews, setViewHidden,
   listSavedViews, resetSavedViewsForTests, getSavedView, DEMO_SAVED_VIEWS, VIEW_ME, SAVED_VIEW_COLUMNS, warmSavedViews,
-  viewBucketOf, viewWaitingIds, canEditView, canShareView, savedViewFailure,
+  canEditView, canShareView, savedViewFailure,
 } from "./views";
+import { viewMatchesTask, viewCount, viewCountOrNull, viewCounts, viewBucketOf, viewWaitingIds } from "./savedViews/counts";
 import { positionChanges } from "./savedViews/remote";
 import { pathOf, routeOf } from "./nav";
 import { bucketWaiting, openBucketOf } from "./myTaskBuckets";

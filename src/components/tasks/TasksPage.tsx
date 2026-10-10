@@ -136,7 +136,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   /** My tasks ?due=…: scroll to and flash that group */
   dueFocus?: "today" | "overdue" | "week";
   currentUserId?: string;
-  savedViews?: { id: string; name: string; count: number }[];
+  /** (count: null while it's being worked out, or for a view that doesn't list tasks: no number shown) */
+  savedViews?: { id: string; name: string; count: number | null }[];
   onOpenSavedView?: (id: string) => void;
   /** name, and the view as a search query (text, status, priority, assignee, tag, due) */
   onSaveView?: (name: string, query?: Record<string, string>) => void;
@@ -455,9 +456,9 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
     <nav ref={savedRef} className="ktv-views" aria-label="Saved views">
       {shownSaved.map((v) => (
         <button key={v.id} type="button" className="ktab" onClick={() => onOpenSavedView?.(v.id)}
-          aria-label={`${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`} title={views ? undefined : "Opens in Search"}>
+          aria-label={v.count == null ? v.name : `${v.name}, ${v.count} ${v.count === 1 ? "task" : "tasks"}`} title={views ? undefined : "Opens in Search"}>
           <span className="ktab-label" data-label={v.name}>{v.name}</span>
-          <span className="ktab-count">{v.count}</span>
+          {v.count != null && <span className="ktab-count">{v.count}</span>}
         </button>
       ))}
     </nav>

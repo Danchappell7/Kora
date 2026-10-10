@@ -285,7 +285,11 @@ export interface WinsInput {
   now: Date;
   timezone?: string;
   currentUserId: string;
+  /** your tasks (what you finished, and the streak, come from these alone) */
   tasks: readonly Task[];
+  /** every task you can see, your teammates' too: the titles of the kudos you gave, and who was waiting on
+   *  your work ("You unblocked Maya"). Default: `tasks` (then those two moments can only find your own). */
+  seen?: readonly Task[];
   projects: readonly Pick<Project, "id" | "name" | "emoji" | "color">[];
   kudos: readonly Kudos[];
   plannedDays: readonly string[];
@@ -331,7 +335,10 @@ export function buildWinsRecap(input: WinsInput): MomentumRecap | null {
   if (!win) return null;
   const inWin = (value: string | null | undefined) => { const d = localDayOf(value, timezone); return !!d && d >= win.from && d <= win.to; };
   const tasks = input.tasks ?? [];
-  const byId = new Map(tasks.map((t) => [t.id, t]));
+  // titles and who's waiting are looked up in everything you can see (kudos you gave are on teammates' tasks)
+  const seen = input.seen && input.seen !== tasks ? [...tasks, ...input.seen] : tasks;
+  const byId = new Map(seen.map((t) => [t.id, t]));
+  const lookup = [...byId.values()];
   const titleOf = (id: string) => byId.get(id)?.title?.trim() || "a task";
 
   const mineDone = tasks.filter((t) => t.status === "done" && mineToFinish(t, me));
@@ -380,7 +387,7 @@ export function buildWinsRecap(input: WinsInput): MomentumRecap | null {
     moments.push({ kind: "kudos_received", text: `${rest.length} more kudos from ${nameList(rest.map((k) => name(k.fromUser)))}` });
   }
   const unblocked = done.filter((t) => t.assigneeId === me)
-    .map((t) => ({ t, waiting: tasks.find((x) => x.id !== t.id && (x.dependencies ?? []).includes(t.id) && x.assigneeId && x.assigneeId !== me) }))
+    .map((t) => ({ t, waiting: lookup.find((x) => x.id !== t.id && (x.dependencies ?? []).includes(t.id) && x.assigneeId && x.assigneeId !== me) }))
     .find((x) => !!x.waiting);
   if (unblocked?.waiting) {
     moments.push({ kind: "unblocked", taskId: unblocked.t.id, userId: unblocked.waiting.assigneeId,

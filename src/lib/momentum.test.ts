@@ -257,6 +257,27 @@ describe("the wins recap", () => {
     expect(only.total).toBe(0);
     expect(recapHeadline(only)).toBe("A week more about the people than the list.");
   });
+  it("kudos you gave and the work yours unblocked are found among every task you can see, not just yours", () => {
+    const mine = [task({ id: "deck", title: "Finalise launch deck", completedAt: "2026-10-08T16:00:00Z" })];
+    const theirs = [
+      task({ id: "palette", title: "Refresh brand colour palette", projectId: "p-brand", assigneeId: "sana", completedAt: "2026-10-08T09:00:00Z" }),
+      task({ id: "onb", title: "Ship onboarding", status: "blocked", assigneeId: "maya", dependencies: ["deck"] }),
+    ];
+    const gave = [kudo({ taskId: "palette", fromUser: "me", toUser: "sana", createdAt: "2026-10-08T10:00:00Z" })];
+    const base = { now: friday, currentUserId: "me", tasks: mine, projects: PROJECTS, kudos: gave, plannedDays: ["2026-10-09"], nameOf };
+    // your own tasks alone: the kudos' task can't be named, and no one is seen waiting on yours
+    expect(buildWinsRecap(base)!.moments.map((m) => m.text)).toEqual(["You thanked Sana for “a task”"]);
+    const r = buildWinsRecap({ ...base, seen: [...mine, ...theirs] })!;
+    expect(r.moments.map((m) => m.text)).toEqual([
+      "You unblocked Maya: “Finalise launch deck” was holding up “Ship onboarding”",
+      "You thanked Sana for “Refresh brand colour palette”",
+    ]);
+    expect(r.moments[1]).toMatchObject({ kind: "kudos_given", taskId: "palette", userId: "sana" });
+    // what you finished, and your streak, are still yours alone
+    expect(r.total).toBe(1);
+    expect(r.byProject.flatMap((p) => p.tasks.map((t) => t.id))).toEqual(["deck"]);
+    expect(r.streak).toEqual(buildWinsRecap(base)!.streak);
+  });
   it("lots of kudos fold into one line", () => {
     const many = ["maya", "theo", "sana", "idris"].map((u, i) => kudo({ taskId: "deck", fromUser: u, createdAt: `2026-10-0${5 + i}T10:00:00Z` }));
     const r = buildWinsRecap({ ...input(), kudos: many })!;

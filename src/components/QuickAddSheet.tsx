@@ -16,6 +16,10 @@
      session), so a slip of the thumb never costs a dictated sentence.
    • The integrator lazy-loads this module (it's not in the first
      download) and mounts it for people who can write.
+   • "/" for a template, as Quick capture: the picker under the field
+     (or "From a template", for a thumb), the chosen title with its
+     first {placeholder} selected, a strip saying what it adds; Add
+     makes the task with its sub-tasks and checklist (onApplyTemplate).
    ============================================================ */
 import { forwardRef, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Icon, Avatar, Button, PriorityGlyph, ProjectTile, Sheet } from "./primitives";
@@ -26,12 +30,15 @@ import {
   parseQuickAdd, quickAddTask, oneLine, liveKept, projectChips, readingSummary, tidyDictation,
   tokenWords, TOKEN_NOUN, type KeptToken,
 } from "./phone/quickAdd";
-import type { Member, Project, Task } from "../data/types";
+import { captureTemplatePlan, type AppliedTemplatePlan } from "../lib/templatePlan";
+import { CaptureTemplatePicker, CaptureTemplateStrip } from "./templates/CaptureTemplate";
+import type { LibraryTemplate, Member, Project, TagDef, Task } from "../data/types";
 
 export interface QuickAddSheetProps {
   open: boolean;
   onClose: () => void;
-  projects: Pick<Project, "id" | "name" | "color" | "emoji" | "workspaceId">[];
+  /** (ownerId: a template's "project owner" sub-tasks go to them) */
+  projects: (Pick<Project, "id" | "name" | "color" | "emoji" | "workspaceId"> & { ownerId?: string | null })[];
   members: Pick<Member, "id" | "name">[];
   /** newest first, at most 5 shown */
   recentProjectIds?: string[];
@@ -39,31 +46,45 @@ export interface QuickAddSheetProps {
   currentUserId: string;
   /** the same contract as QuickCapture's onCreate */
   onCreate: (partial: Partial<Task> & { title: string }) => void;
+  /** "/" for a template (QuickCapture's contract): the task as typed, the template filling the rest, its sub-tasks
+   *  and checklist. Without it, "/" is just a character. */
+  onApplyTemplate?: (plan: AppliedTemplatePlan, template: LibraryTemplate) => void;
+  /** the workspace this is in: whose template library, and whether a template's roles apply (null = Personal) */
+  workspaceId?: string | null;
+  /** the workspace's tags (a template's tags are matched against them) */
+  tags?: Record<string, TagDef>;
 }
 
 /* ---------- this session's memory: the unsent draft, and the projects picked here ---------- */
-interface Draft { text: string; kept: KeptToken[]; picked?: string }
+interface Draft { text: string; kept: KeptToken[]; picked?: string; tpl?: LibraryTemplate | null }
 let draft: Draft = { text: "", kept: [] };
 let sessionPicks: string[] = [];
 /** (tests) forget the draft and the picks */
 export function resetQuickAddMemory(): void { draft = { text: "", kept: [] }; sessionPicks = []; }
 
-export function QuickAddSheet({ open, onClose, projects, members, recentProjectIds, defaultProjectId, currentUserId, onCreate }: QuickAddSheetProps) {
+export function QuickAddSheet({ open, onClose, projects, members, recentProjectIds, defaultProjectId, currentUserId, onCreate, onApplyTemplate, workspaceId, tags }: QuickAddSheetProps) {
   const [text, setText] = useState(draft.text);
   const [kept, setKept] = useState<KeptToken[]>(draft.kept);
   const [picked, setPicked] = useState<string | undefined>(draft.picked);
   const [added, setAdded] = useState<string | null>(null);
   const [allProjects, setAllProjects] = useState(false);
+  // "/" for a template: the one chosen, and whether the picker was set aside (until the "/" goes)
+  const [tpl, setTpl] = useState<LibraryTemplate | null>(draft.tpl ?? null);
+  const [pickerOff, setPickerOff] = useState(false);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const isPhone = useMediaQuery("(max-width: 859px)");
   const uid = useId();
+  const fieldId = `kqa-${uid.replace(/[^a-zA-Z0-9_-]/g, "")}-field`;
 
   // each opening starts from the unsent draft (if any)
   useEffect(() => {
     if (!open) return;
-    setText(draft.text); setKept(draft.kept); setPicked(draft.picked); setAdded(null); setAllProjects(false);
+    setText(draft.text); setKept(draft.kept); setPicked(draft.picked); setTpl(draft.tpl ?? null); setPickerOff(false); setAdded(null); setAllProjects(false);
   }, [open]);
-  useEffect(() => { if (open) draft = { text, kept, picked }; }, [open, text, kept, picked]);
+  useEffect(() => { if (open) draft = { text, kept, picked, tpl }; }, [open, text, kept, picked, tpl]);
+  const slash = text.startsWith("/");
+  const picking = !!onApplyTemplate && open && !tpl && !pickerOff && slash;
+  useEffect(() => { if (!slash && pickerOff) setPickerOff(false); }, [slash, pickerOff]);
 
   // `today` keeps "today" / "fri" right in a sheet left open past midnight
   const today = todayISO();
@@ -83,20 +104,47 @@ export function QuickAddSheet({ open, onClose, projects, members, recentProjectI
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [defaultProjectId, recentProjectIds, projects, open]);
   const others = projects.filter((p) => !chips.includes(p.id));
-  const title = tidyDictation(reading.title);
+  const title = picking ? "" : tidyDictation(reading.title);
   // what will be made, for screen readers (the chips say it to the eye)
-  const summary = title ? readingSummary(reading, { project: project?.name, person: person?.name, you: assigneeId === currentUserId }) : "";
+  const tplSubs = tpl?.body.subtasks?.length ?? 0;
+  const summary = title
+    ? `${tpl ? `From the template ${tpl.name}${tplSubs ? `, with ${tplSubs} sub-task${tplSubs === 1 ? "" : "s"}` : ""}. ` : ""}${readingSummary(reading, { project: project?.name, person: person?.name, you: assigneeId === currentUserId })}`
+    : "";
 
   const refocus = () => window.setTimeout(() => fieldRef.current?.focus({ preventScroll: true }), 0);
   const submit = (keepGoing: boolean) => {
+    // (the picker has the keys while it's open: with nothing to pick, Enter waits for a match or Escape)
+    if (picking) return;
     const partial = quickAddTask(reading, projectId);
     if (!partial) return;
-    onCreate(partial);
+    if (tpl && onApplyTemplate) {
+      // what was typed wins (a date moves the sub-tasks with it); the template fills the rest
+      const home = project ?? null;
+      const plan = captureTemplatePlan(tpl, partial, {
+        today: new Date(KANBO_TODAY), currentUserId, projectId, projectOwnerId: home?.ownerId ?? null,
+        workspaceId: home && home.workspaceId !== undefined ? home.workspaceId ?? null : workspaceId ?? null, tags: tags ?? TAGS,
+        typed: { priority: reading.priority, focusMin: reading.focusMin }, ...(reading.dueDate ? { dueDate: reading.dueDate } : {}),
+      });
+      onApplyTemplate(plan, tpl);
+    } else onCreate(partial);
     if (projectId) sessionPicks = [projectId, ...sessionPicks.filter((id) => id !== projectId)].slice(0, 5);
-    setText(""); setKept([]);
+    setText(""); setKept([]); setTpl(null);
     if (keepGoing) { setAdded(partial.title); refocus(); }
     else { draft = { text: "", kept: [], picked }; onClose(); }
   };
+  const pickTemplate = (t: LibraryTemplate, [a, b]: [number, number]) => {
+    setTpl(t); setPickerOff(false); setKept([]); setAdded(null);
+    setText(oneLine(t.body.title));
+    // the first {placeholder} is selected, ready to type (or say) over
+    window.setTimeout(() => { const el = fieldRef.current; if (!el) return; el.focus({ preventScroll: true }); el.setSelectionRange(a, b); }, 0);
+  };
+  const removeTemplate = () => {
+    if (tpl && text === oneLine(tpl.body.title)) setText("");
+    setTpl(null);
+    refocus();
+  };
+  /** "From a template": the picker, for a thumb ("/" in an empty field) */
+  const startTemplate = () => { setText("/"); setPickerOff(false); refocus(); };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(e.shiftKey); return; }
     // Escape closes at once: nothing is lost (the draft waits for next time)
@@ -130,11 +178,24 @@ export function QuickAddSheet({ open, onClose, projects, members, recentProjectI
     <Sheet open={open} onClose={onClose} side="bottom" label="Quick add a task" title="New task" width={560} initialFocus={fieldRef as React.RefObject<HTMLElement>} footer={footer}>
       <style>{QUICK_ADD_CSS}</style>
       <div className="kqa">
-        <QuickAddField ref={fieldRef} value={text} spans={reading.spans} kept={reading.kept} describedBy={tipId}
+        <QuickAddField ref={fieldRef} id={fieldId} value={text} spans={picking ? [] : reading.spans} kept={picking ? [] : reading.kept} describedBy={tipId}
           onValueChange={(v) => { setText(oneLine(v)); if (added) setAdded(null); }} onKeyDown={onKeyDown} />
         <p className="sr-only" aria-live="polite">{summary}</p>
 
-        {(reading.spans.length > 0 || keptNow.length > 0) && (
+        {picking && (
+          <CaptureTemplatePicker text={text} inputId={fieldId} workspaceId={workspaceId ?? null} currentUserId={currentUserId}
+            onPick={pickTemplate} onClose={() => setPickerOff(true)} />
+        )}
+        {tpl && <CaptureTemplateStrip template={tpl} onRemove={removeTemplate} />}
+        {onApplyTemplate && !tpl && !text && (
+          <div className="kqa-chips" role="group" aria-label="Start from">
+            <button type="button" className="kqa-chip" data-more="true" onMouseDown={keepFocus} onClick={startTemplate}>
+              <Icon name="layers" size={14} sw={1.75} /><span>From a template</span>
+            </button>
+          </div>
+        )}
+
+        {!picking && (reading.spans.length > 0 || keptNow.length > 0) && (
           <div className="kqa-sec" role="group" aria-label="What Kanbo read">
             <ul className="kqa-toks">
               {reading.spans.map((sp) => {
@@ -211,13 +272,14 @@ export function QuickAddSheet({ open, onClose, projects, members, recentProjectI
 /* ---------- the field: transparent text over an aligned mirror that marks the tokens ---------- */
 
 const QuickAddField = forwardRef<HTMLTextAreaElement, {
+  id?: string;
   value: string;
   spans: NlpSpan[];
   kept: { start: number; end: number }[];
   describedBy?: string;
   onValueChange: (v: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
-}>(function QuickAddField({ value, spans, kept, describedBy, onValueChange, onKeyDown }, ref) {
+}>(function QuickAddField({ id, value, spans, kept, describedBy, onValueChange, onKeyDown }, ref) {
   const own = useRef<HTMLTextAreaElement | null>(null);
   const mirror = useRef<HTMLDivElement>(null);
   const setRef = (el: HTMLTextAreaElement | null) => {
@@ -245,7 +307,7 @@ const QuickAddField = forwardRef<HTMLTextAreaElement, {
           : <span key={i}>{s.text}</span>))}
         {"​"}
       </div>
-      <textarea ref={setRef} rows={1} value={value} aria-label="Task, in your own words" aria-describedby={describedBy}
+      <textarea ref={setRef} id={id} rows={1} value={value} aria-label="Task, in your own words" aria-describedby={describedBy}
         placeholder="What needs doing?" autoCapitalize="sentences" spellCheck={false} autoComplete="off" inputMode="text"
         className="kqa-text" data-focus-ring="none"
         onChange={(e) => onValueChange(e.target.value)} onKeyDown={onKeyDown} onScroll={sync} onSelect={sync} onKeyUp={sync} />

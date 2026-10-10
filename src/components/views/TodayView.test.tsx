@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useState } from "react";
 import { render, screen, fireEvent, act, within, waitFor } from "@testing-library/react";
-import { TodayView, type TodayViewProps } from "./TodayView";
+import { TodayView, type TodayViewProps, type TodayCardFold } from "./TodayView";
+import { PLAN_CSS, DAY_MIN } from "./PlanView";
 import { ToastProvider } from "../Toast";
 import { ghostPrefsKey, localDayKey } from "./planCanvas";
 import { EVENTS, setReferenceData } from "../../data/data";
@@ -606,6 +607,141 @@ describe("TodayView: getting set up", () => {
   it("isn't shown once every step is done", () => {
     renderToday([], { setup: steps().map((s) => ({ ...s, done: true })) });
     expect(screen.queryByRole("button", { name: /set up/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("TodayView: the cards under the brief keep out of the day's way", () => {
+  /** a stand-in for the host's card: says how it was folded, and opens / folds like the real ones */
+  function Card({ name, fold }: { name: string; fold: TodayCardFold | null }) {
+    return (
+      <section aria-label={name} data-folded={fold?.folded || undefined} data-fold={fold ? (fold.folded ? "folded" : "open") : "whole"}>
+        {fold && <button type="button" aria-expanded={!fold.folded} onClick={() => fold.onFold(!fold.folded)}>{name} in full</button>}
+      </section>
+    );
+  }
+  const slots = { setupSlot: (f: TodayCardFold | null) => <Card name="Get set up" fold={f} />, winsSlot: (f: TodayCardFold | null) => <Card name="Your week so far" fold={f} /> };
+  const state = (name: string) => screen.getByRole("region", { name }).getAttribute("data-fold");
+
+  it("beside the rail both are folded to a row, side by side under the brief (not in place of the day)", () => {
+    renderToday([], slots);
+    expect(state("Get set up")).toBe("folded");
+    expect(state("Your week so far")).toBe("folded");
+    const row = screen.getByRole("region", { name: "Get set up" }).parentElement!;
+    expect(row).toHaveClass("ktoday-cards");
+    expect(within(row).getByRole("region", { name: "Your week so far" })).toBeInTheDocument();
+    // under the brief, ahead of the day: the day itself is still there
+    expect(screen.getByRole("region", { name: "Your day in brief" })).toContainElement(row);
+    expect(document.querySelector(".kday-scroll")).toBeInTheDocument();
+    // (and the old chip gives way to the host's card)
+    expect(screen.queryByRole("button", { name: /set up$/ })).not.toBeInTheDocument();
+  });
+
+  it("opening one keeps it open for the rest of the day (this device), and only that one", () => {
+    const first = renderToday([], slots);
+    fireEvent.click(screen.getByRole("button", { name: "Get set up in full" }));
+    expect(state("Get set up")).toBe("open");
+    expect(state("Your week so far")).toBe("folded");
+    first.unmount();
+    const again = renderToday([], slots);
+    expect(state("Get set up")).toBe("open");
+    fireEvent.click(screen.getByRole("button", { name: "Get set up in full" }));
+    expect(state("Get set up")).toBe("folded");
+    again.unmount();
+    // a new day starts folded again
+    const third = renderToday([], slots);
+    fireEvent.click(screen.getByRole("button", { name: "Your week so far in full" }));
+    expect(state("Your week so far")).toBe("open");
+    third.unmount();
+    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); vi.setSystemTime(d);
+    renderToday([], slots);
+    expect(state("Your week so far")).toBe("folded");
+  });
+
+  it("in one column (a phone) they're whole: the page scrolls, so there's nothing to fold", () => {
+    const mm = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ ...mm(q), matches: q.includes("max-width: 859px") })) as typeof window.matchMedia;
+    try {
+      renderToday([], slots);
+      expect(state("Get set up")).toBe("whole");
+      expect(state("Your week so far")).toBe("whole");
+    } finally { window.matchMedia = mm; }
+  });
+
+  it("a card the host renders as it is (not a function) is placed as it is", () => {
+    renderToday([], { setupSlot: <section aria-label="Plain card" /> });
+    expect(screen.getByRole("region", { name: "Plain card" }).parentElement).toHaveClass("ktoday-cards");
+  });
+
+  it("the day always keeps room of its own beside the rail; what's above it scrolls away instead (1280×800, 1440×900)", () => {
+    const rule = (sel: string) => {
+      const at = PLAN_CSS.indexOf(`\n${sel} {`);
+      expect(at, sel).toBeGreaterThanOrEqual(0);
+      return PLAN_CSS.slice(at, PLAN_CSS.indexOf("}", at));
+    };
+    // the column (the brief, its cards and the day) scrolls when it must…
+    expect(rule(".kplan-main")).toMatch(/overflow-y: auto/);
+    // …and the day never gives up its last DAY_MIN to the cards above it
+    expect(rule(".kday-scroll")).toContain(`min-height: ${DAY_MIN}`);
+    expect(DAY_MIN).toBe("min(40vh, 320px)");
+    // the room it keeps, at the two laptop sizes the cards squeezed it to 88px on: about five hours either way
+    const room = (vh: number) => Math.min(0.4 * vh, 320);
+    expect([room(800), room(900)]).toEqual([320, 320]);
+    // in one column the page scrolls as a whole: no minimum, no inner scroller
+    expect(PLAN_CSS).toMatch(/\.kplan\[data-stacked="true"\] \.kplan-main \{ flex: none; overflow: visible; \}/);
+    expect(PLAN_CSS).toMatch(/\.kplan\[data-stacked="true"\] \.kday-scroll \{ flex: none; min-height: 0;/);
+  });
+});
+
+describe("TodayView: “/” in the capture field picks a template", () => {
+  const capture = () => screen.getByRole("textbox", { name: "Capture a task for today" }) as HTMLInputElement;
+  const typeIn = (v: string) => fireEvent.change(capture(), { target: { value: v } });
+
+  it("“/bug” lists the library; ⏎ picks one (placeholder selected); ⏎ again hands the host the template and what was typed", async () => {
+    const { resetLibraryTemplates } = await import("../../lib/templates");
+    resetLibraryTemplates({ demoDelayMs: 0 });
+    const onCapture = vi.fn();
+    const { props } = renderToday([], { templates: { workspaceId: "ws-foundrise", onCapture } });
+    fireEvent.focus(capture());
+    expect(screen.getByText("Type / for a template")).toBeInTheDocument();
+    // (a screen reader hears it with the field, once — not from the live parse line on every focus)
+    expect(capture()).toHaveAccessibleDescription(/Type a slash to start from a template\./);
+    typeIn("/bug");
+    const opt = await screen.findByRole("option", { name: /Bug report/ });
+    await waitFor(() => expect(within(screen.getByRole("listbox", { name: "Templates" })).getAllByRole("option")[0]).toBe(opt));
+    fireEvent.keyDown(capture(), { key: "Enter" });
+    expect(props.onCreate).not.toHaveBeenCalled();
+    expect(capture().value).toBe("Bug: {summary}");
+    await waitFor(() => expect([capture().selectionStart, capture().selectionEnd]).toEqual([5, 14]));
+    expect(await screen.findByRole("group", { name: "Template: Bug report" })).toHaveTextContent("+ 5 sub-tasks");
+    typeIn("Bug: login fails !high");
+    fireEvent.keyDown(capture(), { key: "Enter" });
+    expect(props.onCreate).not.toHaveBeenCalled();
+    expect(onCapture).toHaveBeenCalledTimes(1);
+    const [tpl, partial, typed] = onCapture.mock.calls[0];
+    expect(tpl.id).toBe("builtin-lib-bug-report");
+    expect(partial).toMatchObject({ title: "Bug: login fails", projectId: "p-personal", assigneeId: "me", planToday: true, status: "todo" });
+    expect(typed).toMatchObject({ priority: "high" });
+    expect(capture().value).toBe("");
+    expect(screen.queryByRole("group", { name: /^Template:/ })).toBeNull();
+    // said out loud, with what it brought
+    expect(await screen.findByText(/Added “Bug: login fails” to today from “Bug report”, with 5 sub-tasks\./)).toBeInTheDocument();
+  });
+
+  it("Escape sets the picker aside; without a host for templates “/” is just text (and a guest has no capture at all)", async () => {
+    const { resetLibraryTemplates } = await import("../../lib/templates");
+    resetLibraryTemplates({ demoDelayMs: 0 });
+    const first = renderToday([], { templates: { workspaceId: null, onCapture: vi.fn() } });
+    typeIn("/zzz");
+    await screen.findByRole("listbox", { name: "Templates" });
+    fireEvent.keyDown(capture(), { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "Templates" })).toBeNull();
+    expect(capture().value).toBe("/zzz");
+    first.unmount();
+    const plain = renderToday([]);
+    typeIn("/bug");
+    expect(screen.queryByRole("listbox", { name: "Templates" })).toBeNull();
+    fireEvent.keyDown(capture(), { key: "Enter" });
+    expect(plain.props.onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "/bug" }));
   });
 });
 

@@ -7,7 +7,9 @@ const seen: TaskDropTargetOptions[] = [];
 vi.mock("./dnd", () => ({
   useTaskDropTarget: (o: TaskDropTargetOptions) => { seen.push(o); return { bind: { ref: () => undefined }, isOver: false, canDrop: false, payload: null }; },
 }));
-const { moveTasksToProject, reassignTasks, useProjectDropTarget, usePersonDropTarget } = await import("./dropActions");
+const { useProjectDropTarget, usePersonDropTarget } = await import("./dropActions");
+// (the moves load with the first drop: their own module, out of the Sidebar's first download)
+const { moveTasksToProject, reassignTasks } = await import("./dropMoves");
 
 const task = (id: string, extra: Partial<Task> = {}): Task => ({
   id, title: `Task ${id}`, description: "", status: "todo", priority: "medium", projectId: "p-old", sectionId: "s-old", assigneeId: "me",

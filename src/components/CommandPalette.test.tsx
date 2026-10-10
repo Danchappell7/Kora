@@ -161,13 +161,28 @@ describe("CommandPalette", () => {
   it("offers the new actions with their keys, and never a sparkle", () => {
     const onAction = vi.fn();
     const { container } = open({ onAction });
-    for (const label of ["New task", "Quick capture", "Paste notes → tasks", "Plan my day", "Prioritise my tasks", "Start focus", "Shut down my day", "Toggle theme", "Open settings", "Manage tags", "Keyboard shortcuts", "Import tasks"]) {
-      expect(within(screen.getByRole("group", { name: "Actions" })).getByRole("option", { name: new RegExp(label) })).toBeInTheDocument();
+    for (const label of ["New task", "Quick capture", "New task from a template…", "Paste notes → tasks", "Plan my day", "Prioritise my tasks", "Start focus", "Shut down my day", "Toggle theme", "Open settings", "Manage tags", "Keyboard shortcuts", "Import tasks"]) {
+      // (each by its own name: "New task" isn't "New task from a template…")
+      const name = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?! from)`);
+      expect(within(screen.getByRole("group", { name: "Actions" })).getByRole("option", { name })).toBeInTheDocument();
     }
     fireEvent.click(screen.getByRole("option", { name: /Shut down my day/ }));
     expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ id: "shutdown" }));
     // the sparkles icon path never appears: Kanbo's own mark stands for AI
     expect(container.querySelector('path[d^="M12 3l1.6 4.4"]')).toBeNull();
+  });
+
+  it("typing \"template\" offers New task from a template… (a phone's way to the library); never to a guest", () => {
+    const onAction = vi.fn();
+    const { unmount } = open({ onAction });
+    type("template");
+    const actions = within(screen.getByRole("group", { name: "Actions" }));
+    fireEvent.click(actions.getByRole("option", { name: /New task from a template…/ }));
+    expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ id: "from-template" }));
+    unmount();
+    open({ canAct: false });
+    type("template");
+    expect(screen.queryByRole("option", { name: /from a template/ })).not.toBeInTheDocument();
   });
 
   it("guests don't get actions that create or change work", () => {

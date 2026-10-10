@@ -57,10 +57,11 @@ import { todayListPatches } from "./components/dnd/todayNav";
 import { prefetchPlanMenus } from "./components/dnd/lazy";
 import {
   useOnboardingState, useTourWanted, tourRoleOf, shouldAutoStartTour, setupSignals, useShowSetupChecklist, demoOnboardingState,
-  createTourSample, removeTourSample, checklistProgress, dismissSetupChecklist, startTour, type TourSampleDeps,
+  checklistProgress, dismissSetupChecklist, startTour,
 } from "./lib/onboarding";
-import { useSavedViews, viewCounts, getSavedView, viewRoute, canShareViews } from "./lib/views";
-import { moveTasksToProject, reassignTasks, type MoveDeps } from "./lib/dropActions";
+import type { SampleHost } from "./tourSampleHost";
+import { useSavedViews, getSavedView, viewRoute, canShareViews } from "./lib/views";
+import type { MoveDeps } from "./lib/dropMoves";
 import type { AppliedTemplatePlan } from "./lib/templatePlan";
 import type { BoardSettingsChange } from "./components/tasks/otherViewsLogic";
 import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
@@ -1168,17 +1169,8 @@ export default function App() {
     const failed = (e: unknown) => { reportError(e, { op: "updateNotifyPrefs" }); toastError("Couldn't save notification preferences."); };
     const whole = () => store.updateNotifyPrefs(userIdRef.current, prefs);
     if (!store.configured) { whole().catch(failed); return; }
-    const diff: NotifyPrefs = {};
-    for (const k of new Set([...Object.keys(before), ...Object.keys(prefs)])) {
-      if (JSON.stringify(before[k] ?? null) !== JSON.stringify(prefs[k] ?? null)) diff[k] = (prefs[k] ?? null) as NotifyPrefs[string];
-    }
-    if (!Object.keys(diff).length) return;
-    import("./lib/notifyPrefs").then((m) => m.mergeNotifyPrefs(diff))
-      .then((stored) => setProfile((p) => (p ? { ...p, notifyPrefs: stored } : p)), (e: unknown) => {
-        const msg = String((e as { message?: unknown } | null)?.message ?? e);
-        if ((e as { code?: string } | null)?.code === "PGRST202" || /could not find the function|merge_notify_prefs/i.test(msg)) return whole();
-        throw e;
-      })
+    import("./lib/notifyPrefs").then((m) => m.saveNotifyPrefsChange(before, prefs, whole))
+      .then((stored) => { if (stored) setProfile((p) => (p ? { ...p, notifyPrefs: stored } : p)); })
       .catch(failed);
   }, [toastError]);
   /** NotificationPrefsPanel saved a change itself (merge_notify_prefs): the app's copy follows. */
@@ -3317,14 +3309,18 @@ export default function App() {
     toast: (m, undo) => { if (undo) toastAction(m, "Undo", undo, {}); else toastInfo(m); },
     sections: sectionsRef.current, members: wsMembersRef.current,
   }), [applyMovePatches, toastAction, toastInfo]);
+  // (the moves' code comes with the first drop, or while the browser is idle: never in the first download)
+  const dropMoves = useCallback((run: (m: typeof import("./lib/dropMoves")) => void) => {
+    import("./lib/dropMoves").then(run, (e: unknown) => { reportError(e, { op: "dropMoves" }); toastError("Couldn't move those tasks. Check your connection and try again."); });
+  }, [toastError]);
   const dropOnProject = useCallback((ids: string[], projectId: string) => {
     const p = projectsRef.current.find((x) => x.id === projectId);
-    if (p) moveTasksToProject(ids, p, moveDeps());
-  }, [moveDeps]);
+    if (p) dropMoves((m) => m.moveTasksToProject(ids, p, moveDeps()));
+  }, [moveDeps, dropMoves]);
   const dropOnPerson = useCallback((ids: string[], userId: string) => {
     const name = getMember(userId)?.name || wsMembersRef.current.find((m) => m.userId === userId)?.name || "them";
-    reassignTasks(ids, { id: userId, name }, moveDeps());
-  }, [moveDeps]);
+    dropMoves((m) => m.reassignTasks(ids, { id: userId, name }, moveDeps()));
+  }, [moveDeps, dropMoves]);
   /** Today in the sidebar: on today's list (no time), your plan on teammates' tasks; one Undo for them all. */
   const dropOnToday = useCallback((ids: string[]) => {
     const me = userIdRef.current;
@@ -3351,7 +3347,19 @@ export default function App() {
     }, (e: unknown) => { reportError(e, { op: "applyTemplatePlan" }); toastError("Couldn't use that template. Check your connection and try again."); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildNewTask, unplanIfTheirs, applyAutomation, denyGuest, persistTask, copyChecklist, noteElsewhere, toastError]);
-  /** New task ▾ › From a template… (and the palette): the library. Never for guests. */
+  /** Today's capture field ("/" for a template): the template's plan from what was typed (it wins), then the same create path. */
+  const captureFromTemplate = useCallback((t: LibraryTemplate, partial: Partial<Task> & { title: string }, typed: { priority?: Task["priority"]; focusMin?: number; dueDate?: string }) => {
+    import("./lib/templatePlan").then(({ captureTemplatePlan }) => {
+      const p = partial.projectId ? projectsRef.current.find((x) => x.id === partial.projectId) : undefined;
+      applyTemplatePlan(captureTemplatePlan(t, partial, {
+        today: new Date(KANBO_TODAY), currentUserId: userIdRef.current, projectId: partial.projectId, projectOwnerId: p?.ownerId ?? null,
+        workspaceId: p ? (p.workspaceId ?? null) : workspaceRef.current, tags: tagsRef.current,
+        typed: { priority: typed.priority, focusMin: typed.focusMin }, ...(typed.dueDate ? { dueDate: typed.dueDate } : {}),
+      }));
+    }, (e: unknown) => { reportError(e, { op: "captureFromTemplate" }); toastError("Couldn't use that template. Check your connection and try again."); });
+  }, [applyTemplatePlan, toastError]);
+  const todayTemplates = useMemo(() => ({ workspaceId: workspace, onCapture: captureFromTemplate }), [workspace, captureFromTemplate]);
+  /** New task ▾ › From a template…, the palette's "New task from a template…" (a phone's way there): the library. Never for guests. */
   const openTemplateLibrary = useCallback((initialTemplateId?: string) => {
     if (denyGuest([workspaceRef.current])) return;
     setTemplateLibrary({ open: true, initialTemplateId });
@@ -3367,51 +3375,24 @@ export default function App() {
   }, [denyGuest]);
 
   /* ---- 0048 first run: the "Kanbo tour" sample project (Help menu) ---- */
-  // Made in Personal through the store, shown at once, kept through any reload already under way.
-  const sampleDeps = useMemo((): TourSampleDeps => ({
-    createProject: async (input) => {
-      const me = userIdRef.current;
-      const p = await store.createProject({ name: input.name, emoji: input.emoji, color: input.color, workspaceId: input.workspaceId }, me);
-      noteCreated(p.id);
-      let full: Project = p;
-      if (input.description) {
-        full = { ...p, description: input.description };
-        await store.updateProject(p.id, { description: input.description }).catch((e) => reportError(e, { op: "sampleDescription" }));
-      }
-      applyProjects([...projectsRef.current.filter((x) => x.id !== p.id), full]);
-      return full;
-    },
-    createTasks: async (rows) => {
-      const saved = await store.createTasksBatch(rows, userIdRef.current);
+  // (its code — the store calls behind it — comes when it's asked for: ./tourSampleHost)
+  const sampleHost = useCallback((): SampleHost => ({
+    me: () => userIdRef.current, projects: () => projectsRef.current, tasks: () => tasksRef.current,
+    applyProjects, setTasks, noteCreated, noteDelete: (ids) => noteDelete(ids), dropPending,
+    holdPending: (saved) => {
       const until = Date.now() + 30000;
       const ids = new Set(saved.map((t) => t.id));
       pendingTasksRef.current = [...saved.map((t) => ({ id: t.id, task: t, until })), ...pendingTasksRef.current.filter((x) => !ids.has(x.id))];
-      setTasks((ts) => (ts ? [...saved.filter((t) => !ts.some((x) => x.id === t.id)), ...ts] : saved));
-      return saved;
     },
-    addDependency: async (taskId, dependsOn) => {
-      await store.addDependency(taskId, dependsOn);
-      setTasks((ts) => ts && ts.map((t) => (t.id === taskId ? { ...t, dependencies: [...new Set([...(t.dependencies ?? []), dependsOn])] } : t)));
-    },
-    createDoc: async (projectId, title, body) => {
-      const { saveProjectDoc } = await import("./lib/docs");
-      const r = await saveProjectDoc({ id: newTaskId(), projectId, title, body, baseUpdatedAt: null });
-      return { id: r.doc.id };
-    },
-    deleteProject: async (projectId) => {
-      await store.deleteProject(projectId);
+    leaveProject: (projectId) => {
       if (routeRef.current.view === "project" && routeRef.current.projectId === projectId) setRoute({ view: "plan" }, { replace: true });
-      const gone = new Set((tasksRef.current ?? []).filter((t) => t.projectId === projectId).map((t) => t.id));
-      applyProjects(projectsRef.current.filter((p) => p.id !== projectId));
-      setTasks((ts) => ts && ts.filter((t) => !gone.has(t.id)));
-      noteDelete([...gone]); dropPending(gone);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [noteCreated, applyProjects, noteDelete, dropPending]);
   const trySample = useCallback(() => {
     if (sampleBusy) return;
     setSampleBusy(true);
-    createTourSample(sampleDeps, { today: new Date(KANBO_TODAY), currentUserId: userIdRef.current, workspaceId: null, current: onboardingRef.current })
+    import("./tourSampleHost").then((m) => m.makeTourSample(sampleHost(), { today: new Date(KANBO_TODAY), current: onboardingRef.current }))
       .then((state) => {
         adoptOnboarding(state);
         const pid = state.sample?.projectId;
@@ -3425,15 +3406,15 @@ export default function App() {
       })
       .finally(() => setSampleBusy(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sampleBusy, sampleDeps, adoptOnboarding, toastSuccess, toastError]);
+  }, [sampleBusy, sampleHost, adoptOnboarding, toastSuccess, toastError]);
   const removeSample = useCallback(() => {
     if (sampleBusy) return;
     setSampleBusy(true);
-    removeTourSample(sampleDeps, onboardingRef.current)
+    import("./tourSampleHost").then((m) => m.takeTourSampleAway(sampleHost(), onboardingRef.current))
       .then((state) => { adoptOnboarding(state); toastSuccess("The sample project went to the recycle bin"); },
         (e: unknown) => { reportError(e, { op: "removeTourSample" }); toastError("Couldn't remove the sample project. Try again, or delete “Kanbo tour” from its menu."); })
       .finally(() => setSampleBusy(false));
-  }, [sampleBusy, sampleDeps, adoptOnboarding, toastSuccess, toastError]);
+  }, [sampleBusy, sampleHost, adoptOnboarding, toastSuccess, toastError]);
 
   /** "Get set up": each item's button takes you where it's done. */
   const onSetupAction = useCallback((id: SetupItemId) => {
@@ -3526,6 +3507,19 @@ export default function App() {
   /* ---- 0048 saved views (lib/views): the Sidebar's Views, My tasks' links, ?view= and /search/list/:id ---- */
   // (off until the real account is known: before bootstrap the id is the "m-self" placeholder)
   const sv = useSavedViews(workspace, currentUserId, { enabled: tasks !== null && (!store.configured || currentUserId !== "m-self") });
+  // The counts (lib/savedViews/counts) are fetched while the browser is idle — at once on My tasks, whose links
+  // show them — so they stay out of the first download; until then the badges simply aren't shown.
+  const [countsLib, setCountsLib] = useState<typeof import("./lib/savedViews/counts") | null>(null);
+  const wantsCounts = sv.views.length > 0;
+  const countsNow = route.view === "tasks";
+  useEffect(() => {
+    if (!wantsCounts || countsLib) return;
+    let alive = true;
+    const load = () => { import("./lib/savedViews/counts").then((m) => { if (alive) setCountsLib(m); }, () => undefined); };
+    if (countsNow) { load(); return () => { alive = false; }; }
+    const cancel = whenIdle(load, 3000);
+    return () => { alive = false; cancel(); };
+  }, [wantsCounts, countsLib, countsNow]);
   // A search view's count is the Search view's own task rule (lib/search/searchSpec), fetched while the browser
   // is idle so the search chunk stays out of the first download; until then its words count literally.
   const [searchSpec, setSearchSpec] = useState<typeof import("./lib/search/searchSpec") | null>(null);
@@ -3538,8 +3532,9 @@ export default function App() {
   }, [wantsSearchSpec, searchSpec]);
   // live counts over every task you can see (personal search views span workspaces), as Search counts them
   const savedViewCounts = useMemo(() => {
+    if (!countsLib) return {} as Record<string, number | null>;
     const all = tasksSeen ?? [];
-    const out: Record<string, number | null> = viewCounts(sv.views, { tasks: all, currentUserId, today: KANBO_TODAY });
+    const out: Record<string, number | null> = countsLib.viewCounts(sv.views, { tasks: all, currentUserId, today: KANBO_TODAY });
     if (searchSpec) {
       const people = [...new Map([[currentUserId, getMember(currentUserId)?.name || "You"], ...wsMembers.filter((m) => m.status === "active" && m.userId).map((m) => [m.userId!, getMember(m.userId!)?.name || m.name || m.email] as [string, string])]).entries()].map(([id, name]) => ({ id, name }));
       const ctx = { members: people, projects, currentUserId, today: dayKey };
@@ -3555,7 +3550,7 @@ export default function App() {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sv.views, tasksSeen, currentUserId, dayKey, searchSpec, projects, wsMembers]);
+  }, [countsLib, sv.views, tasksSeen, currentUserId, dayKey, searchSpec, projects, wsMembers]);
   // the saved view the page shows (?view= on My tasks or a project): TasksPage starts from it
   const appliedView = route.savedViewId ? getSavedView(route.savedViewId) : undefined;
   // the phone's quick add: your recent projects first (worked out when it opens; its code comes with it)
@@ -3631,8 +3626,9 @@ export default function App() {
     if (!shellShown || import.meta.env.MODE === "test") return;
     const wsId = workspaceRef.current, role = roleIn(wsId);
     const ctx = { personal: wsId === null, guest: role === "guest", admin: role === "owner" || role === "admin" };
-    // (0048: the Schedule… / Move to… menus too, so the keyboard way to plan opens at once)
-    const menus = canPrefetchAhead() ? whenIdle(prefetchPlanMenus, 8000) : () => {};
+    // (0048: the Schedule… / Move to… menus too, so the keyboard way to plan opens at once, and what a drop on a
+    // project or a person does)
+    const menus = canPrefetchAhead() ? whenIdle(() => { prefetchPlanMenus(); void import("./lib/dropMoves").catch(() => undefined); }, 8000) : () => {};
     const stop = prefetchWhenIdle([...likelyNext(routeRef.current, ctx), ...everyScreen()]);
     return () => { menus(); stop(); };
   }, [shellShown, idlePlace, workspace, roleIn]);
@@ -3938,13 +3934,17 @@ export default function App() {
         members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
         risks={risks} onAsk={() => openPalette()}
         dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })}
+        // 0048: "/" in the rail's capture field picks a template, as Quick capture's does
+        templates={activeReadOnly ? undefined : todayTemplates}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
-        setupSlot={showSetup ? (
-          <Suspense fallback={null}><SetupChecklist role={tourRole} onboarding={onboarding} signals={setupFacts} hidden={setupHidden} onChange={changeOnboarding} onAction={onSetupAction} /></Suspense>
+        // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
+        setupSlot={showSetup ? (fold) => (
+          <Suspense fallback={null}><SetupChecklist role={tourRole} onboarding={onboarding} signals={setupFacts} hidden={setupHidden} onChange={changeOnboarding} onAction={onSetupAction} fold={fold} /></Suspense>
         ) : null}
-        winsSlot={onboarding.momentum?.recapHidden ? null : (
-          <Suspense fallback={null}><TodayWins currentUserId={currentUserId} workspaceId={workspace} tasks={myTasksEverywhere} projects={projects} members={wsPeople}
-            prefs={onboarding.momentum} onOpenTask={setDetailId} onHide={() => saveMomentum({ ...(onboarding.momentum ?? {}), recapHidden: true })} userName={currentUser?.name} /></Suspense>
+        // (the kudos you gave are on teammates' tasks, and whom your work unblocked is in theirs: `seen` is every task you can see)
+        winsSlot={onboarding.momentum?.recapHidden ? null : (fold) => (
+          <Suspense fallback={null}><TodayWins currentUserId={currentUserId} workspaceId={workspace} tasks={myTasksEverywhere} seen={tasksSeen ?? undefined} projects={projects} members={wsPeople}
+            prefs={onboarding.momentum} onOpenTask={setDetailId} onHide={() => saveMomentum({ ...(onboarding.momentum ?? {}), recapHidden: true })} userName={currentUser?.name} fold={fold} /></Suspense>
         )} />;
       case "myweek": return <MyWeekView tasks={myTasks} onOpen={setDetailId} onPatch={guardedPatch} currentUserId={currentUserId} readOnly={activeReadOnly} />;
       // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
@@ -4073,7 +4073,7 @@ export default function App() {
             tab: route.tab ?? "open", onTab: (id: string) => setRoute({ view: "tasks", tab: id === "open" ? undefined : id }, { keepPanel: true }),
             dueFocus: isDueFocus(route.list) ? route.list : undefined,
             // 0048: the pinned views (not project ones) as links beside the tabs; "mine" is the smart list
-            savedViews: sv.pinned.filter((v) => v.kind !== "project").map((v) => ({ id: v.id, name: v.name, count: savedViewCounts[v.id] ?? 0 })),
+            savedViews: sv.pinned.filter((v) => v.kind !== "project").map((v) => ({ id: v.id, name: v.name, count: savedViewCounts[v.id] ?? null })),
             onOpenSavedView: (id: string) => { const v = getSavedView(id); setRoute(v ? viewRoute(v) : { view: "search", list: id }); },
             onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
             // 0047: Waiting on › "Waiting on approval" (your open requests)
@@ -4090,7 +4090,8 @@ export default function App() {
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => openSettings()} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling}
       // 0048: the Views group (pinned saved views, live counts); tasks dropped on a project row move there, on Today plan it
-      views={sv.views} viewCounts={savedViewCounts}
+      // (until the counts' code is here the Views group counts them itself: it brings the same code with it)
+      views={sv.views} viewCounts={countsLib ? savedViewCounts : undefined}
       onDropTasksOnProject={activeReadOnly ? undefined : dropOnProject} onDropTasksOnToday={activeReadOnly ? undefined : dropOnToday}
       help={(
         <Suspense fallback={null}>
@@ -4209,6 +4210,7 @@ export default function App() {
         onAction={(s) => {
           if (s.id === "new-task") openNewTask();
           else if (s.id === "quick-capture") openCapture();
+          else if (s.id === "from-template") openTemplateLibrary();
           else if (s.id === "paste-notes") openExtract();
           else if (s.id === "import") openImport();
           else if (s.id === "new-project") setNewProjectOpen(true);
@@ -4330,7 +4332,9 @@ export default function App() {
       <Deferred when={quickAddOpen}><QuickAddSheet open={quickAddOpen} onClose={() => setQuickAddOpen(false)} projects={wsProjects} members={assignees} currentUserId={currentUserId}
         defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined}
         recentProjectIds={quickRecent}
-        onCreate={quickAddTask} /></Deferred>
+        onCreate={quickAddTask}
+        // "/" (or "From a template") picks a template, as Quick capture's field does; the same create path
+        workspaceId={workspace} tags={tags} onApplyTemplate={applyTemplatePlan} /></Deferred>
       {/* 0048 templates: the library (New task ▾ › From a template…), and Save as template (the task panel's ⋯) */}
       <Deferred when={templateLibrary.open}><TemplateLibrary open={templateLibrary.open} onClose={() => setTemplateLibrary({ open: false })} initialTemplateId={templateLibrary.initialTemplateId}
         workspaceId={workspace} workspaceName={activeWsName} currentUserId={currentUserId} canShare={canShareViews(myRole ?? null, workspace)}

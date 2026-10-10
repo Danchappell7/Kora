@@ -20,7 +20,7 @@ vi.mock("./supabase", () => ({
 }));
 
 import {
-  listSnoozes, mergeNotifyPrefs, rescheduleHeldNotices, snoozeFailure, snoozeThread, subscribeSnoozes, touchesTiming, unsnoozeThread,
+  listSnoozes, mergeNotifyPrefs, rescheduleHeldNotices, saveNotifyPrefsChange, snoozeFailure, snoozeThread, subscribeSnoozes, touchesTiming, unsnoozeThread,
 } from "./notifyPrefs";
 
 /** a PostgREST-ish builder that records its calls and resolves to `result` */
@@ -44,6 +44,26 @@ describe("prefs", () => {
     rpc.mockResolvedValue({ data: { delivery: "digest", comment_email: false }, error: null });
     expect(await mergeNotifyPrefs({ delivery: "digest" })).toEqual({ delivery: "digest", comment_email: false });
     expect(rpc).toHaveBeenCalledWith("merge_notify_prefs", { p_patch: { delivery: "digest" } });
+  });
+  it("Settings' whole prefs object: only what changed is sent (a key gone is null); nothing changed, nothing sent", async () => {
+    const whole = vi.fn(async () => undefined);
+    rpc.mockResolvedValue({ data: { delivery: "digest" }, error: null });
+    const stored = await saveNotifyPrefsChange({ delivery: "each", comment_email: false }, { delivery: "digest" }, whole);
+    expect(rpc).toHaveBeenCalledWith("merge_notify_prefs", { p_patch: { delivery: "digest", comment_email: null } });
+    expect(stored).toEqual({ delivery: "digest" });
+    rpc.mockClear();
+    expect(await saveNotifyPrefsChange({ delivery: "digest" }, { delivery: "digest" }, whole)).toBeNull();
+    expect(rpc).not.toHaveBeenCalled();
+    expect(whole).not.toHaveBeenCalled();
+  });
+  it("a database without merge_notify_prefs (before 0048) saves the whole object instead; other failures surface", async () => {
+    const whole = vi.fn(async () => undefined);
+    rpc.mockResolvedValue({ data: null, error: { message: "Could not find the function public.merge_notify_prefs", code: "PGRST202" } });
+    expect(await saveNotifyPrefsChange({}, { delivery: "digest" }, whole)).toBeNull();
+    expect(whole).toHaveBeenCalledTimes(1);
+    rpc.mockResolvedValue({ data: null, error: { message: "not authorized", code: "P0001" } });
+    await expect(saveNotifyPrefsChange({}, { delivery: "each" }, whole)).rejects.toMatchObject({ message: "not authorized" });
+    expect(whole).toHaveBeenCalledTimes(1);
   });
   it("a refusal surfaces", async () => {
     rpc.mockResolvedValue({ data: null, error: { message: "not authorized", code: "P0001" } });

@@ -63,6 +63,27 @@ export async function mergeNotifyPrefs(patch: NotifyPrefs): Promise<NotifyPrefs>
   return data && typeof data === "object" && !Array.isArray(data) ? (data as NotifyPrefs) : {};
 }
 
+/**
+ * Settings' In-app / Email table and the push panel hand over the whole prefs object: only what changed from
+ * `before` is sent (merge_notify_prefs; null removes a key), so a stale tab never overwrites another
+ * device's change. A database without merge_notify_prefs (before 0048) saves the whole object (`whole`).
+ * Answers the stored prefs, or null when nothing changed.
+ */
+export async function saveNotifyPrefsChange(before: NotifyPrefs, after: NotifyPrefs, whole: () => Promise<unknown>): Promise<NotifyPrefs | null> {
+  const diff: NotifyPrefs = {};
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (JSON.stringify(before[k] ?? null) !== JSON.stringify(after[k] ?? null)) diff[k] = (after[k] ?? null) as NotifyPrefs[string];
+  }
+  if (!Object.keys(diff).length) return null;
+  try {
+    return await mergeNotifyPrefs(diff);
+  } catch (e) {
+    const msg = String((e as { message?: unknown } | null)?.message ?? e);
+    if ((e as { code?: string } | null)?.code === "PGRST202" || /could not find the function|merge_notify_prefs/i.test(msg)) { await whole(); return null; }
+    throw e;
+  }
+}
+
 /** The keys that decide when held push and email may go: a change to one plans them again. */
 export const TIMING_PREF_KEYS = ["quiet_hours", "timezone", "delivery"] as const;
 export const touchesTiming = (patch: NotifyPrefs): boolean => TIMING_PREF_KEYS.some((k) => k in patch);

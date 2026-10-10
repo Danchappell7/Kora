@@ -96,6 +96,17 @@
 }
 .ktpl-capchip-x:hover { background: var(--fill-2); color: var(--ink); }
 .kcap .ktpl-pick { margin-top: 12px; }
+/* the small capture fields (Today's, the phone's quick add): the strip under the field, with Remove */
+.ktpl-applied-x {
+  flex-shrink: 0; height: 28px; padding: 0 8px; border: 0; border-radius: var(--r-sm, 6px); background: none; cursor: pointer;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent));
+}
+.ktpl-applied-x:hover { background: var(--fill-1); }
+.ktpl-applied-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.krail-cap-tpl { margin-top: 8px; }
+.krail-cap-tpl .ktpl-pick { margin-top: 0; }
+.kqa .ktpl-pick { margin-top: 0; }
+@media (pointer: coarse) { .ktpl-applied-x { height: 36px; padding: 0 12px; } }
 
 /* ---------------- the library sheet ---------------- */
 .ktpl { display: flex; flex-direction: column; gap: 12px; min-width: 0; font-family: var(--font-ui, var(--font-display)); color: var(--ink); }

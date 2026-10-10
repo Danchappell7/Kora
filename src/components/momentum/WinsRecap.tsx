@@ -11,12 +11,14 @@
    Mount (integrator): Today, under the brief, through the lazy
    TodayWins (components/momentum/TodayMomentum), which reads the kudos
    and the days you planned.
+   Folded (`fold`, Today beside the rail): one row — the title, the week
+   in numbers and "Your week in full" (a disclosure) — so the day keeps
+   its room; Slack sharing waits for the open card (its code with it).
    ============================================================ */
-import { useId, useMemo, useState } from "react";
+import { lazy, Suspense, useId, useMemo, useState } from "react";
 import type { Kudos, Member, MomentumPrefs, Project, Task } from "../../data/types";
 import { Icon, IconButton, ProjectChip, StatusGlyph } from "../primitives";
 import { getProject } from "../../data/data";
-import { SlackPostButton } from "../integrations/SlackPostButton";
 import { copyText, useOptionalToast } from "../rituals/shared";
 import {
   buildWinsRecap, focusLabel, localMoment, mondayOf, rangeLabel, recapHeadline, recapTitle, streakLabel, winsRecapText,
@@ -28,7 +30,11 @@ import "./momentum.css";
 export interface WinsRecapProps {
   now?: Date;
   currentUserId: string;
+  /** your tasks (what you finished) */
   tasks: Task[];
+  /** every task you can see (your teammates' too): the titles of kudos you gave, and who your work unblocked.
+   *  Default: `tasks`. */
+  seen?: Task[];
   projects: Project[];
   members: Member[];
   kudos: Kudos[];
@@ -51,12 +57,17 @@ export interface WinsRecapProps {
   preview?: boolean;
   /** your name, for the shared text's heading ("Daniel's week") */
   userName?: string;
+  /** Today's fold (TodayCardFold): folded, the card is one row until it's opened. Without it, the card is whole. */
+  fold?: { folded: boolean; onFold: (folded: boolean) => void } | null;
 }
+
+// "Share to Slack" (and lib/slack) only comes down with a team's open card, never with Today itself
+const SlackPostButton = lazy(() => import("../integrations/SlackPostButton").then((m) => ({ default: m.SlackPostButton })));
 
 const SHOWN_PROJECTS = 4, SHOWN_TASKS = 3;
 const MOMENT_ICON: Record<string, string> = { kudos_received: "🎉", kudos_given: "🙌", unblocked: "🔓", helped: "🤝", approval: "✅" };
 
-export function WinsRecap({ now, currentUserId, tasks, projects, members, kudos, plannedDays, prefs, workspaceId, onOpenTask, onHide, timezone, focusLog, approvals, preview, userName }: WinsRecapProps) {
+export function WinsRecap({ now, currentUserId, tasks, seen, projects, members, kudos, plannedDays, prefs, workspaceId, onOpenTask, onHide, timezone, focusLog, approvals, preview, userName, fold }: WinsRecapProps) {
   const at = useMinuteClock(now);
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const toast = useOptionalToast();
@@ -69,7 +80,7 @@ export function WinsRecap({ now, currentUserId, tasks, projects, members, kudos,
 
   const recap = useMemo((): MomentumRecap | null => {
     if (prefs?.recapHidden) return null;
-    const base = { now: at, timezone, currentUserId, tasks, projects, kudos, plannedDays, prefs, nameOf, focusLog, approvals };
+    const base = { now: at, timezone, currentUserId, tasks, seen, projects, kudos, plannedDays, prefs, nameOf, focusLog, approvals };
     const r = buildWinsRecap(base);
     if (r || !preview) return r;
     // the preview: this week so far (Monday to today)
@@ -78,7 +89,7 @@ export function WinsRecap({ now, currentUserId, tasks, projects, members, kudos,
     return buildWinsRecap({ ...base, window: win });
     // (the clock to the minute stands in for `at`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minute, timezone, currentUserId, tasks, projects, kudos, plannedDays, prefs, members, focusLog, approvals, preview]);
+  }, [minute, timezone, currentUserId, tasks, seen, projects, kudos, plannedDays, prefs, members, focusLog, approvals, preview]);
 
   if (!recap || hidden) return null;
 
@@ -114,6 +125,36 @@ export function WinsRecap({ now, currentUserId, tasks, projects, members, kudos,
   const groups = allProjects ? recap.byProject : recap.byProject.slice(0, SHOWN_PROJECTS);
   const title = recapTitle(recap);
   const streakShown = !prefs?.streakHidden && recap.streak.days >= 2;
+  const folded = !!fold?.folded;
+  const bodyId = `${uid}-body`;
+  const disclosure = fold && (
+    <IconButton icon="chevronDown" size="sm" label="Your week in full" className="kwins-fold" aria-expanded={!folded} aria-controls={bodyId}
+      onClick={() => fold.onFold(!folded)} />
+  );
+  const hideButton = onHide && <IconButton icon="x" size="sm" label={`Hide ${title.toLowerCase()}`} onClick={hide} />;
+
+  if (folded) {
+    // one row: the week in numbers (the card's facts, in words), and the way into the rest
+    const numbers = [
+      recap.total > 0 ? `${recap.total} done` : null,
+      recap.focusMinutes > 0 ? `${focusLabel(recap.focusMinutes)} ${recap.focusFrom === "timer" ? "focus" : "of focused work"}` : null,
+      streakShown ? streakLabel(recap.streak.days) : null,
+      recap.kudosReceived > 0 ? `${recap.kudosReceived} kudos` : null,
+    ].filter(Boolean).join(" · ");
+    return (
+      <section className="kwins" aria-labelledby={`${uid}-h`} data-kind={recap.kind} data-folded="">
+        <div className="kwins-head">
+          <span className="kwins-lead" aria-hidden="true"><Icon name="sparkles" size={18} sw={1.75} /></span>
+          <div className="kwins-heading">
+            <h2 id={`${uid}-h`}>{title} <span className="kwins-range">{rangeLabel(recap.from, recap.to)}</span></h2>
+            <p className="kwins-sum">{numbers || recapHeadline(recap)}</p>
+          </div>
+          <span className="kwins-acts">{disclosure}{hideButton}</span>
+        </div>
+        <div id={bodyId} hidden />
+      </section>
+    );
+  }
 
   return (
     <section className="kwins" aria-labelledby={`${uid}-h`} data-kind={recap.kind}>
@@ -121,13 +162,19 @@ export function WinsRecap({ now, currentUserId, tasks, projects, members, kudos,
         <h2 id={`${uid}-h`}>{title}</h2>
         <span className="kwins-range">{rangeLabel(recap.from, recap.to)}</span>
         <span className="kwins-acts">
-          {workspaceId && <SlackPostButton workspaceId={workspaceId} kind="standup" variant="ghost" label="Share to Slack"
-            title={userName ? `${userName.trim().split(/\s+/)[0]}'s week` : "My week"} getText={sharedText} />}
+          {workspaceId && (
+            <Suspense fallback={null}>
+              <SlackPostButton workspaceId={workspaceId} kind="standup" variant="ghost" label="Share to Slack"
+                title={userName ? `${userName.trim().split(/\s+/)[0]}'s week` : "My week"} getText={sharedText} />
+            </Suspense>
+          )}
           <IconButton icon="copy" size="sm" label="Copy as text" onClick={() => void copy()} />
-          {onHide && <IconButton icon="x" size="sm" label={`Hide ${title.toLowerCase()}`} onClick={hide} />}
+          {disclosure}
+          {hideButton}
         </span>
       </div>
 
+      <div id={bodyId} className="kwins-body">
       <p className="kwins-lede">{recapHeadline(recap)}</p>
 
       <ul className="kwins-facts" aria-label="In numbers">
@@ -197,6 +244,7 @@ export function WinsRecap({ now, currentUserId, tasks, projects, members, kudos,
       )}
 
       {outside && <p className="kwins-foot">Share and Copy include this workspace's work only.</p>}
+      </div>
     </section>
   );
 }

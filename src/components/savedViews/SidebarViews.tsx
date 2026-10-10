@@ -28,8 +28,9 @@ import type { Role, SavedView, Task } from "../../data/types";
 import type { Route } from "../../app-types";
 import { chunk, lazyComponent, prefetch } from "../../lib/lazyLoad";
 import {
-  canEditView, canShareViews, isViewActive, reorderSavedViews, savedViewFailure, updateSavedView, useViewerMarks, viewCounts as countViews,
+  canEditView, canShareViews, isViewActive, reorderSavedViews, savedViewFailure, updateSavedView, useViewerMarks,
 } from "../../lib/views";
+import { viewCounts as countViews } from "../../lib/savedViews/counts";
 import { savedViewMessage } from "../../lib/savedViews/messages";
 import { ViewGlyph, SharedGlyph } from "./ViewGlyph";
 import { ViewMenu } from "./ViewMenu";

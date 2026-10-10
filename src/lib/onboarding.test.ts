@@ -293,7 +293,10 @@ describe("the shell's first download stays lean", () => {
   it("lib/onboarding only re-exports the words and the sample; they never import it back (types aside)", async () => {
     const lean = await read("./onboarding.ts");
     expect(lean).not.toMatch(/^import \{[^}]*\b(tourSteps|resumeIndex|checklistView|SETUP_COPY|tourSamplePlan|buildTourSample)\b[^}]*\} from/m);
-    expect(lean).toMatch(/await import\("\.\/onboardingSample"\)/);
+    // making and removing the sample load on demand (./tourSample, which loads the sample's own module in turn)
+    expect(lean).toMatch(/await import\("\.\/tourSample"\)/);
+    expect(lean).not.toMatch(/^import [^\n]* from "\.\/tourSample";/m);
+    expect(await read("./tourSample.ts")).toMatch(/await import\("\.\/onboardingSample"\)/);
     for (const f of ["./onboardingCopy.ts", "./onboardingSample.ts", "./onboardingItems.ts"]) {
       expect(await read(f), f).not.toMatch(/^import \{[^}]*\} from "\.\/onboarding";/m);
     }

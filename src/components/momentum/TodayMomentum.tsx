@@ -8,26 +8,28 @@
      flag never counts) — and copies the focus timer's total for the
      wins recap.
    · TodayWins — Today's wins card on Friday afternoons / Monday
-     mornings (the demo shows "your week so far" any day): reads the
-     workspace's kudos and the days you planned.
-   · TaskKudos — the task panel: KudosButton on a teammate's finished
-     team task, or the kudos you got on your own (KudosTally).
+     mornings (the demo shows "your week so far" any day): the days you
+     planned here; the card and the workspace's kudos (./TodayWinsCard)
+     load only then.
+   · TaskKudos (./TaskKudos, its own chunk: the kudos button never
+     comes down with Today) — the task panel.
    · MomentumSettings — Settings rows (show my streak / my week's wins,
      days off). See ./MomentumSettings.
    Nothing here writes the profile: onChangePrefs / onHide go to the host
    (lib/onboarding saveOnboarding({ momentum }) — momentumPatch shapes it).
    ============================================================ */
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { Member, MomentumPrefs, Project, Task } from "../../data/types";
 import { isSupabaseConfigured } from "../../lib/backend";
 import {
   activeDaysFor, addDaysISO, computeStreak, localMoment, noteFocusToday, notePlans, readFocusLog, readPlannedDays, recapWindow, streakCompleted,
 } from "../../lib/momentum";
-import { KudosButton, KudosTally } from "./KudosButton";
 import { StreakChip } from "./StreakChip";
-import { WinsRecap } from "./WinsRecap";
-import { useWorkspaceKudos } from "./useKudos";
 import { useMinuteClock } from "./shared";
+
+// The card itself (and the kudos it reads) only comes down when there's a week to show — Friday afternoons,
+// Monday mornings, the demo's preview — never with every visit to Today.
+const WinsCard = lazy(() => import("./TodayWinsCard").then((m) => ({ default: m.TodayWinsCard })));
 
 const sameDays = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((d, i) => d === b[i]);
 
@@ -78,12 +80,14 @@ export function TodayStreak({ currentUserId, tasks, prefs, onChangePrefs, timezo
   return <StreakChip streak={streak} prefs={prefs} onChangePrefs={onChangePrefs} now={at} timezone={timezone} active={active} />;
 }
 
-export function TodayWins({ currentUserId, workspaceId, tasks, projects, members, prefs, onOpenTask, onHide, timezone, now, preview, userName }: {
+export function TodayWins({ currentUserId, workspaceId, tasks, seen, projects, members, prefs, onOpenTask, onHide, timezone, now, preview, userName, fold }: {
   currentUserId: string;
   /** the workspace on screen (Slack sharing, and whose kudos are read); null = Personal */
   workspaceId: string | null;
   /** your tasks, all workspaces (the recap is your week) */
   tasks: Task[];
+  /** every task you can see (teammates' too): the titles of kudos you gave, and whose work yours unblocked */
+  seen?: Task[];
   projects: Project[];
   members: Member[];
   prefs?: MomentumPrefs | null;
@@ -94,40 +98,25 @@ export function TodayWins({ currentUserId, workspaceId, tasks, projects, members
   /** "your week so far" outside the Friday / Monday windows; default: on in the demo */
   preview?: boolean;
   userName?: string;
+  /** Today's fold (folded beside the rail: one row until it's opened) */
+  fold?: { folded: boolean; onFold: (folded: boolean) => void } | null;
 }) {
   const at = useMinuteClock(now);
   const showPreview = preview ?? !isSupabaseConfigured;
   const win = recapWindow(at, timezone, prefs);
   const live = !prefs?.recapHidden && (!!win || showPreview);
   const from = win?.from ?? addDaysISO(localMoment(at, timezone).date, -7);
-  // the window's kudos (from the day before, to be safe across timezones)
-  const since = useMemo(() => new Date(`${addDaysISO(from, -1)}T00:00:00Z`).toISOString(), [from]);
-  const { kudos } = useWorkspaceKudos(live ? workspaceId : null, { since });
+  // (always: a plan you make today is noted even with the streak hidden)
   const plannedDays = usePlannedDays(currentUserId, tasks, at, timezone);
   const focusLog = useMemo(() => (live && currentUserId ? readFocusLog(currentUserId, at) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [live, currentUserId, from]);
   if (!live || !currentUserId) return null;
   return (
-    <WinsRecap now={at} currentUserId={currentUserId} tasks={tasks} projects={projects} members={members} kudos={kudos} plannedDays={plannedDays}
-      prefs={prefs} workspaceId={workspaceId} onOpenTask={onOpenTask} onHide={onHide} timezone={timezone} focusLog={focusLog}
-      preview={showPreview} userName={userName} />
+    <Suspense fallback={null}>
+      <WinsCard now={at} from={from} currentUserId={currentUserId} tasks={tasks} seen={seen} projects={projects} members={members} plannedDays={plannedDays}
+        prefs={prefs} workspaceId={workspaceId} onOpenTask={onOpenTask} onHide={onHide} timezone={timezone} focusLog={focusLog}
+        preview={showPreview} userName={userName} fold={fold} />
+    </Suspense>
   );
-}
-
-export function TaskKudos({ task, currentUserId, recipientName, disabled, size = "md", people }: {
-  task: Pick<Task, "id" | "title" | "status" | "assigneeId" | "workspaceId">;
-  currentUserId: string;
-  recipientName: string;
-  disabled?: boolean;
-  size?: "sm" | "md";
-  people?: readonly { id?: string; userId?: string | null; name?: string; email?: string }[];
-}) {
-  const show = task.status === "done" && !!task.workspaceId && !!task.assigneeId;
-  const taskIds = useMemo(() => [task.id], [task.id]);
-  const { kudos, replaceFor } = useWorkspaceKudos(show ? task.workspaceId : null, { taskIds });
-  if (!show) return null;
-  if (task.assigneeId === currentUserId) return <KudosTally kudos={kudos} taskId={task.id} people={people} />;
-  return <KudosButton task={task} currentUserId={currentUserId} recipientName={recipientName} kudos={kudos} size={size} disabled={disabled}
-    people={people} onChange={(next) => replaceFor(task.id, next)} />;
 }

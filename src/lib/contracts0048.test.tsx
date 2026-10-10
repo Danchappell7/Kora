@@ -264,11 +264,15 @@ describe("every package's entry points exist (stubs until built)", () => {
       ["./searchApi", ["searchAll", "localSearch", "mergeSearchHits", "groupSearchHits", "recentSearches", "rememberSearch", "forgetRecentSearches"]],
       ["./notifyPrefs", ["readNotifyPrefs", "mergeNotifyPrefs", "snoozeChoices", "listSnoozes", "snoozeThread", "unsnoozeThread", "subscribeSnoozes", "isSnoozed", "inQuietHours", "quietHoursEnd", "nextDigestAt", "planDelivery"]],
       ["./inboxTriage", ["bundleInbox"]],
-      ["./views", ["listSavedViews", "createSavedView", "updateSavedView", "deleteSavedView", "reorderSavedViews", "adoptLegacySavedSearches", "subscribeSavedViews", "viewMatchesTask", "viewCount", "viewRoute"]],
+      ["./views", ["listSavedViews", "createSavedView", "updateSavedView", "deleteSavedView", "reorderSavedViews", "adoptLegacySavedSearches", "subscribeSavedViews", "viewRoute"]],
+      // (what a view shows and its count: their own module, fetched when idle — never in the first download)
+      ["./savedViews/counts", ["viewMatchesTask", "viewCount", "viewCounts"]],
       ["./gestures", ["useSwipeRow", "swipeDecision", "haptic"]],
       ["./templates", ["listLibraryTemplates", "createLibraryTemplate", "updateLibraryTemplate", "deleteLibraryTemplate", "adoptLocalTemplates", "templateFromTask", "matchTemplates", "planTemplate"]],
       ["./presence", ["usePresence", "useTyping", "useDocCollab", "applyDocOps", "mergeRemoteBatch", "diffDocBlocks", "presenceSentence", "presenceKey"]],
-      ["./dropActions", ["moveTasksToProject", "reassignTasks", "useProjectDropTarget", "usePersonDropTarget"]],
+      ["./dropActions", ["useProjectDropTarget", "usePersonDropTarget"]],
+      // (the moves load with the first drop)
+      ["./dropMoves", ["moveTasksToProject", "reassignTasks"]],
       ["./momentum", ["isWorkingDay", "computeStreak", "recapWindow", "buildWinsRecap", "winsRecapText", "kudosCounts", "listKudos", "giveKudos", "takeBackKudos", "subscribeKudos"]],
     ];
     for (const [path, names] of libs) {

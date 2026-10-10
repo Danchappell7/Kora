@@ -17,6 +17,9 @@
      can't be unticked.
    • The card fits the brief's column (two columns of items) and the
      Today rail or a phone (one column): a container query decides.
+   • Folded (`fold`, Today beside the rail): one row — the ring, how far
+     you are and the next step with its button; "Set-up steps" opens the
+     whole list (a disclosure: aria-expanded / aria-controls).
    • Leaving with focus inside it (Dismiss, or after the celebration),
      focus goes to the main content (#main), never dropped on <body>.
    ============================================================ */
@@ -38,6 +41,8 @@ export interface SetupChecklistProps {
   onAction: (id: SetupItemId) => void;
   /** optional: items this person can't do here, left out (e.g. ["add_domain"] for an owner who isn't a site admin) */
   hidden?: readonly SetupItemId[];
+  /** optional: Today's fold (TodayCardFold): folded, the card is one row until it's opened. Without it, the card is whole. */
+  fold?: { folded: boolean; onFold: (folded: boolean) => void } | null;
 }
 
 const WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six"];
@@ -77,10 +82,14 @@ function SetupRing({ done, total }: { done: number; total: number }) {
   );
 }
 
-export function SetupChecklist({ role, onboarding, signals, onChange, onAction, hidden }: SetupChecklistProps) {
+export function SetupChecklist({ role, onboarding, signals, onChange, onAction, hidden, fold }: SetupChecklistProps) {
   const opts = { hidden };
   const view = checklistView(role, onboarding, signals, opts);
   const headId = "ksetup" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const listId = headId + "-list";
+  const folded = !!fold?.folded;
+  // folded, the row offers the next step (the list's order is the order to do them in)
+  const next = view.items.find((it) => !it.done);
   const [announce, setAnnounce] = useState("");
   const [celebrate, setCelebrate] = useState(false);
   const wasComplete = useRef(view.complete);
@@ -128,10 +137,13 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
 
   const sub = view.complete
     ? "Everything's in place. This card will tuck itself away."
+    : folded
+    ? `${view.done} of ${view.total} done${next ? ` · Next: ${next.label}` : ""}`
     : `${view.done} of ${view.total} done · ${WORDS[view.total] ?? view.total} quick things ${role === "owner" ? "to get your team going" : "to make Kanbo yours"}.`;
 
   return (
-    <section ref={cardRef} className="ksetup" aria-labelledby={headId} data-complete={view.complete || undefined} data-celebrate={celebrate || undefined}>
+    <section ref={cardRef} className="ksetup" aria-labelledby={headId} data-complete={view.complete || undefined} data-celebrate={celebrate || undefined}
+      data-folded={folded || undefined}>
       <style>{SETUP_CSS}</style>
       <header className="ksetup-head">
         <SetupRing done={view.done} total={view.total} />
@@ -139,9 +151,18 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
           <h2 id={headId} className="ksetup-title">{view.complete ? "You're all set" : "Get set up"}</h2>
           <p className="ksetup-sub">{sub}</p>
         </div>
-        {!view.complete && <IconButton icon="x" label="Dismiss “Get set up”" size="sm" onClick={dismiss} />}
+        {folded && next && !view.complete && (
+          <Button size="sm" variant="secondary" className="ksetup-next" onClick={() => onAction(next.id)} aria-label={`${next.action}: ${next.label}`}>{next.action}</Button>
+        )}
+        <span className="ksetup-acts">
+          {fold && (
+            <IconButton icon="chevronDown" label="Set-up steps" size="sm" className="ksetup-fold" aria-expanded={!folded} aria-controls={listId}
+              onClick={() => fold.onFold(!folded)} />
+          )}
+          {!view.complete && <IconButton icon="x" label="Dismiss “Get set up”" size="sm" onClick={dismiss} />}
+        </span>
       </header>
-      <ul className="ksetup-list">
+      <ul id={listId} className="ksetup-list" hidden={folded}>
         {view.items.map((it) => (
           <li key={it.id} className="ksetup-item" data-done={it.done || undefined}>
             <StatusGlyph status={it.done ? "done" : "todo"} size={20} label={it.label} celebrateKey={`setup:${it.id}`}
@@ -170,7 +191,21 @@ export const SETUP_CSS = `
 .ksetup-heading { flex: 1; min-width: 0; }
 .ksetup-title { margin: 0; font: 600 17px/24px var(--font-head); letter-spacing: -0.01em; color: var(--ink); }
 .ksetup-sub { margin: 2px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
-.ksetup-head > .kibtn { align-self: flex-start; }
+.ksetup-acts { display: inline-flex; align-items: center; gap: 2px; align-self: flex-start; flex-shrink: 0; }
+.ksetup-fold > svg { transition: rotate var(--d-2, 160ms) var(--ease); }
+.ksetup-fold[aria-expanded="true"] > svg { rotate: 180deg; }
+.ksetup-list[hidden] { display: none; }
+/* folded (Today beside the rail): one row, the height of a list row */
+.ksetup[data-folded] { padding: 10px 10px 10px 12px; }
+.ksetup[data-folded] .ksetup-head { gap: 12px; min-height: 36px; }
+.ksetup[data-folded] .ksetup-ring, .ksetup[data-folded] .ksetup-ring > svg { width: 36px; height: 36px; }
+.ksetup[data-folded] .ksetup-ring-n { font-size: 12px; }
+.ksetup[data-folded] .ksetup-title { font-size: 14px; line-height: 20px; letter-spacing: 0; }
+.ksetup[data-folded] .ksetup-sub { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ksetup[data-folded] .ksetup-acts { align-self: center; }
+.ksetup-next { flex-shrink: 0; }
+/* too narrow for the next step's button as well: "Set-up steps" still opens it */
+@container (max-width: 340px) { .ksetup-next { display: none; } }
 .ksetup-ring { position: relative; display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; color: var(--ok, var(--st-done)); }
 .ksetup-ring > svg { position: absolute; inset: 0; }
 .ksetup-ring-arc { transition: stroke-dasharray var(--d-3, 240ms) var(--ease); }

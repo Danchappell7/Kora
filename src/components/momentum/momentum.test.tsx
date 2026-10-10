@@ -320,13 +320,40 @@ describe("WinsRecap", () => {
     expect(within(card).queryByRole("button", { name: /Slack/ })).toBeNull();
     expect(card).not.toHaveTextContent("this workspace's work only");
   });
+  it("folded (Today beside the rail): one row with the week in numbers; Your week in full opens the card", () => {
+    const onFold = vi.fn(), onHide = vi.fn();
+    const { rerender } = render(<WinsRecap {...props({ fold: { folded: true, onFold }, onHide })} />);
+    const card = screen.getByRole("region", { name: /Your week's wins/ });
+    expect(card).toHaveAttribute("data-folded");
+    expect(card.querySelector(".kwins-sum")).toHaveTextContent("3 done · 1h 30m of focused work · 4-day streak · 1 kudos");
+    // nothing but the row: no projects, no moments, no Slack (its code waits for the open card)
+    expect(within(card).queryByRole("list", { name: "Finished, by project" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /Slack/ })).toBeNull();
+    const full = within(card).getByRole("button", { name: "Your week in full" });
+    expect(full).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById(full.getAttribute("aria-controls")!)).not.toBeNull();
+    fireEvent.click(full);
+    expect(onFold).toHaveBeenCalledWith(false);
+    // Hide is there folded too
+    expect(within(card).getByRole("button", { name: "Hide your week's wins" })).toBeInTheDocument();
+    rerender(<WinsRecap {...props({ fold: { folded: false, onFold }, onHide })} />);
+    const open = screen.getByRole("region", { name: "Your week's wins" });
+    expect(open).not.toHaveAttribute("data-folded");
+    expect(within(open).getByRole("list", { name: "Finished, by project" })).toBeInTheDocument();
+    const fold = within(open).getByRole("button", { name: "Your week in full" });
+    expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById(fold.getAttribute("aria-controls")!)).toContainElement(within(open).getByRole("list", { name: "Finished, by project" }));
+    fireEvent.click(fold);
+    expect(onFold).toHaveBeenLastCalledWith(true);
+  });
   it("Share to Slack shows once the workspace has Slack connected (the demo connection)", async () => {
     const slack = await import("../../lib/slack");
     slack.resetSlackState({ demoDelayMs: 0 });
     await slack.connectSlack("ws-foundrise", "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX", "#team");
     render(<WinsRecap {...props()} />);
     await flush();
-    expect(screen.getByRole("button", { name: "Share to Slack" })).toBeInTheDocument();
+    // (the button's code, and lib/slack's, come down with the open card: never with Today itself)
+    expect(await screen.findByRole("button", { name: "Share to Slack" })).toBeInTheDocument();
     slack.resetSlackState();
   });
 });
@@ -360,8 +387,9 @@ describe("the wrappers", () => {
     resetKudosDemo({ demoDelayMs: 0 });   // (the fakes' "22 hours ago" read the clock)
     const tasks = [task({ id: "t-12", title: "Approve Q3 launch budget", completedAt: "2026-10-06" }), task({ id: "t-13", title: "Pick launch date with leadership", completedAt: "2026-10-05" })];
     render(<TodayWins currentUserId="m-self" workspaceId="ws-foundrise" tasks={tasks} projects={PROJECTS} members={MEMBERS} now={WED} />);
+    // (the card's own code loads when there's a week to show)
+    const card = await screen.findByRole("region", { name: "Your week so far" });
     await flush();
-    const card = screen.getByRole("region", { name: "Your week so far" });
     expect(card).toHaveTextContent("Maya sent you 👏 for “Approve Q3 launch budget”");
     expect(card).toHaveTextContent("Sana sent you 🎉 for “Pick launch date with leadership”");
     expect(card).toHaveTextContent("This week you finished 2 things in Q3 Product Launch.");

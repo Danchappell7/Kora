@@ -50,7 +50,7 @@ const NotionLinkChip = lazy(() => import("./NotionLinkChip").then((m) => ({ defa
 // 0047: Approval on team tasks, loaded with the first task opened (if its code can't be fetched, no section)
 const ApprovalPanel = lazy(() => import("./approvals/ApprovalPanel").then((m) => ({ default: m.ApprovalPanel }), () => ({ default: () => null })));
 // 0048: kudos on a teammate's finished team task (or what you got on your own), with lib/momentum (if its code can't be fetched, none)
-const TaskKudos = lazy(() => import("./momentum/TodayMomentum").then((m) => ({ default: m.TaskKudos }), () => ({ default: () => null })));
+const TaskKudos = lazy(() => import("./momentum/TaskKudos").then((m) => ({ default: m.TaskKudos }), () => ({ default: () => null })));
 
 const REACTION_EMOJIS = ["👍", "❤️", "🎉", "👀", "✅", "🚀"];
 const RECUR_LABEL: Record<Recurrence, string> = { none: "Doesn't repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly" };

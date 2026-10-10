@@ -26,6 +26,36 @@ describe("Get set up", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Connect: Connect a calendar" }));
     expect(onAction).toHaveBeenCalledWith("connect_calendar");
   });
+  it("folded (Today beside the rail): one row — how far you are, the next step and its button; Set-up steps opens the list", () => {
+    const onAction = vi.fn(), onFold = vi.fn();
+    const props = { role: "owner" as TourRole, onboarding: { checklist: { done: { invite_team: "t" } } }, signals: {}, onChange: vi.fn(), onAction };
+    const { rerender } = render(<SetupChecklist {...props} fold={{ folded: true, onFold }} />);
+    const card = screen.getByRole("region", { name: "Get set up" });
+    expect(card).toHaveAttribute("data-folded");
+    expect(within(card).getByText("1 of 4 done · Next: Connect a calendar")).toBeInTheDocument();
+    // the list is there for the disclosure to open, but hidden (so neither seen nor tabbed to)
+    const steps = within(card).getByRole("button", { name: "Set-up steps" });
+    expect(steps).toHaveAttribute("aria-expanded", "false");
+    const list = document.getElementById(steps.getAttribute("aria-controls")!)!;
+    expect(list).not.toBeVisible();
+    expect(within(card).queryAllByRole("checkbox")).toHaveLength(0);
+    // the next step's button is right there
+    fireEvent.click(within(card).getByRole("button", { name: "Connect: Connect a calendar" }));
+    expect(onAction).toHaveBeenCalledWith("connect_calendar");
+    fireEvent.click(steps);
+    expect(onFold).toHaveBeenCalledWith(false);
+    rerender(<SetupChecklist {...props} fold={{ folded: false, onFold }} />);
+    expect(card).not.toHaveAttribute("data-folded");
+    expect(within(card).getByRole("button", { name: "Set-up steps" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(card).getAllByRole("checkbox")).toHaveLength(4);
+    expect(within(card).getByText(/1 of 4 done · Four quick things/)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Set-up steps" }));
+    expect(onFold).toHaveBeenLastCalledWith(true);
+    // no fold (a phone, or anywhere else): the whole card, no disclosure
+    rerender(<SetupChecklist {...props} />);
+    expect(within(card).queryByRole("button", { name: "Set-up steps" })).toBeNull();
+    expect(within(card).getAllByRole("checkbox")).toHaveLength(4);
+  });
   it("members: plan your day, complete a task, install the app, set notifications", () => {
     render(<SetupChecklist role="member" onboarding={{}} signals={{}} onChange={vi.fn()} onAction={vi.fn()} />);
     expect(screen.getAllByRole("checkbox").map((c) => c.getAttribute("aria-label")))

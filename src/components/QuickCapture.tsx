@@ -22,7 +22,7 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { getMember, todayISO, KANBO_TODAY, TAGS } from "../data/data";
 import { parseTask, parseDateText, segments, splitLines, stripTokens, fmtMinutes, dayLabel, type NlpSpan, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { IMPORT_LIMIT, type ImportRow } from "../lib/importTasks";
-import { planTemplate, resolveTemplateTags, templatePlaceholders, templateQueryOf, type AppliedTemplatePlan } from "../lib/templatePlan";
+import { captureTemplatePlan, resolveTemplateTags, templatePlaceholders, templateQueryOf, type AppliedTemplatePlan } from "../lib/templatePlan";
 import { TemplatePicker } from "./templates/TemplatePicker";
 import { TemplateTile } from "./templates/parts";
 import { useLibraryTemplates } from "./templates/useLibraryTemplates";
@@ -327,21 +327,13 @@ export function QuickCapture({ open, onClose, projects, members, defaultProjectI
   };
   /** the task from a template: what was typed wins, the template fills the rest */
   const createFromTemplate = (t: LibraryTemplate, partial: Partial<Task> & { title: string }) => {
-    const plan = planTemplate(t, {
-      today: new Date(KANBO_TODAY), currentUserId, projectId: projectId ?? "", projectOwnerId: project?.ownerId ?? null,
-      workspaceId: tplWs, assigneeId: assigneeId ?? currentUserId, tags: tagDict,
+    const plan = captureTemplatePlan(t, partial, {
+      today: new Date(KANBO_TODAY), currentUserId, projectId, projectOwnerId: project?.ownerId ?? null, workspaceId: tplWs, tags: tagDict,
+      typed: { priority: parsed.priority, focusMin: parsed.focusMin },
       // a date typed or picked moves the sub-tasks with it; a date taken off means none
       ...(due.date ? { dueDate: due.date } : picks.due === null && !dateTyped ? { dueDate: null } : {}),
     });
-    const task: Partial<Task> & { title: string } = {
-      ...plan.task, ...partial,
-      priority: parsed.priority ?? plan.task.priority,
-      focusMin: parsed.focusMin ?? plan.task.focusMin, dur: parsed.focusMin ?? plan.task.dur,
-      tags: [...new Set([...(partial.tags ?? []), ...(plan.task.tags ?? [])])],
-    };
-    const dueDate = partial.dueDate ?? plan.task.dueDate;
-    if (dueDate) task.dueDate = dueDate; else delete task.dueDate;
-    if (!projectId) delete task.projectId; // the host picks one, as for any capture
+    const task = plan.task;
     const withList = <T extends Partial<Task>>(x: T): T => (plan.checklist.length
       ? { ...x, description: [x.description, `**Checklist**\n${plan.checklist.map((c) => `- ${c}`).join("\n")}`].filter(Boolean).join("\n\n") }
       : x);

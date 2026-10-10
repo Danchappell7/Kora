@@ -38,7 +38,7 @@ import {
 import type { CaptureOptions } from "../../data/data";
 import type { NlpSpan } from "../../lib/nlp";
 import { uiZoom } from "../../lib/appearance";
-import type { Task, CalEvent, EnergyKind, ExternalEvent } from "../../data/types";
+import type { Task, CalEvent, EnergyKind, ExternalEvent, LibraryTemplate, Priority } from "../../data/types";
 import {
   durOf, energyKindOf, layoutLanes, isPlaced, todaysEvents, fmtTime, fmtTimeRange, fmtDuration, parseDay, daysBetween, weekdayShort, dayMonth, dayLong,
   localDayKey, planSeenKey, readSeen, writeSeen, carryOver, recordSeen, markSeen, touchSeen, carryLabel,
@@ -46,6 +46,7 @@ import {
 } from "./planCanvas";
 import { useTaskDragSource, useTaskDropTarget, DND_LONG_PRESS_MS, DND_TOUCH_SLOP_PX, type TaskDragPayload, type TaskDropEvent, type DragPoint } from "../../lib/dnd";
 import { ScheduleMenu, prefetchPlanMenus } from "../dnd/lazy";
+import { CaptureTemplatePicker, CaptureTemplateStrip, prefetchCaptureTemplates } from "../templates/lazyCapture";
 import type { Lane, SeenMap } from "./planCanvas";
 import { freeGaps as freeGapsOf, isTodaysScope, WORK_START, type GhostBlock } from "../../lib/brief";
 
@@ -181,9 +182,13 @@ export function EnergyChip({ energy, small }: { energy: EnergyKind; small?: bool
 
 /* ============================== styles ============================== */
 
+/** The least room the day gets beside the rail, however tall the brief and its cards are above it:
+ *  five hours or so, less on a short window. */
+export const DAY_MIN = "min(40vh, 320px)";
+
 /* Tokens are read with fallbacks to today's names (the "Paper & Navy" set
    lands separately); the aliases on .kplan keep the rules below readable. */
-const PLAN_CSS = `
+export const PLAN_CSS = `
 .kplan {
   --kp-grad-v: linear-gradient(180deg, var(--brand-blue, #5B7CFA), var(--brand-violet, #8B5CF6) 52%, var(--brand-magenta, #C24BE0));
   --kp-accent-line: var(--accent-line, color-mix(in oklch, var(--accent) 45%, transparent));
@@ -200,14 +205,17 @@ const PLAN_CSS = `
 }
 .kplan[data-stacked="true"] { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
 @media (max-width: 859px) { .kplan { --kp-gutter: var(--gutter, 16px); } }
-.kplan-main { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.kplan[data-stacked="true"] .kplan-main { flex: none; }
+/* Side by side, the day always keeps room of its own (DAY_MIN): when what's above it (the brief and
+   its cards) is taller than the window allows, the column scrolls to the day instead of squeezing it
+   away. The day still scrolls its own hours inside that room. */
+.kplan-main { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; }
+.kplan[data-stacked="true"] .kplan-main { flex: none; overflow: visible; }
 
 /* ---- the day ---- */
-.kday-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 16px var(--kp-gutter) 72px;
+.kday-scroll { position: relative; flex: 1; min-height: ${DAY_MIN}; overflow-y: auto; padding: 16px var(--kp-gutter) 72px;
   /* the day slides away under the brief rather than being cut off */
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px); mask-image: linear-gradient(to bottom, transparent, #000 16px); }
-.kplan[data-stacked="true"] .kday-scroll { flex: none; overflow: visible; padding: 16px var(--kp-gutter) 24px; -webkit-mask-image: none; mask-image: none; }
+.kplan[data-stacked="true"] .kday-scroll { flex: none; min-height: 0; overflow: visible; padding: 16px var(--kp-gutter) 24px; -webkit-mask-image: none; mask-image: none; }
 .kday-connect { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px ${LANE_LEFT}px; padding: 0; border: 0; background: none;
   font: 500 12px/16px var(--kp-ui); color: var(--ink-3); cursor: pointer; text-decoration: underline dotted var(--ink-4); text-underline-offset: 4px; }
 .kday-connect:hover { color: var(--accent-text, var(--accent)); text-decoration-color: currentColor; }
@@ -812,7 +820,31 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
 /* ============================== the rail ============================== */
 
 /** Capture, with the words Kanbo understood highlighted as you type. */
-function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, projects, members }: {
+/** Today's capture takes a template with "/", as Quick capture does: whose library, and how the host makes the
+ *  task (its sub-tasks and checklist with it). Leave it out and "/" is just a character. */
+export interface CaptureTemplates {
+  /** the workspace whose library the picker lists (null = Personal) */
+  workspaceId: string | null;
+  /** make the task from the template: `partial` is the capture as read (the template's title, perhaps edited,
+   *  and anything typed); `typed` what the words themselves said (they win over the template's own) */
+  onCapture: (template: LibraryTemplate, partial: Partial<Task> & { title: string }, typed: { priority?: Priority; focusMin?: number; dueDate?: string }) => void;
+}
+
+/** A capture as the fields a new task is made from (not the demo task captureTask builds around them). */
+function capturedPartial(r: NonNullable<ReturnType<typeof parseTodayCapture>>): Partial<Task> & { title: string } {
+  const { task: t, parsed: p } = r;
+  const out: Partial<Task> & { title: string } = { title: t.title, status: "todo", priority: t.priority, projectId: t.projectId, assigneeId: t.assigneeId, planToday: !!t.planToday };
+  if (t.dueDate) out.dueDate = t.dueDate;
+  if (t.dueTime) out.dueTime = t.dueTime;
+  if (t.startDate) out.startDate = t.startDate;
+  if (t.recurrence) out.recurrence = t.recurrence;
+  if (t.effortHours != null) out.effortHours = t.effortHours;
+  if (p.tags?.length) out.tags = p.tags;
+  if (p.energy) out.energy = p.energy;
+  return out;
+}
+
+function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, projects, members, templates, onTemplate, me }: {
   onCapture: (t: Task) => void;
   /** Tab: add it and put it on the day */
   onCapturePlan: (t: Task) => void;
@@ -821,24 +853,56 @@ function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, pro
   today: string;
   projects: { id: string; name: string }[];
   members: { id: string; name: string }[];
+  /** "/" for a template (the host's library and create path) */
+  templates?: CaptureTemplates;
+  /** a task made from a template (said out loud) */
+  onTemplate?: (template: LibraryTemplate, partial: Partial<Task> & { title: string }) => void;
+  me: string;
 }) {
   const [text, setText] = useState("");
   const [focused, setFocused] = useState(false);
+  // "/" for a template: the one chosen, and whether Escape set the picker aside (until the "/" goes)
+  const [tpl, setTpl] = useState<LibraryTemplate | null>(null);
+  const [pickerOff, setPickerOff] = useState(false);
   const mirrorRef = useRef<HTMLSpanElement>(null);
   const parseId = useId();
+  const inputId = `${parseId.replace(/[^a-zA-Z0-9_-]/g, "")}-capture`;
   const projectId = defaults?.projectId, assigneeId = defaults?.assigneeId;
+  const slash = text.startsWith("/") && !/[\r\n]/.test(text);
+  const picking = !!templates && !tpl && !pickerOff && slash;
+  useEffect(() => { if (!slash && pickerOff) setPickerOff(false); }, [slash, pickerOff]);
   // one reading of the text for the highlight, the parse line and the task, so what the
   // line promises is what's created ("today" / "fri" resolve against the date, so it's
-  // re-read when the day changes under a half-typed capture)
-  const read = useMemo(() => parseTodayCapture(text, { projectId, assigneeId, projects, members }),
+  // re-read when the day changes under a half-typed capture); nothing while it's "/" for the picker
+  const read = useMemo(() => (picking ? null : parseTodayCapture(text, { projectId, assigneeId, projects, members })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [text, today, projectId, assigneeId, projects, members]);
+    [picking, text, today, projectId, assigneeId, projects, members]);
 
   const submit = (plan: boolean) => {
+    // (the picker has the keys while it's open; with nothing to pick, Enter waits for Escape or a match)
+    if (picking) return;
     const r = parseTodayCapture(text, { projectId, assigneeId, projects, members });
     if (!r) return;
-    (plan ? onCapturePlan : onCapture)(r.task);
+    if (tpl && templates) {
+      // a template's task is filed as it says (its sub-tasks stay off the day): Tab adds it as Enter does
+      const partial = capturedPartial(r);
+      const p = r.parsed;
+      const est = p.effortHours != null ? Math.round(p.effortHours * 60) : undefined;
+      templates.onCapture(tpl, partial, { priority: p.priority, focusMin: p.focusMin ?? est, dueDate: p.dueDate });
+      onTemplate?.(tpl, partial);
+      setTpl(null);
+    } else (plan ? onCapturePlan : onCapture)(r.task);
     setText("");
+  };
+  const pickTemplate = (t: LibraryTemplate, [a, b]: [number, number]) => {
+    setTpl(t); setPickerOff(false); setText(t.body.title);
+    // the title's first {placeholder} is selected, ready to type over
+    window.setTimeout(() => { const el = inputRef.current; if (!el) return; el.focus(); el.setSelectionRange(a, b); }, 0);
+  };
+  const removeTemplate = () => {
+    if (tpl && text === tpl.body.title) setText("");
+    setTpl(null);
+    inputRef.current?.focus();
   };
 
   // the highlight layer scrolls with the text
@@ -877,28 +941,49 @@ function CaptureField({ onCapture, onCapturePlan, inputRef, defaults, today, pro
         <Icon name="plus" size={16} sw={1.75} />
         <div className="krail-cap-box">
           <div className="krail-cap-mirror" aria-hidden="true"><span ref={mirrorRef}>{marked}</span></div>
-          <input ref={inputRef} className="krail-cap-input" value={text} spellCheck={false} autoComplete="off"
+          <input ref={inputRef} id={inputId} className="krail-cap-input" value={text} spellCheck={false} autoComplete="off"
             onChange={(e) => setText(e.target.value)} onScroll={syncScroll} onKeyUp={syncScroll}
-            onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+            onFocus={() => { setFocused(true); if (templates) prefetchCaptureTemplates(); }} onBlur={() => setFocused(false)}
             onKeyDown={(e) => {
               if (e.key === "Enter") { e.preventDefault(); submit(false); }
-              else if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && text.trim()) { e.preventDefault(); submit(true); }
-              else if (e.key === "Escape" && text) { e.stopPropagation(); setText(""); }
+              else if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && text.trim() && !picking) { e.preventDefault(); submit(true); }
+              else if (e.key === "Escape" && (text || tpl)) { e.stopPropagation(); setText(""); setTpl(null); }
             }}
-            aria-label="Capture a task for today" aria-describedby={parseId} data-focus-ring="none"
+            aria-label="Capture a task for today" aria-describedby={templates ? `${parseId} ${inputId}-tip` : parseId} data-focus-ring="none"
             placeholder="Add a task — try “call Sana fri 3pm ~30m”" />
         </div>
         {!focused && !text && <span aria-hidden="true" title="Press q to jump here"><Kbd>Q</Kbd></span>}
       </div>
+      {templates && (picking || tpl) && (
+        <div className="krail-cap-tpl">
+          <Suspense fallback={null}>
+            {picking
+              ? <CaptureTemplatePicker text={text} inputId={inputId} workspaceId={templates.workspaceId} currentUserId={me}
+                  onPick={pickTemplate} onClose={() => setPickerOff(true)} />
+              : tpl && <CaptureTemplateStrip template={tpl} onRemove={removeTemplate} />}
+          </Suspense>
+        </div>
+      )}
       <div id={parseId} className="krail-parse" aria-live="polite">
-        {text.trim() ? (
+        {picking ? null : text.trim() ? (
           <>
             <span className="krail-parse-bits">{line}</span>
-            <span className="krail-parse-keys" aria-hidden="true">⏎ add · ⇥ plan</span>
-            <span className="sr-only">Press Enter to add it, or Tab to add it and plan it.</span>
+            {tpl ? (
+              <>
+                <span className="krail-parse-keys" aria-hidden="true">⏎ add</span>
+                <span className="sr-only">Press Enter to add it, with what “{tpl.name}” adds.</span>
+              </>
+            ) : (
+              <>
+                <span className="krail-parse-keys" aria-hidden="true">⏎ add · ⇥ plan</span>
+                <span className="sr-only">Press Enter to add it, or Tab to add it and plan it.</span>
+              </>
+            )}
           </>
-        ) : null}
+        ) : focused && templates ? <span className="krail-parse-bits" aria-hidden="true">Type / for a template</span> : null}
       </div>
+      {/* (said once with the field, not each time it takes focus) */}
+      {templates && <span id={`${inputId}-tip`} className="sr-only">Type a slash to start from a template.</span>}
     </div>
   );
 }
@@ -1033,8 +1118,9 @@ export interface PlanViewProps {
   captureDefaults?: CaptureOptions;
   /* ---- Today (all optional: PlanView stands alone without them) ---- */
   /** the brief and its actions, above the canvas; as a function it's told where a
-   *  task held over the Daybeam would land, so the beam can show it */
-  lede?: ReactNode | ((beamDrop: { start: number; end: number } | null) => ReactNode);
+   *  task held over the Daybeam would land, so the beam can show it, and whether the
+   *  day and the rail are in one column (`stacked`: the page scrolls as a whole) */
+  lede?: ReactNode | ((beamDrop: { start: number; end: number } | null, layout: { stacked: boolean }) => ReactNode);
   /** today's meetings (TodayView shares them with the brief); default: from the calendar props */
   events?: CalEvent[];
   /** the clock (TodayView shares it with the brief) */
@@ -1071,6 +1157,8 @@ export interface PlanViewProps {
   railTop?: ReactNode;
   /** after the working day: shown instead of the day's grid (which folds behind a toggle) */
   afterHours?: ReactNode;
+  /** "/" in the capture field picks a template (the host's library and create path) */
+  templates?: CaptureTemplates;
 }
 
 export type RailFocusKind = "due" | "overdue" | "slipping" | "team";
@@ -1082,7 +1170,7 @@ export function PlanView({
   tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false, currentUserId, captureDefaults,
   lede, events: eventsProp, nowMin: nowProp, ghosts = [], tomorrowIds, skipped, onSkip, onUnskip, landing, readOnly = false,
   onStartFocus, onExtractFromMeeting, onConnectCalendar, railFocus = null, onRailFocus, freePulse, big3, onOpenMyTasks, onShutdown,
-  members: membersProp, projects: projectsProp, railTop, afterHours,
+  members: membersProp, projects: projectsProp, railTop, afterHours, templates,
 }: PlanViewProps) {
   // after hours the day's grid folds away behind a toggle
   const [dayOpen, setDayOpen] = useState(false);
@@ -1400,6 +1488,12 @@ export function PlanView({
     if (where) notify(`Added “${t.title}” ${where}.`);
     else announce(`Added “${t.title}” to today${t.dueTime ? ` at ${t.dueTime}` : ""}.`);
   }, [onCreate, announce, notify, elsewhere]);
+  /** A task made from a template: its sub-tasks (and where it went) are said out loud, as a toast. */
+  const capturedFromTemplate = useCallback((tpl: LibraryTemplate, t: Partial<Task> & { title: string }) => {
+    const subs = tpl.body.subtasks?.length ?? 0;
+    const where = elsewhere({ ...t, assigneeId: t.assigneeId ?? me } as Task);
+    notify(`Added “${t.title}”${where ? ` ${where}` : " to today"} from “${tpl.name}”${subs ? `, with ${subs} sub-task${subs === 1 ? "" : "s"}` : ""}.`);
+  }, [elsewhere, notify, me]);
   const captureAndPlan = useCallback((t: Task) => {
     // only your own work for today goes on your day; the rest is filed where it belongs
     if (elsewhere(t)) { capture(t); return; }
@@ -1820,7 +1914,7 @@ export function PlanView({
 
   const captureField = readOnly ? null : (
     <CaptureField onCapture={capture} onCapturePlan={captureAndPlan} inputRef={captureRef} defaults={captureDefaults}
-      today={day} projects={projects} members={members} />
+      today={day} projects={projects} members={members} templates={templates} onTemplate={capturedFromTemplate} me={me ?? ""} />
   );
   const big3Section = big3Tasks.length > 0 && (
     <section className="krail-section krail-big3" aria-labelledby={`${helpId}-big3`}>
@@ -1868,7 +1962,7 @@ export function PlanView({
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
       <div className="kplan-main">
         {typeof lede === "function"
-          ? lede(preview?.on === "beam" ? { start: preview.start, end: preview.start + preview.dur } : null)
+          ? lede(preview?.on === "beam" ? { start: preview.start, end: preview.start + preview.dur } : null, { stacked })
           : lede}
         <h2 ref={dayHeadingRef} tabIndex={-1} className="sr-only">Your day</h2>
         <div ref={scrollRef} className="kday-scroll">

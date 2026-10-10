@@ -76,6 +76,43 @@ describe("App · first run (0048)", () => {
   });
 });
 
+describe("App · Today keeps its day (QA)", () => {
+  it("beside the rail Get set up and the week's wins are folded to a row each; Set-up steps opens the list", async () => {
+    await boot();
+    const setup = await screen.findByRole("region", { name: "Get set up" });
+    expect(setup).toHaveAttribute("data-folded");
+    const wins = await screen.findByRole("region", { name: /^Your week so far/ });
+    expect(wins).toHaveAttribute("data-folded");
+    // side by side, under the brief: the day itself is still there below them
+    expect(setup.parentElement).toBe(wins.parentElement);
+    expect(document.querySelector(".kday-scroll .kday-canvas")).toBeInTheDocument();
+    const steps = within(setup).getByRole("button", { name: "Set-up steps" });
+    fireEvent.click(steps);
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Get set up" })).getByRole("button", { name: "Set-up steps" })).toHaveAttribute("aria-expanded", "true"));
+    expect(screen.getByRole("region", { name: "Get set up" })).not.toHaveAttribute("data-folded");
+  });
+
+  it("the week's wins name the task you thanked a teammate for (it's theirs, not yours)", async () => {
+    await boot();
+    const wins = await screen.findByRole("region", { name: /^Your week so far/ });
+    fireEvent.click(within(wins).getByRole("button", { name: "Your week in full" }));
+    const open = await screen.findByRole("region", { name: "Your week so far" });
+    await waitFor(() => expect(within(open).getByRole("list", { name: "With your team" })).toHaveTextContent(/You thanked Sana for “Refresh brand colour palette”/));
+    expect(open).not.toHaveTextContent("“a task”");
+  });
+});
+
+describe("App · templates from anywhere (QA)", () => {
+  it("⌘K › “template” offers New task from a template…, which opens the library", async () => {
+    await boot();
+    key("k", { metaKey: true });
+    const input = await screen.findByRole("combobox", { name: "Search or ask Kanbo" });
+    fireEvent.change(input, { target: { value: "template" } });
+    fireEvent.click(await screen.findByRole("option", { name: /New task from a template…/ }));
+    expect(await screen.findByRole("dialog", { name: "Template library" })).toBeInTheDocument();
+  });
+});
+
 describe("App · templates (0048)", () => {
   it("New task ▾ › From a template… opens the library; Use template opens New task with it", async () => {
     await boot();

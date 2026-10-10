@@ -61,10 +61,13 @@ export interface Suggestion {
 /** The action ids App handles. Kept: new-task, quick-capture, new-project,
  *  prioritize, focus, board, manage-tags, toggle-theme, settings. New:
  *  paste-notes, plan, shutdown, shortcuts, import; plan-project (0047: the AI
- *  project planner; works on-device when Kanbo AI is off). */
+ *  project planner; works on-device when Kanbo AI is off); from-template (0048:
+ *  the template library, as New task ▾ › From a template… opens it — the way
+ *  there on a phone, which has no New task menu). */
 const ACTIONS: Suggestion[] = [
   { id: "new-task", icon: "plus", label: "New task", hint: "C" },
   { id: "quick-capture", icon: "zap", label: "Quick capture", hint: "Q" },
+  { id: "from-template", icon: "layers", label: "New task from a template…", hint: "" },
   { id: "paste-notes", icon: "notes", label: "Paste notes → tasks", hint: "" },
   { id: "new-project", icon: "folder", label: "New project", hint: "" },
   { id: "plan-project", icon: "kanbo", label: "Plan a project…", hint: "", ai: true },
@@ -80,7 +83,7 @@ const ACTIONS: Suggestion[] = [
   { id: "board", icon: "board", label: "Switch to board view", hint: "" },
 ];
 /** actions that create or change work: not for guests */
-const WRITES = new Set(["new-task", "quick-capture", "paste-notes", "new-project", "plan-project", "prioritize", "shutdown", "import"]);
+const WRITES = new Set(["new-task", "quick-capture", "from-template", "paste-notes", "new-project", "plan-project", "prioritize", "shutdown", "import"]);
 
 /** Words that make the text read as a question or an instruction for Kanbo. */
 const ASK_VERBS = /^(move|assign|plan|what|who|when|which|show|list|summarise|summarize|mark|set|reschedule|push|how)\b/i;

@@ -7,9 +7,13 @@
    work, then makes the ghosts solid — with one Undo. The canvas, the
    Unplanned rail and their drop targets (lib/dnd: drag to plan) live in
    PlanView; the Daybeam's row here is a drop target too.
+   The host's cards under the brief ("Get set up", the week's wins) fold
+   to a row each beside the rail, side by side, so the day keeps its
+   room; one you open stays open for the day. (The day also keeps a
+   minimum of its own: what's above it scrolls away instead.)
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { PlanView, useDayClock, dayEventsFor } from "./PlanView";
+import { PlanView, useDayClock, dayEventsFor, type CaptureTemplates } from "./PlanView";
 import { Daybeam, type BeamSegment } from "./Daybeam";
 import { BriefCard, NoticedCard, TomorrowCard, BRIEF_CSS, type RailFocus } from "./TodayBrief";
 import { Button, Icon, Kbd, StatusGlyph, projectIdentity } from "../primitives";
@@ -67,10 +71,19 @@ export interface TodayViewProps {
   onPlanTomorrow?: () => void;
   /* ---- 0048 (the host's cards; Today works without) ---- */
   /** the "Get set up" card (u1 SetupChecklist), in place of the "2 of 4 set up" chip */
-  setupSlot?: ReactNode;
+  setupSlot?: TodayCardSlot;
   /** the week's wins card (u10 TodayWins), under the day's actions */
-  winsSlot?: ReactNode;
+  winsSlot?: TodayCardSlot;
+  /** "/" in the rail's capture field picks a template (the host's library and create path) */
+  templates?: CaptureTemplates;
 }
+
+/** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
+ *  keeps its room); in one column (`null`: the page scrolls as a whole) it's shown in full. */
+export interface TodayCardFold { folded: boolean; onFold: (folded: boolean) => void }
+/** A card under the brief: as it is, or made for the fold Today gives it. */
+export type TodayCardSlot = ReactNode | ((fold: TodayCardFold | null) => ReactNode);
+type CardKey = "setup" | "wins";
 
 /** "Not now" on a noticed card lasts the day, per person, on this device. */
 const noticedKey = (me: string) => `kanbo-noticed:${me || "local"}`;
@@ -93,6 +106,18 @@ const isEditable = (el: EventTarget | null) => {
 };
 
 const SETUP_HIDDEN_KEY = "kanbo-setup-hidden";
+
+/** The cards you opened under the brief stay open for the day, per person, on this device. */
+const cardsKey = (me: string) => `kanbo-today-cards:${me || "local"}`;
+function readOpenCards(me: string, day: string): CardKey[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(cardsKey(me)) || "null");
+    return v && v.day === day && Array.isArray(v.open) ? v.open.filter((x: unknown): x is CardKey => x === "setup" || x === "wins") : [];
+  } catch { return []; }
+}
+function writeOpenCards(me: string, day: string, open: CardKey[]) {
+  try { localStorage.setItem(cardsKey(me), JSON.stringify({ day, open })); } catch { /* private mode: it lasts this visit */ }
+}
 type RankSource = Awaited<ReturnType<TodayViewProps["onRank"]>>;
 
 const TODAY_CSS = `
@@ -115,6 +140,13 @@ const TODAY_CSS = `
 .ktoday-hero-label > span { grid-area: 1 / 1; text-align: start; }
 .ktoday-hero-label > [aria-hidden="true"] { visibility: hidden; }
 .ktoday-beam { flex: 1 1 280px; min-width: 200px; }
+/* the host's cards (Get set up, the week's wins): folded to a row each, side by side while they fit;
+   one you open takes the whole width */
+.ktoday-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; max-width: 920px; margin-top: 16px; }
+.ktoday-cards:empty { display: none; }
+.ktoday-cards > * { min-width: 0; }
+.ktoday-cards > :is(.ksetup, .kwins) { margin: 0; max-width: none; }
+.ktoday-cards > :not([data-folded]) { grid-column: 1 / -1; }
 .ktoday-setup { display: flex; margin-top: 12px; }
 .ktoday-setup .kpill svg { margin-right: -2px; }
 .ktoday-steps { padding: 6px 6px 4px; min-width: 268px; }
@@ -239,7 +271,7 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
-  setupSlot, winsSlot,
+  setupSlot, winsSlot, templates,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -430,6 +462,19 @@ function TodayDay({
     return () => window.removeEventListener("keydown", h);
   }, [readOnly]);
 
+  /* ----- the cards under the brief: folded beside the rail, unless you opened them today ----- */
+  const [openCards, setOpenCards] = useState<CardKey[]>(() => readOpenCards(me, day));
+  useEffect(() => { setOpenCards(readOpenCards(me, day)); }, [me, day]);
+  const foldFor = (key: CardKey, stacked: boolean): TodayCardFold | null => stacked ? null : {
+    folded: !openCards.includes(key),
+    onFold: (folded) => {
+      const next = folded ? openCards.filter((k) => k !== key) : [...openCards.filter((k) => k !== key), key];
+      setOpenCards(next); writeOpenCards(me, day, next);
+    },
+  };
+  const card = (slot: TodayCardSlot | undefined, key: CardKey, stacked: boolean): ReactNode =>
+    typeof slot === "function" ? slot(foldFor(key, stacked)) : slot;
+
   /* ----- the brief's numbers: each narrows the rail (free time is outlined on the day) ----- */
   const [railFocus, setRailFocus] = useState<RailFocus | null>(null);
   const [freePulse, setFreePulse] = useState(0);
@@ -508,7 +553,7 @@ function TodayDay({
     </Button>
   );
 
-  const lede = (drop: { start: number; end: number } | null) => (
+  const lede = (drop: { start: number; end: number } | null, { stacked }: { stacked: boolean }) => (
     <section className="ktoday-lede" aria-label="Your day in brief">
       <style>{TODAY_CSS}</style>
       <style>{BRIEF_CSS}</style>
@@ -533,8 +578,13 @@ function TodayDay({
           </span>
         )}
       </div>
-      {setupSlot !== undefined ? setupSlot : !readOnly && <SetupChip steps={setup} />}
-      {winsSlot}
+      {setupSlot === undefined && !readOnly && <SetupChip steps={setup} />}
+      {(setupSlot !== undefined || winsSlot !== undefined) && (
+        <div className="ktoday-cards">
+          {card(setupSlot, "setup", stacked)}
+          {card(winsSlot, "wins", stacked)}
+        </div>
+      )}
       <div role="status" aria-live="polite" className="sr-only">{srMsg}</div>
     </section>
   );
@@ -543,7 +593,7 @@ function TodayDay({
     <PlanView tasks={tasks} onUpdate={onUpdate} onCreate={onCreate} onOpen={onOpen} externalEvents={events}
       calendarConnected={calendarConnected} currentUserId={currentUserId} captureDefaults={captureDefaults}
       lede={lede} events={dayEvents} nowMin={nowMin} ghosts={ghosts} tomorrowIds={ghostsOff ? [] : plan.unplaced.map((t) => t.id)}
-      skipped={prefs.skipped} onSkip={skip} onUnskip={unskipOne} landing={landing} readOnly={readOnly}
+      skipped={prefs.skipped} onSkip={skip} onUnskip={unskipOne} landing={landing} readOnly={readOnly} templates={readOnly ? undefined : templates}
       onStartFocus={onStartFocus} onExtractFromMeeting={onExtractFromMeeting} onConnectCalendar={onConnectCalendar}
       railFocus={railFocus} onRailFocus={setRailFocus} freePulse={freePulse} big3={big3}
       onOpenMyTasks={onOpenMyTasks} onShutdown={evening ? undefined : onShutdown} members={members} projects={projects}

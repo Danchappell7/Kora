@@ -9,7 +9,7 @@
    The model (dates are "days after it's used", roles, weekends) is
    written up at the top of lib/templates' library section.
    ============================================================ */
-import type { LibraryTemplate, Recurrence, Subtask, TagDef, Task, TaskTemplateBody, TemplateAssigneeRole } from "../data/types";
+import type { LibraryTemplate, Priority, Recurrence, Subtask, TagDef, Task, TaskTemplateBody, TemplateAssigneeRole } from "../data/types";
 import { toLocalISO } from "../data/data";
 import { foldText } from "./searchQuery";
 
@@ -241,6 +241,42 @@ export function planTemplate(tpl: Pick<LibraryTemplate, "body">, ctx: {
     ...(typeof s.offsetDays === "number" ? { dueDate: templateDate(zero, s.offsetDays, today, cap) } : {}),
   }));
   return { task, subtasks, checklist: [...(b.checklist ?? [])] };
+}
+
+/**
+ * A task captured with a template (Quick capture, the phone's quick add, Today's capture field): what was
+ * typed wins and the template fills in the rest. `partial` is the capture as it would be made without the
+ * template (its title is the template's, perhaps edited); `typed` is what the words themselves said (a
+ * priority or a length typed beats the template's — a capture's own "medium" or 30 minutes doesn't);
+ * `dueDate` is a date typed or picked (it moves the sub-tasks with it), null when one was taken off, and
+ * undefined for the template's own. Without a project the host files it, as for any capture.
+ */
+export function captureTemplatePlan(tpl: Pick<LibraryTemplate, "body">, partial: Partial<Task> & { title: string }, ctx: {
+  today: Date;
+  currentUserId: string;
+  projectId?: string;
+  projectOwnerId?: string | null;
+  workspaceId: string | null;
+  tags?: Record<string, TagDef>;
+  typed?: { priority?: Priority; focusMin?: number };
+  dueDate?: string | null;
+}): AppliedTemplatePlan {
+  const plan = planTemplate(tpl, {
+    today: ctx.today, currentUserId: ctx.currentUserId, projectId: ctx.projectId ?? "", projectOwnerId: ctx.projectOwnerId ?? null,
+    workspaceId: ctx.workspaceId, assigneeId: partial.assigneeId ?? ctx.currentUserId, tags: ctx.tags,
+    ...(ctx.dueDate !== undefined ? { dueDate: ctx.dueDate } : {}),
+  });
+  const typed = ctx.typed ?? {};
+  const task: Partial<Task> & { title: string } = {
+    ...plan.task, ...partial,
+    priority: typed.priority ?? plan.task.priority,
+    focusMin: typed.focusMin ?? plan.task.focusMin, dur: typed.focusMin ?? plan.task.dur,
+    tags: [...new Set([...(partial.tags ?? []), ...(plan.task.tags ?? [])])],
+  };
+  const dueDate = partial.dueDate ?? plan.task.dueDate;
+  if (dueDate) task.dueDate = dueDate; else delete task.dueDate;
+  if (!ctx.projectId) delete task.projectId; // the host picks one, as for any capture
+  return { task, subtasks: plan.subtasks, checklist: plan.checklist };
 }
 
 /**
