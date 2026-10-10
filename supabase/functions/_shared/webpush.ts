@@ -414,6 +414,9 @@ export interface PushRunResult {
   pruned: number;
   /** true when `allow` said no (already pushed about this) */
   skipped?: boolean;
+  /** the person's devices couldn't be read (a database error, not "no devices"): a caller treats it as a
+   *  failed send, so a queued notice is tried again rather than recorded as sent */
+  readFailed?: boolean;
 }
 
 /* ---------- notify's guard rails for event pushes ---------- */
@@ -495,9 +498,9 @@ export async function pushToUser(
   if (opts.endpoint) q = q.eq("endpoint", opts.endpoint);
   const { data, error } = await q.order("created_at", { ascending: false }).limit(20);
   if (error) {
-    if (isMissing(error)) warnOnce("missing", "push_subscriptions not found — run migration 0043. Push is off until then.");
-    else console.warn("[webpush] couldn't read subscriptions:", String(error?.message ?? error));
-    return out;
+    if (isMissing(error)) { warnOnce("missing", "push_subscriptions not found — run migration 0043. Push is off until then."); return out; }
+    console.warn("[webpush] couldn't read subscriptions:", String(error?.message ?? error));
+    return { ...out, readFailed: true };
   }
   const subs = (data ?? []) as ({ id: string } & PushSubscriptionKeys)[];
   out.total = subs.length;
@@ -549,7 +552,7 @@ export async function pushDueDigest(
       allow: async () => (claimed = await slot.claim()),
     });
     if (r.sent > 0) return "sent";
-    if (r.total === 0) return "no-device";
+    if (r.total === 0 && !r.readFailed) return "no-device";
     if (r.skipped) return "already";
   } catch (e) {
     console.error("[webpush] digest:", String((e as Error)?.message ?? e));

@@ -248,7 +248,7 @@ Deno.serve(async (req) => {
           store, now, prefs: person.prefs, snoozedUntil,
           send: async ({ recorded }) => {
             const res = await pushToUser(supa, id, push, vapid, recorded ? {} : { allow: pushOnce(id) });
-            return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+            return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
           },
         });
         tally[`push:${r.result}`] = (tally[`push:${r.result}`] ?? 0) + 1;
@@ -425,7 +425,7 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
         store, now, prefs: person.prefs, snoozedUntil,
         send: async () => {
           const res = await pushToUser(supa, id, push, vapid);
-          return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+          return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
         },
       });
       if (r.result === "sent") pushed++;
@@ -488,7 +488,7 @@ async function kudosNotice(supa: Supa, req: Request, body: Record<string, unknow
       store, now, prefs: person.prefs, snoozedUntil,
       send: async () => {
         const res = await pushToUser(supa, id, push, vapid);
-        return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+        return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
       },
     });
     if (r.result === "sent") pushed++;

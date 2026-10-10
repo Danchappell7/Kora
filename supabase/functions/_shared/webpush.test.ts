@@ -246,6 +246,8 @@ type Row = Record<string, unknown>;
 class FakeDb {
   rows: Row[] = [];
   missing = false;
+  /** any other read error (a timeout, a dropped connection) */
+  broken = false;
   /** PostgREST's max-rows (1000 on Supabase): no read returns more */
   maxRows = 1000;
   failUpdate = false;
@@ -269,6 +271,7 @@ class Q implements PromiseLike<{ data: unknown; error: unknown }> {
   }
   private run() {
     if (this.db.missing) return { data: null, error: { code: "PGRST205", message: "Could not find the table 'public.push_subscriptions' in the schema cache" } };
+    if (this.db.broken) return { data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } };
     let hit = this.db.rows.filter((r) => this.f.every((fn) => fn(r)));
     if (this.op === "select") hit = hit.slice(0, Math.min(this.n, this.db.maxRows));
     this.db.log.push(`${this.op} ${this.t} ${hit.map((r) => r.id).join(",")}`);
@@ -378,6 +381,16 @@ describe("pushToUser", () => {
     expect(await pushToUser(db, "u1", TEST_PUSH, v, { fetch, allow: async () => { throw new Error("db down"); } })).toMatchObject({ sent: 0, skipped: true });
     expect(fetch).not.toHaveBeenCalled();
     expect(await pushToUser(db, "u1", TEST_PUSH, v, { fetch, allow: async () => true })).toEqual({ total: 1, sent: 1, failed: 0, pruned: 0 });
+  });
+
+  it("says so when the devices couldn't be read (so a queued notice is tried again, not marked sent)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const v = vapidKeys();
+    const fetch = vi.fn() as unknown as typeof globalThis.fetch;
+    const db = new FakeDb();
+    db.broken = true;
+    expect(await pushToUser(db, "u1", TEST_PUSH, v, { fetch })).toEqual({ total: 0, sent: 0, failed: 0, pruned: 0, readFailed: true });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("sends nothing before 0043, or when the VAPID keys aren't a pair", async () => {

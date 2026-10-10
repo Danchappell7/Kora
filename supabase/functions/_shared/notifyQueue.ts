@@ -495,7 +495,7 @@ export async function sendComposed(db: ServiceDb, userId: string, channel: Notif
   if (channel === "push") {
     if (!env.vapid || !msg.push) return "nothing";
     const r = await pushToUser(db, userId, msg.push, env.vapid, { ttl: 12 * 3600 });
-    return r.sent > 0 ? "sent" : r.failed > 0 ? "failed" : "nothing";
+    return r.sent > 0 ? "sent" : r.failed > 0 || r.readFailed ? "failed" : "nothing";
   }
   if (!env.resendKey || !msg.email) return "nothing";
   const { data: u } = await db.auth.admin.getUserById(userId);

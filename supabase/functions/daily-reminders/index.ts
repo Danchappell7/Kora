@@ -183,7 +183,7 @@ async function dueReminders(supa: Supa, env: Env): Promise<Response> {
         send: async ({ recorded }): Promise<SendOutcome> => {
           if (recorded) {
             const res = await pushToUser(supa, userId, dueDigestPush(list, today), vapid, { ttl: 12 * 3600 });
-            return res.sent > 0 ? "sent" : res.failed > 0 ? "failed" : "nothing";
+            return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
           }
           const outcome = await pushDueDigest(supa, userId, list, today, vapid, {
             claim: async () => (await hit(supa, pushKey, { windowSec: 36 * 3600 })).allowed,

@@ -56,7 +56,8 @@ describe("calendar feed links", () => {
 describe("push contract", () => {
   it("pref keys reuse notify_prefs with a _push suffix", () => {
     expect(pushPrefKey("assigned")).toBe("assigned_push");
-    expect(PUSH_KINDS.map((k) => k.key)).toEqual(["assigned", "mention", "comment", "approval", "due"]);
+    // (0048 adds kudos: the notify function pushes them, behind "kudos_push")
+    expect(PUSH_KINDS.map((k) => k.key)).toEqual(["assigned", "mention", "comment", "approval", "kudos", "due"]);
   });
   it("reads the VAPID public key as a string (empty when unset: push stays hidden)", () => {
     expect(typeof VAPID_PUBLIC_KEY).toBe("string");
