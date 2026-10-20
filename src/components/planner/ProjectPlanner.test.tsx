@@ -161,7 +161,9 @@ describe("ProjectPlanner — review", () => {
   });
 
   it("warns about the deadline and takes you to the tasks", async () => {
-    setup({ initialGoal: PLANNER_EXAMPLES[0] });
+    // no existing workload: the demo tasks sit relative to today, so on some
+    // weekdays they alone tip a person over capacity and add a second warning
+    setup({ initialGoal: PLANNER_EXAMPLES[0], tasks: [] });
     await draftIt();
     // a deadline earlier than the plan's end
     const dl = screen.getByRole("button", { name: /^Deadline/ });
