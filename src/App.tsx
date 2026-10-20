@@ -31,7 +31,9 @@ import {
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
   FocusMode, PlannerHost, TrialBanner, UpgradeModal, Paywall, likelyNext, everyScreen, prefetchRoute,
   TourHost, SetupChecklist, HelpMenu, QuickAddSheet, prefetchQuickAdd, TemplateLibrary, SaveAsTemplate, TodayStreak, TodayWins,
+  SlackLinkPage,
 } from "./lazyViews";
+import { forgetSlackLink, rememberSlackLink, slackLinkToOpen, slackLinkTokenFromUrl } from "./lib/slackLinkToken";
 import { canPrefetchAhead, prefetchWhenIdle, whenIdle } from "./lib/lazyLoad";
 import { useAuth } from "./auth/AuthProvider";
 import { useToast } from "./components/Toast";
@@ -274,6 +276,17 @@ export default function App() {
     bootUrlRef.current = { route: routeOf(window.location.pathname, window.location.search) ?? { view: "plan" }, task: params.get("task"), q: params.get("q"), newTask: params.get("new") === "1" };
   }
   const [route, setRouteRaw] = useState<Route>(() => bootUrlRef.current!.route);
+  // 0049: /link/slack?t=… (or a link kept through signing in): "Link Slack account X in Y to Kanbo?" over the app
+  const [slackLinkToken, setSlackLinkToken] = useState<string | null>(() => {
+    const t = slackLinkToOpen(window.location.href);
+    // the one-time token leaves the address bar (and history) at once; this tab keeps it until the page closes
+    // (remembered first, so a second run of this initialiser, as StrictMode does, finds the same token)
+    if (t && slackLinkTokenFromUrl(window.location.href)) {
+      rememberSlackLink(t);
+      try { window.history.replaceState(window.history.state, "", "/"); } catch { /* not a browser */ }
+    }
+    return t;
+  });
   const [workspace, setWorkspace] = useState<string | null>(store.configured ? null : "ws-foundrise");
   const [view, setView] = useState<TaskView>(() => {
     try { const s = localStorage.getItem("kanbo-view") as TaskView | null; if (s && ["list", "board", "timeline", "calendar", "files", "matrix"].includes(s)) return s; } catch { /* private mode */ }
@@ -4282,6 +4295,11 @@ export default function App() {
         initialFirst={profile?.firstName ?? ""} initialLast={profile?.lastName ?? ""}
         // a new account the first-run sheet won't follow is offered the tour here
         tourAvailable offerTour={isNewAccount && !onboardOpen && !onboarding.tour?.done && !onboarding.tour?.skipped} /></Deferred>
+      {slackLinkToken && (
+        <Suspense fallback={null}>
+          <SlackLinkPage token={slackLinkToken} email={auth.user?.email ?? null} onDone={() => { forgetSlackLink(); setSlackLinkToken(null); }} />
+        </Suspense>
+      )}
       <Deferred when={settingsOpen}><SettingsModal open={settingsOpen} onClose={closeSettings}
         initial={{ firstName: profile?.firstName ?? "", lastName: profile?.lastName ?? "", pronouns: profile?.pronouns ?? "", avatarUrl: profile?.avatarUrl ?? null }}
         email={auth.user?.email ?? currentUser?.email ?? ""} color={currentUser?.color ?? SELF_COLOR}

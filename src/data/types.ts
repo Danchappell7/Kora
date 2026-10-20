@@ -153,6 +153,8 @@ export interface Task {
   createdBy?: string;              // tasks.user_id (the creator); mapped by rowToTask
   /** 0048 tasks.cover_attachment_id: one of the task's own image files, shown as its board-card cover */
   coverAttachmentId?: string | null;
+  /** 0049 tasks.slack_permalink: the Slack message the task was made from (the Kanbo Slack app); read-only in the app */
+  slackPermalink?: string | null;
 }
 
 export type CustomValue = string | number | boolean | string[] | null;

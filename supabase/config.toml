@@ -106,3 +106,10 @@ verify_jwt = false
 # database with kanbo_health() (service role)
 [functions.health]
 verify_jwt = false
+
+# 0049: the Kanbo Slack app (/kanbo, the "Create a Kanbo task" message
+# shortcut, link previews, the Home tab). Slack signs every request with the
+# app's signing secret (SLACK_SIGNING_SECRET), checked before anything is
+# read; there is no Supabase JWT to verify
+[functions.slack-app]
+verify_jwt = false

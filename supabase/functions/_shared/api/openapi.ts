@@ -68,7 +68,7 @@ const EX_TASK = {
   assigneeId: PRIYA, createdBy: ME, dueDate: "2026-10-16", dueTime: "17:00", startDate: "2026-10-12", completedAt: null,
   tags: [{ id: "writing", label: "Writing", color: "oklch(0.78 0.15 70)" }, { id: TAG, label: "Launch", color: "oklch(0.74 0.14 230)" }],
   effortHours: 3, loggedHours: 1.5, isMilestone: false, recurrence: "none", archived: false, archivedAt: null,
-  createdAt: "2026-10-05T09:12:44.120Z", updatedAt: "2026-10-06T14:03:10.552Z", url: `${APP}/?task=${TASK}`,
+  createdAt: "2026-10-05T09:12:44.120Z", updatedAt: "2026-10-06T14:03:10.552Z", url: `${APP}/?task=${TASK}`, slackPermalink: null,
 };
 const EX_TASK_FULL = { ...EX_TASK, subtaskIds: [SUBTASK], dependencyIds: [BLOCKER] };
 const EX_PROJECT = {
@@ -177,7 +177,7 @@ const SCHEMAS: Record<string, unknown> = {
   Tag: { type: "object", required: ["id", "label", "color"], properties: { id: { type: "string", description: "A tag's id, or a built-in tag (design, eng, research, writing, ops, bug)." }, label: nullable("string"), color: nullable("string") } },
   Task: {
     type: "object",
-    required: ["object", "id", "title", "description", "status", "priority", "workspaceId", "projectId", "sectionId", "parentId", "assigneeId", "createdBy", "dueDate", "dueTime", "startDate", "completedAt", "tags", "effortHours", "loggedHours", "isMilestone", "recurrence", "archived", "archivedAt", "createdAt", "updatedAt", "url"],
+    required: ["object", "id", "title", "description", "status", "priority", "workspaceId", "projectId", "sectionId", "parentId", "assigneeId", "createdBy", "dueDate", "dueTime", "startDate", "completedAt", "tags", "effortHours", "loggedHours", "isMilestone", "recurrence", "archived", "archivedAt", "createdAt", "updatedAt", "url", "slackPermalink"],
     properties: {
       object: { const: "task" },
       id: uuid(),
@@ -205,6 +205,7 @@ const SCHEMAS: Record<string, unknown> = {
       createdAt: nullable("string", { format: "date-time" }),
       updatedAt: nullable("string", { format: "date-time", description: "Moves on every real change; use updated_since to sync." }),
       url: nullable("string", { format: "uri", description: "Opens the task in Kanbo." }),
+      slackPermalink: nullable("string", { format: "uri", description: "The Slack message this task was made from (the Kanbo Slack app); null otherwise. Read-only." }),
       subtaskIds: { type: "array", items: uuid(), description: "One task's answers only (GET /tasks/{id} and writes to it), not lists." },
       dependencyIds: { type: "array", items: uuid(), description: "One task's answers only: tasks this one waits for." },
     },

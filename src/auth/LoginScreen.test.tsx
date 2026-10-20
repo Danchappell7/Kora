@@ -261,3 +261,14 @@ describe("Sign in with Google", () => {
     expect(screen.queryByText(/Invited with a different email/)).not.toBeInTheDocument();
   });
 });
+
+describe("PublicSite and the Slack app's link (0049)", () => {
+  it("/link/slack opens straight on signing in, not the marketing page", async () => {
+    mockAuth({ user: null });
+    const { PublicSite } = await import("./LoginScreen");
+    window.history.replaceState(null, "", "/link/slack?t=Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg");
+    render(<PublicSite />);
+    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument();
+    window.history.replaceState(null, "", "/");
+  });
+});

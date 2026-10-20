@@ -50,6 +50,16 @@ describe("Root's gate", () => {
     expect(h.imported.app).toBe(1);
   });
 
+  it("a Slack link opened signed out: the sign-in site, and the link is kept through signing in", async () => {
+    const token = "Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg";
+    window.history.replaceState(null, "", `/link/slack?t=${token}`);
+    render(<Gate />);
+    expect(await screen.findByText("The sign-in site")).toBeInTheDocument();
+    expect(JSON.parse(sessionStorage.getItem("kanbo:slack-link") ?? "{}").t).toBe(token);
+    sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
+  });
+
   it("demo mode (no backend) goes straight to the app", async () => {
     h.auth = { configured: false, loading: false, recovery: false, user: null };
     render(<Gate />);

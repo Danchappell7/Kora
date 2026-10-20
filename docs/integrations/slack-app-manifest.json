@@ -1,0 +1,72 @@
+{
+  "_metadata": {
+    "major_version": 1,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "Kanbo",
+    "description": "Add tasks to Kanbo from Slack: /kanbo, any message, and link previews.",
+    "background_color": "#1f2340",
+    "long_description": "Kanbo for Slack lets your team capture work where it's discussed. Type /kanbo and the task in your own words (\"Send the brief fri 3pm #launch @sana\") and Kanbo reads the date, time, project and person just like Quick capture. On any message, choose More actions › Create a Kanbo task to turn it into a task with a link back to the message. Kanbo task and project links you paste show a preview with Complete and Open buttons. Everyone links their own Kanbo account first, and Kanbo always acts with that person's own access."
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": false,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Kanbo",
+      "always_online": false
+    },
+    "shortcuts": [
+      {
+        "name": "Create a Kanbo task",
+        "type": "message",
+        "callback_id": "create_kanbo_task",
+        "description": "Turn this message into a Kanbo task"
+      }
+    ],
+    "slash_commands": [
+      {
+        "command": "/kanbo",
+        "url": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-app",
+        "description": "Add a task to Kanbo",
+        "usage_hint": "Send the brief fri 3pm #project @person (or: help)",
+        "should_escape": true
+      }
+    ],
+    "unfurl_domains": [
+      "www.kanbo.co.uk"
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "commands",
+        "chat:write",
+        "links:read",
+        "links:write",
+        "users:read",
+        "users:read.email"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-app",
+      "bot_events": [
+        "app_home_opened",
+        "link_shared"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-app",
+      "message_menu_options_url": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-app"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

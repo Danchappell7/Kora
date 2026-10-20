@@ -51,6 +51,8 @@ function NotLoaded() {
 const notLoaded = { default: NotLoaded };
 const DevelopersSection = lazy(() => import("./settings/DevelopersSection").catch(() => notLoaded));
 const NotionPanel = lazy(() => import("./settings/NotionPanel").then((m) => ({ default: m.NotionPanel }), () => notLoaded));
+// 0049: Kanbo for Slack (the Slack app: /kanbo, linked accounts, which workspace it adds to)
+const SlackAppPanel = lazy(() => import("./slack/SlackAppPanel").then((m) => ({ default: m.SlackAppPanel }), () => notLoaded));
 
 const PRONOUN_SUGGESTIONS = ["she/her", "he/him", "they/them", "she/they", "he/they", "ze/zir"];
 
@@ -797,6 +799,13 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       <CalendarFeedPanel />
       {/* Slack is per team workspace; the panel explains itself in Personal */}
       {slack && <SlackSettingsPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null} />}
+      {/* Kanbo for Slack (the app): /kanbo, your linked Slack accounts, and which Kanbo workspace each Slack workspace adds to */}
+      {slack && (
+        <Suspense fallback={sectionLoading("Kanbo for Slack")}>
+          <SlackAppPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null}
+            workspaces={developers?.workspaces ?? []} />
+        </Suspense>
+      )}
       {/* Notion, for the same workspace: owners/admins connect and import; members see the status */}
       {slack && (
         <Suspense fallback={sectionLoading("Notion")}>

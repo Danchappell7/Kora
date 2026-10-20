@@ -59,7 +59,7 @@ describe("serialiseTask", () => {
       tags: [{ id: "t-1", label: "Launch", color: "oklch(0.7 0.1 30)" }, { id: "t-unknown", label: null, color: null }],
       effortHours: null, loggedHours: null, isMilestone: false, recurrence: "none", archived: false, archivedAt: null,
       createdAt: "2026-10-05T18:04:38.310Z", updatedAt: "2026-10-05T18:04:38.312Z",
-      url: `https://www.kanbo.co.uk/?task=${OUTBOX_TASK.id}`,
+      url: `https://www.kanbo.co.uk/?task=${OUTBOX_TASK.id}`, slackPermalink: null,
     });
     for (const secret of ["ai_reason", "aiReason", "reactions", "followers", "scheduled", "planToday", "position", "custom"]) {
       expect(JSON.stringify(t)).not.toContain(secret === "ai_reason" ? "secret ranking" : `"${secret}"`);
@@ -74,6 +74,16 @@ describe("serialiseTask", () => {
     expect(r.assigneeId).toBe("aaaaaaaa-0000-4000-8000-000000000001");
     expect(r.subtaskIds).toEqual(["s1"]);
     expect(r.dependencyIds).toEqual([]);
+  });
+  it("slackPermalink (0049): a Slack message link from the row (webhook to_jsonb or the API's column), anything else null", () => {
+    const link = "https://acme.slack.com/archives/C024BE91L/p1700000000123456";
+    expect(serialiseTask({ ...OUTBOX_TASK, slack_permalink: link }).slackPermalink).toBe(link);
+    expect(serialiseTask({ ...OUTBOX_TASK, slack_permalink: `${link}?thread_ts=1700000000.123456&cid=C024BE91L` }).slackPermalink).toContain("thread_ts");
+    for (const bad of ["javascript:alert(1)", "https://evil.test/archives/C1/p1", "https://acme.slack.com.evil.test/archives/C1/p1", 7, ""]) {
+      expect(serialiseTask({ ...OUTBOX_TASK, slack_permalink: bad }).slackPermalink).toBeNull();
+    }
+    // before 0049 (no column): null, never missing
+    expect(serialiseTask(OUTBOX_TASK)).toHaveProperty("slackPermalink", null);
   });
   it("falls back safely on odd values; no url without an app address", () => {
     const r = serialiseTask({ id: "x", status: "weird", priority: 7, recurrence: null, due_time: "late" });

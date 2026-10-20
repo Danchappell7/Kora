@@ -265,7 +265,8 @@ for the new one's.
     "archivedAt": null,
     "createdAt": "2026-10-05T08:12:44.120Z",
     "updatedAt": "2026-10-05T08:12:44.120Z",
-    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b"
+    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b",
+    "slackPermalink": null
   }
 }
 ```
@@ -318,7 +319,8 @@ someone:
     "archivedAt": null,
     "createdAt": "2026-10-05T08:12:44.120Z",
     "updatedAt": "2026-10-05T09:41:10.532Z",
-    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b"
+    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b",
+    "slackPermalink": null
   },
   "changes": [
     "assigneeId",
@@ -372,7 +374,8 @@ someone:
     "archivedAt": null,
     "createdAt": "2026-10-05T08:12:44.120Z",
     "updatedAt": "2026-10-05T15:02:31.004Z",
-    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b"
+    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b",
+    "slackPermalink": null
   }
 }
 ```
@@ -422,7 +425,8 @@ someone:
     "archivedAt": "2026-10-06T10:00:00.000Z",
     "createdAt": "2026-10-05T08:12:44.120Z",
     "updatedAt": "2026-10-05T15:02:31.004Z",
-    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b"
+    "url": "https://www.kanbo.co.uk/?task=0b6f4e2a-91c3-4d7e-8a5b-3c2d1e0f9a8b",
+    "slackPermalink": null
   },
   "deletion": "archived"
 }

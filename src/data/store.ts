@@ -188,6 +188,8 @@ interface TaskRow {
   task_dependencies?: { depends_on: string }[] | null;
   /** 0048 */
   cover_attachment_id?: string | null;
+  /** 0049: the Slack message it came from (written only by the Slack app; never sent from here) */
+  slack_permalink?: string | null;
 }
 
 function rowToTask(r: TaskRow): Task {
@@ -233,6 +235,7 @@ function rowToTask(r: TaskRow): Task {
     position: r.position ?? 0,
     createdBy: r.user_id ?? undefined,
     ...(r.cover_attachment_id !== undefined ? { coverAttachmentId: r.cover_attachment_id } : {}),
+    ...(r.slack_permalink ? { slackPermalink: r.slack_permalink } : {}),
   };
 }
 

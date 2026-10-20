@@ -12,6 +12,7 @@ import { TextField, PasswordField } from "./AuthFields";
 import { friendlyAuthError, type LinkError, type LinkType } from "./authLinks";
 import { GoogleButton, useGoogleSignIn } from "./GoogleButton";
 import { friendlyGoogleError, googleSignInEnabled, usesGoogle } from "./googleSignIn";
+import { isSlackLinkPath } from "../lib/slackLinkToken";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -92,7 +93,8 @@ function LinkBanner({ error }: { error: LinkError }) {
 export function PublicSite() {
   const { loading, linkError } = useAuth();
   // arriving from an expired or failed email link goes straight to the explanation
-  const [view, setView] = useState<"landing" | "auth" | "request">(() => (linkError ? "auth" : "landing"));
+  // (a Slack app link, /link/slack, opened signed out goes straight to signing in too: Root keeps its token)
+  const [view, setView] = useState<"landing" | "auth" | "request">(() => (linkError || isSlackLinkPath(window.location.pathname) ? "auth" : "landing"));
   const [startMode, setStartMode] = useState<Mode>("signin");
   // while the stored session is read, show the backdrop only — a signed-in
   // user shouldn't see the marketing page flash before their workspace

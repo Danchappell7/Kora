@@ -43,6 +43,7 @@ import { subscribeApprovals } from "../lib/approvals";
 import { PresenceAvatars, TypingIndicator, presenceKey, presenceMeFrom, usePresence, useTyping } from "./presence";
 import { CoverPicker } from "./tasks/CoverPicker";
 import { demoAwareBoardSettings, demoCoverAttachments } from "./board/boardDemo";
+import { SlackSourceChip } from "./slack/SlackSourceChip";
 
 // 0046: Notion pages on a task, loaded when a task first opens (it renders nothing until it knows there's something to show)
 // (if its code can't be fetched, the task simply shows no Notion section)
@@ -1793,6 +1794,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
             />
           )}
         </div>
+
+        {/* 0049: made from a Slack message (the Kanbo Slack app): "From Slack" opens it */}
+        {task.slackPermalink && <SlackSourceChip permalink={task.slackPermalink} />}
 
         {/* task reactions: shown once there are some, or when asked for from ⋯ */}
         {onToggleTaskReaction && !readOnly && (totalReacts > 0 || reactsOpen) && (

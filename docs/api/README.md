@@ -118,7 +118,9 @@ that opens it in Kanbo. Tasks in someone's Personal list have
 `workspaceId: null` and `projectId: "p-personal"`. A write to one task answers
 with the task exactly as `GET /tasks/{id}` shows it (with `subtaskIds` and
 `dependencyIds`) and its new `ETag`. Webhook payloads use the same shapes
-(without `subtaskIds` / `dependencyIds`).
+(without `subtaskIds` / `dependencyIds`). A task made from a Slack message
+with the Kanbo Slack app carries that message's link as `slackPermalink`
+(read-only; `null` otherwise).
 
 ### Filtering tasks
 

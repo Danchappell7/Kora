@@ -685,6 +685,42 @@ says it isn't switched on yet. The details are in
    `kanbo-daily-reminders` job stays as it is. Check them a few minutes later
    with notifications.md › 3.
 
+### Step 15: Kanbo for Slack (database update 0049)
+
+The Kanbo Slack app: `/kanbo Send the brief fri 3pm #launch @sana` adds a task
+from any channel (read like Quick capture), **More actions › Create a Kanbo
+task** turns a message into a task with a link back to it, Kanbo links
+pasted in Slack show a preview with **Complete** and **Open**, and the app's
+Home tab lists what's due. Everyone links their own Kanbo account first, and
+Kanbo always acts with that person's own access. Until these steps are done
+the app works as before (Settings says the Slack app "isn't switched on
+yet"). Everything, with copy boxes, is in
+[docs/integrations/slack-app.md](docs/integrations/slack-app.md); the app
+itself is made from
+[docs/integrations/slack-app-manifest.json](docs/integrations/slack-app-manifest.json).
+
+1. **Create the app in Slack** from the manifest and install it
+   (slack-app.md › Owner steps › 1).
+2. **Set its two secrets** (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`) with
+   the hidden-prompt command in slack-app.md › 2. Never paste them anywhere
+   else.
+3. **Run 0049** (needs 0043; works with or without 0048; safe to re-run):
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && supabase db query --linked -f supabase/migrations/0049_slack_app.sql && echo "0049 applied."; unset SUPABASE_ACCESS_TOKEN
+   ```
+4. **Deploy three functions**: `slack-app` (new; no JWT check: Slack signs its
+   requests), and `api` and `webhook-dispatch` again so tasks made from Slack
+   carry `slackPermalink` in the API and webhooks. Then press **Retry** next
+   to the Request URL on the Slack app's **Event Subscriptions** page.
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && R=htnchiljplrnjkwimgla && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && echo "All three functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   ```
+5. **Link yourself and choose the workspace**: type `/kanbo` in Slack, follow
+   the link, then **Settings › Calendar & integrations › Kanbo for Slack ›
+   Adds tasks to**.
+
 ---
 
 ## Reference
@@ -708,6 +744,7 @@ This matches `supabase/config.toml`. Deploy the "no" rows with
 | `calendar` | no | Google/Microsoft redirect back without a JWT. Every other action checks the user itself |
 | `stripe-webhook` | no | Stripe, checked by signature |
 | `metrics` | no | an external dashboard with `METRICS_TOKEN` |
+| `slack-app` | no | Slack (the Kanbo Slack app), checked by the app's signing secret; acts only for linked people, as them, under RLS (needs 0049) |
 
 ### Vercel (the app)
 

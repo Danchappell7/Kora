@@ -1,0 +1,111 @@
+/* ============================================================
+   KANBO — Kanbo for Slack: the Settings panel, the /link/slack page and
+   the task's "From Slack" chip.                                  [0049]
+   Built on Settings' kset-* rows (SettingsModal); this file only adds
+   what they don't have. Tokens are read with fallbacks; no
+   backdrop-filter; motion is 160ms and off under prefers-reduced-motion.
+   The live region (.kslka-live, role="status") stays in the accessibility
+   tree while empty: never display:none / visibility:hidden on it.
+   ============================================================ */
+
+/* a panel after another integration panel sits a group's distance below it */
+* + .kslka { margin-top: 28px; }
+.kslka .kset-group + .kset-group, .kslka .kslka-live + .kset-group, .kslka .kset-note + .kset-group { margin-top: 28px; }
+.kslka-checking { display: inline-flex; align-items: center; gap: 6px; }
+.kslka code, .kslka-page code {
+  padding: 1px 5px; border-radius: var(--r-xs, 4px); background: var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent));
+  font: 500 12px/18px var(--font-mono, ui-monospace, monospace); color: var(--ink);
+}
+
+/* ---- messages under the Slack workspaces card ---- */
+.kslka-live { min-height: 0; }
+.kslka-msg {
+  display: flex; align-items: flex-start; gap: 6px; margin: 8px 2px 0;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ok, var(--st-done)); text-wrap: pretty;
+}
+.kslka-msg > svg { flex-shrink: 0; margin-top: 1px; }
+.kslka-msg[data-tone="signal"] { font-weight: 500; color: var(--signal, var(--prio-urgent)); }
+
+/* ---- "Adds tasks to" ---- */
+.kslka-pick { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kslka-pick-label { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kslka-select {
+  height: var(--h-md, 32px); min-width: 160px; max-width: 260px; padding: 0 10px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.kslka-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kslka-select:disabled { opacity: 0.55; cursor: progress; }
+
+/* ---- unlink confirmation ---- */
+.kslka-acts-inline { display: flex; gap: 8px; }
+
+/* ---- how to use ---- */
+.kslka-howto { display: grid; gap: 12px; padding: 14px 16px 16px; }
+.kslka-howto-lead { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kslka-examples { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.kslka-examples li { display: grid; gap: 2px; }
+.kslka-examples code { justify-self: start; overflow-wrap: anywhere; }
+.kslka-examples span { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kslka-tips { display: grid; gap: 6px; margin: 0; padding: 0 0 0 18px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kslka-tips strong { font-weight: 600; color: var(--ink); }
+
+/* ---- /link/slack ---- */
+.kslka-page {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px 16px; overflow-y: auto;
+  background: var(--bg, var(--surface));
+}
+.kslka-card {
+  width: min(480px, 100%); padding: 28px 24px 24px; border-radius: var(--r-xl, 16px);
+  background: var(--surface-raised, var(--surface)); box-shadow: 0 0 0 1px var(--hairline-strong), var(--e2-drop, 0 8px 24px oklch(0 0 0 / 0.12));
+  animation: kslkaIn var(--d-2, 160ms) var(--ease, ease);
+}
+.kslka-card:focus { outline: none; }
+@keyframes kslkaIn { from { opacity: 0; translate: 0 6px; } }
+.kslka-mark {
+  display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 16px; border-radius: var(--r-lg, 12px);
+  background: var(--accent-dim, color-mix(in oklch, var(--accent) 14%, transparent)); color: var(--accent-text, var(--accent));
+}
+.kslka-title { margin: 0 0 10px; font: 600 20px/28px var(--font-head, var(--font-display)); letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; text-wrap: balance; }
+.kslka-title:focus { outline: none; }
+.kslka-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.kslka-body { margin: 0 0 12px; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kslka-body strong { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.kslka-body .kspin { display: inline-block; vertical-align: -2px; margin-right: 6px; }
+.kslka-example { margin: 0 0 12px; }
+.kslka-note { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kslka-warn {
+  display: flex; gap: 8px; align-items: flex-start; margin: 4px 0 12px; padding: 10px 12px; border-radius: var(--r-md, 8px);
+  background: var(--signal-tint, color-mix(in oklch, var(--signal, oklch(0.6 0.2 25)) 10%, transparent));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.kslka-warn > svg { flex-shrink: 0; margin-top: 2px; color: var(--signal, var(--prio-urgent)); }
+.kslka-warn p { margin: 0; text-wrap: pretty; }
+.kslka-check { display: flex; align-items: center; gap: 8px; min-height: 32px; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); cursor: pointer; }
+.kslka-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.kslka-check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kslka-err { min-height: 0; margin: 4px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); }
+.kslka-err:empty { margin: 0; }
+.kslka-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* ---- the task's "From Slack" chip ---- */
+.kslka-src-wrap { margin: 4px 0 0; }
+.kslka-src {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border-radius: var(--pill, 999px);
+  background: var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent)); color: var(--ink-2);
+  font: 600 12px/16px var(--font-ui, var(--font-display)); text-decoration: none;
+  transition: background-color var(--d-1, 90ms) var(--ease, ease), color var(--d-1, 90ms) var(--ease, ease);
+}
+.kslka-src:hover { background: var(--fill-2, color-mix(in oklch, var(--ink) 10%, transparent)); color: var(--ink); }
+.kslka-src:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kslka-src > svg:last-child { color: var(--ink-3); }
+
+@media (max-width: 480px) {
+  .kslka-card { padding: 24px 16px 16px; }
+  .kslka-acts > .kbtn { flex: 1 1 auto; }
+  .kslka-select { max-width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kslka-card { animation: none; }
+  .kslka-src { transition: none; }
+}

@@ -17,6 +17,7 @@
 //
 // Pure module: vitest covers it (serialise.test.ts).
 // ============================================================
+import { slackPermalinkOf } from "../slackPermalink.ts";
 
 export type ApiStatus = "todo" | "progress" | "review" | "blocked" | "done";
 export type ApiPriority = "low" | "medium" | "high" | "urgent";
@@ -65,6 +66,8 @@ export interface ApiTask {
   updatedAt: string | null;
   /** opens the task in Kanbo */
   url: string | null;
+  /** the Slack message the task was made from (the Kanbo Slack app, 0049); null otherwise */
+  slackPermalink: string | null;
   /** GET /tasks/:id only: its sub-tasks */
   subtaskIds?: string[];
   /** GET /tasks/:id only: tasks this one waits for */
@@ -354,6 +357,7 @@ export function serialiseTask(row: Row, ctx?: SerialiseCtx): ApiTask {
     createdAt: isoTime(row.created_at),
     updatedAt: isoTime(row.updated_at),
     url: taskUrl(id, ctx),
+    slackPermalink: slackPermalinkOf(row.slack_permalink),
   };
   if (row.subtask_ids !== undefined) out.subtaskIds = strArray(row.subtask_ids);
   if (row.dependency_ids !== undefined) out.dependencyIds = strArray(row.dependency_ids);

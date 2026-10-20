@@ -41,6 +41,7 @@ import {
 } from "./validate.ts";
 import type { RouteContext } from "./router.ts";
 import type { Tx } from "./types.ts";
+import { slackPermalinkOf } from "../slackPermalink.ts";
 
 type Row = Record<string, unknown>;
 const s = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
@@ -53,7 +54,8 @@ const TASK_COLS = `t.id::text as id, t.user_id::text as user_id, t.title, t.desc
   t.project_id, t.section_id, t.parent_id::text as parent_id, t.assignee_id, t.workspace_id::text as workspace_id,
   t.due_date::text as due_date, t.due_time, t.start_date::text as start_date, t.completed_at::text as completed_at,
   t.tags, t.effort_hours::float8 as effort_hours, t.logged_hours::float8 as logged_hours, t.is_milestone, t.recurrence,
-  t.archived_at, t.created_at, t.updated_at`;
+  t.archived_at, t.created_at, t.updated_at,
+  (to_jsonb(t) ->> 'slack_permalink') as slack_permalink`;
 
 const PROJECT_COLS = `p.id::text as id, p.user_id::text as user_id, p.workspace_id::text as workspace_id, p.name, p.emoji,
   p.color, p.description, p.status, p.owner_id::text as owner_id, p.contributor_ids::text[] as contributor_ids,
@@ -540,7 +542,20 @@ async function taskAnswer(ctx: RouteContext, task: Awaited<ReturnType<typeof ful
   return ok(ctx, task, status, { ...headers, ETag: await etagFor(task) });
 }
 
-export async function createTask(ctx: RouteContext): Promise<Response> {
+export function createTask(ctx: RouteContext): Promise<Response> {
+  return createTaskWith(ctx);
+}
+
+/** What Kanbo's own integrations may add to a new task that API callers can't (0049). */
+export interface TaskCreateExtras {
+  /** the Slack message the task was made from (the Slack app); must be a Slack message link */
+  slackPermalink?: string | null;
+}
+
+/** POST /tasks, for the API and for Kanbo's own integrations (the Slack app also records the Slack message). */
+export async function createTaskWith(ctx: RouteContext, extras: TaskCreateExtras = {}): Promise<Response> {
+  const permalink = extras.slackPermalink ? slackPermalinkOf(extras.slackPermalink) : null;
+  if (extras.slackPermalink && !permalink) throw invalid({ slackPermalink: "That isn't a Slack message link." });
   const c = checkTaskCreate(ctx.body ?? {});
   if (!c.ok) throw invalid(c.fields);
   const v = c.value;
@@ -588,12 +603,12 @@ export async function createTask(ctx: RouteContext): Promise<Response> {
     const q = new Sql();
     const made = await tx.query<{ id: string }>(
       `insert into public.tasks (user_id, title, description, status, priority, project_id, section_id, parent_id,
-         assignee_id, workspace_id, due_date, due_time, start_date, completed_at, tags, effort_hours, position)
+         assignee_id, workspace_id, due_date, due_time, start_date, completed_at, tags, effort_hours, position${permalink ? ", slack_permalink" : ""})
        values (${q.p(me)}::uuid, ${q.p(v.title)}, ${q.p(v.description ?? "")}, ${q.p(status)}, ${q.p(fx.priority ?? v.priority ?? "medium")},
          ${q.p(target)}, ${q.p(fx.sectionId ?? v.sectionId ?? null)}, ${q.p(v.parentId ?? null)}::uuid, ${q.p(fx.assigneeId ?? assignee)}, ${q.p(ws)}::uuid,
          ${q.p(v.dueDate ?? null)}::date, ${q.p(v.dueTime ?? null)}, ${q.p(v.startDate ?? null)}::date,
          ${status === "done" ? "current_date" : "null"}, array(select jsonb_array_elements_text(${q.p(JSON.stringify(tags))}::jsonb)),
-         ${q.p(v.effortHours ?? null)}::numeric, extract(epoch from clock_timestamp()) * 1000)
+         ${q.p(v.effortHours ?? null)}::numeric, extract(epoch from clock_timestamp()) * 1000${permalink ? `, ${q.p(permalink)}` : ""})
        returning id::text as id`, q.params);
     return readBack(ctx, tx, made[0].id);
   });
