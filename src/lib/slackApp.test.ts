@@ -22,14 +22,19 @@ describe("parsers", () => {
     expect(s).toEqual({
       workspaceId: "w1", canManage: true,
       teams: [{ teamId: "TACME", teamName: "acme", connectedAt: "2026-10-20T10:00:00Z", isDefaultHere: true, defaultWorkspaceId: "w1",
-        defaultWorkspaceName: "Acme", defaultElsewhere: false, linked: true, slackAdmin: true, canSetDefault: true, canClear: true }],
+        defaultWorkspaceName: "Acme", defaultElsewhere: false, linked: true, slackAdmin: true, slackAdminStale: false, canSetDefault: true, canClear: true }],
       links: [{ teamId: "TACME", teamName: "acme", slackUserId: "U1", slackUserName: "Mia", linkedAt: "2026-10-20T10:00:00Z" }],
     });
     expect(parseSlackAppStatus(null)).toBeNull();
     expect(parseSlackAppStatus({ teams: "x" })).toBeNull();
     // a server before these fields: nobody is taken for a Slack admin
     expect(parseSlackAppStatus({ teams: [{ team_id: "T1", linked: true, can_set_default: true }], links: [] })?.teams[0])
-      .toMatchObject({ slackAdmin: false, canSetDefault: true, canClear: false });
+      .toMatchObject({ slackAdmin: false, slackAdminStale: false, canSetDefault: true, canClear: false });
+    // Slack said "owner or admin" over a day ago: not a Slack admin until Kanbo asks again
+    expect(parseSlackAppStatus({ teams: [{ team_id: "T1", linked: true, slack_admin: false, slack_admin_stale: true }], links: [] })?.teams[0])
+      .toMatchObject({ slackAdmin: false, slackAdminStale: true });
+    expect(parseSlackAppStatus({ teams: [{ team_id: "T1", linked: true, slack_admin: true, slack_admin_stale: true }], links: [] })?.teams[0])
+      .toMatchObject({ slackAdmin: true, slackAdminStale: false });
   });
   it("slack_link_preview() JSON", () => {
     expect(parseSlackLinkPreview({ status: "ok", team_id: "T", team_name: "acme", slack_user_name: "Mia", has_email: true, email_matches: false, already_linked: false }))
@@ -44,6 +49,8 @@ describe("parsers", () => {
     expect(slackAppFailure({ message: "invalid link" }).reason).toBe("invalid_link");
     expect(slackAppFailure({ message: "email mismatch" }).reason).toBe("email_mismatch");
     expect(slackAppFailure({ message: "not allowed" }).reason).toBe("not_allowed");
+    expect(slackAppFailure({ message: "slack admin check needed" })).toMatchObject({ reason: "recheck", message: SLACK_APP_COPY.recheck });
+    expect(SLACK_APP_COPY.recheck).toMatch(/Home tab/);
     expect(slackAppFailure({ code: "PGRST202", message: "Could not find the function public.slack_app_status" }).reason).toBe("unavailable");
     expect(slackAppFailure(new TypeError("Failed to fetch")).reason).toBe("network");
     expect(slackAppFailure({ message: "boom" }).reason).toBe("unknown");

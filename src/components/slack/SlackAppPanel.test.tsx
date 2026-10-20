@@ -72,7 +72,7 @@ describe("SlackAppPanel", () => {
 
   it("linked, but not a Slack admin: can only set it back to Personal lists from the workspace it points at", async () => {
     const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: true, defaultWorkspaceId: WS, defaultWorkspaceName: "Foundrise",
-      defaultElsewhere: false, linked: true, slackAdmin: false, canSetDefault: false, canClear: true };
+      defaultElsewhere: false, linked: true, slackAdmin: false, slackAdminStale: false, canSetDefault: false, canClear: true };
     vi.spyOn(lib, "loadSlackAppStatus").mockResolvedValue({ workspaceId: WS, canManage: true, teams: [team], links: [] });
     const runs = [...RUNS, { id: "ws-mine", name: "My other team", role: "owner" as const }];
     render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={runs} />);
@@ -85,7 +85,7 @@ describe("SlackAppPanel", () => {
 
   it("linked, not a Slack admin, nothing to clear: no picker, and why", async () => {
     const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: false, defaultWorkspaceId: null, defaultWorkspaceName: null,
-      defaultElsewhere: false, linked: true, slackAdmin: false, canSetDefault: false, canClear: false };
+      defaultElsewhere: false, linked: true, slackAdmin: false, slackAdminStale: false, canSetDefault: false, canClear: false };
     vi.spyOn(lib, "loadSlackAppStatus").mockResolvedValue({ workspaceId: WS, canManage: true, teams: [team], links: [] });
     render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);
     const g = await screen.findByRole("region", { name: "Kanbo for Slack" });
@@ -95,7 +95,7 @@ describe("SlackAppPanel", () => {
 
   it("a Slack admin can take it back from a workspace someone else pointed it at", async () => {
     const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: false, defaultWorkspaceId: null, defaultWorkspaceName: null,
-      defaultElsewhere: true, linked: true, slackAdmin: true, canSetDefault: true, canClear: true };
+      defaultElsewhere: true, linked: true, slackAdmin: true, slackAdminStale: false, canSetDefault: true, canClear: true };
     vi.spyOn(lib, "loadSlackAppStatus").mockResolvedValue({ workspaceId: WS, canManage: true, teams: [team], links: [] });
     const set = vi.spyOn(lib, "setSlackDefaultWorkspace").mockResolvedValue(null);
     render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);
@@ -104,6 +104,50 @@ describe("SlackAppPanel", () => {
     expect([...select.options].map((o) => [o.textContent, o.disabled])).toEqual([["Another workspace", true], ["Foundrise", false], ["No workspace (Personal lists)", false]]);
     fireEvent.change(select, { target: { value: WS } });
     await waitFor(() => expect(set).toHaveBeenCalledWith("TACME", WS));
+  });
+
+  it("Slack's word is over a day old: why, and Check again (after the Home tab or /kanbo), then the picker", async () => {
+    const base = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: false, defaultWorkspaceId: null, defaultWorkspaceName: null,
+      defaultElsewhere: true, linked: true, canClear: false };
+    const stale = { ...base, slackAdmin: false, slackAdminStale: true, canSetDefault: false };
+    const fresh = { ...base, slackAdmin: true, slackAdminStale: false, canSetDefault: true, canClear: true };
+    const load = vi.spyOn(lib, "loadSlackAppStatus")
+      .mockResolvedValueOnce({ workspaceId: WS, canManage: true, teams: [stale], links: [] })
+      .mockResolvedValueOnce({ workspaceId: WS, canManage: true, teams: [stale], links: [] })
+      .mockResolvedValueOnce({ workspaceId: WS, canManage: true, teams: [fresh], links: [] });
+    render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);
+    const g = await screen.findByRole("region", { name: "Kanbo for Slack" });
+    expect(await within(g).findByText(/Slack last confirmed over a day ago that you're an owner or admin there/)).toBeInTheDocument();
+    expect(within(g).queryByLabelText("Adds tasks to")).toBeNull();
+    const check = within(g).getByRole("button", { name: "Check again whether you're an owner or admin of acme.slack.com" });
+    check.focus();
+    // Slack hasn't been asked again yet: said so, and the button keeps focus
+    fireEvent.click(check);
+    expect(await screen.findByText(/Slack hasn't confirmed it again yet/)).toBeInTheDocument();
+    expect(check).toHaveFocus();
+    // …now it has: the picker, focused
+    fireEvent.click(check);
+    expect(await screen.findByText("Slack says you're an owner or admin of acme.slack.com. You can choose where its tasks go.")).toBeInTheDocument();
+    const select = within(g).getByLabelText("Adds tasks to");
+    await waitFor(() => expect(select).toHaveFocus());
+    expect(within(g).queryByRole("button", { name: /Check again/ })).toBeNull();
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it("choosing with Slack's word gone out of date: said how to fix it, and the row offers Check again", async () => {
+    const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: false, defaultWorkspaceId: null, defaultWorkspaceName: null,
+      defaultElsewhere: true, linked: true, canClear: false };
+    vi.spyOn(lib, "loadSlackAppStatus")
+      .mockResolvedValueOnce({ workspaceId: WS, canManage: true, teams: [{ ...team, slackAdmin: true, slackAdminStale: false, canSetDefault: true }], links: [] })
+      .mockResolvedValueOnce({ workspaceId: WS, canManage: true, teams: [{ ...team, slackAdmin: false, slackAdminStale: true, canSetDefault: false }], links: [] });
+    vi.spyOn(lib, "setSlackDefaultWorkspace").mockRejectedValueOnce(new SlackAppError("recheck", SLACK_APP_COPY.recheck));
+    render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);
+    const g = await screen.findByRole("region", { name: "Kanbo for Slack" });
+    fireEvent.change(await within(g).findByLabelText("Adds tasks to"), { target: { value: WS } });
+    expect(await screen.findByText(SLACK_APP_COPY.recheck)).toBeInTheDocument();
+    const check = await within(g).findByRole("button", { name: /Check again/ });
+    await waitFor(() => expect(check).toHaveFocus());
+    expect(within(g).queryByLabelText("Adds tasks to")).toBeNull();
   });
 
   it("a refusal is said, and stays", async () => {

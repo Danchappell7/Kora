@@ -5,7 +5,8 @@
 //
 // Slack calls this one address for the /kanbo slash command, buttons and
 // modals (interactivity), the modal's pickers (options loads) and events
-// (link previews, the Home tab): docs/integrations/slack-app-manifest.json.
+// (link previews, the Home tab, user_change: Slack demoting or deactivating an
+// owner/admin): docs/integrations/slack-app-manifest.json.
 // Everything is in ../_shared/slackAppHandler.ts (verified, routed, rate
 // limited, and run AS the linked Kanbo person with RLS); this file only
 // wires in the secrets, the database and Slack.

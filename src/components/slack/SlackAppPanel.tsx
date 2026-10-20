@@ -5,9 +5,12 @@
        (and any that adds tasks to this Kanbo workspace), and which Kanbo
        workspace its /kanbo adds tasks to. Choosing it ("Adds tasks to")
        takes both sides: an owner or admin of the Slack workspace (Slack says
-       so) who runs the Kanbo workspace, whatever it pointed at before. An
-       owner or admin of the Kanbo workspace it points at can set it back to
-       Personal lists (the database decides: slack_app_set_default).
+       so, and has in the last 24 hours) who runs the Kanbo workspace,
+       whatever it pointed at before. When Slack's word is older than that,
+       the row says how to have Kanbo ask again (the Home tab or /kanbo) and
+       offers Check again. An owner or admin of the Kanbo workspace it points
+       at can set it back to Personal lists (the database decides:
+       slack_app_set_default).
      • Your linked Slack accounts, each with Unlink (asks first).
      • How to use: /kanbo examples, the message shortcut, link previews.
    Before migration 0049 it explains the Slack app isn't switched on yet.
@@ -106,6 +109,45 @@ export function SlackAppPanel({ workspaceId, workspaceName, role, workspaces = [
       const name = target ? runs.find((w) => w.id === target)?.name ?? "that workspace" : null;
       setMsg({ tone: "ok", text: name ? `/kanbo in ${label} now adds tasks to ${name}.` : `/kanbo in ${label} now adds tasks to people's Personal lists.` });
     } catch (e) {
+      const f = slackAppFailure(e);
+      if (!alive.current) return;
+      setMsg({ tone: "signal", text: f.message });
+      if (f.reason === "recheck") {
+        // Slack's word went out of date since this page read it: show the row as it is now (Check again)
+        const s = await loadSlackAppStatus(workspaceId).catch(() => null);
+        const now = s?.teams.find((t) => t.teamId === team.teamId);
+        if (s && alive.current) {
+          setStatus(s);
+          const c = now ? teamControls(now, runs) : null;
+          focusAfter.current = c?.stale ? `${ids}-check-${team.teamId}` : c?.canChoose ? `${ids}-ws-${team.teamId}` : `${ids}-links`;
+        }
+      }
+    } finally {
+      if (alive.current) setBusy(null);
+    }
+  };
+
+  // after the Home tab or /kanbo has asked Slack again: read what Slack said now
+  const recheck = async (team: SlackAppTeam) => {
+    if (busy) return;
+    setBusy(`check:${team.teamId}`); setMsg(null);
+    try {
+      const s = await loadSlackAppStatus(workspaceId);
+      if (!alive.current) return;
+      setStatus(s);
+      const now = s?.teams.find((t) => t.teamId === team.teamId);
+      const label = slackTeamLabel(team.teamName, team.teamId);
+      if (now?.slackAdmin) {
+        setMsg({ tone: "ok", text: `Slack says you're an owner or admin of ${label}. You can choose where its tasks go.` });
+        focusAfter.current = `${ids}-ws-${team.teamId}`;
+      } else if (now?.slackAdminStale) {
+        setMsg({ tone: "signal", text: "Slack hasn't confirmed it again yet. In Slack, open the Kanbo app's Home tab (or type /kanbo), then check again." });
+      } else {
+        setMsg({ tone: "signal", text: `Slack says you're not an owner or admin of ${label} now, so you can't choose where its tasks go.` });
+        // the button has gone: the picker if there's still one (set back to Personal lists), else the next section
+        focusAfter.current = now && teamControls(now, runs).canChoose ? `${ids}-ws-${team.teamId}` : `${ids}-links`;
+      }
+    } catch (e) {
       if (alive.current) setMsg({ tone: "signal", text: slackAppFailure(e).message });
     } finally {
       if (alive.current) setBusy(null);
@@ -153,7 +195,8 @@ export function SlackAppPanel({ workspaceId, workspaceName, role, workspaces = [
     <SetRow icon={slackIcon} label="No Slack workspace yet"
       desc={<>Once the Kanbo app is in your Slack workspace, type <code>/kanbo</code> there and follow the link to connect your account. {status.canManage ? `Then, if you're an owner or admin of that Slack workspace, you can choose ${wsName} here as the workspace it adds tasks to.` : "Then an owner or admin of the Slack workspace can choose which Kanbo workspace it adds tasks to."}</>} />
   ) : status.teams.map((t) => (
-    <TeamRow key={t.teamId} ids={ids} team={t} wsName={wsName} runs={runs} busy={busy === `team:${t.teamId}`} anyBusy={!!busy} onChoose={(v) => void choose(t, v)} />
+    <TeamRow key={t.teamId} ids={ids} team={t} wsName={wsName} runs={runs} busy={busy === `team:${t.teamId}`} checking={busy === `check:${t.teamId}`}
+      anyBusy={!!busy} onChoose={(v) => void choose(t, v)} onRecheck={() => void recheck(t)} />
   ));
 
   const linkRows = !status ? null : status.links.length === 0 ? (
@@ -201,8 +244,22 @@ export function SlackAppPanel({ workspaceId, workspaceName, role, workspaces = [
   );
 }
 
-function TeamRow({ ids, team, wsName, runs, busy, anyBusy, onChoose }: {
-  ids: string; team: SlackAppTeam; wsName: string; runs: { id: string; name: string }[]; busy: boolean; anyBusy: boolean; onChoose: (v: string) => void;
+/**
+ * What a Slack workspace's row offers you. Choose any workspace you run: a Slack owner/admin there (Slack
+ * says so, and has in the last 24 hours). Otherwise, only set it back to Personal lists, when it points at
+ * a workspace you run (canClear). Slack's word over a day old (stale): Check again. The database decides.
+ */
+function teamControls(team: SlackAppTeam, runs: { id: string }[]) {
+  const current = team.defaultWorkspaceId ?? (team.defaultElsewhere ? ELSEWHERE : NONE);
+  const canPick = team.linked && team.slackAdmin && runs.length > 0;
+  const canClear = team.linked && team.canClear && current !== NONE;
+  const stale = team.linked && team.slackAdminStale && !team.slackAdmin && runs.length > 0;
+  return { current, canPick, canClear, canChoose: canPick || canClear, stale };
+}
+
+function TeamRow({ ids, team, wsName, runs, busy, checking, anyBusy, onChoose, onRecheck }: {
+  ids: string; team: SlackAppTeam; wsName: string; runs: { id: string; name: string }[]; busy: boolean; checking: boolean; anyBusy: boolean;
+  onChoose: (v: string) => void; onRecheck: () => void;
 }) {
   const label = slackTeamLabel(team.teamName, team.teamId);
   const where = team.isDefaultHere ? wsName : team.defaultWorkspaceName;
@@ -211,21 +268,23 @@ function TeamRow({ ids, team, wsName, runs, busy, anyBusy, onChoose }: {
     : where ? <>/kanbo adds tasks to {where}.</>
     : team.defaultElsewhere ? <>/kanbo adds tasks to another Kanbo workspace.</>
     : <>Not connected to a Kanbo workspace yet: /kanbo adds tasks to people's Personal lists.</>;
-  // choose any workspace you run: a Slack owner/admin there (Slack says so). Otherwise, only set it back
-  // to Personal lists, when it points at a workspace you run (canClear). The database decides either way.
-  const current = team.defaultWorkspaceId ?? (team.defaultElsewhere ? ELSEWHERE : NONE);
-  const canPick = team.linked && team.slackAdmin && runs.length > 0;
-  const canClear = team.linked && team.canClear && current !== NONE;
-  const canChoose = canPick || canClear;
+  const { current, canPick, canClear, canChoose, stale } = teamControls(team, runs);
   const offered = canPick ? runs : runs.filter((w) => w.id === current);
   const selectId = `${ids}-ws-${team.teamId}`;
   const why = canPick ? null
     : !team.linked ? " Link your own Slack account there to change it."
+    : stale ? <> Slack last confirmed over a day ago that you're an owner or admin there, so Kanbo needs to ask again before you can choose: in Slack, open the Kanbo app's <strong>Home</strong> tab (or type <code>/kanbo</code>), then choose <strong>Check again</strong>.</>
     : canClear ? " Only an owner or admin of the Slack workspace can point it at a different workspace."
     : " Only an owner or admin of the Slack workspace, who also runs a Kanbo workspace, can choose it.";
   return (
     <SetRow icon={slackIcon} label={label} desc={<>{desc}{why}</>}>
-      {canChoose && (
+      {(canChoose || stale) && (
+        <span className="kslka-ctl">
+        {stale && (
+          <Button size="sm" variant="ghost" icon="refresh" id={`${ids}-check-${team.teamId}`} loading={checking} disabled={anyBusy && !checking} onClick={onRecheck}
+            aria-label={`Check again whether you're an owner or admin of ${label}`}>Check again</Button>
+        )}
+        {canChoose && (
         <span className="kslka-pick">
           <label htmlFor={selectId} className="kslka-pick-label">Adds tasks to</label>
           <select id={selectId} className="kslka-select" value={current} disabled={anyBusy} aria-busy={busy || undefined}
@@ -237,6 +296,8 @@ function TeamRow({ ids, team, wsName, runs, busy, anyBusy, onChoose }: {
             {offered.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
             <option value={NONE}>No workspace (Personal lists)</option>
           </select>
+        </span>
+        )}
         </span>
       )}
     </SetRow>

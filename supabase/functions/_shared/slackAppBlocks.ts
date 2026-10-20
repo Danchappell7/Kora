@@ -5,8 +5,12 @@
 // names, Slack display names, workspace names) is escaped for mrkdwn
 // (& < >) or sent as plain_text, so nothing can @channel, mention anyone,
 // or hide a link behind other words; link labels also lose "|" (it would
-// end the label). Links are only ever Kanbo's own address (APP_URL) or a
-// Slack permalink. Slack's limits are enforced here: plain_text in buttons
+// end the label). Every mrkdwn text object is sent verbatim (verbatim:
+// true): Slack doesn't turn a bare URL, a #channel or an @name someone typed
+// into a link or a mention (by default it would, inside a Kanbo card the
+// whole channel may see). Links are only ever the <url|label> links built
+// here, to Kanbo's own address (APP_URL) or a Slack permalink, and those
+// still work verbatim. Slack's limits are enforced here: plain_text in buttons
 // and options ≤ 75, option values ≤ 150, section text ≤ 3,000, modal title
 // ≤ 24, private_metadata ≤ 3,000, ≤ 100 options, ≤ 50 blocks (100 in a view).
 //
@@ -47,7 +51,8 @@ export const LIMITS = { button: 75, option: 75, value: 150, section: 3000, modal
 
 type Json = Record<string, unknown>;
 const plain = (text: string, max: number = LIMITS.option, emoji = true) => ({ type: "plain_text", text: oneLine(text, max) || " ", emoji });
-const mrkdwn = (text: string) => ({ type: "mrkdwn", text: clip(text, LIMITS.section) });
+/** verbatim: Slack shows the text as written (no auto-linked URLs, #channels or @names); our own <url|label> links still work */
+const mrkdwn = (text: string) => ({ type: "mrkdwn", text: clip(text, LIMITS.section), verbatim: true });
 const section = (text: string, extra: Json = {}) => ({ type: "section", text: mrkdwn(text), ...extra });
 const context = (...lines: string[]) => ({ type: "context", elements: lines.filter(Boolean).map((t) => mrkdwn(t)) });
 const esc = (s: string | null | undefined, max = 200) => escapeMrkdwn(oneLine(String(s ?? ""), max));

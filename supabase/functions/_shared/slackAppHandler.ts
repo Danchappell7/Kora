@@ -9,7 +9,8 @@
 //     message_action         "Create a Kanbo task" on a message → the modal
 //     view_submission        the modal → a task
 //     block_suggestion       the modal's project / assignee pickers
-//   events (JSON)            url_verification · link_shared (unfurls) · app_home_opened
+//   events (JSON)            url_verification · link_shared (unfurls) · app_home_opened ·
+//                            user_change (Slack demoted, deactivated or promoted someone)
 //
 // In order, for every request:
 //   1. the Slack signature (slackAppVerify.ts) over the raw body: wrong,
@@ -223,16 +224,25 @@ async function slackProfile(deps: SlackAppDeps, slackUserId: string, ms: number)
   const p = obj(u.profile);
   const realName = str(p.real_name) || str(u.real_name) || null;
   const displayName = str(p.display_name) || null;
-  const grid = obj(u.enterprise_user);
   return {
     name: (realName || displayName || str(u.name) || null)?.slice(0, 200) ?? null,
     realName, displayName,
     email: str(p.email) || null,
     tz: str(u.tz) || null,
     bot: u.is_bot === true,
-    admin: u.is_bot !== true && u.deleted !== true
-      && (u.is_admin === true || u.is_owner === true || u.is_primary_owner === true || grid.is_admin === true || grid.is_owner === true),
+    admin: slackUserIsAdmin(u),
   };
+}
+
+/**
+ * Slack's user object (users.info, or a user_change event) → an owner or admin of the Slack workspace (or of
+ * its Enterprise Grid org) who is an active person: never a bot, never a deactivated account.
+ */
+export function slackUserIsAdmin(user: unknown): boolean {
+  const u = obj(user);
+  const grid = obj(u.enterprise_user);
+  return u.is_bot !== true && u.deleted !== true
+    && (u.is_admin === true || u.is_owner === true || u.is_primary_owner === true || grid.is_admin === true || grid.is_owner === true);
 }
 
 const busyMessage = (retryAfter: number) => noticeMessage(COPY.busy(retryAfter), { emoji: ":hourglass:" });
@@ -588,7 +598,8 @@ async function onEvent(body: Json, headers: Headers, deps: SlackAppDeps): Promis
   if (type !== "event_callback") return ack();
   const teamId = str(body.team_id);
   const ev = obj(body.event);
-  const slackUserId = str(ev.user);
+  // user_change carries the whole user object; every other event just its id
+  const slackUserId = str(ev.user) || str(obj(ev.user).id);
   if (!isSlackId(teamId) || !isSlackId(slackUserId)) return ack();
   const eventId = str(body.event_id);
   // a resend of an event we're already handling (or handled) is answered and dropped
@@ -601,9 +612,24 @@ async function onEvent(body: Json, headers: Headers, deps: SlackAppDeps): Promis
     if (over) return;
     if (str(ev.type) === "link_shared") return onLinkShared(deps, teamId, slackUserId, ev);
     if (str(ev.type) === "app_home_opened" && str(ev.tab) === "home") return onHomeOpened(deps, teamId, slackUserId);
+    if (str(ev.type) === "user_change") return onUserChange(deps, teamId, slackUserId, ev, body.event_time);
   })().catch((e) => deps.log("error", "slack-app: event failed", { error: safeErrorNote(e) }));
   deps.waitUntil(work);
   return ack();
+}
+
+/**
+ * Slack changed someone's account (user_change: their profile, role or status). For a LINKED person only, the
+ * owner/admin flag follows what Slack says now, as of the event's time: someone Slack demotes or deactivates
+ * loses the say over the Slack workspace's Kanbo workspace at once, not when they next use Kanbo. Never makes
+ * a link, never calls Slack, never answers anyone; Slack signed it (the gate) and it's de-duplicated.
+ */
+async function onUserChange(deps: SlackAppDeps, teamId: string, slackUserId: string, ev: Json, eventTime: unknown): Promise<void> {
+  const user = obj(ev.user);
+  if (str(user.id) !== slackUserId) return;
+  const secs = typeof eventTime === "number" && Number.isFinite(eventTime) && eventTime > 0 ? eventTime : null;
+  const asOf = secs !== null ? new Date(Math.min(secs * 1000, deps.now())) : null;
+  await refreshSlackAdmin(deps.db.service, teamId, slackUserId, slackUserIsAdmin(user), asOf);
 }
 
 /** Which Kanbo thing a pasted link is: ?task=<id> anywhere on Kanbo's site, or /p/<project id>. */

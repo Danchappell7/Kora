@@ -45,18 +45,30 @@ updates. Both sit in **Settings › Calendar & integrations**.
   and never personal tasks.
 - **Where a Slack workspace's tasks go is its own owners' call.** Choosing
   the Kanbo workspace takes both sides: an owner or admin of the Slack
-  workspace (Slack says so: `users.info`, checked when they link and again
-  whenever they use `/kanbo` or open the app's Home tab) who is also an owner
-  or admin of the Kanbo workspace. Anyone can make a Kanbo workspace of their
-  own, so Kanbo rights alone never decide, and nobody can hold a Slack
-  workspace by choosing first: a Slack owner or admin can always point it
-  elsewhere. An owner or admin of the Kanbo workspace it points at can always
-  set it back to Personal lists.
+  workspace who is also an owner or admin of the Kanbo workspace. Anyone can
+  make a Kanbo workspace of their own, so Kanbo rights alone never decide, and
+  nobody can hold a Slack workspace by choosing first: a Slack owner or admin
+  can always point it elsewhere. An owner or admin of the Kanbo workspace it
+  points at can always set it back to Personal lists.
+- **Slack's say-so has to be current.** Kanbo asks Slack (`users.info`) when
+  someone links, and again whenever they use `/kanbo` or open the app's Home
+  tab, and records when (`slack_user_links.slack_admin_checked_at`). The app
+  also listens for Slack's `user_change` event, so the moment Slack demotes or
+  deactivates an owner or admin, they lose the say. As a backstop, a "yes"
+  Slack hasn't confirmed for 24 hours decides nothing (`slack_admin_state`):
+  Settings says so and offers **Check again**, and the database refuses with
+  `slack admin check needed` until the person opens the Home tab or runs
+  `/kanbo` (Kanbo then asks Slack again). A late event never turns a newer
+  "no" back into a "yes".
 - **Secrets stay in function secrets.** `SLACK_BOT_TOKEN` and
   `SLACK_SIGNING_SECRET` live only in the slack-app function's secrets: never
   in the database, never in a reply, never in a log line.
 - **Everything shown in Slack is escaped** (`&`, `<`, `>`), so a task title
-  can't @channel, mention anyone or hide a link.
+  can't @channel, mention anyone or hide a link, and every `mrkdwn` text is
+  sent with `verbatim: true`, so Slack doesn't turn a URL, `#channel` or
+  `@name` someone typed into a link or a mention. The only links in a Kanbo
+  card are the ones Kanbo builds: to www.kanbo.co.uk, or the Slack message a
+  task came from.
 - **Rate limits** (0046's `api_rate_hit`): 20 commands, clicks and submissions
   a minute per Slack person, 120 picker searches and 60 events (checked first,
   linked or not), and 300 a minute per Slack workspace, which counts only
@@ -68,7 +80,7 @@ Who can do what:
 
 | | Owner / admin (linked in that Slack) | Member | Guest |
 |---|---|---|---|
-| Choose which Kanbo workspace a Slack workspace adds to | Only if they're also a Slack owner or admin there (whatever it points at now) | No | No |
+| Choose which Kanbo workspace a Slack workspace adds to | Only if they're also a Slack owner or admin there, as Slack has said in the last 24 hours (whatever it points at now) | No | No |
 | Set it back to Personal lists | Yes, when it points at their workspace (a Slack owner or admin: always) | No | No |
 | `/kanbo`, the message shortcut, Assign to me, Complete, Undo | Yes | Yes | Personal list only |
 | See link previews they share | Yes | Yes | Yes |
@@ -90,7 +102,12 @@ Who can do what:
 - **The Slack app**, made from `docs/integrations/slack-app-manifest.json`
   (bot scopes `commands`, `chat:write`, `links:read`, `links:write`,
   `users:read`, `users:read.email`; no message history: the message link comes
-  from `chat.getPermalink`, which needs no scope).
+  from `chat.getPermalink`, which needs no scope). Bot events:
+  `app_home_opened`, `link_shared` and `user_change` (Slack sends it whenever
+  someone's profile, role or status changes; for anyone who hasn't linked an
+  account it changes nothing). An app made from an earlier copy of the
+  manifest needs `user_change` added: **Event Subscriptions › Subscribe to bot
+  events › Add Bot User Event › user_change › Save Changes**.
 - **The web app** with the `/link/slack` page live on www.kanbo.co.uk before
   anyone clicks a link.
 
@@ -129,9 +146,10 @@ The step-by-step version with copy boxes is in the owner guide. In short:
    Slack** choose the workspace under **Adds tasks to**. Only an owner or
    admin of the Slack workspace (who runs the Kanbo workspace) can choose; if
    someone chose before you, choose again: a Slack owner or admin always can.
-   If Settings says you aren't one but you are, open the Kanbo app's **Home**
-   tab in Slack once (Kanbo checks with Slack again) and reload Settings. The
-   owner guide also has a one-line SQL fallback.
+   If Settings says you aren't one but you are, or that Slack last confirmed
+   it over a day ago, open the Kanbo app's **Home** tab in Slack once (Kanbo
+   checks with Slack again) and press **Check again** (or reload Settings).
+   The owner guide also has a one-line SQL fallback.
 6. **Try it**: `/kanbo Try Kanbo from Slack tomorrow 10am`.
 
 ## Checking it
@@ -170,4 +188,6 @@ never are.
   (`SlackAppPanel`, `SlackLinkPage`, `SlackSourceChip`).
 - Tests: `_shared/slackApp*.test.ts` (vitest, a stubbed Slack Web API), and the
   PGlite replay of every migration with attacks and full flows
-  (`scratchpad/pgtest-slack`: `slack0049.mjs`, `flows.mjs`).
+  (`scratchpad/pgtest-slack`: `slack0049.mjs`, `flows.mjs`, and `fresh.mjs`
+  for the Slack owner/admin say-so: `user_change`, the 24-hour limit, late
+  and forged events).

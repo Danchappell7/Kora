@@ -34,6 +34,9 @@ describe("the 0049 contract", () => {
     expect(rpc).toHaveBeenLastCalledWith("slack_app_set_default", { p_team: "TACME", p_ws: null });
     rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "not allowed" } });
     await expect(setSlackDefaultWorkspace("TACME", WS)).rejects.toMatchObject({ reason: "not_allowed" });
+    // Slack's "owner or admin" is over a day old: the Home tab or /kanbo asks again
+    rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "slack admin check needed" } });
+    await expect(setSlackDefaultWorkspace("TACME", WS)).rejects.toMatchObject({ reason: "recheck" });
   });
   it("preview and claim (with the explicit 'this is mine')", async () => {
     rpc.mockResolvedValue({ data: { status: "ok", team_id: "TACME", team_name: "acme", slack_user_name: "Mia", has_email: true, email_matches: true, already_linked: false }, error: null });

@@ -11,12 +11,16 @@
          { workspace_id, can_manage, teams: [{ team_id, team_name, connected_at,
            default_set_at, is_default_here, default_workspace_id,
            default_workspace_name, default_elsewhere, linked, slack_admin,
-           can_set_default, can_clear }],
+           slack_admin_stale, can_set_default, can_clear }],
            links: [{ team_id, team_name, slack_user_id, slack_user_name, linked_at }] }
-     rpc slack_app_set_default(p_team, p_ws | null) → status   ('not allowed')
-         choosing p_ws: a Slack owner/admin there (as Slack said when they linked)
-         who is owner/admin of p_ws, whatever it pointed at before; clearing:
-         that, or owner/admin of the Kanbo workspace it points at now
+     rpc slack_app_set_default(p_team, p_ws | null) → status
+         ('not allowed' | 'slack admin check needed')
+         choosing p_ws: a Slack owner/admin there (as Slack has said within the
+         last 24 hours: when they linked, used /kanbo or opened the Home tab, or
+         Slack's own user_change event) who is owner/admin of p_ws, whatever it
+         pointed at before; clearing: that, or owner/admin of the Kanbo
+         workspace it points at now. An older "owner/admin" decides nothing
+         ('slack admin check needed': the Home tab or /kanbo asks Slack again)
      rpc slack_link_preview(p_token) → { status: 'ok' | 'used' | 'expired', team_name,
          slack_user_name, expires_at, has_email, email_matches, already_linked } | null
      rpc claim_slack_link(p_token, p_accept_mismatch) → { team_id, team_name, slack_user_id,
@@ -52,8 +56,10 @@ export interface SlackAppTeam {
   defaultElsewhere: boolean;
   /** you have a Slack account linked there */
   linked: boolean;
-  /** …and Slack says you're an owner or admin of that Slack workspace (the say over where its tasks go) */
+  /** …and Slack says you're an owner or admin of that Slack workspace, as of the last 24 hours (the say over where its tasks go) */
   slackAdmin: boolean;
+  /** …Slack said so, but not in the last 24 hours: open the Kanbo Home tab in Slack (or run /kanbo) so Kanbo asks again */
+  slackAdminStale: boolean;
   /** you may point it at this workspace (a Slack owner/admin there, and owner/admin here) */
   canSetDefault: boolean;
   /** you may set it back to Personal lists (a Slack owner/admin there, or owner/admin of where it points now) */
@@ -87,10 +93,11 @@ export interface SlackLinkPreview {
 }
 export interface SlackLinkResult { teamId: string; teamName: string | null; slackUserId: string; slackUserName: string | null; linkedAt: string | null }
 
-export type SlackAppFailure = "not_allowed" | "invalid_link" | "used" | "expired" | "email_mismatch" | "unavailable" | "network" | "unknown";
+export type SlackAppFailure = "not_allowed" | "recheck" | "invalid_link" | "used" | "expired" | "email_mismatch" | "unavailable" | "network" | "unknown";
 
 export const SLACK_APP_COPY = {
   notAllowed: "You can't do that. Choosing the workspace takes an owner or admin of the Slack workspace (with their Slack account linked) who also runs the Kanbo workspace.",
+  recheck: "Kanbo needs to check with Slack that you're still an owner or admin there (it last checked over a day ago). In Slack, open the Kanbo app's Home tab or type /kanbo, then try again.",
   invalidLink: "This link isn't valid. Type /kanbo in Slack to get a new one.",
   used: "This link has already been used. Type /kanbo in Slack to get a new one.",
   expired: "This link has expired (they last 15 minutes). Type /kanbo in Slack to get a new one.",
@@ -128,6 +135,7 @@ export function parseSlackAppStatus(raw: unknown): SlackAppStatus | null {
       defaultElsewhere: t.default_elsewhere === true,
       linked: t.linked === true,
       slackAdmin: t.slack_admin === true,
+      slackAdminStale: t.slack_admin !== true && t.slack_admin_stale === true,
       canSetDefault: t.can_set_default === true,
       canClear: t.can_clear === true,
     })),
@@ -163,6 +171,7 @@ export function slackAppFailure(e: unknown): SlackAppError {
   if (/link expired/i.test(msg)) return new SlackAppError("expired", SLACK_APP_COPY.expired);
   if (/invalid link/i.test(msg)) return new SlackAppError("invalid_link", SLACK_APP_COPY.invalidLink);
   if (/email mismatch/i.test(msg)) return new SlackAppError("email_mismatch", SLACK_APP_COPY.emailMismatch);
+  if (/slack admin check needed/i.test(msg)) return new SlackAppError("recheck", SLACK_APP_COPY.recheck);
   if (/not allowed/i.test(msg) || code === "42501") return new SlackAppError("not_allowed", SLACK_APP_COPY.notAllowed);
   if (code === "PGRST202" || code === "42883" || code === "42P01" || code === "PGRST205" || /could not find the function|does not exist|schema cache/i.test(msg)) {
     return new SlackAppError("unavailable", SLACK_APP_COPY.unavailable);
@@ -190,7 +199,7 @@ function demoStatus(ws: string | null): SlackAppStatus {
     teamId: "T0FOUNDRISE", teamName: "foundrise", connectedAt: "2026-10-01T09:00:00.000Z",
     isDefaultHere: !!ws && demo.defaultWs === ws, defaultWorkspaceId: demo.defaultWs, defaultWorkspaceName: demo.defaultWs === DEMO_WS ? "Foundrise" : null,
     // demo: your linked Slack account is a Slack admin there, and you run Foundrise (elsewhere you're a member)
-    defaultElsewhere: !!demo.defaultWs && demo.defaultWs !== ws, linked, slackAdmin: linked,
+    defaultElsewhere: !!demo.defaultWs && demo.defaultWs !== ws, linked, slackAdmin: linked, slackAdminStale: false,
     canSetDefault: linked && ws === DEMO_WS, canClear: linked && ws === DEMO_WS && !!demo.defaultWs,
   };
   return { workspaceId: ws, canManage: ws === DEMO_WS, teams: linked || (ws && demo.defaultWs === ws) ? [team] : [], links: demo.links.map((l) => ({ ...l })) };

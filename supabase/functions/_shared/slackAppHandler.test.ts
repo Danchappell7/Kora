@@ -310,6 +310,46 @@ describe("events", () => {
     await h.settle();
     expect(h.calls.filter((c) => c.method === "views.publish")).toHaveLength(1);
   });
+  it("user_change: the owner/admin flag follows Slack at once (as of the event's time); nobody is linked, called or told", async () => {
+    const h = harness({ linked: true });
+    const at = Math.floor(Date.now() / 1000) - 30;
+    const change = (id: string, user: Record<string, unknown>, eventTime: unknown = at) =>
+      h.run(event({ type: "event_callback", team_id: "TACME", event_id: `EvU${id}`, event_time: eventTime, event: { type: "user_change", user: { id: "UOLIVE", ...user } } }));
+    const refreshes = () => h.sql.map((q, i) => ({ q, p: h.params[i] })).filter((x) => /update public\.slack_user_links/.test(x.q)).map((x) => x.p);
+    expect((await change("1", { is_admin: false, is_owner: false })).status).toBe(200);
+    await change("2", { is_admin: true, deleted: true });                            // deactivated
+    await change("3", { is_owner: true });                                          // promoted
+    await change("4", { is_bot: true, is_admin: true });                            // a bot never counts
+    await change("5", { enterprise_user: { is_admin: true } }, "soon");             // Grid org admin; no usable time
+    await change("6", { is_admin: true }, Math.floor(Date.now() / 1000) + 3600);   // a time ahead of ours: now
+    await h.settle();
+    const r = refreshes();
+    expect(r.map((p) => p.slice(0, 3))).toEqual([
+      ["TACME", "UOLIVE", false], ["TACME", "UOLIVE", false], ["TACME", "UOLIVE", true], ["TACME", "UOLIVE", false], ["TACME", "UOLIVE", true], ["TACME", "UOLIVE", true],
+    ]);
+    expect(r[0][3]).toBe(new Date(at * 1000).toISOString());
+    expect(r[4][3]).toBeNull();
+    expect(Date.parse(String(r[5][3]))).toBeLessThanOrEqual(Date.now());
+    expect(h.calls).toEqual([]);
+    expect(h.responds).toEqual([]);
+    expect(h.asUser).toEqual([]);
+    expect(h.sql.some((q) => /insert into public\.slack_(user_links|link_requests|teams)/.test(q))).toBe(false);
+  });
+  it("user_change: a malformed user or a user object for someone else changes nothing", async () => {
+    const h = harness({ linked: true });
+    await h.run(event({ type: "event_callback", team_id: "TACME", event_id: "EvU7", event: { type: "user_change", user: { id: "bad id", is_admin: true } } }));
+    await h.run(event({ type: "event_callback", team_id: "TACME", event_id: "EvU8", event: { type: "user_change", user: "UOLIVE" } }));
+    await h.settle();
+    expect(h.sql.some((q) => /update public\.slack_user_links/.test(q))).toBe(false);
+  });
+  it("using /kanbo or opening the Home tab refreshes the flag from users.info (the database's clock)", async () => {
+    const h = harness({ linked: true, ws: null, slackAdmin: true });
+    await h.run(event({ type: "event_callback", team_id: "TACME", event_id: "EvH1", event: { type: "app_home_opened", user: "UMIA", tab: "home" } }));
+    await h.settle();
+    const at = h.sql.findIndex((q) => /update public\.slack_user_links/.test(q));
+    expect(at).toBeGreaterThan(-1);
+    expect(h.params[at]).toEqual(["TACME", "UMIA", true, null]);
+  });
   it("link_shared from someone unlinked: no unfurl, no task read", async () => {
     const h = harness({ linked: false });
     await h.run(event({ type: "event_callback", team_id: "TACME", event_id: "Ev02", event: { type: "link_shared", user: "UNEW", channel: "C1", message_ts: "1.2",

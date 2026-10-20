@@ -7,21 +7,27 @@
 --      Kanbo workspace each one adds tasks to (default_workspace_id). No
 --      client reads the table: members see slack_app_status(ws). Choosing
 --      it takes both sides' say-so (slack_app_set_default(team, ws)): an
---      owner or admin OF THE SLACK WORKSPACE (Slack says so: users.info, as
---      their account was linked) who is also an owner or admin of the Kanbo
---      workspace. Anyone can make a Kanbo workspace of their own, so Kanbo
---      rights alone never decide where a Slack workspace's tasks go; a
---      Slack owner/admin can always point it somewhere else, so nobody can
---      squat it. Clearing it (back to Personal lists): that Slack
---      owner/admin, or an owner/admin of the Kanbo workspace it points at.
+--      owner or admin OF THE SLACK WORKSPACE (Slack says so, and has said so
+--      in the last 24 hours: slack_admin_state) who is also an owner or
+--      admin of the Kanbo workspace. Anyone can make a Kanbo workspace of
+--      their own, so Kanbo rights alone never decide where a Slack
+--      workspace's tasks go; a Slack owner/admin can always point it
+--      somewhere else, so nobody can squat it. Clearing it (back to
+--      Personal lists): that Slack owner/admin, or an owner/admin of the
+--      Kanbo workspace it points at.
 --   2. slack_user_links: "this Slack person is this Kanbo person". A Slack
 --      user id means nothing to Kanbo until its owner links it: the
 --      slack-app function only ever acts for a linked person, and always AS
 --      them (RLS). Your own rows: read and delete (Unlink) only; links are
 --      only ever made by claim_slack_link(). One Kanbo person may link
 --      several Slack accounts (several Slack workspaces). slack_admin: Slack
---      says this person is an owner or admin of that Slack workspace (set
---      at linking, kept current by the slack-app function).
+--      says this person is an owner or admin of that Slack workspace, as of
+--      slack_admin_checked_at (users.info when the link was offered; again
+--      whenever they use /kanbo or open the Home tab; and Slack's own
+--      user_change event the moment Slack demotes or deactivates them). A
+--      flag Slack hasn't confirmed for 24 hours decides nothing: someone
+--      Slack has since demoted can't use an old "yes" (they're told to open
+--      the Home tab or run /kanbo, so Kanbo asks Slack again).
 --   3. slack_link_requests (service only): the one-time "Link your Kanbo
 --      account" link /kanbo shows an unlinked person, stored as the SHA-256
 --      of a 256-bit random token the slack-app function made. 15 minutes,
@@ -88,8 +94,10 @@ create table if not exists public.slack_user_links (
 alter table public.slack_user_links drop constraint if exists slack_user_links_shape;
 alter table public.slack_user_links add constraint slack_user_links_shape check (
   slack_user_id ~ '^[A-Z0-9]{2,32}$' and (slack_user_name is null or length(slack_user_name) <= 200));
--- Slack says they're an owner or admin of that Slack workspace (users.info is_owner / is_admin)
+-- Slack says they're an owner or admin of that Slack workspace (users.info is_owner / is_admin)…
 alter table public.slack_user_links add column if not exists slack_admin boolean not null default false;
+-- …as of when Slack last said so (null: never confirmed, which counts as out of date)
+alter table public.slack_user_links add column if not exists slack_admin_checked_at timestamptz;
 create index if not exists slack_user_links_user_idx on public.slack_user_links (user_id);
 alter table public.slack_user_links enable row level security;
 revoke all on public.slack_user_links from anon, authenticated;
@@ -155,6 +163,21 @@ returns text language sql immutable set search_path = pg_catalog as $$
 $$;
 revoke execute on function public.slack_link_token_hash(text) from public, anon, authenticated;
 
+-- Is this Kanbo person an owner or admin of this Slack workspace, as Slack
+-- says? 'current': one of their links there says so, confirmed by Slack in
+-- the last 24 hours. 'stale': it said so, but not in the last 24 hours (Slack
+-- may have demoted or deactivated them since: it decides nothing until Kanbo
+-- asks again). 'none': no. Only for the functions below (no client calls it).
+create or replace function public.slack_admin_state(p_team text, p_user uuid)
+returns text language sql stable set search_path = public as $$
+  select case
+    when bool_or(l.slack_admin and l.slack_admin_checked_at > now() - interval '24 hours') then 'current'
+    when bool_or(l.slack_admin) then 'stale'
+    else 'none' end
+    from public.slack_user_links l where l.team_id = p_team and l.user_id = p_user;
+$$;
+revoke execute on function public.slack_admin_state(text, uuid) from public, anon, authenticated;
+
 -- What the Slack app looks like from a Kanbo workspace (null for anyone who
 -- isn't in it; p_ws null = just your own links). Never another person's links.
 --   teams: the Slack workspaces you've linked an account in, and any whose
@@ -162,8 +185,11 @@ revoke execute on function public.slack_link_token_hash(text) from public, anon,
 --          is_default_here, default_workspace_id / _name (only when you're in
 --          that workspace; default_elsewhere says it points somewhere else),
 --          linked (you have an account linked there), slack_admin (…as a
---          Slack owner/admin), can_set_default (you may point it at THIS
---          workspace), can_clear (you may set it back to Personal lists)
+--          Slack owner/admin, confirmed by Slack in the last 24 hours),
+--          slack_admin_stale (…Slack said so, but not in the last 24 hours:
+--          open the Home tab or run /kanbo so Kanbo asks again),
+--          can_set_default (you may point it at THIS workspace), can_clear
+--          (you may set it back to Personal lists)
 --   links: your own linked Slack accounts
 create or replace function public.slack_app_status(p_ws uuid)
 returns jsonb language plpgsql security definer stable set search_path = public as $$
@@ -191,12 +217,13 @@ begin
                                          then (select w.name from public.workspaces w where w.id = t.default_workspace_id) end,
           'default_elsewhere', t.default_workspace_id is not null and t.default_workspace_id is distinct from p_ws,
           'linked', exists (select 1 from public.slack_user_links l where l.team_id = t.team_id and l.user_id = me),
-          'slack_admin', exists (select 1 from public.slack_user_links l where l.team_id = t.team_id and l.user_id = me and l.slack_admin),
-          'can_set_default', role in ('owner', 'admin')
-                             and exists (select 1 from public.slack_user_links l where l.team_id = t.team_id and l.user_id = me and l.slack_admin),
+          'slack_admin', public.slack_admin_state(t.team_id, me) = 'current',
+          'slack_admin_stale', public.slack_admin_state(t.team_id, me) = 'stale',
+          'can_set_default', role in ('owner', 'admin') and public.slack_admin_state(t.team_id, me) = 'current',
           'can_clear', t.default_workspace_id is not null
-                       and exists (select 1 from public.slack_user_links l where l.team_id = t.team_id and l.user_id = me
-                                      and (l.slack_admin or public.ws_role(t.default_workspace_id) in ('owner', 'admin'))))
+                       and exists (select 1 from public.slack_user_links l where l.team_id = t.team_id and l.user_id = me)
+                       and (public.slack_admin_state(t.team_id, me) = 'current'
+                            or public.ws_role(t.default_workspace_id) in ('owner', 'admin')))
         order by lower(coalesce(t.team_name, t.team_id)), t.team_id)
         from public.slack_teams t
        where exists (select 1 from public.slack_user_links l where l.team_id = t.team_id and l.user_id = me)
@@ -215,30 +242,39 @@ end; $$;
 
 -- Point a Slack workspace's /kanbo at a Kanbo workspace (p_ws null = at none).
 -- You must have linked your own Slack account in that Slack workspace.
---   choosing p_ws: Slack says you're an owner or admin of the Slack workspace,
+--   choosing p_ws: Slack says you're an owner or admin of the Slack workspace
+--     (and has said so in the last 24 hours: slack_admin_state 'current'),
 --     and you're an owner or admin of p_ws. Whatever it pointed at before:
 --     the Slack workspace's own owners and admins decide where its tasks go
 --     (anyone can make a Kanbo workspace and be its owner, so that alone
 --     never wins, and nobody can hold a Slack workspace by getting there first).
---   clearing it: a Slack owner/admin there, or an owner/admin of the Kanbo
---     workspace it points at now (a Kanbo workspace can always stop taking
---     tasks from a Slack workspace).
+--   clearing it: a Slack owner/admin there (as above), or an owner/admin of
+--     the Kanbo workspace it points at now (a Kanbo workspace can always stop
+--     taking tasks from a Slack workspace).
+-- Errors: 'not allowed'; 'slack admin check needed' when only an out-of-date
+-- Slack "owner or admin" stands in the way (open the Kanbo Home tab in Slack
+-- or run /kanbo, so Kanbo asks Slack again, then try again).
 create or replace function public.slack_app_set_default(p_team text, p_ws uuid)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
-  me  uuid := auth.uid();
-  cur uuid;
-  is_slack_admin boolean;
+  me    uuid := auth.uid();
+  cur   uuid;
+  admin text;
 begin
   if me is null or not public.can_act() or p_team is null then raise exception 'not allowed'; end if;
-  -- null: no Slack account of yours is linked there
-  select bool_or(l.slack_admin) into is_slack_admin from public.slack_user_links l where l.team_id = p_team and l.user_id = me;
-  if is_slack_admin is null then raise exception 'not allowed'; end if;
+  if not exists (select 1 from public.slack_user_links l where l.team_id = p_team and l.user_id = me) then
+    raise exception 'not allowed';   -- no Slack account of yours is linked there
+  end if;
   select default_workspace_id into cur from public.slack_teams where team_id = p_team for update;
   if not found then raise exception 'not allowed'; end if;
+  -- read after the row lock: a demotion (user_change) that landed meanwhile counts
+  admin := public.slack_admin_state(p_team, me);
   if p_ws is not null then
-    if not is_slack_admin or public.ws_role(p_ws) not in ('owner', 'admin') then raise exception 'not allowed'; end if;
-  elsif not is_slack_admin and (cur is null or public.ws_role(cur) not in ('owner', 'admin')) then
+    if public.ws_role(p_ws) not in ('owner', 'admin') then raise exception 'not allowed'; end if;
+    if admin = 'stale' then raise exception 'slack admin check needed'; end if;
+    if admin <> 'current' then raise exception 'not allowed'; end if;
+  elsif admin <> 'current' and (cur is null or public.ws_role(cur) not in ('owner', 'admin')) then
+    if admin = 'stale' then raise exception 'slack admin check needed'; end if;
     raise exception 'not allowed';
   end if;
   update public.slack_teams
@@ -308,11 +344,12 @@ begin
   update public.slack_link_requests set used_at = at, used_by = me where token_hash = h;
   insert into public.slack_teams as t (team_id, team_name) values (r.team_id, r.team_name)
   on conflict (team_id) do update set team_name = coalesce(excluded.team_name, t.team_name);
-  insert into public.slack_user_links as l (team_id, slack_user_id, user_id, slack_user_name, linked_at, slack_admin)
-  values (r.team_id, r.slack_user_id, me, r.slack_user_name, at, r.slack_admin)
+  -- Slack's answer is as of when the link was offered (users.info, then): that's its age
+  insert into public.slack_user_links as l (team_id, slack_user_id, user_id, slack_user_name, linked_at, slack_admin, slack_admin_checked_at)
+  values (r.team_id, r.slack_user_id, me, r.slack_user_name, at, r.slack_admin, r.created_at)
   on conflict (team_id, slack_user_id) do update
      set user_id = excluded.user_id, slack_user_name = excluded.slack_user_name, linked_at = excluded.linked_at,
-         slack_admin = excluded.slack_admin;
+         slack_admin = excluded.slack_admin, slack_admin_checked_at = excluded.slack_admin_checked_at;
   return jsonb_build_object(
     'team_id', r.team_id,
     'team_name', (select t.team_name from public.slack_teams t where t.team_id = r.team_id),
@@ -359,8 +396,11 @@ end $rec$;
 --   (select relrowsecurity from pg_class where oid = 'public.slack_user_links'::regclass)
 --   and not has_table_privilege('authenticated', 'public.slack_user_links', 'insert')
 --   and not has_table_privilege('authenticated', 'public.slack_user_links', 'update')      as links_own_read_delete,
---   exists (select 1 from information_schema.columns where table_schema = 'public'
---            and table_name = 'slack_user_links' and column_name = 'slack_admin')         as links_slack_admin,
+--   (select count(*) from information_schema.columns where table_schema = 'public'
+--     and table_name = 'slack_user_links' and column_name in ('slack_admin', 'slack_admin_checked_at')) = 2
+--                                                                                          as links_slack_admin,
+--   not has_function_privilege('authenticated', 'public.slack_admin_state(text, uuid)', 'execute')
+--                                                                                          as admin_state_server_only,
 --   exists (select 1 from information_schema.columns where table_schema = 'public'
 --            and table_name = 'tasks' and column_name = 'slack_permalink')                as task_permalink,
 --   (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and prosecdef

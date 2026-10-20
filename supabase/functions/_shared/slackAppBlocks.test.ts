@@ -21,6 +21,16 @@ function mrkdwnTexts(v: unknown, out: string[] = []): string[] {
   }
   return out;
 }
+/** every mrkdwn text object in a Block Kit structure */
+function mrkdwnObjects(v: unknown, out: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+  if (Array.isArray(v)) v.forEach((x) => mrkdwnObjects(x, out));
+  else if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (o.type === "mrkdwn") out.push(o);
+    Object.values(o).forEach((x) => mrkdwnObjects(x, out));
+  }
+  return out;
+}
 /** every plain_text text */
 function plainTexts(v: unknown, out: string[] = []): string[] {
   if (Array.isArray(v)) v.forEach((x) => plainTexts(x, out));
@@ -56,6 +66,32 @@ describe("escaping (mrkdwn injection)", () => {
     assertNoInjection(homeView({ linked: true, tasks: [{ ...card, overdue: true }], appUrl: APP, workspaceName: EVIL, today: "2026-10-20" }));
     assertNoInjection(undoneMessage(EVIL).blocks);
     assertNoInjection(noticeMessage(EVIL).blocks);
+  });
+  it("every mrkdwn text is verbatim: a URL, #channel or @name someone typed stays plain text (only our <url|label> links link)", () => {
+    const BARE = "Pay at https://evil.example/login #general @here www.evil.example";
+    const bare: TaskCard = { ...card, title: BARE, projectName: BARE, assigneeName: BARE };
+    const built: Array<[string, unknown]> = [
+      ["createdMessage", createdMessage(bare, { appUrl: APP, canUndo: true, notes: [BARE] })],
+      ["updatedMessage", updatedMessage(bare, { appUrl: APP, note: "Assigned to you:" })],
+      ["undoneMessage", undoneMessage(BARE)],
+      ["noticeMessage", noticeMessage(BARE)],
+      ["taskUnfurl", taskUnfurl(bare, APP)],
+      ["projectUnfurl", projectUnfurl({ id: ID, name: BARE, emoji: "📁", description: BARE, openCount: 1, doneCount: 0 }, APP)],
+      ["homeView", homeView({ linked: true, tasks: [{ ...bare, overdue: true }], appUrl: APP, workspaceName: BARE, today: "2026-10-20", more: 2 })],
+      ["homeView (unlinked)", homeView({ linked: false, appUrl: APP })],
+      ["linkPromptMessage", linkPromptMessage({ url: `${APP}/link/slack?t=abc` })],
+      ["helpMessage", helpMessage()],
+      ["createModal", createModal({ title: BARE, workspaceName: BARE })],
+    ];
+    for (const [name, v] of built) {
+      const objs = mrkdwnObjects(v);
+      expect(objs.length, name).toBeGreaterThan(0);
+      for (const o of objs) expect(o.verbatim, `${name}: ${String(o.text).slice(0, 60)}`).toBe(true);
+    }
+    // the typed URL is in the card as text; every <…> link goes to Kanbo (a typed URL is at most a label's words)
+    const texts = mrkdwnTexts(built[0][1]).join("\n");
+    expect(texts).toContain("https://evil.example/login");
+    for (const m of texts.matchAll(/<([^|>]*)[|>]/g)) expect(m[1]).toMatch(/^https:\/\/www\.kanbo\.co\.uk\//);
   });
   it("fallback texts are escaped too", () => {
     expect(createdMessage(card, { appUrl: APP, canUndo: false }).text).not.toMatch(/<!channel>/);

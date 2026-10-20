@@ -48,6 +48,19 @@ describe("migration 0049", () => {
     expect(M49).toMatch(/for select to authenticated using \(user_id = auth\.uid\(\)\)/);
     expect(M49).toMatch(/for delete to authenticated using \(user_id = auth\.uid\(\)\)/);
   });
+  it("a Slack owner/admin's say-so is only as good as Slack's last word on it: 24 hours, checked server-side", () => {
+    expect(M49).toMatch(/add column if not exists slack_admin_checked_at timestamptz/);
+    expect(M49).toMatch(/create or replace function public\.slack_admin_state\(p_team text, p_user uuid\)[\s\S]*?slack_admin_checked_at > now\(\) - interval '24 hours'/);
+    expect(M49).toContain("revoke execute on function public.slack_admin_state(text, uuid) from public, anon, authenticated;");
+    expect(M49).not.toMatch(/grant execute on function public\.slack_admin_state/);
+    const setDefault = /create or replace function public\.slack_app_set_default[\s\S]*?end; \$\$;/.exec(M49)![0];
+    expect(setDefault).toMatch(/slack_admin_state\(p_team, me\)/);
+    expect(setDefault).toMatch(/raise exception 'slack admin check needed'/);
+    expect(setDefault).not.toMatch(/bool_or\(l\.slack_admin\)/);
+    // linking records when Slack said it (the link request's time: users.info was asked then)
+    expect(M49).toMatch(/slack_admin_checked_at\)\s*values \(r\.team_id, r\.slack_user_id, me, r\.slack_user_name, at, r\.slack_admin, r\.created_at\)/);
+    expect(LIB).toMatch(/slack admin check needed/);
+  });
   it("the one-time link: hashed, 15 minutes, single use", () => {
     expect(M49).toMatch(/token_hash ~ '\^\[0-9a-f\]\{64\}\$'/);
     expect(M49).toMatch(/expires_at <= created_at \+ interval '15 minutes'/);
@@ -67,7 +80,8 @@ describe("the Slack app manifest", () => {
     expect(MANIFEST.features.shortcuts).toEqual([expect.objectContaining({ type: "message", callback_id: SHORTCUT_CALLBACK })]);
     expect(MODAL_CALLBACK).toBe("create_kanbo_task");
     expect(MANIFEST.features.shortcuts[0].name.length).toBeLessThanOrEqual(24);
-    expect(new Set(MANIFEST.settings.event_subscriptions.bot_events)).toEqual(new Set(["link_shared", "app_home_opened"]));
+    // user_change: Slack tells Kanbo at once when it demotes or deactivates an owner/admin (users:read covers it)
+    expect(new Set(MANIFEST.settings.event_subscriptions.bot_events)).toEqual(new Set(["link_shared", "app_home_opened", "user_change"]));
     expect(MANIFEST.features.unfurl_domains).toEqual(["www.kanbo.co.uk"]);
     expect(MANIFEST.features.app_home.home_tab_enabled).toBe(true);
     expect(Object.values(ACTIONS)).toContain("complete_task");

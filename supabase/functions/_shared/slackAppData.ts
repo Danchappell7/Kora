@@ -92,19 +92,33 @@ export async function createLinkRequest(service: Tx, r: {
     [r.tokenHash, r.teamId, cut(r.teamName, 200), r.slackUserId, cut(r.slackUserName, 200), cut(r.slackEmail?.trim().toLowerCase(), 320), r.slackAdmin === true]);
 }
 
+/** How often a refresh that changes nothing still brings slack_admin_checked_at up to date. */
+export const SLACK_ADMIN_TOUCH_MINUTES = 15;
+
 /**
- * Keep a linked person's Slack owner/admin flag as Slack says it is now (users.info, just read): a new
- * Slack admin gains the say over the Kanbo workspace, a former one loses it. Writes only on a change;
- * never fails the request it rides on.
+ * Keep a linked person's Slack owner/admin flag as Slack says it is, and when Slack said it
+ * (slack_admin_checked_at: a "yes" Slack hasn't confirmed for 24 hours decides nothing, 0049
+ * slack_admin_state). From users.info just now (`asOf` omitted: the database's clock), or from Slack's
+ * user_change event (`asOf` = its event time, never later than now). A new Slack admin gains the say over
+ * the Kanbo workspace, a former one loses it. Writes on a change, or to bring the time up to date (at most
+ * every 15 minutes). A "yes" never overwrites a newer answer (Slack can deliver events late); a "no" always
+ * applies (taking the say away is the safe direction). Never fails the request it rides on.
  */
-export async function refreshSlackAdmin(service: Tx, teamId: string, slackUserId: string, slackAdmin: boolean): Promise<void> {
+export async function refreshSlackAdmin(service: Tx, teamId: string, slackUserId: string, slackAdmin: boolean, asOf?: Date | null): Promise<void> {
   if (!isSlackId(teamId) || !isSlackId(slackUserId)) return;
+  const at = asOf && Number.isFinite(asOf.getTime()) ? asOf.toISOString() : null;
   try {
     await service.query(
-      `update public.slack_user_links set slack_admin = $3
-        where team_id = $1 and slack_user_id = $2 and slack_admin is distinct from $3`, [teamId, slackUserId, slackAdmin === true]);
+      `update public.slack_user_links l
+          set slack_admin = $3, slack_admin_checked_at = s.at
+         from (select least(coalesce($4::timestamptz, now()), now()) as at) s
+        where l.team_id = $1 and l.slack_user_id = $2
+          and (not $3 or l.slack_admin_checked_at is null or l.slack_admin_checked_at <= s.at)
+          and (l.slack_admin is distinct from $3 or l.slack_admin_checked_at is null
+               or l.slack_admin_checked_at < s.at - interval '${SLACK_ADMIN_TOUCH_MINUTES} minutes')`,
+      [teamId, slackUserId, slackAdmin === true, at]);
   } catch {
-    // a refresh that fails changes nothing: the flag stays as it was
+    // a refresh that fails changes nothing: the flag (and its age) stay as they were
   }
 }
 

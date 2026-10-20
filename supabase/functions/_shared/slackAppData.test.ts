@@ -58,14 +58,25 @@ describe("the Slack admin flag", () => {
     expect(inserts.map((q) => q.params[6])).toEqual([true, false]);
     expect(inserts[0].text).toMatch(/slack_admin/);
   });
-  it("refreshing writes only on a change, and never throws", async () => {
+  it("refreshing records when Slack said it: on a change, or to bring the time up to date; a late yes never wins; never throws", async () => {
     const { tx, seen } = scripted();
     await refreshSlackAdmin(tx, "TACME", "UOLIVE", false);
-    expect(seen[0].text).toMatch(/update public\.slack_user_links set slack_admin = \$3[\s\S]*slack_admin is distinct from \$3/);
-    expect(seen[0].params).toEqual(["TACME", "UOLIVE", false]);
+    const q = seen[0].text;
+    expect(q).toMatch(/update public\.slack_user_links l\s+set slack_admin = \$3, slack_admin_checked_at = s\.at/);
+    // users.info (no time given): the database's clock; an event's time is never later than now
+    expect(q).toMatch(/least\(coalesce\(\$4::timestamptz, now\(\)\), now\(\)\)/);
+    // a "yes" never overwrites a newer answer; a "no" always applies
+    expect(q).toMatch(/not \$3 or l\.slack_admin_checked_at is null or l\.slack_admin_checked_at <= s\.at/);
+    // writes on a change, or when the time is over 15 minutes old
+    expect(q).toMatch(/slack_admin is distinct from \$3[\s\S]*interval '15 minutes'/);
+    expect(seen[0].params).toEqual(["TACME", "UOLIVE", false, null]);
+    await refreshSlackAdmin(tx, "TACME", "UOLIVE", true, new Date("2026-10-20T09:00:00Z"));
+    expect(seen[1].params).toEqual(["TACME", "UOLIVE", true, "2026-10-20T09:00:00.000Z"]);
+    await refreshSlackAdmin(tx, "TACME", "UOLIVE", true, new Date("nonsense"));
+    expect(seen[2].params[3]).toBeNull();
     const failing: Tx = { async query() { throw new Error("boom"); } };
     await expect(refreshSlackAdmin(failing, "TACME", "UOLIVE", true)).resolves.toBeUndefined();
     await refreshSlackAdmin(tx, "bad id", "UOLIVE", true);
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(3);
   });
 });

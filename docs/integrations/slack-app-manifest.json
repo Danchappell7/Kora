@@ -57,7 +57,8 @@
       "request_url": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/slack-app",
       "bot_events": [
         "app_home_opened",
-        "link_shared"
+        "link_shared",
+        "user_change"
       ]
     },
     "interactivity": {
