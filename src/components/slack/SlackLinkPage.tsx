@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — /link/slack: "Link Slack account X in Y to Kanbo?"    [0049]
+   KANBO — /link/slack: "Link your Slack account?" (X · Y)       [0049]
    Where /kanbo's one-time "Link your Kanbo account" button lands. Signed
    in, it asks first (whose Slack account, in which Slack workspace), then
    claims the link: /kanbo then adds tasks as this person, with their
@@ -94,9 +94,11 @@ export function SlackLinkPage({ token, onDone, email = null }: SlackLinkPageProp
 
   const titleId = `${ids}-t`;
   const descId = `${ids}-d`;
+  const whoId = `${ids}-w`;
+  const asking = view.kind === "ask" && !view.preview.alreadyLinked;
   return (
     <div className="kslka-page" role="presentation">
-      <div ref={trap} className="kslka-card" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={view.kind === "loading" ? undefined : descId} tabIndex={-1}>
+      <div ref={trap} className="kslka-card" role="dialog" aria-modal="true" aria-labelledby={asking ? `${titleId} ${whoId}` : titleId} aria-describedby={view.kind === "loading" ? undefined : descId} tabIndex={-1}>
         <div className="kslka-mark" aria-hidden="true"><Icon name="message" size={22} sw={1.75} /></div>
         {view.kind === "loading" && (
           <>
@@ -120,7 +122,8 @@ export function SlackLinkPage({ token, onDone, email = null }: SlackLinkPageProp
           }
           return (
             <form onSubmit={submit} noValidate>
-              <h1 id={titleId} ref={headingRef} tabIndex={-1} className="kslka-title">Link Slack account {who} in {team} to Kanbo?</h1>
+              <h1 id={titleId} ref={headingRef} tabIndex={-1} className="kslka-title">Link your Slack account?</h1>
+              <p id={whoId} className="kslka-who"><strong>{who}</strong><span aria-hidden="true"> · </span><span className="sr-only"> in </span><span className="kslka-who-team">{team}</span></p>
               <div id={descId}>
                 <p className="kslka-body">
                   Then <code>/kanbo</code> and <strong>Create a Kanbo task</strong> in {team} add tasks as you{email ? <> (<strong>{email}</strong>)</> : null}, with your own access, and Kanbo links you share there can show a preview.

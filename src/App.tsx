@@ -276,7 +276,7 @@ export default function App() {
     bootUrlRef.current = { route: routeOf(window.location.pathname, window.location.search) ?? { view: "plan" }, task: params.get("task"), q: params.get("q"), newTask: params.get("new") === "1" };
   }
   const [route, setRouteRaw] = useState<Route>(() => bootUrlRef.current!.route);
-  // 0049: /link/slack?t=… (or a link kept through signing in): "Link Slack account X in Y to Kanbo?" over the app
+  // 0049: /link/slack?t=… (or a link kept through signing in): "Link your Slack account?" over the app
   const [slackLinkToken, setSlackLinkToken] = useState<string | null>(() => {
     const t = slackLinkToOpen(window.location.href);
     // the one-time token leaves the address bar (and history) at once; this tab keeps it until the page closes

@@ -1,4 +1,4 @@
-/* /link/slack: "Link Slack account X in Y to Kanbo?" (demo mode, and with
+/* /link/slack: "Link your Slack account?" (demo mode, and with
    lib/slackApp's calls stubbed for the refusals). */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -20,7 +20,7 @@ describe("SlackLinkPage", () => {
     rememberSlackLink(TOKEN);
     const onDone = vi.fn();
     render(<SlackLinkPage token={TOKEN} onDone={onDone} />);
-    const dialog = await screen.findByRole("dialog", { name: "Link Slack account Mia Member in acme.slack.com to Kanbo?" });
+    const dialog = await screen.findByRole("dialog", { name: "Link your Slack account? Mia Member in acme.slack.com" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveFocus());
     expect(screen.queryByRole("checkbox")).toBeNull();

@@ -69,7 +69,12 @@
 }
 .kslka-title { margin: 0 0 10px; font: 600 20px/28px var(--font-head, var(--font-display)); letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; text-wrap: balance; }
 .kslka-title:focus { outline: none; }
-.kslka-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+/* the heading takes focus on load for screen readers; it isn't a tab stop, so no ring */
+.kslka-who {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 2px; margin: -2px 0 12px;
+  font: 500 14px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); overflow-wrap: anywhere;
+}
+.kslka-who strong { font-weight: 600; color: var(--ink); }
 .kslka-body { margin: 0 0 12px; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
 .kslka-body strong { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
 .kslka-body .kspin { display: inline-block; vertical-align: -2px; margin-right: 6px; }

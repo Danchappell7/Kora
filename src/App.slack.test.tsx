@@ -1,4 +1,4 @@
-/* 0049: /link/slack opens "Link Slack account X in Y to Kanbo?" over the app
+/* 0049: /link/slack opens "Link your Slack account?" over the app
    (demo mode), the token leaves the address at once, and the task panel shows
    "From Slack" for a task made from a Slack message. */
 import { describe, it, expect, afterEach, beforeAll, beforeEach } from "vitest";
@@ -20,7 +20,7 @@ describe("/link/slack", () => {
   it("asks, links, and takes the token out of the address straight away", async () => {
     window.history.replaceState(null, "", `/link/slack?t=${TOKEN}`);
     renderApp();
-    const dialog = await screen.findByRole("dialog", { name: /Link Slack account You \(Slack\) in foundrise\.slack\.com to Kanbo\?/ });
+    const dialog = await screen.findByRole("dialog", { name: /Link your Slack account\? You \(Slack\) in foundrise\.slack\.com/ });
     expect(window.location.href).not.toContain(TOKEN);
     expect(dialog).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Link account" }));
@@ -34,9 +34,9 @@ describe("/link/slack", () => {
   it("a link kept through signing in (Google comes back to /) opens too; Cancel drops it", async () => {
     rememberSlackLink(TOKEN);
     renderApp();
-    expect(await screen.findByRole("dialog", { name: /Link Slack account/ })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: /Link your Slack account/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Link Slack account/ })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Link your Slack account/ })).toBeNull());
     expect(pendingSlackLink()).toBeNull();
   });
 
@@ -44,6 +44,6 @@ describe("/link/slack", () => {
     window.history.replaceState(null, "", `/today?t=${TOKEN}`);
     renderApp();
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument());
-    expect(screen.queryByRole("dialog", { name: /Link Slack account/ })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: /Link your Slack account/ })).toBeNull();
   });
 });
