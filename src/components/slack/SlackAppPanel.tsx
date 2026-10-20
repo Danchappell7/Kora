@@ -3,10 +3,11 @@
    Beside the Slack channel (webhook) panel. Three cards:
      • Slack workspaces: each Slack workspace you've linked an account in
        (and any that adds tasks to this Kanbo workspace), and which Kanbo
-       workspace its /kanbo adds tasks to. Owners and admins who've linked
-       their own Slack account there choose it ("Adds tasks to"); moving it
-       away from another Kanbo workspace needs owner/admin there too (the
-       database decides: slack_app_set_default).
+       workspace its /kanbo adds tasks to. Choosing it ("Adds tasks to")
+       takes both sides: an owner or admin of the Slack workspace (Slack says
+       so) who runs the Kanbo workspace, whatever it pointed at before. An
+       owner or admin of the Kanbo workspace it points at can set it back to
+       Personal lists (the database decides: slack_app_set_default).
      • Your linked Slack accounts, each with Unlink (asks first).
      • How to use: /kanbo examples, the message shortcut, link previews.
    Before migration 0049 it explains the Slack app isn't switched on yet.
@@ -150,7 +151,7 @@ export function SlackAppPanel({ workspaceId, workspaceName, role, workspaces = [
     )
   ) : status.teams.length === 0 ? (
     <SetRow icon={slackIcon} label="No Slack workspace yet"
-      desc={<>Once the Kanbo app is in your Slack workspace, type <code>/kanbo</code> there and follow the link to connect your account. {status.canManage ? `Then you can choose ${wsName} here as the workspace it adds tasks to.` : "Then an owner or admin can choose which Kanbo workspace it adds tasks to."}</>} />
+      desc={<>Once the Kanbo app is in your Slack workspace, type <code>/kanbo</code> there and follow the link to connect your account. {status.canManage ? `Then, if you're an owner or admin of that Slack workspace, you can choose ${wsName} here as the workspace it adds tasks to.` : "Then an owner or admin of the Slack workspace can choose which Kanbo workspace it adds tasks to."}</>} />
   ) : status.teams.map((t) => (
     <TeamRow key={t.teamId} ids={ids} team={t} wsName={wsName} runs={runs} busy={busy === `team:${t.teamId}`} anyBusy={!!busy} onChoose={(v) => void choose(t, v)} />
   ));
@@ -210,25 +211,30 @@ function TeamRow({ ids, team, wsName, runs, busy, anyBusy, onChoose }: {
     : where ? <>/kanbo adds tasks to {where}.</>
     : team.defaultElsewhere ? <>/kanbo adds tasks to another Kanbo workspace.</>
     : <>Not connected to a Kanbo workspace yet: /kanbo adds tasks to people's Personal lists.</>;
-  // may choose: linked there, run somewhere, and (when it points at a workspace you can see) you run that one too
+  // choose any workspace you run: a Slack owner/admin there (Slack says so). Otherwise, only set it back
+  // to Personal lists, when it points at a workspace you run (canClear). The database decides either way.
   const current = team.defaultWorkspaceId ?? (team.defaultElsewhere ? ELSEWHERE : NONE);
-  const pointsAtYours = current === NONE || runs.some((w) => w.id === current);
-  const canChoose = team.linked && runs.length > 0 && (team.canSetDefault || pointsAtYours);
+  const canPick = team.linked && team.slackAdmin && runs.length > 0;
+  const canClear = team.linked && team.canClear && current !== NONE;
+  const canChoose = canPick || canClear;
+  const offered = canPick ? runs : runs.filter((w) => w.id === current);
   const selectId = `${ids}-ws-${team.teamId}`;
+  const why = canPick ? null
+    : !team.linked ? " Link your own Slack account there to change it."
+    : canClear ? " Only an owner or admin of the Slack workspace can point it at a different workspace."
+    : " Only an owner or admin of the Slack workspace, who also runs a Kanbo workspace, can choose it.";
   return (
-    <SetRow icon={slackIcon} label={label} desc={
-      <>{desc}{!canChoose && !team.linked ? " Link your own Slack account there to change it." : !canChoose && team.linked ? " Only its owners and admins can change this." : null}</>
-    }>
+    <SetRow icon={slackIcon} label={label} desc={<>{desc}{why}</>}>
       {canChoose && (
         <span className="kslka-pick">
           <label htmlFor={selectId} className="kslka-pick-label">Adds tasks to</label>
           <select id={selectId} className="kslka-select" value={current} disabled={anyBusy} aria-busy={busy || undefined}
             onChange={(e) => onChoose(e.target.value)}>
             {current === ELSEWHERE && <option value={ELSEWHERE} disabled>Another workspace</option>}
-            {team.defaultWorkspaceId && !runs.some((w) => w.id === team.defaultWorkspaceId) && (
+            {team.defaultWorkspaceId && !offered.some((w) => w.id === team.defaultWorkspaceId) && (
               <option value={team.defaultWorkspaceId} disabled>{team.defaultWorkspaceName ?? "Another workspace"}</option>
             )}
-            {runs.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            {offered.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
             <option value={NONE}>No workspace (Personal lists)</option>
           </select>
         </span>

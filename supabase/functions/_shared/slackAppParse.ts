@@ -36,6 +36,8 @@ export interface SlackMention {
 
 const HANDLE_PREFIX = "kslk";
 const handleFor = (id: string) => `${HANDLE_PREFIX}${id.toLowerCase()}`;
+/** stands in for the "@" of a mention the grammar mustn't read (it names nobody in Kanbo) */
+const NOBODY = "\uE000";
 
 /** Slack's escaped text → plain text, with each person mention swapped for a handle. */
 export function decodeSlackText(text: string): { text: string; mentions: SlackMention[] } {
@@ -60,11 +62,16 @@ export function decodeSlackText(text: string): { text: string; mentions: SlackMe
   return { text: out.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"), mentions };
 }
 
+/** Every "@<handle>" (or NOBODY + handle) in `s`, the whole handle, not the start of a longer one → `to`. */
+function swapHandle(s: string, handle: string, to: string): string {
+  return s.replace(new RegExp(`[@${NOBODY}]${handle}(?![a-z0-9])`, "gu"), () => to);
+}
+
 /** A message as people read it: mentions as "@name" (from `names`, else "@someone"), escapes undone. */
 export function readableSlackText(text: string, names: Map<string, string> = new Map()): string {
   const { text: plain, mentions } = decodeSlackText(text);
   let s = plain;
-  for (const m of mentions) s = s.split(`@${m.handle}`).join(`@${names.get(m.slackUserId) || m.label || "someone"}`);
+  for (const m of mentions) s = swapHandle(s, m.handle, `@${names.get(m.slackUserId) || m.label || "someone"}`);
   return s;
 }
 
@@ -135,23 +142,33 @@ export interface SlackParsedTask {
 
 /**
  * Read a /kanbo sentence. `resolved`: Slack user id → Kanbo user id for the
- * mentions decodeSlackText found (the caller asks Slack who they are).
+ * mentions decodeSlackText found (the caller asks Slack who they are);
+ * `names`: Slack user id → the name Slack gave (users.info), for the title.
+ *
+ * The grammar assigns ONE person (the first @ it can read). Every other
+ * mention stays in the title as the person's name, never as the handle used
+ * to read it: a member by their Kanbo name, anyone else by their Slack name
+ * (else the name Slack showed, else "@someone").
  */
 export function parseSlackTask(raw: string, ctx: {
   today: Date;
   projects: Project[];
   members: Member[];
   resolved?: Map<string, string>;
+  names?: Map<string, string>;
 }): SlackParsedTask {
   const { text, mentions } = decodeSlackText(raw);
   const resolved = ctx.resolved ?? new Map<string, string>();
-  // a resolved mention reads as its handle, an unresolved one as the name Slack showed
+  const names = ctx.names ?? new Map<string, string>();
+  // a resolved mention reads as its handle; an unresolved one as the name Slack showed (the grammar
+  // may know it: "@sana"), or, with none, as a word the grammar can't read as anyone (a bare handle
+  // could be the start of another mention's handle, and so read as that person)
   let sentence = text;
   const synthetic: Member[] = [];
   for (const m of mentions) {
     const uid = resolved.get(m.slackUserId);
     if (uid) synthetic.push({ id: uid, name: m.handle });
-    else sentence = sentence.split(`@${m.handle}`).join(m.label ? `@${m.label.replace(/\s+/g, "")}` : "@someone");
+    else sentence = swapHandle(sentence, m.handle, m.label ? `@${m.label.replace(/\s+/g, "")}` : `${NOBODY}${m.handle}`);
   }
   const p = parseTask(sentence, {
     today: ctx.today,
@@ -160,11 +177,26 @@ export function parseSlackTask(raw: string, ctx: {
     // the handles first: an exact handle always wins over a member whose name starts the same
     members: [...synthetic, ...ctx.members.map((x) => ({ id: x.id, name: x.name }))],
   });
-  // whatever looks like #project / @person but wasn't read stays in the title: say so
+  const byHandle = new Map(mentions.map((m) => [m.handle, m]));
+  const nameOf = (m: SlackMention): string | null => {
+    const uid = resolved.get(m.slackUserId);
+    return (uid ? ctx.members.find((x) => x.id === uid)?.name : null) || names.get(m.slackUserId) || m.label || null;
+  };
+  // whatever looks like #project / @person but wasn't read stays in the title: say so (a mention of
+  // someone in the workspace who just isn't the assignee is known, not unknown)
   const unknownProjects = [...p.title.matchAll(/(?:^|[\s(\[,;])#(\p{L}[\p{L}\p{N}_-]*)/gu)].map((m) => m[1]);
-  const unknownPeople = [...p.title.matchAll(/(?:^|[\s(\[,;])@(\p{L}[\p{L}\p{N}._-]*)/gu)].map((m) => m[1]).filter((w) => w !== "someone");
+  const unknownPeople = [...p.title.matchAll(new RegExp(`(?:^|[\\s(\\[,;])[@${NOBODY}](\\p{L}[\\p{L}\\p{N}._-]*)`, "gu"))].flatMap((x) => {
+    const word = x[1].replace(/[._-]+$/, "");
+    const m = byHandle.get(word);
+    if (!m) return [word];
+    if (resolved.has(m.slackUserId)) return [];
+    const n = nameOf(m);
+    return n ? [n] : [];
+  });
+  let title = p.title;
+  for (const m of mentions) title = swapHandle(title, m.handle, `@${nameOf(m) || "someone"}`);
   return {
-    title: p.title,
+    title,
     ...(p.dueDate ? { dueDate: p.dueDate } : {}),
     ...(p.dueTime ? { dueTime: p.dueTime } : {}),
     ...(p.startDate ? { startDate: p.startDate } : {}),

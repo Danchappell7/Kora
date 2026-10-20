@@ -43,20 +43,33 @@ updates. Both sit in **Settings › Calendar & integrations**.
   policies) or the person's own Personal list. Guests and people outside the
   workspace can't add to it; previews only ever show what the sharer can see,
   and never personal tasks.
+- **Where a Slack workspace's tasks go is its own owners' call.** Choosing
+  the Kanbo workspace takes both sides: an owner or admin of the Slack
+  workspace (Slack says so: `users.info`, checked when they link and again
+  whenever they use `/kanbo` or open the app's Home tab) who is also an owner
+  or admin of the Kanbo workspace. Anyone can make a Kanbo workspace of their
+  own, so Kanbo rights alone never decide, and nobody can hold a Slack
+  workspace by choosing first: a Slack owner or admin can always point it
+  elsewhere. An owner or admin of the Kanbo workspace it points at can always
+  set it back to Personal lists.
 - **Secrets stay in function secrets.** `SLACK_BOT_TOKEN` and
   `SLACK_SIGNING_SECRET` live only in the slack-app function's secrets: never
   in the database, never in a reply, never in a log line.
 - **Everything shown in Slack is escaped** (`&`, `<`, `>`), so a task title
   can't @channel, mention anyone or hide a link.
 - **Rate limits** (0046's `api_rate_hit`): 20 commands, clicks and submissions
-  a minute per Slack person, 120 picker searches, 60 events, and 300 a minute
-  per Slack workspace. Slack's resent events are dropped by event id.
+  a minute per Slack person, 120 picker searches and 60 events (checked first,
+  linked or not), and 300 a minute per Slack workspace, which counts only
+  linked people within their own limit: someone without a Kanbo account, or
+  one person flooding, can't use up everyone else's share. Slack's resent
+  events are dropped by event id.
 
 Who can do what:
 
 | | Owner / admin (linked in that Slack) | Member | Guest |
 |---|---|---|---|
-| Choose which Kanbo workspace a Slack workspace adds to | Yes (and owner/admin of where it points now) | No | No |
+| Choose which Kanbo workspace a Slack workspace adds to | Only if they're also a Slack owner or admin there (whatever it points at now) | No | No |
+| Set it back to Personal lists | Yes, when it points at their workspace (a Slack owner or admin: always) | No | No |
 | `/kanbo`, the message shortcut, Assign to me, Complete, Undo | Yes | Yes | Personal list only |
 | See link previews they share | Yes | Yes | Yes |
 | Link / unlink their own Slack account | Yes | Yes | Yes |
@@ -113,7 +126,12 @@ The step-by-step version with copy boxes is in the owner guide. In short:
 
 5. **Link yourself and choose the workspace**: type `/kanbo` in Slack, follow
    the link, then in Kanbo **Settings › Calendar & integrations › Kanbo for
-   Slack** choose the workspace under **Adds tasks to**.
+   Slack** choose the workspace under **Adds tasks to**. Only an owner or
+   admin of the Slack workspace (who runs the Kanbo workspace) can choose; if
+   someone chose before you, choose again: a Slack owner or admin always can.
+   If Settings says you aren't one but you are, open the Kanbo app's **Home**
+   tab in Slack once (Kanbo checks with Slack again) and reload Settings. The
+   owner guide also has a one-line SQL fallback.
 6. **Try it**: `/kanbo Try Kanbo from Slack tomorrow 10am`.
 
 ## Checking it

@@ -719,7 +719,9 @@ itself is made from
    ```
 5. **Link yourself and choose the workspace**: type `/kanbo` in Slack, follow
    the link, then **Settings › Calendar & integrations › Kanbo for Slack ›
-   Adds tasks to**.
+   Adds tasks to**. Only an owner or admin of the Slack workspace (Slack says
+   so) who also runs the Kanbo workspace can choose, and they can change it
+   whoever chose first (slack-app.md › Owner steps › 5).
 
 ---
 

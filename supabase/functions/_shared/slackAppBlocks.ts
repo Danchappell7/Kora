@@ -114,7 +114,8 @@ export function cardFacts(t: TaskCard): string {
   bits.push(t.personal ? "📥 Your Personal list" : `${esc(t.projectEmoji || "📁", 8)} ${esc(t.projectName || "No project", 80)}`);
   const due = dueLabel(t.dueDate, t.dueTime);
   bits.push(due ? `📅 Due ${esc(due)}` : "📅 No due date");
-  bits.push(t.assigneeName ? `👤 ${t.assignedToMe ? "You" : esc(t.assigneeName, 80)}` : "👤 Unassigned");
+  // only the person themselves reads a card: "You" (link previews, read by the channel, name them: taskUnfurl)
+  bits.push(t.assignedToMe ? "👤 You" : t.assigneeName ? `👤 ${esc(t.assigneeName, 80)}` : "👤 Unassigned");
   if (t.priority && t.priority !== "medium") bits.push(`⚑ ${priorityLabel(t.priority)} priority`);
   return bits.join("  ·  ");
 }
@@ -362,13 +363,25 @@ export function descriptionFromMessage(text: string, permalink: string | null): 
 
 /* ------------------------------------------------------------ unfurls */
 
-/** A Kanbo task link's preview (only for people who can see it; actions run as whoever clicks). */
+/** A name the whole channel may read: a member with no name shows as their email in Kanbo, never in a preview. */
+export function publicName(name: string | null | undefined): string | null {
+  const n = String(name ?? "").trim();
+  if (!n) return null;
+  const at = n.indexOf("@");
+  return at > 0 && /^[^\s@<>|]+@[^\s@<>|]+\.[^\s@<>|]+$/.test(n) ? n.slice(0, at) : n;
+}
+
+/**
+ * A Kanbo task link's preview (only for people who can see it; actions run as whoever clicks). The whole
+ * channel reads it, so it's written for them, not the sharer: the assignee by name, never "You".
+ */
 export function taskUnfurl(t: TaskCard, appUrl: string): Json {
   const url = taskUrl(appUrl, t.id);
+  const who = publicName(t.assigneeName);
   const fields = [
     mrkdwn(`*Project*\n${t.personal ? "Personal" : `${esc(t.projectEmoji || "📁", 8)} ${esc(t.projectName || "No project", 80)}`}`),
     mrkdwn(`*Status*\n${statusLabel(t.status)}`),
-    mrkdwn(`*Assignee*\n${t.assigneeName ? esc(t.assigneeName, 80) : "Unassigned"}`),
+    mrkdwn(`*Assignee*\n${who ? esc(who, 80) : "Unassigned"}`),
     mrkdwn(`*Due*\n${esc(dueLabel(t.dueDate, t.dueTime) ?? "No due date")}`),
   ];
   const actions: Json[] = [];

@@ -70,6 +70,42 @@ describe("SlackAppPanel", () => {
     expect(await screen.findByText("foundrise.slack.com")).toBeInTheDocument();
   });
 
+  it("linked, but not a Slack admin: can only set it back to Personal lists from the workspace it points at", async () => {
+    const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: true, defaultWorkspaceId: WS, defaultWorkspaceName: "Foundrise",
+      defaultElsewhere: false, linked: true, slackAdmin: false, canSetDefault: false, canClear: true };
+    vi.spyOn(lib, "loadSlackAppStatus").mockResolvedValue({ workspaceId: WS, canManage: true, teams: [team], links: [] });
+    const runs = [...RUNS, { id: "ws-mine", name: "My other team", role: "owner" as const }];
+    render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={runs} />);
+    const g = await screen.findByRole("region", { name: "Kanbo for Slack" });
+    const select = await within(g).findByLabelText("Adds tasks to") as HTMLSelectElement;
+    // not "My other team": pointing it elsewhere is the Slack workspace's owners' and admins' call
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Foundrise", "No workspace (Personal lists)"]);
+    expect(within(g).getByText(/Only an owner or admin of the Slack workspace can point it at a different workspace/)).toBeInTheDocument();
+  });
+
+  it("linked, not a Slack admin, nothing to clear: no picker, and why", async () => {
+    const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: false, defaultWorkspaceId: null, defaultWorkspaceName: null,
+      defaultElsewhere: false, linked: true, slackAdmin: false, canSetDefault: false, canClear: false };
+    vi.spyOn(lib, "loadSlackAppStatus").mockResolvedValue({ workspaceId: WS, canManage: true, teams: [team], links: [] });
+    render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);
+    const g = await screen.findByRole("region", { name: "Kanbo for Slack" });
+    expect(await within(g).findByText(/Only an owner or admin of the Slack workspace, who also runs a Kanbo workspace, can choose it/)).toBeInTheDocument();
+    expect(within(g).queryByLabelText("Adds tasks to")).toBeNull();
+  });
+
+  it("a Slack admin can take it back from a workspace someone else pointed it at", async () => {
+    const team = { teamId: "TACME", teamName: "acme", connectedAt: null, isDefaultHere: false, defaultWorkspaceId: null, defaultWorkspaceName: null,
+      defaultElsewhere: true, linked: true, slackAdmin: true, canSetDefault: true, canClear: true };
+    vi.spyOn(lib, "loadSlackAppStatus").mockResolvedValue({ workspaceId: WS, canManage: true, teams: [team], links: [] });
+    const set = vi.spyOn(lib, "setSlackDefaultWorkspace").mockResolvedValue(null);
+    render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);
+    const g = await screen.findByRole("region", { name: "Kanbo for Slack" });
+    const select = await within(g).findByLabelText("Adds tasks to") as HTMLSelectElement;
+    expect([...select.options].map((o) => [o.textContent, o.disabled])).toEqual([["Another workspace", true], ["Foundrise", false], ["No workspace (Personal lists)", false]]);
+    fireEvent.change(select, { target: { value: WS } });
+    await waitFor(() => expect(set).toHaveBeenCalledWith("TACME", WS));
+  });
+
   it("a refusal is said, and stays", async () => {
     vi.spyOn(lib, "setSlackDefaultWorkspace").mockRejectedValueOnce(new SlackAppError("not_allowed", SLACK_APP_COPY.notAllowed));
     render(<SlackAppPanel workspaceId={WS} workspaceName="Foundrise" role="owner" workspaces={RUNS} />);

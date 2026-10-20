@@ -16,17 +16,20 @@ describe("parsers", () => {
     const s = parseSlackAppStatus({
       workspace_id: "w1", can_manage: true,
       teams: [{ team_id: "TACME", team_name: "acme", connected_at: "2026-10-20T10:00:00Z", is_default_here: true, default_workspace_id: "w1",
-        default_workspace_name: "Acme", default_elsewhere: false, linked: true, can_set_default: true }, { team_name: "no id" }],
+        default_workspace_name: "Acme", default_elsewhere: false, linked: true, slack_admin: true, can_set_default: true, can_clear: true }, { team_name: "no id" }],
       links: [{ team_id: "TACME", team_name: "acme", slack_user_id: "U1", slack_user_name: "Mia", linked_at: "2026-10-20T10:00:00Z" }, { team_id: "T" }],
     });
     expect(s).toEqual({
       workspaceId: "w1", canManage: true,
       teams: [{ teamId: "TACME", teamName: "acme", connectedAt: "2026-10-20T10:00:00Z", isDefaultHere: true, defaultWorkspaceId: "w1",
-        defaultWorkspaceName: "Acme", defaultElsewhere: false, linked: true, canSetDefault: true }],
+        defaultWorkspaceName: "Acme", defaultElsewhere: false, linked: true, slackAdmin: true, canSetDefault: true, canClear: true }],
       links: [{ teamId: "TACME", teamName: "acme", slackUserId: "U1", slackUserName: "Mia", linkedAt: "2026-10-20T10:00:00Z" }],
     });
     expect(parseSlackAppStatus(null)).toBeNull();
     expect(parseSlackAppStatus({ teams: "x" })).toBeNull();
+    // a server before these fields: nobody is taken for a Slack admin
+    expect(parseSlackAppStatus({ teams: [{ team_id: "T1", linked: true, can_set_default: true }], links: [] })?.teams[0])
+      .toMatchObject({ slackAdmin: false, canSetDefault: true, canClear: false });
   });
   it("slack_link_preview() JSON", () => {
     expect(parseSlackLinkPreview({ status: "ok", team_id: "T", team_name: "acme", slack_user_name: "Mia", has_email: true, email_matches: false, already_linked: false }))

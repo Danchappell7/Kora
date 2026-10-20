@@ -15,12 +15,15 @@
 //   1. the Slack signature (slackAppVerify.ts) over the raw body: wrong,
 //      missing or older than 5 minutes → 401 before anything is read; the
 //      same signature twice (a replay inside those 5 minutes) is dropped;
-//   2. the Slack person must be LINKED to a Kanbo account (slack_user_links,
+//   2. a rate limit per Slack person, before anything else is looked up;
+//   3. the Slack person must be LINKED to a Kanbo account (slack_user_links,
 //      made only by claim_slack_link) and able to act (not suspended); an
 //      unlinked person only ever gets "Link your Kanbo account" (a one-time,
 //      15-minute link only they can see);
-//   3. a rate limit per Slack person (and per Slack workspace);
-//   4. the work, as that person, with RLS (slackAppData.ts), pinned to the
+//   4. a rate limit per Slack workspace, counting only linked people within
+//      their own limit: nobody outside Kanbo, and no one person, can use up
+//      everyone else's share;
+//   5. the work, as that person, with RLS (slackAppData.ts), pinned to the
 //      Slack workspace's chosen Kanbo workspace (or their own Personal list).
 // Slack wants an answer within 3 seconds: the work races a timer (2.2 s);
 // if it isn't done, Slack gets an empty 200 and the answer follows through
@@ -47,7 +50,7 @@ import {
 import { decodeSlackText, parseSlackTask, readableSlackText, resolveMention, safeTz, slashIntent, zonedToday, type Member } from "./slackAppParse.ts";
 import {
   assignToMe, completeTask, createLinkRequest, createTask, findLink, firstTimeSeen, firstTimeSigned, homeTasks, isMissingSchema, isSlackId, loadCard,
-  loadProjectCard, memberOptions, projectOptions, rateHit, SlackWriteError, taskScope, teamInfo, undoCreate, workspaceContext,
+  loadProjectCard, memberOptions, projectOptions, rateHit, refreshSlackAdmin, SlackWriteError, taskScope, teamInfo, undoCreate, workspaceContext,
   type SlackDb, type SlackLink, type TeamInfo,
 } from "./slackAppData.ts";
 import { toLocalISO } from "./nlp.ts";
@@ -76,8 +79,12 @@ export interface SlackAppDeps {
 
 export const MAX_BODY = 512 * 1024;
 export const LINK_MINUTES = 15;
-/** per Slack person: commands, buttons and submissions · options loads · events */
+/**
+ * Per Slack person: commands, buttons and submissions · options loads · events (checked first, linked
+ * or not). Per Slack workspace: only linked people's requests that passed their own limit count.
+ */
 export const RATE = { actions: { windowSec: 60, max: 20 }, options: { windowSec: 60, max: 120 }, events: { windowSec: 60, max: 60 }, team: { windowSec: 60, max: 300 } } as const;
+type PersonKind = Exclude<keyof typeof RATE, "team">;
 
 type Json = Record<string, unknown>;
 const ack = () => new Response(null, { status: 200 });
@@ -168,7 +175,10 @@ type Gate =
   | { ok: true; link: SlackLink; team: TeamInfo }
   | { ok: false; message: SlackMessage };
 
-/** Linked, able to act, and the Slack workspace's Kanbo workspace. An unlinked person gets a fresh link. */
+/**
+ * Linked, able to act, within the Slack workspace's share, and the Slack workspace's Kanbo workspace.
+ * An unlinked person gets a fresh link (their own per-person limit is all that bounds them).
+ */
 async function gate(deps: SlackAppDeps, teamId: string, slackUserId: string, opts: { teamName?: string | null; offerLink?: boolean } = {}): Promise<Gate> {
   try {
     const link = await findLink(deps.db.service, teamId, slackUserId);
@@ -177,6 +187,8 @@ async function gate(deps: SlackAppDeps, teamId: string, slackUserId: string, opt
       return { ok: false, message: await offerLink(deps, teamId, slackUserId, opts.teamName ?? null) };
     }
     if (!link.canAct) return { ok: false, message: noticeMessage(COPY.cantAct, { emoji: ":no_entry:" }) };
+    const busy = await teamLimited(deps, teamId);
+    if (busy) return { ok: false, message: busy };
     return { ok: true, link, team: await teamInfo(deps.db.service, teamId) };
   } catch (e) {
     if (isMissingSchema(e)) return { ok: false, message: noticeMessage(COPY.notSetUp, { emoji: ":construction:" }) };
@@ -190,13 +202,17 @@ async function offerLink(deps: SlackAppDeps, teamId: string, slackUserId: string
   const token = deps.newToken();
   await createLinkRequest(deps.db.service, {
     tokenHash: await sha256Hex(token), teamId, teamName, slackUserId,
-    slackUserName: prof?.name ?? null, slackEmail: prof?.email ?? null,
+    slackUserName: prof?.name ?? null, slackEmail: prof?.email ?? null, slackAdmin: prof?.admin === true,
   });
   const url = `${deps.appUrl.replace(/\/+$/, "")}/link/slack?t=${encodeURIComponent(token)}`;
   return linkPromptMessage({ url, minutes: LINK_MINUTES });
 }
 
-interface SlackProfile { name: string | null; realName: string | null; displayName: string | null; email: string | null; tz: string | null; bot: boolean }
+interface SlackProfile {
+  name: string | null; realName: string | null; displayName: string | null; email: string | null; tz: string | null; bot: boolean;
+  /** Slack says they're an owner or admin of this Slack workspace (or of its Enterprise Grid org) */
+  admin: boolean;
+}
 
 /** users.info, capped at `ms` (null when Slack is slow or says no). */
 async function slackProfile(deps: SlackAppDeps, slackUserId: string, ms: number): Promise<SlackProfile | null> {
@@ -207,24 +223,34 @@ async function slackProfile(deps: SlackAppDeps, slackUserId: string, ms: number)
   const p = obj(u.profile);
   const realName = str(p.real_name) || str(u.real_name) || null;
   const displayName = str(p.display_name) || null;
+  const grid = obj(u.enterprise_user);
   return {
     name: (realName || displayName || str(u.name) || null)?.slice(0, 200) ?? null,
     realName, displayName,
     email: str(p.email) || null,
     tz: str(u.tz) || null,
     bot: u.is_bot === true,
+    admin: u.is_bot !== true && u.deleted !== true
+      && (u.is_admin === true || u.is_owner === true || u.is_primary_owner === true || grid.is_admin === true || grid.is_owner === true),
   };
 }
 
-/** Limit per Slack person and per Slack workspace (fails open). A message when over. */
-async function limited(deps: SlackAppDeps, kind: keyof typeof RATE, teamId: string, slackUserId: string): Promise<SlackMessage | null> {
+const busyMessage = (retryAfter: number) => noticeMessage(COPY.busy(retryAfter), { emoji: ":hourglass:" });
+
+/** The limit per Slack person, linked or not (fails open). Checked first, and it never touches the Slack workspace's share. */
+async function limited(deps: SlackAppDeps, kind: PersonKind, teamId: string, slackUserId: string): Promise<SlackMessage | null> {
   const r = RATE[kind];
-  const [u, t] = await Promise.all([
-    rateHit(deps.db.service, `kanbo:api:slack:${kind}:${teamId}:${slackUserId}`, r.windowSec, r.max),
-    rateHit(deps.db.service, `kanbo:api:slack:team:${teamId}`, RATE.team.windowSec, RATE.team.max),
-  ]);
-  if (u.allowed && t.allowed) return null;
-  return noticeMessage(COPY.busy(Math.max(u.retryAfter, t.retryAfter)), { emoji: ":hourglass:" });
+  const u = await rateHit(deps.db.service, `kanbo:api:slack:${kind}:${teamId}:${slackUserId}`, r.windowSec, r.max);
+  return u.allowed ? null : busyMessage(u.retryAfter);
+}
+
+/**
+ * The Slack workspace's share (fails open): only for a LINKED person who passed their own limit, so
+ * someone with no Kanbo account (or one person flooding) can never lock everyone else out.
+ */
+async function teamLimited(deps: SlackAppDeps, teamId: string): Promise<SlackMessage | null> {
+  const t = await rateHit(deps.db.service, `kanbo:api:slack:team:${teamId}`, RATE.team.windowSec, RATE.team.max);
+  return t.allowed ? null : busyMessage(t.retryAfter);
 }
 
 /** Answer with the work's message if it's ready in time; otherwise ack now and send it to response_url when it is. */
@@ -252,7 +278,7 @@ const todayIn = (deps: SlackAppDeps, tz?: string | null) => zonedToday(safeTz(tz
 /** An ApiTask (just written) → the card, with names from what we already know. */
 function cardOf(t: ApiTask, me: string, ctx: { projects?: { id: string; name: string; emoji?: string | null }[]; members?: Member[] }): TaskCard {
   const proj = (ctx.projects ?? []).find((p) => p.id === t.projectId);
-  const who = t.assigneeId ? (t.assigneeId === me ? "You" : (ctx.members ?? []).find((m) => m.id === t.assigneeId)?.name ?? "Someone") : null;
+  const who = t.assigneeId ? ((ctx.members ?? []).find((m) => m.id === t.assigneeId)?.name ?? (t.assigneeId === me ? "You" : "Someone")) : null;
   return {
     id: t.id, title: t.title, status: t.status, priority: t.priority, projectName: proj?.name ?? null, projectEmoji: proj?.emoji ?? null,
     personal: t.workspaceId == null, dueDate: t.dueDate, dueTime: t.dueTime, assigneeName: who, assignedToMe: t.assigneeId === me,
@@ -275,7 +301,8 @@ async function onCommand(form: URLSearchParams, deps: SlackAppDeps): Promise<Res
   const work = (async (): Promise<SlackMessage | null> => {
     const g = await gate(deps, teamId, slackUserId, { teamName: form.get("team_domain") });
     if (!g.ok) return g.message;
-    if (intent.kind === "modal") return openCreateModal(deps, g, { triggerId });
+    // the form answers through the command's response_url (30 minutes): the confirmation card, or a late refusal
+    if (intent.kind === "modal") return openCreateModal(deps, g, { triggerId, meta: { ru: responseUrl || undefined } });
     return createFromText(deps, g, slackUserId, intent.text);
   })();
   return settle(deps, work, responseUrl);
@@ -300,11 +327,14 @@ async function createFromText(deps: SlackAppDeps, g: Extract<Gate, { ok: true }>
       if (who) resolved.set(m.slackUserId, who.id);
     }
   }
+  // what Slack calls the people mentioned: the title names anyone /kanbo didn't assign
+  const names = new Map(people.flatMap(({ m, p }) => (p?.name ? [[m.slackUserId, p.name] as const] : [])));
   const parsed = parseSlackTask(text, {
     today: todayIn(deps, prof?.tz),
     projects: teamOk ? wsc.projects : [],
     members: teamOk ? wsc.members : [],
     resolved,
+    names,
   });
   if (!parsed.title) return noticeMessage(COPY.noTitle, { emoji: ":pencil2:" });
 
@@ -323,10 +353,14 @@ async function createFromText(deps: SlackAppDeps, g: Extract<Gate, { ok: true }>
   if (projectId === PERSONAL) assigneeId = undefined;
 
   try {
-    const t = await createTask({ db: deps.db, appUrl: deps.appUrl, apiBase: deps.apiBase }, me, ws, {
-      title: parsed.title, projectId, assigneeId, dueDate: parsed.dueDate, dueTime: parsed.dueTime, startDate: parsed.startDate,
-      priority: parsed.priority, effortHours: parsed.effortHours,
-    });
+    const [t] = await Promise.all([
+      createTask({ db: deps.db, appUrl: deps.appUrl, apiBase: deps.apiBase }, me, ws, {
+        title: parsed.title, projectId, assigneeId, dueDate: parsed.dueDate, dueTime: parsed.dueTime, startDate: parsed.startDate,
+        priority: parsed.priority, effortHours: parsed.effortHours,
+      }),
+      // Slack just said whether they're a Slack owner/admin: keep the link's flag current
+      prof ? refreshSlackAdmin(deps.db.service, g.team.teamId, slackUserId, prof.admin) : null,
+    ]);
     return createdMessage(cardOf(t, me, wsc), { appUrl: deps.appUrl, canUndo: true, notes });
   } catch (e) {
     if (e instanceof SlackWriteError) return noticeMessage(`Kanbo couldn't add that: ${e.message}`, { emoji: ":warning:" });
@@ -428,6 +462,7 @@ async function onSuggestion(p: Json, deps: SlackAppDeps, teamId: string, slackUs
     if (over) return optionsPayload([]);
     const link = await findLink(deps.db.service, teamId, slackUserId).catch(() => null);
     if (!link || !link.canAct) return optionsPayload([]);
+    if (await teamLimited(deps, teamId)) return optionsPayload([]);
     const team = await teamInfo(deps.db.service, teamId);
     if (actionId === BLOCK.project) return optionsPayload(await projectOptions(deps.db, link.userId, team.workspaceId, q));
     if (actionId === BLOCK.assignee) return optionsPayload(await memberOptions(deps.db, link.userId, team.workspaceId, q));
@@ -590,6 +625,7 @@ export function kanboLinkTarget(url: string, appUrl: string): { kind: "task" | "
 async function onLinkShared(deps: SlackAppDeps, teamId: string, slackUserId: string, ev: Json): Promise<void> {
   const link = await findLink(deps.db.service, teamId, slackUserId);
   if (!link || !link.canAct) return;
+  if (await teamLimited(deps, teamId)) return;
   const team = await teamInfo(deps.db.service, teamId);
   const ws = team.workspaceId;
   if (!ws) return;
@@ -620,13 +656,17 @@ async function onHomeOpened(deps: SlackAppDeps, teamId: string, slackUserId: str
     await deps.slack.call("views.publish", { user_id: slackUserId, view: homeView({ linked: false, appUrl: deps.appUrl }) });
     return;
   }
+  if (await teamLimited(deps, teamId)) return;
   await publishHome(deps, { ok: true, link, team: await teamInfo(deps.db.service, teamId) }, slackUserId);
 }
 
 async function publishHome(deps: SlackAppDeps, g: Extract<Gate, { ok: true }>, slackUserId: string): Promise<void> {
   const prof = await slackProfile(deps, slackUserId, 1500);
   const today = toLocalISO(todayIn(deps, prof?.tz));
-  const { tasks, more } = await homeTasks(deps.db, g.link.userId, g.team.workspaceId, today);
+  const [{ tasks, more }] = await Promise.all([
+    homeTasks(deps.db, g.link.userId, g.team.workspaceId, today),
+    prof ? refreshSlackAdmin(deps.db.service, g.team.teamId, slackUserId, prof.admin) : null,
+  ]);
   const view = homeView({ linked: true, tasks, more, appUrl: deps.appUrl, workspaceName: g.team.workspaceName, today });
   const r = await deps.slack.call("views.publish", { user_id: slackUserId, view });
   if (!r.ok) deps.log("warn", "slack-app: views.publish refused", { error: r.error });

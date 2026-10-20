@@ -77,6 +77,31 @@ describe("/kanbo sentences (the app's grammar)", () => {
     expect(p.unknownPeople).toEqual(["zed"]);
     expect(parseSlackTask("Fix login <@U0X>", ctx).unknownPeople).toEqual([]);
   });
+  it("two mentions: the first is the assignee, the second stays in the title by name (never the handle)", () => {
+    const resolved = new Map([["U01SANA", MEMBERS[0].id], ["U02THEO", MEMBERS[1].id]]);
+    const p = parseSlackTask("Sync with <@U01SANA> and <@U02THEO> #launch fri", { ...ctx, resolved });
+    expect(p).toMatchObject({ title: "Sync with and @Theo Hart", assigneeId: MEMBERS[0].id, projectId: PROJECTS[0].id, dueDate: "2026-10-23" });
+    // Theo is a known member, just not the assignee: not "nobody called…"
+    expect(p.unknownPeople).toEqual([]);
+    expect(p.title).not.toMatch(/kslk/);
+  });
+  it("a mention with no label: the name Slack gives (users.info), else @someone; never the handle", () => {
+    const names = new Map([["U09XYZ", "Bob Stone"]]);
+    const named = parseSlackTask("Review deck <@U09XYZ> #launch", { ...ctx, names });
+    expect(named).toMatchObject({ title: "Review deck @Bob Stone", projectId: PROJECTS[0].id, unknownPeople: ["Bob Stone"] });
+    expect(named.assigneeId).toBeUndefined();
+    const bare = parseSlackTask("Review deck <@U09XYZ> #launch", ctx);
+    expect(bare).toMatchObject({ title: "Review deck @someone", unknownPeople: [] });
+    // a resolved mention after an unresolved one is still the assignee, and both read as names
+    const mixed = parseSlackTask("Pair <@U09XYZ> with <@U0SAM>", { ...ctx, names, resolved: new Map([["U0SAM", MEMBERS[2].id]]) });
+    expect(mixed).toMatchObject({ title: "Pair @Bob Stone", assigneeId: MEMBERS[2].id });
+  });
+  it("one mention is never read as another whose Slack id it starts", () => {
+    // U1AB is nobody in Kanbo; U1ABC is Theo: "@U1AB" must not be read as Theo
+    const p = parseSlackTask("Ask <@U1AB> and <@U1ABC>", { ...ctx, resolved: new Map([["U1ABC", MEMBERS[1].id]]), names: new Map([["U1AB", "Ann Lee"]]) });
+    expect(p).toMatchObject({ title: "Ask @Ann Lee", assigneeId: MEMBERS[1].id, unknownPeople: ["Ann Lee"] });
+    expect(readableSlackText("hey <@U1AB> and <@U1ABC>", new Map([["U1AB", "Ann"], ["U1ABC", "Abe"]]))).toBe("hey @Ann and @Abe");
+  });
   it("reports #words that named no project", () => {
     const p = parseSlackTask("Plan offsite #nowhere", ctx);
     expect(p.projectId).toBeUndefined();

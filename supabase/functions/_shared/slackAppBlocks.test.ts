@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTIONS, cardFacts, createdMessage, createModal, decodeMeta, descriptionFromMessage, dueLabel, encodeMeta, helpMessage, homeView, link,
-  linkPromptMessage, LIMITS, noticeMessage, optionsPayload, projectUnfurl, readModal, taskUnfurl, taskUrl, titleFromMessage, undoneMessage,
+  linkPromptMessage, LIMITS, noticeMessage, optionsPayload, projectUnfurl, publicName, readModal, taskUnfurl, taskUrl, titleFromMessage, undoneMessage,
   updatedMessage, type TaskCard,
 } from "./slackAppBlocks.ts";
 
@@ -65,6 +65,17 @@ describe("escaping (mrkdwn injection)", () => {
     expect(cardFacts(card)).toBe("🚀 &lt;!here&gt; Launch  ·  📅 Due Fri 23 Oct, 15:00  ·  👤 &lt;@U999&gt;  ·  ⚑ High priority");
     expect(cardFacts({ id: ID, title: "x", personal: true })).toBe("📥 Your Personal list  ·  📅 No due date  ·  👤 Unassigned");
     expect(cardFacts({ id: ID, title: "x", assigneeName: "Ada", assignedToMe: true })).toContain("👤 You");
+    // a Personal-list task is yours even with no member name
+    expect(cardFacts({ id: ID, title: "x", personal: true, assignedToMe: true })).toContain("👤 You");
+  });
+  it("a link preview names the assignee for the channel: never \"You\", never an email", () => {
+    const fields = (t: TaskCard) => JSON.stringify((taskUnfurl(t, APP).blocks as Array<{ fields?: unknown }>)[0].fields);
+    expect(fields({ id: ID, title: "x", assigneeName: "Sana Rao", assignedToMe: true })).toContain("*Assignee*\\nSana Rao");
+    expect(fields({ id: ID, title: "x", assigneeName: "sana.rao@acme.test" })).toContain("*Assignee*\\nsana.rao");
+    expect(fields({ id: ID, title: "x", assigneeName: "sana.rao@acme.test" })).not.toContain("acme.test");
+    expect(fields({ id: ID, title: "x" })).toContain("*Assignee*\\nUnassigned");
+    expect(publicName("<@U999>")).toBe("<@U999>");
+    expect(publicName("  ")).toBeNull();
   });
 });
 

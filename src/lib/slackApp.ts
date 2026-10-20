@@ -10,9 +10,13 @@
      rpc slack_app_status(p_ws) → status JSON | null (not in the workspace)
          { workspace_id, can_manage, teams: [{ team_id, team_name, connected_at,
            default_set_at, is_default_here, default_workspace_id,
-           default_workspace_name, default_elsewhere, linked, can_set_default }],
+           default_workspace_name, default_elsewhere, linked, slack_admin,
+           can_set_default, can_clear }],
            links: [{ team_id, team_name, slack_user_id, slack_user_name, linked_at }] }
      rpc slack_app_set_default(p_team, p_ws | null) → status   ('not allowed')
+         choosing p_ws: a Slack owner/admin there (as Slack said when they linked)
+         who is owner/admin of p_ws, whatever it pointed at before; clearing:
+         that, or owner/admin of the Kanbo workspace it points at now
      rpc slack_link_preview(p_token) → { status: 'ok' | 'used' | 'expired', team_name,
          slack_user_name, expires_at, has_email, email_matches, already_linked } | null
      rpc claim_slack_link(p_token, p_accept_mismatch) → { team_id, team_name, slack_user_id,
@@ -25,8 +29,8 @@
    that comes back to the home page, and App opens the link page from it.
 
    Demo mode (no Supabase): an in-memory "Foundrise" Slack workspace
-   connected to the demo team workspace, with one linked account; any token
-   previews as that Slack workspace. Every failure is a SlackAppError with a
+   connected to the demo team workspace, with one linked account (a Slack
+   admin there); any token previews as that Slack workspace. Every failure is a SlackAppError with a
    sentence (British English) as its message.
    ============================================================ */
 import { supabase } from "./supabase";
@@ -48,8 +52,12 @@ export interface SlackAppTeam {
   defaultElsewhere: boolean;
   /** you have a Slack account linked there */
   linked: boolean;
-  /** you may point it at this workspace (owner/admin here, linked there, and owner/admin of where it points now) */
+  /** …and Slack says you're an owner or admin of that Slack workspace (the say over where its tasks go) */
+  slackAdmin: boolean;
+  /** you may point it at this workspace (a Slack owner/admin there, and owner/admin here) */
   canSetDefault: boolean;
+  /** you may set it back to Personal lists (a Slack owner/admin there, or owner/admin of where it points now) */
+  canClear: boolean;
 }
 export interface SlackAppLink {
   teamId: string;
@@ -82,7 +90,7 @@ export interface SlackLinkResult { teamId: string; teamName: string | null; slac
 export type SlackAppFailure = "not_allowed" | "invalid_link" | "used" | "expired" | "email_mismatch" | "unavailable" | "network" | "unknown";
 
 export const SLACK_APP_COPY = {
-  notAllowed: "You can't do that. Only owners and admins who've linked their own Slack account there can choose the workspace.",
+  notAllowed: "You can't do that. Choosing the workspace takes an owner or admin of the Slack workspace (with their Slack account linked) who also runs the Kanbo workspace.",
   invalidLink: "This link isn't valid. Type /kanbo in Slack to get a new one.",
   used: "This link has already been used. Type /kanbo in Slack to get a new one.",
   expired: "This link has expired (they last 15 minutes). Type /kanbo in Slack to get a new one.",
@@ -119,7 +127,9 @@ export function parseSlackAppStatus(raw: unknown): SlackAppStatus | null {
       defaultWorkspaceName: str(t.default_workspace_name),
       defaultElsewhere: t.default_elsewhere === true,
       linked: t.linked === true,
+      slackAdmin: t.slack_admin === true,
       canSetDefault: t.can_set_default === true,
+      canClear: t.can_clear === true,
     })),
     links: list(r.links).filter((l) => !!str(l.team_id) && !!str(l.slack_user_id)).map(parseLink),
   };
@@ -179,7 +189,9 @@ function demoStatus(ws: string | null): SlackAppStatus {
   const team: SlackAppTeam = {
     teamId: "T0FOUNDRISE", teamName: "foundrise", connectedAt: "2026-10-01T09:00:00.000Z",
     isDefaultHere: !!ws && demo.defaultWs === ws, defaultWorkspaceId: demo.defaultWs, defaultWorkspaceName: demo.defaultWs === DEMO_WS ? "Foundrise" : null,
-    defaultElsewhere: !!demo.defaultWs && demo.defaultWs !== ws, linked, canSetDefault: linked && ws === DEMO_WS,
+    // demo: your linked Slack account is a Slack admin there, and you run Foundrise (elsewhere you're a member)
+    defaultElsewhere: !!demo.defaultWs && demo.defaultWs !== ws, linked, slackAdmin: linked,
+    canSetDefault: linked && ws === DEMO_WS, canClear: linked && ws === DEMO_WS && !!demo.defaultWs,
   };
   return { workspaceId: ws, canManage: ws === DEMO_WS, teams: linked || (ws && demo.defaultWs === ws) ? [team] : [], links: demo.links.map((l) => ({ ...l })) };
 }

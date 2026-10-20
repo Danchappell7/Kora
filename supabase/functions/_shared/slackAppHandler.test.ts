@@ -7,7 +7,8 @@
 // (scratchpad/pgtest-slack/flows.mjs).
 import { describe, expect, it } from "vitest";
 import { createHash, createHmac } from "node:crypto";
-import { handleSlackRequest, kanboLinkTarget, within, type SlackAppDeps } from "./slackAppHandler.ts";
+import { handleSlackRequest, kanboLinkTarget, RATE, within, type SlackAppDeps } from "./slackAppHandler.ts";
+import { decodeMeta } from "./slackAppBlocks.ts";
 import type { SlackApi, SlackApiAnswer } from "./slackAppApi.ts";
 import type { Tx } from "./api/types.ts";
 
@@ -29,24 +30,40 @@ const event = (e: unknown, extra: Record<string, string> = {}, ts?: number) => {
 };
 const slash = (text: string, user = "UMIA") => form({ command: "/kanbo", text, team_id: "TACME", team_domain: "acme", user_id: user, response_url: "https://hooks.slack.com/commands/T/1/a", trigger_id: "1.2.3" });
 
-interface Script { linked?: boolean; canAct?: boolean; ws?: string | null; seen?: Set<string>; missing?: boolean }
+interface Script {
+  /** true: everyone is linked (as Mia); a list: only these Slack ids are */
+  linked?: boolean | string[];
+  canAct?: boolean; ws?: string | null; seen?: Set<string>; missing?: boolean;
+  /** count rate-limit hits like api_rate_hit does (rejected hits count too) */
+  countRates?: boolean;
+  /** users.info says they're a Slack workspace admin */
+  slackAdmin?: boolean;
+  /** each as-the-person transaction takes this long */
+  userDelayMs?: number;
+}
 function harness(script: Script = {}, slackDelayMs = 0) {
   const sql: string[] = [];
+  const params: Array<readonly unknown[]> = [];
   const asUser: string[] = [];
   const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
   const responds: Array<{ url: string; body: unknown }> = [];
   const later: Promise<unknown>[] = [];
   const seen = script.seen ?? new Set<string>();
+  const hits = new Map<string, number>();
+  const isLinked = (slackUserId: unknown) => (Array.isArray(script.linked) ? script.linked.includes(String(slackUserId)) : !!script.linked);
   const service: Tx = {
-    async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+    async query<T>(text: string, args: readonly unknown[] = []): Promise<T[]> {
       sql.push(text);
+      params.push(args);
       if (script.missing && /slack_/.test(text)) throw Object.assign(new Error('relation "public.slack_user_links" does not exist'), { code: "42P01" });
       if (/api_rate_hit/.test(text)) {
-        const key = String(params[0]);
+        const key = String(args[0]);
         if (key.startsWith("kanbo:api:slack:evt:") || key.startsWith("kanbo:api:slack:sig:")) { const first = !seen.has(key); seen.add(key); return [{ allowed: first, retry_after: 0 }] as T[]; }
-        return [{ allowed: true, retry_after: 0 }] as T[];
+        const n = (hits.get(key) ?? 0) + 1;
+        hits.set(key, n);
+        return [{ allowed: !script.countRates || n <= Number(args[2]), retry_after: 60 }] as T[];
       }
-      if (/from public\.slack_user_links/.test(text)) return (script.linked ? [{ user_id: MIA, slack_user_name: "Mia", can_act: script.canAct !== false }] : []) as T[];
+      if (/from public\.slack_user_links/.test(text)) return (isLinked(args[1]) ? [{ user_id: MIA, slack_user_name: "Mia", can_act: script.canAct !== false }] : []) as T[];
       if (/from public\.slack_teams/.test(text)) return (script.ws === undefined ? [] : [{ team_name: "acme", ws: script.ws, ws_name: "Acme" }]) as T[];
       return [] as T[];
     },
@@ -55,13 +72,17 @@ function harness(script: Script = {}, slackDelayMs = 0) {
     async call(method, args): Promise<SlackApiAnswer> {
       calls.push({ method, args });
       if (slackDelayMs) await new Promise((r) => setTimeout(r, slackDelayMs));
-      if (method === "users.info") return { ok: true, user: { name: "mia", tz: "Europe/London", profile: { real_name: "Mia Member", email: "mia@acme.test" } } };
+      if (method === "users.info") return { ok: true, user: { name: "mia", tz: "Europe/London", is_admin: script.slackAdmin === true, profile: { real_name: "Mia Member", email: "mia@acme.test" } } };
       return { ok: true };
     },
     async respond(url, body) { responds.push({ url, body }); return true; },
   };
   const deps: SlackAppDeps = {
-    db: { service, withUser: async (scope, fn) => { asUser.push(scope.userId); return fn(service); } },
+    db: { service, withUser: async (scope, fn) => {
+      asUser.push(scope.userId);
+      if (script.userDelayMs) await new Promise((r) => setTimeout(r, script.userDelayMs));
+      return fn(service);
+    } },
     slack, signingSecret: SECRET, appUrl: "https://www.kanbo.co.uk", apiBase: "https://x/functions/v1/api/v1", tz: "Europe/London",
     now: () => Date.now(), waitUntil: (p) => { later.push(p); }, log: () => {}, newToken: () => TOKEN, ackAfterMs: 200,
   };
@@ -70,7 +91,7 @@ function harness(script: Script = {}, slackDelayMs = 0) {
     const text = await res.text();
     return { status: res.status, body: text ? (() => { try { return JSON.parse(text); } catch { return text; } })() : null };
   };
-  return { deps, run, sql, asUser, calls, responds, settle: () => Promise.all(later.splice(0)) };
+  return { deps, run, sql, params, asUser, calls, responds, hits, settle: () => Promise.all(later.splice(0)) };
 }
 
 describe("the gate", () => {
@@ -161,6 +182,30 @@ describe("/kanbo", () => {
     expect(r.body).toBeNull();
     expect(h.calls.find((c) => c.method === "views.open")?.args.trigger_id).toBe("1.2.3");
   });
+  it("bare /kanbo's form answers through the command's response_url: a refusal after the form has closed still reaches them", async () => {
+    const h = harness({ linked: true, ws: null, userDelayMs: 300 });   // the write takes longer than we wait (200 ms)
+    await h.run(slash(""));
+    const view = h.calls.find((c) => c.method === "views.open")?.args.view as { private_metadata: string; callback_id: string };
+    expect(decodeMeta(view.private_metadata).ru).toBe("https://hooks.slack.com/commands/T/1/a");
+    const r = await h.run(payload({ type: "view_submission", user: { id: "UMIA" }, team: { id: "TACME" },
+      view: { callback_id: view.callback_id, private_metadata: view.private_metadata, state: { values: { title: { title: { value: "Ship it" } } } } } }));
+    expect(r).toEqual({ status: 200, body: null });   // the form closes on time
+    expect(h.responds).toEqual([]);
+    await h.settle();
+    // the scripted database can't make a task: what went wrong is told in the channel, only to them
+    expect(h.responds).toHaveLength(1);
+    expect(h.responds[0].url).toBe("https://hooks.slack.com/commands/T/1/a");
+    expect(JSON.stringify(h.responds[0].body)).toMatch(/Kanbo couldn't add that task/);
+  });
+  it("the link request records whether Slack says they're a Slack workspace admin", async () => {
+    for (const slackAdmin of [true, false]) {
+      const h = harness({ linked: false, slackAdmin });
+      await h.run(slash("Buy milk"));
+      const at = h.sql.findIndex((q) => /insert into public\.slack_link_requests/.test(q));
+      expect(h.sql[at]).toMatch(/slack_admin/);
+      expect(h.params[at][6]).toBe(slackAdmin);
+    }
+  });
   it("slow work: Slack gets an empty 200 in time, the answer follows via response_url", async () => {
     const h = harness({ linked: false }, 400);   // users.info takes 400 ms; we answer after 200
     const t0 = Date.now();
@@ -172,6 +217,36 @@ describe("/kanbo", () => {
     expect(h.responds).toHaveLength(1);
     expect(h.responds[0].url).toBe("https://hooks.slack.com/commands/T/1/a");
     expect(JSON.stringify(h.responds[0].body)).toMatch(/Link your Kanbo account/);
+  });
+});
+
+describe("rate limits", () => {
+  // every request Slack sends is signed afresh (the replay guard drops repeats): a new trigger each time
+  let n = 0;
+  const slashOnce = (text: string, user: string) => form({ command: "/kanbo", text, team_id: "TACME", team_domain: "acme", user_id: user,
+    response_url: "https://hooks.slack.com/commands/T/1/a", trigger_id: `1.2.${++n}` });
+  it("someone with no Kanbo account can't use up the Slack workspace's share: linked people still get through", async () => {
+    const h = harness({ linked: ["UMIA"], countRates: true });
+    // a flood of /kanbo help from an unlinked person: only their own limit stops them
+    let busy = 0;
+    for (let i = 0; i < RATE.team.max + 5; i++) {
+      const r = await h.run(slashOnce("help", "UEVE"));
+      if (/a lot of Kanbo/.test(JSON.stringify(r.body))) busy++;
+    }
+    expect(busy).toBe(RATE.team.max + 5 - RATE.actions.max);
+    // …and an unlinked person's link prompts, past their limit, are refused before anything else
+    const prompts = h.sql.filter((q) => /insert into public\.slack_link_requests/.test(q)).length;
+    expect(prompts).toBe(0);
+    expect(h.hits.get("kanbo:api:slack:team:TACME") ?? 0).toBe(0);
+    const mia = await h.run(slashOnce("Buy milk", "UMIA"));
+    expect(JSON.stringify(mia.body)).not.toMatch(/a lot of Kanbo/);
+    expect(h.hits.get("kanbo:api:slack:team:TACME")).toBe(1);
+  });
+  it("a linked person over their own limit doesn't count against the Slack workspace either", async () => {
+    const h = harness({ linked: true, ws: null, countRates: true });
+    for (let i = 0; i < RATE.actions.max + 10; i++) await h.run(slashOnce("", "UMIA"));
+    expect(h.hits.get("kanbo:api:slack:actions:TACME:UMIA")).toBe(RATE.actions.max + 10);
+    expect(h.hits.get("kanbo:api:slack:team:TACME")).toBe(RATE.actions.max);
   });
 });
 

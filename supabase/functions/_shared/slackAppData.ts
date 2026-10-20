@@ -72,9 +72,14 @@ export async function teamInfo(service: Tx, teamId: string): Promise<TeamInfo> {
   return { teamId, teamName: r?.team_name ?? null, workspaceId: r?.ws ?? null, workspaceName: r?.ws_name ?? null };
 }
 
-/** A new one-time link (only its SHA-256 is stored). Earlier unused links for the same person stop working. */
+/**
+ * A new one-time link (only its SHA-256 is stored). Earlier unused links for the same person stop working.
+ * slackAdmin: Slack's own users.info said they're an owner or admin of the Slack workspace (false when
+ * Slack didn't answer): the say-so slack_app_set_default needs to choose its Kanbo workspace.
+ */
 export async function createLinkRequest(service: Tx, r: {
   tokenHash: string; teamId: string; teamName?: string | null; slackUserId: string; slackUserName?: string | null; slackEmail?: string | null;
+  slackAdmin?: boolean;
 }): Promise<void> {
   if (!/^[0-9a-f]{64}$/.test(r.tokenHash) || !isSlackId(r.teamId) || !isSlackId(r.slackUserId)) throw new Error("createLinkRequest: invalid input");
   const cut = (s: string | null | undefined, n: number) => (s ? s.slice(0, n) : null);
@@ -82,9 +87,25 @@ export async function createLinkRequest(service: Tx, r: {
     `delete from public.slack_link_requests
       where (team_id = $1 and slack_user_id = $2 and used_at is null) or expires_at < now() - interval '1 day'`, [r.teamId, r.slackUserId]);
   await service.query(
-    `insert into public.slack_link_requests (token_hash, team_id, team_name, slack_user_id, slack_user_name, slack_email)
-     values ($1, $2, $3, $4, $5, $6)`,
-    [r.tokenHash, r.teamId, cut(r.teamName, 200), r.slackUserId, cut(r.slackUserName, 200), cut(r.slackEmail?.trim().toLowerCase(), 320)]);
+    `insert into public.slack_link_requests (token_hash, team_id, team_name, slack_user_id, slack_user_name, slack_email, slack_admin)
+     values ($1, $2, $3, $4, $5, $6, $7)`,
+    [r.tokenHash, r.teamId, cut(r.teamName, 200), r.slackUserId, cut(r.slackUserName, 200), cut(r.slackEmail?.trim().toLowerCase(), 320), r.slackAdmin === true]);
+}
+
+/**
+ * Keep a linked person's Slack owner/admin flag as Slack says it is now (users.info, just read): a new
+ * Slack admin gains the say over the Kanbo workspace, a former one loses it. Writes only on a change;
+ * never fails the request it rides on.
+ */
+export async function refreshSlackAdmin(service: Tx, teamId: string, slackUserId: string, slackAdmin: boolean): Promise<void> {
+  if (!isSlackId(teamId) || !isSlackId(slackUserId)) return;
+  try {
+    await service.query(
+      `update public.slack_user_links set slack_admin = $3
+        where team_id = $1 and slack_user_id = $2 and slack_admin is distinct from $3`, [teamId, slackUserId, slackAdmin === true]);
+  } catch {
+    // a refresh that fails changes nothing: the flag stays as it was
+  }
 }
 
 /** One hit on a fixed window (0046 api_rate_hit). Fails open: a limiter problem never blocks someone. */
@@ -191,7 +212,7 @@ export async function taskScope(db: SlackDb, userId: string, taskId: string): Pr
   return rs.length ? { workspaceId: rs[0].ws ?? null } : null;
 }
 
-interface CardRow {
+export interface CardRow {
   id: string; title: string; status: string; priority: string; workspace_id: string | null; due_date: string | null; due_time: string | null;
   assignee_id: string | null; user_id: string; created_at: string | Date; project_name: string | null; project_emoji: string | null; assignee_name: string | null;
 }
@@ -199,12 +220,17 @@ const CARD_COLS = `t.id::text as id, t.title, t.status, t.priority, t.workspace_
   t.assignee_id, t.user_id::text as user_id, t.created_at, p.name as project_name, p.emoji as project_emoji, ${ASSIGNEE_NAME} as assignee_name`;
 
 export interface LoadedCard extends TaskCard { workspaceId: string | null; createdBy: string; createdAt: string }
-function toCard(r: CardRow, me: string): LoadedCard {
+/**
+ * A row → a card. assigneeName is the assignee's real name, never "You": a link preview is read by the
+ * whole channel, not just the person who shared it. The cards only that person sees (their own
+ * confirmation, the Home tab) say "You" from assignedToMe (cardFacts).
+ */
+export function toCard(r: CardRow, me: string): LoadedCard {
   const created = r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at ?? "");
   return {
     id: r.id, title: r.title || "Untitled task", status: r.status, priority: r.priority,
     projectName: r.project_name, projectEmoji: r.project_emoji, personal: r.workspace_id == null,
-    dueDate: r.due_date, dueTime: r.due_time, assigneeName: r.assignee_id === me ? "You" : r.assignee_name,
+    dueDate: r.due_date, dueTime: r.due_time, assigneeName: r.assignee_name,
     assignedToMe: !!r.assignee_id && r.assignee_id === me, workspaceId: r.workspace_id, createdBy: r.user_id, createdAt: created,
   };
 }
