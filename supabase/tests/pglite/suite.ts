@@ -488,30 +488,140 @@ async function attackSuite(w: World) {
     await w.pg.exec(`update public.mcp_oauth_grants set resource = 'https://evil.example.org/mcp' where client_id = '${c.client}'`);
     eq((await legacy(w, c.access, "tools/list")).status, 401, "a token for another server is no use here");
   });
-  await test("refresh reuse: the replaced token is honoured for 10 seconds, then the whole grant goes", async () => {
+  /** Moves a connection's refresh tokens back in time: as if `by` had passed since they were made and replaced. */
+  const ageTokens = (client: string, by: string) => w.pg.query(
+    `update public.mcp_oauth_refresh_tokens t set issued_at = t.issued_at - $2::interval, used_at = t.used_at - $2::interval, superseded_at = t.superseded_at - $2::interval
+       from public.mcp_oauth_grants g where g.id = t.grant_id and g.client_id = $1`, [client, by]);
+  const revokedWhy = async (client: string) => (await w.pg.query<{ r: string | null }>(`select revoked_reason as r from public.mcp_oauth_grants where client_id = $1`, [client])).rows[0].r;
+  await test("refresh reuse: a replaced token is good for 10 seconds, then the whole grant goes", async () => {
+    await clearRates(w);
     const c = await connect(w, w.alice);
     const r1 = await refresh(w, c.client, c.refresh);
     const lost = await refresh(w, c.client, c.refresh);
     eq(lost.status, 200, "within the window: the first answer may have been lost");
-    await w.pg.exec(`update public.mcp_oauth_refresh_tokens set used_at = now() - interval '11 seconds' where used_at is not null`);
+    await ageTokens(c.client, "11 seconds");
     const stolen = await refresh(w, c.client, c.refresh);
     eq(stolen.json.error, "invalid_grant", "after the window");
     eq((await refresh(w, c.client, lost.json.refresh_token)).json.error, "invalid_grant", "and the live one goes too");
     eq((await legacy(w, lost.json.access_token, "tools/list")).status, 401, "and its access token");
+    eq(await revokedWhy(c.client), "refresh_reuse");
     eq(r1.status, 200);
   });
-  await test("reuse of an older token, past the one just replaced, revokes at once", async () => {
+  await test("reuse of an older token past its window revokes, however far back it is", async () => {
+    await clearRates(w);
     const c = await connect(w, w.alice);
     const r1 = await refresh(w, c.client, c.refresh);
+    await ageTokens(c.client, "1 hour");
     const r2 = await refresh(w, c.client, r1.json.refresh_token);
+    eq(r2.status, 200);
     eq((await refresh(w, c.client, c.refresh)).json.error, "invalid_grant");
     eq((await legacy(w, r2.json.access_token, "tools/list")).status, 401);
+    eq(await revokedWhy(c.client), "refresh_reuse");
+  });
+  await test("the 10 seconds can't be stretched by replaying inside them", async () => {
+    await clearRates(w);
+    const c = await connect(w, w.alice);
+    eq((await refresh(w, c.client, c.refresh)).status, 200);
+    await ageTokens(c.client, "9 seconds");
+    eq((await refresh(w, c.client, c.refresh)).status, 200, "second 9: still good");
+    await ageTokens(c.client, "2 seconds");
+    eq((await refresh(w, c.client, c.refresh)).json.error, "invalid_grant", "second 11: gone, though it was replayed at 9");
+  });
+  await test("parallel calls at expiry: whichever answer arrives last, the app's next refresh works", async () => {
+    // The SDK refreshes once per call and keeps the last answer it reads, and answers can arrive in any order.
+    for (const kept of [0, 1, 2]) {
+      await clearRates(w);
+      const c = await connect(w, w.alice);
+      const burst = [await refresh(w, c.client, c.refresh), await refresh(w, c.client, c.refresh), await refresh(w, c.client, c.refresh)];
+      for (const r of burst) eq(r.status, 200, "every call in the burst");
+      await ageTokens(c.client, "1 hour");
+      const next = await refresh(w, c.client, burst[kept].json.refresh_token);
+      eq(next.status, 200, `the next refresh, keeping answer ${kept + 1}: ${JSON.stringify(next.json)}`);
+      eq(await revokedWhy(c.client), null, "the connection lives");
+      await ageTokens(c.client, "1 hour");
+      eq((await refresh(w, c.client, next.json.refresh_token)).status, 200, "and the one after that");
+      eq(await revokedWhy(c.client), null, "still");
+    }
+  });
+  await test("parallel calls when one refreshes with the token another has just brought back", async () => {
+    // Call 1 brings back T2. Call 2 sees a 401 after that and refreshes with T2. Call 3 was already on its way with T1.
+    for (const keep of ["t2's answer", "t1's late answer"]) {
+      await clearRates(w);
+      const c = await connect(w, w.alice);
+      const a = await refresh(w, c.client, c.refresh);
+      const b = await refresh(w, c.client, a.json.refresh_token);
+      const late = await refresh(w, c.client, c.refresh);
+      eq(b.status, 200);
+      eq(late.status, 200, "T1 is only a moment old");
+      await ageTokens(c.client, "1 hour");
+      const next = await refresh(w, c.client, (keep === "t2's answer" ? b : late).json.refresh_token);
+      eq(next.status, 200, `keeping ${keep}: ${JSON.stringify(next.json)}`);
+      eq(await revokedWhy(c.client), null, "the connection lives");
+    }
+    // the same with the order the other way round: T1 is replayed first, then T2 is spent before T1's replay is answered
+    await clearRates(w);
+    const c = await connect(w, w.alice);
+    const t2 = await refresh(w, c.client, c.refresh);
+    const t3 = await refresh(w, c.client, c.refresh);
+    eq((await refresh(w, c.client, t2.json.refresh_token)).status, 200);
+    await ageTokens(c.client, "1 hour");
+    eq((await refresh(w, c.client, t3.json.refresh_token)).status, 200, "T3 was made in the same burst T2 was spent in");
+    eq(await revokedWhy(c.client), null);
+  });
+  await test("a burst doesn't hide a theft: once one of its tokens is used, the others die with their window", async () => {
+    await clearRates(w);
+    const c = await connect(w, w.alice);
+    const app = await refresh(w, c.client, c.refresh);
+    const thief = await refresh(w, c.client, c.refresh);
+    await ageTokens(c.client, "1 hour");
+    const appNext = await refresh(w, c.client, app.json.refresh_token);
+    eq(appNext.status, 200, "the app, an hour later");
+    eq((await refresh(w, c.client, thief.json.refresh_token)).status, 200, "the other token, in the same moment: can't be told from a parallel call");
+    await ageTokens(c.client, "11 seconds");
+    eq((await refresh(w, c.client, thief.json.refresh_token)).json.error, "invalid_grant", "and past its window the connection ends");
+    eq(await revokedWhy(c.client), "refresh_reuse");
+    eq((await refresh(w, c.client, appNext.json.refresh_token)).json.error, "invalid_grant", "for everyone holding one");
+    // a thief who goes first ends it the same way, on the app's next refresh
+    await clearRates(w);
+    const d = await connect(w, w.alice);
+    const dApp = await refresh(w, d.client, d.refresh);
+    const dThief = await refresh(w, d.client, d.refresh);
+    await ageTokens(d.client, "1 hour");
+    eq((await refresh(w, d.client, dThief.json.refresh_token)).status, 200, "the thief goes first");
+    await ageTokens(d.client, "11 seconds");
+    eq((await refresh(w, d.client, dApp.json.refresh_token)).json.error, "invalid_grant", "the app's refresh shows it up");
+    eq(await revokedWhy(d.client), "refresh_reuse");
+  });
+  await test("replaced tokens are tidied away after 90 days, including ones nobody ever presented", async () => {
+    await clearRates(w);
+    const c = await connect(w, w.alice);
+    const n = async () => (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.mcp_oauth_refresh_tokens t join public.mcp_oauth_grants g on g.id = t.grant_id where g.client_id = $1`, [c.client])).rows[0].n;
+    const kept = await refresh(w, c.client, c.refresh);
+    eq((await refresh(w, c.client, c.refresh)).status, 200, "a second answer, which the app never presents");
+    eq(await n(), 3, "the first token and two answers");
+    await ageTokens(c.client, "91 days");
+    const next = await refresh(w, c.client, kept.json.refresh_token);
+    eq(next.status, 200);
+    eq(await n(), 3, "the first token has gone; the two answers stay, replaced only now; and a new one");
+    await ageTokens(c.client, "91 days");
+    eq((await refresh(w, c.client, next.json.refresh_token)).status, 200);
+    eq(await n(), 2, "the two answers have gone too, though one was never presented");
   });
   await test("a refresh token from another app", async () => {
     const c = await connect(w, w.alice);
     const other = await register(w);
     eq((await refresh(w, other, c.refresh)).json.error, "invalid_grant");
     eq((await refresh(w, c.client, c.refresh)).status, 200, "the theft attempt doesn't burn it");
+  });
+  await test("a refresh from an app Kanbo no longer knows says so, so the app registers again", async () => {
+    await clearRates(w);
+    const c = await connect(w, w.alice);
+    await w.pg.query(`delete from public.mcp_oauth_clients where client_id = $1`, [c.client]);
+    const gone = await refresh(w, c.client, c.refresh);
+    eq(gone.status, 400);
+    eq(gone.json.error, "invalid_client", "RFC 6749 5.2, and what makes an MCP client forget its client_id");
+    const live = await register(w);
+    eq((await refresh(w, live, c.refresh)).json.error, "invalid_grant", "a wrong token from an app that exists is still just a wrong token");
   });
   await test("another person's data: invisible, unwritable", async () => {
     const bob = await connect(w, w.bob);
@@ -765,7 +875,7 @@ async function attackSuite(w: World) {
   await test("the sweep clears the dead and never an app in use", async () => {
     const idle = await register(w, "Idle");
     const c = await connect(w, w.alice);
-    await w.pg.exec(`update public.mcp_oauth_clients set created_at = now() - interval '8 days' where client_id in ('${idle}', '${c.client}')`);
+    await w.pg.exec(`update public.mcp_oauth_clients set created_at = now() - interval '31 days', last_seen_at = now() - interval '31 days' where client_id in ('${idle}', '${c.client}')`);
     await w.pg.exec(`select public.mcp_oauth_sweep()`);
     eq((await w.pg.query(`select 1 from public.mcp_oauth_clients where client_id = '${idle}'`)).rows.length, 0, "an unused app goes");
     eq((await legacy(w, c.access, "tools/list")).status, 200, "an app in use stays");
@@ -1224,7 +1334,7 @@ async function strangerSuite(w: World) {
     eq((await w.pg.query<{ r: { error?: string } }>(`select public.mcp_oauth_register_client('x', null, array[$1]) as r`, [uri(600)])).rows[0].r.error, "invalid_redirect_uri");
     await clearRates(w);
   });
-  await test("the sweep clears old rate-limit rows, and registrations that never connected within a day", async () => {
+  await test("the sweep clears old rate-limit rows, and apps not seen for a month", async () => {
     await clearRates(w);
     await w.pg.exec(`insert into public.rate_limits (key, last_at, count)
       select 'kanbo:mcp:old:' || g, now() - interval '30 days', 1 from generate_series(1, 700) g`);
@@ -1237,16 +1347,76 @@ async function strangerSuite(w: World) {
     eq(await countRows("kanbo:other:old"), 1, "nor anyone else's");
     const client = await register(w, "Never connected");
     const docClient = "https://apps.example.org/client.json";
-    await w.pg.query(`insert into public.mcp_oauth_clients (client_id, kind, client_name, redirect_uris, fetched_at, created_at) values ($1, 'cimd', 'A doc', array['https://x.example.org/cb'], now(), now() - interval '2 days') on conflict do nothing`, [docClient]);
+    await w.pg.query(`insert into public.mcp_oauth_clients (client_id, kind, client_name, redirect_uris, fetched_at, created_at, last_seen_at) values ($1, 'cimd', 'A doc', array['https://x.example.org/cb'], now(), now() - interval '2 days', now() - interval '2 days') on conflict do nothing`, [docClient]);
     const c = await connect(w, w.alice);
-    await w.pg.exec(`update public.mcp_oauth_clients set created_at = now() - interval '25 hours' where client_id in ('${client}', '${c.client}')`);
+    await w.pg.exec(`update public.mcp_oauth_clients set created_at = now() - interval '31 days', last_seen_at = now() - interval '31 days' where client_id in ('${client}', '${c.client}')`);
     await w.pg.exec(`select public.mcp_oauth_sweep()`);
-    eq((await w.pg.query(`select 1 from public.mcp_oauth_clients where client_id = '${client}'`)).rows.length, 0, "a registration that never connected");
+    eq((await w.pg.query(`select 1 from public.mcp_oauth_clients where client_id = '${client}'`)).rows.length, 0, "a registration not seen for a month");
     eq((await legacy(w, c.access, "tools/list")).status, 200, "one in use stays");
     eq((await w.pg.query(`select 1 from public.mcp_oauth_clients where client_id = $1`, [docClient])).rows.length, 1, "a document's kept for a week");
-    await w.pg.exec(`update public.mcp_oauth_clients set created_at = now() - interval '8 days' where client_id = '${docClient}'`);
+    await w.pg.exec(`update public.mcp_oauth_clients set last_seen_at = now() - interval '8 days' where client_id = '${docClient}'`);
     await w.pg.exec(`select public.mcp_oauth_sweep()`);
     eq((await w.pg.query(`select 1 from public.mcp_oauth_clients where client_id = $1`, [docClient])).rows.length, 0, "then it goes");
+    await clearRates(w);
+  });
+  await test("an app that didn't finish connecting can try again days later with the client_id it remembers", async () => {
+    await clearRates(w);
+    w.sessions.set("s-a", w.alice);
+    const h = { Authorization: "Bearer s-a" };
+    const prepare = async (client_id: string) => (await send(w, "/oauth/prepare", jsonBody({ client_id, redirect_uri: CALLBACK }, h))).json;
+    const seen = async (id: string) => (await w.pg.query<{ s: number }>(`select extract(epoch from now() - last_seen_at)::int as s from public.mcp_oauth_clients where client_id = $1`, [id])).rows[0].s;
+    const client = await register(w, "Half connected");
+    eq((await prepare(client)).ok, true, "day 1");
+    // two days on, someone else's registration runs the sweep
+    await w.pg.query(`update public.mcp_oauth_clients set created_at = now() - interval '2 days', last_seen_at = now() - interval '2 days' where client_id = $1`, [client]);
+    await register(w, "Someone else");
+    eq((await prepare(client)).ok, true, "day 3: the same client_id still works");
+    ok((await seen(client)) < 5, "and being seen at the consent page starts the 30 days again");
+    // seen 29 days ago: stays. Registered long before that doesn't matter.
+    await w.pg.query(`update public.mcp_oauth_clients set created_at = now() - interval '200 days', last_seen_at = now() - interval '29 days' where client_id = $1`, [client]);
+    await w.pg.exec(`select public.mcp_oauth_sweep()`);
+    eq((await prepare(client)).ok, true, "seen 29 days ago");
+    // a wrong address doesn't keep anything alive, and an hour's sighting isn't written twice
+    await w.pg.query(`update public.mcp_oauth_clients set last_seen_at = now() - interval '29 days' where client_id = $1`, [client]);
+    eq((await send(w, "/oauth/prepare", jsonBody({ client_id: client, redirect_uri: "https://evil.example.org/cb" }, h))).json.reason, "bad_redirect");
+    ok((await seen(client)) > 86400, "a wrong address isn't a sighting");
+    await w.pg.query(`update public.mcp_oauth_clients set last_seen_at = now() - interval '10 minutes' where client_id = $1`, [client]);
+    await prepare(client);
+    ok((await seen(client)) >= 590, "seen ten minutes ago: nothing written");
+    // a month unseen: gone, and the page says what will actually work
+    await w.pg.query(`update public.mcp_oauth_clients set last_seen_at = now() - interval '31 days' where client_id = $1`, [client]);
+    await w.pg.exec(`select public.mcp_oauth_sweep()`);
+    const dead = await prepare(client);
+    eq(dead.reason, "unknown_client");
+    ok(/Remove Kanbo from the app and add it again/.test(dead.message), `says what works: ${dead.message}`);
+    ok(!/Start connecting again/.test(dead.message), "not what doesn't");
+    await clearRates(w);
+  });
+  await test("registrations nobody used can't fill the table: past 50,000 the least recently seen go first", async () => {
+    await clearRates(w);
+    const count = async () => (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.mcp_oauth_clients where kind = 'dcr'`)).rows[0].n;
+    const there = async (id: string) => (await w.pg.query(`select 1 from public.mcp_oauth_clients where client_id = $1`, [id])).rows.length === 1;
+    const before = await count();
+    const c = await connect(w, w.alice);
+    await w.pg.query(`update public.mcp_oauth_clients set last_seen_at = now() - interval '20 days' where client_id = $1`, [c.client]);
+    const n = 50300 - before;
+    await w.pg.query(`insert into public.mcp_oauth_clients (client_id, kind, client_name, redirect_uris, last_seen_at)
+      select 'kmcp_client_flood_' || g, 'dcr', 'Flood', array['https://x.example.org/cb'], now() - (g || ' seconds')::interval from generate_series(1, $1::int) g`, [n]);
+    await w.pg.exec(`select public.mcp_oauth_sweep()`);
+    eq(await count(), 50300 + 1 - 200, "200 at a time");
+    await w.pg.exec(`select public.mcp_oauth_sweep()`);
+    const unused = async () => (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.mcp_oauth_clients x where x.kind = 'dcr' and not exists (select 1 from public.mcp_oauth_grants g where g.client_id = x.client_id)`)).rows[0].n;
+    ok(await unused() <= 50000, `unused ones held at the ceiling: ${await unused()}`);
+    ok(await there("kmcp_client_flood_1"), "the most recently seen stay");
+    ok(!(await there(`kmcp_client_flood_${n}`)), "the least recently seen went");
+    ok(await there(c.client), "and an app in use never goes, however long since it was seen at the consent page");
+    eq((await legacy(w, c.access, "tools/list")).status, 200);
+    // a new registration still gets in, and the ceiling stays where it was
+    await register(w, "Honest");
+    ok(await unused() <= 50000 + 1, "the sweep made room, and the new one is added after it");
+    await w.pg.exec(`select public.mcp_oauth_sweep()`);
+    ok(await unused() <= 50000, "and the next sweep puts it back");
+    await w.pg.exec(`delete from public.mcp_oauth_clients where client_id like 'kmcp_client_flood_%'`);
     await clearRates(w);
   });
   await test("fetching an app's description: same guard as webhooks, and one answer for every failure", async () => {

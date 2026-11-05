@@ -11,7 +11,10 @@
 --   mcp_oauth_clients         apps. Dynamic Client Registration rows
 --                             (client_id kmcp_client_…) and Client ID Metadata
 --                             Documents (client_id is the https URL). Names are
---                             what the app says it's called: untrusted text.
+--                             what the app says it's called: untrusted text. Apps
+--                             remember their client_id, so an unused registration
+--                             stays for 30 days from when it was last seen, with a
+--                             ceiling on how many (mcp_oauth_sweep).
 --   mcp_oauth_codes           single use, 5 minutes, PKCE S256, one exact
 --                             redirect_uri. Only the SHA-256 is stored. A code
 --                             used twice revokes the grant it made.
@@ -20,9 +23,11 @@
 --                             key's id (rate limits, idempotency).
 --   mcp_oauth_access_tokens   1 hour. Only the SHA-256.
 --   mcp_oauth_refresh_tokens  rotated on every use, kept as hashes so a replay
---                             can be recognised: the token before the current
---                             one is honoured for 10 seconds (a lost answer),
---                             anything else revokes the grant.
+--                             can be recognised. A replaced token is honoured for
+--                             10 seconds (parallel calls, a lost answer), and the
+--                             tokens made in those seconds all stay live, because
+--                             answers can arrive in any order. Anything older
+--                             revokes the grant.
 --
 --   service role only (the mcp edge function): mcp_oauth_register_client,
 --     mcp_oauth_upsert_cimd_client, mcp_oauth_client_check,
@@ -101,8 +106,11 @@ create table if not exists public.mcp_oauth_clients (
   client_uri   text,
   redirect_uris text[] not null,
   created_at   timestamptz not null default now(),
-  fetched_at   timestamptz
+  fetched_at   timestamptz,
+  last_seen_at timestamptz not null default now()
 );
+alter table public.mcp_oauth_clients add column if not exists last_seen_at timestamptz not null default now();
+create index if not exists mcp_oauth_clients_seen_idx on public.mcp_oauth_clients (kind, last_seen_at desc);
 alter table public.mcp_oauth_clients drop constraint if exists mcp_oauth_clients_shape;
 alter table public.mcp_oauth_clients add constraint mcp_oauth_clients_shape check (
   kind in ('dcr', 'cimd')
@@ -122,7 +130,6 @@ create table if not exists public.mcp_oauth_grants (
   created_at   timestamptz not null default now(),
   last_used_at timestamptz,
   refresh_expires_at timestamptz not null default (now() + interval '90 days'),
-  prev_refresh_hash  text,
   revoked_at   timestamptz,
   revoked_reason text
 );
@@ -131,8 +138,7 @@ create index if not exists mcp_oauth_grants_client_idx on public.mcp_oauth_grant
 create index if not exists mcp_oauth_grants_workspace_idx on public.mcp_oauth_grants (workspace_id) where workspace_id is not null;
 alter table public.mcp_oauth_grants drop constraint if exists mcp_oauth_grants_shape;
 alter table public.mcp_oauth_grants add constraint mcp_oauth_grants_shape check (
-  access in ('read', 'write') and length(scope) <= 200 and length(resource) <= 512
-  and (prev_refresh_hash is null or prev_refresh_hash ~ '^[0-9a-f]{64}$'));
+  access in ('read', 'write') and length(scope) <= 200 and length(resource) <= 512);
 
 create table if not exists public.mcp_oauth_codes (
   code_hash    text primary key,
@@ -167,8 +173,11 @@ create table if not exists public.mcp_oauth_refresh_tokens (
   token_hash text primary key,
   grant_id   uuid not null references public.mcp_oauth_grants (id) on delete cascade,
   issued_at  timestamptz not null default now(),
-  used_at    timestamptz
+  used_at    timestamptz,            -- when this token was first presented
+  superseded_at timestamptz          -- when it stopped being live: it was used, or a newer one was
 );
+alter table public.mcp_oauth_refresh_tokens add column if not exists superseded_at timestamptz;
+update public.mcp_oauth_refresh_tokens set superseded_at = used_at where used_at is not null and superseded_at is null;
 create index if not exists mcp_oauth_refresh_tokens_grant_idx on public.mcp_oauth_refresh_tokens (grant_id, issued_at desc);
 
 -- nobody reaches these directly: the edge function's connection and the functions below only
@@ -233,14 +242,27 @@ begin
     select x.id from public.mcp_oauth_grants x
      where (x.revoked_at is not null and x.revoked_at < now() - interval '30 days')
         or x.refresh_expires_at < now() - interval '30 days' limit 200);
-  -- an app with no connection left: registered apps after a day (anyone can add one,
-  -- without signing in, so these go quickly), documents after a week
+  -- an app with no connection left: a registered app 30 days after it was last seen (apps
+  -- remember their client_id and send it again, and there's nothing they can do if it has
+  -- gone), a document after a week (Kanbo reads it again when it's next asked for)
   delete from public.mcp_oauth_clients c where c.client_id in (
     select x.client_id from public.mcp_oauth_clients x
-     where x.created_at < now() - case x.kind when 'dcr' then interval '1 day' else interval '7 days' end
+     where ((x.kind = 'dcr' and x.last_seen_at < now() - interval '30 days')
+            or (x.kind = 'cimd' and x.last_seen_at < now() - interval '7 days'))
        and not exists (select 1 from public.mcp_oauth_grants g where g.client_id = x.client_id)
        and not exists (select 1 from public.mcp_oauth_codes k where k.client_id = x.client_id and k.expires_at > now())
      limit 200);
+  -- Anyone can add a registered app without signing in, so there's a ceiling too. 2,000 an hour
+  -- (the overall limit) kept for 30 days would be gigabytes. Past 50,000, about 250 MB at the very
+  -- most, the least recently seen go first, and never one in use. Each sweep can clear more than
+  -- one registration adds, so a flood can't outrun it. Flooding costs an unused registration its
+  -- 30 days, not a connection.
+  delete from public.mcp_oauth_clients c where c.client_id in (
+    select x.client_id from (
+      select y.client_id from public.mcp_oauth_clients y
+       where y.kind = 'dcr' order by y.last_seen_at desc offset 50000 limit 200) x
+     where not exists (select 1 from public.mcp_oauth_grants g where g.client_id = x.client_id)
+       and not exists (select 1 from public.mcp_oauth_codes k where k.client_id = x.client_id and k.expires_at > now()));
 end; $$;
 revoke execute on function public.mcp_oauth_sweep() from public, anon, authenticated;
 
@@ -280,15 +302,17 @@ begin
   insert into public.mcp_oauth_clients as c (client_id, kind, client_name, client_uri, redirect_uris, fetched_at)
   values (p_client_id, 'cimd', coalesce(nullif(nm, ''), 'Unnamed app'), left(p_client_uri, 2048), p_redirect_uris, now())
   on conflict (client_id) do update set client_name = excluded.client_name, client_uri = excluded.client_uri,
-    redirect_uris = excluded.redirect_uris, fetched_at = now()
+    redirect_uris = excluded.redirect_uris, fetched_at = now(), last_seen_at = now()
    where c.kind = 'cimd';
 end; $$;
 revoke execute on function public.mcp_oauth_upsert_cimd_client(text, text, text, text[]) from public, anon, authenticated;
 
 -- Is this app known, and is this one of its addresses? The consent page asks
 -- through the edge function before showing anything: a bad answer never redirects.
+-- A good answer counts as seeing the app (at most one write an hour); only someone
+-- signed in gets this far, so a stranger can't keep a registration alive.
 create or replace function public.mcp_oauth_client_check(p_client_id text, p_redirect_uri text)
-returns jsonb language plpgsql security definer stable set search_path = public as $$
+returns jsonb language plpgsql security definer volatile set search_path = public as $$
 declare c public.mcp_oauth_clients;
 begin
   select * into c from public.mcp_oauth_clients x where x.client_id = p_client_id;
@@ -296,6 +320,8 @@ begin
   if not public.mcp_oauth_redirect_matches(c.redirect_uris, p_redirect_uri) then
     return jsonb_build_object('ok', false, 'reason', 'bad_redirect', 'kind', c.kind);
   end if;
+  update public.mcp_oauth_clients x set last_seen_at = now()
+   where x.client_id = c.client_id and x.last_seen_at < now() - interval '1 hour';
   return jsonb_build_object('ok', true, 'kind', c.kind, 'client_name', c.client_name, 'client_uri', c.client_uri,
     'fetched_at', c.fetched_at);
 end; $$;
@@ -314,7 +340,7 @@ begin
   insert into public.mcp_oauth_refresh_tokens (token_hash, grant_id) values (public.api_key_digest(rt), p_grant.id);
   update public.mcp_oauth_grants g set refresh_expires_at = now() + interval '90 days' where g.id = p_grant.id;
   delete from public.mcp_oauth_access_tokens a where a.grant_id = p_grant.id and a.expires_at < now();
-  delete from public.mcp_oauth_refresh_tokens r where r.grant_id = p_grant.id and r.used_at < now() - interval '90 days';
+  delete from public.mcp_oauth_refresh_tokens r where r.grant_id = p_grant.id and r.superseded_at < now() - interval '90 days';
   return jsonb_build_object('access_token', at, 'token_type', 'Bearer', 'expires_in', 3600,
     'refresh_token', rt, 'scope', p_grant.scope);
 end; $$;
@@ -370,8 +396,19 @@ begin
 end; $$;
 revoke execute on function public.mcp_oauth_exchange_code(text, text, text, text, text) from public, anon, authenticated;
 
--- refresh_token: rotates. The token just replaced is honoured for 10 seconds, once
--- the answer may have been lost; any other replay revokes the grant.
+-- refresh_token: rotates. A well-behaved app refreshes in bursts: at expiry each parallel call
+-- refreshes for itself (the MCP SDK doesn't share one refresh between them), some with the old
+-- token and some with one a moment old, the answers can arrive in any order, and the app keeps
+-- the last one it reads. So:
+--   a live token        is used, and every live token made more than 10 seconds ago stops being
+--                       live. Tokens made in the last 10 seconds stay live: any of them could be
+--                       the one the app ends up keeping.
+--   a replaced token    is honoured for 10 seconds from when it was replaced, a fixed time that a
+--                       replay doesn't move. Nothing else changes.
+--   anything older      is a replay, and revokes the grant.
+-- That still catches a theft. A token someone else holds stays live only until either party's
+-- next refresh, which replaces it, and the one left holding a replaced token ends the connection
+-- when they present it. Live tokens are bounded by the limit of 30 refreshes a minute.
 create or replace function public.mcp_oauth_refresh(p_token text, p_client_id text, p_resource text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -384,7 +421,14 @@ begin
   if coalesce(p_token, '') !~ '^kmcp_rt_[A-Za-z0-9_-]{43}$' then return bad; end if;
   d := public.api_key_digest(p_token);
   select * into r from public.mcp_oauth_refresh_tokens x where x.token_hash = d;
-  if r.token_hash is null then return bad; end if;
+  if r.token_hash is null then
+    -- the app itself is gone (its connection ended long ago, and the sweep took both). Saying so
+    -- is what makes an MCP client forget the client_id it remembers and register again.
+    if not exists (select 1 from public.mcp_oauth_clients c where c.client_id = p_client_id) then
+      return jsonb_build_object('error', 'invalid_client', 'error_description', 'Kanbo doesn''t know this app any more. Connect it to Kanbo again.');
+    end if;
+    return bad;
+  end if;
   select * into g from public.mcp_oauth_grants x where x.id = r.grant_id for update;
   select * into r from public.mcp_oauth_refresh_tokens x where x.token_hash = d;
   if g.id is null or g.client_id is distinct from p_client_id then return bad; end if;
@@ -400,17 +444,16 @@ begin
   if not rate.allowed then
     return jsonb_build_object('error', 'slow_down', 'retry_after', rate.retry_after);
   end if;
-  if r.used_at is not null then
-    if not (r.token_hash = g.prev_refresh_hash and r.used_at >= now() - interval '10 seconds') then
-      perform public.mcp_oauth_revoke(g.id, 'refresh_reuse');
-      return bad;
-    end if;
-    -- the answer to the first use never arrived: its replacement goes, and a new pair comes
-    update public.mcp_oauth_refresh_tokens x set used_at = now() where x.grant_id = g.id and x.used_at is null;
-  else
-    update public.mcp_oauth_refresh_tokens x set used_at = now() where x.token_hash = d;
-    update public.mcp_oauth_grants x set prev_refresh_hash = d where x.id = g.id;
+  if r.superseded_at < now() - interval '10 seconds' then
+    perform public.mcp_oauth_revoke(g.id, 'refresh_reuse');
+    return bad;
   end if;
+  if r.superseded_at is null then
+    update public.mcp_oauth_refresh_tokens x set superseded_at = now()
+     where x.grant_id = g.id and x.superseded_at is null
+       and (x.token_hash = d or x.issued_at < now() - interval '10 seconds');
+  end if;
+  update public.mcp_oauth_refresh_tokens x set used_at = coalesce(x.used_at, now()) where x.token_hash = d;
   return public.mcp_oauth_mint(g);
 end; $$;
 revoke execute on function public.mcp_oauth_refresh(text, text, text) from public, anon, authenticated;

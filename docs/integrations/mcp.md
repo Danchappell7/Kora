@@ -103,9 +103,12 @@ What the tools do on someone's behalf, and how that differs from the app:
   one-workspace connections answer 503.
 - **OAuth 2.1, built small on purpose** (`supabase/migrations/0050_mcp_oauth.sql`).
   Authorisation code with PKCE S256 only; single-use codes (5 minutes; a code used twice
-  revokes what it made); access tokens for 1 hour; rotating refresh tokens (the one just
-  replaced is honoured for 10 seconds in case the answer was lost, and any other reuse
-  revokes the whole connection). Only SHA-256 hashes of codes and tokens are stored. Tokens
+  revokes what it made); access tokens for 1 hour; rotating refresh tokens. A replaced token
+  is honoured for 10 seconds, and the tokens made in those seconds all stay live, because each
+  parallel call refreshes for itself and the answers can arrive in any order. Using any of them
+  later replaces the rest, and presenting a replaced one past its 10 seconds revokes the whole
+  connection, so a stolen token is still caught at the next refresh. Only SHA-256 hashes of codes
+  and tokens are stored. Tokens
   are bound to `https://www.kanbo.co.uk/mcp`. Supabase's own OAuth server wasn't used: it
   can't do read-only or one-workspace grants, Client ID Metadata Documents or audience
   binding yet, keeps its issuer on `supabase.co`, and skips consent for known clients.
@@ -141,11 +144,15 @@ Inbox. Consent: 30 a minute per person.
 each use one public `client_id` for everyone, and Claude's traffic comes from one address range, so a
 limit counted before the check would let one stranger switch them off for every Kanbo user. Nothing
 is at risk without one: codes and tokens are 256-bit, malformed ones never reach the database, and a
-well-formed wrong one costs one indexed read and writes nothing. Refreshing a real token is limited
+well-formed wrong one costs an indexed read or two and writes nothing. Refreshing a real token is limited
 to 30 a minute per connection, in the SQL, after it's been checked.
 
 `/oauth/register` stores something for anyone who asks, so what it keeps is small (at most 8 redirect
-addresses of 512 characters each) and short-lived (gone after a day if it never connected). Only
+addresses of 512 characters each) and bounded. Apps remember their `client_id` and send it again, so
+a registration with no connection stays for 30 days from when it was last seen at the consent page,
+and past 50,000 of them the least recently seen go first. If one has gone, the consent page says
+"Remove Kanbo from the app and add it again", and an app still holding a refresh token gets
+`invalid_client`, which makes an MCP client forget the `client_id` and register again. Only
 requests that would be stored are counted: 2,000 an hour overall, 600 an hour per address as
 Supabase's edge sees it, and 120 an hour per caller. Through www.kanbo.co.uk that edge address is
 Vercel's, shared by everyone, so a caller is the pair of it and the address in `x-vercel-forwarded-for`

@@ -17,7 +17,7 @@
 //   one address range, so any limit counted before the check would let one stranger
 //   switch them off for every Kanbo user. Nothing is at risk without one: codes and
 //   tokens are 256-bit, malformed ones never reach the database, and a well-formed
-//   wrong one costs one indexed read and writes nothing. Use of a real refresh token
+//   wrong one costs an indexed read or two and writes nothing. Use of a real refresh token
 //   is limited per connection, in the SQL, after it has been checked.
 //   /oauth/register stores something, so it's limited: see registerLimits.
 //
@@ -330,7 +330,8 @@ export interface PreparedClient {
 }
 
 const REFUSE = {
-  unknown_client: "Kanbo doesn't know this app. Start connecting again from the app.",
+  // apps remember their client_id, so starting again from the app would only send the same one
+  unknown_client: "Kanbo doesn't know this app. Remove Kanbo from the app and add it again.",
   bad_redirect: "This app asked to send you back to an address it hasn't registered, so Kanbo stopped here.",
 };
 

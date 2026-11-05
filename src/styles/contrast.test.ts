@@ -321,3 +321,31 @@ describe("accent model (appearance.ts ↔ kanbo.css)", () => {
     expect(Object.keys(accentInline("teal"))).toContain("--on-accent-dark");
   });
 });
+
+/* The amber notice in Settings › Developers: "This isn't switched on yet" (everyone sees it from the
+   moment the site ships until 0050 is live; demo mode can't show it, so a screenshot won't catch this)
+   and a new API key's "shown once" warning. Read from its own stylesheet, on every surface. */
+describe.each(["light", "dark"] as const)("%s theme: the notice in Settings › Developers", (theme) => {
+  const t = tokens(theme);
+  const dev = readFileSync(`${cwd()}/src/components/settings/developers.css`, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = (selector: string) => {
+    const at = dev.indexOf(`${selector} {`);
+    if (at < 0) throw new Error(`no rule for ${selector}`);
+    return dev.slice(at + selector.length + 2, dev.indexOf("}", at));
+  };
+  const prop = (block: string, name: string) => {
+    const m = block.match(new RegExp(`(?:^|[\\s;])${name}:\\s*([^;]+);`));
+    if (!m) throw new Error(`no ${name} in ${block}`);
+    return color(resolve(m[1], t));
+  };
+  const box = rule(".kdev-warn");
+  const fill = prop(box, "background");
+  const ink = prop(box, "color");
+  const icon = prop(rule(".kdev-warn > svg"), "color");
+
+  it.each(Object.entries(surfaces(t)))("reads on %s: text ≥ 4.5:1, icon ≥ 3:1", (_, under) => {
+    const behind = solid(fill, under);
+    expect(contrast(solid(ink, behind), behind)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(solid(icon, behind), behind)).toBeGreaterThanOrEqual(3);
+  });
+});

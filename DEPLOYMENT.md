@@ -734,10 +734,14 @@ done the app works as before (**Settings › Developers › Connect your AI** sa
 isn't switched on yet). Everything, including what each AI app needs, is in
 [docs/integrations/mcp.md](docs/integrations/mcp.md). No new secrets.
 
+Steps 1 and 2 run from `~/Downloads/kora-app`, which must have the branch `mcp` merged
+into the branch it's on (`release-slack`, until that has gone out). Without it they say
+"The new code isn't in this folder yet." and stop before asking for your token.
+
 1. **Run 0050** (needs 0046; works with or without 0047, 0048 and 0049; safe to re-run):
 
    ```bash
-   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && supabase db query --linked -f supabase/migrations/0050_mcp_oauth.sql
+   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0050_mcp_oauth.sql ] && [ -f supabase/functions/mcp/index.ts ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && supabase db query --linked -f supabase/migrations/0050_mcp_oauth.sql; unset SUPABASE_ACCESS_TOKEN
    ```
 2. **Deploy five functions**: `mcp` (new; no JWT check: callers send an API key or
    an OAuth token, which it checks itself), and `api`, `webhook-dispatch`, `notion`
@@ -746,12 +750,12 @@ isn't switched on yet). Everything, including what each AI app needs, is in
    more; see `_shared/api/pgTypes.ts`). The `api` deploy is what fixes those.
 
    ```bash
-   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && R=htnchiljplrnjkwimgla && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notion --project-ref $R --use-api && echo "All five functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0050_mcp_oauth.sql ] && [ -f supabase/functions/mcp/index.ts ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && R=htnchiljplrnjkwimgla && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notion --project-ref $R --use-api && echo "All five functions deployed."; unset SUPABASE_ACCESS_TOKEN
    ```
 3. **Push the website** (`vercel.json` proxies `/mcp` and `/oauth/*` to the
    function and serves the discovery documents).
 4. **Check it from your terminal**. It adds one test app entry, which tidies itself
-   away after a day. Three `ok` lines, then `HTTP/2 401` and a `www-authenticate` line
+   away after 30 days. Three `ok` lines, then `HTTP/2 401` and a `www-authenticate` line
    naming `resource_metadata`, then `register 201`:
 
    ```bash

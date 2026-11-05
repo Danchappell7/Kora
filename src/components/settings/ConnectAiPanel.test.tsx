@@ -121,6 +121,8 @@ describe("ConnectAiPanel", () => {
     render(<ConnectAiPanel />);
     expect(await screen.findByText("Not switched on yet")).toBeInTheDocument();
     expect(screen.getByText(/This isn't switched on yet/)).toBeInTheDocument();
+    // the notice src/styles/contrast.test.ts measures, in both themes: demo mode can't show this state
+    expect(screen.getByText(/This isn't switched on yet/).closest(".kdev-warn")).not.toBeNull();
     // the address and the steps are still there to read
     expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("https://www.kanbo.co.uk/mcp");
     expect(screen.getByRole("tablist")).toBeInTheDocument();

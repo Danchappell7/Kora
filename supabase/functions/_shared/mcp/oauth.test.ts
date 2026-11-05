@@ -319,7 +319,10 @@ describe("prepare", () => {
   });
   it("says no to an unknown app or a bad address", async () => {
     const { d } = deps(client({ ok: false, reason: "unknown_client" }));
-    expect(await (await handlePrepare(json({ client_id: "x", redirect_uri: "https://x.example/" }, auth), d)).json()).toMatchObject({ ok: false, reason: "unknown_client" });
+    const unknown = await (await handlePrepare(json({ client_id: "x", redirect_uri: "https://x.example/" }, auth), d)).json();
+    expect(unknown).toMatchObject({ ok: false, reason: "unknown_client" });
+    // apps remember their client_id, so "start again from the app" would only send the same one
+    expect(unknown.message).toMatch(/Remove Kanbo from the app and add it again/);
     const b = deps(client({ ok: false, reason: "bad_redirect", kind: "dcr" }));
     expect(await (await handlePrepare(json({ client_id: "x", redirect_uri: "https://x.example/" }, auth), b.d)).json()).toMatchObject({ ok: false, reason: "bad_redirect" });
   });

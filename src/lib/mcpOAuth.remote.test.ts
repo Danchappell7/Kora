@@ -7,7 +7,7 @@ vi.mock("./supabase", () => ({
   isSupabaseConfigured: true,
 }));
 
-import { approveConnection, consentWorkspaces, listConnectedApps, MCP_RESOURCE, McpNotReady, prepareClient, revokeConnectedApp } from "./mcpOAuth";
+import { approveConnection, consentWorkspaces, listConnectedApps, MCP_COPY, MCP_RESOURCE, McpNotReady, prepareClient, revokeConnectedApp } from "./mcpOAuth";
 
 const req = { clientId: "c", redirectUri: "https://claude.ai/cb", state: "st", codeChallenge: "a".repeat(43), resource: MCP_RESOURCE, scope: "kanbo.read kanbo.write", wantsWrite: true };
 const client = { name: "Claude", kind: "cimd", clientHost: "claude.ai", redirectHost: "claude.ai", loopback: false };
@@ -33,11 +33,23 @@ describe("prepareClient", () => {
     getSession.mockResolvedValue({ data: { session: { access_token: "x" } } });
     expect(await prepareClient("c", "https://x/", (async () => json({ ok: false, reason: "signed_out" }, 401)) as unknown as typeof fetch)).toMatchObject({ reason: "signed_out" });
   });
-  it("the function isn't there yet: an HTML page, a 404 or its own word for it", async () => {
-    const html = async () => new Response("<!doctype html>", { status: 200 });
-    expect(await prepareClient("c", "https://x/", html as unknown as typeof fetch)).toMatchObject({ reason: "not_ready" });
+  it("the function isn't there yet: a 404 or its own word for it", async () => {
     expect(await prepareClient("c", "https://x/", (async () => json({ error: "x" }, 404)) as unknown as typeof fetch)).toMatchObject({ reason: "not_ready" });
+    expect(await prepareClient("c", "https://x/", (async () => new Response("<!doctype html>", { status: 404 })) as unknown as typeof fetch)).toMatchObject({ reason: "not_ready" });
     expect(await prepareClient("c", "https://x/", (async () => json({ ok: false, reason: "not_ready" }, 503)) as unknown as typeof fetch)).toMatchObject({ reason: "not_ready" });
+  });
+  it.each([
+    ["a gateway's HTML 502", () => new Response("<!doctype html><title>Bad gateway</title>", { status: 502, headers: { "Content-Type": "text/html" } })],
+    ["a gateway's HTML 504", () => new Response("<html>Gateway time-out</html>", { status: 504 })],
+    ["an HTML 429", () => new Response("<html>Slow down</html>", { status: 429 })],
+    ["an HTML 403", () => new Response("<html>Blocked</html>", { status: 403 })],
+    ["an HTML page with a 200", () => new Response("<!doctype html>", { status: 200 })],
+    ["an empty 500", () => new Response("", { status: 500 })],
+    ["a gateway's own JSON", () => json({ code: "BOOT_ERROR", message: "Function failed to start (please check logs)" }, 503)],
+    ["JSON that isn't an answer", () => json(null)],
+  ])("%s is a moment's trouble with Try again, not \"not switched on\"", async (_, answer) => {
+    const r = await prepareClient("c", "https://x/", (async () => answer()) as unknown as typeof fetch);
+    expect(r).toEqual({ ok: false, reason: "unavailable", message: MCP_COPY.checkFailed });
   });
   it("a refusal keeps its words; a failure can be tried again", async () => {
     expect(await prepareClient("c", "https://x/", (async () => json({ ok: false, reason: "bad_redirect", message: "Not that address." })) as unknown as typeof fetch)).toEqual({ ok: false, reason: "refused", message: "Not that address." });

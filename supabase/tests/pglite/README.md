@@ -30,12 +30,14 @@ PGLITE_PATH=/tmp/pglite/node_modules/@electric-sql/pglite POSTGRES_PATH=/tmp/pgl
 ```
 
 `suite.ts` has the legit flows first, then the attacks: code reuse, expired codes, the wrong
-PKCE verifier, the wrong redirect, the wrong audience, refresh reuse, another person's data,
+PKCE verifier, the wrong redirect, the wrong audience, refresh reuse (and parallel refreshes whose
+answers arrive in any order, which mustn't look like it), another person's data,
 read-only enforcement, workspace pinning, suspended, revoked and deleted people, and migrating twice.
 Then what a model would actually do (a backlog in `my_day`, editing a long description, the newest
 comment on a thread, a forged author, repeating and blocked tasks, handing a task on, `@names`,
 writes in a loop), then what a stranger can do with no credentials (flooding the token endpoint,
-made-up address headers, filling the registrations table, probing a network through an app's description).
+made-up address headers, filling the registrations table, probing a network through an app's description,
+and an app coming back days later with the `client_id` it remembers).
 
 vitest doesn't pick these files up (none is named `*.test.*`). `metadata.test.ts` checks the
 harness opens transactions exactly as the live `db.ts` does.

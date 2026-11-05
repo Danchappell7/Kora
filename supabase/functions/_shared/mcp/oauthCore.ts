@@ -124,7 +124,7 @@ export type RegistrationCheck =
 
 /**
  * What a stranger may store without signing in. VS Code lists six redirect addresses, so eight;
- * long enough for any real one, and small enough that 2,000 an hour kept for a day stays small.
+ * long enough for any real one, and small enough that the most 0050's sweep keeps (50,000 unused) stays small.
  */
 export const REGISTER_MAX_URIS = 8;
 export const REGISTER_MAX_URI_CHARS = 512;

@@ -146,6 +146,20 @@ describe("the live check in DEPLOYMENT.md", () => {
     expect(read("DEPLOYMENT.md")).toMatch(/oauth\/register" -H 'Content-Type: application\/json'/);
     expect(read("DEPLOYMENT.md")).toMatch(/register 201/);
   });
+  it("runs steps 1 and 2 only from a folder with the new code, before asking for the token", () => {
+    const step = read("DEPLOYMENT.md").split("### Step 16")[1].split("\n---")[0];
+    const commands = step.split("\n").filter((l) => /read -s .*supabase (db query|functions deploy)/.test(l));
+    expect(commands).toHaveLength(2);
+    for (const c of commands) {
+      for (const file of ["supabase/migrations/0050_mcp_oauth.sql", "supabase/functions/mcp/index.ts"]) {
+        expect(c, file).toContain(`[ -f ${file} ]`);
+        expect(read(file).length, file).toBeGreaterThan(0);
+      }
+      expect(c.indexOf("isn't in this folder yet")).toBeGreaterThan(-1);
+      expect(c.indexOf("isn't in this folder yet")).toBeLessThan(c.indexOf("read -s"));
+    }
+    expect(step).toMatch(/branch `mcp` merged/);
+  });
   it("says db.ts's other functions need deploying too", () => {
     const step = read("DEPLOYMENT.md").split("### Step 16")[1];
     for (const fn of ["mcp", "api", "webhook-dispatch", "notion", "slack-app"]) expect(step, fn).toContain(`supabase functions deploy ${fn}`);

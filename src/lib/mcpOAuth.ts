@@ -91,10 +91,13 @@ export async function prepareClient(clientId: string, redirectUri: string, fetch
   }
   let body: { ok?: boolean; client?: PreparedClient; reason?: string; message?: string } | null = null;
   try { body = await res.json(); } catch { body = null; }
-  // the proxy has nothing there yet, or the function isn't deployed
-  if (!body || res.status === 404 || body.reason === "not_ready") return { ok: false, reason: "not_ready", message: MCP_COPY.notReady };
-  if (body.ok && body.client) return { ok: true, client: body.client };
+  // the function isn't deployed, or it says the migration isn't there yet
+  if (res.status === 404 || body?.reason === "not_ready") return { ok: false, reason: "not_ready", message: MCP_COPY.notReady };
+  if (body?.ok && body.client) return { ok: true, client: body.client };
   if (res.status === 401) return { ok: false, reason: "signed_out", message: "Sign in to Kanbo first." };
+  // The function always gives a reason. Anything else came from in between (a gateway's 502, say),
+  // which says nothing about this app or the feature: trying again is the right thing to offer.
+  if (typeof body?.reason !== "string") return { ok: false, reason: "unavailable", message: MCP_COPY.checkFailed };
   if (res.status >= 500 || res.status === 429) return { ok: false, reason: "unavailable", message: body.message || MCP_COPY.checkFailed };
   return { ok: false, reason: "refused", message: body.message || "Kanbo can't connect this app." };
 }
