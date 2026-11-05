@@ -20,7 +20,7 @@
 // Pure module (everything injected): handler.test.ts, and the PGlite suite.
 // ============================================================
 import { bearerToken, isScopeMissing, looksLikeApiKey, type VerifyKey } from "../api/auth.ts";
-import { handleApiRequest } from "../api/pipeline.ts";
+import { handleApiRequest, IDEMPOTENCY_KEY_RE } from "../api/pipeline.ts";
 import { coreRoutes } from "../api/routes.ts";
 import type { Method, Route } from "../api/router.ts";
 import type { ApiPrincipal, Tx, UserDb } from "../api/types.ts";
@@ -144,7 +144,11 @@ export function toolEnv(caller: ResolvedCaller, deps: McpDeps): ToolEnv {
     for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
     const headers = new Headers({ Accept: "application/json" });
     if (opts.body !== undefined) headers.set("Content-Type", "application/json");
-    if (opts.idempotencyKey) headers.set("Idempotency-Key", opts.idempotencyKey);
+    if (opts.idempotencyKey !== undefined) {
+      // a NUL or an emoji can't go in a header at all, so refuse it here in the API's own words
+      if (!IDEMPOTENCY_KEY_RE.test(opts.idempotencyKey)) throw new ToolFault("idempotencyKey must be 1 to 255 visible ASCII characters (a UUID is ideal). Nothing was changed.");
+      headers.set("Idempotency-Key", opts.idempotencyKey);
+    }
     const res = await handleApiRequest(new Request(url, { method, headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined }), {
       db: deps.db,
       service: deps.service,

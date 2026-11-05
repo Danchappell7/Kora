@@ -734,9 +734,8 @@ done the app works as before (**Settings › Developers › Connect your AI** sa
 isn't switched on yet). Everything, including what each AI app needs, is in
 [docs/integrations/mcp.md](docs/integrations/mcp.md). No new secrets.
 
-Steps 1 and 2 run from `~/Downloads/kora-app`, which must have the branch `mcp` merged
-into the branch it's on (`release-slack`, until that has gone out). Without it they say
-"The new code isn't in this folder yet." and stop before asking for your token.
+Steps 1 and 2 run from `~/Downloads/kora-app`. If the new code isn't in that folder they
+say "The new code isn't in this folder yet." and stop before asking for your token.
 
 1. **Run 0050** (needs 0046; works with or without 0047, 0048 and 0049; safe to re-run):
 

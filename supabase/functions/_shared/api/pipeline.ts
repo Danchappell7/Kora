@@ -64,7 +64,7 @@ export { etagMatches };
 /** Pauses before each retry of api_idempotency_finish (3 tries in all, ~0.6 s). */
 const FINISH_BACKOFF_MS = [100, 500];
 
-const IDEMPOTENCY_KEY_RE = /^[\x21-\x7E](?:[\x20-\x7E]{0,253}[\x21-\x7E])?$/;
+export const IDEMPOTENCY_KEY_RE = /^[\x21-\x7E](?:[\x20-\x7E]{0,253}[\x21-\x7E])?$/;
 const NO_CORS = "The Kanbo API doesn't answer browsers' cross-origin checks. Call it from a server or a script: an API key in a web page can be read by anyone.";
 const UNREACHABLE = "Kanbo's API can't reach its database right now. Try again in a moment.";
 const TEAM_KEYS_PAUSED = "Team keys are paused while Kanbo's database is being updated. Personal keys still work. Try again in a few minutes.";

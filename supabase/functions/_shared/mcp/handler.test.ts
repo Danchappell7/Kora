@@ -240,6 +240,20 @@ describe("the modern era", () => {
   });
 });
 
+describe("a retry key the API could never take", () => {
+  it("is refused in plain words, and nothing reaches the database", async () => {
+    for (const idempotencyKey of ["bad\u0000key", "🔁", " ", "", "x".repeat(256)]) {
+      let reached = false;
+      const d = deps({ db: { withUser: async () => { reached = true; throw new Error("should not run"); } } });
+      const res = await call(modern("tools/call", { name: "add_task", arguments: { title: "x", idempotencyKey } }, { "Mcp-Name": "add_task" }), d);
+      const out = (await res.json()) as { result: { isError: boolean; content: { text: string }[] } };
+      expect(out.result.isError, JSON.stringify(idempotencyKey)).toBe(true);
+      expect(out.result.content[0].text).toMatch(/idempotencyKey/);
+      expect(reached).toBe(false);
+    }
+  });
+});
+
 describe("the OAuth routes' front door", () => {
   const d = () => deps();
   it("POST only, with CORS for known browsers", async () => {
