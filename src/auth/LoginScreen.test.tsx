@@ -262,6 +262,25 @@ describe("Sign in with Google", () => {
   });
 });
 
+describe("PublicSite and an AI app asking to connect (0050)", () => {
+  it("/oauth/authorize opens straight on signing in, not the marketing page", async () => {
+    mockAuth({ user: null });
+    const { PublicSite } = await import("./LoginScreen");
+    window.history.replaceState(null, "", "/oauth/authorize");
+    render(<PublicSite />);
+    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument();
+    window.history.replaceState(null, "", "/");
+  });
+  it("so does a request kept from before, on the home page", async () => {
+    mockAuth({ user: null });
+    const { PublicSite } = await import("./LoginScreen");
+    sessionStorage.setItem("kanbo:oauth-request", JSON.stringify({ q: "client_id=abc", at: Date.now() }));
+    render(<PublicSite />);
+    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument();
+    sessionStorage.clear();
+  });
+});
+
 describe("PublicSite and the Slack app's link (0049)", () => {
   it("/link/slack opens straight on signing in, not the marketing page", async () => {
     mockAuth({ user: null });

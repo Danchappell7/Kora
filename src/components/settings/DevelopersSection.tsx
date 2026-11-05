@@ -1,10 +1,11 @@
 /* ============================================================
    KANBO — Settings › Developers, as SettingsModal shows it (0046).
-   API keys (DevelopersPanel), then webhooks (WebhooksPanel); "API
-   reference" swaps the API reference (ApiDocs) in place. The panels stay
-   mounted, hidden, underneath it, so a key or signing secret that's on
-   screen only once isn't lost by a look at the docs. Opening the reference
-   puts focus on its heading; Back returns focus to the link.
+   Connect your AI (ConnectAiPanel, 0050), API keys (DevelopersPanel), then
+   webhooks (WebhooksPanel); "API reference" swaps the API reference (ApiDocs)
+   in place. The panels stay mounted, hidden, underneath it, so a key or
+   signing secret that's on screen only once isn't lost by a look at the
+   docs. Opening the reference puts focus on its heading; Back returns focus
+   to the link.
 
    Loaded on demand (React.lazy in SettingsModal): the OpenAPI document and
    the three panels stay out of the app's first download. The section
@@ -13,6 +14,7 @@
    ============================================================ */
 import { useRef, useState } from "react";
 import { ApiDocs } from "./ApiDocs";
+import { ConnectAiPanel } from "./ConnectAiPanel";
 import { DevelopersPanel, type DevWorkspace } from "./DevelopersPanel";
 import { WebhooksPanel } from "./WebhooksPanel";
 import { apiBaseUrl } from "../../lib/apiKeys";
@@ -57,6 +59,7 @@ export default function DevelopersSection({ workspaces, currentWorkspaceId }: De
         </div>
       )}
       <div hidden={docsOpen}>
+        <ConnectAiPanel />
         <DevelopersPanel workspaces={workspaces} currentWorkspaceId={currentWorkspaceId} onOpenDocs={openDocs} />
         <WebhooksPanel workspaces={workspaces} currentWorkspaceId={currentWorkspaceId} />
       </div>

@@ -5,7 +5,8 @@
      /privacy, /terms          Legal
      /f/<token>                the public request form
      everything else           Root: the session, then the sign-in
-                               site (signed out), the app (signed in)
+                               site (signed out), the app (signed in),
+                               an AI app's consent page (/oauth/authorize)
                                or /admin
    so a public page never downloads the app, and a visitor who isn't
    signed in never downloads it either.
@@ -18,6 +19,7 @@ export const signInChunk = chunk(() => import("./auth/LoginScreen"));
 export const adminChunk = chunk(() => import("./admin/AdminApp"));
 export const legalChunk = chunk(() => import("./components/Legal"));
 export const publicFormChunk = chunk(() => import("./public/PublicFormPage"));
+export const oauthConsentChunk = chunk(() => import("./components/oauth/OAuthConsentPage"));
 
 export const Root = lazyComponent(rootChunk, (m) => m.default, "Root");
 export const App = lazyComponent(appChunk, (m) => m.default, "App");
@@ -28,6 +30,7 @@ export const AdminApp = lazyComponent(adminChunk, (m) => m.AdminApp, "AdminApp")
 export const PrivacyPolicy = lazyComponent(legalChunk, (m) => m.PrivacyPolicy, "PrivacyPolicy");
 export const Terms = lazyComponent(legalChunk, (m) => m.Terms, "Terms");
 export const PublicFormPage = lazyComponent(publicFormChunk, (m) => m.default, "PublicFormPage");
+export const OAuthConsentPage = lazyComponent(oauthConsentChunk, (m) => m.OAuthConsentPage, "OAuthConsentPage");
 
 /** A stored Supabase session (supabase-js keeps it as sb-<ref>-auth-token), or an
  *  OAuth return that's about to become one. Demo mode (no backend) is always "in". */

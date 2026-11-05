@@ -1,0 +1,15 @@
+{
+  "resource": "https://www.kanbo.co.uk/mcp",
+  "authorization_servers": [
+    "https://www.kanbo.co.uk"
+  ],
+  "scopes_supported": [
+    "kanbo.read",
+    "kanbo.write"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "resource_name": "Kanbo",
+  "resource_documentation": "https://github.com/Danchappell7/Kora/blob/main/docs/integrations/mcp.md"
+}

@@ -7,6 +7,11 @@ own tools and scripts. JSON over HTTPS, one API key per tool.
 https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1
 ```
 
+Connecting an AI app (Claude, ChatGPT, Cursor, your own agent)? Use the MCP
+server instead, at `https://www.kanbo.co.uk/mcp`: paste the address, sign in,
+press Allow. See [docs/integrations/mcp.md](../integrations/mcp.md). It runs on
+this API, with the same keys and the same permissions.
+
 The full reference, with every field and an example for every endpoint, is in
 the app (**Settings › Developers › API reference**) and as an OpenAPI 3.1
 document at [`/v1/openapi.json`](https://htnchiljplrnjkwimgla.supabase.co/functions/v1/api/v1/openapi.json)

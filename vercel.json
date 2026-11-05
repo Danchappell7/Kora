@@ -3,8 +3,34 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "rewrites": [
+    { "source": "/.well-known/oauth-protected-resource/mcp", "destination": "/oauth-metadata/protected-resource.json" },
+    { "source": "/.well-known/oauth-protected-resource", "destination": "/oauth-metadata/protected-resource.json" },
+    { "source": "/.well-known/oauth-authorization-server", "destination": "/oauth-metadata/authorization-server.json" },
+    { "source": "/mcp", "destination": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/mcp" },
+    { "source": "/oauth/register", "destination": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/mcp/oauth/register" },
+    { "source": "/oauth/token", "destination": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/mcp/oauth/token" },
+    { "source": "/oauth/revoke", "destination": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/mcp/oauth/revoke" },
+    { "source": "/oauth/prepare", "destination": "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/mcp/oauth/prepare" },
+    { "source": "/((?!\\.well-known/).*)", "destination": "/index.html" }
+  ],
   "headers": [
+    {
+      "source": "/.well-known/oauth-(.*)",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/mcp",
+      "headers": [{ "key": "x-vercel-enable-rewrite-caching", "value": "0" }]
+    },
+    {
+      "source": "/oauth/(register|token|revoke|prepare)",
+      "headers": [{ "key": "x-vercel-enable-rewrite-caching", "value": "0" }]
+    },
     {
       "source": "/assets/(.*)",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]

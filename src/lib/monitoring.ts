@@ -114,12 +114,13 @@ export function scrubCapabilityUrls(text: string): string {
 }
 
 // auth redirects (#access_token=…&refresh_token=…, ?code=… for PKCE), email links (?token_hash=)
-const AUTH_PARAM = /([?&#](?:access_token|refresh_token|provider_token|provider_refresh_token|id_token|token_hash|token|code|apikey|api_key|key|secret)=)[^&#\s"'\\]+/gi;
+const AUTH_PARAM = /([?&#](?:access_token|refresh_token|provider_token|provider_refresh_token|id_token|token_hash|token|code|code_challenge|code_verifier|state|apikey|api_key|key|secret)=)[^&#\s"'\\]+/gi;
 // (bounded repeats: linear time on long runs of word characters)
 const EMAIL = /[A-Z0-9._%+-]{1,64}@[A-Z0-9-]{1,63}(?:\.[A-Z0-9-]{1,63}){0,8}\.[A-Z]{2,24}\b/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g;
 const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi;
 const KANBO_KEY = /\bkanbo_(sk|pk)_[A-Za-z0-9_-]+/g;
+const MCP_TOKEN = /\bkmcp_(at|rt|ac)_[A-Za-z0-9_-]+/g;
 const WEBHOOK_SECRET = /\bwhsec_[A-Za-z0-9_+/=-]+/g;
 const SLACK_HOOK = /(hooks\.slack\.com\/services\/)[A-Za-z0-9/_-]+/gi;
 // PostgREST filters (rest/v1/tasks?title=ilike.*…*) can carry what someone typed
@@ -154,6 +155,7 @@ export function scrubText(text: string): string {
     .replace(JWT, "[jwt]")
     .replace(BEARER, "$1[redacted]")
     .replace(KANBO_KEY, "kanbo_$1_[redacted]")
+    .replace(MCP_TOKEN, "kmcp_$1_[redacted]")
     .replace(WEBHOOK_SECRET, "whsec_[redacted]")
     .replace(SLACK_HOOK, "$1[redacted]")
     .replace(EMAIL, "[email]");

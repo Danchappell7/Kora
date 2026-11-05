@@ -725,6 +725,36 @@ itself is made from
    last confirmed it over a day ago, open the Kanbo app's **Home** tab in
    Slack, then **Check again** (slack-app.md › Owner steps › 5).
 
+### Step 16: Connect your AI (database update 0050)
+
+Lets Claude, ChatGPT, Cursor and people's own agents read and manage Kanbo as
+the signed-in person, with exactly the same permissions as the app: paste
+`https://www.kanbo.co.uk/mcp`, sign in, press **Allow**. Until these steps are
+done the app works as before (**Settings › Developers › Connect your AI** says it
+isn't switched on yet). Everything, including what each AI app needs, is in
+[docs/integrations/mcp.md](docs/integrations/mcp.md). No new secrets.
+
+1. **Run 0050** (needs 0046; works with or without 0047, 0048 and 0049; safe to re-run):
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && supabase db query --linked -f supabase/migrations/0050_mcp_oauth.sql
+   ```
+2. **Deploy the `mcp` function** (no JWT check: callers send an API key or an
+   OAuth token, which it checks itself). No other function needs deploying.
+
+   ```bash
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && supabase functions deploy mcp --no-verify-jwt --use-api --project-ref htnchiljplrnjkwimgla
+   ```
+3. **Push the website** (`vercel.json` proxies `/mcp` and `/oauth/*` to the
+   function and serves the discovery documents).
+4. **Check it from your terminal**. Three `ok` lines, then `HTTP/2 401` and a
+   `www-authenticate` line naming `resource_metadata`:
+
+   ```bash
+   B=https://www.kanbo.co.uk; for p in .well-known/oauth-protected-resource/mcp .well-known/oauth-protected-resource .well-known/oauth-authorization-server; do curl -s "$B/$p" | grep -q '"https://www.kanbo.co.uk' && echo "ok  /$p" || echo "BAD /$p"; done; curl -si -X POST "$B/mcp" -H 'Content-Type: application/json' -d '{}' | grep -iE '^HTTP|^www-authenticate'
+   ```
+5. **Connect an AI app**: Settings › Developers › Connect your AI has the steps for each one.
+
 ---
 
 ## Reference

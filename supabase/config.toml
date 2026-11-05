@@ -113,3 +113,10 @@ verify_jwt = false
 # read; there is no Supabase JWT to verify
 [functions.slack-app]
 verify_jwt = false
+
+# 0050: the remote MCP server and its OAuth endpoints (www.kanbo.co.uk/mcp, proxied
+# by vercel.json). Callers send a Kanbo API key or an OAuth access token, which the
+# function checks itself; the consent page's /oauth/prepare sends the person's own
+# session token, which the function asks Supabase Auth about
+[functions.mcp]
+verify_jwt = false

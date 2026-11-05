@@ -19,6 +19,8 @@
      a deploy) with the app's index.html, which must never be stored as
      that file.
    - cross-origin (Supabase API, fonts CDN, etc.): never intercepted.
+   - /mcp, /.well-known, /oauth-metadata and the OAuth endpoints (0050):
+     never intercepted. /oauth/authorize is the app itself.
    - web push (0043): shows each push as a notification; a click focuses an
      open Kanbo window and takes it to the push's link (same origin only),
      or opens one. Registered as /sw.js?push-only=1 by lib/push in a dev
@@ -152,6 +154,10 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // leave API / cross-origin alone
+  // the MCP server and its OAuth endpoints are proxied to an edge function, and its
+  // discovery documents are read by AI apps: never cached, never the offline shell.
+  // /oauth/authorize is the app itself, so it keeps the shell.
+  if (/^\/(mcp|\.well-known|oauth-metadata|oauth\/(register|token|revoke|prepare))(\/|$)/.test(url.pathname)) return;
 
   if (req.mode === "navigate") {
     // network-first: always try fresh HTML, fall back to cached shell offline

@@ -26,12 +26,12 @@
 // the PGlite harness drives it against the real migrations. The Deno entry
 // (supabase/functions/api/index.ts) only wires the database and env in.
 // ============================================================
-import { authenticate, hitRate, isScopeMissing, methodAllowed, rateHeaders, sha256Hex, type VerifyKey } from "./auth.ts";
+import { authenticate, hitRate, isScopeMissing, methodAllowed, rateHeaders, sha256Hex, type AuthResult, type VerifyKey } from "./auth.ts";
 import { ApiFail, etagMatches, etagOfText, pgFailure } from "./core.ts";
 import { buildOpenApi } from "./openapi.ts";
 import { apiError, json, matchRoute, newRequestId, stripBase, type Method, type Route, type RouteContext } from "./router.ts";
 import { coreRoutes } from "./routes.ts";
-import type { Tx, UserDb } from "./types.ts";
+import type { ApiPrincipal, Tx, UserDb } from "./types.ts";
 import { API_LIMITS } from "./validate.ts";
 import { webhookRoutes } from "./webhooks.ts";
 
@@ -41,6 +41,12 @@ export interface ApiDeps {
   /** privileged connection: key verification, rate limits, idempotency only */
   service: Tx;
   verify: VerifyKey;
+  /**
+   * Already authenticated (Kanbo's MCP server resolves its own bearer tokens, API keys and
+   * OAuth access tokens, then runs each tool through this same pipeline): `verify` is skipped.
+   * Never set from anything a caller sent.
+   */
+  principal?: ApiPrincipal;
   /** the app's address, for `url` fields */
   appUrl: string;
   /** this API's base, e.g. https://<ref>.supabase.co/functions/v1/api/v1 */
@@ -184,9 +190,9 @@ export async function handleApiRequest(req: Request, deps: ApiDeps): Promise<Res
     }
 
     // ---- who is calling ----
-    let auth;
+    let auth: AuthResult;
     try {
-      auth = await authenticate(req.headers, deps.verify);
+      auth = deps.principal ? { ok: true, principal: deps.principal } : await authenticate(req.headers, deps.verify);
     } catch (e) {
       if (isScopeMissing(e)) {
         // fail closed: a team key never runs without the policies that keep it in its workspace

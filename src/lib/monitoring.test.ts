@@ -56,7 +56,7 @@ describe("scrubText (PII and secrets)", () => {
     for (const s of ["eyJhbGci", "r3fr3sh", "ya29.abc"]) expect(out).not.toContain(s);
     expect(out).toContain("expires_in=3600");
     expect(out).toContain("token_type=bearer");
-    expect(scrubText("/admin?code=4f9a-secret-code&state=x")).toBe("/admin?code=:redacted&state=x");
+    expect(scrubText("/admin?code=4f9a-secret-code&state=x")).toBe("/admin?code=:redacted&state=:redacted");
     expect(scrubText("/?token_hash=pkce_abc123&type=recovery")).toBe("/?token_hash=:redacted&type=recovery");
   });
 
@@ -332,5 +332,17 @@ describe("with a DSN", () => {
     expect(JSON.stringify(sentry.setUser.mock.calls)).not.toContain("sam@");
     m.setUserContext(null);
     expect(sentry.setUser).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe("scrubText: connecting AI apps (0050)", () => {
+  it("takes the state and PKCE values out of a consent address", () => {
+    const out = scrubText("https://www.kanbo.co.uk/oauth/authorize?client_id=abc&code_challenge=sEcReT&state=sEcReT2");
+    expect(out).not.toContain("sEcReT");
+    expect(out).toContain("client_id=abc");
+  });
+  it("redacts Kanbo's OAuth tokens", () => {
+    const token = ["kmcp", "at", "x".repeat(43)].join("_");
+    expect(scrubText(`failed with ${token}`)).toBe("failed with kmcp_at_[redacted]");
   });
 });

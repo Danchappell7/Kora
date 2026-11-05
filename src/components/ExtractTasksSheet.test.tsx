@@ -73,7 +73,7 @@ describe("ExtractTasksSheet", () => {
     expect(screen.getByText("Found on-device")).toBeInTheDocument();
     const row = rowFor(list, "Send the brief");
     expect(within(row).getByRole("combobox", { name: "Assignee for “Send the brief”" })).toHaveValue("m-3");
-    expect(within(row).getByRole("button", { name: /Due date for “Send the brief”/ })).toHaveTextContent(/Fri/);
+    expect(within(row).getByRole("button", { name: /Due date for “Send the brief”/ })).toHaveTextContent(/Fri|Today|Tomorrow/);   // on a Thursday, Friday reads "Tomorrow"
     // prose and decisions are left out
     expect(within(list).getAllByRole("listitem")).toHaveLength(3);
   });

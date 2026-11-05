@@ -50,7 +50,7 @@ const strings = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []
 
 /* ------------------------------------------------------------ SQL pieces */
 
-const TASK_COLS = `t.id::text as id, t.user_id::text as user_id, t.title, t.description, t.status, t.priority,
+export const TASK_COLS = `t.id::text as id, t.user_id::text as user_id, t.title, t.description, t.status, t.priority,
   t.project_id, t.section_id, t.parent_id::text as parent_id, t.assignee_id, t.workspace_id::text as workspace_id,
   t.due_date::text as due_date, t.due_time, t.start_date::text as start_date, t.completed_at::text as completed_at,
   t.tags, t.effort_hours::float8 as effort_hours, t.logged_hours::float8 as logged_hours, t.is_milestone, t.recurrence,
@@ -96,7 +96,7 @@ async function workspaceVisible(tx: Tx, ws: string): Promise<boolean> {
 }
 
 /** SQL: `col` is in the key's workspace ($n holds keyWorkspace(): null = a personal key, no filter). */
-const inKeyWs = (col: string, n: number) => `($${n}::uuid is null or ${col} = $${n}::uuid)`;
+export const inKeyWs = (col: string, n: number) => `($${n}::uuid is null or ${col} = $${n}::uuid)`;
 
 /** A project the key can reach (RLS, and a team key's own workspace), or null. */
 async function loadProject(tx: Tx, id: string, kws: string | null): Promise<Row | null> {
@@ -131,7 +131,7 @@ async function tagMap(tx: Tx, rows: Row[], kws: string | null): Promise<Map<stri
   return map;
 }
 
-async function serialiseTasks(ctx: RouteContext, tx: Tx, rows: Row[]) {
+export async function serialiseTasks(ctx: RouteContext, tx: Tx, rows: Row[]) {
   const tags = await tagMap(tx, rows, keyWorkspace(ctx.principal));
   return rows.map((r) => serialiseTask(r, { appUrl: ctx.appUrl, tags }));
 }
@@ -842,6 +842,27 @@ export async function deleteTask(ctx: RouteContext): Promise<Response> {
     if (!gone.length) throw forbidden("You can't delete this task.");
   });
   return ok(ctx, null, 204);
+}
+
+/**
+ * What Kanbo's MCP server's delete_task runs (not a public REST route): into the recycle bin and
+ * nowhere else. Anyone who can edit the task may do this, as in the app (the tasks delete policy
+ * decides, as the key's user). The BEFORE DELETE trigger from 0047 keeps the task, its sub-tasks and
+ * comments for 30 days; if that trigger isn't there, nothing is deleted.
+ */
+export async function binTask(ctx: RouteContext): Promise<Response> {
+  const id = pathId(ctx, "Task");
+  const out = await asUser(ctx, async (tx) => {
+    const cur = await editableTask(ctx, tx, id);
+    const bin = await tx.query<{ present: boolean }>(
+      `select exists (select 1 from pg_catalog.pg_trigger g
+                       where g.tgrelid = 'public.tasks'::regclass and g.tgname = 'trg_trash_task' and g.tgenabled <> 'D') as present`);
+    if (bin[0]?.present !== true) throw new ApiFail(409, "conflict", "Kanbo's recycle bin isn't set up yet, so this task wasn't deleted.");
+    const gone = await tx.query(`delete from public.tasks t where t.id = $1::uuid returning t.id`, [id]);
+    if (!gone.length) throw forbidden("You can't delete this task.");
+    return { object: "task", id, title: String(cur.title ?? ""), inRecycleBin: true, keptForDays: 30 };
+  });
+  return ok(ctx, out);
 }
 
 /* ============================================================ comments */

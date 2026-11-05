@@ -101,6 +101,32 @@ const routes: Route[] = [
 const isError = (j: { error?: { code?: string; status?: number; requestId?: string } }, status: number, code: string) =>
   j?.error?.code === code && j.error.status === status && /^req_[0-9a-f]{16}$/.test(j.error.requestId ?? "");
 
+describe("an already-resolved caller (Kanbo's MCP server)", () => {
+  const ROUTES: Route[] = [{ method: "GET", path: "/who", handler: async (ctx: RouteContext) => ok(ctx, { user: ctx.principal.userId, key: ctx.principal.keyId }) }];
+  const service: Tx = { query: async <T,>() => [{ allowed: true, remaining: 9, retry_after: 0 }] as T[] };
+  const db = { withUser: async <T,>(_s: UserScope, fn: (tx: Tx) => Promise<T>) => fn(service) };
+  const base = { db, service, appUrl: "https://k", apiBase: BASE, routes: ROUTES, log: () => undefined };
+
+  it("uses that person and never asks for a key", async () => {
+    let asked = 0;
+    const principal: ApiPrincipal = { keyId: "aaaaaaaa-0000-4000-8000-00000000000a", userId: "bbbbbbbb-0000-4000-8000-00000000000b", workspaceId: null, access: "read" };
+    const res = await handleApiRequest(new Request(`${BASE}/who`), { ...base, principal, verify: async () => { asked++; return null; } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ user: principal.userId, key: principal.keyId });
+    expect(asked).toBe(0);
+  });
+  it("a read-only one still can't write", async () => {
+    const principal: ApiPrincipal = { keyId: "aaaaaaaa-0000-4000-8000-00000000000a", userId: "bbbbbbbb-0000-4000-8000-00000000000b", workspaceId: null, access: "read" };
+    const routes: Route[] = [{ method: "POST", path: "/who", handler: async (ctx: RouteContext) => ok(ctx, {}) }];
+    const res = await handleApiRequest(new Request(`${BASE}/who`, { method: "POST" }), { ...base, routes, principal, verify: async () => null });
+    expect(res.status).toBe(403);
+  });
+  it("without one, a key is needed as ever", async () => {
+    const res = await handleApiRequest(new Request(`${BASE}/who`), { ...base, verify: async () => null });
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("who is calling", () => {
   it("401 without a key, with a malformed or unknown key", async () => {
     const { call } = setup(routes);

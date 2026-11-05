@@ -1,0 +1,79 @@
+/* ============================================================
+   KANBO — /oauth/authorize, "Allow <app> to use your Kanbo?"     [0050]
+   Reads the app's tokens with fallbacks, so it works in both themes before
+   anything else has loaded. Motion is off under prefers-reduced-motion.
+   ============================================================ */
+.koauth-page {
+  position: fixed; inset: 0; z-index: 1000; display: grid; justify-items: center; align-items: safe center;
+  padding: 24px 16px; overflow-y: auto; background: var(--bg, var(--surface));
+}
+.koauth-card {
+  width: min(480px, 100%); padding: 28px 24px 24px; border-radius: var(--r-xl, 16px); min-width: 0;
+  background: var(--surface-raised, var(--surface)); box-shadow: 0 0 0 1px var(--hairline-strong), var(--e2-drop, 0 8px 24px oklch(0 0 0 / 0.12));
+  animation: koauthIn var(--d-2, 160ms) var(--ease, ease);
+}
+@keyframes koauthIn { from { opacity: 0; translate: 0 6px; } }
+.koauth-mark {
+  display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 16px; border-radius: var(--r-lg, 12px);
+  background: var(--accent-dim, color-mix(in oklch, var(--accent) 14%, transparent)); color: var(--accent-text, var(--accent));
+}
+.koauth-title { margin: 0 0 12px; font: 600 20px/28px var(--font-head, var(--font-display)); letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; }
+/* the heading takes focus for screen readers; it isn't a tab stop, so no ring */
+.koauth-title:focus { outline: none; }
+.koauth-body { margin: 0 0 12px; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; overflow-wrap: anywhere; }
+.koauth-body .kspin { display: inline-block; vertical-align: -2px; margin-right: 6px; }
+.koauth-page code {
+  padding: 1px 5px; border-radius: var(--r-xs, 4px); background: var(--fill-1, color-mix(in oklch, var(--ink) 6%, transparent));
+  font: 500 13px/18px var(--font-mono, ui-monospace, monospace); color: var(--ink); overflow-wrap: anywhere;
+}
+
+.koauth-facts { display: grid; gap: 6px; margin: 0 0 12px; }
+.koauth-facts > div { display: grid; grid-template-columns: 124px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.koauth-facts dt { font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.koauth-facts dd { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+
+.koauth-note { margin: 0 0 12px; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; overflow-wrap: anywhere; }
+.koauth-note-name { color: var(--ink-2); font-weight: 600; }
+.koauth-warn {
+  display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--r-md, 8px);
+  background: var(--signal-tint, color-mix(in oklch, var(--signal, oklch(0.6 0.2 25)) 10%, transparent));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.koauth-warn > svg { flex-shrink: 0; margin-top: 2px; color: var(--signal, var(--prio-urgent)); }
+.koauth-warn p { margin: 0; text-wrap: pretty; }
+
+.koauth-choices { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; border: 0; min-width: 0; }
+.koauth-choices > legend { padding: 0; margin: 0 0 8px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.koauth-choice {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: var(--r-md, 8px); cursor: pointer; min-width: 0;
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+}
+.koauth-choice:hover { background: var(--fill-1); }
+.koauth-choice:has(input:checked) { box-shadow: inset 0 0 0 2px var(--accent); }
+.koauth-choice > input { margin: 2px 0 0; accent-color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
+.koauth-choice > input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.koauth-choice-text { display: grid; gap: 2px; min-width: 0; }
+.koauth-choice-label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.koauth-choice-desc { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.koauth-choices:disabled .koauth-choice { opacity: 0.6; cursor: not-allowed; }
+.koauth-pick { display: grid; gap: 4px; }
+.koauth-pick > label { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.koauth-select {
+  width: 100%; height: 40px; padding: 0 10px; border-radius: var(--r-sm, 6px); min-width: 0;
+  border: 1px solid var(--field-border, var(--hairline-strong)); background-color: var(--field-bg, var(--surface));
+  color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display));
+}
+.koauth-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.koauth-small { margin: 16px 0 0; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.koauth-err { margin: 8px 0 0; font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); }
+.koauth-err:empty { margin: 0; }
+.koauth-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+@media (max-width: 480px) {
+  .koauth-page { padding: 16px; }
+  .koauth-card { padding: 24px 16px 16px; }
+  .koauth-acts .kbtn { flex: 1 1 120px; min-height: 44px; }
+  .koauth-choice { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .koauth-card { animation: none; } }
