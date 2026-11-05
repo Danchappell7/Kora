@@ -7,10 +7,14 @@
    It always asks: there is no silent re-approval. The name is whatever the app
    calls itself, so the page says so, and shows the host it will send you back
    to (and the app's own published host, when it has one). A bad client or a bad
-   redirect address stops here and never redirects. Once the address has been
-   checked against the app, other mistakes, Cancel and Allow all go back to it
-   with location.assign, so no form and no CSP form-action is involved.
-   Postgres checks everything again when Allow is pressed.
+   redirect address stops here and never redirects.
+
+   Nothing here ever leaves without a click. Anyone can register an app and name
+   any address, so a registered address proves nothing (RFC 9700 section 4.11.2):
+   a link with a mistake in it stops here too, with a button back to the app's
+   host, rather than bouncing a signed-in person straight to wherever it says.
+   Cancel and Allow go back with location.assign, so no form and no CSP
+   form-action is involved. Postgres checks everything again when Allow is pressed.
 
    A page of its own (no dialog over the app), lazy loaded, in both themes, at 390px.
    ============================================================ */
@@ -40,7 +44,7 @@ type View =
   | { kind: "loading" }
   | { kind: "ask"; request: AuthorizeRequest; client: PreparedClient; workspaces: ConsentWorkspace[] }
   | { kind: "sent"; host: string; denied: boolean }
-  | { kind: "dead"; title: string; body: string; retry?: boolean };
+  | { kind: "dead"; title: string; body: string; retry?: boolean; back?: { url: string; host: string } };
 
 const go = (url: string) => { window.location.assign(url); };
 
@@ -83,10 +87,14 @@ export function OAuthConsentPage({ query, email = null, onClose, navigate = go }
         setView(dead);
         return;
       }
-      // the address now belongs to this app: a request's other mistakes go back to it, as OAuth says
+      // the address is one this app registered, which says nothing about who registered it: only a click goes there
       if (parsed.kind === "redirect_error") {
-        leave(navigate, denyUrl(parsed.redirectUri, parsed.state, parsed.error, parsed.description));
-        setView({ kind: "sent", host: answer.client.redirectHost, denied: true });
+        setView({
+          kind: "dead",
+          title: "This request isn't valid",
+          body: `The link from the app has a mistake in it, so Kanbo stopped here and nothing was connected. If you were connecting an app you trust, start again from the app. The address it gave is ${answer.client.redirectHost}.`,
+          back: { url: denyUrl(parsed.redirectUri, parsed.state, parsed.error, parsed.description), host: answer.client.redirectHost },
+        });
         return;
       }
       if (parsed.kind !== "ok") return;
@@ -245,6 +253,16 @@ export function OAuthConsentPage({ query, email = null, onClose, navigate = go }
             <p className="koauth-body" role={view.retry ? "alert" : undefined}>{view.body}</p>
             <div className="koauth-acts">
               {view.retry && <Button icon="refresh" onClick={() => setAsk((n) => n + 1)}>Try again</Button>}
+              {view.back && (
+                <Button onClick={() => {
+                  if (!isSupabaseConfigured) { onClose(); return; }
+                  const { url, host } = view.back!;
+                  leave(navigate, url);
+                  setView({ kind: "sent", host, denied: true });
+                }}>
+                  Go back to <bdi className="koauth-host">{view.back.host}</bdi>
+                </Button>
+              )}
               <Button variant="primary" onClick={onClose}>Back to Kanbo</Button>
             </div>
           </>

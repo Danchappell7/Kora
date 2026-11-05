@@ -280,8 +280,14 @@ signature checks and retries.
   the same request, as in the app. A value a rule names that the task can't
   take (someone outside the workspace, another project's section, a tag from
   elsewhere, an unknown tag name) is skipped, never guessed.
-- Completing a recurring task through the API marks it done; the next
-  occurrence is created when someone completes it in the Kanbo app.
+- Completing a repeating task makes its next occurrence, in the same
+  transaction, as completing it in the app does (`POST /tasks/{id}/complete`, or
+  a `PATCH` to `done`): same work and people, sub-tasks and an unticked checklist,
+  and dates moved on. The answer then has `nextOccurrence: { id, dueDate }`. If an
+  open occurrence is already due on or after that date, none is made, so completing
+  it again changes nothing. Reopening a task doesn't take its next occurrence back.
+- When a `PATCH` or a rule changes a task's assignee, the old assignee's plan goes
+  with it: its slot, "on today" and My-tasks section are cleared, as in the app.
 - Moving a task to a project in another workspace takes its sub-tasks with
   it, clears the section and hands it to you if its assignee isn't in the new
   workspace, as the app does. Because the task, its sub-tasks and their

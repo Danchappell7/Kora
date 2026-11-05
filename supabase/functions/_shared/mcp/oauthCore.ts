@@ -94,6 +94,8 @@ export function checkClientIdUrl(s: unknown): ClientIdCheck {
   // raw segments: URL has already resolved dots, so a difference from the raw string would have failed above too
   if (/(^|\/)\.\.?(\/|$)/.test(s.slice(8))) return { ok: false, reason: "That app's address has dots in its path." };
   if (isSpecialUseHost(u.hostname)) return { ok: false, reason: "That app's address points somewhere private." };
+  // a public name, never a bare address or a name that only means something inside a network
+  if (!u.hostname.includes(".") || u.hostname.includes(":") || /^[0-9.]+$/.test(u.hostname)) return { ok: false, reason: "That app's address has to use a public name." };
   return { ok: true, host: u.hostname };
 }
 
@@ -120,19 +122,27 @@ export type RegistrationCheck =
   | { ok: true; name: string; clientUri: string | null; redirectUris: string[] }
   | { ok: false; error: "invalid_redirect_uri" | "invalid_client_metadata"; description: string };
 
+/**
+ * What a stranger may store without signing in. VS Code lists six redirect addresses, so eight;
+ * long enough for any real one, and small enough that 2,000 an hour kept for a day stays small.
+ */
+export const REGISTER_MAX_URIS = 8;
+export const REGISTER_MAX_URI_CHARS = 512;
+
 /** RFC 7591. Grant types and methods the app lists are ignored: it always gets authorization_code + refresh_token and no secret. */
 export function checkRegistration(body: unknown): RegistrationCheck {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "invalid_client_metadata", description: "Send the app's details as a JSON object." };
   const b = body as Record<string, unknown>;
   const uris = b.redirect_uris;
   if (!Array.isArray(uris) || !uris.length) return { ok: false, error: "invalid_redirect_uri", description: "Say where to send people back to: redirect_uris." };
-  if (uris.length > 20) return { ok: false, error: "invalid_redirect_uri", description: "List at most 20 redirect_uris." };
+  if (uris.length > REGISTER_MAX_URIS) return { ok: false, error: "invalid_redirect_uri", description: `List at most ${REGISTER_MAX_URIS} redirect_uris.` };
   for (const u of uris) {
     if (!isAllowedRedirectUri(u)) {
       return { ok: false, error: "invalid_redirect_uri", description: "A redirect address must be https, or http on localhost, with no fragment." };
     }
+    if (u.length > REGISTER_MAX_URI_CHARS) return { ok: false, error: "invalid_redirect_uri", description: `A redirect address can be at most ${REGISTER_MAX_URI_CHARS} characters.` };
   }
-  const clientUri = typeof b.client_uri === "string" && /^https:\/\//.test(b.client_uri) && b.client_uri.length <= 2048 ? b.client_uri : null;
+  const clientUri = typeof b.client_uri === "string" && /^https:\/\//.test(b.client_uri) && b.client_uri.length <= REGISTER_MAX_URI_CHARS ? b.client_uri : null;
   return { ok: true, name: cleanClientName(b.client_name), clientUri, redirectUris: [...new Set(uris as string[])] };
 }
 
@@ -153,7 +163,7 @@ export interface AuthorizeRequest {
 export type AuthorizeParse =
   /** no client or no usable redirect address: show an error here, never redirect */
   | { kind: "fatal"; reason: "missing_client" | "bad_redirect" }
-  /** something else is wrong: once the address is checked against the app, send the error back to it */
+  /** something else is wrong: the page stops and says so, and the error only goes back to the app if someone clicks */
   | { kind: "redirect_error"; clientId: string; redirectUri: string; state: string | null; error: "unsupported_response_type" | "invalid_request" | "invalid_target"; description: string }
   | { kind: "ok"; request: AuthorizeRequest };
 

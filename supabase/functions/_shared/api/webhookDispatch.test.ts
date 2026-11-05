@@ -9,7 +9,7 @@ import type { WebhookEnvelope } from "./serialise.ts";
 import type { Tx } from "./types.ts";
 import {
   BUILTIN_TAG_LABELS, checkDestination, CREATOR_GONE_REASON, DeliveryError, describeResult, DISPATCH_SQL, dohResolver, fetchSender,
-  fitPayload, isRuntimeUnsupported, parseDohAnswer, postPinned, readStatus, runDispatch, type ClaimedDelivery, type Conn, type NetApi,
+  fitPayload, getPinned, isRuntimeUnsupported, parseDohAnswer, postPinned, readStatus, runDispatch, systemResolver, type ClaimedDelivery, type Conn, type NetApi,
   type SendTarget,
 } from "./webhookDispatch.ts";
 import { verifySignature, WEBHOOK_USER_AGENT } from "./webhooks.ts";
@@ -248,6 +248,75 @@ function fakeService(pool: ClaimedDelivery[], opts: {
 }
 const did = (i: number) => `${String(i).padStart(8, "0")}-d7e3-4f30-96e8-2a7008b6045c`;
 const LAUNCH = "7f6e5d4c-0000-4000-8000-000000000001";
+
+describe("getPinned", () => {
+  const target = (o: Partial<SendTarget> = {}): SendTarget => ({ url: "https://apps.example.com/c.json?x=1", host: "apps.example.com", port: 443, path: "/c.json?x=1", address: "93.184.216.34", ...o });
+  it("connects to the IP, TLS for the hostname, writes a plain GET", async () => {
+    const { net, log } = fakeNet("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+    expect(await getPinned(net, target(), 5000, 1000)).toEqual({ status: 200, text: "{}" });
+    expect(log.connect).toEqual([{ hostname: "93.184.216.34", port: 443 }]);
+    expect(log.tls).toEqual(["apps.example.com"]);
+    const lines = log.written.split("\r\n");
+    expect(lines[0]).toBe("GET /c.json?x=1 HTTP/1.1");
+    expect(lines).toContain("Host: apps.example.com");
+    expect(lines).toContain("Connection: close");
+    expect(lines).toContain("Accept-Encoding: identity");
+    expect(log.closed).toBeGreaterThan(0);
+  });
+  it("reads a body split across reads, chunked, or that just ends at the close", async () => {
+    expect(await getPinned(fakeNet(["HTTP/1.1 200 OK\r\nContent-Le", "ngth: 11\r\n\r\nhello", " world"]).net, target(), 5000, 1000)).toEqual({ status: 200, text: "hello world" });
+    expect(await getPinned(fakeNet("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;x=1\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").net, target(), 5000, 1000)).toEqual({ status: 200, text: "hello world" });
+    expect(await getPinned(fakeNet(["HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhe", "llo\r\n", "0\r\n\r\n"]).net, target(), 5000, 1000)).toEqual({ status: 200, text: "hello" });
+    expect(await getPinned(fakeNet("HTTP/1.1 200 OK\r\n\r\nhello").net, target(), 5000, 1000)).toEqual({ status: 200, text: "hello" });
+    expect(await getPinned(fakeNet("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx").net, target(), 5000, 1000)).toEqual({ status: 200, text: "x" });
+  });
+  it("anything but a 200 has no text, and redirects aren't followed", async () => {
+    for (const status of [301, 302, 404, 500]) {
+      const { net, log } = fakeNet(`HTTP/1.1 ${status} X\r\nLocation: https://169.254.169.254/\r\nContent-Length: 2\r\n\r\nno`);
+      expect(await getPinned(net, target(), 5000, 1000)).toEqual({ status, text: null });
+      expect(log.connect).toHaveLength(1);
+    }
+  });
+  it("past the cap there's no text, whichever way it's sent", async () => {
+    expect(await getPinned(fakeNet("HTTP/1.1 200 OK\r\nContent-Length: 9000\r\n\r\nxx").net, target(), 5000, 1000)).toEqual({ status: 200, text: null });
+    expect(await getPinned(fakeNet(["HTTP/1.1 200 OK\r\n\r\n", "x".repeat(4000), "x".repeat(1001)]).net, target(), 5000, 1000)).toEqual({ status: 200, text: null });
+    expect(await getPinned(fakeNet(["HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1389\r\n", "x".repeat(4000), "x".repeat(1001), "\r\n0\r\n\r\n"]).net, target(), 5000, 1000)).toEqual({ status: 200, text: null });
+    const endless = fakeNet(Array(40).fill(`HTTP/1.1 200 OK\r\n\r\n`.padEnd(4096, "x")));
+    expect((await getPinned(endless.net, target(), 5000, 1000)).text).toBeNull();
+  });
+  it("timeouts, hang-ups, junk and refused connections say what kind they are", async () => {
+    let e = await getPinned(fakeNet(null, { hang: true }).net, target(), 5000, 30).catch((x) => x);
+    expect(e.kind).toBe("timeout");
+    e = await getPinned(fakeNet(null).net, target(), 5000, 1000).catch((x) => x);
+    expect(e.kind).toBe("closed");
+    e = await getPinned(fakeNet("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nxx").net, target(), 5000, 1000).catch((x) => x);
+    expect(e.kind).toBe("closed");
+    e = await getPinned(fakeNet("SSH-2.0-OpenSSH\r\n\r\n").net, target(), 5000, 1000).catch((x) => x);
+    expect(e.kind).toBe("protocol");
+    e = await getPinned(fakeNet(null, { failTls: new Error("invalid peer certificate: NotValidForName") }).net, target(), 5000, 1000).catch((x) => x);
+    expect(e.kind).toBe("tls");
+    e = await getPinned(fakeNet(null, { failConnect: Object.assign(new Error("Connection refused (os error 111)"), { name: "ConnectionRefused" }) }).net, target(), 5000, 1000).catch((x) => x);
+    expect(e.kind).toBe("connect");
+  });
+});
+
+describe("systemResolver", () => {
+  const doh = async () => ["1.1.1.1"];
+  it("takes the runtime's answers", async () => {
+    expect(await systemResolver(async (_h, t) => (t === "A" ? ["93.184.216.34"] : ["2606:4700::1"]), doh)("x.example.com")).toEqual(["93.184.216.34", "2606:4700::1"]);
+  });
+  it("no runtime lookup, or one that failed outright: DNS over HTTPS", async () => {
+    expect(await systemResolver(null, doh)("x.example.com")).toEqual(["1.1.1.1"]);
+    expect(await systemResolver(async () => { throw new Error("boom"); }, doh)("x.example.com")).toEqual(["1.1.1.1"]);
+  });
+  it("no such host is [] rather than a guess", async () => {
+    const notFound = Object.assign(new Error("no record"), { name: "NotFound" });
+    expect(await systemResolver(async () => { throw notFound; }, doh)("x.example.com")).toEqual([]);
+  });
+  it("can't tell at all: it throws, so nothing is sent", async () => {
+    await expect(systemResolver(async () => { throw new Error("boom"); }, async () => { throw new Error("DoH down"); })("x.example.com")).rejects.toThrow();
+  });
+});
 
 describe("runDispatch", () => {
   const publicDns = async () => ["93.184.216.34", "2606:4700::1"];

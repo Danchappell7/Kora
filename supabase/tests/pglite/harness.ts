@@ -3,12 +3,13 @@
 // WebAssembly), with just enough of Supabase stubbed around them: the auth
 // schema, roles, storage, vault, cron and net.
 //
-// Nothing here touches a real database. Run with run.mjs (see README.md).
+// Requests go through the real driver (driver.ts); this file only builds the
+// database and sets up test data. Nothing here touches a real database. Run with
+// run.mjs (see README.md).
 // ============================================================
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Tx, UserDb, UserScope } from "../../functions/_shared/api/types.ts";
 
 const MIGRATIONS = join(process.cwd(), "supabase", "migrations");
 
@@ -154,36 +155,10 @@ export async function applyFile(pg: Pg, file: string): Promise<void> {
   await pg.exec(adapt(migrationSql(file)));
 }
 
-/** db.ts's WITH_USER_SQL (db.ts is Deno-only, so a contract test keeps the two the same). */
+/** db.ts's WITH_USER_SQL, for asPerson below (a contract test keeps the two the same). */
 export const WITH_USER_SQL =
   "select set_config('role', 'authenticated', true), set_config('statement_timeout', '15s', true), " +
   "set_config('request.jwt.claims', $1, true), set_config('kanbo.api_workspace', $2, true)";
-
-/** Postgres dates come back as JS Dates from PGlite; the live driver gives strings. */
-function txOf(q: { query: Pg["query"] }): Tx {
-  return {
-    async query<T = Record<string, unknown>>(text: string, params: readonly unknown[] = []): Promise<T[]> {
-      const rs = await q.query<T>(text, params as unknown[]);
-      return rs.rows;
-    },
-  };
-}
-
-export interface HarnessDb extends UserDb { service: Tx }
-
-/** The same transaction shape as db.ts createApiDb, on PGlite. */
-export function harnessDb(pg: Pg): HarnessDb {
-  return {
-    service: txOf(pg),
-    withUser<T>(scope: UserScope, fn: (tx: Tx) => Promise<T>): Promise<T> {
-      return pg.transaction(async (t) => {
-        await t.exec(scope.readOnly ? "set transaction read only" : "set transaction read write");
-        await t.query(WITH_USER_SQL, [JSON.stringify({ sub: scope.userId, role: "authenticated" }), scope.workspaceId ?? ""]);
-        return fn(txOf(t));
-      }) as Promise<T>;
-    },
-  };
-}
 
 /** Run one statement as a signed-in person, the way PostgREST would (for RPCs from the app). */
 export async function asPerson<T = Record<string, unknown>>(pg: Pg, userId: string, sql: string, params: unknown[] = []): Promise<T[]> {

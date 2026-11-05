@@ -5,7 +5,8 @@
 // the resolved person), so validation, RLS through db.withUser, one-workspace
 // pinning, rate limits, idempotency and audit are the API's, not copies of them.
 // A tool only chooses what to call and shapes the answer for a model: smaller
-// tasks, long text cut with a flag, and a cap on the whole answer.
+// tasks, long text cut with a flag (and always a way to read the rest), and a cap
+// on the whole answer. What people wrote stays apart from Kanbo's own words.
 //
 // Schemas have no top-level oneOf / anyOf / allOf (some model APIs refuse them):
 // add_task's fields are all optional and the server says what's missing.
@@ -20,10 +21,14 @@ import type { ApiComment, ApiMember, ApiProject, ApiTask, ApiWorkspace } from ".
 import { API_PRIORITIES, API_STATUSES } from "../api/serialise.ts";
 import type { Method } from "../api/router.ts";
 import type { ApiPrincipal } from "../api/types.ts";
-import { API_LIMITS, PROJECT_STATUSES } from "../api/validate.ts";
+import { API_LIMITS, PERSONAL_PROJECT_ID, PROJECT_STATUSES } from "../api/validate.ts";
 import { schemaErrors, type JsonSchema } from "./jsonSchema.ts";
 import { MCP_ISSUER } from "./metadata.ts";
-import { DEFAULT_TIMEZONE, dateInZone, isTimeZone, localMidnight } from "./myDay.ts";
+import { DEFAULT_TIMEZONE, dateInZone, isTimeZone, localMidnight, type MyDayCounts } from "./myDay.ts";
+import { readPerson, readProject, type Named } from "./names.ts";
+import { cut, DETAIL_TEXT_MAX, LIST_TEXT_MAX } from "./text.ts";
+
+export { cut };
 
 /* ------------------------------------------------------------ what a tool runs against */
 
@@ -43,7 +48,12 @@ export interface ToolEnv {
   /** the OAuth client's name (self-supplied), or null for an API key */
   clientName: string | null;
   now: () => Date;
+  /** counts a write against this connection's budget for that kind; throws a ToolFault when it's spent (handler.ts) */
+  spend?: (kind: WriteKind) => Promise<void>;
 }
+
+/** Writes with their own, tighter budget: "delete" empties things, "reach" lands in someone else's Inbox. */
+export type WriteKind = "delete" | "reach";
 
 /** A refusal in plain words: becomes an isError result, never a protocol error. */
 export class ToolFault extends Error {}
@@ -78,22 +88,17 @@ export interface McpTool {
 export const MAX_JSON_CHARS = 19_000;
 export const PAGE_DEFAULT = 20;
 export const PAGE_MAX = 50;
-const LIST_TEXT_MAX = 200;
-const DETAIL_TEXT_MAX = 6_000;
 const COMMENT_TEXT_MAX = 1_000;
 const DETAIL_COMMENTS = 20;
 const DETAIL_SUBTASKS = 20;
+/** What someone else wrote, as a label: a task's title, a person's name. */
+const LABEL_MAX = 120;
 
 const size = (v: unknown) => JSON.stringify(v).length;
 
-/** At most `max` characters, never splitting a surrogate pair. */
-export function cut(s: string, max: number): { text: string; truncated: boolean } {
-  if (s.length <= max) return { text: s, truncated: false };
-  let end = max;
-  const c = s.charCodeAt(end - 1);
-  if (c >= 0xD800 && c <= 0xDBFF) end--;
-  return { text: s.slice(0, end), truncated: true };
-}
+/** Someone's name or a title on one line, so it can't pretend to be more than a label. */
+// deno-lint-ignore no-control-regex
+const label = (v: unknown) => cut(String(v ?? "").replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim(), LABEL_MAX).text;
 
 /* ------------------------------------------------------------ answers from the pipeline */
 
@@ -134,17 +139,18 @@ export interface McpTaskView {
   startDate: string | null; completedAt: string | null; projectId: string | null; workspaceId: string | null;
   sectionId: string | null; parentId: string | null; assigneeId: string | null; tags: string[];
   effortHours: number | null; archived: boolean; url: string | null; updatedAt: string | null;
-  description: string; descriptionTruncated: boolean;
+  recurrence: string; description: string; descriptionTruncated: boolean;
 }
 
-export function taskView(t: ApiTask, textMax = LIST_TEXT_MAX): McpTaskView {
-  const d = cut(t.description ?? "", textMax);
+export function taskView(t: ApiTask, textMax = LIST_TEXT_MAX, from = 0): McpTaskView {
+  const d = cut((t.description ?? "").slice(from), textMax);
   return {
     id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate, dueTime: t.dueTime,
     startDate: t.startDate, completedAt: t.completedAt, projectId: t.projectId, workspaceId: t.workspaceId,
     sectionId: t.sectionId, parentId: t.parentId, assigneeId: t.assigneeId,
     tags: (t.tags ?? []).map((g) => g.label ?? g.id),
     effortHours: t.effortHours, archived: t.archived, url: t.url, updatedAt: t.updatedAt,
+    recurrence: t.recurrence ?? "none",
     description: d.text, descriptionTruncated: d.truncated,
   };
 }
@@ -157,8 +163,8 @@ function projectView(p: ApiProject) {
   };
 }
 
-function commentView(c: ApiComment) {
-  const b = cut(c.body ?? "", COMMENT_TEXT_MAX);
+function commentView(c: ApiComment, textMax = COMMENT_TEXT_MAX) {
+  const b = cut(c.body ?? "", textMax);
   return { id: c.id, taskId: c.taskId, parentId: c.parentId, authorName: c.authorName, createdAt: c.createdAt, body: b.text, bodyTruncated: b.truncated };
 }
 
@@ -187,7 +193,8 @@ const TASK_VIEW: JsonSchema = obj({
   sectionId: nstr("The project section."), parentId: nstr("Set on a sub-task."), assigneeId: nstr("A user id; null is unassigned."),
   tags: arr({ type: "string" }), effortHours: { type: ["number", "null"] }, archived: { type: "boolean" },
   url: nstr("Opens the task in Kanbo."), updatedAt: nstr("ISO 8601"),
-  description: { type: "string" }, descriptionTruncated: { type: "boolean", description: "True when the description was cut short." },
+  recurrence: { type: "string", description: "none, daily, weekdays, weekly, biweekly or monthly. A repeating task makes its next occurrence when it's completed." },
+  description: { type: "string" }, descriptionTruncated: { type: "boolean", description: "True when the description was cut short. get_task's descriptionOffset reads the rest." },
 }, ["id", "title", "status", "priority", "url", "description", "descriptionTruncated"]);
 
 const PROJECT_VIEW: JsonSchema = obj({
@@ -230,19 +237,63 @@ const pageLimit = (a: Record<string, unknown>) => String(Math.min(Number(a.limit
 
 const NL_KINDS: NlpKind[] = ["date", "time", "start", "priority", "project", "person", "estimate"];
 
-interface Sentence { fields: Record<string, unknown>; notes: string[] }
+interface Sentence {
+  fields: Record<string, unknown>;
+  /** what was taken out of the sentence and how it was read, for the model to check */
+  read: string[];
+  notes: string[];
+}
+
+const READ_AS: Partial<Record<NlpKind, (label: string) => string>> = {
+  date: (l) => `due ${l}`,
+  time: (l) => `at ${l}`,
+  start: (l) => `starting ${l}`,
+  priority: (l) => `priority ${l}`,
+  project: (l) => `project ${l}`,
+  person: (l) => l,
+  estimate: (l) => `estimate ${l}`,
+};
+
+/** The saved zone, so "today" here is the day my_day says it is. If it can't be read, London. */
+async function zoneOf(env: ToolEnv): Promise<string> {
+  const a = await env.api("GET", "/me/timezone");
+  const tz = a.status < 400 ? a.body?.timezone : null;
+  return isTimeZone(tz) ? tz : DEFAULT_TIMEZONE;
+}
 
 /**
  * "Send the brief fri 3pm #launch @sana !high ~30m", read by the one grammar the app's Quick capture
  * and the Slack app use: #project against the projects this person can see, @person against the
- * members of that project's workspace. Whatever can't be matched stays in the title, and is mentioned.
+ * members of that project's workspace. Nobody is watching the highlight here, so names have to match
+ * properly (names.ts): an exact name, a first name or the start of a word, and only one of them.
+ * Whatever can't be matched stays in the title and is mentioned, and what was read is listed.
  */
 async function readSentence(text: string, tz: string, projectHint: string | undefined, env: ToolEnv): Promise<Sentence> {
   const today = localMidnight(dateInZone(env.now(), tz));
   const projectsBody = await need(env.api("GET", "/projects", { query: { limit: "100" } }));
   const projects: ApiProject[] = projectsBody.data ?? [];
   const named = projects.map((p) => ({ id: p.id, name: p.name }));
-  const first = parseTask(text, { today, kinds: NL_KINDS, projects: named, members: [] });
+  const notes: string[] = [];
+  const several = new Set<string>();
+  const say = (mark: string, q: string, hits: Named[], what: string) => {
+    const key = `${mark}${q.toLowerCase()}`;
+    if (several.has(key)) return;
+    several.add(key);
+    notes.push(`“${mark}${q}” could be ${hits.map((h) => label(h.name)).join(" or ")}, so it stayed in the title. Give ${what} to choose.`);
+  };
+  const nameMatch = {
+    project: (q: string, list: Named[]) => {
+      const r = readProject(q, list);
+      if (r.kind === "several") say("#", q, r.hits, "projectId");
+      return r.kind === "one" ? r.hit : undefined;
+    },
+    member: (q: string, list: Named[]) => {
+      const r = readPerson(q, list);
+      if (r.kind === "several") say("@", q, r.hits, "assigneeId");
+      return r.kind === "one" ? r.hit : undefined;
+    },
+  };
+  const first = parseTask(text, { today, kinds: NL_KINDS, projects: named, members: [], nameMatch: { project: (q, list) => { const r = readProject(q, list); return r.kind === "one" ? r.hit : undefined; } } });
   // which workspace's people does @someone mean?
   const projectId = projectHint ?? first.projectId;
   const ws = projects.find((p) => p.id === projectId)?.workspaceId ?? env.principal.workspaceId;
@@ -252,7 +303,7 @@ async function readSentence(text: string, tz: string, projectHint: string | unde
     const a = await env.api("GET", "/members", { query: { workspace: ws, limit: "100" } });
     if (a.status < 400) members = (a.body?.data as ApiMember[] ?? []).filter((m) => m.status === "active" && m.userId).map((m) => ({ id: m.userId!, name: m.name }));
   }
-  const p = parseTask(text, { today, kinds: NL_KINDS, projects: named, members: [{ id: env.principal.userId, name: "me" }, ...members] });
+  const p = parseTask(text, { today, kinds: NL_KINDS, projects: named, members: [{ id: env.principal.userId, name: "me" }, ...members], nameMatch });
   const fields: Record<string, unknown> = { title: p.title };
   if (p.dueDate) fields.dueDate = p.dueDate;
   if (p.dueTime) fields.dueTime = p.dueTime;
@@ -261,10 +312,36 @@ async function readSentence(text: string, tz: string, projectHint: string | unde
   if (p.projectId) fields.projectId = p.projectId;
   if (p.assigneeId) fields.assigneeId = p.assigneeId === env.principal.userId ? "me" : p.assigneeId;
   if (p.effortHours !== undefined) fields.effortHours = p.effortHours;
-  const notes: string[] = [];
-  for (const m of p.title.matchAll(/(?:^|[\s(\[,;])#(\p{L}[\p{L}\p{N}_-]*)/gu)) notes.push(`No project called “${m[1]}”, so #${m[1]} stayed in the title.`);
-  for (const m of p.title.matchAll(/(?:^|[\s(\[,;])@(\p{L}[\p{L}\p{N}._-]*)/gu)) notes.push(`No one called “${m[1]}” here, so @${m[1]} stayed in the title.`);
-  return { fields, notes };
+  const read = p.spans.map((sp) => `“${text.slice(sp.start, sp.end).trim()}” read as ${(READ_AS[sp.kind] ?? ((l: string) => l))(label(sp.label))}`);
+  for (const m of p.title.matchAll(/(?:^|[\s(\[,;])#(\p{L}[\p{L}\p{N}_-]*)/gu)) if (!several.has(`#${m[1].toLowerCase()}`)) notes.push(`No project called “${m[1]}”, so #${m[1]} stayed in the title.`);
+  for (const m of p.title.matchAll(/(?:^|[\s(\[,;])@(\p{L}[\p{L}\p{N}._-]*)/gu)) if (!several.has(`@${m[1].toLowerCase()}`)) notes.push(`No one called “${m[1]}” here, so @${m[1]} stayed in the title.`);
+  return { fields, read, notes };
+}
+
+/* ------------------------------------------------------------ what a task waits for */
+
+interface Blocker { id: string; title: string }
+
+async function blockersOf(env: ToolEnv, id: string): Promise<{ status: string; blockers: Blocker[]; more: boolean }> {
+  const b = await need(env.api("GET", `/tasks/${id}/blockers`));
+  return { status: String(b.status ?? ""), blockers: ((b.data ?? []) as Blocker[]).map((x) => ({ id: x.id, title: label(x.title) })), more: !!b.hasMore };
+}
+
+/** Marking a task done while it waits for something is a question for the person, as it is in the app. */
+async function refuseIfBlocked(env: ToolEnv, id: string): Promise<void> {
+  const { status, blockers, more } = await blockersOf(env, id);
+  if (status === "done" || !blockers.length) return;
+  const list = blockers.slice(0, 3).map((b) => `“${b.title}” (${b.id})`).join(", ");
+  throw new ToolFault(`This task is waiting on ${blockers.length}${more ? " or more" : ""} unfinished task${blockers.length === 1 ? "" : "s"}, so it wasn't marked done: ${list}. Check with the person, and send confirmedBlocked: true if they want it done anyway.`);
+}
+
+const CONFIRMED_BLOCKED: JsonSchema = { type: "boolean", description: "Send true to finish a task that's still waiting on unfinished tasks, once the person has said so." };
+
+/** A task's answer to being finished: the next occurrence, if it made one. */
+const NEXT_OCCURRENCE: JsonSchema = obj({ id: { type: "string" }, dueDate: { type: "string", description: "YYYY-MM-DD" } }, ["id", "dueDate"], "The next occurrence, made because this task repeats.");
+
+function nextWords(next: { id: string; dueDate: string } | undefined): string {
+  return next ? ` It repeats, so the next one (${next.id}) is due ${next.dueDate}.` : "";
 }
 
 /* ------------------------------------------------------------ the tools */
@@ -289,7 +366,20 @@ const TASK_FIELDS: Record<string, JsonSchema> = {
   effortHours: { type: ["number", "null"], minimum: 0, maximum: API_LIMITS.effortHours, description: "Estimated hours." },
 };
 
-const TASK_RESULT: JsonSchema = obj({ task: TASK_VIEW }, ["task"]);
+const TASK_RESULT: JsonSchema = obj({ task: TASK_VIEW, nextOccurrence: NEXT_OCCURRENCE }, ["task"]);
+
+const COUNTS = (description: string): JsonSchema => obj(
+  { overdue: { type: "integer" }, dueToday: { type: "integer" }, approvals: { type: "integer" }, planned: { type: "integer" }, blocked: { type: "integer" } },
+  ["overdue", "dueToday", "approvals", "planned", "blocked"], description);
+const COUNT_OF_KIND = { overdue: "overdue", due_today: "dueToday", approval: "approvals", planned: "planned", blocked: "blocked" } as const;
+
+/** Every line of what someone wrote marked as theirs, so a line of it can't pass for one of Kanbo's. */
+const quoted = (text: string) => text.split(/\r\n|\r|\n|\u2028|\u2029/).map((l) => `> ${l}`).join("\n");
+
+/** All the ways the tools spell the Personal list. */
+const isPersonalList = (v: unknown) => v == null || (typeof v === "string" && (v.toLowerCase() === "personal" || v === PERSONAL_PROJECT_ID));
+
+const reachesSomeoneElse = (assignee: unknown, env: ToolEnv) => typeof assignee === "string" && assignee !== "me" && assignee !== env.principal.userId;
 
 export const TOOLS: readonly McpTool[] = [
   {
@@ -372,7 +462,7 @@ export const TOOLS: readonly McpTool[] = [
   {
     name: "list_tasks",
     title: "List tasks",
-    description: "Lists and filters tasks this connection can see, newest first: by assignee (\"me\"), status, project, workspace, due date range or words in the title and description. Archived tasks are left out. Long descriptions are cut short and flagged; get_task has the rest. Changes nothing.",
+    description: "Lists and filters tasks this connection can see, newest first: by assignee (\"me\"), status, project, workspace, due date range or words in the title and description. Archived tasks are left out. Long descriptions are cut short and flagged; get_task has the rest. parentId lists a task's sub-tasks. Changes nothing.",
     inputSchema: input({
       assignee: s("\"me\", \"none\" (unassigned) or a user id.", { maxLength: 64 }),
       status: { type: "array", items: STATUS_ENUM, maxItems: 5, description: "One or more statuses." },
@@ -381,6 +471,7 @@ export const TOOLS: readonly McpTool[] = [
       dueBefore: s("Due on or before this day, YYYY-MM-DD.", { maxLength: 10 }),
       dueAfter: s("Due on or after this day, YYYY-MM-DD.", { maxLength: 10 }),
       query: s("Words to look for.", { maxLength: API_LIMITS.q }),
+      parentId: s("Only the sub-tasks of this task.", { maxLength: 64 }),
       limit: LIMIT, cursor: CURSOR,
     }),
     outputSchema: obj({ tasks: arr(TASK_VIEW), ...PAGE_FIELDS }, ["tasks", "nextCursor", "hasMore"]),
@@ -391,7 +482,7 @@ export const TOOLS: readonly McpTool[] = [
       const out = await fittedPage<ApiTask, McpTaskView>(Number(pageLimit(a)),
         (limit) => need(env.api("GET", "/tasks", { query: {
           assignee: a.assignee, status: Array.isArray(a.status) && a.status.length ? a.status.join(",") : undefined,
-          project: a.projectId, workspace: a.workspaceId, due_before: a.dueBefore, due_after: a.dueAfter, q: a.query,
+          project: a.projectId, workspace: a.workspaceId, due_before: a.dueBefore, due_after: a.dueAfter, q: a.query, parent: a.parentId,
           limit: String(limit), cursor: a.cursor,
         } })),
         (t) => taskView(t), (tasks, nextCursor, hasMore) => ({ tasks, nextCursor, hasMore }));
@@ -402,33 +493,66 @@ export const TOOLS: readonly McpTool[] = [
   {
     name: "get_task",
     title: "Get a task",
-    description: "Reads one task with its full description, its comments and its sub-tasks. Very long text is cut short and flagged. Changes nothing.",
-    inputSchema: input({ taskId: TASK_ID }, ["taskId"]),
+    description: "Reads one task: up to 6,000 characters of its description at a time, its newest comments in time order, its sub-tasks and any unfinished tasks it's waiting on. Long text is flagged, and each flag has a way to read the rest: descriptionOffset for the description, commentsCursor for older comments, fullComments for long ones, list_tasks with parentId for more sub-tasks. Changes nothing.",
+    inputSchema: input({
+      taskId: TASK_ID,
+      descriptionOffset: { type: "integer", minimum: 0, maximum: API_LIMITS.description, description: "Read the description from this character on: descriptionNextOffset from the last answer." },
+      commentsCursor: s("commentsNextCursor from the last answer: reads older comments.", { maxLength: 400 }),
+      fullComments: { type: "boolean", description: "True shows long comments whole rather than the first 1,000 characters." },
+    }, ["taskId"]),
     outputSchema: obj({
       task: TASK_VIEW,
-      comments: arr(COMMENT_VIEW), commentsTruncated: { type: "boolean", description: "True when there are more comments than are shown." },
-      subtasks: arr(TASK_VIEW), subtasksTruncated: { type: "boolean", description: "True when there are more sub-tasks than are shown." },
-    }, ["task", "comments", "commentsTruncated", "subtasks", "subtasksTruncated"]),
+      descriptionLength: { type: "integer", description: "How long the whole description is, in characters." },
+      descriptionNextOffset: { type: ["integer", "null"], description: "Pass as descriptionOffset for the next part. null when this is the end." },
+      blockedBy: arr(obj({ id: { type: "string" }, title: { type: "string" } }, ["id", "title"]), "Unfinished tasks this one waits for. Their titles are written by people."),
+      comments: arr(COMMENT_VIEW), commentsTruncated: { type: "boolean", description: "True when there are older comments than these." },
+      commentsNextCursor: nstr("Pass as commentsCursor for older comments. null when these reach the first."),
+      subtasks: arr(TASK_VIEW), subtasksTruncated: { type: "boolean", description: "True when there are more sub-tasks than are shown. list_tasks with parentId has them." },
+    }, ["task", "descriptionLength", "descriptionNextOffset", "blockedBy", "comments", "commentsTruncated", "commentsNextCursor", "subtasks", "subtasksTruncated"]),
     annotations: { title: "Get a task", ...READ },
     write: false,
-    routes: [["GET", "/tasks/:id"], ["GET", "/tasks/:id/comments"], ["GET", "/tasks"]],
+    routes: [["GET", "/tasks/:id"], ["GET", "/tasks/:id/comments/recent"], ["GET", "/tasks/:id/blockers"], ["GET", "/tasks"]],
     async run(a, env) {
       const id = pathId(a.taskId);
       const t = await need(env.api("GET", `/tasks/${id}`)) as ApiTask;
-      const cs = await need(env.api("GET", `/tasks/${id}/comments`, { query: { limit: String(DETAIL_COMMENTS) } }));
+      const commentMax = a.fullComments ? API_LIMITS.comment : COMMENT_TEXT_MAX;
+      const recent = (limit: number) => need(env.api("GET", `/tasks/${id}/comments/recent`, { query: { limit: String(limit), cursor: a.commentsCursor } }));
+      let cs = await recent(DETAIL_COMMENTS);
       const ss = await need(env.api("GET", "/tasks", { query: { parent: t.id, limit: String(DETAIL_SUBTASKS) } }));
+      const { blockers } = await blockersOf(env, id);
+      const from = Math.min(Number(a.descriptionOffset ?? 0), (t.description ?? "").length);
+      const place = (shown: McpTaskView) => {
+        const end = from + shown.description.length;
+        return { descriptionLength: (t.description ?? "").length, descriptionNextOffset: shown.descriptionTruncated ? end : null };
+      };
+      const task = taskView(t, DETAIL_TEXT_MAX, from);
       const out = {
-        task: taskView(t, DETAIL_TEXT_MAX),
-        comments: (cs.data as ApiComment[]).map(commentView),
+        task,
+        ...place(task),
+        blockedBy: blockers,
+        // they come newest first, and read in time order
+        comments: (cs.data as ApiComment[]).map((c) => commentView(c, commentMax)).reverse(),
         commentsTruncated: !!cs.hasMore,
+        commentsNextCursor: (cs.nextCursor ?? null) as string | null,
         subtasks: (ss.data as ApiTask[]).map((x) => taskView(x)),
         subtasksTruncated: !!ss.hasMore,
       };
-      // over the cap: the newest comments and sub-tasks go first, then the description shortens
+      // over the cap: the sub-tasks go first, then the oldest comments (asked for again, so the cursor stays true), then the description shortens
       while (size(out) > MAX_JSON_CHARS && out.subtasks.length) { out.subtasks.pop(); out.subtasksTruncated = true; }
-      while (size(out) > MAX_JSON_CHARS && out.comments.length) { out.comments.pop(); out.commentsTruncated = true; }
-      if (size(out) > MAX_JSON_CHARS) out.task = taskView(t, DETAIL_TEXT_MAX / 2);
-      return { structured: out, summary: `“${t.title}” (${t.id}): ${t.status}${t.dueDate ? `, due ${t.dueDate}` : ""}.` };
+      if (size(out) > MAX_JSON_CHARS && out.comments.length > 1) {
+        const views = out.comments.slice();
+        while (size({ ...out, comments: views }) > MAX_JSON_CHARS && views.length > 1) views.shift();
+        cs = await recent(views.length);
+        out.comments = (cs.data as ApiComment[]).map((c) => commentView(c, commentMax)).reverse();
+        out.commentsTruncated = !!cs.hasMore;
+        out.commentsNextCursor = (cs.nextCursor ?? null) as string | null;
+      }
+      if (size(out) > MAX_JSON_CHARS) {
+        out.task = taskView(t, DETAIL_TEXT_MAX / 2, from);
+        Object.assign(out, place(out.task));
+      }
+      if (size(out) > MAX_JSON_CHARS) out.comments = (cs.data as ApiComment[]).map((c) => commentView(c)).reverse();
+      return { structured: out, summary: `“${t.title}” (${t.id}): ${t.status}${t.dueDate ? `, due ${t.dueDate}` : ""}${t.recurrence && t.recurrence !== "none" ? `, repeats ${t.recurrence}` : ""}${blockers.length ? `, waiting on ${blockers.length} unfinished task${blockers.length === 1 ? "" : "s"}` : ""}.` };
     },
   },
   {
@@ -453,7 +577,7 @@ export const TOOLS: readonly McpTool[] = [
   {
     name: "fetch",
     title: "Read a search result",
-    description: "Reads one result from search in full: a task with its description and comments, or a project with its description. Takes the id search gave. Changes nothing.",
+    description: "Reads one result from search: a task with its description and its newest comments, or a project with its description. What people wrote is quoted, each line starting with \"> \", under a line from Kanbo saying who wrote it and when, and the comments are in metadata as well. Takes the id search gave. To change a description, read it with get_task. Changes nothing.",
     inputSchema: input({ id: s("An id from search, such as task:… or project:…. A bare id is read as a task.", { minLength: 1, maxLength: 80 }) }, ["id"]),
     outputSchema: obj({
       id: { type: "string" }, title: { type: "string" }, text: { type: "string" }, url: { type: "string" },
@@ -461,7 +585,7 @@ export const TOOLS: readonly McpTool[] = [
     }, ["id", "title", "text", "url"]),
     annotations: { title: "Read a search result", ...READ },
     write: false,
-    routes: [["GET", "/tasks/:id"], ["GET", "/tasks/:id/comments"], ["GET", "/projects/:id"]],
+    routes: [["GET", "/tasks/:id"], ["GET", "/tasks/:id/comments/recent"], ["GET", "/projects/:id"]],
     async run(a, env) {
       const raw = String(a.id);
       const m = /^(task|project):(.+)$/.exec(raw);
@@ -470,53 +594,79 @@ export const TOOLS: readonly McpTool[] = [
       if (kind === "project") {
         const p = await need(env.api("GET", `/projects/${id}`)) as ApiProject;
         const d = cut(p.description ?? "", DETAIL_TEXT_MAX);
-        return { structured: { id: `project:${p.id}`, title: p.name, text: d.text || "This project has no description.", url: p.url || MCP_ISSUER, metadata: { kind: "project", status: p.status, workspaceId: p.workspaceId, truncated: d.truncated } } };
+        return { structured: { id: `project:${p.id}`, title: p.name, text: d.text ? `Description:\n${quoted(d.text)}` : "This project has no description.", url: p.url || MCP_ISSUER, metadata: { kind: "project", status: p.status, workspaceId: p.workspaceId, truncated: d.truncated } } };
       }
       const t = await need(env.api("GET", `/tasks/${id}`)) as ApiTask;
-      const cs = await need(env.api("GET", `/tasks/${id}/comments`, { query: { limit: String(DETAIL_COMMENTS) } }));
+      const cs = await need(env.api("GET", `/tasks/${id}/comments/recent`, { query: { limit: String(DETAIL_COMMENTS) } }));
       const d = cut(t.description ?? "", DETAIL_TEXT_MAX);
-      const lines = [d.text || "This task has no description."];
-      for (const c of cs.data as ApiComment[]) lines.push(`\n${c.authorName}${c.createdAt ? ` (${c.createdAt.slice(0, 10)})` : ""}: ${cut(c.body ?? "", COMMENT_TEXT_MAX).text}`);
-      const whole = cut(lines.join("\n"), Math.floor(MAX_JSON_CHARS * 0.8));
-      return { structured: {
-        id: `task:${t.id}`, title: t.title, text: whole.text, url: t.url || MCP_ISSUER,
-        metadata: { kind: "task", status: t.status, priority: t.priority, dueDate: t.dueDate, assigneeId: t.assigneeId, projectId: t.projectId, workspaceId: t.workspaceId, truncated: d.truncated || whole.truncated || !!cs.hasMore },
-      } };
+      // newest first from the route; over the cap the oldest go, because the newest is usually the one that matters
+      const comments = (cs.data as ApiComment[]).map((c) => {
+        const b = cut(c.body ?? "", COMMENT_TEXT_MAX);
+        return { id: c.id, authorName: label(c.authorName), createdAt: c.createdAt, body: b.text, bodyTruncated: b.truncated };
+      }).reverse();
+      const answer = (shown: typeof comments, description: string) => {
+        const lines = [description ? `Description:\n${quoted(description)}` : "This task has no description."];
+        shown.forEach((c, i) => lines.push(`Comment ${i + 1} of ${shown.length} by ${c.authorName}${c.createdAt ? ` on ${c.createdAt.slice(0, 10)}` : ""}:\n${quoted(c.body)}`));
+        return {
+          id: `task:${t.id}`, title: t.title, text: lines.join("\n\n"), url: t.url || MCP_ISSUER,
+          metadata: { kind: "task", status: t.status, priority: t.priority, dueDate: t.dueDate, assigneeId: t.assigneeId, projectId: t.projectId, workspaceId: t.workspaceId, recurrence: t.recurrence ?? "none", comments: shown, truncated: d.truncated || shown.length < comments.length || !!cs.hasMore },
+        };
+      };
+      let shown = comments;
+      let out = answer(shown, d.text);
+      while (size(out) > MAX_JSON_CHARS && shown.length) { shown = shown.slice(1); out = answer(shown, d.text); }
+      if (size(out) > MAX_JSON_CHARS) {
+        out = answer(shown, cut(d.text, DETAIL_TEXT_MAX / 2).text);
+        out.metadata.truncated = true;
+      }
+      return { structured: out };
     },
   },
   {
     name: "my_day",
     title: "My day",
-    description: "Answers \"what do I need to get done today?\" for the person: overdue, due today, approvals waiting on them, on their plan for today, then blocked, in that order, with a one-line reason for each. Worked out directly from their tasks in their time zone, with no AI involved. Changes nothing.",
+    description: "Answers \"what do I need to get done today?\" for the person: overdue, due today, approvals waiting on them, on their plan for today, then blocked, in that order, with a one-line reason for each. Everything due today is listed; overdue and blocked are limited to the most urgent ten, and the counts and summary cover everything. Worked out directly from their tasks in their time zone, with no AI involved. Changes nothing.",
     inputSchema: input({ timezone: TIMEZONE }),
     outputSchema: obj({
       date: { type: "string", description: "Today in the person's time zone, YYYY-MM-DD." },
       timezone: { type: "string" },
       summary: { type: "string" },
-      counts: obj({ overdue: { type: "integer" }, dueToday: { type: "integer" }, approvals: { type: "integer" }, planned: { type: "integer" }, blocked: { type: "integer" } }, ["overdue", "dueToday", "approvals", "planned", "blocked"]),
+      counts: COUNTS("How many of each there are in all."),
       items: arr(obj({
         kind: { type: "string", enum: ["overdue", "due_today", "approval", "planned", "blocked"] },
-        taskId: { type: "string" }, title: { type: "string" }, reason: { type: "string" }, status: { type: "string" }, priority: { type: "string" },
+        taskId: { type: "string" }, title: { type: "string", description: "Written by a person." }, reason: { type: "string", description: "Kanbo's own words." }, status: { type: "string" }, priority: { type: "string" },
         dueDate: nstr("YYYY-MM-DD"), dueTime: nstr("HH:MM"), projectId: nstr("The task's project."), workspaceId: nstr("The task's workspace."), url: nstr("Opens the task in Kanbo."),
         approvalId: nstr("Set on an approval."),
+        blockedByTitle: nstr("The title of an unfinished task this one waits for. Written by a person."),
+        requesterName: nstr("Who asked for this approval. Written by a person."),
       }, ["kind", "taskId", "title", "reason"])),
-      truncated: { type: "boolean", description: "True when there's more than is listed. The counts cover everything." },
-    }, ["date", "timezone", "summary", "counts", "items", "truncated"]),
+      notShown: COUNTS("How many of each aren't in items. list_tasks has the rest of the overdue and blocked ones."),
+      truncated: { type: "boolean", description: "True when something isn't in items. The counts and summary cover everything." },
+    }, ["date", "timezone", "summary", "counts", "items", "notShown", "truncated"]),
     annotations: { title: "My day", ...READ },
     write: false,
     routes: [["GET", "/my-day"]],
     async run(a, env) {
       const day = await need(env.api("GET", "/my-day", { query: { timezone: a.timezone } }));
       const items = day.items as Record<string, unknown>[];
-      const out = { date: day.date, timezone: day.timezone, summary: day.summary, counts: day.counts, items, truncated: !!day.truncated };
-      while (size(out) > MAX_JSON_CHARS && items.length) { items.pop(); out.truncated = true; }
-      return { structured: out, summary: `${day.date}: ${day.summary}` };
+      const notShown: MyDayCounts = { overdue: 0, dueToday: 0, approvals: 0, planned: 0, blocked: 0, ...day.notShown };
+      const out = { date: day.date, timezone: day.timezone, summary: day.summary, counts: day.counts, items, notShown, truncated: !!day.truncated };
+      // over the size cap, what's waiting on them today is the last to go
+      const lastOf = (kind: string) => items.map((i) => i.kind).lastIndexOf(kind);
+      while (size(out) > MAX_JSON_CHARS && items.length) {
+        const kind = (["blocked", "overdue", "planned", "due_today", "approval"] as const).find((k) => lastOf(k) >= 0)!;
+        items.splice(lastOf(kind), 1);
+        notShown[COUNT_OF_KIND[kind]]++;
+        out.truncated = true;
+      }
+      const more = notShown.overdue ? ` ${notShown.overdue} more overdue aren't listed: list_tasks with assignee "me" and dueBefore has them.` : "";
+      return { structured: out, summary: `${day.date}: ${day.summary}${more}` };
     },
   },
   {
     name: "add_task",
     title: "Add a task",
-    description: "Adds one task. Give a title and fields, or a sentence in text, read the way Kanbo's Quick capture reads it: \"Send the brief fri 3pm #launch @sana !high ~30m\" (#project, @person, !priority, ~estimate, a day and a time). Fields you give win over what the sentence says. Without a project it goes on the person's Personal list, assigned to them. Adds one task only; it doesn't change or remove others.",
+    description: "Adds one task. Give a title and fields, or a sentence in text, read the way Kanbo's Quick capture reads it: \"Send the brief fri 3pm #launch @sana !high ~30m\" (#project, @person, !priority, ~estimate, a day and a time). Names have to match properly: an exact name, a first name or the start of a word, and only one person or project. Anything else stays in the title and is listed in notes, and read says how the sentence was understood. Fields you give win over what the sentence says. Without a project it goes on the person's Personal list, assigned to them. Assigning reaches that person in their Kanbo Inbox, with no email or push. Adds one task only; it doesn't change or remove others.",
     inputSchema: input({
       text: s("A task sentence. Use this or title.", { maxLength: 2000 }),
       title: s("The task's title. Use this or text.", { maxLength: API_LIMITS.title }),
@@ -525,52 +675,72 @@ export const TOOLS: readonly McpTool[] = [
       timezone: TIMEZONE,
       idempotencyKey: IDEMPOTENCY,
     }),
-    outputSchema: obj({ task: TASK_VIEW, notes: arr({ type: "string" }, "Anything in the sentence that couldn't be matched.") }, ["task", "notes"]),
+    outputSchema: obj({
+      task: TASK_VIEW,
+      read: arr({ type: "string" }, "What was taken out of the sentence and how it was read. Check these: an ordinary word can read as a date."),
+      notes: arr({ type: "string" }, "Anything in the sentence that couldn't be matched."),
+    }, ["task", "read", "notes"]),
     annotations: { title: "Add a task", ...ADD },
     write: true,
-    routes: [["POST", "/tasks"], ["GET", "/projects"], ["GET", "/members"]],
+    routes: [["POST", "/tasks"], ["GET", "/projects"], ["GET", "/members"], ["GET", "/me/timezone"]],
     async run(a, env) {
       if (a.timezone !== undefined && !isTimeZone(a.timezone)) throw new ToolFault("timezone: Use a time zone name like Europe/London.");
       const { text, timezone, idempotencyKey, ...given } = a;
       if (!text && !given.title) throw new ToolFault("Give the task a title, or a sentence in text.");
       const hint = typeof given.projectId === "string" ? given.projectId : undefined;
-      const read = text ? await readSentence(String(text), timezone ?? DEFAULT_TIMEZONE, hint, env) : { fields: {}, notes: [] };
+      const read = text ? await readSentence(String(text), timezone ?? await zoneOf(env), hint, env) : { fields: {}, read: [], notes: [] };
       const body: Record<string, unknown> = { ...read.fields, ...given };
       if (!body.title) throw new ToolFault("That sentence has no words left for a title. Add what the task is.");
       // the Personal list is yours: a task there with no one on it would never show in My tasks
-      if (body.projectId == null && !body.parentId && body.assigneeId === undefined && !env.principal.workspaceId) body.assigneeId = "me";
+      if (isPersonalList(body.projectId) && !body.parentId && body.assigneeId === undefined && !env.principal.workspaceId) body.assigneeId = "me";
+      if (reachesSomeoneElse(body.assigneeId, env)) await env.spend?.("reach");
       const made = await need(env.api("POST", "/tasks", { body, idempotencyKey })) as ApiTask;
-      return { structured: { task: taskView(made), notes: read.notes }, summary: `Added “${made.title}” (${made.id})${read.notes.length ? `. ${read.notes.join(" ")}` : "."}` };
+      const said = [...(read.read.length ? [`Read: ${read.read.join("; ")}.`] : []), ...read.notes];
+      return { structured: { task: taskView(made), read: read.read, notes: read.notes }, summary: `Added “${made.title}” (${made.id}).${said.length ? ` ${said.join(" ")}` : ""}` };
     },
   },
   {
     name: "update_task",
     title: "Update a task",
-    description: "Changes the fields you give on one task: title, description, status, priority, project, section, assignee, dates, tags or estimate. Fields left out stay as they are; a value replaces what was there. Doesn't delete anything. To finish a task use complete_task.",
-    inputSchema: input({ taskId: TASK_ID, title: s("The new title.", { maxLength: API_LIMITS.title, minLength: 1 }), ...TASK_FIELDS }, ["taskId"]),
+    description: "Changes the fields you give on one task: title, description, status, priority, project, section, assignee, dates, tags or estimate. Fields left out stay as they are. A new description replaces all of the old one and the old text can't be got back, so appendToDescription is the way to add to it; a shortened copy of a long description is refused. Assigning reaches that person in their Kanbo Inbox, with no email or push, and takes the task off the old assignee's plan. Status done works as complete_task does. Changes one task only.",
+    inputSchema: input({
+      taskId: TASK_ID,
+      title: s("The new title.", { maxLength: API_LIMITS.title, minLength: 1 }),
+      ...TASK_FIELDS,
+      description: s("A new description, replacing all of the old one. To add to it, use appendToDescription.", { maxLength: API_LIMITS.description }),
+      appendToDescription: s("Text to add to the end of the description, after a blank line. Nothing has to be read first, and nothing already there changes.", { minLength: 1, maxLength: API_LIMITS.description }),
+      confirmReplaceDescription: { type: "boolean", description: "Send true to replace a long description with one that starts the same way, once the person has said the rest should go." },
+      confirmedBlocked: CONFIRMED_BLOCKED,
+    }, ["taskId"]),
     outputSchema: TASK_RESULT,
     annotations: { title: "Update a task", ...CHANGE },
     write: true,
-    routes: [["PATCH", "/tasks/:id"]],
+    routes: [["PATCH", "/tasks/:id/tool"], ["GET", "/tasks/:id/blockers"]],
     async run(a, env) {
-      const { taskId, ...fields } = a;
-      if (!Object.keys(fields).length) throw new ToolFault("Say what to change: give at least one field as well as taskId.");
-      const t = await need(env.api("PATCH", `/tasks/${pathId(taskId)}`, { body: fields })) as ApiTask;
-      return { structured: { task: taskView(t) }, summary: `Updated “${t.title}” (${t.id}).` };
+      const { taskId, confirmedBlocked, ...fields } = a;
+      const id = pathId(taskId);
+      if (!Object.keys(fields).filter((k) => k !== "confirmReplaceDescription").length) throw new ToolFault("Say what to change: give at least one field as well as taskId.");
+      if (fields.description !== undefined && fields.appendToDescription !== undefined) throw new ToolFault("Send description or appendToDescription, not both. Nothing was changed.");
+      if (fields.status === "done" && !confirmedBlocked) await refuseIfBlocked(env, id);
+      if (reachesSomeoneElse(fields.assigneeId, env)) await env.spend?.("reach");
+      const t = await need(env.api("PATCH", `/tasks/${id}/tool`, { body: fields })) as ApiTask & { nextOccurrence?: { id: string; dueDate: string } };
+      return { structured: { task: taskView(t), ...(t.nextOccurrence ? { nextOccurrence: t.nextOccurrence } : {}) }, summary: `Updated “${t.title}” (${t.id}).${nextWords(t.nextOccurrence)}` };
     },
   },
   {
     name: "complete_task",
     title: "Complete a task",
-    description: "Marks one task as done. The project's own \"task completed\" automations run, as they do in the app. Doing it to a task that's already done changes nothing.",
-    inputSchema: input({ taskId: TASK_ID }, ["taskId"]),
+    description: "Marks one task as done. The project's own \"task completed\" automations run, as they do in the app. A repeating task makes its next occurrence, and the answer says when it's due. A task still waiting on unfinished tasks is refused until the person has said to go ahead (confirmedBlocked), as the app asks. Doing it to a task that's already done changes nothing.",
+    inputSchema: input({ taskId: TASK_ID, confirmedBlocked: CONFIRMED_BLOCKED }, ["taskId"]),
     outputSchema: TASK_RESULT,
     annotations: { title: "Complete a task", ...CHANGE },
     write: true,
-    routes: [["POST", "/tasks/:id/complete"]],
+    routes: [["POST", "/tasks/:id/complete"], ["GET", "/tasks/:id/blockers"]],
     async run(a, env) {
-      const t = await need(env.api("POST", `/tasks/${pathId(a.taskId)}/complete`)) as ApiTask;
-      return { structured: { task: taskView(t) }, summary: `Marked “${t.title}” (${t.id}) as done.` };
+      const id = pathId(a.taskId);
+      if (!a.confirmedBlocked) await refuseIfBlocked(env, id);
+      const t = await need(env.api("POST", `/tasks/${id}/complete`)) as ApiTask & { nextOccurrence?: { id: string; dueDate: string } };
+      return { structured: { task: taskView(t), ...(t.nextOccurrence ? { nextOccurrence: t.nextOccurrence } : {}) }, summary: `Marked “${t.title}” (${t.id}) as done.${nextWords(t.nextOccurrence)}` };
     },
   },
   {
@@ -585,6 +755,7 @@ export const TOOLS: readonly McpTool[] = [
     write: true,
     routes: [["DELETE", "/tasks/:id/bin"]],
     async run(a, env) {
+      await env.spend?.("delete");
       const r = await need(env.api("DELETE", `/tasks/${pathId(a.taskId)}/bin`));
       return { structured: { id: r.id, title: r.title, inRecycleBin: r.inRecycleBin, keptForDays: r.keptForDays }, summary: `Moved “${r.title}” (${r.id}) to the recycle bin. It can be restored for ${r.keptForDays} days.` };
     },
@@ -592,22 +763,28 @@ export const TOOLS: readonly McpTool[] = [
   {
     name: "add_comment",
     title: "Add a comment",
-    description: "Adds a comment to one task, as the person, or a reply to a comment on it. Guests can comment too. Doesn't change the task itself.",
+    description: "Adds a comment to one task, as the person, or a reply to a comment on it. Guests can comment too. It reaches the task's creator, assignee and followers in their Kanbo Inbox. Writing @Name also reaches that person, when it's their full name or a first name only one person in the workspace has; the answer says who was mentioned and which @names reached nobody. No email or push is sent. Doesn't change the task itself.",
     inputSchema: input({
       taskId: TASK_ID,
       body: s("The comment.", { minLength: 1, maxLength: API_LIMITS.comment }),
       parentId: s("Replies to this comment on the task.", { maxLength: 64 }),
       idempotencyKey: IDEMPOTENCY,
     }, ["taskId", "body"]),
-    outputSchema: obj({ comment: COMMENT_VIEW }, ["comment"]),
+    outputSchema: obj({
+      comment: COMMENT_VIEW,
+      mentioned: arr({ type: "string" }, "The people an @name in it reached."),
+      notes: arr({ type: "string" }, "Any @name that reached nobody, and why."),
+    }, ["comment", "mentioned", "notes"]),
     annotations: { title: "Add a comment", ...ADD },
     write: true,
-    routes: [["POST", "/tasks/:id/comments"]],
+    routes: [["POST", "/tasks/:id/comments/tool"]],
     async run(a, env) {
-      const c = await need(env.api("POST", `/tasks/${pathId(a.taskId)}/comments`, {
+      await env.spend?.("reach");
+      const c = await need(env.api("POST", `/tasks/${pathId(a.taskId)}/comments/tool`, {
         body: { body: a.body, ...(a.parentId ? { parentId: a.parentId } : {}) }, idempotencyKey: a.idempotencyKey,
-      })) as ApiComment;
-      return { structured: { comment: commentView(c) }, summary: `Commented on task ${c.taskId} (comment ${c.id}).` };
+      })) as ApiComment & { mentioned?: string[]; notes?: string[] };
+      const mentioned = (c.mentioned ?? []).map(label), notes = c.notes ?? [];
+      return { structured: { comment: commentView(c), mentioned, notes }, summary: `Commented on task ${c.taskId} (comment ${c.id}).${mentioned.length ? ` Mentioned ${mentioned.join(", ")}.` : ""}${notes.length ? ` ${notes.join(" ")}` : ""}` };
     },
   },
   {

@@ -222,6 +222,9 @@ grant execute on function public.api_idempotency_commit(uuid, text) to authentic
 create or replace function public.mcp_oauth_sweep() returns void
 language plpgsql security definer set search_path = public as $$
 begin
+  -- this server's own rate-limit rows: nothing else clears the kanbo:mcp: prefix
+  delete from public.rate_limits l where l.ctid in (
+    select x.ctid from public.rate_limits x where x.key like 'kanbo:mcp:%' and x.last_at < now() - interval '1 day' limit 500);
   delete from public.mcp_oauth_codes c where c.ctid in (
     select x.ctid from public.mcp_oauth_codes x where x.expires_at < now() - interval '1 day' limit 500);
   delete from public.mcp_oauth_access_tokens a where a.ctid in (
@@ -230,10 +233,11 @@ begin
     select x.id from public.mcp_oauth_grants x
      where (x.revoked_at is not null and x.revoked_at < now() - interval '30 days')
         or x.refresh_expires_at < now() - interval '30 days' limit 200);
-  -- an app with no connection left: registered apps after a week, documents the same
+  -- an app with no connection left: registered apps after a day (anyone can add one,
+  -- without signing in, so these go quickly), documents after a week
   delete from public.mcp_oauth_clients c where c.client_id in (
     select x.client_id from public.mcp_oauth_clients x
-     where x.created_at < now() - interval '7 days'
+     where x.created_at < now() - case x.kind when 'dcr' then interval '1 day' else interval '7 days' end
        and not exists (select 1 from public.mcp_oauth_grants g where g.client_id = x.client_id)
        and not exists (select 1 from public.mcp_oauth_codes k where k.client_id = x.client_id and k.expires_at > now())
      limit 200);
@@ -248,13 +252,14 @@ declare
   u text;
   nm text := left(btrim(regexp_replace(coalesce(p_name, ''), '[[:cntrl:]]+', ' ', 'g')), 120);
 begin
-  if coalesce(array_length(p_redirect_uris, 1), 0) not between 1 and 20 then return jsonb_build_object('error', 'invalid_redirect_uri'); end if;
+  -- what a stranger may store without signing in is small (oauthCore.ts says the same, in friendlier words)
+  if coalesce(array_length(p_redirect_uris, 1), 0) not between 1 and 8 then return jsonb_build_object('error', 'invalid_redirect_uri'); end if;
   foreach u in array p_redirect_uris loop
-    if not public.mcp_oauth_redirect_allowed(u) then return jsonb_build_object('error', 'invalid_redirect_uri'); end if;
+    if length(u) > 512 or not public.mcp_oauth_redirect_allowed(u) then return jsonb_build_object('error', 'invalid_redirect_uri'); end if;
   end loop;
   perform public.mcp_oauth_sweep();
   insert into public.mcp_oauth_clients (client_id, kind, client_name, client_uri, redirect_uris)
-  values (cid, 'dcr', coalesce(nullif(nm, ''), 'Unnamed app'), left(p_client_uri, 2048), p_redirect_uris);
+  values (cid, 'dcr', coalesce(nullif(nm, ''), 'Unnamed app'), left(p_client_uri, 512), p_redirect_uris);
   return jsonb_build_object('client_id', cid, 'client_id_issued_at', extract(epoch from now())::bigint,
     'client_name', coalesce(nullif(nm, ''), 'Unnamed app'), 'redirect_uris', to_jsonb(p_redirect_uris));
 end; $$;
@@ -373,6 +378,7 @@ declare
   d text;
   r public.mcp_oauth_refresh_tokens;
   g public.mcp_oauth_grants;
+  rate record;
   bad constant jsonb := jsonb_build_object('error', 'invalid_grant', 'error_description', 'This connection has ended. Connect the app to Kanbo again.');
 begin
   if coalesce(p_token, '') !~ '^kmcp_rt_[A-Za-z0-9_-]{43}$' then return bad; end if;
@@ -388,6 +394,12 @@ begin
   end if;
   if g.refresh_expires_at <= now() or g.resource is distinct from public.mcp_oauth_resource() then return bad; end if;
   if not public.mcp_oauth_person_ok(g.user_id, g.workspace_id) then return bad; end if;
+  -- a limit only a real token can reach, so it costs nobody else anything. An hour apart is
+  -- normal; this stops a connection growing the token tables in a loop. The token isn't spent.
+  select * into rate from public.api_rate_hit('kanbo:mcp:refresh:' || g.id::text, 60, 30);
+  if not rate.allowed then
+    return jsonb_build_object('error', 'slow_down', 'retry_after', rate.retry_after);
+  end if;
   if r.used_at is not null then
     if not (r.token_hash = g.prev_refresh_hash and r.used_at >= now() - interval '10 seconds') then
       perform public.mcp_oauth_revoke(g.id, 'refresh_reuse');

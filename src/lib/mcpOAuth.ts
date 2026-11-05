@@ -156,7 +156,7 @@ export async function approveConnection(req: AuthorizeRequest, access: McpAccess
 
 /** Where Allow sends the browser. */
 export const allowUrl = (req: AuthorizeRequest, code: string) => authorizeRedirect(req.redirectUri, MCP_ISSUER, { code, state: req.state });
-/** Where Cancel, or an error once the address is checked, sends the browser. */
+/** Where Cancel, or choosing to go back after a request with a mistake in it, sends the browser. */
 export const denyUrl = (redirectUri: string, state: string | null, error = "access_denied", description?: string) =>
   authorizeRedirect(redirectUri, MCP_ISSUER, { error, ...(description ? { error_description: description } : {}), state });
 

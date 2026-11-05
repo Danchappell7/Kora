@@ -217,19 +217,53 @@ describe("errors here, never a redirect", () => {
   });
 });
 
-describe("other mistakes go back to the app, once its address is checked", () => {
+describe("a request with a mistake in it stops here, and only a click leaves", () => {
   it.each([
     ["a wrong response_type", { response_type: "token" }, "unsupported_response_type"],
     ["PKCE plain", { code_challenge_method: "plain" }, "invalid_request"],
     ["another server", { resource: "https://evil.example/mcp" }, "invalid_target"],
   ])("%s", async (_w, o, error) => {
-    const { navigate, prepare } = setup(query(o as Record<string, string>));
-    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    const { navigate, prepare, onClose } = setup(query(o as Record<string, string>), { prepared: { ok: true, client: client({ redirectHost: "claude.ai" }) } });
+    expect(await screen.findByRole("heading", { name: "This request isn't valid" })).toBeInTheDocument();
     expect(prepare).toHaveBeenCalled();
+    // anyone can register an app with any address, so nothing goes there on its own
+    expect(navigate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Allow" })).not.toBeInTheDocument();
+    expect(screen.getByText(/The address it gave is claude\.ai/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go back to claude.ai" }));
     const u = new URL(navigate.mock.calls[0][0]);
     expect(u.origin).toBe("https://claude.ai");
     expect(u.searchParams.get("error")).toBe(error);
     expect(u.searchParams.get("state")).toBe("st-1");
     expect(u.searchParams.get("iss")).toBe("https://www.kanbo.co.uk");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("an attacker's registered address gets nobody there without a click", async () => {
+    const q = new URLSearchParams({ client_id: "kmcp_client_attacker", redirect_uri: "https://evil.example/fake-kanbo-login", response_type: "nope" }).toString();
+    const { navigate } = setup(q, { prepared: { ok: true, client: client({ name: "Anything", kind: "dcr", clientHost: null, redirectHost: "evil.example" }) } });
+    expect(await screen.findByRole("heading", { name: "This request isn't valid" })).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Go back to evil.example" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Kanbo" })).toBeInTheDocument();
+  });
+
+  it("in the demo nothing is sent anywhere", async () => {
+    flags.configured = false;
+    const { navigate, onClose } = setup(query({ response_type: "token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Go back to claude.ai" }));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("this tab forgets the request once someone chooses to go back", async () => {
+    rememberOAuthRequest("client_id=x");
+    const { navigate } = setup(query({ response_type: "token" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Go back to claude.ai" }));
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(pendingOAuthRequest()).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Nothing was connected" })).toBeInTheDocument();
+    sessionStorage.clear();
   });
 });

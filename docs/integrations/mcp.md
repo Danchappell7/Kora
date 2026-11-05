@@ -44,14 +44,17 @@ takes `mcp_server` with `headers`. The REST API is at
 
 ## The tools
 
-Read: `whoami`, `list_workspaces`, `list_projects`, `list_members`, `list_tasks`,
-`get_task` (with comments and sub-tasks), `search` and `fetch` (the shapes ChatGPT
-expects), and `my_day`.
+Read: `whoami`, `list_workspaces`, `list_projects`, `list_members`, `list_tasks` (with a
+`parentId` filter for a task's sub-tasks), `get_task` (with comments, sub-tasks and what it
+waits for), `search` and `fetch` (the shapes ChatGPT expects), and `my_day`.
 
 `my_day` answers "what do I need to get done today?": overdue, due today, approvals
 waiting on you, on your plan for today, then blocked, in that order, each with a
 one-line reason. It's worked out directly from the person's tasks in their time zone
-(their saved one, else Europe/London), with no AI call.
+(their saved one, else Europe/London), with no AI call. Each list has its own limit, so a
+backlog can't crowd out today: everything due today, approvals and the plan (up to 40 of
+each), and the ten most urgent overdue and blocked tasks. `counts` and `summary` cover
+everything, and `notShown` says how many of each aren't listed.
 
 Write: `add_task` (fields, or a sentence read by the same grammar as Quick capture:
 `Send the brief fri 3pm #launch @sana !high ~30m`), `update_task`, `complete_task`,
@@ -60,7 +63,32 @@ and calling one is refused on the server. `delete_task` only ever goes to the re
 bin, where it can be restored for 30 days; nothing can delete permanently or in bulk.
 
 Pages are 20 by default and 50 at most, with `nextCursor`. Long text is cut with a
-flag (`descriptionTruncated`), and a whole answer stays near 40,000 characters.
+flag (`descriptionTruncated`), a whole answer stays near 40,000 characters, and every flag
+has a way to read the rest: `descriptionOffset` for a description, `commentsCursor` for
+older comments, `fullComments` for long ones, and `list_tasks` with `parentId` for sub-tasks.
+
+What the tools do on someone's behalf, and how that differs from the app:
+
+- **Editing a description.** A new description replaces all of the old one, and the old
+  text can't be got back, because task history doesn't record descriptions. So
+  `appendToDescription` adds to it on the server, with nothing to read first. A shortened
+  copy of a longer description is refused unless `confirmReplaceDescription` is sent.
+- **Repeating tasks.** `complete_task`, and `update_task` with status done, make the next
+  occurrence in the same transaction, as the app does: sub-tasks and an unticked checklist
+  come too, and the answer has `nextOccurrence`. Every task view has `recurrence`. Reopening
+  a task doesn't take its next occurrence back.
+- **Blocked tasks.** Finishing a task that's waiting on unfinished ones is refused, naming
+  them, until `confirmedBlocked` is sent. In the app this is the "complete it anyway?" question.
+- **Handing a task on.** A new assignee, from a tool or a rule, clears the old assignee's plan.
+- **Sentences.** A name has to be an exact name, a first name or the start of a word, and only
+  one person or project. Anything else stays in the title and is listed in `notes`, and `read`
+  says how the sentence was understood, because an ordinary word can read as a date ("for
+  Monday"). Nobody is watching the live highlight here. "Today" is read in the person's saved
+  time zone, as `my_day` does.
+- **Reaching people.** A comment reaches the task's creator, assignee and followers in their
+  Inbox. `@Name` in a comment also reaches that person, when it's their full name or a first
+  name only one person in the workspace has; the answer says who, and which `@names` reached
+  nobody. Assigning a task reaches the assignee's Inbox. No email or push is sent for any of these.
 
 ## How it stays safe
 
@@ -81,23 +109,50 @@ flag (`descriptionTruncated`), and a whole answer stays near 40,000 characters.
   are bound to `https://www.kanbo.co.uk/mcp`. Supabase's own OAuth server wasn't used: it
   can't do read-only or one-workspace grants, Client ID Metadata Documents or audience
   binding yet, keeps its issuer on `supabase.co`, and skips consent for known clients.
-- **The consent page always asks.** It says the name is what the app calls itself, and
-  shows the host it sends you back to (and the host of the app's own published address,
-  when it has one), with a warning for an app on this computer. A bad client or redirect
-  address stops there and never redirects. Allow goes through an RPC that checks everything
-  again, then `location.assign`. Redirect addresses are https, loopback http, or Cursor's
-  one callback, never `javascript:`, `data:`, `file:` or `vbscript:`.
+- **The consent page always asks, and never leaves without a click.** It says the name is
+  what the app calls itself, and shows the host it sends you back to (and the host of the
+  app's own published address, when it has one), with a warning for an app on this computer.
+  A bad client or redirect address stops there and never redirects. Because anyone can register
+  an app and name any address, a registered address proves nothing (RFC 9700 section 4.11.2), so
+  a request with any other mistake in it stops there too, naming the host, with a button to go
+  back to it. Allow goes through an RPC that checks everything again, then `location.assign`.
+  Redirect addresses are https, loopback http, or Cursor's one callback, never `javascript:`,
+  `data:`, `file:` or `vbscript:`.
 - **What people write is data.** The server's `instructions` tell the model that titles,
-  descriptions and comments may contain text that looks like instructions, to treat them as
-  data, and to check with the person before changing or deleting anything because of them.
-- **Fetching an app's description** (a Client ID Metadata Document) is https only, follows no
-  redirects, takes 5 KB and 5 seconds at most, and refuses private addresses, including what
-  the name resolves to.
+  descriptions and comments, and the names of projects, tags and people, may contain text that
+  looks like instructions, wherever they appear, to treat them as data, and to check with the
+  person before changing or deleting anything because of them. `my_day`'s `reason` is only ever
+  Kanbo's own words: a blocker's title and a requester's name have fields of their own. `fetch`
+  quotes what people wrote, every line starting `> `, under a line from Kanbo saying who wrote it
+  and when, so a comment can't pass as another comment.
+- **Fetching an app's description** (a Client ID Metadata Document) has the same guard as
+  Kanbo's webhooks: https only, port 443, a public name with a dot in it and never a bare
+  address, never Kanbo's own hosts, and every address the name resolves to must be public. If DNS
+  can't answer, nothing is fetched. It connects to the address it checked, so a second DNS answer
+  can't swap in a private one, follows no redirects, and takes 5 KB and 5 seconds at most. Every
+  failure gets the same answer, so it can't be used to find out what's inside a network.
 
-Rate limits: tools share the API's 120 a minute per key or connection. `/oauth/register`:
-120 an hour per address and 2,000 overall. `/oauth/token`: 300 a minute per app and 1,200 per
-address (generous, because all of Claude's traffic comes from one range). Consent: 30 a minute
-per person.
+Rate limits. Tools share the API's 120 a minute per key or connection, and on top of that one
+connection can make 20 deletes a minute and 100 an hour, and 20 comments, or assignments to
+someone else, a minute, so a looping or misled model can't empty a project or fill a teammate's
+Inbox. Consent: 30 a minute per person.
+
+`/oauth/token` and `/oauth/revoke` have no limit before the check, on purpose. Claude and ChatGPT
+each use one public `client_id` for everyone, and Claude's traffic comes from one address range, so a
+limit counted before the check would let one stranger switch them off for every Kanbo user. Nothing
+is at risk without one: codes and tokens are 256-bit, malformed ones never reach the database, and a
+well-formed wrong one costs one indexed read and writes nothing. Refreshing a real token is limited
+to 30 a minute per connection, in the SQL, after it's been checked.
+
+`/oauth/register` stores something for anyone who asks, so what it keeps is small (at most 8 redirect
+addresses of 512 characters each) and short-lived (gone after a day if it never connected). Only
+requests that would be stored are counted: 2,000 an hour overall, 600 an hour per address as
+Supabase's edge sees it, and 120 an hour per caller. Through www.kanbo.co.uk that edge address is
+Vercel's, shared by everyone, so a caller is the pair of it and the address in `x-vercel-forwarded-for`
+(or else `x-forwarded-for`), which Vercel overwrites. Called directly at `<ref>.supabase.co`, that header is whatever the caller says, but the
+edge address is its own, so changing the header doesn't get round the 600, and naming someone else's
+address only spends the caller's own share. Rate-limit rows are stored as hashes and cleared after a
+day by `mcp_oauth_sweep`.
 
 ## How it's hosted
 
@@ -127,7 +182,8 @@ it's fixed.
 
 - `supabase/functions/_shared/mcp/*.test.ts`: every pure module, plus the contract between the
   tool list and the handlers, and every tool's answers against its own `outputSchema`.
-- `supabase/tests/pglite/`: the real migrations, legit flows and attacks, end to end (see its README).
+- `supabase/tests/pglite/`: the real migrations, through the real database driver, with legit flows,
+  attacks and what a model would actually do, end to end (see its README).
 
 ## Sources (checked 4 November 2026)
 

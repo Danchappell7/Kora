@@ -12,6 +12,7 @@ import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
 import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";
+import { daysBetweenISO, nextDueDateFrom, parseLocalDay, seriesAnchorDay, shiftISO } from "../../supabase/functions/_shared/recurrence.ts";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
    It is ONE Date object that refreshClock() (below, next to NOW_MIN) moves
@@ -49,71 +50,11 @@ export function dayOffset(n: number): string {
   return toLocalISO(d);
 }
 
-const DAY_MS = 86400000;
-const daysInMonth = (y: number, m: number): number => new Date(y, m + 1, 0).getDate();
-/* local midnight of a "YYYY-MM-DD" (tolerates a trailing time part); null if unparseable */
-function parseLocalDay(iso: string): Date | null {
-  const d = new Date(iso.slice(0, 10) + "T00:00:00");
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-/* whole days from one local date to another (DST-safe: rounds the 23/25h days) */
-function daysBetweenISO(from: string, to: string): number {
-  const a = parseLocalDay(from), b = parseLocalDay(to);
-  return a && b ? Math.round((b.getTime() - a.getTime()) / DAY_MS) : 0;
-}
-function shiftISO(iso: string, days: number): string {
-  const d = parseLocalDay(iso);
-  if (!d || !days) return iso;
-  d.setDate(d.getDate() + days);
-  return toLocalISO(d);
-}
-
-/* Advance a due date by one recurrence step (from the due date, or today).
-   Monthly keeps to its day of the month and clamps to the last day of shorter
-   months (31 Jan → 28/29 Feb, 31 Aug → 30 Sep) instead of overflowing into the
-   next month. Pass `anchorDay` — the day the series was set up on — so a series
-   that was clamped finds its way back (28 Feb → 31 Mar); without it (or if it
-   isn't a number, e.g. derived from a bad date) the anchor is the base date's
-   own day. */
+/* The date maths lives in one place, shared with the REST API and the MCP server. */
+export { seriesAnchorDay };
+/* Advance a due date by one recurrence step (from the due date, or today). See recurrence.ts. */
 export function nextDueDate(iso: string | undefined, recurrence: Recurrence, anchorDay?: number): string {
-  const base = (iso && parseLocalDay(iso)) || new Date(KANBO_TODAY);
-  const d = new Date(base);
-  const a = anchorDay != null && Number.isFinite(anchorDay) ? anchorDay : base.getDate();
-  const anchor = Math.min(31, Math.max(1, Math.round(a)));
-  const step = () => {
-    if (recurrence === "daily") d.setDate(d.getDate() + 1);
-    else if (recurrence === "weekdays") { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
-    else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
-    else if (recurrence === "biweekly") d.setDate(d.getDate() + 14);
-    else if (recurrence === "monthly") {
-      // go via the 1st so setMonth can't overflow (31 Jan + 1 month = 3 Mar)
-      d.setDate(1);
-      d.setMonth(d.getMonth() + 1);
-      d.setDate(Math.min(anchor, daysInMonth(d.getFullYear(), d.getMonth())));
-    }
-  };
-  if (recurrence === "none") return toLocalISO(d);
-  step();
-  // if the computed next date is in the past, roll forward to the future
-  // (bounded, so a decades-old daily date can't spin the tab)
-  const todayMid = new Date(KANBO_TODAY);
-  for (let i = 0; d < todayMid && i < 20000; i++) step();
-  return toLocalISO(d);
-}
-
-/* The day of the month a monthly series belongs on, for nextDueDate's
-   `anchorDay`. It's the due date's own day, unless that date sits on the last
-   day of a short month (so it may have been clamped: 31 Jan → 28 Feb) and
-   `originalDueDate` remembers a later day, which then wins (→ 31 Mar). A due
-   date the user moved to mid-month is never clamped, so the series follows it.
-   nextOccurrence keeps originalDueDate pointing at the series' day. */
-export function seriesAnchorDay(t: { dueDate?: string; originalDueDate?: string }): number | undefined {
-  const due = t.dueDate ? parseLocalDay(t.dueDate) : null;
-  if (!due) return undefined;
-  const day = due.getDate();
-  const orig = t.originalDueDate ? parseLocalDay(t.originalDueDate) : null;
-  const atMonthEnd = day === daysInMonth(due.getFullYear(), due.getMonth());
-  return orig && atMonthEnd && orig.getDate() > day ? orig.getDate() : day;
+  return nextDueDateFrom(iso, recurrence, KANBO_TODAY, anchorDay);
 }
 
 /* The next instance of a recurring task: same work and people, fresh state.

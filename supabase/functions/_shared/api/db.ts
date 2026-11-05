@@ -27,6 +27,7 @@
 // Supavisor (transaction mode) can't keep prepared statements, so prepare:false.
 // ============================================================
 import postgres from "npm:postgres@3.4.5";
+import { PG_TYPES } from "./pgTypes.ts";
 import type { Tx, UserDb, UserScope } from "./types.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -45,8 +46,7 @@ export function connect(url: string | undefined = Deno.env.get("SUPABASE_DB_URL"
     max: 3,
     idle_timeout: 20,
     connect_timeout: 10,
-    // keep date-only columns as "YYYY-MM-DD" strings (serialise.ts takes strings or Dates either way)
-    types: { date: { to: 1082, from: [1082], serialize: (x: string) => x, parse: (x: string) => x } },
+    types: PG_TYPES,         // see pgTypes.ts: JSON text goes as it is, not encoded twice
   });
   return shared;
 }

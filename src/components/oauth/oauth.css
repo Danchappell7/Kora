@@ -69,11 +69,14 @@
 .koauth-err { margin: 8px 0 0; font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--signal, var(--prio-urgent)); }
 .koauth-err:empty { margin: 0; }
 .koauth-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* an app's host can be any length: the button wraps rather than running off the card */
+.koauth-acts .kbtn:has(.koauth-host) { min-width: 0; max-width: 100%; height: auto; min-height: 32px; padding-block: 4px; white-space: normal; text-align: center; }
+.koauth-host { overflow-wrap: anywhere; min-width: 0; }
 
 @media (max-width: 480px) {
   .koauth-page { padding: 16px; }
   .koauth-card { padding: 24px 16px 16px; }
-  .koauth-acts .kbtn { flex: 1 1 120px; min-height: 44px; }
+  .koauth-acts .kbtn, .koauth-acts .kbtn:has(.koauth-host) { flex: 1 1 120px; min-height: 44px; }
   .koauth-choice { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .koauth-card { animation: none; } }

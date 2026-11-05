@@ -280,7 +280,9 @@ export async function handleApiRequest(req: Request, deps: ApiDeps): Promise<Res
       }
       const state = begun?.state;
       if (state === "replay") {
-        const stored = (begun?.response ?? {}) as { body?: unknown; location?: string | null };
+        // an answer stored before the driver fix (pgTypes.ts) is a JSON string inside the jsonb
+        const kept = typeof begun?.response === "string" ? JSON.parse(begun.response) : begun?.response;
+        const stored = (kept ?? {}) as { body?: unknown; location?: string | null };
         const status = Number(begun?.status) || 200;
         const headers: Record<string, string> = { "Idempotent-Replayed": "true" };
         if (stored.location) headers.Location = stored.location;

@@ -131,6 +131,28 @@ describe("addresses", () => {
   });
 });
 
+describe("the live check in DEPLOYMENT.md", () => {
+  const check = /grep -qE '([^']+)'/.exec(read("DEPLOYMENT.md"))![1];
+  const re = new RegExp(check);
+  it("matches the discovery documents", () => {
+    expect(read("public/oauth-metadata/protected-resource.json")).toMatch(re);
+    expect(read("public/oauth-metadata/authorization-server.json")).toMatch(re);
+  });
+  it("doesn't match the app's own page, which is what an address gets when it's not set up", () => {
+    expect(read("index.html")).toContain("https://www.kanbo.co.uk");
+    expect(read("index.html")).not.toMatch(re);
+  });
+  it("makes one real round trip, and the owner's guide says so", () => {
+    expect(read("DEPLOYMENT.md")).toMatch(/oauth\/register" -H 'Content-Type: application\/json'/);
+    expect(read("DEPLOYMENT.md")).toMatch(/register 201/);
+  });
+  it("says db.ts's other functions need deploying too", () => {
+    const step = read("DEPLOYMENT.md").split("### Step 16")[1];
+    for (const fn of ["mcp", "api", "webhook-dispatch", "notion", "slack-app"]) expect(step, fn).toContain(`supabase functions deploy ${fn}`);
+    expect(step).not.toMatch(/No other function needs deploying/);
+  });
+});
+
 describe("the PGlite harness", () => {
   it("opens transactions exactly as the live db.ts does", () => {
     const live = /WITH_USER_SQL =\s*("[^;]+);/.exec(read("supabase/functions/_shared/api/db.ts"))![1];
@@ -151,6 +173,12 @@ describe("0050", () => {
     expect(sql).toContain("insert into public.schema_migrations (version) values ('0050') on conflict (version) do nothing");
     expect(sql).toMatch(/version = '0046'/);
     expect(sql).not.toMatch(/version = '004[789]'/);
+  });
+  it("clears its own rate-limit rows, and what a stranger can store stays small", () => {
+    expect(sql).toMatch(/delete from public\.rate_limits l where l\.ctid in/);
+    expect(sql).toMatch(/x\.key like 'kanbo:mcp:%'/);
+    expect(sql).toMatch(/not between 1 and 8/);
+    expect(sql).toMatch(/length\(u\) > 512/);
   });
   it("doesn't touch anything from 0047, 0048 or 0049", () => {
     // ignore comments: the header says what it doesn't depend on

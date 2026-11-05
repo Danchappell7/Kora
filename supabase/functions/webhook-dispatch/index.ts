@@ -30,7 +30,7 @@
 // ============================================================
 import { createApiDb } from "../_shared/api/db.ts";
 import {
-  dohResolver, fetchSender, isRuntimeUnsupported, postPinned, runDispatch, type Conn, type NetApi, type Resolver, type Sender,
+  dohResolver, fetchSender, isRuntimeUnsupported, postPinned, runDispatch, systemResolver, type Conn, type NetApi, type Sender,
 } from "../_shared/api/webhookDispatch.ts";
 import { safeEqual } from "../_shared/api/webhooks.ts";
 
@@ -41,22 +41,7 @@ const json = (b: unknown, status = 200) =>
 const D = Deno as any;
 
 /** Deno.resolveDns when the runtime has it; DNS-over-HTTPS when it doesn't (or can't answer). */
-const doh = dohResolver(fetch);
-const resolve: Resolver = async (host) => {
-  if (typeof D.resolveDns === "function") {
-    const [a, aaaa] = await Promise.allSettled([D.resolveDns(host, "A"), D.resolveDns(host, "AAAA")]);
-    const got = [
-      ...(a.status === "fulfilled" && Array.isArray(a.value) ? a.value : []),
-      ...(aaaa.status === "fulfilled" && Array.isArray(aaaa.value) ? aaaa.value : []),
-    ].filter((x): x is string => typeof x === "string");
-    if (got.length) return got;
-    const notFound = (r: PromiseSettledResult<unknown>) =>
-      r.status === "rejected" && (r.reason?.name === "NotFound" || /not ?found|no (?:record|data)|nxdomain/i.test(String(r.reason?.message ?? "")));
-    // one family answered empty / "no records" and the other likewise: the host really has no address
-    if ((a.status === "fulfilled" || notFound(a)) && (aaaa.status === "fulfilled" || notFound(aaaa))) return [];
-  }
-  return doh(host);
-};
+const resolve = systemResolver(typeof D.resolveDns === "function" ? (host, type) => D.resolveDns(host, type) : null, dohResolver(fetch));
 
 /** Connect to the checked address itself (Deno.connect + Deno.startTls); fetch only where the runtime can't. */
 const net: NetApi | null = typeof D.connect === "function" && typeof D.startTls === "function"

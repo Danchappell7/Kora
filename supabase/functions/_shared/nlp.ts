@@ -60,6 +60,13 @@ export interface NlpContext {
   /** How "3/10" reads: day first (UK, the default) or month first — as an
    *  import file's own date order says. */
   dateOrder?: "dmy" | "mdy";
+  /** Replace the fuzzy #project and @person matches. The app's live highlight lets a
+   *  person catch a wrong guess; a caller with nobody watching (the MCP server) can't
+   *  afford one, so it passes stricter rules. */
+  nameMatch?: {
+    project?: (q: string, projects: { id: string; name: string }[]) => { id: string; name: string } | undefined;
+    member?: (q: string, members: { id: string; name: string }[]) => { id: string; name: string } | undefined;
+  };
 }
 
 /** Where a recognised token sits in the original text (for live highlighting). */
@@ -304,8 +311,8 @@ export const fmtMinutes = (m: number): string => {
    Fuzzy names
    --------------------------------------------------------------------------- */
 
-const norm = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
-const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).map(norm);
+export const norm = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
+export const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).map(norm);
 
 /** "#launch" → "Q3 Product Launch": the whole name, then its start, then any
  *  word's start, then (3+ letters) anywhere in it. */
@@ -577,14 +584,14 @@ export function parseTask(text: string, ctx: NlpContext = {}): ParsedTask {
 
   // 8) #project, @person, +tags — only a name that matches is read
   scan.find(PROJECT_RE, (m, at, end) => {
-    const p = matchProject(m[2], ctx.projects ?? []);
+    const p = (ctx.nameMatch?.project ?? matchProject)(m[2], ctx.projects ?? []);
     if (!p) return null;
     if (claim("project", at, end, p.name)) out.projectId = p.id;
     return true;
   });
   scan.find(PERSON_RE, (m, at) => {
     const handle = m[2].replace(/[._-]+$/, "");
-    const who = matchMember(handle, ctx.members ?? []);
+    const who = (ctx.nameMatch?.member ?? matchMember)(handle, ctx.members ?? []);
     if (!who) return null;
     if (claim("person", at, at + 1 + handle.length, who.name)) out.assigneeId = who.id;
     return true;

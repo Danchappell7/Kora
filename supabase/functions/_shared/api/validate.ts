@@ -293,7 +293,7 @@ function unknownFields(body: Body, allowed: readonly string[], fields: FieldErro
   }
 }
 
-function text(body: Body, k: string, fields: FieldErrors, opts: { max: number; min?: number; multiline?: boolean; nullable?: boolean }): string | null | undefined {
+export function text(body: Body, k: string, fields: FieldErrors, opts: { max: number; min?: number; multiline?: boolean; nullable?: boolean }): string | null | undefined {
   if (!has(body, k)) return undefined;
   const v = body[k];
   if (v === null) {

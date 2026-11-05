@@ -739,21 +739,42 @@ isn't switched on yet). Everything, including what each AI app needs, is in
    ```bash
    read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && supabase db query --linked -f supabase/migrations/0050_mcp_oauth.sql
    ```
-2. **Deploy the `mcp` function** (no JWT check: callers send an API key or an
-   OAuth token, which it checks itself). No other function needs deploying.
+2. **Deploy five functions**: `mcp` (new; no JWT check: callers send an API key or
+   an OAuth token, which it checks itself), and `api`, `webhook-dispatch`, `notion`
+   and `slack-app` again, because they share `_shared/api/db.ts`, which had a fault
+   that broke JSON parameters on the live driver (`POST /tasks`, `?status=` filters and
+   more; see `_shared/api/pgTypes.ts`). The `api` deploy is what fixes those.
 
    ```bash
-   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && supabase functions deploy mcp --no-verify-jwt --use-api --project-ref htnchiljplrnjkwimgla
+   read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && cd ~/Downloads/kora-app && R=htnchiljplrnjkwimgla && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notion --project-ref $R --use-api && echo "All five functions deployed."; unset SUPABASE_ACCESS_TOKEN
    ```
 3. **Push the website** (`vercel.json` proxies `/mcp` and `/oauth/*` to the
    function and serves the discovery documents).
-4. **Check it from your terminal**. Three `ok` lines, then `HTTP/2 401` and a
-   `www-authenticate` line naming `resource_metadata`:
+4. **Check it from your terminal**. It adds one test app entry, which tidies itself
+   away after a day. Three `ok` lines, then `HTTP/2 401` and a `www-authenticate` line
+   naming `resource_metadata`, then `register 201`:
 
    ```bash
-   B=https://www.kanbo.co.uk; for p in .well-known/oauth-protected-resource/mcp .well-known/oauth-protected-resource .well-known/oauth-authorization-server; do curl -s "$B/$p" | grep -q '"https://www.kanbo.co.uk' && echo "ok  /$p" || echo "BAD /$p"; done; curl -si -X POST "$B/mcp" -H 'Content-Type: application/json' -d '{}' | grep -iE '^HTTP|^www-authenticate'
+   B=https://www.kanbo.co.uk; for p in .well-known/oauth-protected-resource/mcp .well-known/oauth-protected-resource .well-known/oauth-authorization-server; do curl -s "$B/$p" | grep -qE '"(issuer|resource)": *"https://www.kanbo.co.uk' && echo "ok  /$p" || echo "BAD /$p"; done; curl -si -X POST "$B/mcp" -H 'Content-Type: application/json' -d '{}' | grep -iE '^HTTP|^www-authenticate'; curl -s -o /dev/null -w 'register %{http_code}\n' -X POST "$B/oauth/register" -H 'Content-Type: application/json' -d '{"client_name":"Kanbo live check","redirect_uris":["https://www.kanbo.co.uk/"]}'
    ```
-5. **Connect an AI app**: Settings › Developers › Connect your AI has the steps for each one.
+   `register 201` is the one line that proves the database and the driver work end to
+   end: a 503 there means no AI app can connect, whatever the other lines say.
+5. **Check which address the function sees**. Registration limits rely on Supabase's
+   edge saying who called (`cf-connecting-ip`), which can only be seen on a deployed
+   function. Make one more test entry straight at the function:
+
+   ```bash
+   curl -s -o /dev/null -w 'direct %{http_code}\n' -X POST https://htnchiljplrnjkwimgla.supabase.co/functions/v1/mcp/oauth/register -H 'Content-Type: application/json' -H 'x-vercel-forwarded-for: 192.0.2.1' -d '{"client_name":"Kanbo live check","redirect_uris":["https://www.kanbo.co.uk/"]}'
+   ```
+   Then in the [SQL editor](https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new):
+
+   ```sql
+   select key, count from public.rate_limits where key like 'kanbo:mcp:register:p:%' order by last_at desc limit 5;
+   ```
+   You want two rows, one for each way in. One row means the function can't tell callers
+   apart, and none means it can't see an address at all. Nothing is broken in either case, but
+   the per-address limit is weaker until that's looked at.
+6. **Connect an AI app**: Settings › Developers › Connect your AI has the steps for each one.
 
 ---
 

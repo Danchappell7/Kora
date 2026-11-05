@@ -20,12 +20,17 @@
 // Like the app: project automation rules run on create / status change /
 // completion (automationRules.ts, each value checked), and moving a task
 // out of a workspace is for its makers or that workspace's owners and
-// admins. If-Match on a write is checked with the row locked (412).
+// admins. Completing a repeating task makes its next occurrence, and a new
+// assignee clears the old one's plan. If-Match on a write is checked with the
+// row locked (412).
 //
-// Pure module (no Deno globals): exercised by the PGlite harness
-// (scratchpad/pgtest-a1) against the real migrations.
+// Pure module (no Deno globals): exercised by supabase/tests/pglite against the
+// real migrations.
 // ============================================================
 import { planRules, type RuleRow, type RuleTrigger } from "../automationRules.ts";
+import type { NlpRecurrence } from "../nlp.ts";
+import { nextOccurrenceDates, shiftISO } from "../recurrence.ts";
+import { dateInZone, DEFAULT_TIMEZONE, isTimeZone, localMidnight } from "../zone.ts";
 import {
   API_PRIORITIES, serialiseComment, serialiseMember, serialiseProject, serialiseSection, serialiseTask, serialiseWorkspace,
   type ApiMe,
@@ -35,7 +40,7 @@ import {
   OUTSIDE_WORKSPACE, preconditionFailed, Sql,
 } from "./core.ts";
 import {
-  checkCommentCreate, checkProjectCreate, checkProjectPatch, checkSectionCreate, checkTaskCreate, checkTaskPatch,
+  API_LIMITS, checkCommentCreate, checkProjectCreate, checkProjectPatch, checkSectionCreate, checkTaskCreate, checkTaskPatch,
   cursorKeySql, decodeCursor, encodeCursor, escapeLike, isUuid, parseBool, parsePageQuery, parseProjectQuery,
   parseTaskQuery, PERSONAL_PROJECT_ID, queryFingerprint, unknownParams, UUID_RE, type Cursor, type TaskInput,
 } from "./validate.ts";
@@ -538,8 +543,8 @@ export async function getTask(ctx: RouteContext): Promise<Response> {
 const readBack = fullTask;
 
 /** A written task's answer: GET's shape, with the ETag a later If-Match needs. */
-async function taskAnswer(ctx: RouteContext, task: Awaited<ReturnType<typeof fullTask>>, status = 200, headers: Record<string, string> = {}) {
-  return ok(ctx, task, status, { ...headers, ETag: await etagFor(task) });
+async function taskAnswer(ctx: RouteContext, task: Awaited<ReturnType<typeof fullTask>>, status = 200, headers: Record<string, string> = {}, next: NextOccurrence | null = null) {
+  return ok(ctx, next ? { ...task, nextOccurrence: next } : task, status, { ...headers, ETag: await etagFor(task) });
 }
 
 export function createTask(ctx: RouteContext): Promise<Response> {
@@ -657,13 +662,29 @@ async function editableTask(ctx: RouteContext, tx: Tx, id: string): Promise<Row>
 const statusTriggers = (from: unknown, to: string): RuleTrigger[] =>
   from === to ? [] : to === "done" ? ["status_changed", "task_completed"] : ["status_changed"];
 
-export async function updateTask(ctx: RouteContext): Promise<Response> {
+export function updateTask(ctx: RouteContext): Promise<Response> {
+  return updateTaskWith(ctx);
+}
+
+/** What the MCP server's update_task adds to PATCH /tasks/:id (never the public API). */
+export interface TaskUpdateExtras {
+  /** added to the end of the description, in the same update, so nothing has to be read and sent back */
+  appendDescription?: string;
+  /** says why a new description can't be saved, given what's stored, or null */
+  refuseDescription?: (stored: string, next: string) => string | null;
+}
+
+/** PATCH /tasks/:id, for the API and for Kanbo's own MCP server. */
+export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras = {}): Promise<Response> {
   const id = pathId(ctx, "Task");
-  const c = checkTaskPatch(ctx.body ?? {});
+  const body = ctx.body ?? {};
+  // adding to the description can be the whole of the change
+  const c = extras.appendDescription && !Object.keys(body).length ? { ok: true as const, value: {} as TaskInput } : checkTaskPatch(body);
   if (!c.ok) throw invalid(c.fields);
   const v: TaskInput = c.value;
   const p = ctx.principal;
   const me = p.userId;
+  let next: NextOccurrence | null = null;
   const task = await asUser(ctx, async (tx) => {
     const cur = await editableTask(ctx, tx, id);
     const curWs = s(cur.workspace_id);
@@ -740,7 +761,19 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
 
     // ---- fields ----
     if (v.title !== undefined) sets.push(`title = ${q.p(v.title)}`);
-    if (v.description !== undefined) sets.push(`description = ${q.p(v.description)}`);
+    if (v.description !== undefined) {
+      const refusal = extras.refuseDescription?.(String(cur.description ?? ""), v.description);
+      if (refusal) throw invalid({ description: refusal });
+      sets.push(`description = ${q.p(v.description)}`);
+    }
+    if (extras.appendDescription) {
+      const stored = String(cur.description ?? "");
+      if (stored.length + extras.appendDescription.length + 2 > API_LIMITS.description) {
+        throw invalid({ appendToDescription: `That would make the description longer than ${API_LIMITS.description.toLocaleString("en-GB")} characters. Nothing was changed.` });
+      }
+      // in the update itself, so an edit made in the app a moment ago isn't lost
+      sets.push(`description = case when coalesce(t.description, '') = '' then ${q.p(extras.appendDescription)} else t.description || E'\\n\\n' || ${q.p(extras.appendDescription)} end`);
+    }
     if (v.priority !== undefined) priority = v.priority;
     const triggers = v.status !== undefined ? statusTriggers(cur.status, v.status) : [];
     if (v.status !== undefined && v.status !== cur.status) {
@@ -768,9 +801,15 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
       if (fx.addTags.length) tags = withTags(tags ?? strings(cur.tags), fx.addTags);
     }
     if (section !== undefined) sets.push(`section_id = ${q.p(section)}`);
-    if (assignee !== undefined) sets.push(`assignee_id = ${q.p(assignee)}`);
+    if (assignee !== undefined) {
+      sets.push(`assignee_id = ${q.p(assignee)}`);
+      if (assignee !== String(cur.assignee_id ?? "")) sets.push(...RELEASED_PLAN);
+    }
     if (priority !== undefined) sets.push(`priority = ${q.p(priority)}`);
     if (tags !== undefined) sets.push(`tags = array(select jsonb_array_elements_text(${q.p(JSON.stringify(tags))}::jsonb))`);
+
+    // completing a repeating task: its next occurrence is made from the task as it stood, as in the app
+    if (v.status === "done" && cur.status !== "done") next = await spawnNextOccurrence(ctx, tx, cur);
 
     const kws = keyWorkspace(p);
     if (sets.length) {
@@ -784,6 +823,9 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
       const m = new Sql();
       const root = m.p(id);
       const people = moved ? `,
+          plan_today = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.plan_today else false end,
+          scheduled = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.scheduled else null end,
+          my_section_id = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.my_section_id else null end,
           assignee_id = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.assignee_id else ${m.p(me)} end,
           followers = array(select x from unnest(t.followers) x where ${visibleSql(m, "x", ws, me)}),
           collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(m, "x", ws, me)})` : "";
@@ -796,28 +838,108 @@ export async function updateTask(ctx: RouteContext): Promise<Response> {
     if (v.archived !== undefined && (cur.archived_at != null) !== v.archived) await setArchived(tx, id, v.archived, kws);
     return readBack(ctx, tx, id);
   });
-  return taskAnswer(ctx, task);
+  return taskAnswer(ctx, task, 200, {}, next);
+}
+
+/**
+ * When a task changes hands its row's plan (the slot, "on today", the My-tasks section) stops being
+ * anyone's: a task you hand on never lands in your slot on their day (App.tsx releasedPlan).
+ */
+const RELEASED_PLAN = ["plan_today = false", "scheduled = null", "my_section_id = null"];
+
+/* ============================================================ repeating tasks */
+
+export interface NextOccurrence { id: string; dueDate: string }
+
+const RECURRENCES = ["daily", "weekdays", "weekly", "biweekly", "monthly"];
+
+/** Their saved time zone (notify_prefs.timezone, 0048), if any. Reads the row as JSON so nothing depends on 0048. */
+export async function savedZone(tx: Tx, me: string): Promise<string | null> {
+  const rs = await tx.query<{ tz: string | null }>(
+    `select to_jsonb(p) -> 'notify_prefs' ->> 'timezone' as tz from public.profiles p where p.id = $1::uuid`, [me]);
+  const tz = rs[0]?.tz ?? null;
+  return isTimeZone(tz) ? tz : null;
+}
+
+const CLONED_COLS = `title, description, priority, project_id, section_id, my_section_id, assignee_id, workspace_id, due_time, tags,
+  focus_min, ai_score, ai_reason, energy, dur, followers, collaborators, custom, effort_hours, is_milestone, recurrence`;
+
+/**
+ * Completing a repeating task makes its next occurrence, in the same transaction, the way the app's
+ * buildRecurrence does: same work and people, back to to-do, a fresh plan, no logged time and no
+ * dependencies, made by whoever completed it. Its sub-tasks come too, with their dates moved by as
+ * much; sub-tasks that repeat on their own stay behind, because they make their own next occurrence.
+ * The checklist comes unticked. An open occurrence already due on or after that date means there's
+ * nothing to make, so completing, reopening and completing again doesn't make two.
+ */
+async function spawnNextOccurrence(ctx: RouteContext, tx: Tx, cur: Row): Promise<NextOccurrence | null> {
+  const recurrence = String(cur.recurrence ?? "none");
+  if (!RECURRENCES.includes(recurrence)) return null;
+  const me = ctx.principal.userId;
+  const id = String(cur.id);
+  const zone = (await savedZone(tx, me)) ?? DEFAULT_TIMEZONE;
+  const today = localMidnight(dateInZone(new Date(), zone));
+  const [orig] = await tx.query<{ d: string | null }>(`select t.original_due_date::text as d from public.tasks t where t.id = $1::uuid`, [id]);
+  const occ = nextOccurrenceDates({ recurrence: recurrence as NlpRecurrence, dueDate: s(cur.due_date), startDate: s(cur.start_date), originalDueDate: orig?.d ?? null }, today);
+  const already = await tx.query(
+    `select 1 from public.tasks x
+      where x.id <> $1::uuid and x.status <> 'done' and x.archived_at is null and x.parent_id is not distinct from $2::uuid
+        and x.title = $3 and x.project_id = $4 and x.recurrence = $5 and x.due_date >= $6::date limit 1`,
+    [id, s(cur.parent_id), String(cur.title ?? ""), String(cur.project_id), recurrence, occ.dueDate]);
+  if (already.length) return null;
+  const clone = async (from: string, parent: string | null, due: string | null, start: string | null, original: string | null) => {
+    const made = await tx.query<{ id: string }>(
+      `insert into public.tasks (user_id, status, parent_id, due_date, start_date, original_due_date, position, ${CLONED_COLS})
+       select $1::uuid, 'todo', $2::uuid, $3::date, $4::date, $5::date, extract(epoch from clock_timestamp()) * 1000, ${CLONED_COLS}
+         from public.tasks where id = $6::uuid
+       returning id::text as id`, [me, parent, due, start, original, from]);
+    return made[0].id;
+  };
+  const root = await clone(id, s(cur.parent_id), occ.dueDate, occ.startDate, occ.originalDueDate);
+  const kids = await tx.query<Row>(
+    `${treeSql("$1")}
+     select t.id::text as id, t.parent_id::text as parent_id, t.recurrence, t.archived_at, t.due_date::text as due_date, t.start_date::text as start_date
+       from public.tasks t where t.id in (select id from d) and t.id <> $1::uuid order by t.created_at, t.id limit 500`, [id]);
+  const copies = new Map<string, string>([[id, root]]);
+  let waiting = kids.filter((k) => k.archived_at == null && String(k.recurrence ?? "none") === "none");
+  // parents before children; one whose parent stayed behind (archived, or its own series) stays behind with it
+  for (let round = 0; waiting.length && round < 64; round++) {
+    const ready = waiting.filter((k) => copies.has(String(k.parent_id)));
+    if (!ready.length) break;
+    for (const k of ready) {
+      const moved = (iso: unknown) => { const d = s(iso); return d ? shiftISO(d, occ.shiftDays) : null; };
+      copies.set(String(k.id), await clone(String(k.id), copies.get(String(k.parent_id))!, moved(k.due_date), moved(k.start_date), null));
+    }
+    waiting = waiting.filter((k) => !copies.has(String(k.id)));
+  }
+  await tx.query(`insert into public.subtasks (task_id, title, done, position) select $1::uuid, c.title, false, c.position from public.subtasks c where c.task_id = $2::uuid`, [root, id]);
+  return { id: root, dueDate: occ.dueDate };
 }
 
 export async function completeTask(ctx: RouteContext): Promise<Response> {
   const id = pathId(ctx, "Task");
   const me = ctx.principal.userId;
+  let next: NextOccurrence | null = null;
   const task = await asUser(ctx, async (tx) => {
     const cur = await editableTask(ctx, tx, id);
     if (cur.status !== "done") {
+      next = await spawnNextOccurrence(ctx, tx, cur);
       // the project's "status changed" and "task completed" rules, as completing it in the app runs them
       const fx = await ruleEffect(tx, statusTriggers(cur.status, "done"), String(cur.project_id), s(cur.workspace_id), me);
       const q = new Sql();
       const sets = ["status = 'done'", "completed_at = current_date"];
       if (fx.priority !== undefined) sets.push(`priority = ${q.p(fx.priority)}`);
-      if (fx.assigneeId !== undefined) sets.push(`assignee_id = ${q.p(fx.assigneeId)}`);
+      if (fx.assigneeId !== undefined) {
+        sets.push(`assignee_id = ${q.p(fx.assigneeId)}`);
+        if (fx.assigneeId !== String(cur.assignee_id ?? "")) sets.push(...RELEASED_PLAN);
+      }
       if (fx.sectionId !== undefined) sets.push(`section_id = ${q.p(fx.sectionId)}`);
       if (fx.addTags.length) sets.push(`tags = array(select jsonb_array_elements_text(${q.p(JSON.stringify(withTags(strings(cur.tags), fx.addTags)))}::jsonb))`);
       await tx.query(`update public.tasks t set ${sets.join(", ")} where t.id = ${q.p(id)}::uuid and t.status <> 'done'`, q.params);
     }
     return readBack(ctx, tx, id);
   });
-  return taskAnswer(ctx, task);
+  return taskAnswer(ctx, task, 200, {}, next);
 }
 
 export async function deleteTask(ctx: RouteContext): Promise<Response> {
@@ -884,24 +1006,59 @@ export async function listComments(ctx: RouteContext): Promise<Response> {
   return ok(ctx, list(page.map(serialiseComment), next));
 }
 
-export async function createComment(ctx: RouteContext): Promise<Response> {
+/**
+ * The task's comments, newest first, for the MCP server: the newest comment on a thread is usually
+ * the one that matters. The cursor walks back to older ones. Mounted only on its route table.
+ */
+export async function listRecentComments(ctx: RouteContext): Promise<Response> {
+  const id = pathId(ctx, "Task");
+  const pq = parsePageQuery(ctx.url.searchParams);
+  if (!pq.ok) throw badQuery(pq.fields);
+  const fp = await queryFingerprint({ r: "comments-recent", id });
+  const cur = await readCursor(pq.value.cursor, "kd", fp);
+  const rows = await asUser(ctx, async (tx) => {
+    if (!(await taskVisible(tx, id, keyWorkspace(ctx.principal)))) throw notFound("Task");
+    const q = new Sql();
+    return tx.query(`select ${COMMENT_COLS}, ${cursorKeySql("c.created_at")} as _ck from public.comments c
+      where c.task_id = ${q.p(id)}::uuid${after(q, cur, "c.created_at", "c.id", "desc")}
+      order by c.created_at desc, c.id desc limit ${q.p(pq.value.limit + 1)}::int`, q.params);
+  });
+  const { page, next } = pageOf(rows, pq.value.limit, "kd", fp);
+  return ok(ctx, list(page.map(serialiseComment), next));
+}
+
+export function createComment(ctx: RouteContext): Promise<Response> {
+  return createCommentWith(ctx);
+}
+
+/** What the MCP server's add_comment adds: who the text mentions, and anything to tell the caller. */
+export type CommentMentions = (tx: Tx, body: string, workspaceId: string | null) => Promise<{ ids: string[]; answer: Record<string, unknown> }>;
+
+/** POST /tasks/:id/comments, for the API and for Kanbo's own MCP server. */
+export async function createCommentWith(ctx: RouteContext, mentions?: CommentMentions): Promise<Response> {
   const id = pathId(ctx, "Task");
   const c = checkCommentCreate(ctx.body ?? {});
   if (!c.ok) throw invalid(c.fields);
   const v = c.value;
+  let extra: Record<string, unknown> = {};
   const row = await asUser(ctx, async (tx) => {
-    if (!(await taskVisible(tx, id, keyWorkspace(ctx.principal)))) throw notFound("Task");
+    const seen = await tx.query<{ workspace_id: string | null }>(
+      `select t.workspace_id::text as workspace_id from public.tasks t where t.id = $1::uuid and ${inKeyWs("t.workspace_id", 2)}`, [id, keyWorkspace(ctx.principal)]);
+    if (!seen[0]) throw notFound("Task");
     if (v.parentId) {
       const par = await tx.query(`select 1 from public.comments c where c.id = $1::uuid and c.task_id = $2::uuid`, [v.parentId, id]);
       if (!par.length) throw invalid({ parentId: "That comment isn't on this task." });
     }
+    const read = mentions ? await mentions(tx, v.body, seen[0].workspace_id) : null;
+    extra = read?.answer ?? {};
     // guests may comment (RLS: comment as yourself on a task you can see)
-    const rs = await tx.query(`insert into public.comments as c (task_id, user_id, body, parent_id)
-      values ($1::uuid, $2::uuid, $3, $4::uuid) returning ${COMMENT_COLS}`, [id, ctx.principal.userId, v.body, v.parentId]);
+    const rs = await tx.query(`insert into public.comments as c (task_id, user_id, body, parent_id, mentions)
+      values ($1::uuid, $2::uuid, $3, $4::uuid, array(select (jsonb_array_elements_text($5::jsonb))::uuid)) returning ${COMMENT_COLS}`,
+      [id, ctx.principal.userId, v.body, v.parentId, JSON.stringify(read?.ids ?? [])]);
     // the task's comment count, as the app keeps it (writers only — a guest's count catches up when someone edits)
     await tx.query(`update public.tasks t set comments = (select count(*) from public.comments k where k.task_id = t.id)
       where t.id = $1::uuid and public.can_edit_task(t.id)`, [id]);
     return rs[0];
   });
-  return ok(ctx, serialiseComment(row), 201);
+  return ok(ctx, { ...serialiseComment(row), ...extra }, 201);
 }

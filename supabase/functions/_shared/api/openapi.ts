@@ -502,7 +502,7 @@ const PATHS: OpenApiDoc["paths"] = {
   "/tasks/{id}/complete": {
     post: {
       operationId: "completeTask", summary: "Mark a task done", tags: ["Tasks"], "x-kanbo-access": "write",
-      description: "Sets status to done and completedAt to today, and runs the project's \"status changed\" and \"task completed\" automations, as in the app. Calling it again changes nothing. (Recurring tasks: the next occurrence is created when someone completes it in the Kanbo app.)",
+      description: "Sets status to done and completedAt to today, and runs the project's \"status changed\" and \"task completed\" automations, as in the app. Calling it again changes nothing. A repeating task makes its next occurrence in the same transaction, and the answer then has nextOccurrence: { id, dueDate }.",
       parameters: [P.id("task"), P.ifMatch("task")],
       responses: { 200: ok("The completed task, as GET shows it.", ref("Task"), { ...EX_TASK_FULL, status: "done", completedAt: "2026-10-06" }, WRITE_HEADERS), ...errs(401, 403, 404, 412, 429, 500) },
     },

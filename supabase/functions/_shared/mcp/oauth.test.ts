@@ -3,7 +3,7 @@
 // The rules themselves are attacked on the real migrations by the PGlite suite.
 import { describe, expect, it, vi } from "vitest";
 import type { Tx } from "../api/types.ts";
-import { clientIp, fetchClientDocument, handlePrepare, handleRegister, handleRevoke, handleToken, type OAuthDeps } from "./oauth.ts";
+import { CANT_READ_DESCRIPTION, fetchClientDocument, handlePrepare, handleRegister, handleRevoke, handleToken, registerLimits, type OAuthDeps } from "./oauth.ts";
 import { MCP_RESOURCE } from "./metadata.ts";
 
 type Q = { text: string; params: readonly unknown[] };
@@ -17,7 +17,7 @@ function deps(answer: (q: Q) => unknown = () => [], o: Partial<OAuthDeps> = {}) 
       return answer({ text, params }) as T[];
     },
   };
-  const d: OAuthDeps = { service, fetch: vi.fn() as unknown as typeof fetch, verifyUser: async (j) => (j === "good" ? "user-1" : null), log: () => undefined, ...o };
+  const d: OAuthDeps = { service, fetch: vi.fn() as unknown as typeof fetch, resolve: async () => ["93.184.216.34"], verifyUser: async (j) => (j === "good" ? "user-1" : null), log: () => undefined, ...o };
   return { d, queries };
 }
 const form = (o: Record<string, string>, h: Record<string, string> = {}) =>
@@ -53,6 +53,26 @@ describe("register", () => {
     expect(res.status).toBe(429);
     expect(res.headers.get("retry-after")).toBe("42");
   });
+  it("counts nothing, and writes nothing, for a request that wouldn't be stored", async () => {
+    for (const bad of [
+      new Request("https://f", { method: "POST", headers: { "Content-Type": "application/json" }, body: "garbage" }),
+      json({}),
+      json({ redirect_uris: ["javascript:alert(1)"] }),
+      json({ redirect_uris: Array(9).fill("https://x.example/") }),
+      json({ redirect_uris: [`https://x.example/${"a".repeat(600)}`] }),
+    ]) {
+      const { d, queries } = deps();
+      expect((await handleRegister(bad, d)).status).toBe(400);
+      expect(queries).toEqual([]);
+    }
+  });
+  it("the overall cap only counts what's about to be stored", async () => {
+    const { d, queries } = deps((q) => (q.text.includes("register_client") ? [{ r: { client_id: "c" } }] : []));
+    await handleRegister(json({ redirect_uris: ["https://x.example/"] }, { "cf-connecting-ip": "203.0.113.9" }), d);
+    const keys = queries.filter((q) => q.text.includes("api_rate_hit")).map((q) => String(q.params[0]));
+    expect(keys).toHaveLength(3);
+    expect(keys[2]).toBe("kanbo:mcp:register:all");
+  });
   it("a rate-limit failure doesn't lock people out", async () => {
     const { d } = deps();
     d.service.query = (async (text: string) => {
@@ -70,7 +90,8 @@ describe("register", () => {
 });
 
 describe("token", () => {
-  const code = { grant_type: "authorization_code", client_id: "c", code: "kmcp_ac_x", code_verifier: "v", redirect_uri: "https://x.example/cb" };
+  const AC = `kmcp_ac_${"a".repeat(43)}`, RT = `kmcp_rt_${"r".repeat(43)}`;
+  const code = { grant_type: "authorization_code", client_id: "c", code: AC, code_verifier: "v", redirect_uri: "https://x.example/cb" };
   const ok = { access_token: "a", token_type: "Bearer", expires_in: 3600, refresh_token: "r", scope: "kanbo.read" };
 
   it("passes a code to Postgres and answers with no-store", async () => {
@@ -79,12 +100,12 @@ describe("token", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await res.json()).toEqual(ok);
-    expect(queries.find((q) => q.text.includes("exchange"))!.params).toEqual(["kmcp_ac_x", "v", "c", "https://x.example/cb", null]);
+    expect(queries.find((q) => q.text.includes("exchange"))!.params).toEqual([AC, "v", "c", "https://x.example/cb", null]);
   });
   it("passes a refresh token to Postgres", async () => {
     const { d, queries } = deps((q) => (q.text.includes("mcp_oauth_refresh") ? [{ r: ok }] : []));
-    expect((await handleToken(form({ grant_type: "refresh_token", client_id: "c", refresh_token: "kmcp_rt_x", resource: MCP_RESOURCE }), d)).status).toBe(200);
-    expect(queries.find((q) => q.text.includes("mcp_oauth_refresh"))!.params).toEqual(["kmcp_rt_x", "c", MCP_RESOURCE]);
+    expect((await handleToken(form({ grant_type: "refresh_token", client_id: "c", refresh_token: RT, resource: MCP_RESOURCE }), d)).status).toBe(200);
+    expect(queries.find((q) => q.text.includes("mcp_oauth_refresh"))!.params).toEqual([RT, "c", MCP_RESOURCE]);
   });
   it("Postgres's errors go out as 400s", async () => {
     const { d } = deps((q) => (q.text.includes("mcp_oauth") ? [{ r: { error: "invalid_grant", error_description: "x" } }] : []));
@@ -116,28 +137,42 @@ describe("token", () => {
     expect((await handleToken(json(code), d)).status).toBe(400);
   });
   it("never echoes a token in an error", async () => {
-    const { d } = deps(() => { throw new Error("boom kmcp_rt_secret"); });
-    const text = await (await handleToken(form({ grant_type: "refresh_token", client_id: "c", refresh_token: "kmcp_rt_secret" }), d)).text();
-    expect(text).not.toContain("secret");
+    const { d } = deps(() => { throw new Error(`boom ${RT}`); });
+    const text = await (await handleToken(form({ grant_type: "refresh_token", client_id: "c", refresh_token: RT }), d)).text();
+    expect(text).not.toContain(RT);
   });
-  it("rate limits per app, keyed by a hash", async () => {
-    const seen: string[] = [];
-    const { d } = deps();
-    d.service.query = (async (text: string, p: unknown[]) => {
-      if (text.includes("api_rate_hit")) { seen.push(String(p[0])); return [{ allowed: !String(p[0]).includes(":c:"), retry_after: 3 }]; }
-      return [];
-    }) as Tx["query"];
-    const res = await handleToken(form({ grant_type: "refresh_token", client_id: `https://x.example/${"y".repeat(300)}`, refresh_token: "x" }), d);
+  it("a stranger can't use up anything: no limit is counted before the code or token has been checked", async () => {
+    const { d, queries } = deps((q) => (q.text.includes("mcp_oauth_") ? [{ r: { error: "invalid_grant", error_description: "x" } }] : []));
+    const junk = await handleToken(form({ grant_type: "refresh_token", client_id: "claude", refresh_token: "junk" }), d);
+    expect(junk.status).toBe(400);
+    expect((await junk.json()).error).toBe("invalid_grant");
+    expect((await handleToken(form({ ...code, code: "junk" }), d)).status).toBe(400);
+    // malformed never reaches the database at all
+    expect(queries).toEqual([]);
+    expect((await handleToken(form({ grant_type: "refresh_token", client_id: "claude", refresh_token: RT }), d)).status).toBe(400);
+    expect(queries.some((q) => q.text.includes("api_rate_hit"))).toBe(false);
+  });
+  it("too many refreshes of one real token slows that connection down, and says when to try again", async () => {
+    const { d } = deps((q) => (q.text.includes("mcp_oauth_refresh") ? [{ r: { error: "slow_down", retry_after: 17 } }] : []));
+    const res = await handleToken(form({ grant_type: "refresh_token", client_id: "c", refresh_token: RT }), d);
     expect(res.status).toBe(429);
-    expect(seen[1].length).toBeLessThan(200);
+    expect(res.headers.get("retry-after")).toBe("17");
+    expect((await res.json()).error).toBe("slow_down");
   });
 });
 
 describe("revoke", () => {
   it("answers 200 whether or not there was anything", async () => {
     const { d, queries } = deps();
-    expect((await handleRevoke(form({ token: "kmcp_rt_x", client_id: "c" }), d)).status).toBe(200);
-    expect(queries.find((q) => q.text.includes("mcp_oauth_revoke_token"))!.params).toEqual(["kmcp_rt_x", "c"]);
+    const token = `kmcp_rt_${"r".repeat(43)}`;
+    expect((await handleRevoke(form({ token, client_id: "c" }), d)).status).toBe(200);
+    expect(queries.find((q) => q.text.includes("mcp_oauth_revoke_token"))!.params).toEqual([token, "c"]);
+    expect(queries.some((q) => q.text.includes("api_rate_hit"))).toBe(false);
+  });
+  it("something that can't be a token never reaches the database", async () => {
+    const { d, queries } = deps();
+    expect((await handleRevoke(form({ token: "junk" }), d)).status).toBe(200);
+    expect(queries).toEqual([]);
   });
   it("wants a token, in a form", async () => {
     const { d } = deps();
@@ -146,11 +181,39 @@ describe("revoke", () => {
   });
 });
 
-describe("clientIp", () => {
-  it("takes the first address Vercel passes on", () => {
-    expect(clientIp(new Headers({ "x-vercel-forwarded-for": "1.2.3.4", "x-forwarded-for": "9.9.9.9" }))).toBe("1.2.3.4");
-    expect(clientIp(new Headers({ "x-forwarded-for": "1.2.3.4, 5.6.7.8" }))).toBe("1.2.3.4");
-    expect(clientIp(new Headers())).toBe("unknown");
+describe("who a registration counts against", () => {
+  const keys = async (h: Record<string, string>) => (await registerLimits(new Headers(h))).map((l) => l.key);
+  it("never a header a direct caller can set on its own", async () => {
+    const one = await keys({ "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "1.1.1.1" });
+    const two = await keys({ "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "2.2.2.2" });
+    // changing the header makes a new pair, but the address the edge saw stays the same, so it runs out
+    expect(one[0]).toBe(two[0]);
+    expect(one[1]).not.toBe(two[1]);
+    // naming someone else's address reaches a different bucket from theirs
+    const them = await keys({ "cf-connecting-ip": "76.76.21.21", "x-vercel-forwarded-for": "160.79.104.10" });
+    const namingThem = await keys({ "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "160.79.104.10" });
+    expect(namingThem[1]).not.toBe(them[1]);
+    expect(namingThem[0]).not.toBe(them[0]);
+  });
+  it("the first hop of x-forwarded-for stands in for Vercel's own header, and buys nothing more", async () => {
+    const one = await keys({ "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "1.1.1.1, 203.0.113.9" });
+    const two = await keys({ "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "9.9.9.9, 203.0.113.9" });
+    expect(one[0]).toBe(two[0]);
+    expect(one[1]).not.toBe(two[1]);
+    expect(one[1]).toBe((await keys({ "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "1.1.1.1" }))[1]);
+  });
+  it("addresses are stored as hashes", async () => {
+    for (const k of await keys({ "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "1.1.1.1" })) {
+      expect(k).toMatch(/^kanbo:mcp:register:[pc]:[0-9a-f]{32}$/);
+    }
+  });
+  it("no address at all: only the overall cap", async () => {
+    expect(await registerLimits(new Headers({ "x-vercel-forwarded-for": "1.1.1.1" }))).toEqual([]);
+  });
+  it("the last hop is the one that counts when there's no edge header", async () => {
+    const one = await keys({ "x-forwarded-for": "1.1.1.1, 203.0.113.9" });
+    expect(one[0]).toBe((await keys({ "x-forwarded-for": "9.9.9.9, 203.0.113.9" }))[0]);
+    expect(one[0]).not.toBe((await keys({ "x-forwarded-for": "1.1.1.1, 203.0.113.10" }))[0]);
   });
 });
 
@@ -158,35 +221,84 @@ describe("fetching an app's description", () => {
   const url = "https://claude.ai/oauth/mcp-oauth-client-metadata";
   const doc = JSON.stringify({ client_id: url, client_name: "Claude", redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] });
   const f = (res: Response) => vi.fn(async () => res) as unknown as typeof fetch;
+  const pub = async () => ["93.184.216.34"];
+  const refused = { ok: false, reason: CANT_READ_DESCRIPTION };
 
   it("reads a good one, following no redirects", async () => {
     const fetchImpl = f(new Response(doc));
-    expect(await fetchClientDocument(url, { fetch: fetchImpl })).toMatchObject({ ok: true, name: "Claude" });
+    expect(await fetchClientDocument(url, { fetch: fetchImpl, resolve: pub })).toMatchObject({ ok: true, name: "Claude" });
     const init = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0][1];
     expect(init.redirect).toBe("manual");
     expect(init.method).toBe("GET");
   });
-  it("anything but a 200 is an error, redirects included", async () => {
-    for (const status of [301, 302, 404, 500]) {
-      expect((await fetchClientDocument(url, { fetch: f(new Response(null, { status })) })).ok, String(status)).toBe(false);
-    }
+  it("goes to the address it checked, when it's given a way to", async () => {
+    const seen: unknown[] = [];
+    const getDocument = vi.fn(async (t) => { seen.push(t); return { status: 200, text: doc }; });
+    expect((await fetchClientDocument(url, { fetch: f(new Response("no")), resolve: pub, getDocument })).ok).toBe(true);
+    expect(seen[0]).toMatchObject({ address: "93.184.216.34", host: "claude.ai", port: 443, path: "/oauth/mcp-oauth-client-metadata" });
   });
-  it("has a read limit", async () => {
-    expect((await fetchClientDocument(url, { fetch: f(new Response("x".repeat(6000))) })).ok).toBe(false);
+  it("tries a second address only if the first never connected", async () => {
+    const both = async () => ["93.184.216.34", "93.184.216.35"];
+    const connect = vi.fn(async () => { throw Object.assign(new Error("refused"), { kind: "connect" }); });
+    expect(await fetchClientDocument(url, { fetch: f(new Response("no")), resolve: both, getDocument: connect })).toEqual(refused);
+    expect(connect).toHaveBeenCalledTimes(2);
+    const later = vi.fn(async () => { throw Object.assign(new Error("reset"), { kind: "network" }); });
+    await fetchClientDocument(url, { fetch: f(new Response("no")), resolve: both, getDocument: later });
+    expect(later).toHaveBeenCalledTimes(1);
   });
-  it("refuses bad JSON, and a network failure", async () => {
-    expect((await fetchClientDocument(url, { fetch: f(new Response("nope")) })).ok).toBe(false);
-    expect((await fetchClientDocument(url, { fetch: vi.fn(async () => { throw new Error("x"); }) as unknown as typeof fetch })).ok).toBe(false);
+  it("every failure reads the same, so it can't probe a network", async () => {
+    const answers: (typeof fetch)[] = [
+      f(new Response(null, { status: 301 })), f(new Response(null, { status: 302 })), f(new Response("x", { status: 404 })), f(new Response("x", { status: 500 })),
+      f(new Response("x".repeat(6000))), f(new Response("nope")), f(new Response("[]")),
+      f(new Response(JSON.stringify({ client_id: "https://other.example/x", client_name: "x", redirect_uris: ["https://x.example/"] }))),
+      f(new Response(JSON.stringify({ client_id: url, redirect_uris: ["https://x.example/"] }))),
+      vi.fn(async () => { throw new Error("connection refused"); }) as unknown as typeof fetch,
+    ];
+    for (const fetchImpl of answers) expect(await fetchClientDocument(url, { fetch: fetchImpl, resolve: pub })).toEqual(refused);
+  });
+  it("says what really went wrong in the log, by host only", async () => {
+    const log = vi.fn();
+    await fetchClientDocument(url, { fetch: f(new Response("x", { status: 404 })), resolve: pub, log });
+    expect(log.mock.calls[0][1]).toEqual({ host: "claude.ai", why: "HTTP 404" });
   });
   it("won't even ask a private address, or a name that resolves to one", async () => {
     const fetchImpl = f(new Response(doc));
-    expect((await fetchClientDocument("https://10.0.0.1/c.json", { fetch: fetchImpl })).ok).toBe(false);
-    expect((await fetchClientDocument(url, { fetch: fetchImpl, resolveHost: async () => ["93.184.216.34", "169.254.169.254"] })).ok).toBe(false);
+    expect((await fetchClientDocument("https://10.0.0.1/c.json", { fetch: fetchImpl, resolve: pub })).ok).toBe(false);
+    expect(await fetchClientDocument(url, { fetch: fetchImpl, resolve: async () => ["93.184.216.34", "169.254.169.254"] })).toEqual(refused);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
-  it("carries on when DNS can't be checked here", async () => {
-    expect((await fetchClientDocument(url, { fetch: f(new Response(doc)), resolveHost: async () => null })).ok).toBe(true);
-    expect((await fetchClientDocument(url, { fetch: f(new Response(doc)), resolveHost: async () => { throw new Error("no"); } })).ok).toBe(true);
+  it.each(["fec0::1", "2002:7f00:1::", "2002:a00:1::", "2001:0:a00:1::", "3fff::1", "0:0:0:0:0:ffff:7f00:1", "0:0:0:0:0:0:0:1", "::1", "::ffff:10.0.0.1", "10.0.0.1", "not an address"])("refuses a name that resolves to %s", async (address) => {
+    const fetchImpl = f(new Response(doc));
+    expect(await fetchClientDocument(url, { fetch: fetchImpl, resolve: async () => [address] })).toEqual(refused);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["no answer", async () => { throw new Error("DNS failed"); }],
+    ["nothing", async () => []],
+  ])("fetches nothing when DNS gives %s", async (_w, resolve) => {
+    const fetchImpl = f(new Response(doc));
+    expect(await fetchClientDocument(url, { fetch: fetchImpl, resolve })).toEqual(refused);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it("fetches nothing with no way to check DNS", async () => {
+    const fetchImpl = f(new Response(doc));
+    expect(await fetchClientDocument(url, { fetch: fetchImpl })).toEqual(refused);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each(["https://kong/client.json", "https://internal/client.json", "https://[fec0::1]/c.json", "https://[2606:4700::1111]/c.json", "https://8.8.8.8/c.json"])("refuses %s without looking it up", async (u) => {
+    const resolve = vi.fn(pub);
+    const fetchImpl = f(new Response(doc));
+    expect((await fetchClientDocument(u, { fetch: fetchImpl, resolve })).ok).toBe(false);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it("never Kanbo's own hosts", async () => {
+    const fetchImpl = f(new Response(doc));
+    const ownHosts = ["htnchiljplrnjkwimgla.supabase.co", "kanbo.co.uk"];
+    for (const u of ["https://htnchiljplrnjkwimgla.supabase.co/functions/v1/notify", "https://www.kanbo.co.uk/x.json", "https://kanbo.co.uk/x.json"]) {
+      expect(await fetchClientDocument(u, { fetch: fetchImpl, resolve: pub, ownHosts })).toEqual(refused);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -223,9 +335,9 @@ describe("prepare", () => {
     expect(stale.queries.some((q) => q.text.includes("mcp_oauth_upsert_cimd_client"))).toBe(true);
   });
   it("a bad document stops there", async () => {
-    const url = "https://x.example/c.json";
+    const url = "https://apps.example.org/c.json";
     const { d, queries } = deps(client({ ok: false, reason: "unknown_client" }), { fetch: vi.fn(async () => new Response("nope", { status: 404 })) as unknown as typeof fetch });
-    expect(await (await handlePrepare(json({ client_id: url, redirect_uri: "https://x.example/" }, auth), d)).json()).toMatchObject({ ok: false, reason: "bad_client" });
+    expect(await (await handlePrepare(json({ client_id: url, redirect_uri: "https://x.example/" }, auth), d)).json()).toMatchObject({ ok: false, reason: "bad_client", message: CANT_READ_DESCRIPTION });
     expect(queries.some((q) => q.text.includes("upsert"))).toBe(false);
   });
   it("says when it isn't switched on, or can't reach the database", async () => {

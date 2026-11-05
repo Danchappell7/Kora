@@ -212,6 +212,28 @@ export function dohResolver(fetchImpl: typeof fetch, servers: readonly string[] 
   };
 }
 
+/**
+ * The runtime's DNS when it has it (Deno.resolveDns, passed in), and DNS-over-HTTPS when it doesn't or
+ * can't answer. [] only when the host really has no address; anything else that can't be told throws.
+ */
+export function systemResolver(dns: ((host: string, type: "A" | "AAAA") => Promise<unknown>) | null, fallback: Resolver): Resolver {
+  return async (host) => {
+    if (dns) {
+      const [a, aaaa] = await Promise.allSettled([dns(host, "A"), dns(host, "AAAA")]);
+      const got = [
+        ...(a.status === "fulfilled" && Array.isArray(a.value) ? a.value : []),
+        ...(aaaa.status === "fulfilled" && Array.isArray(aaaa.value) ? aaaa.value : []),
+      ].filter((x): x is string => typeof x === "string");
+      if (got.length) return got;
+      const notFound = (r: PromiseSettledResult<unknown>) =>
+        r.status === "rejected" && (r.reason?.name === "NotFound" || /not ?found|no (?:record|data)|nxdomain/i.test(String(r.reason?.message ?? "")));
+      // one family answered empty / "no records" and the other likewise: the host really has no address
+      if ((a.status === "fulfilled" || notFound(a)) && (aaaa.status === "fulfilled" || notFound(aaaa))) return [];
+    }
+    return fallback(host);
+  };
+}
+
 /* ------------------------------------------------------------ sending */
 
 /** The parts of a Deno connection the sender uses (Deno.TcpConn / Deno.TlsConn fit). */
@@ -330,6 +352,128 @@ export async function readStatus(conn: Conn): Promise<SendResult> {
       throw new DeliveryError(buf ? "The endpoint closed the connection mid-answer." : "The endpoint closed the connection without answering.", "closed");
     }
     buf += dec.decode(chunk.subarray(0, n));
+  }
+}
+
+/** A body sent in chunks, back to plain bytes; null while it isn't all here yet. */
+function dechunk(b: Uint8Array): Uint8Array | null {
+  const parts: Uint8Array[] = [];
+  let at = 0;
+  for (;;) {
+    let eol = at;
+    while (eol + 1 < b.length && !(b[eol] === 13 && b[eol + 1] === 10)) eol++;
+    if (eol + 1 >= b.length) return null;
+    const n = parseInt(new TextDecoder().decode(b.subarray(at, eol)).split(";")[0].trim(), 16);
+    if (!Number.isFinite(n) || n < 0) throw new DeliveryError("The answer's chunks can't be read.", "protocol");
+    if (n === 0) break;
+    if (eol + 2 + n + 2 > b.length) return null;
+    parts.push(b.subarray(eol + 2, eol + 2 + n));
+    at = eol + 2 + n + 2;
+  }
+  const out = new Uint8Array(parts.reduce((t, p) => t + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+/**
+ * GET over HTTP/1.1 + TLS to one exact IP address (the one checked), with SNI and certificate checks for
+ * the hostname, so a second DNS answer can't swap in a private address. No redirects, no keep-alive, no
+ * proxies. Reads at most `maxBytes` of body: past that, `text` is null. Anything but a 200 has no text.
+ */
+export async function getPinned(net: NetApi, target: SendTarget, maxBytes: number, timeoutMs: number, userAgent = WEBHOOK_USER_AGENT): Promise<{ status: number; text: string | null }> {
+  let conn: Conn | null = null;
+  let done = false;
+  const hangUp = () => { if (conn) { try { conn.close(); } catch { /* already closed */ } } };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      hangUp();
+      reject(new DeliveryError(`No answer within ${Math.round(timeoutMs / 1000)} seconds.`, "timeout"));
+    }, timeoutMs);
+  });
+  const work = (async () => {
+    let tcp: Conn;
+    try { tcp = await net.connect({ hostname: target.address, port: target.port }); }
+    catch (e) { if (isRuntimeUnsupported(e)) throw e; throw new DeliveryError(networkMessage(e, target.host), "connect"); }
+    conn = tcp;
+    if (done) { hangUp(); throw new DeliveryError("Timed out.", "timeout"); }
+    let tls: Conn;
+    try { tls = await net.startTls(tcp, { hostname: target.host }); }
+    catch (e) { if (isRuntimeUnsupported(e)) throw e; throw new DeliveryError(tlsMessage(e, target.host), "tls"); }
+    conn = tls;
+    if (done) { hangUp(); throw new DeliveryError("Timed out.", "timeout"); }
+    const request = enc.encode([
+      `GET ${target.path || "/"} HTTP/1.1`,
+      `Host: ${target.port === 443 ? target.host : `${target.host}:${target.port}`}`,
+      "Accept: application/json",
+      "Accept-Encoding: identity",
+      `User-Agent: ${userAgent}`,
+      "Connection: close",
+      "", "",
+    ].join("\r\n"));
+    let off = 0;
+    while (off < request.length) {
+      const n = await tls.write(request.subarray(off));
+      if (!n) throw new DeliveryError("The connection closed while sending.", "closed");
+      off += n;
+    }
+    // room for the head and a chunked body's framing: past this the answer is too long, whatever it says
+    const limit = HEAD_LIMIT + maxBytes * 2 + 1024;
+    const chunk = new Uint8Array(4096);
+    let buf = new Uint8Array(0);
+    let status = 0, bodyAt = -1, length = -1, chunked = false;
+    const parseHead = () => {
+      const end = new TextDecoder("latin1").decode(buf.subarray(0, Math.min(buf.length, HEAD_LIMIT))).indexOf("\r\n\r\n");
+      if (end < 0) { if (buf.length > HEAD_LIMIT) throw new DeliveryError("The answer's head was too long to read.", "protocol"); return; }
+      const head = new TextDecoder("latin1").decode(buf.subarray(0, end));
+      const m = /^HTTP\/1\.[01] (\d{3})/.exec(head);
+      if (!m) throw new DeliveryError("The endpoint didn't answer with HTTP.", "protocol");
+      if (Number(m[1]) >= 100 && Number(m[1]) < 200) { buf = buf.subarray(end + 4); parseHead(); return; }
+      status = Number(m[1]);
+      bodyAt = end + 4;
+      const cl = /\r\ncontent-length:[ \t]*(\d+)/i.exec(head);
+      if (cl) length = Number(cl[1]);
+      chunked = /\r\ntransfer-encoding:[^\r]*chunked/i.test(head);
+    };
+    const finished = (body: Uint8Array): Uint8Array | null => {
+      if (chunked) return dechunk(body);
+      return length >= 0 && body.length >= length ? body.subarray(0, length) : null;
+    };
+    for (;;) {
+      if (bodyAt < 0) parseHead();
+      if (bodyAt >= 0) {
+        if (status !== 200) return { status, text: null };
+        if (length > maxBytes) return { status, text: null };
+        const whole = finished(buf.subarray(bodyAt));
+        if (whole) return { status, text: whole.length > maxBytes ? null : new TextDecoder().decode(whole) };
+      }
+      if (buf.length > limit) return { status: status || 200, text: null };
+      let n: number | null;
+      try { n = await tls.read(chunk); }
+      // some servers close without saying goodbye: with no length to wait for, what arrived is the answer
+      catch (e) { if (bodyAt >= 0 && !chunked && length < 0) n = null; else throw new DeliveryError(networkMessage(e, target.host), "network"); }
+      if (n === null || n === 0) {
+        if (bodyAt < 0) throw new DeliveryError("The connection closed without an answer.", "closed");
+        if (chunked || length >= 0) throw new DeliveryError("The connection closed mid-answer.", "closed");
+        const body = buf.subarray(bodyAt);
+        return { status, text: body.length > maxBytes ? null : new TextDecoder().decode(body) };
+      }
+      const next = new Uint8Array(buf.length + n);
+      next.set(buf, 0);
+      next.set(chunk.subarray(0, n), buf.length);
+      buf = next;
+    }
+  })();
+  work.catch(() => { /* reported through the race */ });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    done = true;
+    clearTimeout(timer);
+    hangUp();
   }
 }
 
