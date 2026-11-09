@@ -6,7 +6,8 @@ import { ProjectsView, directoryColumns } from "./ProjectsView";
 import { ProjectActions } from "../project/ProjectHeader";
 import { clearStatusDrafts } from "../project/StatusComposer";
 
-const ago = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
+// d calendar days back at this time of day (24-hour steps drift a day across a clock change)
+const ago = (d: number) => { const x = new Date(); x.setDate(x.getDate() - d); return x.toISOString(); };
 const iso = (d: number) => { const x = new Date(); x.setDate(x.getDate() + d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
 const proj = (id: string, name: string, o: Partial<Project> = {}): Project => ({ id, name, emoji: "", color: "oklch(0.74 0.14 230)", workspaceId: "ws", ...o });
 const task = (id: string, projectId: string, o: Partial<Task> = {}): Task => ({
@@ -44,15 +45,6 @@ beforeEach(() => { localStorage.clear(); clearStatusDrafts(); });
 describe("ProjectsView (the gallery, the default)", () => {
   const cards = () => within(screen.getByRole("list", { name: "Projects" })).getAllByRole("listitem");
   const cardOf = (name: string) => screen.getByRole("link", { name }).closest("li") as HTMLElement;
-
-  it("never tells a guest a project has no update (once 0051 is run they don't see the team's)", () => {
-    render(<ProjectsView {...props({ canCreate: false })} />);
-    const infra = cardOf("Infra");
-    expect(infra).toHaveTextContent("2 open · 1 overdue");
-    expect(infra).not.toHaveTextContent(/No update/);
-    expect(cardOf("Launch")).toHaveTextContent(/Updated 9d ago/);      // one they can see still shows
-    expect(within(cardOf("Launch")).getByText("At risk")).toBeInTheDocument();
-  });
 
   it("opens on the gallery: one card per project in its identity (cover, tile, status, progress, work, freshness, people)", () => {
     render(<ProjectsView {...props()} />);

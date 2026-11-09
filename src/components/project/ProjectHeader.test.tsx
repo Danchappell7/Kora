@@ -368,10 +368,13 @@ describe("ProjectPanels", () => {
     expect(items[0].querySelector("[data-former]")).toBeNull();
   });
 
-  it("Updates: a guest with none to read is told updates are for members, not that nobody posted", () => {
+  it("Updates: a guest reads the team's updates (only goals and portfolios are for members, 0051), and none posted says so", () => {
+    const { unmount } = render(<ProjectPanels {...base({ readOnly: true })} />);
+    expect(within(screen.getByRole("list")).getAllByRole("listitem")).toHaveLength(UPDATES.length);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    unmount();
     render(<ProjectPanels {...base({ readOnly: true, statusUpdates: [] })} />);
-    expect(screen.getByText("Updates are for members")).toBeInTheDocument();
-    expect(screen.queryByText(/Nobody has posted/)).toBeNull();
+    expect(screen.getByText("Nobody has posted an update on this project yet.")).toBeInTheDocument();
   });
 
   it("Updates: a half-written update survives a tab switch, and is the header's draft too", () => {
@@ -477,17 +480,5 @@ describe("ProjectPanels", () => {
     expect(screen.queryByRole("combobox", { name: "Project owner" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add a description…" })).not.toBeInTheDocument();
     expect(screen.getByText("No description.")).toBeInTheDocument();
-  });
-});
-
-describe("a guest and the status pill", () => {
-  it("never says \"No update\" to a guest, who doesn't see the team's updates (0051)", async () => {
-    const { projectStatusPill } = await import("./ProjectHeader");
-    expect(projectStatusPill(P).label).toBe("No update");
-    expect(projectStatusPill(P, undefined, { guest: true }).label).toBe("");
-    expect(projectStatusPill({ ...P, workspaceId: null }, undefined, { guest: true }).label).toBe("No update");   // (Personal has no guests)
-    expect(projectStatusPill(P, UPDATES[1], { guest: true }).label).toBe("At risk");                       // one they can see still shows
-    render(<ProjectTitleAddon project={P} tasks={TASKS} statusUpdates={[]} onOpenUpdates={vi.fn()} readOnly />);
-    expect(screen.queryByText("No update")).toBeNull();
   });
 });
