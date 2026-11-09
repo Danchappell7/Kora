@@ -28,7 +28,14 @@ const ACROSS_CSS = `
 .kpj-pick-head { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; margin-top: 4px; font: 600 12px/16px var(--kpj-font); color: var(--ink-3); }
 .kpj-pick-group:first-child .kpj-pick-head { margin-top: 0; }
 .kpj-proj .kpj-pf-biz { grid-column: 2; }
-@media (max-width: 859px) { .kpj-pf-name { flex-wrap: wrap; row-gap: 0; } }
+/* (its summary carries one more line: it wraps rather than run off a phone's edge) */
+[data-across] .kpj-card-side, [data-across] .kpj-pf-exec-head { flex-wrap: wrap; min-width: 0; row-gap: 6px; }
+[data-across] .kpj-card-side { justify-content: flex-end; }
+@media (max-width: 859px) {
+  .kpj-pf-name { flex-wrap: wrap; row-gap: 0; }
+  [data-across] .kpj-card-side { justify-content: flex-start; margin-left: 0; }
+  .kpj-pf-only { flex-basis: 100%; }
+}
 `;
 const ONLY_YOU = "It's in your Personal space, so only you can see it. It shows projects from every business you're in, from what you can already see.";
 
@@ -267,7 +274,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
                 if (view === "table") {
                   return (
-                    <section key={pf.id} className="kpj-pf-exec" aria-label={pf.name}>
+                    <section key={pf.id} className="kpj-pf-exec" aria-label={pf.name} data-across={across ? "" : undefined}>
                       <div className="kpj-pf-exec-head">
                         <h2 className="kpj-pf-exec-name">{pf.name}</h2>
                         {summary}
@@ -289,7 +296,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                   </button>
                 );
                 return (
-                  <article key={pf.id} className="kpj-card" aria-label={`Portfolio ${pf.name}`}>
+                  <article key={pf.id} className="kpj-card" aria-label={`Portfolio ${pf.name}`} data-across={across ? "" : undefined}>
                     <div className="kpj-card-head">
                       <Icon name="briefcase" size={16} sw={1.75} style={{ color: "var(--icon-quiet, var(--ink-4))" }} />
                       <DraftInput value={pf.name} required label={`Portfolio name: ${pf.name}`} onCommit={(v) => onUpdate(pf.id, { name: v })} className="kpj-name-input" />

@@ -15,8 +15,8 @@ const WS: Workspace[] = [
 const mem = (workspaceId: string, role: WorkspaceMember["role"]): WorkspaceMember => ({ id: workspaceId, workspaceId, userId: "me", email: "", name: "Me", role, status: "active" });
 const MEMBERS = [mem("w-a", "owner"), mem("w-b", "admin"), mem("w-c", "member")];
 const PROJECTS: Project[] = [
-  { id: "pa", name: "Studio Opening", color: "", workspaceId: "w-a" }, { id: "pb", name: "Winter League", color: "", workspaceId: "w-b" },
-  { id: "pc", name: "Client Review", color: "", workspaceId: "w-c" },
+  { id: "pa", name: "Studio Opening", emoji: "", color: "", workspaceId: "w-a" }, { id: "pb", name: "Winter League", emoji: "", color: "", workspaceId: "w-b" },
+  { id: "pc", name: "Client Review", emoji: "", color: "", workspaceId: "w-c" },
 ];
 const t = (o: Partial<Task> & { id: string }): Task => ({ title: o.id, status: "todo", priority: "medium", projectId: "pa", workspaceId: "w-a", assigneeId: "me",
   dependencies: [], subtasks: [], tags: [], comments: 0, createdAt: "2026-10-06T09:00:00Z", ...o } as Task);

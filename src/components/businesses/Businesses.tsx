@@ -23,6 +23,7 @@ export const BUSINESS_CSS = `
 .kwschip { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; max-width: 132px; height: 20px; padding: 0 7px 0 2px; border-radius: 999px;
   background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); white-space: nowrap; }
 .kwschip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kwschip[data-mark] { padding: 0; background: none; box-shadow: none; }
 /* in a list row's cluster it holds a column of its own, so every row's project still lines up */
 .kwschip-col { display: inline-flex; flex-shrink: 0; width: 120px; min-width: 0; }
 .kwschip-col > .kwschip { max-width: 100%; }
@@ -91,14 +92,16 @@ export function BusinessChipsProvider({ on, workspaces, children }: { on: boolea
 /** Is All businesses on (a row may need its chip's room)? */
 export const useBusinessChips = (): boolean => useContext(BusinessChips).on;
 
-/** The business a row's task (or doc) is from, while All businesses is on; nothing otherwise. `col`: a list row's own column. */
-export function WorkspaceChip({ projectId, col }: { projectId?: string | null; col?: boolean }) {
+/** The business a row's task (or doc) is from, while All businesses is on; nothing otherwise. `col`: a list row's own
+ *  column. `mark`: just its logo (a narrow row, beside the project's own tile), its name said and shown on hover. */
+export function WorkspaceChip({ projectId, col, mark }: { projectId?: string | null; col?: boolean; mark?: boolean }) {
   const { on, byId } = useContext(BusinessChips);
   if (!on || !projectId) return null;
   const p = getProject(projectId);
   if (!p) return null;
   const w = byId.get(p.workspaceId ?? "personal");
   if (!w) return null;
+  if (mark) return <span className="kwschip" data-mark="" title={w.name}><WorkspaceMark workspace={w} size={16} /><span className="sr-only">In {w.name}</span></span>;
   const chip = (
     <span className="kwschip" title={w.name}>
       <WorkspaceMark workspace={w} size={16} />
