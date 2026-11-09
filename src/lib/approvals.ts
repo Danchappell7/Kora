@@ -404,9 +404,10 @@ const reviewer = (userId: string, decision: ApprovalDecision | null = null, comm
   userId, name: memberName(userId), decision, comment, decidedAt: decision && minutesAgo !== undefined ? agoIso(minutesAgo) : null,
 });
 
-/* Two requests waiting on you (Sana's design tokens: anyone may approve; Maya's analytics events),
-   one you made (the launch deck: everyone must approve, Maya has, Sana hasn't), and Sana's hero
-   illustration, where you asked for changes yesterday (after an earlier request she withdrew). */
+/* Two requests waiting on you at Foundrise (Sana's design tokens: anyone may approve; Maya's analytics
+   events), one you made (the launch deck: everyone must approve, Maya has, Sana hasn't), Sana's hero
+   illustration, where you asked for changes yesterday (after an earlier request she withdrew), and
+   Theo's resurfacing contractor at Courtside Padel, waiting on you in another business. */
 function seedDemo(): DemoRow[] {
   const row = (o: Omit<DemoRow, "workspaceId" | "title" | "updatedAt"> & { updatedAt?: string }): DemoRow => {
     const t = demoTask(o.taskId);
@@ -427,6 +428,10 @@ function seedDemo(): DemoRow[] {
       reviewers: [reviewer(DEMO_ME, "changes_requested", "Love the composition. Can we try a warmer palette so it sits with the new tokens?", 22 * 60), reviewer("m-4")] }),
     row({ id: "ap-demo-5", taskId: "t-9", requestedBy: "m-3", rule: "any", status: "cancelled", createdAt: agoIso(3 * 24 * 60), resolvedAt: agoIso(3 * 24 * 60 - 45), attachmentId: null,
       note: "First sketch for a gut check.",
+      reviewers: [reviewer(DEMO_ME)] }),
+    // in another business (Courtside Padel): its Inbox, the Group page and the switcher's dot show it
+    row({ id: "ap-demo-6", taskId: "t-35", requestedBy: "m-2", rule: "any", status: "pending", createdAt: agoIso(140), resolvedAt: null, attachmentId: null,
+      note: "Proline is the dearest, but the only one who can start before the league. OK to book?",
       reviewers: [reviewer(DEMO_ME)] }),
   ];
 }

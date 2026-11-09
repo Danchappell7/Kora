@@ -4,7 +4,7 @@ import {
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
   DAY_START, DAY_END, nextDueDate, nextOccurrence, nextOccurrenceChildren,
   refreshClock, KANBO_TODAY, NOW_MIN, presetDate, todayISO, parseTaskTokens,
-  seriesAnchorDay, TASKS, DEMO_ACTIVITY, DEMO_TASK_EVENTS, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES,
+  seriesAnchorDay, TASKS, PROJECTS, DEMO_ACTIVITY, DEMO_TASK_EVENTS, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES,
   DEMO_RULES, DEMO_FORMS,
 } from "./data";
 import type { Task } from "./types";
@@ -597,8 +597,10 @@ describe("parseTaskTokens shares the fixes", () => {
 describe("demo seed", () => {
   const byId = (id: string) => TASKS.find((t) => t.id === id)!;
 
-  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30", () => {
-    expect(TASKS.map((t) => t.id)).toEqual(Array.from({ length: 30 }, (_, i) => `t-${i + 1}`));
+  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30 (and the other businesses' t-31…t-43)", () => {
+    expect(TASKS.map((t) => t.id)).toEqual(Array.from({ length: 43 }, (_, i) => `t-${i + 1}`));
+    // t-1…t-30 are all Foundrise's or Personal's but Growth Experiments' (Reco HQ); the rest live in the other businesses
+    expect(TASKS.slice(30).every((t) => ["p-onboard", "p-growth", "p-clubhouse", "p-league", "p-northwind"].includes(t.projectId))).toBe(true);
     expect(byId("t-1")).toMatchObject({ title: "Finalise Q3 launch narrative deck", status: "progress", projectId: "p-launch", assigneeId: "m-self" });
     expect(byId("t-1").subtasks.filter((s) => s.done)).toHaveLength(2);
     expect(byId("t-2")).toMatchObject({ status: "blocked", assigneeId: "m-1", dependencies: ["t-4"] });
@@ -673,8 +675,14 @@ describe("demo seed", () => {
     expect(DEMO_ACTIVITY.filter((a) => !a.detail.startsWith("Request via")).every((a) => members.includes(a.detail))).toBe(true);
     // the request's task carries the line a form submission writes
     expect(byId("t-25").description).toMatch(/^Request via Launch requests\./);
-    expect(DEMO_GOALS.map((g) => g.status)).toEqual(["on_track", "at_risk"]);
-    expect(DEMO_PORTFOLIOS).toEqual([expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] })]);
+    expect(DEMO_GOALS.filter((g) => g.workspaceId === "ws-foundrise").map((g) => g.status)).toEqual(["on_track", "at_risk"]);
+    // the other businesses: Reco HQ on track, Courtside Padel behind on both
+    expect(DEMO_GOALS.filter((g) => g.workspaceId !== "ws-foundrise").map((g) => [g.workspaceId, g.status]))
+      .toEqual([["ws-reco", "on_track"], ["ws-courtside", "at_risk"], ["ws-courtside", "off_track"]]);
+    expect(DEMO_PORTFOLIOS[0]).toEqual(expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] }));
+    // a Personal portfolio across businesses, one of whose projects has gone from view
+    expect(DEMO_PORTFOLIOS[1]).toMatchObject({ workspaceId: null, projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"] });
+    expect(PROJECTS.some((p) => p.id === "p-gone-studio")).toBe(false);
     expect(DEMO_STATUS_UPDATES.some((u) => u.projectId === "p-infra")).toBe(false);
     expect(DEMO_RULES[0]).toMatchObject({ projectId: "p-launch", trigger: "task_created", actions: [{ type: "add_tag", value: "eng" }] });
     expect(DEMO_FORMS[0]).toMatchObject({ name: "Launch requests", fields: ["description", "priority", "dueDate"] });

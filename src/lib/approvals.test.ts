@@ -17,9 +17,12 @@ beforeEach(() => resetApprovalsDemo({ demoDelayMs: 0 }));
 const rev = (name: string, decision: ApprovalReviewer["decision"] = null): ApprovalReviewer => ({ userId: name, name, decision, comment: null, decidedAt: decision ? "2026-10-09T09:00:00Z" : null });
 
 describe("demo: what's waiting", () => {
-  it("two requests wait on you, one you made is half approved", async () => {
+  it("two requests wait on you, one you made is half approved (and one more in another business)", async () => {
     const my = await listMyApprovals();
-    expect(my.toReview.map((a) => a.task?.title)).toEqual(["Define design tokens v2", "Set up usage analytics events"]);
+    expect(my.toReview.map((a) => a.task?.title)).toEqual(["Define design tokens v2", "Choose the court resurfacing contractor", "Set up usage analytics events"]);
+    // the Inbox shows each workspace's own: Foundrise has two, Courtside Padel one
+    expect(approvalsInWorkspace(my.toReview, "ws-foundrise")).toHaveLength(2);
+    expect(approvalsInWorkspace(my.toReview, "ws-courtside").map((a) => a.id)).toEqual(["ap-demo-6"]);
     expect(my.toReview.every((a) => a.canDecide && !a.canCancel && a.status === "pending")).toBe(true);
     expect(my.toReview[0]).toMatchObject({ requestedByName: "Sana Rao", rule: "any", task: { projectId: "p-brand", workspaceId: "ws-foundrise" } });
     expect(my.requested).toHaveLength(1);
@@ -71,7 +74,8 @@ describe("demo: asking, deciding, cancelling", () => {
     await expect(decideApproval("ap-demo-2", "approved", "x".repeat(2001))).rejects.toThrow(/invalid comment/);
     const c = await decideApproval("ap-demo-2", "changes_requested", "Rename two events");
     expect(c.status).toBe("changes_requested");
-    expect((await listMyApprovals()).toReview).toHaveLength(0);
+    // (only Courtside Padel's, in another business, still waits)
+    expect((await listMyApprovals()).toReview.map((a) => a.id)).toEqual(["ap-demo-6"]);
   });
   it("only the requester cancels; a closed request can't be", async () => {
     await expect(cancelApproval("ap-demo-1")).rejects.toThrow(/approval not found/);
