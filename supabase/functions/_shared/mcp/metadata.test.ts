@@ -158,7 +158,7 @@ describe("the live check in DEPLOYMENT.md", () => {
       expect(c.indexOf("isn't in this folder yet")).toBeGreaterThan(-1);
       expect(c.indexOf("isn't in this folder yet")).toBeLessThan(c.indexOf("read -s"));
     }
-    expect(step).toMatch(/branch `mcp` merged/);
+    expect(step).toMatch(/new code isn't in that folder/);
   });
   it("says db.ts's other functions need deploying too", () => {
     const step = read("DEPLOYMENT.md").split("### Step 16")[1];

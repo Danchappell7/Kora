@@ -93,7 +93,7 @@ export function StreakChip({ streak, prefs, onChangePrefs, now, timezone, active
             {week.map((d, i) => (
               <li key={d.date} className="kstreak-day" data-today={d.date === today ? "" : undefined}>
                 <span className="kstreak-day-name" aria-hidden="true">{DAY_LETTERS[i]}</span>
-                <span className="kweek-dot" aria-hidden="true" data-state={d.state === "missed" ? undefined : d.state} />
+                <span className="kmom-dot" aria-hidden="true" data-state={d.state === "missed" ? undefined : d.state} />
                 <span className="sr-only">{DAY_NAMES[i]} {dayLabel(d.date).split(" ").slice(1).join(" ")}: {dayWords(d, d.date === today)}</span>
               </li>
             ))}

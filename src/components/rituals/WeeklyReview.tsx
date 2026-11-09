@@ -173,12 +173,12 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
   };
 
   const stepper = (
-    <div className="kweek-steps" role="img" aria-label={`Step ${step} of 4`}>
+    <div className="kwr-steps" role="img" aria-label={`Step ${step} of 4`}>
       {[1, 2, 3, 4].map((n) => <span key={n} data-on={n <= step || undefined} />)}
     </div>
   );
-  const heading = (text: string) => <h3 ref={headRef} tabIndex={-1} className="kweek-h">{text}</h3>;
-  const back = (to: Step) => <span className="kweek-foot-start"><Button variant="ghost" icon="arrowLeft" onClick={() => setStep(to)}>Back</Button></span>;
+  const heading = (text: string) => <h3 ref={headRef} tabIndex={-1} className="kwr-h">{text}</h3>;
+  const back = (to: Step) => <span className="kwr-foot-start"><Button variant="ghost" icon="arrowLeft" onClick={() => setStep(to)}>Back</Button></span>;
   const nextBtn = (to: Step) => <Button ref={to === 2 ? nextRef : undefined} variant="primary" iconRight="arrowRight" onClick={() => setStep(to)}>Next</Button>;
 
   let body: JSX.Element;
@@ -188,35 +188,35 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
       <>
         {stepper}
         {heading(lookingBack ? "Last week's wins" : "This week's wins")}
-        <p className="kweek-count"><span className="kweek-num">{wins.length}</span> <span className="kweek-unit">{wins.length === 1 ? "task finished" : "tasks finished"}</span></p>
+        <p className="kwr-count"><span className="kwr-num">{wins.length}</span> <span className="kwr-unit">{wins.length === 1 ? "task finished" : "tasks finished"}</span></p>
         {wins.length ? (
-          <ul className="kweek-list">
+          <ul className="kwr-list">
             {wins.slice(0, WINS_SHOWN).map((t) => {
               const p = getProject(t.projectId);
               return (
-                <li key={t.id} className="kweek-item">
+                <li key={t.id} className="kwr-item">
                   <StatusGlyph status="done" size={14} />
-                  <span className="kweek-title truncate">{t.title}</span>
+                  <span className="kwr-title truncate">{t.title}</span>
                   {p && <ProjectDot color={p.color} size={8} title={p.name} />}
                 </li>
               );
             })}
-            {wins.length > WINS_SHOWN && <li className="kweek-more">and {wins.length - WINS_SHOWN} more</li>}
+            {wins.length > WINS_SHOWN && <li className="kwr-more">and {wins.length - WINS_SHOWN} more</li>}
           </ul>
-        ) : <p className="kweek-lede">A quieter week. Carry what matters forward and pick three things for next week.</p>}
+        ) : <p className="kwr-lede">A quieter week. Carry what matters forward and pick three things for next week.</p>}
         {onSummarise && (summary.state === "done" && summary.text ? (
           <Vellum provenance={{
             summary: `from ${wins.length} finished ${wins.length === 1 ? "task" : "tasks"} ${lookingBack ? "last week" : "this week"}`,
             details: wins.length ? wins.map((t) => `Finished: ${t.title}`) : undefined,
           }}>
-            <p className="kweek-summary">{summary.text}</p>
+            <p className="kwr-summary">{summary.text}</p>
           </Vellum>
         ) : (
-          <div className="kweek-ai">
+          <div className="kwr-ai">
             <Button variant="ghost" size="sm" loading={summary.state === "busy"} onClick={summarise}>
               {summary.state !== "busy" && <AiMark size={14} />}Summarise my week
             </Button>
-            {summary.state === "none" && <span className="kweek-note">Kanbo couldn't write a summary just now.</span>}
+            {summary.state === "none" && <span className="kwr-note">Kanbo couldn't write a summary just now.</span>}
           </div>
         ))}
       </>
@@ -225,7 +225,7 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
   } else if (step === 2) {
     const allOn = carry.length > 0 && carry.every((t) => selected.has(t.id));
     const due = (t: Task, where?: LeftoverMove) => (
-      <span className="kweek-due" data-late={!where && !!t.dueDate && t.dueDate < day ? true : undefined}>
+      <span className="kwr-due" data-late={!where && !!t.dueDate && t.dueDate < day ? true : undefined}>
         {where ? `→ ${t.dueDate ? dayLabel(t.dueDate) : "Someday"}` : t.dueDate ? dayLabel(t.dueDate) : ""}
       </span>
     );
@@ -235,7 +235,7 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
         {heading("Carried over")}
         {carry.length ? (
           <>
-            <p className="kweek-lede">
+            <p className="kwr-lede">
               {lookingBack ? "Yours, still open from last week." : "Yours, still open and due this week."}{" "}
               {readOnly ? "You're a guest in this workspace, so their dates stay as they are." : "Pick some and give them a new date."}
             </p>
@@ -243,13 +243,13 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
               action={readOnly ? undefined : <Button variant="ghost" size="sm" onClick={() => setSelected(allOn ? new Set() : new Set(carry.map((t) => t.id)))}>{allOn ? "Select none" : "Select all"}</Button>}>
               {lookingBack ? "Due last week" : "Due this week"}
             </SectionLabel>
-            <ul className="kweek-picks">
+            <ul className="kwr-picks">
               {carry.map((t) => {
                 if (readOnly) {
                   return (
-                    <li key={t.id} className="kweek-pick" data-static="true">
+                    <li key={t.id} className="kwr-pick" data-static="true">
                       <StatusGlyph status={t.status} size={14} />
-                      <span className="kweek-title truncate">{t.title}</span>
+                      <span className="kwr-title truncate">{t.title}</span>
                       {due(t)}
                     </li>
                   );
@@ -258,10 +258,10 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
                 const where = moved[t.id];
                 return (
                   <li key={t.id}>
-                    <button type="button" role="checkbox" aria-checked={on} aria-label={t.title} className="kweek-pick" data-done={where ? true : undefined}
+                    <button type="button" role="checkbox" aria-checked={on} aria-label={t.title} className="kwr-pick" data-done={where ? true : undefined}
                       onClick={() => setSelected((s) => { const n = new Set(s); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); return n; })}>
-                      <span className="kweek-box" aria-hidden="true">{on && <Icon name="check" size={12} sw={2.5} />}</span>
-                      <span className="kweek-title truncate">{t.title}</span>
+                      <span className="kwr-box" aria-hidden="true">{on && <Icon name="check" size={12} sw={2.5} />}</span>
+                      <span className="kwr-title truncate">{t.title}</span>
                       {due(t, where)}
                     </button>
                   </li>
@@ -269,15 +269,15 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
               })}
             </ul>
             {!readOnly && (
-              <div className="kweek-bulk" aria-live="polite">
-                <span className="kweek-note">{selected.size ? `${selected.size} selected` : "Nothing selected"}</span>
+              <div className="kwr-bulk" aria-live="polite">
+                <span className="kwr-note">{selected.size ? `${selected.size} selected` : "Nothing selected"}</span>
                 <Button variant="ghost" size="sm" disabled={!selected.size} onClick={() => moveSelected("someday")}>Someday</Button>
                 <Button variant="secondary" size="sm" icon="calendar" disabled={!selected.size} onClick={() => moveSelected("nextweek")}>Move to {dayLabel(planMonday)}</Button>
               </div>
             )}
           </>
         ) : (
-          <p className="kweek-lede">Nothing of yours carried over. A clean week.</p>
+          <p className="kwr-lede">Nothing of yours carried over. A clean week.</p>
         )}
       </>
     );
@@ -287,27 +287,27 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
       <>
         {stepper}
         {heading(lookingBack ? "This week's Big 3" : "Next week's Big 3")}
-        <p className="kweek-lede">Pick up to three things that would make {lookingBack ? "this" : "next"} week a good one. They sit at the top of Today all week.</p>
+        <p className="kwr-lede">Pick up to three things that would make {lookingBack ? "this" : "next"} week a good one. They sit at the top of Today all week.</p>
         {candidates.length ? (
-          <ul className="kweek-picks" aria-label="Candidates">
+          <ul className="kwr-picks" aria-label="Candidates">
             {candidates.map((t) => {
               const n = big3.indexOf(t.id);
               const full = big3.length >= 3 && n < 0;
               return (
                 <li key={t.id}>
-                  <button type="button" role="checkbox" aria-checked={n >= 0} aria-label={t.title} className="kweek-pick" disabled={full}
+                  <button type="button" role="checkbox" aria-checked={n >= 0} aria-label={t.title} className="kwr-pick" disabled={full}
                     onClick={() => toggleBig3(t.id)}>
-                    <span className="kweek-box" data-rank={n >= 0 ? n + 1 : undefined} aria-hidden="true">{n >= 0 ? n + 1 : null}</span>
-                    <span className="kweek-title truncate">{t.title}</span>
+                    <span className="kwr-box" data-rank={n >= 0 ? n + 1 : undefined} aria-hidden="true">{n >= 0 ? n + 1 : null}</span>
+                    <span className="kwr-title truncate">{t.title}</span>
                     {getProject(t.projectId) && <ProjectDot color={getProject(t.projectId)!.color} size={8} />}
-                    <span className="kweek-due">{t.dueDate ? dayLabel(t.dueDate) : ""}</span>
+                    <span className="kwr-due">{t.dueDate ? dayLabel(t.dueDate) : ""}</span>
                   </button>
                 </li>
               );
             })}
           </ul>
-        ) : <p className="kweek-lede">Nothing open yet. Add a few tasks and come back.</p>}
-        <p className="kweek-note" aria-live="polite">{big3.length ? `${big3.length} of 3 picked · saved for the week of ${dayLabel(planMonday)}` : "None picked yet"}</p>
+        ) : <p className="kwr-lede">Nothing open yet. Add a few tasks and come back.</p>}
+        <p className="kwr-note" aria-live="polite">{big3.length ? `${big3.length} of 3 picked · saved for the week of ${dayLabel(planMonday)}` : "None picked yet"}</p>
       </>
     );
     footer = <>{back(2)}{nextBtn(4)}</>;
@@ -316,8 +316,8 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
       <>
         {stepper}
         {heading("Share")}
-        <p className="kweek-lede">Copy your week as plain text for a standup or a note to yourself. Nothing is sent anywhere.</p>
-        <pre className="kweek-share">{shareText()}</pre>
+        <p className="kwr-lede">Copy your week as plain text for a standup or a note to yourself. Nothing is sent anywhere.</p>
+        <pre className="kwr-share">{shareText()}</pre>
       </>
     );
     footer = (
@@ -331,57 +331,57 @@ export function WeeklyReview({ open, onClose, tasks, allTasks, currentUserId, on
 
   return (
     <Sheet open={open} onClose={finish} label="Weekly review" title="Weekly review" width={600} initialFocus={nextRef}
-      footer={<div className="kweek-foot" key={step}>{footer}</div>}>
+      footer={<div className="kwr-foot" key={step}>{footer}</div>}>
       <style>{WEEK_CSS}</style>
-      <div className="kweek">{body}</div>
+      <div className="kwr">{body}</div>
     </Sheet>
   );
 }
 
 const WEEK_CSS = `
-.kweek { display: flex; flex-direction: column; gap: 16px; padding-top: 4px; }
-.kweek-steps { display: flex; gap: 4px; }
-.kweek-steps > span { width: 24px; height: 2px; border-radius: 2px; background: var(--hairline-strong); }
-.kweek-steps > span[data-on="true"] { background: var(--grad, linear-gradient(90deg, #5B7CFA 0%, #8B5CF6 52%, #C24BE0 100%)); }
-.kweek-h { margin: -4px 0 0; font: 600 15px/24px var(--font-ui, var(--font-display)); color: var(--ink); }
-.kweek-h:focus, .kweek-h:focus-visible { outline: none; }
-.kweek-lede { margin: -8px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
-.kweek-count { display: flex; align-items: baseline; gap: 10px; margin: -8px 0 0; }
-.kweek-num { font: 500 var(--t-display, 28px)/var(--lh-display, 36px) var(--font-head); letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
-.kweek-unit { font: 500 15px/24px var(--font-ui, var(--font-display)); color: var(--ink-2); }
-.kweek-list, .kweek-picks { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
-.kweek-item { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 4px; }
-.kweek-title { flex: 1 1 auto; min-width: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-align: left; }
-.kweek-more { padding: 4px 4px 0 32px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
-.kweek-ai { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.kweek-ai .kbtn .kaimark-wrap { margin-right: 2px; }
-.kweek-summary { margin: 0; font: 400 15px/24px var(--font-ui, var(--font-display)); color: var(--ink); }
-.kweek-note { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); margin: 0; }
-.kweek-pick {
+.kwr { display: flex; flex-direction: column; gap: 16px; padding-top: 4px; }
+.kwr-steps { display: flex; gap: 4px; }
+.kwr-steps > span { width: 24px; height: 2px; border-radius: 2px; background: var(--hairline-strong); }
+.kwr-steps > span[data-on="true"] { background: var(--grad, linear-gradient(90deg, #5B7CFA 0%, #8B5CF6 52%, #C24BE0 100%)); }
+.kwr-h { margin: -4px 0 0; font: 600 15px/24px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kwr-h:focus, .kwr-h:focus-visible { outline: none; }
+.kwr-lede { margin: -8px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kwr-count { display: flex; align-items: baseline; gap: 10px; margin: -8px 0 0; }
+.kwr-num { font: 500 var(--t-display, 28px)/var(--lh-display, 36px) var(--font-head); letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.kwr-unit { font: 500 15px/24px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kwr-list, .kwr-picks { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.kwr-item { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 4px; }
+.kwr-title { flex: 1 1 auto; min-width: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-align: left; }
+.kwr-more { padding: 4px 4px 0 32px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kwr-ai { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.kwr-ai .kbtn .kaimark-wrap { margin-right: 2px; }
+.kwr-summary { margin: 0; font: 400 15px/24px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kwr-note { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); margin: 0; }
+.kwr-pick {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 0 8px; border: 0; border-radius: var(--r-sm, 6px);
   background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left;
   transition: background var(--d-1, 90ms) var(--ease);
 }
-.kweek-pick:hover:not(:disabled):not([data-static]) { background: var(--fill-1); }
-.kweek-pick[data-static="true"] { cursor: default; }
-.kweek-pick:disabled { cursor: not-allowed; opacity: 0.45; }
-.kweek-pick[aria-checked="true"] { background: var(--bg-selected, var(--accent-dim)); }
-.kweek-pick[aria-checked="true"] .kweek-title { color: var(--ink); }
-.kweek-pick[data-done="true"] .kweek-title { color: var(--ink-3); }
-.kweek-box {
+.kwr-pick:hover:not(:disabled):not([data-static]) { background: var(--fill-1); }
+.kwr-pick[data-static="true"] { cursor: default; }
+.kwr-pick:disabled { cursor: not-allowed; opacity: 0.45; }
+.kwr-pick[aria-checked="true"] { background: var(--bg-selected, var(--accent-dim)); }
+.kwr-pick[aria-checked="true"] .kwr-title { color: var(--ink); }
+.kwr-pick[data-done="true"] .kwr-title { color: var(--ink-3); }
+.kwr-box {
   display: grid; place-items: center; flex-shrink: 0; width: 16px; height: 16px; border-radius: var(--r-xs, 4px);
   border: 1.5px solid var(--control-border, var(--hairline-strong)); color: var(--on-accent);
   font: 600 11px/1 var(--font-mono);
 }
-.kweek-pick[aria-checked="true"] .kweek-box { background: var(--accent-fill, var(--accent)); border-color: transparent; }
-.kweek-due { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
-.kweek-due[data-late="true"] { color: var(--signal, var(--st-blocked)); }
-.kweek-bulk { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
-.kweek-bulk .kweek-note { margin-right: auto; }
-.kweek-share {
+.kwr-pick[aria-checked="true"] .kwr-box { background: var(--accent-fill, var(--accent)); border-color: transparent; }
+.kwr-due { flex-shrink: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kwr-due[data-late="true"] { color: var(--signal, var(--st-blocked)); }
+.kwr-bulk { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+.kwr-bulk .kwr-note { margin-right: auto; }
+.kwr-share {
   margin: 0; padding: 12px 16px; border-radius: var(--r-md, 8px); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline);
   font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto;
 }
-.kweek-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
-.kweek-foot-start { display: inline-flex; align-items: center; margin-right: auto; }
+.kwr-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
+.kwr-foot-start { display: inline-flex; align-items: center; margin-right: auto; }
 `;

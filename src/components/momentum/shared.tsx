@@ -10,8 +10,8 @@ import type { StreakDay } from "../../lib/momentum";
 /** Monday to Friday as five dots: counted (filled), today still open (ring), off (a dash), to come (hairline). Decorative. */
 export function WeekDots({ days, size = "sm" }: { days: readonly Pick<StreakDay, "state">[]; size?: "sm" | "md" }) {
   return (
-    <span className="kweek" data-size={size} aria-hidden="true">
-      {days.map((d, i) => <span key={i} className="kweek-dot" data-state={d.state === "missed" ? undefined : d.state} />)}
+    <span className="kmom-week" data-size={size} aria-hidden="true">
+      {days.map((d, i) => <span key={i} className="kmom-dot" data-state={d.state === "missed" ? undefined : d.state} />)}
     </span>
   );
 }
