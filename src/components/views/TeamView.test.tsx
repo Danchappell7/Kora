@@ -124,6 +124,9 @@ describe("TeamView", () => {
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Copy sign-up link for guest@partner.io" })); });
     expect(writeText).toHaveBeenCalledWith(window.location.origin + "/");
     expect(screen.getByText("Link copied")).toBeInTheDocument();
+    // the link is the sign-up page; the invite is the address, so it has to be that exact one
+    expect(screen.getByText("Link copied. Send it to them: they join by signing up or signing in with exactly guest@partner.io. A different address won't see this workspace.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy sign-up link for guest@partner.io" })).toHaveAttribute("title", expect.stringMatching(/that exact address/));
   });
 
   it("a failed resend shows the reason and can be retried", async () => {
@@ -188,21 +191,47 @@ describe("TeamView", () => {
     expect(screen.queryByLabelText("Emails")).toBeNull();
   });
 
-  it("describes the guest role as view-and-comment across every project", () => {
+  it("describes the guest role honestly: every project in the workspace, comment only", () => {
     team([]);
     openInvite();
     fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "guest" } });
-    expect(screen.getByText("Can view and comment — sees every project in this workspace", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Can see every project in this workspace and comment on its tasks, but can't change anything.", { exact: false })).toBeInTheDocument();
   });
 
-  it("warns that removing someone also takes them off tasks they follow or collaborate on", () => {
+  it("warns what someone leaves behind before removing them, and that they come off tasks they follow", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const { props } = team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" })]);
     fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
     fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
-    expect(confirm).toHaveBeenCalledWith("Remove Maya Lin from this workspace? They'll also be taken off tasks they collaborate on or follow.");
+    expect(confirm).toHaveBeenCalledWith("Remove Maya Lin from this workspace? Maya has 1 open task. It'll stay assigned to Maya until you hand it on. Maya will also be taken off tasks they collaborate on or follow.");
     expect(props.onRemoveMember).not.toHaveBeenCalled();
     confirm.mockRestore();
+  });
+
+  it("counts the projects someone owns in this workspace (Theo owns Platform Infra)", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const theirs = [1, 2, 3].map((i) => ({ ...task, id: `th${i}`, assigneeId: "m-2" })) as Task[];
+    team([member({ id: "w2", userId: "m-2", email: "theo@kanbo.app" })], { tasks: [...theirs, { ...task, id: "th-done", assigneeId: "m-2", status: "done" } as Task] });
+    fireEvent.click(screen.getByRole("button", { name: /Theo Vance/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
+    expect(confirm).toHaveBeenCalledWith("Remove Theo Vance from this workspace? Theo has 3 open tasks and owns 1 project. They'll stay with Theo until you hand them on. Theo will also be taken off tasks they collaborate on or follow.");
+    confirm.mockRestore();
+  });
+
+  it("anyone here can see a teammate's tasks: there's no admins-only lock (Pulse and Workload show them too)", () => {
+    team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" })], { myRole: "member" });
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    expect(screen.getByRole("button", { name: /Q3 budget/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Only admins can view/)).toBeNull();
+  });
+
+  it("a guest isn't shown each person's hours (they don't get Workload either)", () => {
+    const people = [member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" }), member({ id: "w0", userId: "m-self", email: "daniel@kanbo.app", role: "guest" })];
+    const { unmount } = team(people);
+    expect(screen.getAllByText(/h \/ 40h/).length).toBeGreaterThan(0);     // an owner sees them
+    unmount();
+    team(people, { myRole: "guest" });
+    expect(screen.queryByText(/h \/ 40h/)).toBeNull();
   });
 
   it("no longer shows the workspace settings (they live in Settings › Workspace)", () => {

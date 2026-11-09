@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canDeleteProject, canArchiveProject, can, ROLE_META } from "./permissions";
+import { canDeleteProject, canArchiveProject, can, ROLE_META, GUEST_LINE, removeMemberQuestion } from "./permissions";
 
 const me = "u-me";
 const team = { id: "p-launch", workspaceId: "ws-1", ownerId: "u-other" };
@@ -61,6 +61,18 @@ describe("guest capabilities", () => {
   it("guests can view and comment, not edit", () => {
     expect(can("guest", "editContent")).toBe(false);
     expect(can("guest", "createProjects")).toBe(false);
-    expect(ROLE_META.guest.blurb).toMatch(/view and comment/i);
+    // honest about today: a guest sees every project (until private projects land)
+    expect(ROLE_META.guest.blurb).toBe("Can see every project and comment");
+    expect(GUEST_LINE).toMatch(/every project in this workspace/);
+    expect(GUEST_LINE).toMatch(/can't change anything/);
+  });
+});
+
+describe("removing someone says what they leave behind", () => {
+  it("names their open tasks and the projects they own", () => {
+    expect(removeMemberQuestion("Theo Vance", 7, 2)).toBe("Remove Theo Vance from this workspace? Theo has 7 open tasks and owns 2 projects. They'll stay with Theo until you hand them on. Theo will also be taken off tasks they collaborate on or follow.");
+    expect(removeMemberQuestion("Theo Vance", 1, 0)).toBe("Remove Theo Vance from this workspace? Theo has 1 open task. It'll stay assigned to Theo until you hand it on. Theo will also be taken off tasks they collaborate on or follow.");
+    expect(removeMemberQuestion("Theo Vance", 0, 1)).toBe("Remove Theo Vance from this workspace? Theo owns 1 project. It'll stay in Theo's name until you hand it on. Theo will also be taken off tasks they collaborate on or follow.");
+    expect(removeMemberQuestion("Maya Lin", 0, 0)).toBe("Remove Maya Lin from this workspace? They'll also be taken off tasks they collaborate on or follow.");
   });
 });

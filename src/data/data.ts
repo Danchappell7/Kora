@@ -146,6 +146,8 @@ export let WORKSPACES: Workspace[] = [
   { id: null, name: "Personal", kind: "personal" },
   { id: "ws-foundrise", name: "Foundrise", kind: "team" },
   { id: "ws-reco", name: "Reco HQ", kind: "team" },
+  // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
+  { id: "ws-northlight", name: "Northlight Studio", kind: "team" },
 ];
 
 /* Each demo project wears its own emoji and spectrum hue (lib/projectIdentity.ts),
@@ -157,6 +159,7 @@ export let PROJECTS: Project[] = [
   { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
   { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"] },
   { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
+  { id: "p-northlight", name: "Website rebuild", emoji: "🧭", color: spectrumColor("lagoon"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
 ];
 
 /* Minimal reference data a brand-new (real) account starts with — one personal
@@ -332,6 +335,15 @@ export const TASKS: Task[] = [
   t({ title: "Security review sign-off", status: "review", priority: "high", projectId: "p-infra",
       assigneeId: "m-1", createdBy: "m-1", dueDate: thisWeek(2), tags: ["eng"], aiScore: 70, focusMin: 30, effortHours: 1,
       createdAt: daysAgoAt(3, 11, 50) }),
+  // Northlight Studio (Idris's workspace; Daniel is a guest there): its own work, nothing of Daniel's
+  t({ id: "t-nl-1", title: "Sitemap and page list", status: "done", priority: "medium", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(-5), completedAt: dayOffset(-6), focusMin: 45, createdAt: daysAgoAt(14, 10, 0) }),
+  t({ id: "t-nl-2", title: "Homepage copy", status: "progress", priority: "high", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(2), tags: ["writing"], focusMin: 90, createdAt: daysAgoAt(8, 9, 30) }),
+  t({ id: "t-nl-3", title: "Choose the studio photography", status: "review", priority: "medium", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(1), tags: ["design"], focusMin: 30, createdAt: daysAgoAt(6, 15, 0) }),
+  t({ id: "t-nl-4", title: "Booking widget on the class pages", status: "todo", priority: "medium", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(9), dependencies: ["t-nl-2"], tags: ["eng"], focusMin: 120, createdAt: daysAgoAt(5, 11, 0) }),
 ];
 
 /* ---- meta ---- */

@@ -364,7 +364,11 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
             <ComposerPanel c={c} title="Post an update" textRef={textRef} />
           </section>
         )}
-        {history.length === 0 ? (
+        {history.length === 0 && readOnly && project.workspaceId ? (
+          // a guest: once 0051 is run they don't see a team's updates, so "nobody has posted" wouldn't be true
+          <EmptyState art="chart" size="sm" title="Updates are for members"
+            body="The people running this project post its status updates for the team. As a guest you can follow its tasks and comment on them." />
+        ) : history.length === 0 ? (
           <EmptyState art="chart" size="sm" title="No updates yet"
             body={canPost ? "A short update keeps everyone in the loop. Kanbo has drafted one from this week's changes above." : "Nobody has posted an update on this project yet."} />
         ) : (

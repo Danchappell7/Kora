@@ -121,3 +121,29 @@ describe("HomeView in a team workspace", () => {
     expect(screen.getByText(/Dan\./).closest("p")!.textContent).toContain("Nothing's due today.");
   });
 });
+
+describe("HomeView (Overview) — the numbers and guests", () => {
+  const p = { id: "p-x", name: "Launch", emoji: "", color: "red", workspaceId: "ws" };
+  const render2 = (tasks: Task[], o: Partial<React.ComponentProps<typeof HomeView>> = {}) => render(
+    <HomeView tasks={tasks} projects={[p]} userName="Dan" onOpen={vi.fn()} setRoute={vi.fn()} openFocus={vi.fn()}
+      onNewProject={vi.fn()} onNewTask={vi.fn()} onAutoPrioritize={vi.fn()} {...o} />,
+  );
+
+  it("a project card counts top-level tasks, as its header, portfolios and goals do", () => {
+    // 1 of 2 top-level tasks done; four open sub-tasks don't drag it to 17%
+    const tasks = [task({ id: "a", projectId: "p-x", status: "done" }), task({ id: "b", projectId: "p-x" }),
+      ...[1, 2, 3, 4].map((i) => task({ id: `s${i}`, projectId: "p-x", parentId: "a" }))];
+    render2(tasks);
+    expect(screen.getByRole("progressbar", { name: "Launch progress" })).toHaveAttribute("aria-valuenow", "50");
+    expect(screen.getByText("2 tasks")).toBeInTheDocument();
+  });
+
+  it("gives a guest no link into Insights (the team's reporting)", () => {
+    const tasks = [task({ id: "a", projectId: "p-x" })];
+    const { unmount } = render2(tasks);
+    expect(screen.getByRole("button", { name: "Details" })).toBeInTheDocument();
+    unmount();
+    render2(tasks, { showInsights: false });
+    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
+  });
+});

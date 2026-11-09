@@ -82,24 +82,39 @@ export const PLACES: Place[] = [
   },
   {
     id: "team", label: "Team", icon: "users", group: "team", gKey: "e", route: { view: "pulse" },
+    // guests see People only: Pulse, Workload and Insights (Trends, Time & billing) are the team's own reporting
     tabs: [
-      { id: "pulse", label: "Pulse", route: { view: "pulse" } },
+      { id: "pulse", label: "Pulse", route: { view: "pulse" }, hiddenForGuest: true },
       { id: "team", label: "People", route: { view: "team" } },
-      { id: "workload", label: "Workload", route: { view: "workload" } },
-      { id: "analytics", label: "Insights", route: { view: "analytics" } },
+      { id: "workload", label: "Workload", route: { view: "workload" }, hiddenForGuest: true },
+      { id: "analytics", label: "Insights", route: { view: "analytics" }, hiddenForGuest: true },
     ],
   },
 ];
+
+/** What a guest can't open: the workspace's Rules and its team reporting (Pulse,
+ *  Workload, Insights and Trends, with Time & billing). App's route guard sends
+ *  them elsewhere (guestRoute); the sidebar, tabs and ⌘K leave them out.
+ *  An interface gate: until private projects land, guests can still read tasks. */
+export const GUEST_HIDDEN_VIEWS: readonly ViewId[] = ["automations", "pulse", "workload", "analytics", "reports"];
+export const hiddenFromGuest = (view: ViewId): boolean => GUEST_HIDDEN_VIEWS.includes(view);
+
+/** Where a guest goes instead of a view they can't open: Rules → Projects, the team's reporting → People. */
+export function guestRoute(r: Route): Route {
+  if (!hiddenFromGuest(r.view)) return r;
+  return r.view === "automations" ? { view: "projects" } : { view: "team" };
+}
 
 const placeById = (id: PlaceId): Place => PLACES.find((p) => p.id === id)!;
 
 export interface NavItem { id: PlaceId | "insights"; label: string; icon: IconName; group: "me" | "team"; route: Route }
 
-/** The sidebar and drawer entries. In Personal, Team is Insights (there's no team to show). */
+/** The sidebar and drawer entries. In Personal, Team is Insights (there's no team to show);
+ *  a guest's Team opens on People. */
 export function navItems(ctx: NavCtx): NavItem[] {
   return PLACES.map((p): NavItem => (p.id === "team" && ctx.personal
     ? { id: "insights", label: "Insights", icon: "chart", group: "team", route: { view: "analytics" } }
-    : { id: p.id, label: p.label, icon: p.icon, group: p.group, route: p.route }));
+    : { id: p.id, label: p.label, icon: p.icon, group: p.group, route: ctx.guest ? guestRoute(p.route) : p.route }));
 }
 
 const PLACE_OF: Record<ViewId, PlaceId> = {
@@ -115,7 +130,7 @@ export function placeOf(route: Route): PlaceId {
   return PLACE_OF[route.view] ?? "today";
 }
 
-/** A place's tabs for this person: guests lose Rules; Personal's Team has none
+/** A place's tabs for this person: guests lose Rules and the team's reporting; Personal's Team has none
  *  (Insights' Overview / Trends switch lives in the page). */
 export function tabsFor(place: PlaceId, ctx: NavCtx): PlaceTab[] {
   if (place === "team" && ctx.personal) return [];

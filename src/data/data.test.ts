@@ -597,8 +597,10 @@ describe("parseTaskTokens shares the fixes", () => {
 describe("demo seed", () => {
   const byId = (id: string) => TASKS.find((t) => t.id === id)!;
 
-  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30", () => {
-    expect(TASKS.map((t) => t.id)).toEqual(Array.from({ length: 30 }, (_, i) => `t-${i + 1}`));
+  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30, then Northlight Studio's four", () => {
+    expect(TASKS.map((t) => t.id)).toEqual([...Array.from({ length: 30 }, (_, i) => `t-${i + 1}`), "t-nl-1", "t-nl-2", "t-nl-3", "t-nl-4"]);
+    // Daniel is a guest in Northlight Studio: none of its work is his
+    expect(TASKS.filter((t) => t.projectId === "p-northlight").every((t) => t.assigneeId === "m-4" && t.createdBy === "m-4")).toBe(true);
     expect(byId("t-1")).toMatchObject({ title: "Finalise Q3 launch narrative deck", status: "progress", projectId: "p-launch", assigneeId: "m-self" });
     expect(byId("t-1").subtasks.filter((s) => s.done)).toHaveLength(2);
     expect(byId("t-2")).toMatchObject({ status: "blocked", assigneeId: "m-1", dependencies: ["t-4"] });

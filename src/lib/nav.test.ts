@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   PLACES, navItems, placeOf, tabsFor, pathOf, routeOf, canonicalPath, G_KEYS, GO_TARGETS, SHORTCUTS, titleOf, type NavCtx,
+  GUEST_HIDDEN_VIEWS, guestRoute, hiddenFromGuest,
 } from "./nav";
 import type { Route, ViewId, ProjectTab } from "../app-types";
 
@@ -162,6 +163,27 @@ describe("places", () => {
     expect(placeOf({ view: "analytics" })).toBe("team");
     expect(placeOf({ view: "reports" })).toBe("team");
     for (const view of VIEWS) expect(PLACES.map((p) => p.id)).toContain(placeOf({ view }));
+  });
+
+  it("give guests People only in Team: Pulse, Workload and Insights (Trends, Time & billing) are the team's reporting", () => {
+    expect(tabsFor("team", GUEST).map((t) => t.label)).toEqual(["People"]);
+    expect(navItems(GUEST).find((n) => n.id === "team")?.route).toEqual({ view: "team" });
+    expect(navItems(TEAM).find((n) => n.id === "team")?.route).toEqual({ view: "pulse" });
+    expect([...GUEST_HIDDEN_VIEWS].sort()).toEqual(["analytics", "automations", "pulse", "reports", "workload"]);
+    for (const v of ["pulse", "workload", "analytics", "reports"] as ViewId[]) {
+      expect(hiddenFromGuest(v)).toBe(true);
+      expect(guestRoute({ view: v })).toEqual({ view: "team" });
+    }
+    expect(guestRoute({ view: "automations" })).toEqual({ view: "projects" });
+    // Goals and Portfolios stay: guests read them (and, once 0051 is run, are told who they're for)
+    for (const v of ["goals", "portfolios", "team", "projects", "home", "plan"] as ViewId[]) {
+      expect(hiddenFromGuest(v)).toBe(false);
+      expect(guestRoute({ view: v })).toEqual({ view: v });
+    }
+    // every address to the team's reporting is covered, aliases included
+    for (const path of ["/team", "/team/pulse", "/team/workload", "/team/insights", "/team/insights/trends", "/analytics", "/reports", "/workload"]) {
+      expect(guestRoute(routeOf(path)!).view).toBe("team");
+    }
   });
 
   it("give guests no Rules tab", () => {

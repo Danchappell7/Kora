@@ -353,6 +353,27 @@ describe("ProjectPanels", () => {
     expect(box().value).toMatch(/^Finished 1 task this week/);
   });
 
+  it("Updates: each says who posted it, with a former member named as such", () => {
+    const withAuthors: StatusUpdate[] = [
+      { ...UPDATES[1], authorId: "m-1" },
+      { ...UPDATES[0], authorId: null },                       // their account was deleted
+      { id: "u0", projectId: P.id, status: "on_track", summary: "First thoughts", createdAt: ago(30), authorId: "m-gone" },   // left the team
+    ];
+    render(<ProjectPanels {...base({ statusUpdates: withAuthors })} />);
+    const items = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("Maya Lin");
+    expect(items[1]).toHaveTextContent("Former member");
+    expect(items[2]).toHaveTextContent("Former member");
+    expect(items[1].querySelector("[data-former]")).not.toBeNull();
+    expect(items[0].querySelector("[data-former]")).toBeNull();
+  });
+
+  it("Updates: a guest with none to read is told updates are for members, not that nobody posted", () => {
+    render(<ProjectPanels {...base({ readOnly: true, statusUpdates: [] })} />);
+    expect(screen.getByText("Updates are for members")).toBeInTheDocument();
+    expect(screen.queryByText(/Nobody has posted/)).toBeNull();
+  });
+
   it("Updates: a half-written update survives a tab switch, and is the header's draft too", () => {
     const { rerender } = render(<ProjectPanels {...base()} />);
     fireEvent.change(box(), { target: { value: "My careful update about the launch" } });

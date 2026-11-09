@@ -1444,6 +1444,13 @@ export const store = {
           id: "wm-" + i, workspaceId: "ws-foundrise", userId: m.id, email: m.email, name: m.name,
           role: m.type === "self" ? "owner" as const : "member" as const, status: "active" as const,
         }));
+        // Northlight Studio is Idris's, and Daniel is a guest there: read and comment only, no
+        // goals, portfolios, updates or team reporting (as the live database has it since 0051)
+        const idris = MEMBERS.find((m) => m.id === "m-4"), self = MEMBERS.find((m) => m.type === "self");
+        if (idris && self) demoMembers.push(
+          { id: "wm-nl-0", workspaceId: "ws-northlight", userId: idris.id, email: idris.email, name: idris.name, role: "owner", status: "active" },
+          { id: "wm-nl-1", workspaceId: "ws-northlight", userId: self.id, email: self.email, name: self.name, role: "guest", status: "active" },
+        );
       }
       // a living inbox from the first load (anything already logged this session stays)
       if (!demoInboxSeeded) {
