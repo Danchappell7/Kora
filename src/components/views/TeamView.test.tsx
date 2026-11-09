@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { TeamView, WorkspaceSettingsPanel } from "./TeamView";
 import type { Task, WorkspaceMember } from "../../data/types";
 
@@ -199,23 +199,49 @@ describe("TeamView", () => {
   });
 
   it("warns what someone leaves behind before removing them, and that they come off tasks they follow", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = vi.spyOn(window, "confirm");
     const { props } = team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" })]);
     fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
     fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
-    expect(confirm).toHaveBeenCalledWith("Remove Maya Lin from this workspace? Maya has 1 open task. It'll stay assigned to Maya until you hand it on. Maya will also be taken off tasks they collaborate on or follow.");
+    // a step in the profile, not a browser dialog
+    expect(confirm).not.toHaveBeenCalled();
+    const step = screen.getByRole("group", { name: "Remove Maya Lin" });
+    expect(step).toHaveTextContent("Remove Maya Lin from this workspace? Maya has 1 open task. It'll stay assigned to Maya until you hand it on. Maya will also be taken off tasks they collaborate on or follow.");
+    fireEvent.click(within(step).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("group", { name: "Remove Maya Lin" })).toBeNull();
     expect(props.onRemoveMember).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Maya" }));
+    expect(props.onRemoveMember).toHaveBeenCalledWith("w1");
     confirm.mockRestore();
   });
 
-  it("counts the projects someone owns in this workspace (Theo owns Platform Infra)", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("counts the projects someone owns in this workspace (Theo owns Platform Infra), and says where to hand them on", () => {
     const theirs = [1, 2, 3].map((i) => ({ ...task, id: `th${i}`, assigneeId: "m-2" })) as Task[];
     team([member({ id: "w2", userId: "m-2", email: "theo@kanbo.app" })], { tasks: [...theirs, { ...task, id: "th-done", assigneeId: "m-2", status: "done" } as Task] });
     fireEvent.click(screen.getByRole("button", { name: /Theo Vance/ }));
     fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
-    expect(confirm).toHaveBeenCalledWith("Remove Theo Vance from this workspace? Theo has 3 open tasks and owns 1 project. They'll stay with Theo until you hand them on. Theo will also be taken off tasks they collaborate on or follow.");
-    confirm.mockRestore();
+    const step = screen.getByRole("group", { name: "Remove Theo Vance" });
+    expect(step).toHaveTextContent("Remove Theo Vance from this workspace? Theo has 3 open tasks and owns 1 project. They'll stay with Theo until you hand them on. Theo will also be taken off tasks they collaborate on or follow.");
+    expect(step).toHaveTextContent("Change the owner of Platform Infra in its About tab.");
+  });
+
+  it("hands someone's open tasks on before removing them (members and admins only, never to a guest)", () => {
+    const onDropTasksOnPerson = vi.fn();
+    const theirs = [1, 2].map((i) => ({ ...task, id: `th${i}`, assigneeId: "m-2" })) as Task[];
+    team([
+      member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" }),
+      member({ id: "w2", userId: "m-2", email: "theo@kanbo.app" }),
+      member({ id: "w3", userId: "m-3", email: "sana@kanbo.app" }),
+      member({ id: "w4", userId: "m-4", email: "idris@kanbo.app", role: "guest" }),
+    ], { tasks: [...theirs, { ...task, id: "th-done", assigneeId: "m-2", status: "done" } as Task], onDropTasksOnPerson });
+    fireEvent.click(screen.getByRole("button", { name: /Theo Vance/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
+    const to = screen.getByRole("combobox", { name: "Hand Theo's open tasks to" }) as HTMLSelectElement;
+    expect([...to.options].map((o) => o.textContent)).toEqual(["Maya Lin", "Sana Rao"]);
+    fireEvent.change(to, { target: { value: "m-3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Hand on 2 tasks" }));
+    expect(onDropTasksOnPerson).toHaveBeenCalledWith(["th1", "th2"], "m-3");
   });
 
   it("anyone here can see a teammate's tasks: there's no admins-only lock (Pulse and Workload show them too)", () => {
