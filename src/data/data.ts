@@ -12,6 +12,7 @@ import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
 import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";
+import { projectPct } from "../lib/countRules";
 import { daysBetweenISO, nextDueDateFrom, parseLocalDay, seriesAnchorDay, shiftISO } from "../../supabase/functions/_shared/recurrence.ts";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
@@ -393,11 +394,8 @@ export function dueState(iso: string | undefined, status: Status): "none" | "ove
   if (diff === 1) return "soon";
   return "future";
 }
-export function projectProgress(tasks: Task[], projectId: string): number {
-  const list = tasks.filter((t) => t.projectId === projectId);
-  if (!list.length) return 0;
-  return Math.round((list.filter((t) => t.status === "done").length / list.length) * 100);
-}
+/** A project's % done: its top-level tasks, the one rule every screen uses (lib/countRules). */
+export const projectProgress = (tasks: Task[], projectId: string): number => projectPct(tasks, projectId);
 export function blockingTasks(task: Task, all: Task[]): Task[] {
   if (!task.dependencies?.length) return [];
   return task.dependencies
@@ -514,12 +512,15 @@ export const DEMO_PORTFOLIOS: Portfolio[] = [
   { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise" },
 ];
 
-/* Platform Infra has no update at all, so it reads as stale. */
+/* Platform Infra has no update at all, so it reads as stale. Each says who posted it;
+   the launch's first came from someone who has since left ("Former member"). */
 export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
-  { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise",
+  { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise", authorId: "m-3",
     summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way." },
-  { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise",
+  { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise", authorId: "m-self",
     summary: "Deck is the critical path; onboarding is blocked on tokens." },
+  { id: "su-launch-kickoff", projectId: "p-launch", status: "on_track", createdAt: daysAgoAt(23, 10, 10), workspaceId: "ws-foundrise", authorId: "m-left",
+    summary: "Kick-off done: scope agreed with sales and support, and the launch date is set." },
 ];
 
 /* Rules have no conditions yet, so "tag bugs" would tag every new launch task:

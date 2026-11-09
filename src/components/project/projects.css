@@ -301,6 +301,9 @@ select.kpj-field { cursor: pointer; }
 .kpj-history-meta { display: flex; align-items: center; gap: 8px; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); }
 .kpj-history-meta .kpj-mono { font-size: 11px; }
 .kpj-history-meta { flex-wrap: wrap; }
+/* who posted it: a face and a name ("Former member" once they've gone, in a quieter ink) */
+.kpj-history-by { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/16px var(--kpj-font); color: var(--ink-2); }
+.kpj-history-by[data-former] { color: var(--ink-3); }
 .kpj-history-act { margin-left: auto; display: inline-flex; }
 .kpj-history-act:empty { display: none; }
 .kpj-history-text { margin: 0; font: 400 15px/24px var(--kpj-font); color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }

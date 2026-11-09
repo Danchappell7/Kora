@@ -12,6 +12,7 @@ import type { CalEvent, Task } from "../data/types";
 import {
   dayMonth, daysBetween, durOf, energyKindOf, fmtDuration, fmtTime, fmtTimeRange, isMine, parseDay, weekdayShort, isPlaced, mergeIntervals, totalMinutes, type Interval,
 } from "../components/views/planCanvas";
+import { needsActionText } from "./countRules";
 
 /** The working day that "free" and the suggestions are counted against. */
 export const WORK_START = 8 * 60;
@@ -230,7 +231,7 @@ export interface BriefInput {
   /** YYYY-MM-DD */
   today: string;
   userName?: string;
-  /** risks that need a look (owners and admins only) */
+  /** Radar's risks that need action (owners and admins only): said the way Radar says them */
   riskCount?: number;
   /** the whole workspace, to count what the top task is holding up (defaults to `tasks`) */
   allTasks?: Task[];
@@ -324,7 +325,7 @@ export function composeBrief({ tasks: given, events, nowMin, today, userName, ri
   }
 
   if (riskCount > 0) {
-    parts.push(" ", { kind: "risks", text: capitalise(`${countOf(riskCount, "risk")} ${riskCount === 1 ? "needs" : "need"} a look`) }, ".");
+    parts.push(" ", { kind: "risks", text: needsActionText(riskCount) }, ".");
   }
 
   // merge neighbouring strings so the parts stay few and readable
@@ -605,7 +606,7 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
     }
   }
   if (riskCount > 0 && variant !== "evening") {
-    prose.push(" ", { kind: "risks", text: capitalise(`${countOf(riskCount, "risk")} ${riskCount === 1 ? "needs" : "need"} a look`) }, ".");
+    prose.push(" ", { kind: "risks", text: needsActionText(riskCount) }, ".");
   }
 
   const facts: BriefFact[] = [];

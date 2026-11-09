@@ -996,15 +996,55 @@ describe("store (supabase) — integration wiring", () => {
     expect(data.SELF_COLOR).toBe("oklch(0.72 0.14 264)");
   });
 
-  it("orders goals, portfolios, rules and forms on the server so lists don't reshuffle", async () => {
+  it("orders goals, portfolios, rules and forms the same way every load, so lists don't reshuffle", async () => {
     const fake = makeFake();
+    const goal = (id: string, position: number | null, created_at: string) => ({ id, workspace_id: null, name: id, description: null, target: null, current: null, unit: null, due: null, status: "on_track", position, created_at });
+    const pf = (id: string, created_at: string) => ({ id, workspace_id: null, name: id, project_ids: [], created_at });
+    fake.setHandler((c) => {
+      if (c.op !== "select") return undefined;
+      if (c.table === "goals") return { data: [goal("g-c", null, "2026-01-01"), goal("g-b", 2, "2026-01-02"), goal("g-a", 1, "2026-01-03"), goal("g-d", null, "2025-12-01")] };
+      if (c.table === "portfolios") return { data: [pf("pf-2", "2026-02-01"), pf("pf-1", "2026-01-01")] };
+      return undefined;
+    });
     const { store: s } = await loadStore(fake);
-    await s.bootstrap({ id: "user-a" });
+    const b = await s.bootstrap({ id: "user-a" });
+    // goals and portfolios are read a page at a time by id, then put in their order here
+    expect(b.goals.map((g) => g.id)).toEqual(["g-a", "g-b", "g-d", "g-c"]);    // by position, then oldest first
+    expect(b.portfolios.map((p) => p.id)).toEqual(["pf-1", "pf-2"]);
     const orders = (t: string) => fake.calls.find((c) => c.table === t && c.op === "select")?.orders;
-    expect(orders("goals")).toEqual(["position", "created_at"]);
-    expect(orders("portfolios")).toEqual(["created_at"]);
+    expect(orders("goals")).toEqual(["id"]);
     expect(orders("automation_rules")).toEqual(["created_at"]);
     expect(orders("forms")).toEqual(["created_at"]);
+  });
+
+  it("reads every status update, goal and portfolio a page at a time, past 1,000 rows", async () => {
+    const fake = makeFake();
+    const rows = Array.from({ length: 2345 }, (_, i) => ({
+      id: `su-${String(i).padStart(5, "0")}`, workspace_id: "ws", project_id: "p", summary: `Update ${i}`, status: "on_track",
+      created_at: new Date(Date.UTC(2026, 0, 1) + i * 60000).toISOString(), user_id: "user-b", author_id: i % 2 ? "user-b" : null,
+    }));
+    fake.setHandler((c) => {
+      if (c.table !== "status_updates" || c.op !== "select") return undefined;
+      const after = c.filters.find((f) => f[0] === "gt" && f[1] === "id")?.[2] as string | undefined;
+      return { data: rows.filter((r) => !after || r.id > after).slice(0, c.limit ?? rows.length) };
+    });
+    const { store: s } = await loadStore(fake);
+    const b = await s.bootstrap({ id: "user-a" });
+    expect(b.statusUpdates).toHaveLength(2345);
+    expect(b.statusUpdates[0].id).toBe("su-02344");                 // newest first
+    expect(selects(fake, "status_updates").map((c) => c.limit)).toEqual([1000, 1000, 1000]);
+    // who posted it: author_id once 0051 is in (null = a deleted account), else user_id
+    expect(b.statusUpdates.find((u) => u.id === "su-00001")?.authorId).toBe("user-b");
+    expect(b.statusUpdates.find((u) => u.id === "su-00002")?.authorId).toBeNull();
+  });
+
+  it("before 0051 an update's author is its user_id", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "status_updates" && c.op === "select"
+      ? { data: [{ id: "su-1", workspace_id: "ws", project_id: "p", summary: "x", status: "on_track", created_at: "2026-01-01T00:00:00Z", user_id: "user-b" }] } : undefined));
+    const { store: s } = await loadStore(fake);
+    const b = await s.bootstrap({ id: "user-a" });
+    expect(b.statusUpdates[0].authorId).toBe("user-b");
   });
 
   it("attachments carry their current owner, for who may delete them", async () => {

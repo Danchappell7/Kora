@@ -13,6 +13,7 @@
 import type { CalEvent, IconName, Task } from "../data/types";
 import type { Risk } from "./radar";
 import { clearestStretch, slippingTasks, waitingOnYou } from "./brief";
+import { isBlocked } from "./countRules";
 import { dayMonth, daysBetween, durOf, fmtDuration, fmtTime, fmtTimeRange, isMine, isPlaced, parseDay } from "../components/views/planCanvas";
 
 export type NoticedAction =
@@ -82,7 +83,8 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
   for (const w of waitingOnYou(allTasks, me).slice(0, 2)) {
     const people = [...new Set(w.waiting.map((d) => d.assigneeId))];
     const d = w.waiting[0];
-    const blocked = w.waiting.some((x) => x.status === "blocked");
+    // "blocked on you" only when their status says blocked; otherwise they're waiting (lib/countRules)
+    const blocked = w.waiting.some(isBlocked);
     const who = people.length === 1 ? first(people[0]) : `${people.length} people`;
     push({
       id: `waiting:${w.task.id}`, kind: "waiting", tone: blocked ? "signal" : "accent", icon: blocked ? "lock" : "users",

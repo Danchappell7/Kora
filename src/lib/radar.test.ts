@@ -42,16 +42,22 @@ describe("computeRisks", () => {
     expect(r.fixes).toEqual([{ kind: "nudge", label: "Nudge Sana" }, { kind: "open", label: "Open chain" }]);
   });
 
-  it("blocked: waiting on someone else's open task counts once it's started or due within a week — not your own sequencing, not next month's plan", () => {
+  it("waiting: waiting on someone else's open task counts once it's started or due within a week — not your own sequencing, not next month's plan", () => {
     const edge = task({ id: "edge", title: "Migrate auth", status: "progress", assigneeId: "m-2", dueDate: day(1) });
     const soon = task({ id: "soon", title: "Usage events", status: "todo", assigneeId: "m-1", dueDate: day(2), dependencies: ["edge"] });
     const mine = task({ id: "mine", title: "Own follow-up", assigneeId: "m-2", dueDate: day(2), dependencies: ["edge"] });
     const later = task({ id: "later", title: "Later work", assigneeId: "m-1", dueDate: day(30), dependencies: ["edge"] });
     const undated = task({ id: "undated", title: "Someday", assigneeId: "m-3", dependencies: ["edge"] });
     const started = task({ id: "started", title: "Billing screens", status: "progress", assigneeId: "m-3", dependencies: ["edge"] });
-    const rs = risks([edge, soon, mine, later, undated, started]).filter((r) => r.kind === "blocked");
-    expect(rs.map((r) => r.id).sort()).toEqual(["blocked:soon", "blocked:started"]);
-    expect(rs.find((r) => r.id === "blocked:soon")?.reason).toBe('Waiting on "Migrate auth" (Theo), still in progress');
+    const all = risks([edge, soon, mine, later, undated, started]);
+    // not marked blocked, so never called blocked: "waiting on other work" (lib/countRules)
+    expect(all.filter((r) => r.kind === "blocked")).toEqual([]);
+    const rs = all.filter((r) => r.kind === "waiting");
+    expect(rs.map((r) => r.id).sort()).toEqual(["waiting:soon", "waiting:started"]);
+    expect(rs.find((r) => r.id === "waiting:soon")).toMatchObject({
+      title: "Usage events is waiting on other work", severity: "signal",
+      reason: 'Waiting on "Migrate auth" (Theo), still in progress',
+    });
   });
 
   it("blocked: marked blocked with nothing to wait on nudges its own owner", () => {

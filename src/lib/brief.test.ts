@@ -160,9 +160,9 @@ describe("composeBrief: where to start", () => {
 
 describe("composeBrief: risks and the evening", () => {
   it("owners and admins with risks get a last sentence, singular and plural", () => {
-    expect(brief({ riskCount: 1 }).plain).toMatch(/One risk needs a look\.$/);
+    expect(brief({ riskCount: 1 }).plain).toMatch(/One risk needs action\.$/);
     const b = brief({ riskCount: 3 });
-    expect(b.plain).toMatch(/Three risks need a look\.$/);
+    expect(b.plain).toMatch(/Three risks need action\.$/);
     expect(kinds(b)).toContain("risks");
     expect(brief({ riskCount: 0 }).plain).not.toContain("risk");
   });
@@ -182,7 +182,7 @@ describe("composeBrief: risks and the evening", () => {
   it("plain is the parts joined", () => {
     const b = brief({ tasks: [task({ dueDate: TODAY, title: "Deck" })], riskCount: 2 });
     expect(b.plain).toBe(b.parts.map((p) => (typeof p === "string" ? p : p.text)).join(""));
-    expect(b.plain).toBe("Good morning, Daniel. You have 8h free and one thing due. Start with Deck: it's your highest priority. Two risks need a look.");
+    expect(b.plain).toBe("Good morning, Daniel. You have 8h free and one thing due. Start with Deck: it's your highest priority. Two risks need action.");
   });
 });
 

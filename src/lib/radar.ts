@@ -11,8 +11,11 @@
 import type { Task, WorkspaceEvent } from "../data/types";
 import { KANBO_TODAY, getMember, getProject, toLocalISO } from "../data/data";
 import { addDays, fmtDayMonth, localDay, round1, startOfWeekMon, taskLoadInWeek } from "./weekMath";
+import { isBlocked } from "./countRules";
 
-export type RiskKind = "blocked" | "blocker_late" | "slipping" | "stale" | "unassigned_due" | "over_capacity" | "milestone_at_risk";
+/** "blocked" is a task whose status says so; "waiting" is one held up by unfinished work it
+ *  depends on (lib/countRules: one vocabulary across the brief, Kanbo noticed, Radar and Ask Kanbo). */
+export type RiskKind = "blocked" | "waiting" | "blocker_late" | "slipping" | "stale" | "unassigned_due" | "over_capacity" | "milestone_at_risk";
 
 /** A one-click fix offered on a risk. */
 export interface RiskFix {
@@ -206,8 +209,8 @@ export function computeRisks(input: {
   const OPEN_CHAIN: RiskFix = { kind: "open", label: "Open chain" };
   const soon = toLocalISO(addDays(today, 7));
 
-  /* blocked — marked blocked, or waiting on someone else's open task and either already
-     started or due within a week. Not every link in a plan: one owner's own sequencing, or
+  /* blocked — marked blocked; waiting — not marked, but waiting on someone else's open task and
+     either already started or due within a week (the two are told apart, as everywhere). Not every link in a plan: one owner's own sequencing, or
      work that hasn't started and isn't due for weeks, isn't at risk yet — flagging those
      would bury the real ones. A late blocker is left to blocker_late, which offers the
      better fix: a firm date. */
@@ -216,7 +219,7 @@ export function computeRisks(input: {
   for (const t of open) {
     if (t.isMilestone) continue;
     const blockers = blockersOf(t);
-    const marked = t.status === "blocked";
+    const marked = isBlocked(t);
     const other = blockers.find((b) => b.assigneeId !== t.assigneeId);
     const pressing = t.status === "progress" || t.status === "review" || (!!t.dueDate && t.dueDate <= soon);
     if (!marked && !(other && pressing && !isLateFor(other, t))) continue;
@@ -242,8 +245,8 @@ export function computeRisks(input: {
     const focus = b ?? t;
     const owner = known(focus.assigneeId) ? focus.assigneeId : undefined;
     push({
-      id: `blocked:${t.id}`, kind: "blocked", severity: "signal",
-      title: `${t.title} is blocked`, reason,
+      id: `${marked ? "blocked" : "waiting"}:${t.id}`, kind: marked ? "blocked" : "waiting", severity: "signal",
+      title: marked ? `${t.title} is blocked` : `${t.title} is waiting on other work`, reason,
       taskIds: b ? [t.id, b.id] : [t.id], memberId: owner,
       projectId: t.projectId, focusTaskId: b?.id,
       fixes: owner ? [...nudge(owner), OPEN_CHAIN] : [{ kind: "assign", label: "Assign" }, OPEN_CHAIN],

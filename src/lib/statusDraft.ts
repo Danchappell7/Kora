@@ -7,6 +7,8 @@
    ============================================================ */
 import type { Project, StatusKind, StatusUpdate, Task } from "../data/types";
 import { localDay, projectHealth, type HealthKind } from "../components/views/reportingUtils";
+import { progressOf } from "./countRules";
+import { getMember } from "../data/data";
 
 const DAY = 86400000;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -69,6 +71,17 @@ export function fmtAge(days: number): string {
   return days <= 0 ? "today" : `${days}d`;
 }
 
+/** What an update says when the person who posted it has left or deleted their account. */
+export const FORMER_MEMBER = "Former member";
+
+/** Who posted an update, by name: "Former member" once they've left the team or
+ *  deleted their account. Undefined when the update doesn't say (made before
+ *  authors were kept). */
+export function updateAuthor(u: Pick<StatusUpdate, "authorId">): string | undefined {
+  if (u.authorId === undefined) return undefined;
+  return (u.authorId ? getMember(u.authorId)?.name?.trim() : "") || FORMER_MEMBER;
+}
+
 /** Newest first, whatever order they arrive in. */
 export function projectUpdates(statusUpdates: StatusUpdate[], projectId: string): StatusUpdate[] {
   return statusUpdates
@@ -116,7 +129,8 @@ export function indexTasks(tasks: Task[]): TaskIndex {
 export function statusFacts(project: Project, tasks: Task[], statusUpdates: StatusUpdate[], today: Date, idx?: TaskIndex): StatusFacts {
   const { byId, byProject, dependents } = idx ?? indexTasks(tasks);
   const mine = byProject.get(project.id) ?? [];
-  const top = mine.filter((t) => !t.parentId);
+  // % done: top-level tasks, the one rule every screen uses (lib/countRules)
+  const progress = progressOf(mine);
   const open = mine.filter((t) => t.status !== "done");
   const todayMid = midnight(today);
   const within7 = (when?: string) => { const a = ageDays(when, today); return a != null && a >= 0 && a < 7; };
@@ -156,15 +170,14 @@ export function statusFacts(project: Project, tasks: Task[], statusUpdates: Stat
   const latest = updates[0];
   const lastUpdateDays = latest ? Math.max(0, ageDays(latest.createdAt, today) ?? 0) : null;
   const changes = new Set([...done7, ...created7, ...slipped].map((t) => t.id)).size;
-  const topDone = top.filter((t) => t.status === "done").length;
 
   return {
     project: { id: project.id, name: project.name },
     today: iso(todayMid),
-    total: top.length,
-    open: top.length - topDone,
+    total: progress.total,
+    open: progress.total - progress.done,
     openAll: open.length,
-    pct: top.length ? Math.round((topDone / top.length) * 100) : 0,
+    pct: progress.pct,
     done7, created7, slipped, blocked, overdue, waitingOn, nextMilestone, criticalPath,
     health: health?.kind ?? "on_track",
     healthDetail: health?.detail ?? "no tasks yet",

@@ -7,6 +7,7 @@
 import type { Task, Status, Workspace, WorkspaceMember, Project } from "../data/types";
 import { nextOccurrence, toLocalISO, KANBO_TODAY } from "../data/data";
 import { reportError } from "./monitoring";
+import { progressOf } from "./countRules";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -201,9 +202,8 @@ export function buildRecurrence(t: Task, all: Task[], makeId: () => string = new
 
 /** Share of top-level tasks done (sub-tasks nest under their parent, so they don't skew it). */
 export function topLevelProgress(tasks: Task[]): { count: number; done: number; pct: number } {
-  const top = tasks.filter((t) => !t.parentId);
-  const done = top.filter((t) => t.status === "done").length;
-  return { count: top.length, done, pct: top.length ? Math.round((done / top.length) * 100) : 0 };
+  const p = progressOf(tasks);
+  return { count: p.total, done: p.done, pct: p.pct };
 }
 
 /* ---------- last-used workspace (per user) ---------- */

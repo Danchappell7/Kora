@@ -159,6 +159,18 @@ describe("localAsk: questions", () => {
     expect(ask("what's blocked?").answer).toBe("One of Maya's tasks is blocked: “Ship onboarding redesign to staging” (waiting on “Approve token naming”).");
   });
 
+  it("keeps blocked (the status) apart from waiting on (a dependency), as Radar and Pulse do", () => {
+    const more = [...tasks, task("t20", "Write the launch email", { assigneeId: "u-theo", dueDate: "2026-10-03", dependencies: ["t5"] })];
+    const r = localAsk("what's blocked?", more, ctx);
+    expect(r.answer).toBe("One of Maya's tasks is blocked: “Ship onboarding redesign to staging” (waiting on “Approve token naming”). One of Theo's tasks is waiting on other work: “Write the launch email” (waiting on “Finalise Q3 launch narrative deck”).");
+    expect(r.cites).toEqual(["t8", "t20"]);
+    expect(localAsk("what's waiting on other work?", more, ctx).answer).toBe("One of Theo's tasks is waiting on other work: “Write the launch email” (waiting on “Finalise Q3 launch narrative deck”).");
+    // only waiting, nothing marked: it says so instead of calling them blocked
+    const noneMarked = more.filter((t) => t.id !== "t8");
+    expect(localAsk("what's blocked?", noneMarked, ctx).answer).toBe("Nothing is marked blocked. One of Theo's tasks is waiting on other work: “Write the launch email” (waiting on “Finalise Q3 launch narrative deck”).");
+    expect(localAsk("what's blocked?", noneMarked.filter((t) => t.id !== "t20"), ctx).answer).toBe("Nothing is blocked or waiting on other work.");
+  });
+
   it("plans my day by opening Today", () => {
     const r = ask("plan my afternoon");
     expect(r.actions).toEqual([{ op: "open", route: { view: "plan" } }]);
