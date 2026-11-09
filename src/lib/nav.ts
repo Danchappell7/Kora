@@ -105,6 +105,14 @@ export function guestRoute(r: Route): Route {
   return r.view === "automations" ? { view: "projects" } : { view: "team" };
 }
 
+/** A guest's Projects tabs: Goals and Portfolios only while there's something to read.
+ *  Since 0051 a guest gets neither, and a tab that only says they're for members is a
+ *  dead end. The page they're on keeps its tab (they came by address or ⌘K). */
+export function readableTabs(tabs: PlaceTab[], ctx: NavCtx, has: Partial<Record<"goals" | "portfolios", boolean>>, current: ViewId): PlaceTab[] {
+  if (!ctx.guest) return tabs;
+  return tabs.filter((t) => (t.id !== "goals" && t.id !== "portfolios") || has[t.id] || t.route.view === current);
+}
+
 const placeById = (id: PlaceId): Place => PLACES.find((p) => p.id === id)!;
 
 export interface NavItem { id: PlaceId | "insights"; label: string; icon: IconName; group: "me" | "team"; route: Route }
@@ -284,6 +292,15 @@ export const G_KEYS: Record<string, Route> = {
   o: { view: "projects" },
   e: { view: "pulse" },
 };
+
+/** Where G then `key` goes for this person. A guest's keys to the team's reporting
+ *  (G A Insights, G R Trends) do nothing rather than land somewhere else unasked;
+ *  G E is the Team place, which for a guest is People. */
+export function gKeyRoute(key: string, ctx: Pick<NavCtx, "guest">): Route | undefined {
+  const to = G_KEYS[key.toLowerCase()];
+  if (!to || !ctx.guest || !hiddenFromGuest(to.view)) return to;
+  return to.view === "pulse" ? guestRoute(to) : undefined;
+}
 
 export interface GoTarget { id: string; label: string; keywords: string; icon: IconName; route: Route; hint?: string }
 

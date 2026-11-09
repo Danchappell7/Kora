@@ -44,7 +44,7 @@ import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject,
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { routeOf, pathOf, placeOf, tabsFor, titleOf, G_KEYS, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
+import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
 import { splitPersonal, withOverlay, writePlanOverlay, writeSectionOverlay, writeScoreOverlay, prunePlanOverlay, type PersonalKey } from "./lib/planOverlay";
 import { undoLast } from "./lib/undoStack";
@@ -651,6 +651,7 @@ export default function App() {
   const openSettingsRef = useRef<(s?: SettingsSection) => void>(() => {});
   const openFocusRef = useRef<(start?: boolean) => void>(() => {});
   const goRef = useRef<(r: Route) => void>(() => {});
+  const guestKeysRef = useRef(false);   // a guest here: their g-keys skip the team's reporting
   useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
       const h = el as HTMLElement | null;
@@ -705,7 +706,7 @@ export default function App() {
       if (modal()) { gPrefixRef.current = false; return; }
       if (gPrefixRef.current) {
         gPrefixRef.current = false;
-        const to = G_KEYS[e.key.toLowerCase()];
+        const to = gKeyRoute(e.key, { guest: guestKeysRef.current });
         if (to) { e.preventDefault(); goRef.current(to); }
         return;
       }
@@ -3723,6 +3724,7 @@ export default function App() {
   const isAdmin = myRole === "owner" || myRole === "admin";
   const personal = workspace === null;
   const navCtx: NavCtx = { personal, guest: activeReadOnly, admin: isAdmin };
+  guestKeysRef.current = activeReadOnly;
   const aiOn = appearance.ai !== false;
   const detailTask = detailId ? seen.find((t) => t.id === detailId) : undefined;
   const detailReadOnly = !!detailTask && roleIn(detailTask.workspaceId) === "guest";
@@ -3879,7 +3881,9 @@ export default function App() {
         }
         // 0047: Projects › Recycle bin (the page draws no title of its own)
         if (route.view === "bin") return { title: "Recycle bin", meta: activeWsName, actions: <Button variant="ghost" size="sm" icon="arrowLeft" onClick={() => setRoute({ view: "projects" })}>All projects</Button> };
-        const tabs = tabsFor("projects", navCtx);
+        const tabs = readableTabs(tabsFor("projects", navCtx), navCtx, {
+          goals: goals.some((g) => (g.workspaceId ?? null) === workspace), portfolios: portfolios.some((p) => (p.workspaceId ?? null) === workspace),
+        }, route.view);
         const counts: Record<string, number> = { automations: wsRules.length, forms: wsForms.length };
         return {
           title: "Projects", meta: activeWsName,
@@ -4003,10 +4007,11 @@ export default function App() {
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} warnings={calWarnings} syncing={calSyncing} readOnly={activeReadOnly}
         scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
+      // (Radar is the team's reporting: a guest's directory has no Risks column or At risk count from it)
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
-        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={risksByProject} />;
+        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject} />;
       // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)
       case "bin": return (
         <RecycleBin key={wsKey} workspaceId={workspace} workspaceName={activeWsName} role={workspace ? (myRole ?? null) : null} currentUserId={currentUserId}
