@@ -2678,7 +2678,7 @@ export default function App() {
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
 
   // ---- goals / OKRs ----
-  type GoalPatch = Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
+  type GoalPatch = Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
   const createGoal = useCallback((name: string) => {
     const wsId = workspaceRef.current;
     if (denyGuest([wsId])) return;
@@ -3505,6 +3505,8 @@ export default function App() {
     return list.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
   }, [projects, workspace]);
   const allTasks = useMemo(() => inWorkspace(tasks ?? []), [tasks, inWorkspace]);
+  // Goals: archived projects' tasks too, so a goal linked to one keeps its progress
+  const goalTasks = useMemo(() => (tasks ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt), [tasks, workspace]);
   const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
@@ -3986,8 +3988,9 @@ export default function App() {
         onOpenPerson={() => setRoute({ view: "team" })}
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
-      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
-      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
+      // (a goal linked to an archived project reads that project's own tasks: archiving a finished project kept them)
+      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={goalTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly} />;
+      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} readOnly={activeReadOnly} />;
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)

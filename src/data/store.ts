@@ -2157,10 +2157,11 @@ export const store = {
     if (error) throw error;
     return rowToGoal(data as GoalRow);
   },
-  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>): Promise<void> {
+  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>): Promise<void> {
     if (!supabase) return;
     const row: Record<string, unknown> = {};
     if ("name" in patch) row.name = patch.name;
+    if ("description" in patch) row.description = patch.description?.trim() || null;
     if ("target" in patch) row.target = patch.target ?? null;
     if ("current" in patch) row.current = patch.current ?? null;
     if ("unit" in patch) row.unit = patch.unit ?? null;
