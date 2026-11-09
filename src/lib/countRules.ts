@@ -7,7 +7,9 @@
      and the Overview all read the same %;
    · "Blocked" is a status someone set. "Waiting on" is an open
      dependency. A task counts as blocked only when its status says so;
-     one that's held up by unfinished work it depends on is waiting;
+     one that's held up by unfinished work it depends on is waiting.
+     Radar's risks are a few of these (blocked, or "held up": waiting
+     on someone else's work and pressing), never a second count of them;
    · Radar's risks either need action (red) or are worth a look.
    Pure: no React, no I/O.
    ============================================================ */
@@ -74,9 +76,11 @@ export function openBlockers(t: Task, byId: Lookup): Task[] {
   return (t.dependencies ?? []).map((id) => find(id)).filter((x): x is Task => !!x && isOpen(x));
 }
 
-/** Waiting on: open, not marked blocked, and something it depends on isn't done yet. */
+/** Waiting on: open, not marked blocked, and something it depends on isn't done yet.
+ *  Never a milestone: it waits for its work by design (Radar watches it as a milestone).
+ *  Radar's "held up" risks are some of these: the pressing ones held up by someone else. */
 export function isWaiting(t: Task, byId: Lookup): boolean {
-  return isOpen(t) && t.status !== "blocked" && openBlockers(t, byId).length > 0;
+  return isOpen(t) && t.status !== "blocked" && !t.isMilestone && openBlockers(t, byId).length > 0;
 }
 
 /** A list split the one way: blocked (the status) and waiting on (a dependency).

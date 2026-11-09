@@ -50,12 +50,12 @@ describe("computeRisks", () => {
     const undated = task({ id: "undated", title: "Someday", assigneeId: "m-3", dependencies: ["edge"] });
     const started = task({ id: "started", title: "Billing screens", status: "progress", assigneeId: "m-3", dependencies: ["edge"] });
     const all = risks([edge, soon, mine, later, undated, started]);
-    // not marked blocked, so never called blocked: "waiting on other work" (lib/countRules)
+    // not marked blocked, so never called blocked: it's held up, waiting on other work (lib/countRules)
     expect(all.filter((r) => r.kind === "blocked")).toEqual([]);
     const rs = all.filter((r) => r.kind === "waiting");
     expect(rs.map((r) => r.id).sort()).toEqual(["waiting:soon", "waiting:started"]);
     expect(rs.find((r) => r.id === "waiting:soon")).toMatchObject({
-      title: "Usage events is waiting on other work", severity: "signal",
+      title: "Usage events is held up", severity: "signal",
       reason: 'Waiting on "Migrate auth" (Theo), still in progress',
     });
   });

@@ -246,7 +246,9 @@ export function computeRisks(input: {
     const owner = known(focus.assigneeId) ? focus.assigneeId : undefined;
     push({
       id: `${marked ? "blocked" : "waiting"}:${t.id}`, kind: marked ? "blocked" : "waiting", severity: "signal",
-      title: marked ? `${t.title} is blocked` : `${t.title} is waiting on other work`, reason,
+      // (a held-up task is a risk, not the whole "waiting on other work" list Ask Kanbo reads out:
+      // Radar names only those held up by someone else and pressing, so it says "held up")
+      title: marked ? `${t.title} is blocked` : `${t.title} is held up`, reason,
       taskIds: b ? [t.id, b.id] : [t.id], memberId: owner,
       projectId: t.projectId, focusTaskId: b?.id,
       fixes: owner ? [...nudge(owner), OPEN_CHAIN] : [{ kind: "assign", label: "Assign" }, OPEN_CHAIN],

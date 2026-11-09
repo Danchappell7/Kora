@@ -8,6 +8,7 @@ import { statusFacts } from "./statusDraft";
 import { projectProgress } from "../data/data";
 import { goalProgressMap, projectHealth } from "../components/views/reportingUtils";
 import { topLevelProgress } from "./taskOps";
+import { computeRisks } from "./radar";
 
 const TODAY = new Date(2026, 8, 30);
 let n = 0;
@@ -82,6 +83,35 @@ describe("the risk vocabulary", () => {
     // dependencies are looked up in `all` when the list is only part of it
     expect(blockedAndWaiting([waiting], list).waiting.map((t) => t.id)).toEqual(["w"]);
     expect(blockedAndWaiting([waiting]).waiting).toEqual([]);
+  });
+
+  it("a milestone is never waiting: it waits for its work by design", () => {
+    const launch = task({ id: "ms", isMilestone: true, dependencies: ["b1"] });
+    expect(isWaiting(launch, byId)).toBe(false);
+    expect(blockedAndWaiting([...list, launch]).waiting.map((t) => t.id)).toEqual(["w"]);
+  });
+
+  it("Radar's blocked and held-up risks are some of Ask Kanbo's blocked and waiting tasks, never more or others", () => {
+    const day = (d: number) => { const x = new Date(2026, 8, 30 + d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+    const deck = task({ id: "deck", title: "Launch deck", status: "progress", assigneeId: "m-2", dueDate: day(1) });
+    const tasks = [
+      deck,
+      task({ id: "press", title: "Press release", assigneeId: "m-1", dueDate: day(2), dependencies: ["deck"] }),      // held up: someone else's, due soon
+      task({ id: "later", title: "Later work", assigneeId: "m-1", dueDate: day(30), dependencies: ["deck"] }),        // waiting, not pressing
+      task({ id: "own", title: "Own follow-up", assigneeId: "m-2", dueDate: day(2), dependencies: ["deck"] }),        // their own sequencing
+      task({ id: "day", title: "Launch day", isMilestone: true, assigneeId: "m-1", dueDate: day(3), dependencies: ["deck"] }),
+      task({ id: "vendor", title: "Vendor contract", status: "blocked", assigneeId: "m-2" }),
+    ];
+    const members = [{ id: "m-1", name: "Maya" }, { id: "m-2", name: "Theo" }];
+    const risks = computeRisks({ tasks, members, capacities: {}, today: day(0) });
+    const split = blockedAndWaiting(tasks);
+    expect(split.blocked.map((t) => t.id)).toEqual(["vendor"]);
+    expect(split.waiting.map((t) => t.id).sort()).toEqual(["later", "own", "press"]);
+    const heldUp = risks.filter((r) => r.kind === "waiting");
+    expect(heldUp.map((r) => r.taskIds[0])).toEqual(["press"]);
+    expect(heldUp[0].title).toBe("Press release is held up");   // a risk's words, not the category's
+    for (const r of heldUp) expect(split.waiting.map((t) => t.id)).toContain(r.taskIds[0]);
+    for (const r of risks.filter((x) => x.kind === "blocked")) expect(split.blocked.map((t) => t.id)).toContain(r.taskIds[0]);
   });
 
   it("says it the same way everywhere", () => {
