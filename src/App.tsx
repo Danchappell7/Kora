@@ -3598,7 +3598,9 @@ export default function App() {
   // …and while that Inbox is on screen, what it shows is read (as the single-workspace one marks its own)
   useEffect(() => {
     if (!biz.all || route.view !== "inbox") return;
-    const unread = biz.inbox.filter((a) => !a.readAt).map((a) => a.id);
+    // (this workspace's own are marked by the Inbox's usual effect, above)
+    const here = new Set(scopedActivityRef.current.map((a) => a.id));
+    const unread = biz.inbox.filter((a) => !a.readAt && !here.has(a.id)).map((a) => a.id);
     if (!unread.length) return;
     const stamp = new Date().toISOString(), ids = new Set(unread);
     unread.forEach((id) => readLocallyRef.current.set(id, stamp));
@@ -4155,7 +4157,7 @@ export default function App() {
             onOpenSavedView: (id: string) => { const v = getSavedView(id); setRoute(v ? viewRoute(v) : { view: "search", list: id }); },
             onNudge: nudge, onAdvancedSearch: () => setRoute({ view: "search" }), onManageTags: () => openSettings("tags"),
             // 0047: Waiting on › "Waiting on approval" (your open requests)
-            waitingApproval: waitingOnApproval(myApprovals, allTasks),
+            waitingApproval: waitingOnApproval(myApprovals, allMy ? biz.liveSeen : allTasks),
           } satisfies Partial<React.ComponentProps<typeof TasksPage>>)} />;
       }
       default: return null;

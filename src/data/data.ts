@@ -353,9 +353,9 @@ export const TASKS: Task[] = [
   t({ title: "Sign off the onboarding email sequence", status: "todo", priority: "high", projectId: "p-onboard",
       assigneeId: "m-self", createdBy: "m-2", dueDate: dayOffset(0), tags: ["writing"], aiScore: 68, focusMin: 30, effortHours: 1,
       aiReason: "Theo can't schedule the sends until you've read it.", createdAt: daysAgoAt(3, 10, 0) }),
-  // already on the day at 15:00 in Reco HQ: Plan my day in another business leaves that hour alone
+  // already on the day at 17:00 in Reco HQ: Plan my day in another business leaves that time alone
   t({ title: "Investor call prep", status: "todo", priority: "medium", projectId: "p-growth",
-      assigneeId: "m-self", dueDate: dayOffset(0), tags: ["writing"], aiScore: 55, focusMin: 45, planToday: true, scheduled: 15 * 60,
+      assigneeId: "m-self", dueDate: dayOffset(0), tags: ["writing"], aiScore: 55, focusMin: 45, planToday: true, scheduled: 17 * 60,
       createdAt: daysAgoAt(4, 9, 15) }),
   t({ title: "Interview three trial customers", status: "todo", priority: "medium", projectId: "p-onboard",
       assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(3), tags: ["research"], aiScore: 47, focusMin: 60, createdAt: daysAgoAt(2, 14, 0) }),
