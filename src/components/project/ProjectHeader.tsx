@@ -489,7 +489,8 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
           <dt>Status</dt>
           <dd>
             {(() => { const p = projectStatusPill(project, facts.latest); return <Pill tone={p.tone} title={p.title}>{p.label}</Pill>; })()}
-            <span className="kpj-card-meta">{kanbosRead(facts)}</span>
+            {/* (how fresh the update is, only when the pill and the stale note don't say it already) */}
+            <span className="kpj-card-meta">{kanbosRead(facts, { withUpdate: !stale && !!facts.latest })}</span>
             {editable && !facts.latest && (
               <select className="kpj-field" data-size="sm" value={project.status ?? ""} aria-label="Status set by hand"
                 onChange={(e) => onUpdate(project.id, { status: e.target.value })}>

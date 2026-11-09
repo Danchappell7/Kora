@@ -426,7 +426,8 @@ function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject 
               <div role="cell" className="kpj-td">
                 <span className="kpj-proj" style={{ padding: 0 }}>
                   <ProjectDot color={p.color} size={10} />
-                  <button type="button" className="kpj-pf-open" aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`} onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>
+                  <button type="button" className="kpj-pf-open" aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`} title={p.archivedAt ? `${p.name} (archived)` : undefined}
+                    onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>
                     {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
                   </button>
                 </span>

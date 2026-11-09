@@ -457,6 +457,16 @@ describe("ProjectPanels", () => {
     expect(onUpdate).toHaveBeenCalledWith("p-a", { contributorIds: [] });
   });
 
+  it("About: says there's no update once (the pill), not again in Kanbo's read; an update's age shows when nothing else says it", () => {
+    const { unmount } = render(<ProjectPanels {...base({ tab: "about", statusUpdates: [] })} />);
+    expect(screen.getByText("No update")).toBeInTheDocument();
+    expect(screen.queryByText(/no updates yet/)).toBeNull();
+    unmount();
+    const nineDaysAgo = (() => { const x = new Date(); x.setDate(x.getDate() - 9); return x.toISOString(); })();
+    render(<ProjectPanels {...base({ tab: "about", statusUpdates: [{ ...UPDATES[1], createdAt: nineDaysAgo }] })} />);
+    expect(screen.getByText(/· no update for 9 days$/)).toBeInTheDocument();
+  });
+
   it("About: counts open work with its sub-tasks, as overdue and blocked do, so they always add up", () => {
     const tasks = [...TASKS, task("t4", { title: "Book the venue", parentId: "t1", dueDate: iso(-2) }), task("t5", { title: "Print badges", parentId: "t1", dueDate: iso(-1) })];
     render(<ProjectPanels {...base({ tab: "about", tasks })} />);
