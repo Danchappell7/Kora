@@ -216,7 +216,7 @@ function NotionBody({ workspaceId, wsName, status, role, projects, onOpenProject
       <details className="knt-help" open={!status.connected || undefined}>
         <summary><Icon name="chevronRight" size={14} sw={2} />How to connect Notion</summary>
         <ol className="knt-steps">
-          <li>Open <a href={NOTION_INTEGRATIONS_URL} target="_blank" rel="noopener noreferrer">Notion's integrations page<span className="sr-only"> (opens in a new tab)</span></a> and choose <strong>New integration</strong>. Name it Kanbo, pick your Notion workspace and keep the type <strong>Internal</strong>.</li>
+          <li>Open <a href={NOTION_INTEGRATIONS_URL} target="_blank" rel="noopener noreferrer">Notion's integrations page<span className="sr-only"> (opens in a new tab)</span></a> (Notion now calls it <strong>Developer tools › Connections</strong>) and choose <strong>New connection</strong>. Name it Kanbo and choose <strong>API token</strong> as the authentication method. Do this in the Notion workspace your docs are in: you need to be its owner or admin, and a guest can't.</li>
           <li>Under <strong>Capabilities</strong>, tick <strong>Read content</strong>, <strong>Update content</strong> and <strong>Read user information including email addresses</strong> (so Notion people match Kanbo members). Save.</li>
           <li>Copy the <strong>Internal Integration Secret</strong> (it starts with <code>ntn_</code>) and paste it above.</li>
           <li>In Notion, open each database or page Kanbo should see and choose <strong>•••</strong> › <strong>Connections</strong> › <strong>Kanbo</strong>. Sharing a parent page shares everything inside it.</li>
