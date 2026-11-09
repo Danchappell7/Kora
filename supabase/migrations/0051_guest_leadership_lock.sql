@@ -1,17 +1,18 @@
 -- ============================================================
--- KANBO — guests can't read a team's goals, portfolios or status updates
--- (2026-11-09). A stop-gap ahead of private projects.
+-- KANBO — guests can't read a team's goals or portfolios (2026-11-09).
+-- A stop-gap ahead of private projects.
 --
---   1. goals, portfolios, status_updates: a team row is read by its
---      workspace's owner, admins and members only. A guest (a client, a
---      freelancer) no longer sees the group's targets, how its projects are
---      grouped or what its leads report, through the app, the REST API or
---      realtime. A restrictive "guests: no team reports" SELECT policy on
---      each table, ANDed with 0041's "read: personal or member": members and
---      above read exactly what they did, personal rows (workspace_id null)
---      are untouched, and writes were already members-only (0041 can_write).
---      0041 drops every policy on these tables when it's run again, so it
---      calls guest_lock_restore() to put this one back, as it does for 0046.
+--   1. goals, portfolios: a team row is read by its workspace's owner,
+--      admins and members only. A guest (a client, a freelancer) no longer
+--      sees the group's targets or how its projects are grouped, through the
+--      app, the REST API or realtime. A restrictive "guests: no team reports"
+--      SELECT policy on each table, ANDed with 0041's "read: personal or
+--      member": members and above read exactly what they did, personal rows
+--      (workspace_id null) are untouched, and writes were already
+--      members-only (0041 can_write). Status updates stay readable: a guest
+--      keeps the updates on the projects they follow. 0041 drops every policy
+--      on these tables when it's run again, so it calls guest_lock_restore()
+--      to put this one back, as it does for 0046.
 --   2. status_updates.author_id: who posted an update. user_id is the row's
 --      keeper, and when the author deletes their account it passes to the
 --      workspace's owner (0042 before_user_delete), so it can't say who wrote
@@ -38,7 +39,7 @@ begin
   end if;
 end $pre$;
 
--- ---------- 1. goals, portfolios and status updates are for members ----------
+-- ---------- 1. goals and portfolios are for members ----------
 -- (Re)creates the "guests: no team reports" policy on each table: run below,
 -- and by 0041 when it's run again (it drops every policy on these tables).
 -- Returns how many tables it covered (a missing table is skipped).
@@ -46,7 +47,11 @@ create or replace function public.guest_lock_restore()
 returns integer language plpgsql set search_path = public as $$
 declare t text; n integer := 0;
 begin
-  foreach t in array array['goals', 'portfolios', 'status_updates'] loop
+  -- status updates are read by guests too (an early draft of this file locked them: undo that)
+  if to_regclass('public.status_updates') is not null then
+    drop policy if exists "guests: no team reports" on public.status_updates;
+  end if;
+  foreach t in array array['goals', 'portfolios'] loop
     if to_regclass('public.' || t) is null then continue; end if;
     execute format('drop policy if exists "guests: no team reports" on public.%I', t);
     -- ws_role() is 'none' (never NULL) for outsiders, who 0041's read policy already
@@ -59,13 +64,13 @@ begin
 end; $$;
 revoke execute on function public.guest_lock_restore() from public, anon, authenticated;
 
--- Is it on every table (restrictive, for SELECT, row security on)?
+-- Is it on both tables (restrictive, for SELECT, row security on)?
 create or replace function public.guest_lock_intact()
 returns boolean language sql stable set search_path = pg_catalog, public as $$
   select coalesce(bool_and(c.relrowsecurity and exists (
            select 1 from pg_catalog.pg_policy p
             where p.polrelid = c.oid and p.polname = 'guests: no team reports' and not p.polpermissive and p.polcmd = 'r')), false)
-    from unnest(array['goals', 'portfolios', 'status_updates']) as t(name)
+    from unnest(array['goals', 'portfolios']) as t(name)
     join pg_catalog.pg_class c on c.oid = to_regclass('public.' || t.name);
 $$;
 revoke execute on function public.guest_lock_intact() from public, anon, authenticated;
@@ -84,6 +89,8 @@ begin
 exception when duplicate_object then null;   -- already there
 end $fk$;
 create index if not exists status_updates_author_idx on public.status_updates (author_id);
+-- (the trigger below would keep an empty author empty: it's put back after the fill)
+drop trigger if exists trg_status_update_author on public.status_updates;
 
 -- the updates posted before this: their keeper is the best we know. Once only, so a
 -- re-run never refills an author whose account has since been deleted.
@@ -95,7 +102,8 @@ begin
 end $fill$;
 
 -- The person posting is the author, whatever the request says; afterwards it never
--- changes, except to empty it when that account is deleted (the foreign key's SET NULL).
+-- changes, except to empty it once that account is deleted (the foreign key's SET NULL
+-- runs after the auth.users row has gone). Nobody can blank it to disown an update.
 -- Server-side writers (service role, SQL editor) may name an author, else the keeper.
 create or replace function public.status_update_author() returns trigger
 language plpgsql security definer set search_path = public as $$
@@ -106,13 +114,13 @@ begin
     else
       new.author_id := coalesce(new.author_id, new.user_id);
     end if;
-  elsif new.author_id is not null then
+  elsif new.author_id is distinct from old.author_id
+        and not (new.author_id is null and not exists (select 1 from auth.users u where u.id = old.author_id)) then
     new.author_id := old.author_id;
   end if;
   return new;
 end; $$;
 revoke execute on function public.status_update_author() from public, anon, authenticated;
-drop trigger if exists trg_status_update_author on public.status_updates;
 create trigger trg_status_update_author before insert or update on public.status_updates
   for each row execute function public.status_update_author();
 
@@ -126,7 +134,7 @@ insert into public.schema_migrations (version) values ('0051') on conflict (vers
 --   exists (select 1 from public.schema_migrations where version = '0051')                          as recorded,
 --   (select count(*) from pg_policies where schemaname = 'public' and policyname = 'guests: no team reports'
 --     and permissive = 'RESTRICTIVE' and cmd = 'SELECT'
---     and tablename in ('goals', 'portfolios', 'status_updates')) = 3                               as guest_lock,
+--     and tablename in ('goals', 'portfolios')) = 2                                                 as guest_lock,
 --   exists (select 1 from information_schema.columns where table_schema = 'public'
 --            and table_name = 'status_updates' and column_name = 'author_id')                       as author_column,
 --   exists (select 1 from pg_trigger where tgname = 'trg_status_update_author' and not tgisinternal)  as author_trigger,

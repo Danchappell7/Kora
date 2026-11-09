@@ -1469,9 +1469,10 @@ async function strangerSuite(w: World) {
 
 /* ============================================================ 0051: guests and the team's reports */
 
-/** Goals, portfolios and status updates are for a workspace's owner, admins and members:
- *  a guest can't read them by any query, a member still can, personal rows are untouched.
- *  Runs last: it deletes an account and re-runs 0041. */
+/** Goals and portfolios are for a workspace's owner, admins and members: a guest can't
+ *  read them by any query, a member still can, personal rows are untouched. A guest still
+ *  reads the team's status updates (they follow its projects). Runs last: it deletes an
+ *  account and re-runs 0041. */
 async function guestLockSuite(w: World) {
   const has0051 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0051') as "on"`)).rows[0].on;
   if (!has0051) return;
@@ -1488,8 +1489,8 @@ async function guestLockSuite(w: World) {
     for (const t of ["goals", "portfolios", "status_updates"]) eq(await count(w.bob, t, "workspace_id = $1::uuid", [w.w1]), 1, `bob, ${t}`);
     for (const t of ["goals", "portfolios", "status_updates"]) eq(await count(w.alice, t, "workspace_id = $1::uuid", [w.w1]), 1, `alice (owner), ${t}`);
   });
-  await test("0051 attack: a guest can't read the team's goals, portfolios or status updates by direct query", async () => {
-    for (const t of ["goals", "portfolios", "status_updates"]) {
+  await test("0051 attack: a guest can't read the team's goals or portfolios by direct query", async () => {
+    for (const t of ["goals", "portfolios"]) {
       eq(await count(w.gus, t, "workspace_id = $1::uuid", [w.w1]), 0, `gus, ${t}`);
       eq(await count(w.gus, t, "workspace_id is not null"), 0, `gus, any team ${t}`);
       // a filter that's always true, or reaching for the row by id, changes nothing
@@ -1498,6 +1499,11 @@ async function guestLockSuite(w: World) {
     const id = (await w.pg.query<{ id: string }>(`select id::text as id from public.goals where workspace_id = $1::uuid limit 1`, [w.w1])).rows[0].id;
     eq((await asPerson(w.pg, w.gus, `select name from public.goals where id = $1::uuid`, [id])).length, 0, "by id");
     eq((await asPerson(w.pg, w.gus, `select g.name from public.goals g join public.workspaces ws on ws.id = g.workspace_id`)).length, 0, "through a join");
+    eq((await asPerson(w.pg, w.gus, `select p.name from public.portfolios p join public.projects pr on pr.id::text = any(p.project_ids)`)).length, 0, "a portfolio through its projects");
+  });
+  await test("0051: a guest still reads the status updates on the team's projects (only goals and portfolios are locked)", async () => {
+    eq(await count(w.gus, "status_updates", "workspace_id = $1::uuid", [w.w1]), 1, "gus, status_updates");
+    eq(await count(w.carol, "status_updates", "workspace_id = $1::uuid", [w.w1]), 0, "carol isn't in w1");
   });
   await test("0051: a guest's own personal goal still reads, and an outsider still reads nothing", async () => {
     eq(await count(w.gus, "goals", "workspace_id is null"), 1, "gus's own goal");
@@ -1525,7 +1531,7 @@ async function guestLockSuite(w: World) {
   await test("0051 attack: no function a signed-in person can call hands these tables back past the policy", async () => {
     const rows = await w.pg.query<{ name: string }>(`
       select p.proname as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-       where n.nspname = 'public' and p.prosecdef and p.prosrc ~* '\m(goals|portfolios|status_updates)\M'
+       where n.nspname = 'public' and p.prosecdef and p.prosrc ~* '\m(goals|portfolios)\M'
          and has_function_privilege('authenticated', p.oid, 'execute') order by 1`);
     eq(rows.rows.map((r) => r.name), [], "security-definer functions open to authenticated");
   });
@@ -1538,6 +1544,9 @@ async function guestLockSuite(w: World) {
     await asPerson(w.pg, w.alice, `update public.status_updates set author_id = $1::uuid, summary = 'edited' where id = $2::uuid`, [w.alice, row.id]);
     const after = (await w.pg.query<{ author_id: string; summary: string }>(`select author_id::text as author_id, summary from public.status_updates where id = $1::uuid`, [row.id])).rows[0];
     eq(after, { author_id: w.bob, summary: "edited" }, "the author can't be re-pointed");
+    // nor blanked, to make it read "Former member" while bob is still here
+    eq((await asPerson(w.pg, w.alice, `update public.status_updates set author_id = null, summary = 'disowned' where id = $1::uuid returning id`, [row.id])).length, 1, "the update itself goes through");
+    eq((await w.pg.query<{ author_id: string | null }>(`select author_id::text as author_id from public.status_updates where id = $1::uuid`, [row.id])).rows[0].author_id, w.bob, "the author can't be emptied by an edit");
     const seeded = (await w.pg.query<{ author_id: string }>(`select author_id::text as author_id from public.status_updates where summary like 'Margins%'`)).rows[0];
     eq(seeded.author_id, w.alice, "a server-side insert takes the keeper");
   });
@@ -1553,21 +1562,25 @@ async function guestLockSuite(w: World) {
     eq(r, { user_id: w.alice, author_id: null }, "kept by the owner, author emptied (\"Former member\")");
     eq(await count(w.bob, "status_updates", "id = $1::uuid", [id]), 1, "the team still reads it");
   });
-  await test("0051: migrating twice keeps the lock and every author, emptied ones included", async () => {
+  await test("0051: migrating twice keeps the lock and every author, emptied ones included (and undoes an early draft's lock on status updates)", async () => {
+    await w.pg.query(`create policy "guests: no team reports" on public.status_updates as restrictive for select using (workspace_id is null or public.ws_role(workspace_id) <> 'guest')`);
     const before = (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.status_updates where author_id is null`)).rows[0].n;
     await applyFile(w.pg, "0051_guest_leadership_lock.sql");
     eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.status_updates where author_id is null`)).rows[0].n, before, "no author refilled");
     eq((await w.pg.query<{ ok: boolean }>(`select public.guest_lock_intact() as ok`)).rows[0].ok, true, "intact");
     eq(await count(w.gus, "goals", "workspace_id = $1::uuid", [w.w1]), 0, "still locked");
+    ok(await count(w.gus, "status_updates", "workspace_id = $1::uuid", [w.w1]) > 0, "status updates open to the guest again");
     eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version = '0051'`)).rows[0].n, 1, "recorded once");
   });
   await test("0051: re-running 0041 (which drops every policy on these tables) puts the lock back", async () => {
     await applyFile(w.pg, "0041_security_hardening_2.sql");
     eq((await w.pg.query<{ ok: boolean }>(`select public.guest_lock_intact() as ok`)).rows[0].ok, true, "intact");
-    eq(await count(w.gus, "status_updates", "workspace_id = $1::uuid", [w.w1]), 0, "guest still locked out");
+    eq(await count(w.gus, "goals", "workspace_id = $1::uuid", [w.w1]), 0, "guest still locked out of goals");
+    eq(await count(w.gus, "portfolios", "workspace_id = $1::uuid", [w.w1]), 0, "and portfolios");
     const all = (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.status_updates where workspace_id = $1::uuid`, [w.w1])).rows[0].n;
     ok(all > 0, "there are updates to read");
     eq(await count(w.bob, "status_updates", "workspace_id = $1::uuid", [w.w1]), all, "member still reads every one");
+    eq(await count(w.gus, "status_updates", "workspace_id = $1::uuid", [w.w1]), all, "and so does the guest");
   });
 }
 

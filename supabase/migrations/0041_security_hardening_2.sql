@@ -315,7 +315,7 @@ end $apiscope$;
 
 -- ---------- 9. 0051's guest lock survives a re-run of this file ----------
 -- Section 4 drops 0051's restrictive "guests: no team reports" policies on
--- goals, portfolios and status updates too. When 0051 is in, put them back.
+-- goals and portfolios too. When 0051 is in, put them back.
 do $guestlock$
 begin
   if to_regprocedure('public.guest_lock_restore()') is not null then

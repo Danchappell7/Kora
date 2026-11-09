@@ -38,10 +38,10 @@ comment on a thread, a forged author, repeating and blocked tasks, handing a tas
 writes in a loop), then what a stranger can do with no credentials (flooding the token endpoint,
 made-up address headers, filling the registrations table, probing a network through an app's description,
 and an app coming back days later with the `client_id` it remembers). Last, 0051: a guest can't
-read a team's goals, portfolios or status updates by any query while a member still can (personal
-rows untouched), no function a signed-in person can call hands them back, an update's author can't
-be forged or re-pointed and empties when the account is deleted, and re-running 0051 or 0041 keeps
-the lock.
+read a team's goals or portfolios by any query while a member still can (personal rows untouched,
+and the guest still reads the team's status updates), no function a signed-in person can call hands
+them back, an update's author can't be forged, re-pointed or blanked and empties when the account is
+deleted, and re-running 0051 or 0041 keeps the lock.
 
 vitest doesn't pick these files up (none is named `*.test.*`). `metadata.test.ts` checks the
 harness opens transactions exactly as the live `db.ts` does.
