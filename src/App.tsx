@@ -3864,7 +3864,7 @@ export default function App() {
             // its cover, and its tile (its emoji lives there, never beside the name as well)
             identity: { project: openProject, crumb: { label: "Projects", href: pathOf({ view: "projects" }), onClick: () => setRoute({ view: "projects" }) } },
             // (0048: who else is in the project right now, beside its people)
-            titleAddon: <Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")}
+            titleAddon: <Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")} readOnly={activeReadOnly}
               me={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null} /></Suspense>,
             actions: (
               <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}

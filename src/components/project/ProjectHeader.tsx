@@ -58,8 +58,10 @@ type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
 export const STATUS_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal" };
 
 /** A project's status pill: its latest update's call; without one, the status
- *  set by hand in About; otherwise "No update". */
-export function projectStatusPill(project: Project, latest?: StatusUpdate): { tone: Tone; label: string; title: string } {
+ *  set by hand in About; otherwise "No update". A guest doesn't see a team's
+ *  updates (0051), so for them "No update" wouldn't be true: the label is empty
+ *  and the pill isn't shown. */
+export function projectStatusPill(project: Project, latest?: StatusUpdate, opts: { guest?: boolean } = {}): { tone: Tone; label: string; title: string } {
   if (latest && STATUS_KIND_META[latest.status]) {
     const age = relDay(latest.createdAt);
     return { tone: STATUS_TONE[latest.status], label: STATUS_KIND_META[latest.status].label, title: `Latest update, ${age.label}` };
@@ -69,6 +71,7 @@ export function projectStatusPill(project: Project, latest?: StatusUpdate): { to
     const tone: Tone = manual.v === "on_hold" ? "neutral" : STATUS_TONE[manual.v as StatusKind];
     return { tone, label: manual.label, title: "Set by hand; no update posted yet" };
   }
+  if (opts.guest && project.workspaceId) return { tone: "neutral", label: "", title: "Status updates are for the project's members" };
   return { tone: "neutral", label: "No update", title: "No status update posted yet" };
 }
 
@@ -100,11 +103,13 @@ export function printProjectReport(project: Project, allProjectTasks: Task[]): v
 
 /** Under the project's name in its header: status pill (opens Updates), a
  *  progress ring with the count behind it, the next milestone, and the people. */
-export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates, me }: {
+export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates, me, readOnly = false }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
   onOpenUpdates: () => void;
+  /** a guest: no "No update" pill (they don't see the team's updates) */
+  readOnly?: boolean;
   /** 0048 live presence: you on the project's channel (who else is here shows beside the people); null: alone */
   me?: PresenceMe | null;
 }): JSX.Element {
@@ -113,14 +118,14 @@ export function ProjectTitleAddon({ project, tasks, statusUpdates, onOpenUpdates
   // the facts read today's date: recompute when the day rolls over in a tab left open
   const today = todayISO();
   const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates, today]);
-  const pill = projectStatusPill(project, facts.latest);
+  const pill = projectStatusPill(project, facts.latest, { guest: readOnly });
   const people = projectPeople(project);
   const names = people.map((id) => getMember(id)?.name).filter(Boolean).join(", ");
   const done = facts.total - facts.open;
   const ms = facts.nextMilestone;
   return (
     <span className="kpj-addon">
-      <Pill tone={pill.tone} onClick={onOpenUpdates} title={`${pill.title} · open Updates`}>{pill.label}</Pill>
+      {pill.label && <Pill tone={pill.tone} onClick={onOpenUpdates} title={`${pill.title} · open Updates`}>{pill.label}</Pill>}
       <span className="kpj-addon-progress" title={`${facts.pct}% of ${plural(facts.total, "task")} done`}>
         <ProgressRing value={facts.pct} size={16} label={`${project.name} progress`} />
         <span className="kpj-mono">{facts.pct}%</span>
@@ -492,7 +497,7 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
 
           <dt>Status</dt>
           <dd>
-            {(() => { const p = projectStatusPill(project, facts.latest); return <Pill tone={p.tone} title={p.title}>{p.label}</Pill>; })()}
+            {(() => { const p = projectStatusPill(project, facts.latest, { guest: readOnly }); return p.label ? <Pill tone={p.tone} title={p.title}>{p.label}</Pill> : null; })()}
             <span className="kpj-card-meta">{kanbosRead(facts)}</span>
             {editable && !facts.latest && (
               <select className="kpj-field" data-size="sm" value={project.status ?? ""} aria-label="Status set by hand"

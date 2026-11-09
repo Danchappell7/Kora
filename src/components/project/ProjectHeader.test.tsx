@@ -479,3 +479,15 @@ describe("ProjectPanels", () => {
     expect(screen.getByText("No description.")).toBeInTheDocument();
   });
 });
+
+describe("a guest and the status pill", () => {
+  it("never says \"No update\" to a guest, who doesn't see the team's updates (0051)", async () => {
+    const { projectStatusPill } = await import("./ProjectHeader");
+    expect(projectStatusPill(P).label).toBe("No update");
+    expect(projectStatusPill(P, undefined, { guest: true }).label).toBe("");
+    expect(projectStatusPill({ ...P, workspaceId: null }, undefined, { guest: true }).label).toBe("No update");   // (Personal has no guests)
+    expect(projectStatusPill(P, UPDATES[1], { guest: true }).label).toBe("At risk");                       // one they can see still shows
+    render(<ProjectTitleAddon project={P} tasks={TASKS} statusUpdates={[]} onOpenUpdates={vi.fn()} readOnly />);
+    expect(screen.queryByText("No update")).toBeNull();
+  });
+});

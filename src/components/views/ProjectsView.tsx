@@ -137,13 +137,14 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   const rows: Row[] = useMemo(() => real.map((p) => {
     const own = idx.byProject.get(p.id) ?? [];
     const facts = statusFacts(p, tasks, statusUpdates, KANBO_TODAY, idx);
-    const pill = projectStatusPill(p, facts.latest);
+    // (canCreate is false only for a guest, who doesn't see the team's updates: no "No update" pill)
+    const pill = projectStatusPill(p, facts.latest, { guest: !canCreate });
     const risks = risksByProject?.[p.id] ?? 0;
     const mine = p.ownerId === currentUserId || (p.contributorIds ?? []).includes(currentUserId)
       || own.some((t) => t.assigneeId === currentUserId && t.status !== "done");
     const atRisk = pill.tone === "warn" || pill.tone === "signal" || facts.health === "at_risk" || facts.health === "off_track" || risks > 0;
     return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale: isStale(facts, oldestTaskAge(own, p.id, KANBO_TODAY)), risks, mine, atRisk };
-  }), [real, tasks, idx, statusUpdates, risksByProject, currentUserId, today]);
+  }), [real, tasks, idx, statusUpdates, risksByProject, currentUserId, today, canCreate]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -251,7 +252,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           <span className="kpj-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</span>
         </div>
       );
-      case "status": return <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>;
+      case "status": return r.pill.label ? <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill> : null;
       case "progress": return (
         <span className="kpj-progress">
           <Meter value={f.pct} width={64} height={4} label={`${r.p.name} progress`} />
@@ -322,9 +323,11 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
                 <li key={r.p.id} className="kpj-gcard kp" style={projectIdentity(r.p).style}
                   data-open={composer?.open && composer.id === r.p.id ? "true" : undefined}>
                   <ProjectCover project={r.p} size="card" tile={44} surface="surface" />
-                  <div className="kpj-gcard-status">
-                    <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
-                  </div>
+                  {r.pill.label && (
+                    <div className="kpj-gcard-status">
+                      <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
+                    </div>
+                  )}
                   <div className="kpj-gcard-body">
                     <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-gcard-link" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
                     <p className="kpj-gcard-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</p>
