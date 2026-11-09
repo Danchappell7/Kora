@@ -9,7 +9,7 @@ import type { ViewId } from "./app-types";
 import mainSrc from "./main.tsx?raw";
 import sheetsSrc from "./styles/globalSheets.ts?raw";
 
-const VIEWS: ViewId[] = ["plan", "home", "inbox", "tasks", "calendar", "team", "analytics", "reports", "project", "search", "goals", "portfolios", "workload", "automations", "forms", "myweek", "projects", "pulse", "bin"];
+const VIEWS: ViewId[] = ["plan", "home", "inbox", "tasks", "calendar", "team", "analytics", "reports", "project", "search", "goals", "portfolios", "workload", "automations", "forms", "myweek", "projects", "pulse", "bin", "group"];
 
 describe("chunksFor", () => {
   it("Today is in the shell; every other page has its own code", () => {

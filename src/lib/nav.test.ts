@@ -6,7 +6,7 @@ import type { Route, ViewId, ProjectTab } from "../app-types";
 
 const VIEWS: ViewId[] = [
   "plan", "home", "inbox", "tasks", "calendar", "team", "analytics", "reports", "project", "search",
-  "goals", "portfolios", "workload", "automations", "forms", "myweek", "projects", "pulse", "bin",
+  "goals", "portfolios", "workload", "automations", "forms", "myweek", "projects", "pulse", "bin", "group",
 ];
 const PROJECT_TABS: ProjectTab[] = ["list", "board", "timeline", "calendar", "files", "matrix", "updates", "requests", "rules", "about", "docs"];
 const TEAM: NavCtx = { personal: false, guest: false, admin: false };
@@ -168,6 +168,16 @@ describe("places", () => {
     expect(tabsFor("projects", TEAM).map((t) => t.label)).toEqual(["All", "Portfolios", "Goals", "Rules", "Requests"]);
     expect(tabsFor("projects", GUEST).map((t) => t.label)).toEqual(["All", "Portfolios", "Goals", "Requests"]);
     expect(tabsFor("projects", TEAM).filter((t) => t.secondary).map((t) => t.label)).toEqual(["Rules", "Requests"]);
+  });
+
+  it("give Projects a Group tab only to someone who runs two or more businesses", () => {
+    expect(tabsFor("projects", { ...TEAM, group: true }).map((t) => t.label)).toEqual(["All", "Portfolios", "Goals", "Group", "Rules", "Requests"]);
+    expect(tabsFor("projects", { ...PERSONAL, group: true }).map((t) => t.id)).toContain("group");
+    expect(tabsFor("projects", { ...GUEST, group: true }).map((t) => t.label)).toEqual(["All", "Portfolios", "Goals", "Group", "Requests"]);
+    expect(pathOf({ view: "group" })).toBe("/projects/group");
+    expect(routeOf("/projects/group")).toEqual({ view: "group" });
+    expect(placeOf({ view: "group" })).toBe("projects");
+    expect(titleOf({ view: "group" })).toBe("Projects");
   });
 
   it("have the tabs from the brief", () => {

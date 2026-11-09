@@ -198,6 +198,12 @@ describe("saving (merge_onboarding's rules)", () => {
     expect(onboardingPatch(next, next)).toEqual({});
     expect(onboardingPatch({}, { checklist: { dismissedAt: "d" } })).toEqual({ checklist: { dismissedAt: "d" }, v: 1 });
   });
+  it("All businesses is a choice of its own (businesses.all), kept only as true", () => {
+    expect(onboardingPatch({ v: 1 }, { v: 1, businesses: { all: true } })).toEqual({ businesses: { all: true } });
+    expect(onboardingPatch({ v: 1, businesses: { all: true } }, { v: 1, businesses: {} })).toEqual({ businesses: {} });
+    expect(applyOnboardingPatch({ v: 1 }, { businesses: { all: true } })).toEqual({ v: 1, businesses: { all: true } });
+    expect(applyOnboardingPatch({ v: 1 }, { businesses: { all: "yes" } } as never)).toEqual({ v: 1, businesses: {} });
+  });
   it("demo mode keeps it in memory, on top of the state the app shows", async () => {
     expect(await saveOnboarding({ tour: { step: "places", done: false } }, { momentum: { recapHidden: true } }))
       .toEqual({ tour: { step: "places", done: false }, momentum: { recapHidden: true } });
