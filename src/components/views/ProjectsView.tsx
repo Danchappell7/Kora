@@ -143,7 +143,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     const mine = p.ownerId === currentUserId || (p.contributorIds ?? []).includes(currentUserId)
       || own.some((t) => t.assigneeId === currentUserId && t.status !== "done");
     const atRisk = pill.tone === "warn" || pill.tone === "signal" || facts.health === "at_risk" || facts.health === "off_track" || risks > 0;
-    return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale: isStale(facts, oldestTaskAge(own, p.id, KANBO_TODAY)), risks, mine, atRisk };
+    // (and a guest is never told a project has no update: they wouldn't see one)
+    return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale: canCreate && isStale(facts, oldestTaskAge(own, p.id, KANBO_TODAY)), risks, mine, atRisk };
   }), [real, tasks, idx, statusUpdates, risksByProject, currentUserId, today, canCreate]);
 
   const shown = useMemo(() => {
@@ -274,7 +275,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           <span className="kpj-ms-date">{fmtShortDay(f.nextMilestone.dueDate, KANBO_TODAY)}</span>
         </span>
       ) : <Dash sr="No milestone" />;
-      case "update": return <UpdateAge facts={f} stale={r.stale} />;
+      case "update": return !canCreate && f.lastUpdateDays == null ? <Dash sr="Updates are for members" /> : <UpdateAge facts={f} stale={r.stale} />;
       case "risks": return r.risks ? <span className="kpj-signal">{r.risks}</span> : <Dash sr="No risks" />;
     }
   };
@@ -339,7 +340,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
                       <span className="kpj-gcard-meta">
                         {r.facts.openAll} open
                         {r.facts.overdue.length > 0 && <> · <span className="kpj-signal">{r.facts.overdue.length} overdue</span></>}
-                        {" · "}<UpdateAge facts={r.facts} stale={r.stale} long />
+                        {(canCreate || r.facts.lastUpdateDays != null) && <>{" · "}<UpdateAge facts={r.facts} stale={r.stale} long /></>}
                       </span>
                       {people.length > 0 && (
                         <span className="kpj-gcard-people" role="img" aria-label={`People: ${names}`} title={names}>
