@@ -9,7 +9,7 @@ import { getProject, getMember, KANBO_TODAY, toLocalISO } from "../../data/data"
 import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate } from "../../data/types";
 import { goalDescendants, goalProgressMap, goalTree, projectHealth, useStableOrder, type GoalProgress, type HealthKind } from "./reportingUtils";
 import { DraftInput } from "../project/DraftInput";
-import { fmtAge, fmtShortDay, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor, type TaskIndex } from "../../lib/statusDraft";
+import { fmtAge, fmtShortDay, FORMER_MEMBER, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor, type TaskIndex } from "../../lib/statusDraft";
 import { combinedProgress, progressOf, projectPct } from "../../lib/countRules";
 import "../project/projects.css";
 
@@ -29,6 +29,8 @@ export const STATUS_KIND_META: Record<StatusKind, { label: string; color: string
 const KIND_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal" };
 const HEALTH_TONE: Record<HealthKind, Tone> = { complete: "ok", on_track: "ok", at_risk: "warn", off_track: "signal" };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** "Maya" for Maya Lin; "Former member" stays whole */
+const shortName = (name: string) => (name === FORMER_MEMBER ? name : name.split(/\s+/)[0] || name);
 
 /** An inline "add" row: a name field with Add and Cancel. */
 function Adder({ label, placeholder, onAdd, onCancel }: { label: string; placeholder: string; onAdd: (name: string) => void; onCancel: () => void }) {
@@ -119,7 +121,7 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
                           }} />
                         </div>
                       </div>
-                      <DraftInput value={g.description ?? ""} placeholder="Add a description" label={`Description of ${g.name}`}
+                      <DraftInput value={g.description ?? ""} placeholder="Add a description" label={`Description of ${g.name}`} multiline
                         onCommit={(v) => onUpdate(g.id, { description: v })} className="kpj-name-input kpj-goal-desc" />
                       <div className="kpj-card-row">
                         <select className="kpj-field" data-size="sm" value={g.projectId ?? ""} onChange={(e) => onUpdate(g.id, { projectId: e.target.value || undefined })} style={{ maxWidth: 220 }} aria-label={`Project linked to ${g.name}`}>
@@ -250,6 +252,8 @@ const readView = (): PfView => { try { return localStorage.getItem("kanbo-portfo
 export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, readOnly = false }: {
   portfolios: Portfolio[];
   projects: Project[];
+  /** the workspace's tasks, archived projects' included: a finished project that's been
+   *  archived keeps its % in the portfolio, as on a goal linked to it */
   tasks: Task[];
   /** project status updates, newest first — adds each project's latest call to its row */
   statusUpdates?: StatusUpdate[];
@@ -358,7 +362,9 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                       return (
                         <div key={p.id} className="kpj-pf-row">
                           <ProjectDot color={p.color} size={10} />
-                          <button type="button" className="kpj-pf-open" onClick={() => onOpenProject(p.id)} aria-label={`Open project ${p.name}`}>{p.name}</button>
+                          <button type="button" className="kpj-pf-open" onClick={() => onOpenProject(p.id)} aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`}>
+                            {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
+                          </button>
                           <div className="kpj-pf-side">
                             {health && <Pill tone={HEALTH_TONE[health.kind]} title={`Kanbo's read: ${health.detail}`}>{health.label}</Pill>}
                             {latest && STATUS_KIND_META[latest.status] && (
@@ -414,19 +420,24 @@ function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject 
           const f = statusFacts(p, tasks, statusUpdates, KANBO_TODAY, idx);
           const stale = isStale(f, oldestTaskAge(idx.byProject.get(p.id) ?? [], p.id, KANBO_TODAY));
           const latest = f.latest;
+          const by = latest ? updateAuthor(latest) : undefined;
           return (
             <div key={p.id} role="row" className="kpj-tr kpj-exec-tr" onClick={() => onOpenProject(p.id)}>
               <div role="cell" className="kpj-td">
                 <span className="kpj-proj" style={{ padding: 0 }}>
                   <ProjectDot color={p.color} size={10} />
-                  <button type="button" className="kpj-pf-open" aria-label={`Open project ${p.name}`} onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>{p.name}</button>
+                  <button type="button" className="kpj-pf-open" aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`} onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>
+                    {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
+                  </button>
                 </span>
               </div>
               <div role="cell" className="kpj-td">
                 {latest && STATUS_KIND_META[latest.status] ? (
                   <span className="kpj-exec-update">
                     <Pill tone={KIND_TONE[latest.status]}>{STATUS_KIND_META[latest.status].label}</Pill>
-                    <span className="kpj-exec-summary" title={updateAuthor(latest) ? `${updateAuthor(latest)}: ${latest.summary}` : latest.summary}>{latest.summary}</span>
+                    {/* who said it, in words (a tooltip alone is out of reach on a phone or the keyboard) */}
+                    {by && <span className="kpj-exec-by" data-former={latest.authorId && getMember(latest.authorId) ? undefined : ""}>{shortName(by)}</span>}
+                    <span className="kpj-exec-summary" title={by ? `${by}: ${latest.summary}` : latest.summary}>{latest.summary}</span>
                   </span>
                 ) : <Pill tone="neutral">No update</Pill>}
               </div>

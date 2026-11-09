@@ -48,12 +48,26 @@ describe("GoalsView — the numbers", () => {
   it("shows the description and saves an edit to it once", () => {
     const onUpdate = vi.fn();
     render(<GoalsView {...base} onUpdate={onUpdate} projects={[]} tasks={[]} goals={[{ id: "g", name: "Grow", status: "on_track", description: "Weekly actives across web and mobile." }]} />);
-    const box = screen.getByLabelText("Description of Grow") as HTMLInputElement;
+    const box = screen.getByLabelText("Description of Grow") as HTMLTextAreaElement;
+    // it wraps onto as many lines as it needs (a one-line field cut a long one off)
+    expect(box.tagName).toBe("TEXTAREA");
     expect(box.value).toBe("Weekly actives across web and mobile.");
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "Weekly actives, web only." } });
     fireEvent.blur(box);
     expect(onUpdate).toHaveBeenCalledWith("g", { description: "Weekly actives, web only." });
+  });
+
+  it("a description stays one paragraph: Enter saves it, a pasted line break becomes a space", () => {
+    const onUpdate = vi.fn();
+    render(<GoalsView {...base} onUpdate={onUpdate} projects={[]} tasks={[]} goals={[{ id: "g", name: "Grow", status: "on_track" }]} />);
+    const box = screen.getByLabelText("Description of Grow") as HTMLTextAreaElement;
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "Weekly actives\nacross web and mobile." } });
+    expect(box.value).toBe("Weekly actives across web and mobile.");
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.blur(box);
+    expect(onUpdate).toHaveBeenCalledWith("g", { description: "Weekly actives across web and mobile." });
   });
 });
 
@@ -110,6 +124,47 @@ describe("PortfoliosView — the numbers and who said it", () => {
     render(<PortfoliosView {...base} statusUpdates={updates} />);
     expect(screen.getByText("Update: At risk").closest("[title]")?.getAttribute("title")).toContain(`, ${maya.name}): Deck is late`);
     expect(screen.getByText("Update: On track").closest("[title]")?.getAttribute("title")).toContain(", Former member): Palette shipped");
+  });
+
+  it("an archived project keeps its % in the portfolio, as on the goal linked to it, and says it's archived", () => {
+    localStorage.setItem("kanbo-portfolio-view", "cards");
+    const old = proj("p-old", "Old launch", { archivedAt: "2026-10-01T09:00:00Z" });
+    const prev = [...PROJECTS];
+    setReferenceData({ projects: [...prev, old] });
+    try {
+      // App hands Goals and Portfolios the same list: the workspace's tasks, archived projects' included
+      const finished = [task({ projectId: "p-old", status: "done" }), task({ projectId: "p-old", status: "done" })];
+      const all = [...tasks, ...finished];
+      const pf2: Portfolio = { id: "pf2", name: "H2", projectIds: ["p-old", "p2"] };
+      const { unmount } = render(<GoalsView onCreate={() => {}} onDelete={() => {}} onUpdate={() => {}} projects={[p1, p2]} tasks={all}
+        goals={[{ id: "g", name: "Old goal", status: "done", projectId: "p-old" }]} />);
+      expect(meter("Old goal")).toHaveAttribute("aria-valuenow", "100");
+      unmount();
+      render(<PortfoliosView {...base} tasks={all} portfolios={[pf2]} />);
+      const card = screen.getByRole("article", { name: "Portfolio H2" });
+      expect(within(card).getByRole("progressbar", { name: "Old launch progress" })).toHaveAttribute("aria-valuenow", "100");
+      expect(within(card).getByRole("button", { name: "Open project Old launch (archived)" })).toHaveTextContent("Old launch (archived)");
+      // 3 of 4 top-level tasks across both (the archived project's 2 done count, not 0 of 0)
+      expect(within(card).getByText("75% · 2 projects")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Table" }));
+      const table = screen.getByRole("table", { name: "H2 projects" });
+      expect(within(table).getByRole("progressbar", { name: "Old launch progress" })).toHaveAttribute("aria-valuenow", "100");
+    } finally {
+      setReferenceData({ projects: prev });
+    }
+  });
+
+  it("the table says who posted the latest update, in words", () => {
+    localStorage.setItem("kanbo-portfolio-view", "table");
+    const updates: StatusUpdate[] = [
+      { id: "u1", projectId: "p1", status: "at_risk", summary: "Deck is late", createdAt: "2026-11-08T10:00:00Z", authorId: "m-1" },
+      { id: "u2", projectId: "p2", status: "on_track", summary: "Palette shipped", createdAt: "2026-11-08T11:00:00Z", authorId: null },
+    ];
+    render(<PortfoliosView {...base} statusUpdates={updates} />);
+    const rows = within(screen.getByRole("table", { name: "Q3 projects" })).getAllByRole("row").slice(1);
+    const first = MEMBERS.find((m) => m.id === "m-1")!.name.split(" ")[0];
+    expect(rows[0]).toHaveTextContent(`At risk${first}Deck is late`);
+    expect(rows[1]).toHaveTextContent("On trackFormer memberPalette shipped");
   });
 
   it("a guest reads it: no rename, add, remove or delete", () => {
