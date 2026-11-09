@@ -21,7 +21,7 @@ import { Popover } from "../primitives/Popover";
 import { useToast } from "../Toast";
 import { getProject } from "../../data/data";
 import type { CaptureOptions } from "../../data/data";
-import type { Task, ExternalEvent } from "../../data/types";
+import type { Task, ExternalEvent, CalEvent } from "../../data/types";
 import {
   composeTodayBrief, ghostCandidates, ghostPlan, freeMinutes, plannedMinutes, placesHint, tomorrowPreview, WORK_START, WORK_END, type BriefFact,
 } from "../../lib/brief";
@@ -76,6 +76,11 @@ export interface TodayViewProps {
   winsSlot?: TodayCardSlot;
   /** "/" in the rail's capture field picks a template (the host's library and create path) */
   templates?: CaptureTemplates;
+  /* ---- across businesses (Today works without) ---- */
+  /** All businesses: the line the brief leads with (the business that needs you most) */
+  briefLead?: ReactNode;
+  /** your blocks on today's day in other businesses: busy time here, so Plan my day works round them */
+  busyElsewhere?: CalEvent[];
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -271,16 +276,20 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
-  setupSlot, winsSlot, templates,
+  setupSlot, winsSlot, templates, briefLead, busyElsewhere,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
   const me = currentUserId;
   const dayEvents = useMemo(
-    () => dayEventsFor(calendarConnected, events),
+    () => {
+      const own = dayEventsFor(calendarConnected, events);
+      // time you've planned in your other businesses is taken here too
+      return busyElsewhere?.length ? [...own, ...busyElsewhere].sort((a, b) => a.start - b.start) : own;
+    },
     // `day` re-reads "today's" events after midnight
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [calendarConnected, events, day],
+    [calendarConnected, events, day, busyElsewhere],
   );
 
   /* ----- what you've waved away today ----- */
@@ -558,7 +567,7 @@ function TodayDay({
       <style>{TODAY_CSS}</style>
       <style>{BRIEF_CSS}</style>
       <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks}
-        hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk} />
+        hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk} lead={briefLead} />
       <div className="ktoday-actions">
         {/* data-plan-beam: the beam's row takes a dragged task too (PlanView binds it as a drop target) */}
         <div className="ktoday-beam" data-plan-beam="">

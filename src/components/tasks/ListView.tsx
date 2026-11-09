@@ -40,6 +40,7 @@ import { TaskApprovalBadge } from "../approvals/ApprovalSummaries";
 import { useSwipeRow } from "../../lib/gestures";
 import { useTaskDragSource, isTaskDragActive } from "../../lib/dnd";
 import { RowActionSheet, quickDueChoices, shortDay } from "../phone/RowActionSheet";
+import { WorkspaceChip } from "../businesses/Businesses";
 
 // small chips showing a task's filled custom-field values (max 3)
 export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
@@ -491,6 +492,8 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
         <div className="ktv-cluster">
           {action && <span className="ktv-action" onClick={stop}>{action}</span>}
           {smart && !done && <AiScore score={task.aiScore} reason={task.aiReason} />}
+          {/* All businesses: which business it's from (nothing otherwise) */}
+          {showProject && <WorkspaceChip projectId={task.projectId} col />}
           {showProject && (
             <span className="ktv-proj" data-row-project={task.id} title={proj?.name}>
               {proj && <><ProjectTile project={proj} size={16} /><span>{proj.name}</span></>}

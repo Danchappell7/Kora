@@ -202,7 +202,7 @@ const spans = (list: BriefSpan[], onOpen: (id: string) => void, onOpenRisks?: ()
 };
 
 /** The brief card. `hero` is the one action ("Plan my day for me", or "Shut down my day" after hours). */
-export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisks, hero, onShowList, onAsk }: {
+export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisks, hero, onShowList, onAsk, lead }: {
   brief: TodayBrief;
   nowMin: number;
   railFocus: RailFocus | null;
@@ -212,6 +212,8 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
   hero?: ReactNode;
   onShowList?: () => void;
   onAsk?: () => void;
+  /** All businesses: the business that needs you most, before the headline */
+  lead?: ReactNode;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [why, setWhy] = useState(false);
@@ -228,6 +230,7 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
           How I got here<Icon name="chevronDown" size={14} sw={2} />
         </button>
       </div>
+      {lead}
       <h2 className="kbrief-head" id={`${uid}-h`}>
         <span>{brief.greeting} </span>{spans(brief.headline, onOpen, onOpenRisks)}
       </h2>

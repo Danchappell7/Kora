@@ -29,6 +29,7 @@ import { dayLabel } from "../../lib/rituals";
 import { prefersReducedMotion, useOptionalToast } from "../rituals/shared";
 import { useEntrance } from "../../hooks/useEntrance";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { WorkspaceChip } from "../businesses/Businesses";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   created:   { icon: "plus",    verb: "created" },
@@ -962,6 +963,8 @@ export function InboxView({
             <span className="kinbox-say">{say}</span>
           </button>
           <div className="kinbox-sub">
+            {/* All businesses: which business it's from (nothing otherwise) */}
+            <WorkspaceChip projectId={(proj ?? docProj)?.id} />
             {ctx}
             {expand}
             {marks}

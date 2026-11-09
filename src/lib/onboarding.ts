@@ -249,7 +249,7 @@ export function dismissSetupChecklist(state: OnboardingState, dismissed: boolean
 
 /* ================================ saving ================================ */
 
-const KEYS = ["v", "tour", "checklist", "sample", "momentum"] as const;
+const KEYS = ["v", "tour", "checklist", "sample", "momentum", "businesses"] as const;
 
 /** What merge_onboarding does, on the client: one level deep, a key set to null is removed. */
 export function applyOnboardingPatch(state: OnboardingState, patch: OnboardingPatch): OnboardingState {

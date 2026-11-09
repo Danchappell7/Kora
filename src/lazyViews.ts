@@ -31,6 +31,7 @@ const projectHeader = screen(() => import("./components/project/ProjectHeader"))
 const search = screen(() => import("./components/views/SearchView"));
 const projectsView = screen(() => import("./components/views/ProjectsView"));
 const goals = screen(() => import("./components/views/GoalsPortfolios"));
+const group = screen(() => import("./components/views/GroupView"));
 const rules = screen(() => import("./components/views/RulesForms"));
 const bin = screen(() => import("./components/bin/RecycleBin"));
 const pulse = screen(() => import("./components/views/TeamPulse"));
@@ -53,6 +54,7 @@ export const SearchView = lazyComponent(search, (m) => m.SearchView, "SearchView
 export const ProjectsView = lazyComponent(projectsView, (m) => m.ProjectsView, "ProjectsView");
 export const GoalsView = lazyComponent(goals, (m) => m.GoalsView, "GoalsView");
 export const PortfoliosView = lazyComponent(goals, (m) => m.PortfoliosView, "PortfoliosView");
+export const GroupView = lazyComponent(group, (m) => m.GroupView, "GroupView");
 export const AutomationsView = lazyComponent(rules, (m) => m.AutomationsView, "AutomationsView");
 export const FormsView = lazyComponent(rules, (m) => m.FormsView, "FormsView");
 export const RecycleBin = lazyComponent(bin, (m) => m.RecycleBin, "RecycleBin");
@@ -132,7 +134,7 @@ const VIEW_CHUNKS: Record<ViewId, Chunk[]> = {
   plan: [], myweek: [myWeek], calendar: [otherViews], home: [home],
   inbox: [inbox],
   tasks: [tasksPage], search: [search],
-  projects: [projectsView], portfolios: [goals], goals: [goals], automations: [rules], forms: [rules],
+  projects: [projectsView], portfolios: [goals], goals: [goals], group: [group], automations: [rules], forms: [rules],
   project: [tasksPage, projectHeader], bin: [bin],
   pulse: [pulse], team: [team], workload: [workload], analytics: [analytics], reports: [reports],
 };

@@ -31,8 +31,13 @@ import {
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
   FocusMode, PlannerHost, TrialBanner, UpgradeModal, Paywall, likelyNext, everyScreen, prefetchRoute,
   TourHost, SetupChecklist, HelpMenu, QuickAddSheet, prefetchQuickAdd, TemplateLibrary, SaveAsTemplate, TodayStreak, TodayWins,
-  SlackLinkPage,
+  SlackLinkPage, GroupView,
 } from "./lazyViews";
+import type { GroupTarget } from "./components/views/GroupView";
+// one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
+import { useBusinessScope } from "./hooks/useBusinessScope";
+import { AllBusinessesToggle, BusinessChipsProvider, BusinessLeadLine, WorkspaceMark } from "./components/businesses/Businesses";
+import { mentionsInWorkspace, roleInWorkspace } from "./lib/businesses";
 import { forgetSlackLink, rememberSlackLink, slackLinkToOpen, slackLinkTokenFromUrl } from "./lib/slackLinkToken";
 import { canPrefetchAhead, prefetchWhenIdle, whenIdle } from "./lib/lazyLoad";
 import { useAuth } from "./auth/AuthProvider";
@@ -3583,6 +3588,39 @@ export default function App() {
   // per render — App re-renders every second while the focus timer runs
   const myTasksEverywhere = useMemo(() => (tasksSeen ?? []).filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)), [tasksSeen, currentUserId]);
 
+  /* ---- across businesses (hooks/useBusinessScope): All businesses, the switcher's dots, Projects › Group ---- */
+  const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
+    workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
+  // (your choice, on every device: profiles.onboarding)
+  const setAllBusinesses = useCallback((all: boolean) => changeOnboarding({ ...onboardingRef.current, businesses: all ? { all: true } : {} }), [changeOnboarding]);
+  // the Inbox's "new" across every business while All businesses is on (else this workspace's, as ever)
+  const inboxNew = biz.all ? (route.view === "inbox" && inboxLiveNew !== null ? inboxLiveNew : biz.unread) : newCount;
+  // …and while that Inbox is on screen, what it shows is read (as the single-workspace one marks its own)
+  useEffect(() => {
+    if (!biz.all || route.view !== "inbox") return;
+    const unread = biz.inbox.filter((a) => !a.readAt).map((a) => a.id);
+    if (!unread.length) return;
+    const stamp = new Date().toISOString(), ids = new Set(unread);
+    unread.forEach((id) => readLocallyRef.current.set(id, stamp));
+    setActivity((xs) => xs.map((a) => (ids.has(a.id) && !a.readAt ? { ...a, readAt: stamp } : a)));
+    store.markActivityRead(unread).catch(reportError);
+  }, [biz.all, route.view, biz.inbox]);
+  /** In All businesses an assignee picker lists everyone you work with: a task only goes to someone in its own workspace. */
+  const assignableHere = useCallback((ids: string[], patch: Partial<Task>): boolean => {
+    if (!biz.all || !patch.assigneeId) return true;
+    const rows = (tasksRef.current ?? []).filter((t) => ids.includes(t.id));
+    const off = rows.find((t) => t.workspaceId && patch.assigneeId !== userIdRef.current && !roleInWorkspace(wsMembersRef.current, patch.assigneeId!, t.workspaceId));
+    if (!off) return true;
+    toastInfo(`${getMember(patch.assigneeId)?.name || "They"} isn't in ${workspacesRef.current.find((w) => w.id === off.workspaceId)?.name ?? "that workspace"}, so “${off.title}” stays with its assignee.`);
+    return false;
+  }, [biz.all, toastInfo]);
+  /** The Group page: switch to that business, then open what was clicked. */
+  const openInBusiness = useCallback((wsId: string, to: GroupTarget) => {
+    if (wsId !== workspaceRef.current) setWorkspace(wsId);
+    if (to.kind === "task") setDetailId(to.taskId);
+    else setRoute(to.kind === "project" ? { view: "project", projectId: to.projectId } : to.kind === "goals" ? { view: "goals" } : to.kind === "risks" ? { view: "pulse" } : { view: "projects" });
+  }, [setRoute]);
+
   /* ---- 0048 first run: who the tour and the "Get set up" card are for, and what the app can see ---- */
   const roleHere = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role ?? null;
   const tourRole = tourRoleOf(roleHere, workspace === null);
@@ -3667,8 +3705,8 @@ export default function App() {
   const baseTitleRef = useRef(typeof document !== "undefined" ? document.title.replace(/^\(\d+\)\s*/, "") : "Kanbo");
   const pageTitle = route.view === "project" ? projects.find((p) => p.id === route.projectId)?.name || "Project" : titleOf(route, { personal: workspace === null });
   useEffect(() => {
-    document.title = shellShown ? `${newCount > 0 ? `(${newCount}) ` : ""}${pageTitle} · Kanbo` : baseTitleRef.current;
-  }, [shellShown, pageTitle, newCount]);
+    document.title = shellShown ? `${inboxNew > 0 ? `(${inboxNew}) ` : ""}${pageTitle} · Kanbo` : baseTitleRef.current;
+  }, [shellShown, pageTitle, inboxNew]);
   // Screen readers hear where you've gone: a new page (a place, or another project) is
   // announced by name. A tab switch isn't: the tab you pressed already says so.
   const [announced, setAnnounced] = useState("");
@@ -3731,7 +3769,7 @@ export default function App() {
   const activeReadOnly = myRole === "guest";
   const isAdmin = myRole === "owner" || myRole === "admin";
   const personal = workspace === null;
-  const navCtx: NavCtx = { personal, guest: activeReadOnly, admin: isAdmin };
+  const navCtx: NavCtx = { personal, guest: activeReadOnly, admin: isAdmin, group: biz.group };
   const aiOn = appearance.ai !== false;
   const detailTask = detailId ? seen.find((t) => t.id === detailId) : undefined;
   const detailReadOnly = !!detailTask && roleIn(detailTask.workspaceId) === "guest";
@@ -3739,7 +3777,8 @@ export default function App() {
   // scope tasks by route: "My tasks" stays within the workspace you're viewing — your
   // personal tasks never mix with a team workspace's, and vice versa
   const openProject = route.view === "project" && route.projectId ? getProject(route.projectId) : undefined;
-  const scoped = route.view === "tasks" ? myTasks : openProject ? allTasks.filter((t) => t.projectId === openProject.id) : allTasks;
+  // (All businesses: yours in every workspace)
+  const scoped = route.view === "tasks" ? (biz.all ? biz.mine : myTasks) : openProject ? allTasks.filter((t) => t.projectId === openProject.id) : allTasks;
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt);
   // people you can assign/tag: active members of the ACTIVE workspace only, by
   // their profile name (then their invite name, then email). Personal resolves
@@ -3783,7 +3822,7 @@ export default function App() {
   /* ---- Today ---- */
   // Momentum: today's work done ÷ today's work (done today, plus open and due today,
   // planned today or scheduled today), counted exactly as Today's brief and rail count it
-  const { done: doneToday, total: dayTotal } = momentumCounts(myTasks, dayKey, currentUserId);
+  const { done: doneToday, total: dayTotal } = momentumCounts(biz.all ? biz.mine : myTasks, dayKey, currentUserId);
   const setup = [
     { label: "Add your first task", done: allTasks.length > 0, action: () => openNewTask() },
     { label: "Plan your day", done: myTasks.some((t) => t.scheduled != null || !!t.planToday), action: () => setRoute({ view: "plan" }) },
@@ -3831,6 +3870,13 @@ export default function App() {
   const tabItem = (t: PlaceTab, extra: Partial<TabItem> = {}): TabItem => ({ id: t.id, label: t.label, secondary: t.secondary, href: pathOf(t.route), ...extra });
   const placeTab = (tabs: PlaceTab[]) => (id: string) => { const t = tabs.find((x) => x.id === id); if (t) setRoute(t.route); };
   const place = placeOf(route);
+  // All businesses (Today › Day, Inbox, My tasks), once you're in more than one workspace; a phone's header
+  // always names the workspace (or All businesses) beside its mark
+  const allToggle = biz.offered ? <AllBusinessesToggle on={biz.all} onChange={setAllBusinesses} /> : null;
+  const both = (a: React.ReactNode, b: React.ReactNode) => (a && b ? <>{a}{b}</> : a || b || undefined);
+  const activeWorkspace = workspaces.find((w) => w.id === workspace) ?? workspaces[0];
+  const scopeLead = isMobile && activeWorkspace ? (biz.all ? <Icon name="layers" size={20} sw={1.75} /> : <WorkspaceMark workspace={activeWorkspace} size={20} />) : undefined;
+  const scoped$ = (meta: string) => (isMobile || biz.all ? `${biz.scopeName} · ${meta}` : meta);
   const header: Pick<PageHeaderProps, "title" | "meta" | "leading" | "titleAddon" | "switcher" | "actions" | "tabs" | "tabValue" | "onTab" | "tabsLabel" | "momentum" | "identity"> = (() => {
     switch (place) {
       case "today": {
@@ -3839,31 +3885,32 @@ export default function App() {
         }
         const shutDown = shutdownDone(currentUserId, dayKey);
         return {
-          title: "Today", meta: dayMeta(KANBO_TODAY),
-          // 0048: your streak, beside the title (hidden in Settings, or from its own popover)
-          titleAddon: route.view === "plan" && !onboarding.momentum?.streakHidden ? (
+          title: "Today", meta: isMobile ? scoped$(dayMeta(KANBO_TODAY)) : dayMeta(KANBO_TODAY), leading: scopeLead,
+          // 0048: your streak, beside the title (hidden in Settings, or from its own popover); on a phone
+          // All businesses leads that row, where it's seen without scrolling it sideways
+          titleAddon: both(isMobile && route.view === "plan" ? allToggle : null, route.view === "plan" && !onboarding.momentum?.streakHidden ? (
             <Suspense fallback={null}><TodayStreak currentUserId={currentUserId} tasks={myTasksEverywhere} prefs={onboarding.momentum} onChangePrefs={saveMomentum} /></Suspense>
-          ) : undefined,
+          ) : undefined),
           // (a task held over Day or Week while dragging opens it: lib/dnd spring-loading)
           switcher: { items: tabsFor("today", navCtx).map((t) => ({ id: t.id, label: t.label, spring: t.id === "plan" || t.id === "myweek" })), value: route.view, onChange: (id) => setRoute({ view: id as Route["view"] }), label: "Show your day, week or month",
             onIntent: (id) => prefetchRoute({ view: id as Route["view"] }) },
-          actions: activeReadOnly ? undefined
+          actions: both(!isMobile && route.view === "plan" ? allToggle : null, activeReadOnly ? undefined
             : route.view === "plan" && lateDay
               ? <Button variant="secondary" size="sm" icon="sunset" iconRight={shutDown ? "check" : undefined} aria-label={shutDown ? "Shut down (done for today)" : "Shut down my day"} onClick={() => setShutdownOpen(true)}>Shut down</Button>
               : route.view === "myweek"
                 ? <Button variant="secondary" size="sm" icon="check" onClick={() => setWeeklyOpen(true)}>Weekly review</Button>
-                : undefined,
+                : undefined),
           momentum: route.view === "plan" && dayTotal > 0 ? doneToday / dayTotal : null,
         };
       }
       case "inbox": {
-        return { title: "Inbox", meta: newCount > 0 ? `${newCount} new` : "Nothing new" };
+        return { title: "Inbox", meta: scoped$(inboxNew > 0 ? `${inboxNew} new` : "Nothing new"), leading: scopeLead, actions: allToggle ?? undefined };
       }
       case "tasks": {
         // a smart list or saved view names itself
         if (route.view === "search") return { title: "Search", meta: route.list ? SMART_LISTS.find((l) => l.id === route.list)?.label ?? searchView?.name : undefined };
-        const open = myTasks.filter((t) => t.status !== "done" && !t.parentId).length;
-        return { title: "My tasks", meta: `${activeWsName} · ${open} open` };
+        const open = (biz.all ? biz.mine : myTasks).filter((t) => t.status !== "done" && !t.parentId).length;
+        return { title: "My tasks", meta: `${biz.scopeName} · ${open} open`, leading: scopeLead, actions: allToggle ?? undefined };
       }
       case "projects": {
         if (route.view === "project") {
@@ -3891,7 +3938,7 @@ export default function App() {
         const tabs = tabsFor("projects", navCtx);
         const counts: Record<string, number> = { automations: wsRules.length, forms: wsForms.length };
         return {
-          title: "Projects", meta: activeWsName,
+          title: "Projects", meta: route.view === "group" ? biz.groupMeta : activeWsName,
           tabs: tabs.map((t) => tabItem(t, { count: counts[t.id] || undefined })), tabValue: route.view, onTab: placeTab(tabs), tabsLabel: "Projects",
           // (secondary: the header's New task is this row's one primary button)
           actions: activeReadOnly ? undefined : <Button variant="secondary" size="sm" icon="plus" onClick={() => setNewProjectOpen(true)}>New project</Button>,
@@ -3938,13 +3985,16 @@ export default function App() {
   const renderMain = () => {
     switch (route.view) {
       // (the demo's Today keeps its illustrative day, already in the example calendars' colours)
-      case "plan": return <TodayView tasks={myTasks} allTasks={allTasks} events={calEvents} calendarConnected={store.configured && calConnections.length > 0}
+      // (All businesses: yours from every workspace, led by the business that needs you most; else this
+      // workspace's, with the time you've planned in the others kept free of new blocks)
+      case "plan": return <TodayView tasks={biz.all ? biz.mine : myTasks} allTasks={biz.all ? biz.liveSeen : allTasks} events={calEvents} calendarConnected={store.configured && calConnections.length > 0}
         currentUserId={currentUserId} userName={currentUser?.name} captureDefaults={{ projectId: planProjectId, assigneeId: currentUserId }}
         onUpdate={guardedPatch} onCreate={createFromPlan} onOpen={setDetailId} onRank={rankForToday} ranking={aiBusy}
         onStartFocus={startFocus} onShutdown={() => setShutdownOpen(true)} onExtractFromMeeting={(title) => openExtract(undefined, title)}
         onConnectCalendar={() => openSettings("calendar")} setup={setup} showSuggestions={appearance.suggestions !== false}
-        riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={activeReadOnly}
-        members={assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
+        riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={biz.all ? false : activeReadOnly}
+        members={biz.all ? biz.people : assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
+        briefLead={biz.all ? <BusinessLeadLine lead={biz.lead} onOpen={setDetailId} /> : undefined} busyElsewhere={biz.busy}
         risks={risks} onAsk={() => openPalette()}
         dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })}
         // 0048: "/" in the rail's capture field picks a template, as Quick capture's does
@@ -3987,14 +4037,25 @@ export default function App() {
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
-      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
+      // Projects › Group: every business you run, side by side (clicking anything goes there)
+      case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} projects={projects} goals={goals}
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} />;
+      // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
+      // picker, cards and table read every workspace you can see; opening a project goes to its business)
+      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}
+        tasks={personal ? biz.liveRows : allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} statusUpdates={statusUpdates}
+        acrossBusinesses={personal ? { workspaces } : undefined}
+        onOpenProject={(pid) => { const p = projects.find((x) => x.id === pid); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: pid }); }} />;
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)
-      case "inbox": return <InboxView activity={scopedActivity} tasks={allSeen} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} onNewCount={setInboxLiveNew}
-        currentUserId={currentUserId} members={assignees} readOnly={activeReadOnly} archived={inboxArchived} onUnarchive={unarchiveInbox}
+      // (All businesses, switched on: every workspace's items together, each with its business's chip; every
+      // action still goes through the task's own workspace, and a reply only mentions people who can see the task)
+      case "inbox": return <InboxView key={biz.all ? "all" : "one"} activity={biz.all ? biz.inbox : scopedActivity} tasks={biz.all ? biz.liveSeen : allSeen} onOpen={setDetailId} onArchive={archiveActivity} onClearAll={clearInbox} onNewCount={setInboxLiveNew}
+        currentUserId={currentUserId} members={biz.all ? biz.people : assignees} readOnly={biz.all ? false : activeReadOnly}
+        archived={biz.all ? [...archivedHereRef.current.values()].map((p) => p.item).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : inboxArchived} onUnarchive={unarchiveInbox}
         // a reply to someone mentions them, so they hear about it
-        onReply={(taskId, body, mentions) => addComment(taskId, body, mentions ?? [])}
+        onReply={(taskId, body, mentions) => addComment(taskId, body, (biz.all ? mentionsInWorkspace(mentions, tasksRef.current?.find((t) => t.id === taskId)?.workspaceId, wsMembers) : mentions) ?? [])}
         onAcceptToday={(taskId) => guardedPatch(taskId, { planToday: true })}
         onSchedule={(taskId, dueDate) => guardedPatch(taskId, { dueDate })}
         onComplete={(taskId) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); }}
@@ -4002,7 +4063,7 @@ export default function App() {
         // (hidden while you're a guest here: the notice says where to go)
         onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")}
         // 0047: "Approvals for you" first (this workspace's), and doc @mentions open their doc
-        approvals={{ toReview: approvalsInWorkspace(myApprovals.toReview, workspace), projects, members: wsPeople, onDecided: onApprovalsChange }}
+        approvals={{ toReview: biz.all ? biz.approvals : approvalsInWorkspace(myApprovals.toReview, workspace), projects, members: biz.all ? biz.peopleAsMembers : wsPeople, onDecided: onApprovalsChange }}
         onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }}
         // 0048: bundles and the quiet-hours line follow your prefs ("Change" opens them); snoozes look after themselves
         notifyPrefs={profile?.notifyPrefs} onOpenNotificationSettings={() => openSettings("notifications")} />;
@@ -4035,10 +4096,13 @@ export default function App() {
         const inProject = !!openProject;
         // (keyed by the saved view too, and by whether it has loaded: arriving on one starts the page from it)
         const viewKey = `${route.savedViewId ?? ""}:${appliedView ? 1 : 0}`;
-        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={activeReadOnly}
+        // My tasks in All businesses: yours from every workspace, each row with its business's chip. Edits go
+        // through each task's own workspace (guests' are refused there); an assignee must be in the task's workspace.
+        const allMy = biz.all && !inProject;
+        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${allMy ? "all" : wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={allMy ? false : activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
-          tasks={scoped} allTasks={allTasks} projects={wsProjects} view={taskView} setView={inProject ? goProjectTab : setView}
+          tasks={scoped} allTasks={allMy ? biz.liveSeen : allTasks} projects={allMy ? projects.filter((p) => !p.archivedAt) : wsProjects} view={taskView} setView={inProject ? goProjectTab : setView}
           groupBy={inProject ? openPrefs?.groupBy ?? "status" : groupBy} setGroupBy={inProject ? (g: GroupBy) => saveProjectPrefs(openProject.id, { groupBy: g }) : setGroupBy} smart={smart} setSmart={setSmart} onOpen={setDetailId} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onAdd={openNewTask} onMove={(id, status, position) => {
             // a reorder within the same column is not a status change (completedAt stays put)
             const prev = tasksRef.current?.find((t) => t.id === id);
@@ -4046,7 +4110,8 @@ export default function App() {
             if (prev && prev.status !== status) patch.status = status;
             if (position !== undefined) patch.position = position;
             if (Object.keys(patch).length) guardedPatch(id, patch);
-          }} onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} onPatch={guardedPatch} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={assignees} allTags={tags}
+          }} onBulkPatch={allMy ? (ids, p) => { if (assignableHere(ids, p)) guardedBulkPatch(ids, p); } : guardedBulkPatch} onBulkDelete={bulkDelete}
+          onPatch={allMy ? (id, p) => { if (assignableHere([id], p)) guardedPatch(id, p); } : guardedPatch} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={allMy ? biz.people : assignees} allTags={tags}
           archivedTasks={archivedTasks}
           sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (openProject ? sections.filter((s) => s.projectId === openProject.id) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
@@ -4099,7 +4164,7 @@ export default function App() {
 
   // App keeps the open project valid (its route guard), so the Sidebar's own guard stays off
   const sidebar = (
-    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={allTasks} projects={projects} inboxCount={newCount}
+    <Sidebar route={route} setRoute={setRoute} workspace={workspace} setWorkspace={switchWorkspace} workspaces={workspaces} onNewWorkspace={() => setNewWorkspaceOpen(true)} focus={focus} openFocus={openFocus} tasks={biz.all ? biz.liveRows : allTasks} projects={projects} inboxCount={inboxNew} wsSignals={biz.signals}
       currentUserId={currentUserId} currentUser={currentUser} onSignOut={auth.configured ? auth.signOut : undefined} onOpenSettings={() => openSettings()} onNewProject={() => setNewProjectOpen(true)} onDeleteProject={(id) => setDeleteProjectId(id)} onArchiveProject={(id) => setProjectArchived(id, true)} onRestoreProject={(id) => setProjectArchived(id, false)}
       subscription={subscription} onUpgrade={() => setUpgradeOpen(true)} onManageBilling={manageBilling}
       // 0048: the Views group (pinned saved views, live counts); tasks dropped on a project row move there, on Today plan it
@@ -4188,15 +4253,17 @@ export default function App() {
             onHome={() => setRoute(route.view === "plan" ? { view: "tasks" } : { view: "plan" })} homeLabel={route.view === "plan" ? "Go to My tasks" : "Go to Today"}>
             {/* 0047: every row and card reads its approval chip from here */}
             <ApprovalSummariesProvider summaries={approvalSummaries}>
-              <Suspense fallback={<PlaceSkeleton kind={skeletonFor(route, taskView)} label={pageTitle} />}>
-                <RenderView render={renderMain} />
-              </Suspense>
+              <BusinessChipsProvider on={biz.all && (route.view === "plan" || route.view === "inbox" || route.view === "tasks")} workspaces={workspaces}>
+                <Suspense fallback={<PlaceSkeleton kind={skeletonFor(route, taskView)} label={pageTitle} />}>
+                  <RenderView render={renderMain} />
+                </Suspense>
+              </BusinessChipsProvider>
             </ApprovalSummariesProvider>
           </ErrorBoundary>
         </div>
         {isMobile && (
           <div style={{ position: "sticky", bottom: 0, zIndex: "var(--z-header, 10)" }}>
-            <MobileNav route={route} setRoute={setRoute} inboxCount={newCount} personal={personal}
+            <MobileNav route={route} setRoute={setRoute} inboxCount={inboxNew} personal={personal}
               onCapture={activeReadOnly ? undefined : openCapture} onQuickAdd={activeReadOnly ? undefined : openQuickAdd} onQuickAddIntent={prefetchQuickAdd}
               onMore={() => setSidebarOpen(true)} moreOpen={sidebarOpen} />
           </div>

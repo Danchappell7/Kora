@@ -49,6 +49,7 @@ import { ScheduleMenu, prefetchPlanMenus } from "../dnd/lazy";
 import { CaptureTemplatePicker, CaptureTemplateStrip, prefetchCaptureTemplates } from "../templates/lazyCapture";
 import type { Lane, SeenMap } from "./planCanvas";
 import { freeGaps as freeGapsOf, isTodaysScope, WORK_START, type GhostBlock } from "../../lib/brief";
+import { WorkspaceChip } from "../businesses/Businesses";
 
 const SNAP = 15;            // drags land on the quarter hour
 const RAIL_GRAB = 16;       // px: a row from the rail (or anywhere else) is held near its top edge
@@ -1070,7 +1071,7 @@ function RailItem({ task, today, me, slot, tomorrow, readOnly, canSkip, onPress,
       {/* the meta line runs the full width, under the suggested slot too */}
       <div className="krail-item-meta" aria-hidden="true">
         <span className="mono">{fmtDuration(durOf(task))}</span>
-        {proj && <><span className="krail-dot">·</span><span className="krail-proj"><ProjectTile project={proj} size={16} /><span>{proj.name}</span></span></>}
+        {proj && <><span className="krail-dot">·</span><WorkspaceChip projectId={proj.id} /><span className="krail-proj"><ProjectTile project={proj} size={16} /><span>{proj.name}</span></span></>}
         {due && <><span className="krail-dot">·</span><span className="mono" data-tone={overdue ? "signal" : undefined}>{due}</span></>}
         {from && <><span className="krail-dot">·</span><span className="krail-from">from {from}</span></>}
       </div>
