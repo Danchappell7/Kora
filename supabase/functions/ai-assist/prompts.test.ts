@@ -54,6 +54,12 @@ describe("prompt builders", () => {
     expect(system).toContain(`up to ${MAX_CITES} ids`);
   });
 
+  it("command keeps blocked (the status) apart from waiting on (a dependency), as the app counts them", () => {
+    const { system } = plan("command");
+    expect(system).toContain("\"Blocked\" means status blocked");
+    expect(system).toContain("is \"waiting on\" them: never call it blocked");
+  });
+
   // Replies are billed by the tokens written, so the ceiling only has to be
   // high enough never to cut the largest reply the contract allows in half
   // (a cut-off reply can't be parsed: 502, and the request is spent).
