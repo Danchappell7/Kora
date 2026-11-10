@@ -1,7 +1,9 @@
 // @vitest-environment node
 // The public-form function, end to end against an in-memory database
 // (a stand-in for the supabase-js query builder, service role: no RLS)
-// and the real rate limiter from _shared/limits.ts.
+// and the real rate limiter from _shared/limits.ts. Its rpc answers as a
+// database before 0058 (no project-access functions) unless a test says
+// otherwise (db.access).
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashKey, hit, KEY_PREFIX, refund } from "../_shared/limits.ts";
 import { FIELD_MESSAGES, identityColour, RATE_LIMIT_MESSAGES } from "../_shared/publicForm.ts";
@@ -15,11 +17,23 @@ class FakeDb {
   broken = new Map<string, { code: string; message: string }>();
   log: string[] = [];
   seq = 0;
+  /** 0058's project-access functions: null = not there (before 0058) */
+  access: { rank?: (user: string, project: string) => number; open?: (project: string) => boolean; broken?: boolean } | null = null;
+  rpcs: string[] = [];
   rows(t: string) {
     if (!this.tables.has(t)) this.tables.set(t, []);
     return this.tables.get(t)!;
   }
   from(t: string) { return new Query(this, t); }
+  async rpc(fn: string, args: Record<string, unknown> = {}) {
+    this.rpcs.push(fn);
+    const a = this.access;
+    if (!a) return { data: null, error: { code: "PGRST202", message: `Could not find the function public.${fn}` } };
+    if (a.broken) return { data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } };
+    if (fn === "user_project_rank") return { data: a.rank ? a.rank(String(args.p_user), String(args.p_project)) : 3, error: null };
+    if (fn === "project_is_open") return { data: a.open ? a.open(String(args.p_project)) : true, error: null };
+    return { data: null, error: { code: "PGRST202", message: `Could not find the function public.${fn}` } };
+  }
 }
 
 class Query implements PromiseLike<{ data: unknown; error: unknown }> {
@@ -207,6 +221,42 @@ describe("GET: the form's public face", () => {
   it("answers a ping without a token, and refuses other methods", async () => {
     expect(await handlePublicForm({ method: "GET", token: null, ip: "", ping: true }, deps())).toEqual({ status: 200, body: { ok: true } });
     expect((await handlePublicForm({ method: "PUT", token: TOKEN, ip: "" }, deps())).status).toBe(405);
+  });
+});
+
+describe("GET: a Members only or Private project (0058, Project access on)", () => {
+  it("the form's own name stands in for the project's, with no emoji and a colour that isn't the project's", async () => {
+    db.access = { open: (p) => p !== PROJECT };
+    const r = await get();
+    expect(r.status).toBe(200);
+    const f = r.body.form as { name: string; project: { name: string; emoji: string; color: string } };
+    expect(f.project).toEqual({ name: "Design requests", emoji: "", color: expect.any(String) });
+    expect(f.project.color).not.toBe("oklch(0.62 0.16 293)");
+    expect(f.name).toBe("Design requests");
+    const wire = JSON.stringify(r.body);
+    for (const secret of ["Website refresh", "🎨", "oklch(0.62 0.16 293)", PROJECT, FORM]) expect(wire).not.toContain(secret);
+    expect(db.rpcs).toEqual(["project_is_open"]);
+  });
+  it("a Whole workspace project (or the switch off) shows as before", async () => {
+    db.access = { open: () => true };
+    expect(((await get()).body.form as { project: unknown }).project).toEqual({ name: "Website refresh", emoji: "🎨", color: "oklch(0.62 0.16 293)" });
+  });
+  it("before 0058 the project shows, as it always has", async () => {
+    db.access = null;
+    expect(((await get()).body.form as { project: { name: string } }).project.name).toBe("Website refresh");
+  });
+  it("when it can't tell, the form says it's unavailable rather than naming the project", async () => {
+    db.access = { broken: true };
+    const r = await get();
+    expect(r.status).toBe(503);
+    expect(r.body.reason).toBe("unavailable");
+    expect(JSON.stringify(r.body)).not.toContain("Website refresh");
+  });
+  it("a personal form never asks", async () => {
+    db.access = { broken: true };
+    Object.assign(form(), { workspace_id: null, project_id: "p-personal" });
+    expect((await get()).status).toBe(200);
+    expect(db.rpcs).toEqual([]);
   });
 });
 
@@ -401,6 +451,30 @@ describe("POST: who gets it", () => {
     expect(r.body.reason).toBe("unavailable");
     expect(activity()).toHaveLength(0);
   });
+  it("Project access (0058): only someone who can edit the project; the owner when nobody named can", async () => {
+    // the project's owner lost edit rights (a viewer on a private project): the form's creator, who can, gets it
+    db.access = { rank: (u) => (u === LEAD ? 1 : 3) };
+    await post(good);
+    expect(tasks()[0].assignee_id).toBe(CREATOR);
+    expect(activity()[0].user_id).toBe(CREATOR);
+    // nobody named can: the team's owner (always can)
+    db.access = { rank: (u) => (u === OWNER ? 3 : 0) };
+    await post({ ...good, email: "b@example.com" });
+    expect(tasks()[1].assignee_id).toBe(OWNER);
+    expect(db.rpcs.filter((f) => f === "user_project_rank").length).toBeGreaterThan(0);
+  });
+  it("Project access: when it can't be checked, the team's owner gets it (and it's still filed)", async () => {
+    db.access = { broken: true };
+    expect((await post(good)).status).toBe(200);
+    expect(tasks()[0].assignee_id).toBe(OWNER);
+    expect(activity()).toEqual([expect.objectContaining({ user_id: OWNER })]);
+  });
+  it("before 0058 it asks once, then goes by today's rule", async () => {
+    db.access = null;
+    await post(good);
+    expect(tasks()[0].assignee_id).toBe(LEAD);
+    expect(db.rpcs).toEqual(["user_project_rank"]);
+  });
   it("a personal form files into the creator's Personal project", async () => {
     Object.assign(form(), { workspace_id: null, project_id: "p-personal" });
     await post(good);
@@ -524,6 +598,16 @@ describe("POST: the project's rules run, as for a form filled in inside Kanbo", 
     // the later rule names a suspended member: the project's owner gets it instead
     expect(tasks().at(-1)!.assignee_id).toBe(LEAD);
     expect(activity().every((a) => a.user_id !== STRANGER && a.user_id !== GUEST && a.user_id !== CREATOR)).toBe(true);
+  });
+
+  it("Project access (0058): a rule's assignee who can't edit the project is skipped", async () => {
+    db.access = { rank: (u) => (u === CREATOR ? 2 : 3) };
+    rule([{ type: "set_assignee", value: CREATOR }]);
+    await post(good);
+    expect(tasks()[0].assignee_id).toBe(LEAD);
+    db.access = { rank: () => 3 };
+    await post({ ...good, email: "b@example.com" });
+    expect(tasks()[1].assignee_id).toBe(CREATOR);
   });
 
   it("a section outside the form's project, or not a section at all, is skipped", async () => {

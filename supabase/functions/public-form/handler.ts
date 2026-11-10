@@ -13,7 +13,10 @@
 //
 // Who can do what: anyone with an enabled form's link reads the form's
 // public face (name, intro, project name / emoji / colour, team name and
-// logo, which of description / priority / due date it asks for) and files
+// logo, which of description / priority / due date it asks for; for a
+// Members only or Private project (0058, Project access on) the form's own
+// name stands in for the project's, with no emoji and a colour of the
+// form's own, so a link that travels never names private work) and files
 // ONE task through it. Nothing else is readable or writable: the token is
 // looked up with the service role, and every value written comes from the
 // form's row (project, workspace, creator), the project's own checked rules
@@ -47,8 +50,15 @@
 // request anyway (see chooseAssignee), a section only if it's in the form's
 // project, a tag only if it's built in, the team's, or the rule author's own.
 // Anything else is skipped, never guessed.
+//
+// Project access (0058): the request goes only to someone who can edit the
+// form's project (user_project_rank ≥ 3); before 0058, today's writer rule.
+// When that can't be checked, the team's owner gets it (they always can).
+// The database's own trigger is the backstop: it hands a task whose
+// assignee can't see the project to the project's owner.
 // ============================================================
 import { KEY_PREFIX, type Db } from "../_shared/limits.ts";
+import { projectAccess, type RpcDb } from "../_shared/projectAccess.ts";
 import { planRules, type RulePlan, type RuleRow } from "../_shared/automationRules.ts";
 import {
   buildPublicSchema, checkSubmission, FAILURE_MESSAGES, FAILURE_STATUS, isHoneypotHit, isPublicToken,
@@ -86,7 +96,8 @@ export interface PublicFormResponse {
 }
 
 export interface PublicFormDeps {
-  db: Db;
+  /** the service role: tables, and 0058's project-access functions (rpc) */
+  db: Db & RpcDb;
   /** rate limiter: hit(db, key, window) from _shared/limits.ts */
   hit: (key: string, opts: { windowSec: number; max?: number }) => Promise<{ allowed: boolean; retryAfter: number }>;
   /** give one hit back: refund(db, key) from _shared/limits.ts (the form's slot, when the task didn't save) */
@@ -284,7 +295,7 @@ async function ruleTags(db: Db, t: Target, wanted: RulePlan["tags"], log?: Publi
  *  form: the rules' assignee if they're an active writer in good standing, else
  *  the project's owner on the same terms, else the form's creator, else the
  *  team's owner (always in the team). */
-async function chooseAssignee(db: Db, t: Target, preferred?: string, log?: PublicFormDeps["log"]): Promise<{ id: string; notify: boolean }> {
+async function chooseAssignee(db: Db & RpcDb, t: Target, preferred?: string, log?: PublicFormDeps["log"]): Promise<{ id: string; notify: boolean }> {
   const ws = t.workspace;
   // a rule's assignee goes first, on exactly the same terms as everyone else
   const candidates = ws
@@ -301,7 +312,25 @@ async function chooseAssignee(db: Db, t: Target, preferred?: string, log?: Publi
     else writers = new Set(((data ?? []) as { user_id: string; role: string; status: string }[])
       .filter((m) => m.status === "active" && WRITER_ROLES.has(m.role)).map((m) => m.user_id));
   }
-  const eligible = (id: string) => inGoodStanding(profiles?.get(id)) && (!ws || id === ws.owner_id || writers.has(id));
+  // Project access (0058): only someone who can edit the form's project. null: before 0058, today's rule
+  let editors: Set<string> | null = null;
+  if (ws) {
+    const access = projectAccess(db);
+    try {
+      const can = new Set<string>();
+      for (const id of candidates) {
+        const rank = await access.projectRank(id, ws.id, t.form.project_id);
+        if (access.before0058) break;
+        if ((rank ?? 0) >= 3) can.add(id);
+      }
+      if (!access.before0058) editors = can;
+    } catch (e) {
+      // can't tell who can see the project: only the team's owner is certain
+      log?.("public-form: project access lookup failed", dbError(e));
+      editors = new Set([ws.owner_id]);
+    }
+  }
+  const eligible = (id: string) => inGoodStanding(profiles?.get(id)) && (!ws || id === ws.owner_id || writers.has(id)) && (!editors || editors.has(id));
   const id = candidates.find(eligible) ?? fallback;
   // notif_on(user, 'assigned'): on unless they've switched it off (a stored "false" counts too)
   const prefs = profiles?.get(id)?.notify_prefs;
@@ -330,7 +359,16 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
     const found = await findTarget(db, token, log);
     if (!found.ok) return fail(found.reason);
     const { form, project, workspace } = found.target;
-    return { status: 200, body: { form: buildPublicSchema({ form, project, workspace }) } };
+    // a Members only or Private project (0058, switched on) isn't named on a page anyone with the link can read
+    let open = true;
+    if (form.workspace_id && UUID.test(String(form.project_id))) {
+      try { open = await projectAccess(db).projectIsOpen(form.workspace_id, String(form.project_id)); } catch (e) {
+        log?.("public-form: project access lookup failed", dbError(e));
+        return fail("unavailable");
+      }
+    }
+    const face = open ? project : { id: form.id, name: form.name, emoji: "", color: null };
+    return { status: 200, body: { form: buildPublicSchema({ form, project: face, workspace }) } };
   }
 
   /* ---------------- file a request ---------------- */
