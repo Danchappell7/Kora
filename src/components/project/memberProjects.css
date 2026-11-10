@@ -1,0 +1,15 @@
+/* KANBO — a person's projects in their Team profile (MemberProjects.tsx, 0058) */
+.kmprj { display: flex; flex-direction: column; gap: 8px; }
+.kmprj-title { margin: 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmprj-hint { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kmprj-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.kmprj-row { display: flex; align-items: center; gap: 8px; min-height: 40px; border-bottom: 1px solid var(--hairline); }
+.kmprj-row:last-child { border-bottom: 0; }
+.kmprj-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kmprj-fixed { flex: none; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmprj-select {
+  flex: none; height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--field-border, var(--hairline-strong));
+  background: var(--field-bg, var(--bg)); color: var(--ink); font: 500 12px/16px var(--font-ui, var(--font-display));
+}
+.kmprj-add { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kmprj-add > .kmprj-select { flex: 1 1 auto; min-width: 0; max-width: 260px; }

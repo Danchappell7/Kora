@@ -99,6 +99,15 @@ describe("App · project access on (Foundrise)", () => {
     expect(await screen.findByText("Maya Lin can't see Seed round, so “Ship onboarding redesign to staging” is now assigned to you.")).toBeInTheDocument();
   }, 30_000);
 
+  it("a guest's profile on Team says which projects they see", async () => {
+    inWs("ws-foundrise", "/team/people");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: /Ana Ruiz/ }, { timeout: 8000 }));
+    const sec = await screen.findByRole("region", { name: "Projects" });
+    expect(within(sec).getByText("Brand Refresh")).toBeInTheDocument();
+    expect(within(sec).getByText(/Ana sees only this project here\./)).toBeInTheDocument();
+  }, 30_000);
+
   it("New project asks who can see it", async () => {
     inWs("ws-foundrise", "/projects");
     await boot();

@@ -100,6 +100,20 @@ describe("PeopleAccess", () => {
     expect(within(panel).getByRole("radio", { name: /^Private/ })).toBeDisabled();
   });
 
+  it("lists pending invites that bring it, and takes one off", async () => {
+    const c = ctx("o", [pm("me", "editor")]);
+    const onRemoveInvite = vi.fn(async () => true);
+    render(<PeopleAccess project={project()} ctx={c} workspaceName="Foundrise" tasks={[]} nameOf={(id) => names[id] ?? id}
+      onSetVisibility={vi.fn()} onSetMember={vi.fn()} onRemoveMember={vi.fn()} invites={[{ memberId: "wm-jo", email: "jo@acme.co", role: "commenter" }]} onRemoveInvite={onRemoveInvite} />);
+    const panel = screen.getByRole("region", { name: "People & access" });
+    const row = within(panel).getByText("jo@acme.co").closest("li")!;
+    expect(row.textContent).toMatch(/Invited/);
+    expect(row.textContent).toMatch(/Can comment/);
+    expect(within(panel).getByText("Invited people see it once they join.")).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("button", { name: "Take jo@acme.co's invite off Seed round" }));
+    await vi.waitFor(() => expect(onRemoveInvite).toHaveBeenCalledWith("wm-jo"));
+  });
+
   it("the question says nobody loses it when nobody does", () => {
     expect(narrowingQuestion("Payroll", "members", [])).toBe("Make Payroll members only?");
     expect(narrowingQuestion("Payroll", "private", [{ name: "Theo Vance", openTasks: 3 }, { name: "Maya Lin", openTasks: 0 }, { name: "Sana Rao", openTasks: 0 }]))

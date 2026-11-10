@@ -54,11 +54,12 @@ import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
 import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange, type PortfolioPatch } from "./data/store";
+import { store, keepOnScreen, getStrippedColumns, stampCreator, type InviteGrant, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange, type PortfolioPatch } from "./data/store";
+import { MemberProjects, type MemberProjectRow } from "./components/project/MemberProjects";
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, mayMakePrivate as mayMakePrivateHere, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -518,6 +519,11 @@ export default function App() {
   /** 0058: read who's on which project again (after a member call, or a project made with people) */
   const reloadProjectMembers = useCallback(() => {
     store.listProjectMembers().then(setProjectMembers, (e) => reportError(e, { op: "listProjectMembers" }));
+  }, []);
+  /** 0058: the projects pending invites bring (owners and admins read them), for their profiles and People & access */
+  const [inviteGrants, setInviteGrants] = useState<InviteGrant[] | null>(null);
+  const reloadInviteGrants = useCallback(() => {
+    store.listInviteGrants().then(setInviteGrants, (e) => reportError(e, { op: "listInviteGrants" }));
   }, []);
   /** Refuse up front an edit to work you can only view (0058): a project id, or a task (its workspace and
    *  project). With project access off this is denyGuest exactly: guests rank 2, everyone else 3. */
@@ -3281,6 +3287,15 @@ export default function App() {
       return true;
     } catch (e) { accessRefused("setProjectMember", e); return false; }
   }, [applyProjects, accessRefused, reloadProjectMembers]);
+  /** 0058: replace what a pending invite brings (its owners and admins), then read them all again. */
+  const setInviteGrantsFor = useCallback(async (memberId: string, grants: { projectId: string; role: ProjectRole }[]): Promise<boolean> => {
+    try {
+      await store.setInviteProjects(memberId, grants);
+      setInviteGrants((cur) => [...(cur ?? []).filter((g) => g.memberId !== memberId), ...grants.map((g) => ({ memberId, ...g }))]);
+      reloadInviteGrants();
+      return true;
+    } catch (e) { accessRefused("setInviteProjects", e); return false; }
+  }, [accessRefused, reloadInviteGrants]);
   const removeProjectMember = useCallback(async (projectId: string, userId: string): Promise<boolean> => {
     try {
       await store.removeProjectMember(projectId, userId);
@@ -3759,8 +3774,14 @@ export default function App() {
   const rolloutRef = useRef<{ openPackGallery: () => void; updateProject?: Project; notePack?: (workspaceId: string) => void }>({ openPackGallery: () => setNewProjectOpen(true) });
   // Get set up's "Invite your pilot group": Team › People opens on its invite sheet
   const [inviteNow, setInviteNow] = useState(false);
-  // 0058: the project a guest's invite starts on (About › People & access › Invite a guest)
+  // 0058: the project a guest's invite starts on (About › People & access › Invite a guest), and the way back to it
   const [invitePreset, setInvitePreset] = useState<string[] | null>(null);
+  const [inviteBack, setInviteBack] = useState<string | null>(null);
+  useEffect(() => { if (route.view !== "team") setInviteBack(null); }, [route.view]);
+  // (owners and admins of a workspace with project access on read what its pending invites bring)
+  const leadsHere = !!workspace && wsMembers.some((m) => m.userId === currentUserId && m.workspaceId === workspace && m.status === "active" && (m.role === "owner" || m.role === "admin"));
+  const gatedHere = accessOn(workspaces.find((w) => w.id === workspace));
+  useEffect(() => { if (leadsHere && gatedHere) reloadInviteGrants(); }, [leadsHere, gatedHere, workspace, wsMembers.length, reloadInviteGrants]);
 
   /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
   const unarchiveInbox = useCallback((ids: string[]) => {
@@ -4195,6 +4216,30 @@ export default function App() {
   // 0058: where project access is on, new work goes only into projects you can edit (as before elsewhere)
   const wsGated = accessOn(workspaces.find((w) => w.id === workspace));
   const wsEditable = wsGated ? wsProjects.filter((p) => projectRank(p.id, accessCtx) >= 3) : wsProjects;
+  // 0058: a person's projects in their Team profile (owners and admins, project access on): each one they're
+  // on and their role there, or what their pending invite brings, changed or taken off right there
+  const memberProjectsFor = (m: WorkspaceMember): React.ReactNode => {
+    const guest = m.role === "guest";
+    const name = getMember(m.userId ?? "")?.name || m.name || m.email;
+    const manageable = wsProjects.filter((p) => !p.id.startsWith("tmp-") && canManageAccess(p, accessCtx));
+    const addableBut = (rows: { projectId: string }[]) => manageable.filter((p) => !rows.some((r) => r.projectId === p.id)).map((p) => ({ id: p.id, name: p.name }));
+    if (m.status === "active" && m.userId) {
+      const uid = m.userId;
+      const rows = wsProjects.flatMap((p): MemberProjectRow[] => {
+        if (p.ownerId === uid) return [{ projectId: p.id, name: p.name, role: "owner" }];
+        const r = accessMemberRole(accessCtx, p.id, uid);
+        return r ? [{ projectId: p.id, name: p.name, role: r }] : [];
+      });
+      return <MemberProjects name={name} guest={guest} pending={false} rows={rows} addable={addableBut(rows)}
+        onSet={(pid, role) => setProjectMember(pid, uid, role)} onRemove={(pid) => removeProjectMember(pid, uid)} />;
+    }
+    if (m.status !== "invited") return null;
+    const grants = (inviteGrants ?? []).filter((g) => g.memberId === m.id).map((g) => ({ projectId: g.projectId, role: g.role }));
+    const rows = grants.flatMap((g) => { const p = wsProjects.find((x) => x.id === g.projectId); return p ? [{ projectId: p.id, name: p.name, role: g.role }] : []; });
+    return <MemberProjects name={m.email} guest={guest} pending rows={rows} addable={addableBut(rows)}
+      onSet={(pid, role) => setInviteGrantsFor(m.id, [...grants.filter((g) => g.projectId !== pid), { projectId: pid, role }])}
+      onRemove={(pid) => setInviteGrantsFor(m.id, grants.filter((g) => g.projectId !== pid))} />;
+  };
   // projects you can view but not change, where project access is on (their rows read like a guest's, everywhere)
   const viewOnlyIds = projects.filter((p) => p.workspaceId && accessOn(workspaces.find((w) => w.id === p.workspaceId)) && projectRank(p.id, accessCtx) < 3).map((p) => p.id);
   if (viewOnlyRef.current.key !== viewOnlyIds.join(",")) viewOnlyRef.current = { key: viewOnlyIds.join(","), set: new Set(viewOnlyIds) };
@@ -4557,8 +4602,10 @@ export default function App() {
         inviteProjects={wsGated && isAdmin ? {
           projects: wsProjects.filter((p) => !p.id.startsWith("tmp-") && canManageAccess(p, accessCtx)).map((p) => ({ id: p.id, name: p.name, emoji: p.emoji })),
           preset: invitePreset ?? undefined,
-          onSet: (memberId, ids) => store.setInviteProjects(memberId, ids.map((projectId) => ({ projectId, role: "commenter" as const }))).then(() => undefined),
-        } : undefined} />;
+          onSet: (memberId, ids) => store.setInviteProjects(memberId, ids.map((projectId) => ({ projectId, role: "commenter" as const }))).then(() => { reloadInviteGrants(); }),
+          back: inviteBack && getProject(inviteBack) ? { label: `Back to ${getProject(inviteBack)!.name}`, go: () => { const pid = inviteBack; setInviteBack(null); setAccessOpenFor(pid); setRoute({ view: "project", projectId: pid, tab: "about" }); } } : undefined,
+        } : undefined}
+        memberProjects={wsGated && isAdmin ? memberProjectsFor : undefined} />;
       case "tasks":
       case "project": {
         const inProject = !!openProject;
@@ -4615,7 +4662,13 @@ export default function App() {
                 access={accessSchema() && projectMembers !== null && openProject!.workspaceId ? {
                   ctx: accessCtx, workspaceName: activeWsName, open: accessOpenFor === openProject!.id,
                   onSetVisibility: setProjectVisibility, onSetMember: setProjectMember, onRemoveMember: removeProjectMember,
-                  onInviteGuest: isAdmin ? (pid) => { setInvitePreset([pid]); setInviteNow(true); setRoute({ view: "team" }); } : undefined,
+                  onInviteGuest: isAdmin ? (pid) => { setInvitePreset([pid]); setInviteBack(pid); setInviteNow(true); setRoute({ view: "team" }); } : undefined,
+                  // (pending invites that bring it: their owners and admins see them, and can take them off)
+                  invites: isAdmin && inviteGrants ? inviteGrants.filter((g) => g.projectId === openProject!.id).flatMap((g) => {
+                    const m = wsMembers.find((x) => x.id === g.memberId && x.status === "invited");
+                    return m ? [{ memberId: m.id, email: m.email, role: g.role }] : [];
+                  }) : undefined,
+                  onRemoveInvite: isAdmin ? (memberId) => setInviteGrantsFor(memberId, (inviteGrants ?? []).filter((g) => g.memberId === memberId && g.projectId !== openProject!.id).map((g) => ({ projectId: g.projectId, role: g.role }))) : undefined,
                 } : undefined} /></Suspense>
             ),
             notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={activeReadOnly ? [] : risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,

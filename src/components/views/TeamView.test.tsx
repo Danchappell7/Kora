@@ -237,9 +237,27 @@ describe("TeamView", () => {
     fireEvent.change(screen.getByLabelText("Emails"), { target: { value: "ana@studioruiz.co" } });
     fireEvent.click(screen.getByRole("button", { name: "Send 1 invite" }));
     await waitFor(() => expect(onSet).toHaveBeenCalledWith("wm-new", ["p-brand", "p-seed"]));
+    // (it says what they'll see, so it can be checked)
+    expect(await screen.findByText(/They'll see Brand Refresh and Seed round once they join\./)).toBeInTheDocument();
     // a member's invite isn't asked
     fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "member" } });
     expect(screen.queryByRole("group", { name: "Projects they can see" })).toBeNull();
+  });
+
+  it("0058: invited from a project, the invite's success offers the way back to it", async () => {
+    const onInvite = vi.fn(async () => ({ id: "wm-new", email: "jo@acme.co", inviteEmail: { sent: true } }));
+    const go = vi.fn();
+    team([], { onInvite, inviteNow: true, inviteProjects: { projects: [{ id: "p-seed", name: "Seed round" }], preset: ["p-seed"], onSet: vi.fn(async () => undefined), back: { label: "Back to Seed round", go } } });
+    fireEvent.change(screen.getByLabelText("Emails"), { target: { value: "jo@acme.co" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 invite" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to Seed round" }));
+    expect(go).toHaveBeenCalled();
+  });
+
+  it("0058: a person's profile carries the projects slot it's given (owners and admins, project access on)", () => {
+    team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app" })], { memberProjects: (m) => <p>Projects of {m.email}</p> });
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    expect(screen.getByText("Projects of maya@kanbo.app")).toBeInTheDocument();
   });
 
   it("warns what someone leaves behind before removing them, and that they come off tasks they follow", () => {

@@ -49,9 +49,13 @@ export interface PeopleAccessProps {
   onInviteGuest?: (projectId: string) => void;
   /** the project syncs to Notion (people with access there can see its tasks) */
   notionSynced?: boolean;
+  /** pending invites that bring this project (its workspace's owners and admins see them) */
+  invites?: { memberId: string; email: string; role: ProjectRole }[];
+  /** take this project off a pending invite */
+  onRemoveInvite?: (memberId: string) => Promise<boolean>;
 }
 
-export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSetVisibility, onSetMember, onRemoveMember, onInviteGuest, notionSynced }: PeopleAccessProps): JSX.Element {
+export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSetVisibility, onSetMember, onRemoveMember, onInviteGuest, notionSynced, invites = [], onRemoveInvite }: PeopleAccessProps): JSX.Element {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const wsId = project.workspaceId ?? "";
   const vis = visibilityOf(project);
@@ -161,7 +165,17 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
               </li>
             );
           })}
+          {invites.map((i) => (
+            <li key={`inv-${i.memberId}`} className="kpax-person">
+              <span className="kpax-ghost" aria-hidden="true"><Icon name="user" size={12} sw={1.75} /></span>
+              <span className="kpax-name">{i.email}<span className="kpax-badge">Invited</span></span>
+              <span className="kpax-role-fixed">{ROLE_LABEL[i.role]}</span>
+              {onRemoveInvite && <Button size="sm" variant="ghost" disabled={busy} aria-label={`Take ${i.email}'s invite off ${project.name}`}
+                onClick={() => void run(() => onRemoveInvite(i.memberId))}>Remove</Button>}
+            </li>
+          ))}
         </ul>
+        {invites.length > 0 && <p className="kpax-note">Invited people see it once they join.</p>}
         {onList.some((m) => guest(m.userId)) && manage && <p className="kpax-note">Guests can comment at most.</p>}
       </div>
 

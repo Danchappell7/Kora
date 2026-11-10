@@ -39,6 +39,10 @@ function fakeClient(db0: Db) {
       if (db === "0050") return { data: null, error: { code: "PGRST205", message: "Could not find the table 'public.project_members' in the schema cache" } };
       if (c.op === "select") return { data: [{ id: "pm-1", project_id: P1, workspace_id: WS, user_id: "old-person", role: "editor", created_at: "2026-11-01T00:00:00Z" }], error: null };
     }
+    if (c.table === "project_member_invites") {
+      if (db === "0050") return { data: null, error: { code: "PGRST205", message: "Could not find the table 'public.project_member_invites' in the schema cache" } };
+      return { data: [{ member_id: "wm-jo", project_id: P1, role: "commenter" }, { member_id: "wm-x", project_id: P1, role: "owner" }], error: null };
+    }
     if (c.table === "workspaces") return { data: [wsRow()], error: null };
     if (c.table === "workspace_members") return { data: [{ id: "wm-1", workspace_id: WS, user_id: ME, email: "me@x.co", name: "Me", role: "member", status: "active" }], error: null };
     if (c.table === "projects") {
@@ -140,6 +144,8 @@ describe("at 0050 (live today): nothing new is read, sent or shown", () => {
   it("the access calls say it isn't switched on yet", async () => {
     const fake = fakeClient("0050");
     const { store } = await load(fake);
+    await store.bootstrap({ id: ME });
+    expect(await store.listInviteGrants()).toBeNull();
     await expect(store.setProjectAccess(WS, { on: true })).rejects.toMatchObject({ code: "access_missing", message: "Project access isn't switched on yet." });
     await expect(store.setProjectVisibility(P1, "private")).rejects.toMatchObject({ code: "access_missing" });
   });
@@ -236,6 +242,13 @@ describe("at 0058 with the switch on", () => {
     expect(fake.calls.filter((c) => c.table === "tasks" && c.op === "update").slice(-1)[0]?.returning).toBe(true);
     fake.refuse(true);
     await expect(store.updateTask(T1, { title: "Refused" })).rejects.toMatchObject({ code: "42501", message: "You can view this project, but not change it." });
+  });
+
+  it("what pending invites bring is read for their profiles (a role it doesn't know is left out)", async () => {
+    const fake = fakeClient("on");
+    const { store } = await load(fake);
+    await store.bootstrap({ id: ME });
+    expect(await store.listInviteGrants()).toEqual([{ memberId: "wm-jo", projectId: P1, role: "commenter" }]);
   });
 
   it("the switch's call maps its answer; a refusal is typed", async () => {

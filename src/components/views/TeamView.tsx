@@ -311,7 +311,9 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, on
 /* Slide-over profile — role controls + role-gated task list. Hoisted so a
    realtime reload of members/tasks doesn't remount it (which wiped the
    Position draft and stole focus mid-typing). */
-function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, onRemoveMember, onOpen, onClose, onHandOn, handTo = [] }: {
+function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, onRemoveMember, onOpen, onClose, onHandOn, handTo = [], projectsSlot }: {
+  /** 0058: their projects (owners and admins, project access on) */
+  projectsSlot?: ReactNode;
   m: WorkspaceMember;
   name: string;
   isSelf: boolean;
@@ -409,6 +411,8 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
 
         {/* 0055: their week here (capacity, days, hours) and their time off */}
         {m.status === "active" && memberId && <AvailabilityPanel workspaceId={workspace} userId={memberId} name={name} isSelf={isSelf} myRole={role} />}
+
+        {projectsSlot && <div className="kprof-field">{projectsSlot}</div>}
 
         <div className="kprof-field">
           {/* everyone here can see a teammate's tasks (they're on the projects, Pulse and Workload too),
@@ -582,7 +586,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects, memberProjects }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -620,7 +624,11 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   onInviteOpened?: () => void;
   /** 0058: with project access on, a guest's invite chooses the projects they'll see (the projects you can
    *  manage); `preset`: chosen already (About › People & access › Invite a guest). Omit: not asked. */
-  inviteProjects?: { projects: { id: string; name: string; emoji?: string }[]; preset?: string[]; onSet: (memberId: string, projectIds: string[]) => Promise<void> };
+  inviteProjects?: { projects: { id: string; name: string; emoji?: string }[]; preset?: string[]; onSet: (memberId: string, projectIds: string[]) => Promise<void>;
+    /** invited from a project's People & access: the way back to it, once the invite is out */
+    back?: { label: string; go: () => void } };
+  /** 0058: a person's projects in their profile (owners and admins, project access on) */
+  memberProjects?: (m: WorkspaceMember) => ReactNode;
   /** The workspace settings moved to Settings › Workspace (WorkspaceSettingsPanel);
       these are still accepted so older hosts compile, and are ignored. */
   onUpdateWorkspace?: (workspaceId: string, name: string, logoUrl: string | null) => void;
@@ -634,7 +642,12 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   const askProjects = !!inviteProjects && inviteRole === "guest";
   const giveProjects = async (memberId: string | undefined): Promise<string> => {
     if (!askProjects || !memberId || !guestProjects.length) return "";
-    try { await inviteProjects!.onSet(memberId, guestProjects); return ""; }
+    try {
+      await inviteProjects!.onSet(memberId, guestProjects);
+      // (said, so the invite's projects can be checked: their profile lists them too)
+      const names = guestProjects.map((id) => inviteProjects!.projects.find((p) => p.id === id)?.name).filter((x): x is string => !!x);
+      return names.length ? ` They'll see ${names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0]} once they join.` : "";
+    }
     catch { return " Their projects couldn't be saved: add them in each project's About tab."; }
   };
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -941,6 +954,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
             <div id="kinvite-msg" role="status" aria-live="polite" className="kinvite-status" data-kind={inviteMsg?.kind}>
               {inviteMsg && <Icon name={inviteMsg.kind === "error" ? "x" : "check"} size={14} sw={2} />}
               {inviteMsg?.text}
+              {inviteMsg?.kind === "ok" && inviteProjects?.back && (
+                <Button size="sm" variant="ghost" icon="arrowLeft" onClick={inviteProjects.back.go}>{inviteProjects.back.label}</Button>
+              )}
               {results && (
                 <>
                   <span className="kinvite-summary">{summary}</span>
@@ -965,7 +981,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
           onSetRole={onSetRole} onSetTitle={onSetTitle} onTransferOwnership={onTransferOwnership}
           onRemoveMember={onRemoveMember} onOpen={onOpen} onClose={() => setSelectedId(null)}
           onHandOn={role && role !== "guest" ? onDropTasksOnPerson : undefined}
-          handTo={active.filter((x) => x.userId && x.role !== "guest").map((x) => ({ id: x.userId!, name: memberName(x) }))} />
+          handTo={active.filter((x) => x.userId && x.role !== "guest").map((x) => ({ id: x.userId!, name: memberName(x) }))}
+          projectsSlot={memberProjects?.(selected)} />
       )}
     </div>
   );

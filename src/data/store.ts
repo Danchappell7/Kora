@@ -1601,6 +1601,8 @@ function offlineGuard(): void {
 const visibilityOfDemo = (p: Project): ProjectVisibility => p.visibility ?? "workspace";
 /** the demo's pending invites' projects */
 const demoInviteGrants = new Map<string, { projectId: string; role: ProjectRole }[]>();
+/** A project a pending invite brings (0058's project_member_invites): `memberId` is the invite's row. */
+export interface InviteGrant { memberId: string; projectId: string; role: ProjectRole }
 /** An old-style "these are its contributors" edit, as 0058's member calls: who's added (as editors;
  *  the server makes guests commenters) and who's taken off. */
 /** 0058's member calls answered "missing" where its schema was read: the undo file's state. From
@@ -2423,6 +2425,20 @@ export const store = {
     const { data, error } = await supabase.rpc("set_invite_projects", { p_member: memberId, p_grants: grants.map((g) => ({ project_id: g.projectId, role: g.role })) });
     if (error) throw accessFailure(error);
     return typeof data === "number" ? data : grants.length;
+  },
+
+  /** 0058: the projects pending invites bring (owners and admins read them; anyone else reads none).
+   *  null before 0058. */
+  async listInviteGrants(): Promise<InviteGrant[] | null> {
+    if (!supabase) return [...demoInviteGrants].flatMap(([memberId, gs]) => gs.map((g) => ({ memberId, projectId: g.projectId, role: g.role })));
+    if (!accessSchema() || accessFnsGone()) return null;
+    const { data, error } = await supabase.from("project_member_invites").select("member_id, project_id, role");
+    if (error) {
+      if (isMissingTable(error, "project_member_invites")) return null;
+      throw error;
+    }
+    return ((data as { member_id: string; project_id: string; role: string }[] | null) ?? [])
+      .filter((r) => ROLE_SET.has(r.role)).map((r) => ({ memberId: r.member_id, projectId: r.project_id, role: r.role as ProjectRole }));
   },
 
   /** 0058: who's on which project, read again (after one of the calls above). null before 0058. */
