@@ -70,7 +70,10 @@ describe("the rollout plan, signed in", () => {
 
 describe("public mail domains (as 0057's public_mail_domain)", () => {
   it("the big providers under any country ending, and UK ISPs; never a business's own", () => {
-    for (const d of ["gmail.com", "outlook.co.uk", "yahoo.fr", "hotmail.fr", "gmx.de", "web.de", "ymail.com", "pm.me", "hey.com", "fastmail.com", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk"]) {
+    for (const d of ["gmail.com", "outlook.co.uk", "yahoo.fr", "hotmail.fr", "gmx.de", "web.de", "ymail.com", "pm.me", "hey.com", "fastmail.com", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk",
+      // shared business-ISP mail and the private relays
+      "btconnect.com", "talk21.com", "plus.com", "tesco.net", "eircom.net", "bluewin.ch", "ziggo.nl", "telenet.be", "skynet.be", "sympatico.ca",
+      "privaterelay.appleid.com", "mozmail.com", "simplelogin.com"]) {
       expect(publicMailDomain(d), d).toBe(true);
     }
     for (const d of ["harbourfit.co.uk", "mailchimp.com", "webflow.io", "outlookstudio.com", "kanbo.co.uk"]) expect(publicMailDomain(d), d).toBe(false);

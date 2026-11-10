@@ -3107,12 +3107,21 @@ async function adoptionSuite(w: World) {
   const ownerOf = async (ws: string) => (await one<{ o: string }>(`select owner_id::text as o from public.workspaces where id = $1::uuid`, [ws])).o;
   const roleOf = async (ws: string, u: string) => (await one<{ r: string } | undefined>(`select role as r from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [ws, u]))?.r;
 
-  // (the two businesses have been going a while: activity counts from a workspace's first day)
+  // (the two businesses have been going a while: activity counts from a workspace's first day, and each person's from
+  // the day they joined; joined_at is the server's, so the trigger steps aside while the test dates them back)
   await w.pg.query(`update public.workspaces set created_at = now() - interval '60 days' where id in ($1::uuid, $2::uuid)`, [w.w1, w.w2]);
+  const joinedLongAgo = async (wss: string[]) => {
+    await w.pg.exec(`alter table public.workspace_members disable trigger trg_member_joined_at`);
+    try {
+      await w.pg.query(`update public.workspace_members set joined_at = now() - interval '60 days', created_at = now() - interval '60 days'
+                         where workspace_id = any ($1::uuid[]) and status = 'active'`, [wss]);
+    } finally { await w.pg.exec(`alter table public.workspace_members enable trigger trg_member_joined_at`); }
+  };
   // who did what lately: bob opened Kanbo today and three days ago, quinn last nine days ago,
   // gus (a guest) changed a task today, carol (another business) was on today
   await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now(), now()), ($1::uuid, now() - interval '3 days', now() - interval '3 days')`, [w.bob]);
   const quinn = await person("quinn58@example.org", { ws: w.w1 });
+  await joinedLongAgo([w.w1, w.w2]);
   await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now() - interval '9 days', now() - interval '9 days')`, [quinn]);
   await w.pg.query(`insert into public.task_events (task_id, actor_id, field, old_value, new_value) values ($1::uuid, $2::uuid, 'status', 'todo', 'progress')`, [w.aliceTask, w.gus]);
   await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now(), now())`, [w.carol]);
@@ -3123,16 +3132,17 @@ async function adoptionSuite(w: World) {
     eq(a.today, today, "today, in London");
     eq(row(w.bob), { user_id: w.bob, days: 2, last_day: today }, "bob: two of the last seven days");
     eq(row(quinn), { user_id: quinn, days: 0, last_day: await dayBefore(9) }, "quinn: not this week, last nine days ago");
-    eq(row(w.gus), { user_id: w.gus, days: 1, last_day: today }, "gus worked here today");
+    eq(row(w.gus), undefined, "gus is a guest: not one of the people who work here, whatever he did");
     eq(row(w.carol), undefined, "someone from another business isn't listed");
     eq(a.days.length, 7, "seven days");
-    eq(a.days[6], { day: today, people: a.members.filter((m) => m.last_day === today).length }, "today: everyone whose last day is today (bob and gus among them)");
+    eq(a.days[6], { day: today, people: a.members.filter((m) => m.last_day === today).length }, "today: everyone whose last day is today (bob among them)");
     ok(a.days[3].people >= 1, "three days ago: bob");
     ok(a.days.every((d, i) => i === 0 || d.day > a.days[i - 1].day), "oldest first");
     ok(!/T\d\d:|\d\d:\d\d/.test(JSON.stringify(a)), "no time of day anywhere in it");
     eq(await activity(pat, w.w1), a, "an admin sees the same");
     // (Elsewhere's people: carol, and whoever the 0055/0056 suites put there)
-    const elsewhere = (await w.pg.query<{ id: string }>(`select user_id::text as id from public.workspace_members where workspace_id = $1::uuid and status = 'active' and user_id is not null order by user_id`, [w.w2])).rows.map((r) => r.id);
+    const elsewhere = (await w.pg.query<{ id: string }>(`select user_id::text as id from public.workspace_members where workspace_id = $1::uuid and status = 'active' and user_id is not null
+      and role in ('owner', 'admin', 'member') order by user_id`, [w.w2])).rows.map((r) => r.id);
     ok(elsewhere.includes(w.carol) && !elsewhere.includes(w.bob), "Elsewhere is carol's, without bob");
     eq((await activity(w.carol, w.w2)).members.map((m) => m.user_id), elsewhere, "carol reads her own business");
   });
@@ -3144,6 +3154,30 @@ async function adoptionSuite(w: World) {
     eq((await one<{ ok: boolean }>(`select has_function_privilege('anon', 'public.workspace_activity(uuid)', 'execute') as ok`)).ok, false, "anon");
     // and nobody reads another person's sessions by hand
     eq((await asPerson(w.pg, w.alice, `select id from public.sessions where user_id = $1::uuid`, [w.bob])).length, 0, "alice reading bob's sessions");
+  });
+  await test("0057 attack: inviting someone shows nothing of their Kanbo use before they joined, and nothing at all as a guest", async () => {
+    // vic works at her own business and opened Kanbo 2, 5 and 11 days ago; a stranger (carol, whose workspace has been going
+    // 60 days) invites her address as a guest, and the app claims it on her next load
+    const vic = await person("vic58@victim.example");
+    await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now() - interval '2 days', now() - interval '2 days'),
+      ($1::uuid, now() - interval '5 days', now() - interval '5 days'), ($1::uuid, now() - interval '11 days', now() - interval '11 days')`, [vic]);
+    await asPerson(w.pg, w.carol, `select public.invite_member($1::uuid, 'vic58@victim.example', 'Vic', 'guest')`, [w.w2]);
+    eq((await claim(vic))[0], { n: 1 }, "claimed on her load");
+    eq((await activity(w.carol, w.w2)).members.find((m) => m.user_id === vic), undefined, "a guest: not listed");
+    // as a member: listed, but only from the day she joined (today)
+    const val = await person("val58@victim.example");
+    await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now() - interval '3 days', now() - interval '3 days')`, [val]);
+    const before = await activity(w.carol, w.w2);
+    await asPerson(w.pg, w.carol, `select public.invite_member($1::uuid, 'val58@victim.example', 'Val', 'member')`, [w.w2]);
+    await claim(val);
+    // (an owner who dates their workspace back changes nothing: each person counts from their own joining)
+    await asPerson(w.pg, w.carol, `update public.workspaces set created_at = now() - interval '200 days' where id = $1::uuid`, [w.w2]);
+    const a = await activity(w.carol, w.w2);
+    eq(a.members.find((m) => m.user_id === val), { user_id: val, days: 0, last_day: null }, "nothing from before she joined");
+    eq(a.days, before.days, "the strip has nothing of hers either");
+    await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now(), now())`, [val]);
+    eq((await activity(w.carol, w.w2)).members.find((m) => m.user_id === val), { user_id: val, days: 1, last_day: today }, "from today on, she counts");
+    await w.pg.query(`update public.workspaces set created_at = now() - interval '60 days' where id = $1::uuid`, [w.w2]);
   });
 
   await test("0057: joined_at is the server's: set when an invite is claimed, kept as it was otherwise", async () => {
@@ -3268,7 +3302,8 @@ async function adoptionSuite(w: World) {
     if (goal) eq((await one<{ o: string }>(`select owner_id::text as o from public.goals where id = $1::uuid`, [goal])).o, nina, "the goal");
     if (portfolioOwners) eq((await one<{ o: string }>(`select owner_id::text as o from public.portfolios where id = $1::uuid`, [portfolio])).o, nina, "the portfolio");
     eq(await one(`select new_owner::text as o, done_at is not null as done from public.workspace_handovers where workspace_id = $1::uuid`, [ws]), { o: nina, done: true }, "recorded");
-    ok((await activity(nina, ws)).members.length === 2, "the new owner sees the health card's numbers");
+    // (the admin who set it up and handed it over isn't one of its people: their days aren't hers to see)
+    eq((await activity(nina, ws)).members.map((m) => m.user_id), [nina], "the new owner sees the health card's numbers, without the admin's");
     // and she can remove the admin who set it up
     const rootRow = (await one<{ id: string }>(`select id::text as id from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [ws, root])).id;
     await asPerson(w.pg, nina, `select public.remove_member($1::uuid)`, [rootRow]);
@@ -3331,7 +3366,9 @@ async function adoptionSuite(w: World) {
     eq((await one<{ a: string }>(`select actor_id::text as a from public.audit_events where workspace_id = $1::uuid and action = 'member.joined'`, [biz.workspace_id])).a, boss, "joining is still hers");
   });
   await test("0057 attack: public mail domains under any country ending, and UK ISPs, are never pre-approved", async () => {
-    for (const d of ["outlook.co.uk", "yahoo.fr", "hey.com", "fastmail.com", "pm.me", "ymail.com", "gmx.de", "web.de", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk", "hotmail.fr", "icloud.com"]) {
+    for (const d of ["outlook.co.uk", "yahoo.fr", "hey.com", "fastmail.com", "pm.me", "ymail.com", "gmx.de", "web.de", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk", "hotmail.fr", "icloud.com",
+      "btconnect.com", "talk21.com", "plus.com", "tesco.net", "eircom.net", "bluewin.ch", "ziggo.nl", "telenet.be", "skynet.be", "sympatico.ca",
+      "privaterelay.appleid.com", "mozmail.com", "simplelogin.com"]) {
       await raises(provision(root, "Public Co", `boss@${d}`, d), /public email domain/).catch((e) => { throw new Error(`${d}: ${(e as Error).message}`); });
       eq((await one<{ n: number }>(`select count(*)::int as n from public.approved_domains where domain = $1`, [d])).n, 0, `${d} never approved`);
     }
@@ -3382,6 +3419,34 @@ async function adoptionSuite(w: World) {
     eq(await ownerOf(third.workspace_id), own, "handed over after 0041 and 0042 ran again");
     await raises(provision(w.alice, "Sneaky Ltd", "boss@sneaky.example"), /not authorized/);
     await raises(activity(w.bob, w.w1), /not authorized/);
+  });
+  // (after 0041 and 0042 ran again just above: earlier suites ran 0041 alone, which puts back its profile guard without
+  // 0042's trusted writes, as no live database has it)
+  await test("0057: an owner-to-be already waiting for approval is let in by the handover, and so is everyone they invite", async () => {
+    // a prospect who signed up (confirmed) and is waiting; the admin provisions their business with no domain
+    const boss = await person("boss58@waiting.example", { approved: false });
+    const biz = await provision(root, "Waiting Co", "boss58@waiting.example");
+    eq((await claim(boss))[0], { n: 1 }, "claimed");
+    eq(await ownerOf(biz.workspace_id), boss, "handed over");
+    eq((await one<{ a: boolean }>(`select approved as a from public.profiles where id = $1::uuid`, [boss])).a, true, "approved: the admin chose them");
+    eq((await asPerson<{ ok: boolean; r: string }>(w.pg, boss, `select public.can_act() as ok, public.ws_role($1::uuid) as r`, [biz.workspace_id]))[0], { ok: true, r: "owner" }, "and can work there");
+    // their teammate signs up after the invite: approved as their address is confirmed
+    await asPerson(w.pg, boss, `select public.invite_member($1::uuid, 'mate58@waiting.example', 'Mate', 'member')`, [biz.workspace_id]);
+    const mate = await makeUser(w.pg, "mate58@waiting.example", "Mate");
+    await w.pg.query(`update auth.users set email_confirmed_at = now() where id = $1::uuid`, [mate]);
+    eq((await one<{ a: boolean }>(`select approved as a from public.profiles where id = $1::uuid`, [mate])).a, true, "the teammate's in");
+    // never someone an admin revoked, nor a suspended account
+    const gone = await person("gone58@waiting2.example", { approved: false });
+    await w.pg.query(`insert into public.admin_audit (actor_id, actor_email, action, target, detail) values ($1::uuid, 'root58@example.org', 'approve', $2, 'Revoked access')`, [root, gone]);
+    const biz2 = await provision(root, "Waiting Two", "gone58@waiting2.example");
+    await claim(gone);
+    eq(await ownerOf(biz2.workspace_id), gone, "handed over");
+    eq((await one<{ a: boolean }>(`select approved as a from public.profiles where id = $1::uuid`, [gone])).a, false, "revoked: still out");
+    const susp = await person("susp58@waiting3.example", { approved: false });
+    await w.pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [susp]);
+    await provision(root, "Waiting Three", "susp58@waiting3.example");
+    await claim(susp);
+    eq((await one<{ a: boolean }>(`select approved as a from public.profiles where id = $1::uuid`, [susp])).a, false, "suspended: still out");
   });
 }
 

@@ -67,7 +67,8 @@ describe("Workspace health", () => {
   it("finds who hasn't joined, loose work, missing updates and quiet goals", () => {
     const activity: WorkspaceActivity = {
       today: "2026-11-10",
-      members: [{ userId: "dan", days: 5, lastDay: "2026-11-10" }, { userId: "maya", days: 2, lastDay: "2026-11-08" }, { userId: "theo", days: 0, lastDay: "2026-10-30" }],
+      members: [{ userId: "dan", days: 5, lastDay: "2026-11-10" }, { userId: "maya", days: 2, lastDay: "2026-11-08" }, { userId: "theo", days: 0, lastDay: "2026-10-30" },
+        { userId: "sana", days: 0, lastDay: null }],
       days: [{ day: "2026-11-10", people: 1 }],
     };
     const goals = [
@@ -105,6 +106,16 @@ describe("Workspace health", () => {
     expect(stale.missing.map((p) => p.id)).toEqual(["p2"]);
     const fresh = workspaceHealth(base({ tasks: [task("t1", { createdAt: daysAgo(2), projectId: "p2" })], projects: [project("p2")], statusUpdates: [] }));
     expect(fresh.missing).toEqual([]);
+  });
+});
+
+describe("Workspace health's activity counts the people workspace_activity counts", () => {
+  it("never a guest, nor someone the answer leaves out (the admin who set it up and handed it over)", () => {
+    const activity: WorkspaceActivity = { today: "2026-11-10", days: [],
+      members: [{ userId: "dan", days: 3, lastDay: "2026-11-10" }, { userId: "maya", days: 0, lastDay: "2026-10-30" }, { userId: "gus", days: 4, lastDay: "2026-11-10" }] };
+    const h = workspaceHealth(base({ members: [member("dan", "owner"), member("maya", "member"), member("gus", "guest"), member("root", "admin")], activity }));
+    expect(h.active).toMatchObject({ count: 1, of: 2 });
+    expect(h.active!.quiet.map((q) => q.member.userId)).toEqual(["maya"]);
   });
 });
 

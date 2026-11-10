@@ -146,10 +146,13 @@ export function workspaceHealth(input: HealthInput): WorkspaceHealth {
   if (input.activity) {
     const a = input.activity;
     const by = new Map(a.members.map((m) => [m.userId, m]));
-    const quiet = people.filter((m) => (by.get(m.userId!)?.days ?? 0) === 0)
+    // the people workspace_activity counts: owners, admins and members (never a guest, nor the platform admin who set
+    // the workspace up and handed it over: the answer leaves them out, so they're neither active nor quiet here)
+    const counted = people.filter((m) => m.role !== "guest" && by.has(m.userId!));
+    const quiet = counted.filter((m) => (by.get(m.userId!)?.days ?? 0) === 0)
       .map((member) => ({ member, lastDay: by.get(member.userId!)?.lastDay ?? null }))
       .sort((x, y) => (x.lastDay ?? "").localeCompare(y.lastDay ?? ""));
-    active = { count: people.length - quiet.length, of: people.length, days: a.days, quiet, today: a.today, ...(a.since ? { since: a.since } : {}) };
+    active = { count: counted.length - quiet.length, of: counted.length, days: a.days, quiet, today: a.today, ...(a.since ? { since: a.since } : {}) };
   }
   const solo = invited.length === 0 && people.length <= 1;
 

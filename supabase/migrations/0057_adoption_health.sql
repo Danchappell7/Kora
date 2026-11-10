@@ -22,7 +22,10 @@
 --      Active means: opened Kanbo that day (public.sessions, 0016: the day
 --      a session started and the day it was last seen), or worked in this
 --      workspace (changed a task, commented on one, posted an update).
---      Days run in Europe/London.
+--      Days run in Europe/London. Only the people who work there (owners,
+--      admins and members: never a guest, never the platform admin who
+--      provisioned it once it's handed over), each from the day they
+--      joined, never before.
 --   4. Provisioning a business (platform admins only, is_admin()):
 --      admin_provision_business(name, owner email, domain, pack) creates
 --      the workspace (the admin owns it while they set it up), invites the
@@ -30,7 +33,8 @@
 --      domain (never a public mail domain; anyone already waiting from it
 --      is let in, unless an admin revoked them) and records a handover.
 --      When the invited owner joins (claim_invites), the trigger hands the
---      workspace to them: they become its owner, the admin who set it up
+--      workspace to them: they become its owner (approved, if they were
+--      still waiting: the admin chose them), the admin who set it up
 --      stays as an admin, and what the admin set up there (project owners,
 --      open tasks assigned to them, goals and portfolios they own) becomes
 --      theirs. Only that invite hands it over (its own row, still an
@@ -167,9 +171,18 @@ declare
 begin
   if auth.uid() is null or public.ws_role(p_ws) not in ('owner', 'admin') then raise exception 'not authorized'; end if;
   return (
+    -- the people who work here: owners, admins and members (never a guest, who may be anyone an owner invited;
+    -- never the platform admin who provisioned it and handed it over). Each is counted only from the day they
+    -- joined (joined_at; from before 0057, the day their row was made), so a session elsewhere before then is
+    -- never this workspace's to see.
     with people as (
-      select distinct m.user_id from public.workspace_members m
+      select m.user_id, max((coalesce(m.joined_at, m.created_at) at time zone 'Europe/London')::date) as from_day
+        from public.workspace_members m
        where m.workspace_id = p_ws and m.status = 'active' and m.user_id is not null
+         and m.role in ('owner', 'admin', 'member')
+         and not exists (select 1 from public.workspace_handovers h join public.workspaces w on w.id = h.workspace_id
+                          where h.workspace_id = p_ws and h.provisioned_by = m.user_id and w.owner_id is distinct from m.user_id)
+       group by m.user_id
     ),
     seen as (
       -- opened Kanbo (the day a session started, and the day it was last seen)
@@ -192,7 +205,8 @@ begin
         from public.status_updates u
        where u.workspace_id = p_ws and u.created_at >= floor_ts and u.user_id in (select user_id from people)
     ),
-    days as (select x.user_id, x.day from seen x where x.day between greatest(month_from, since) and today)
+    days as (select x.user_id, x.day from seen x join people p on p.user_id = x.user_id
+              where x.day between greatest(month_from, since, p.from_day) and today)
     select json_build_object(
       'today', today,
       'since', since,
@@ -253,7 +267,10 @@ returns boolean language sql immutable parallel safe set search_path = pg_catalo
       'bt.com', 'sky.com', 'virginmedia.com', 'virgin.net', 'ntlworld.com', 'blueyonder.co.uk', 'talktalk.net', 'tiscali.co.uk',
       'plus.net', 'plusnet.com', 'aol.co.uk', 'eclipse.co.uk', 'zen.co.uk', 'live.co.uk', 'mail.ru', 'bk.ru', 'list.ru', 'rambler.ru',
       'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net', 'cox.net', 'charter.net', 'shaw.ca', 'rogers.com', 'bigpond.com',
-      'optusnet.com.au', 'xtra.co.nz']);
+      'optusnet.com.au', 'xtra.co.nz',
+    -- shared business-ISP mail and the private relays (anyone can have an address there)
+    'btconnect.com', 'talk21.com', 'plus.com', 'tesco.net', 'eircom.net', 'bluewin.ch', 'ziggo.nl', 'telenet.be', 'skynet.be', 'sympatico.ca',
+    'privaterelay.appleid.com', 'mozmail.com', 'simplelogin.com', 'simplelogin.co', 'aleeas.com', 'passmail.net', 'passinbox.com']);
 $$;
 
 create or replace function public.admin_provision_business(p_name text, p_owner_email text, p_domain text default null, p_pack text default null)
@@ -340,6 +357,17 @@ begin
    where workspace_id = new.workspace_id and role = 'owner' and id <> new.id;
   update public.workspace_members set role = 'owner' where id = new.id;
   update public.workspaces set owner_id = new.user_id where id = new.workspace_id;
+  -- the platform admin choosing them is their approval. (claim_invites approves someone who joins a workspace whose
+  -- owner is in good standing, and by the time it looks the owner is them: an account already waiting for approval
+  -- would stay on the waitlist with the business in hand, and so would everyone they invited.) Never lifts a
+  -- suspension or an admin's revocation; only while whoever set it up is in good standing.
+  if exists (select 1 from public.profiles o where o.id = h.provisioned_by
+               and coalesce(o.approved, true) and not coalesce(o.suspended, false))
+     and not public.access_revoked(new.user_id) then
+    perform set_config('kanbo.trusted', 'on', true);
+    update public.profiles set approved = true where id = new.user_id and not approved and not suspended;
+    perform set_config('kanbo.trusted', 'off', true);
+  end if;
   -- what was set up for them is theirs
   update public.projects set owner_id = new.user_id
    where workspace_id = new.workspace_id and owner_id = h.provisioned_by;
@@ -451,6 +479,7 @@ insert into public.schema_migrations (version) values ('0057') on conflict (vers
 --   exists (select 1 from information_schema.columns where table_schema = 'public'
 --            and table_name = 'workspace_handovers' and column_name = 'member_id')                     as handover_member,
 --   public.public_mail_domain('outlook.co.uk') and public.public_mail_domain('virginmedia.com')
+--     and public.public_mail_domain('btconnect.com') and public.public_mail_domain('privaterelay.appleid.com')
 --     and not public.public_mail_domain('harbourfit.co.uk')                                            as public_domains,
 --   has_function_privilege('authenticated', 'public.admin_workspace_adoption()', 'execute')
 --     and not has_function_privilege('anon', 'public.admin_workspace_adoption()', 'execute')          as adoption_signed_in_only;

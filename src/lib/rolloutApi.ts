@@ -52,7 +52,8 @@ export function demoActivity(userIds: readonly string[], today: Date = KANBO_TOD
  *  (`since`: the workspace's first day, for the demo's week.) */
 export async function loadWorkspaceActivity(workspaceId: string, members: readonly WorkspaceMember[] = [], since?: string): Promise<ActivityAnswer> {
   if (!supabase) {
-    return demoActivity(members.filter((m) => m.workspaceId === workspaceId && m.status === "active" && m.userId).map((m) => m.userId!), KANBO_TODAY, since);
+    // (the people who work there, as the database counts them: never a guest)
+    return demoActivity(members.filter((m) => m.workspaceId === workspaceId && m.status === "active" && m.userId && m.role !== "guest").map((m) => m.userId!), KANBO_TODAY, since);
   }
   try {
     const { data, error } = await supabase.rpc("workspace_activity", { p_ws: workspaceId });
@@ -69,7 +70,10 @@ const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set(["me.com", "mac.com", "
   "bt.com", "sky.com", "virginmedia.com", "virgin.net", "ntlworld.com", "blueyonder.co.uk", "talktalk.net", "tiscali.co.uk",
   "plus.net", "plusnet.com", "aol.co.uk", "eclipse.co.uk", "zen.co.uk", "live.co.uk", "mail.ru", "bk.ru", "list.ru", "rambler.ru",
   "comcast.net", "verizon.net", "att.net", "sbcglobal.net", "cox.net", "charter.net", "shaw.ca", "rogers.com", "bigpond.com",
-  "optusnet.com.au", "xtra.co.nz"]);
+  "optusnet.com.au", "xtra.co.nz",
+  // shared business-ISP mail and the private relays (anyone can have an address there)
+  "btconnect.com", "talk21.com", "plus.com", "tesco.net", "eircom.net", "bluewin.ch", "ziggo.nl", "telenet.be", "skynet.be", "sympatico.ca",
+  "privaterelay.appleid.com", "mozmail.com", "simplelogin.com", "simplelogin.co", "aleeas.com", "passmail.net", "passinbox.com"]);
 /** A public mail provider's domain (gmail.com, outlook.co.uk, virginmedia.com…), not a business's own. */
 export function publicMailDomain(domain: string): boolean {
   const d = domain.trim().toLowerCase();
