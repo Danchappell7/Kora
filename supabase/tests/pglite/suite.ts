@@ -2360,6 +2360,32 @@ async function updateConversationSuite(w: World) {
     eq((await asPerson(w.pg, ada, `delete from public.status_update_comments where id = $1::uuid returning id`, [gusc])).length, 1, "an admin removes it");
     eq((await asPerson(w.pg, w.bob, `delete from public.status_update_comments where id = $1::uuid returning id`, [mine.id])).length, 1, "bob deletes his own");
   });
+  await test("0054: a deleted comment takes the Inbox items it made with it (its writer's delete, or a lead's)", async () => {
+    await w.pg.query(`delete from public.activity where kind = 'update'`);
+    const c1 = (await asPerson<{ id: string }>(w.pg, w.gus, `insert into public.status_update_comments (update_id, user_id, body, mentions) values ($1::uuid, $2::uuid, 'One more, @ada', array[$3::uuid]) returning id::text as id`, [bobs, w.gus, ada]))[0].id;
+    const c2 = (await asPerson<{ id: string }>(w.pg, w.gus, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'And another') returning id::text as id`, [bobs, w.gus]))[0].id;
+    eq([(await notices(w.bob)).length, (await notices(ada)).length], [2, 1], "bob (the author) hears twice, ada (mentioned) once");
+    eq((await asPerson(w.pg, w.gus, `delete from public.status_update_comments where id = $1::uuid returning id`, [c1])).length, 1, "gus takes his back");
+    eq([(await notices(w.bob)).map((x) => x.meta.comment_id), (await notices(ada)).length], [[c2], 0], "its items went with it; the other's stay");
+    eq((await asPerson(w.pg, ada, `delete from public.status_update_comments where id = $1::uuid returning id`, [c2])).length, 1, "an admin removes the other");
+    eq((await notices(w.bob)).length, 0, "and its item goes too");
+  });
+  await test("0054 attack: 120 comments an hour each, and deleting them doesn't start the hour again", async () => {
+    const key = `kanbo:update_comments:${w.gus}`;
+    await w.pg.query(`delete from public.rate_limits where key = $1`, [key]);
+    await w.pg.query(`delete from public.status_update_comments where user_id = $1::uuid`, [w.gus]);
+    await asPerson(w.pg, w.gus, `insert into public.status_update_comments (update_id, user_id, body) select $1::uuid, $2::uuid, 'Flood ' || g from generate_series(1, 120) g`, [bobs, w.gus]);
+    await raises(asPerson(w.pg, w.gus, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'One too many')`, [bobs, w.gus]), /too many comments/);
+    eq((await asPerson(w.pg, w.gus, `delete from public.status_update_comments where user_id = $1::uuid returning id`, [w.gus])).length, 120, "he deletes them all");
+    await raises(asPerson(w.pg, w.gus, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'Flood again')`, [bobs, w.gus]), /too many comments/);
+    eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.activity where kind = 'update' and meta ->> 'update_event' = 'comment' and meta ->> 'status_update_id' = $1`, [bobs])).rows[0].n, 0,
+      "and nothing he deleted is left in anyone's Inbox");
+    // an hour on, he comments again
+    await w.pg.query(`update public.rate_limits set last_at = now() - interval '61 minutes' where key = $1`, [key]);
+    eq((await asPerson(w.pg, w.gus, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'Back again') returning id`, [bobs, w.gus])).length, 1, "a new hour");
+    await w.pg.query(`delete from public.status_update_comments where user_id = $1::uuid`, [w.gus]);
+    await w.pg.query(`delete from public.rate_limits where key = $1`, [key]);
+  });
 
   await test("0054: reactions: anyone who reads the update adds their own (a guest too) and takes back only their own", async () => {
     await asPerson(w.pg, w.gus, `insert into public.status_update_reactions (update_id, user_id, emoji) values ($1::uuid, $2::uuid, '👀')`, [bobs, w.gus]);
@@ -2505,6 +2531,26 @@ async function updateConversationSuite(w: World) {
     eq(await counts(), before, "comments, reactions, views, portfolio updates, sections");
     eq(await n(`select count(*)::int as n from public.schema_migrations where version = '0054'`), 1, "recorded once");
   });
+
+  if (has0048) {
+    await test("0054 without 0053: the notify queue takes kind 'update' anyway (an Ask's push waits out quiet hours, never sent at 03:00)", async () => {
+      // the queue as live has it before 0053 (0048's check without 'update')
+      await w.pg.exec(`alter table public.notify_queue drop constraint if exists notify_queue_shape;
+        alter table public.notify_queue add constraint notify_queue_shape check (
+          channel in ('push', 'email') and kind in ('assigned', 'mention', 'comment', 'approval', 'kudos', 'due', 'digest')
+          and char_length(event_key) between 1 and 200 and char_length(bundle_key) between 1 and 200
+          and char_length(actor_name) <= 200 and char_length(title) <= 500
+          and jsonb_typeof(payload) = 'object' and pg_column_size(payload) <= 8192
+          and (last_error is null or char_length(last_error) <= 500)) not valid;`);
+      const hold = `insert into public.notify_queue (user_id, channel, kind, event_key, bundle_key, actor_name, title, payload, deliver_after)
+        values ($1::uuid, 'push', 'update', $2, 'update:p', 'Sana', 'Launch', '{"v":1}'::jsonb, now() + interval '4 hours')`;
+      await raises(w.pg.query(hold, [ada, "status_update:before"]), /notify_queue_shape/);
+      await applyFile(w.pg, "0054_update_conversation.sql");
+      await w.pg.query(hold, [ada, "status_update:after"]);
+      eq(await n(`select count(*)::int as n from public.notify_queue where event_key = 'status_update:after'`), 1, "held in the queue");
+      await w.pg.query(`delete from public.notify_queue where event_key like 'status_update:%'`);
+    });
+  }
 }
 
 /* ============================================================ run */

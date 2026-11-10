@@ -30,13 +30,18 @@
 --      task). Anyone who can read the update comments, guests too; you
 --      edit your own (edited_at); you delete your own, owners and admins
 --      delete any (moderation). The update's author hears about each one
---      (FYI), and anyone it @mentions ("Needs your reply").
+--      (FYI), and anyone it @mentions ("Needs your reply"); a deleted
+--      comment takes those Inbox items with it. 120 comments an hour each,
+--      counted so that deleting them doesn't start the hour again.
 --   5. status_update_reactions: one of six emoji per person per update;
 --      you add and take back only your own.
 --   6. status_update_views: "Seen by 6". mark_status_updates_seen(ids)
 --      records the caller (never the author) on the updates they can read;
 --      nothing else writes it.
 --   7. Webhooks: 'status_update.posted' (team and personal endpoints).
+--      The notify queue takes kind 'update' (as 0053 has it), so an Ask's
+--      push and email wait for the end of quiet hours even where 0053
+--      isn't in yet.
 --   8. Portfolio pages (c-portfolio-workspace, phase one): portfolios gain
 --      owner_id, description, target_date, follower_ids, color, emoji.
 --      A new portfolio's owner is its creator until they hand it on.
@@ -245,9 +250,16 @@ begin
       new.author_name := public.kanbo_person_name(auth.uid());
       new.created_at := now();
       new.edited_at := null;
-      -- 120 an hour each: room for a lively thread, not for a flood
+      -- 120 an hour each: room for a lively thread, not for a flood. Counted twice over: what's there
+      -- now, and (0046's rate_limits) every one posted this hour, so deleting them doesn't start the
+      -- hour again (each one tells the update's author and up to 20 people)
       if (select count(*) from public.status_update_comments c where c.user_id = auth.uid() and c.created_at > now() - interval '1 hour') >= 120 then
         raise exception 'too many comments';
+      end if;
+      if to_regprocedure('public.api_rate_hit(text, integer, integer)') is not null then
+        if not (select h.allowed from public.api_rate_hit('kanbo:update_comments:' || auth.uid()::text, 3600, 120) h) then
+          raise exception 'too many comments';
+        end if;
       end if;
     end if;
     new.workspace_id := s.workspace_id;
@@ -459,6 +471,23 @@ drop trigger if exists trg_status_update_comment_after on public.status_update_c
 create trigger trg_status_update_comment_after after insert on public.status_update_comments
   for each row execute function public.status_update_comment_after();
 
+-- A deleted comment takes the Inbox items it made with it (its writer's own, or a lead removing it):
+-- the update's author's and the @mentioned people's.
+create or replace function public.status_update_comment_gone() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare sauthor uuid;
+begin
+  select x.author_id into sauthor from public.status_updates x where x.id = old.update_id;
+  delete from public.activity a
+   where a.user_id = any (array[sauthor] || coalesce(old.mentions, '{}'))
+     and a.kind = 'update' and a.meta ->> 'comment_id' = old.id::text;
+  return null;
+end; $$;
+revoke execute on function public.status_update_comment_gone() from public, anon, authenticated;
+drop trigger if exists trg_status_update_comment_gone on public.status_update_comments;
+create trigger trg_status_update_comment_gone after delete on public.status_update_comments
+  for each row execute function public.status_update_comment_gone();
+
 -- ---------- 7. webhooks: status_update.posted ----------
 -- Whatever this database already lists (0046's, 0047's or 0048's), plus the new event.
 do $events$
@@ -625,6 +654,22 @@ create policy "portfolio updates: authors or leads delete" on public.portfolio_u
   using ((author_id = auth.uid() and public.can_write_portfolio(portfolio_id))
       or (workspace_id is not null and public.ws_role(workspace_id) in ('owner', 'admin') and public.api_scope_ok(workspace_id)));
 
+-- ---------- 9. the notify queue takes 'update' ----------
+-- 0053 §5's widening, here too (word for word): the notify function's Ask notices are kind 'update',
+-- and a notice the queue refuses goes out at once, quiet hours or not. Running 0053 as well changes nothing.
+do $queue$
+begin
+  if to_regclass('public.notify_queue') is null then return; end if;   -- before 0048: nothing to widen
+  alter table public.notify_queue drop constraint if exists notify_queue_shape;
+  alter table public.notify_queue add constraint notify_queue_shape check (
+    channel in ('push', 'email')
+    and kind in ('assigned', 'mention', 'comment', 'approval', 'kudos', 'due', 'digest', 'update')
+    and char_length(event_key) between 1 and 200 and char_length(bundle_key) between 1 and 200
+    and char_length(actor_name) <= 200 and char_length(title) <= 500
+    and jsonb_typeof(payload) = 'object' and pg_column_size(payload) <= 8192
+    and (last_error is null or char_length(last_error) <= 500));
+end $queue$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0054') on conflict (version) do nothing;
 
@@ -646,5 +691,8 @@ insert into public.schema_migrations (version) values ('0054') on conflict (vers
 --   'status_update.posted' = any (public.webhook_event_names())                                          as webhook_event,
 --   (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'portfolios'
 --     and column_name in ('owner_id', 'description', 'target_date', 'follower_ids', 'color', 'emoji')) = 6  as portfolio_details,
---   exists (select 1 from pg_trigger where tgname = 'trg_status_update_after' and not tgisinternal)      as notices;
+--   exists (select 1 from pg_trigger where tgname = 'trg_status_update_after' and not tgisinternal)      as notices,
+--   exists (select 1 from pg_trigger where tgname = 'trg_status_update_comment_gone' and not tgisinternal) as comment_notices_go,
+--   (to_regclass('public.notify_queue') is null
+--     or pg_get_constraintdef((select oid from pg_constraint where conname = 'notify_queue_shape')) like '%update%') as queue_takes_update;
 -- ============================================================
