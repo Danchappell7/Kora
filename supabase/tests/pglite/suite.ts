@@ -2755,6 +2755,17 @@ async function meetingsSuite(w: World) {
     await raises(present(w.bob, lead), /not authorized/);
     eq((await present(w.bob, team))[0].p, w.bob, "and hands back");
   });
+  await test("0056: the presenter hands over to someone in the room; nobody else hands it on, and never to someone not there", async () => {
+    const hand = (u: string, to: string) => asPerson<{ p: string }>(w.pg, u, `select (public.hand_meeting($1::uuid, $2::uuid)).presenter_id::text as p`, [team, to]);
+    await raises(hand(w.bob, ned), /need to be in the meeting/);         // asked? no; joined? not yet
+    await raises(hand(w.bob, w.gus), /need to be in the meeting/);
+    await raises(hand(w.bob, w.carol), /need to be in the meeting/);
+    await asPerson(w.pg, w.alice, `select public.join_meeting($1::uuid)`, [team]);
+    await raises(hand(ned, w.alice), /not the presenter/);
+    await raises(hand(w.gus, w.alice), /not authorized/);
+    eq((await hand(w.bob, w.alice))[0].p, w.alice, "to alice, who's there");
+    eq((await hand(ida, w.bob))[0].p, w.bob, "an admin hands it back");
+  });
   let action = "";
   await test("0056: the team logs decisions and actions; an action's owner is on the team, its task the host's", async () => {
     const d = await addItem(w.bob, team, "decision", "  Ship on Thursday  ", { key: "risks" });

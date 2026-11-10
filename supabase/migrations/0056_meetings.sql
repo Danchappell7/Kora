@@ -17,8 +17,9 @@
 --      Kanbo's snapshot of the week, made by whoever starts it from what
 --      they see (which everyone who reads the meeting can see anyway);
 --      `place` is the presenter's place in it, streamed so everyone
---      watching follows. One live meeting of a kind per host (and set of
---      businesses) at a time; one left running for 12 hours is closed.
+--      watching follows. The presenter hands over to someone in the room, or
+--      anyone in it takes over. One live meeting of a kind per host (and set
+--      of businesses) at a time; one left running for 12 hours is closed.
 --   2. meeting_attendees: who was asked (the starter picks from those who
 --      may read it) and who joined.
 --   3. meeting_items: the notes, decisions and actions logged in it (on an
@@ -310,6 +311,27 @@ begin
 end; $$;
 revoke execute on function public.present_meeting(uuid) from public, anon;
 grant execute on function public.present_meeting(uuid) to authenticated;
+
+-- Hand over: the presenter (or the host's owners and admins) passes the agenda to someone who has joined
+-- and may read it.
+create or replace function public.hand_meeting(p_meeting uuid, p_user uuid)
+returns public.meetings language plpgsql security definer set search_path = public as $$
+declare m public.meetings;
+begin
+  m := public.meeting_for_caller(p_meeting);
+  if m.status <> 'live' then raise exception 'meeting ended'; end if;
+  if auth.uid() is distinct from m.presenter_id and public.ws_role(m.workspace_id) not in ('owner', 'admin') then
+    raise exception 'not the presenter';
+  end if;
+  if not public.meeting_user_ok(p_user, m.preset, m.workspace_id, m.workspace_ids)
+     or not exists (select 1 from public.meeting_attendees a where a.meeting_id = p_meeting and a.user_id = p_user and a.joined_at is not null) then
+    raise exception 'not allowed: they need to be in the meeting';
+  end if;
+  update public.meetings set presenter_id = p_user, updated_at = now() where id = p_meeting returning * into m;
+  return m;
+end; $$;
+revoke execute on function public.hand_meeting(uuid, uuid) from public, anon;
+grant execute on function public.hand_meeting(uuid, uuid) to authenticated;
 
 -- Join (watch): the caller is recorded as there. Nothing happens once it has ended.
 create or replace function public.join_meeting(p_meeting uuid)
