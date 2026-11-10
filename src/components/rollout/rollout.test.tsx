@@ -168,7 +168,7 @@ describe("Workspace health", () => {
     expect(within(card).getByText("1 person invited but not joined")).toBeInTheDocument();
     expect(within(card).getByText("Priya Shah hasn't signed in yet.")).toBeInTheDocument();
     expect(within(card).getByText("2 of 4 people active in the last 7 days")).toBeInTheDocument();
-    expect(within(card).getByText(/Quiet this week: Gus \(not in the last month\) and Theo \(over a week ago\)\. Days only, never times\./)).toBeInTheDocument();
+    expect(within(card).getByText(/Quiet this week: Gus \(not in the last month\) and Theo \(over a week ago\)\. Counted by day from opening Kanbo or working here, never by the hour\./)).toBeInTheDocument();
     expect(within(card).getByRole("img", { name: /^People active each day: Wed 0, Thu 1, Fri 2/ })).toBeInTheDocument();
     expect(within(card).getByText("2 open tasks with no owner or date")).toBeInTheDocument();
     expect(within(card).getByText("1 with no owner · 1 with no date")).toBeInTheDocument();

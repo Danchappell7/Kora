@@ -114,7 +114,7 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
                   {h.active.quiet.length
                     ? `Quiet this week: ${namesLine(h.active.quiet.map((q) => `${props.nameOf(q.member).split(/\s+/)[0]} (${lastActiveWords(q.lastDay, h.active!.today).toLowerCase()})`), 4)}.`
                     : "Everyone's been in this week."}
-                  {" "}Days only, never times.
+                  {" "}Counted by day from opening Kanbo or working here, never by the hour.
                 </span>
               </>
             ) : (

@@ -133,15 +133,22 @@ export function useRollout(h: RolloutAppHost) {
   const onboardingAside = (aside === "pack" && h.newProjectOpen) || (aside === "import" && h.importOpen);
   // closed: the import goes back to its usual default
   useEffect(() => { if (!h.importOpen && aside === "import") setImportInto(null); }, [h.importOpen, aside]);
-  /** New project's packs, noting a pack set up from the first run */
-  const wrapPacks = useCallback((packs: PackHost): PackHost => (!packs.apply ? packs : {
-    ...packs,
-    apply: async (pack, pick) => {
-      const o = await packs.apply!(pack, pick);
-      if (o?.applied.projects.length) setProgress((p) => ({ ...p, pack: pack.name }));
-      return o;
-    },
-  }), []);
+  /** New project's packs, noting a pack set up from the first run (the same object back for the same packs) */
+  const wrapped = useRef<{ from: PackHost; to: PackHost } | null>(null);
+  const wrapPacks = useCallback((packs: PackHost): PackHost => {
+    if (!packs.apply) return packs;
+    if (wrapped.current?.from === packs) return wrapped.current.to;
+    const to: PackHost = {
+      ...packs,
+      apply: async (pack, pick) => {
+        const o = await packs.apply!(pack, pick);
+        if (o?.applied.projects.length) setProgress((p) => ({ ...p, pack: pack.name }));
+        return o;
+      },
+    };
+    wrapped.current = { from: packs, to };
+    return to;
+  }, []);
   const noteImport = useCallback((n: number) => { if (n > 0) setProgress((p) => ({ ...p, imported: (p.imported ?? 0) + n })); }, []);
 
   /* ---------------- Welcome to <workspace> ---------------- */
