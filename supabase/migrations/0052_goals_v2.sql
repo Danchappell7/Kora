@@ -33,6 +33,8 @@
 --      always in the goal's own workspace (a personal goal: your own personal
 --      work). goals.project_id stays (the project its % comes from) and is
 --      copied into goal_links once.
+--   5. Search: search_all (0048) also finds goals, by name and description, for
+--      whoever can read them (when 0048 is in).
 --   Both tables stream live (realtime publication), keep guests out (the same
 --   restrictive "guests: no team reports" policy as 0051's), stay inside a
 --   team API key's workspace ("api key scope", when 0046 is in) and follow
@@ -543,6 +545,292 @@ begin
   end loop;
 end $rt$;
 
+-- ---------- 8b. goals in Search and ⌘K ----------
+-- search_all (0048) gains goals, between projects and people: the same function, word for
+-- word, with a goals branch (and 'goal' among the kinds). Still SECURITY INVOKER, so a goal
+-- only comes back to someone who can read it (0041's members, 0051's guest lock, and the
+-- leadership-only rule above). Only where 0048 is in (its kanbo_fts); without it there's
+-- no search_all to extend. (Re-running 0048 puts its own search_all back, without goals:
+-- run this file again after it.)
+do $search$
+begin
+  if to_regprocedure('public.kanbo_fts(text, text)') is null then
+    raise notice '0052: 0048 is not in, so goals join search when it is (run this file again then)';
+    return;
+  end if;
+  execute 'create index if not exists goals_fts_idx on public.goals using gin (public.kanbo_fts(name, description))';
+  execute $fn52$
+create or replace function public.search_all(q text, filters jsonb default '{}'::jsonb, lim integer default 20)
+returns table (kind text, id uuid, title text, snippet text, rank real, task_id uuid, project_id text,
+               workspace_id uuid, meta jsonb, updated_at timestamptz)
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+#variable_conflict use_column
+declare
+  me        uuid := auth.uid();
+  f         jsonb := case when jsonb_typeof(filters) = 'object' then filters else '{}'::jsonb end;
+  n         integer := least(greatest(coalesce(lim, 20), 1), 50);
+  txt       text := left(btrim(coalesce(q, '')), 200);
+  mk_on     constant text := chr(57344);   -- U+E000
+  mk_off    constant text := chr(57345);   -- U+E001
+  hl_opts   text;
+  lexes     text[];
+  w         text;
+  part      tsquery;
+  tsq_s     tsquery;
+  tsq_e     tsquery;
+  tsq       tsquery;
+  like_q    text;
+  kinds     text[] := array['task', 'comment', 'doc', 'project', 'goal', 'person'];
+  scope_all boolean := true;
+  scope_personal boolean := false;
+  scope_ws  uuid;
+  ws_ids    uuid[];
+  f_project text;
+  f_assignee text;
+  f_statuses text[];
+  f_exclude_done boolean := false;
+  f_due_from date;
+  f_due_to  date;
+  f_author  uuid;
+  f_archived boolean := false;
+  task_filtered boolean;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  hl_opts := 'StartSel=' || mk_on || ', StopSel=' || mk_off || ', MaxWords=24, MinWords=8, ShortWord=2, MaxFragments=1';
+
+  begin
+    if f ? 'kinds' then
+      if jsonb_typeof(f -> 'kinds') <> 'array' then raise exception 'kinds'; end if;
+      select coalesce(array_agg(k), '{}') into kinds
+        from jsonb_array_elements_text(f -> 'kinds') k
+       where k in ('task', 'comment', 'doc', 'project', 'goal', 'person');
+    end if;
+    if f ? 'workspace_id' then
+      if jsonb_typeof(f -> 'workspace_id') = 'null' or f ->> 'workspace_id' = 'personal' then
+        scope_all := false; scope_personal := true;
+      else
+        scope_all := false; scope_ws := (f ->> 'workspace_id')::uuid;
+      end if;
+    end if;
+    f_project := nullif(f ->> 'project_id', '');
+    f_assignee := nullif(f ->> 'assignee_id', '');
+    if f ? 'statuses' then
+      if jsonb_typeof(f -> 'statuses') <> 'array' then raise exception 'statuses'; end if;
+      select array_agg(s) into f_statuses from jsonb_array_elements_text(f -> 'statuses') s;
+      f_statuses := coalesce(f_statuses, '{}');
+    end if;
+    f_exclude_done := coalesce((f ->> 'exclude_done')::boolean, false);
+    f_due_from := nullif(f ->> 'due_from', '')::date;
+    f_due_to := nullif(f ->> 'due_to', '')::date;
+    f_author := nullif(f ->> 'author_id', '')::uuid;
+    f_archived := coalesce((f ->> 'include_archived')::boolean, false);
+  exception when others then
+    raise exception 'invalid filters';
+  end;
+  task_filtered := f_project is not null or f_assignee is not null or f_statuses is not null or f_exclude_done
+                   or f_due_from is not null or f_due_to is not null;
+
+  -- the caller's workspaces (guests included, as the read policies have it)
+  select coalesce(array_agg(distinct x.w), '{}') into ws_ids
+    from (select m.workspace_id as w from public.workspace_members m where m.user_id = me and m.status = 'active'
+          union
+          select ws.id from public.workspaces ws where ws.owner_id = me) x;
+  if scope_ws is not null and not (scope_ws = any (ws_ids)) then return; end if;
+
+  -- the words: lexemes from the text-search parser itself (no tsquery syntax
+  -- ever reaches to_tsquery), each as typed or as a prefix, all required
+  if txt <> '' then
+    select array_agg(l.lexeme order by l.positions[1], l.lexeme) into lexes
+      from unnest(to_tsvector('simple', translate(txt, chr(92) || chr(39), '  '))) l;
+    if lexes is not null then
+      foreach w in array lexes[1:8] loop
+        part := ('''' || replace(w, '''', '''''') || '''' || case when char_length(w) >= 2 then ':*' else '' end)::tsquery;
+        tsq_s := case when tsq_s is null then part else tsq_s && part end;
+      end loop;
+      tsq_e := plainto_tsquery('english', txt);
+      if tsq_e is not null and numnode(tsq_e) = 0 then tsq_e := null; end if;
+      tsq := case when tsq_e is null then tsq_s else tsq_s || tsq_e end;
+      like_q := replace(replace(replace(lower(txt), chr(92), chr(92) || chr(92)), '%', chr(92) || '%'), '_', chr(92) || '_');
+    end if;
+  end if;
+  if tsq is null and not task_filtered then return; end if;
+
+  -- tasks
+  if 'task' = any (kinds) then
+    return query
+    with hits as (
+      select t.id, t.title, t.description, t.status, t.priority, t.due_date, t.assignee_id, t.project_id,
+             t.workspace_id, t.parent_id, t.archived_at, t.updated_at,
+             ((case when tsq is null then 0 else ts_rank(public.kanbo_fts(t.title, t.description), tsq) end)
+               * (case when like_q is not null and lower(t.title) like like_q || '%' then 2 else 1 end))::real as r
+        from public.tasks t
+       where ((scope_all and (t.workspace_id = any (ws_ids) or (t.workspace_id is null and t.user_id = me)))
+           or (scope_personal and t.workspace_id is null and t.user_id = me)
+           or (scope_ws is not null and t.workspace_id = scope_ws))
+         and (tsq is null or public.kanbo_fts(t.title, t.description) @@ tsq)
+         and (f_archived or t.archived_at is null)
+         and (f_project is null or t.project_id = f_project)
+         and (f_assignee is null or t.assignee_id = f_assignee or f_assignee = any (t.collaborators))
+         and (f_statuses is null or t.status = any (f_statuses))
+         and (not f_exclude_done or t.status <> 'done')
+         and (f_due_from is null or t.due_date >= f_due_from)
+         and (f_due_to is null or t.due_date <= f_due_to)
+         and (f_archived or not exists (select 1 from public.projects p
+                                         where p.id::text = t.project_id and p.archived_at is not null))
+       order by r desc, (case when tsq is null then t.due_date end) asc nulls last, t.updated_at desc, t.id
+       limit n)
+    select 'task'::text, h.id, h.title,
+           case when coalesce(h.description, '') = '' then null
+                when tsq_s is null then left(h.description, 160)
+                else ts_headline('simple', left(replace(replace(h.description, mk_on, ''), mk_off, ''), 5000), tsq_s, hl_opts) end,
+           h.r, h.id, h.project_id, h.workspace_id,
+           jsonb_build_object('status', h.status, 'priority', h.priority, 'due_date', h.due_date,
+                              'assignee_id', h.assignee_id, 'parent_id', h.parent_id, 'archived', h.archived_at is not null),
+           h.updated_at
+      from hits h;
+  end if;
+
+  if tsq is null then return; end if;
+
+  -- comments (on tasks you can see)
+  if 'comment' = any (kinds) then
+    return query
+    with hits as (
+      select c.id, c.task_id, c.body, c.user_id, c.author_name, c.created_at,
+             t.title as task_title, t.project_id, t.workspace_id, t.status,
+             ts_rank(public.kanbo_fts(''::text, c.body), tsq)::real as r
+        from public.comments c
+        join public.tasks t on t.id = c.task_id
+       where public.kanbo_fts(''::text, c.body) @@ tsq
+         and ((scope_all and (t.workspace_id = any (ws_ids) or (t.workspace_id is null and t.user_id = me)))
+           or (scope_personal and t.workspace_id is null and t.user_id = me)
+           or (scope_ws is not null and t.workspace_id = scope_ws))
+         and (f_archived or t.archived_at is null)
+         and (f_project is null or t.project_id = f_project)
+         and (f_author is null or c.user_id = f_author)
+         and (f_archived or not exists (select 1 from public.projects p
+                                         where p.id::text = t.project_id and p.archived_at is not null))
+       order by r desc, c.created_at desc, c.id
+       limit n)
+    select 'comment'::text, h.id, h.task_title,
+           ts_headline('simple', left(replace(replace(h.body, mk_on, ''), mk_off, ''), 5000), tsq_s, hl_opts),
+           h.r, h.task_id, h.project_id, h.workspace_id,
+           jsonb_build_object('author_id', h.user_id, 'author_name', h.author_name, 'task_status', h.status),
+           h.created_at
+      from hits h;
+  end if;
+
+  -- docs (of projects you can see)
+  if 'doc' = any (kinds) then
+    return query
+    with hits as (
+      select d.id, d.title, d.plain_text, d.icon, d.project_id, d.workspace_id, d.updated_at, d.updated_by,
+             d.archived_at, p.name as project_name,
+             (ts_rank(public.kanbo_fts(d.title, d.plain_text), tsq)
+               * (case when lower(d.title) like like_q || '%' then 2 else 1 end))::real as r
+        from public.project_docs d
+        join public.projects p on p.id = d.project_id
+       where public.kanbo_fts(d.title, d.plain_text) @@ tsq
+         and ((scope_all and (d.workspace_id = any (ws_ids) or (d.workspace_id is null and p.user_id = me)))
+           or (scope_personal and d.workspace_id is null and p.user_id = me)
+           or (scope_ws is not null and d.workspace_id = scope_ws))
+         and (f_archived or (d.archived_at is null and p.archived_at is null))
+         and (f_project is null or d.project_id::text = f_project)
+       order by r desc, d.updated_at desc, d.id
+       limit n)
+    select 'doc'::text, h.id, h.title,
+           case when h.plain_text = '' then null
+                else ts_headline('simple', left(replace(replace(h.plain_text, mk_on, ''), mk_off, ''), 5000), tsq_s, hl_opts) end,
+           h.r, null::uuid, h.project_id::text, h.workspace_id,
+           jsonb_build_object('icon', h.icon, 'project_name', h.project_name, 'updated_by', h.updated_by,
+                              'archived', h.archived_at is not null),
+           h.updated_at
+      from hits h;
+  end if;
+
+  -- projects
+  if 'project' = any (kinds) then
+    return query
+    with hits as (
+      select p.id, p.name, p.description, p.emoji, p.color, p.status, p.owner_id, p.archived_at, p.workspace_id, p.created_at,
+             (ts_rank(public.kanbo_fts(p.name, p.description), tsq)
+               * (case when lower(p.name) like like_q || '%' then 2 else 1 end))::real as r
+        from public.projects p
+       where public.kanbo_fts(p.name, p.description) @@ tsq
+         and ((scope_all and (p.workspace_id = any (ws_ids) or (p.workspace_id is null and p.user_id = me)))
+           or (scope_personal and p.workspace_id is null and p.user_id = me)
+           or (scope_ws is not null and p.workspace_id = scope_ws))
+         and (f_archived or p.archived_at is null)
+         and (f_project is null or p.id::text = f_project)
+       order by r desc, p.created_at desc, p.id
+       limit n)
+    select 'project'::text, h.id, h.name,
+           case when coalesce(h.description, '') = '' then null
+                else ts_headline('simple', left(replace(replace(h.description, mk_on, ''), mk_off, ''), 5000), tsq_s, hl_opts) end,
+           h.r, null::uuid, h.id::text, h.workspace_id,
+           jsonb_build_object('emoji', h.emoji, 'color', h.color, 'status', h.status, 'owner_id', h.owner_id,
+                              'archived', h.archived_at is not null),
+           h.created_at
+      from hits h;
+  end if;
+
+  -- goals (0052): by name and description, the goals you can read (members' only, never a
+  -- guest's; a leadership-only goal only for its own people: the goals' own policies). A
+  -- project filter narrows the other kinds, so goals sit it out.
+  if 'goal' = any (kinds) and f_project is null then
+    return query
+    with hits as (
+      select g.id, g.name, g.description, g.status, g.owner_id, g.period, g.kind, g.icon, g.color,
+             g.archived_at, g.workspace_id, g.project_id, g.created_at,
+             (ts_rank(public.kanbo_fts(g.name, g.description), tsq)
+               * (case when lower(g.name) like like_q || '%' then 2 else 1 end))::real as r
+        from public.goals g
+       where public.kanbo_fts(g.name, g.description) @@ tsq
+         and ((scope_all and (g.workspace_id = any (ws_ids) or (g.workspace_id is null and g.user_id = me)))
+           or (scope_personal and g.workspace_id is null and g.user_id = me)
+           or (scope_ws is not null and g.workspace_id = scope_ws))
+         and (f_archived or g.archived_at is null)
+       order by r desc, g.created_at desc, g.id
+       limit n)
+    select 'goal'::text, h.id, h.name,
+           case when coalesce(h.description, '') = '' then null
+                else ts_headline('simple', left(replace(replace(h.description, mk_on, ''), mk_off, ''), 5000), tsq_s, hl_opts) end,
+           h.r, null::uuid, h.project_id, h.workspace_id,
+           jsonb_build_object('status', h.status, 'owner_id', h.owner_id, 'period', h.period, 'kind', h.kind,
+                              'icon', h.icon, 'color', h.color, 'archived', h.archived_at is not null),
+           h.created_at
+      from hits h;
+  end if;
+
+  -- people (active members of your workspaces; none in Personal)
+  if 'person' = any (kinds) and like_q is not null and not scope_personal then
+    return query
+    with ppl as (
+      select distinct on (m.user_id) m.user_id, m.workspace_id, m.role, m.title, pr.avatar_url,
+             coalesce(nullif(btrim(coalesce(pr.first_name, '') || ' ' || coalesce(pr.last_name, '')), ''),
+                      nullif(btrim(m.name), ''), m.email) as nm,
+             coalesce(nullif(pr.email, ''), m.email) as em
+        from public.workspace_members m
+        left join public.profiles pr on pr.id = m.user_id
+       where m.status = 'active' and m.user_id is not null
+         and ((scope_all and m.workspace_id = any (ws_ids)) or (scope_ws is not null and m.workspace_id = scope_ws))
+       order by m.user_id, m.created_at)
+    select 'person'::text, p.user_id, p.nm, p.em,
+           (case when lower(p.nm) like like_q || '%' then 1.0 else 0.5 end)::real,
+           null::uuid, null::text, p.workspace_id,
+           jsonb_build_object('email', p.em, 'role', p.role, 'title', p.title, 'avatar_url', p.avatar_url),
+           null::timestamptz
+      from ppl p
+     where lower(p.nm) like '%' || like_q || '%' or lower(p.em) like like_q || '%'
+     order by 5 desc, p.nm, p.user_id
+     limit n;
+  end if;
+end; $$;
+$fn52$;
+  execute 'revoke execute on function public.search_all(text, jsonb, integer) from public, anon';
+  execute 'grant execute on function public.search_all(text, jsonb, integer) to authenticated';
+end $search$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0052') on conflict (version) do nothing;
 
@@ -562,5 +850,9 @@ insert into public.schema_migrations (version) values ('0052') on conflict (vers
 --                and exists (select 1 from public.workspace_members m where m.workspace_id = goals.workspace_id
 --                             and m.user_id = goals.user_id and m.status = 'active' and m.role <> 'guest')) as owners_filled,
 --   not has_function_privilege('authenticated', 'public.goal_rules_restore()', 'execute')
---   and not has_function_privilege('authenticated', 'public.goals_v2_guard()', 'execute')              as hooks_private;
+--   and not has_function_privilege('authenticated', 'public.goals_v2_guard()', 'execute')              as hooks_private,
+--   to_regprocedure('public.kanbo_fts(text, text)') is null
+--   or (pg_get_functiondef('public.search_all(text, jsonb, integer)'::regprocedure) like '%''goal''::text%'
+--       and not (select p.prosecdef from pg_proc p where p.oid = 'public.search_all(text, jsonb, integer)'::regprocedure)
+--       and to_regclass('public.goals_fts_idx') is not null)                                           as goals_in_search;
 -- ============================================================

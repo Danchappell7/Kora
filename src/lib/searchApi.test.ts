@@ -192,7 +192,7 @@ describe("mergeSearchHits", () => {
     const merged = mergeSearchHits(local, [], { limitPerKind: 3, text: "" });
     expect(merged.map((h) => h.id)).toEqual(["t0", "t1", "t2", "p1"]);
     expect(groupSearchHits(merged).map((g) => [g.label, g.hits.length])).toEqual([["Tasks", 3], ["People", 1]]);
-    expect(SEARCH_GROUPS.map((g) => g.kind)).toEqual(["task", "comment", "doc", "project", "person"]);
+    expect(SEARCH_GROUPS.map((g) => g.kind)).toEqual(["task", "comment", "doc", "project", "goal", "person"]);
   });
   it("title tiers fold accents and case", () => {
     expect(titleTier("Café menu", "cafe menu")).toBe(4);
@@ -291,5 +291,29 @@ describe("highlights", () => {
     expect(s.length).toBeLessThan(120);
     expect(makeSnippet("nothing here", ["pricing"])).toBeNull();
     expect(makeSnippet(`sneaky ${S}markers${E} pricing`, ["pricing"])).toBe(`sneaky markers ${S}pricing${E}`);
+  });
+});
+
+describe("localSearch: goals (0052)", () => {
+  const goals = [
+    { id: "g-price", name: "Pricing that pays", description: "Annual plans at the new price", status: "at_risk" as const, workspaceId: "ws-1", period: "2026-Q4", kind: "key_result" as const, icon: "💰" },
+    { id: "g-old", name: "Old pricing goal", status: "on_track" as const, workspaceId: "ws-1", archivedAt: "2026-09-01T00:00:00Z" },
+    { id: "g-mine", name: "Read about pricing", status: "on_track" as const, workspaceId: null },
+  ];
+  const base = { tasks: [], projects: PROJECTS, members: MEMBERS, currentUserId: "m-self", goals };
+  const ids = (hits: SearchHit[]) => hits.filter((h) => h.kind === "goal").map((h) => h.id);
+  it("finds goals by name and description, best title first, with their quarter, status and identity", () => {
+    const hits = localSearch({ ...base, text: "pricing", filters: {} });
+    expect(ids(hits)).toEqual(["g-price", "g-mine"]);
+    expect(hits.find((h) => h.id === "g-price")).toMatchObject({ kind: "goal", workspaceId: "ws-1", source: "local", goal: { period: "2026-Q4", status: "at_risk", kind: "key_result", icon: "💰", archived: false } });
+    expect(ids(localSearch({ ...base, text: "annual plans", filters: {} }))).toEqual(["g-price"]);
+  });
+  it("keeps to the scope and the filters asked: a workspace, Personal, archived, kinds, a project", () => {
+    expect(ids(localSearch({ ...base, text: "pricing", filters: { workspaceId: "ws-1" } }))).toEqual(["g-price"]);
+    expect(ids(localSearch({ ...base, text: "pricing", filters: { workspaceId: null } }))).toEqual(["g-mine"]);
+    expect(ids(localSearch({ ...base, text: "pricing", filters: { includeArchived: true } }))).toEqual(["g-price", "g-mine", "g-old"]);   // (archived after the live ones)
+    expect(ids(localSearch({ ...base, text: "pricing", filters: { kinds: ["task", "project"] } }))).toEqual([]);
+    expect(ids(localSearch({ ...base, text: "pricing", filters: { projectId: "p-launch" } }))).toEqual([]);
+    expect(ids(localSearch({ ...base, goals: undefined, text: "pricing", filters: {} }))).toEqual([]);
   });
 });

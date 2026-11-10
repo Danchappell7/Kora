@@ -1376,7 +1376,7 @@ export type OnboardingPatch = { [K in keyof OnboardingState]?: OnboardingState[K
 
 /* ---------- universal search (search_all) ---------- */
 
-export type SearchHitKind = "task" | "comment" | "doc" | "project" | "person";
+export type SearchHitKind = "task" | "comment" | "doc" | "project" | "person" | "goal";
 /** search_all's filters, camelCase (lib/searchApi maps them to the RPC's snake_case). All optional. */
 export interface SearchFilters {
   /** default: every kind */
@@ -1419,6 +1419,8 @@ export interface SearchHit {
   doc?: { icon: string | null; projectName: string | null; updatedBy: string | null; archived: boolean };
   project?: { emoji: string | null; color: string | null; status: string | null; ownerId: string | null; archived: boolean };
   person?: { email: string; role: Role | null; title: string | null; avatarUrl: string | null };
+  /** 0052: a goal (its quarter, status, owner, kind, identity) */
+  goal?: { period: string | null; status: GoalStatus | null; ownerId: string | null; kind: GoalKind | null; icon: string | null; color: string | null; archived: boolean };
 }
 export type SearchChipKind = "assignee" | "author" | "project" | "status" | "due" | "kind" | "archived" | "open";
 /** A filter the natural-language parser found ("Maya's", "overdue", "in Launch"), shown as a removable chip. */

@@ -92,8 +92,8 @@ describe("resolveSearch: chips over the panel", () => {
     expect(resolveSearch("done", { ...EMPTY_PANEL, status: "open" }, CTX, TODAY).filters).toEqual({ statuses: ["done"], kinds: ["task"] });
   });
   it("kinds: asked for, task filters → tasks, else everything", () => {
-    expect(resolveSearch("pricing", EMPTY_PANEL, CTX, TODAY).kinds).toEqual(["task", "comment", "doc", "project", "person"]);
-    expect(resolveSearch("pricing in launch", EMPTY_PANEL, CTX, TODAY).kinds).toHaveLength(5);
+    expect(resolveSearch("pricing", EMPTY_PANEL, CTX, TODAY).kinds).toEqual(["task", "comment", "doc", "project", "person", "goal"]);
+    expect(resolveSearch("pricing in launch", EMPTY_PANEL, CTX, TODAY).kinds).toHaveLength(6);
     expect(resolveSearch("blocked pricing", EMPTY_PANEL, CTX, TODAY).kinds).toEqual(["task"]);
     expect(resolveSearch("pricing", { ...EMPTY_PANEL, priority: "high" }, CTX, TODAY).kinds).toEqual(["task"]);
     expect(resolveSearch("docs mentioning pricing", { ...EMPTY_PANEL, kind: "comment" }, CTX, TODAY).kinds).toEqual(["doc"]);
@@ -153,9 +153,9 @@ describe("the payloads search_all gets (replayed by scratchpad/pgtest-u2 against
     expect(rpc("blocked this week")).toEqual({ statuses: ["blocked"], due_from: "2026-10-05", due_to: "2026-10-11", kinds: ["task"] });
     expect(rpc("assigned to me due friday")).toEqual({ assignee_id: me, due_from: "2026-10-09", due_to: "2026-10-09", kinds: ["task"] });
     expect(rpc("comments by Theo about the deck")).toEqual({ kinds: ["comment"], author_id: theo });
-    expect(rpc("pricing")).toEqual({ kinds: ["task", "comment", "doc", "project", "person"] });
+    expect(rpc("pricing")).toEqual({ kinds: ["task", "comment", "doc", "project", "person", "goal"] });
     expect(searchFiltersToRpc(resolveSearch("pricing", { ...EMPTY_PANEL, scope: "personal" }, CTX, TODAY).filters))
-      .toEqual({ workspace_id: null, kinds: ["task", "comment", "doc", "project", "person"] });
+      .toEqual({ workspace_id: null, kinds: ["task", "comment", "doc", "project", "person", "goal"] });
     expect(searchFiltersToRpc(resolveSearch("", panelFromQuery({ assignee: maya, due: "overdue" }), CTX, TODAY).filters))
       .toEqual({ assignee_id: maya, due_to: "2026-10-08", exclude_done: true, kinds: ["task"] });
   });

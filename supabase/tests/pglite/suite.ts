@@ -1900,6 +1900,52 @@ async function goalsSuite(w: World) {
     eq(await count(w.bob, "goals", "id = $1::uuid", [gl]), 0, "nor read the leadership one");
     await raises(asPerson(w.pg, w.bob, `insert into public.goals (user_id, workspace_id, name) values ($1::uuid, $2::uuid, 'Company goal')`, [w.bob, w.w1]), RLS);
   });
+
+  // ---- goals in Search and ⌘K (search_all, where 0048 is in); after 0052 and 0041 ran again above ----
+  if (await one<{ on: boolean }>(`select to_regprocedure('public.kanbo_fts(text, text)') is not null as "on"`).then((r) => r.on)) {
+    const find = async (user: string, q: string, filters: Record<string, unknown> = {}) =>
+      (await asPerson<{ title: string }>(w.pg, user, `select title from public.search_all($1, $2::jsonb, 20) where kind = 'goal'`, [q, JSON.stringify(filters)])).map((r) => r.title).sort();
+
+    await test("0052: search_all finds goals by name and description for the people who can read them", async () => {
+      eq(await find(w.bob, "revenue"), ["Revenue to £2m", "Revenue to £3m"], "a member, by name (0051's goal and this suite's)");
+      eq(await find(w.bob, "reven"), ["Revenue to £2m", "Revenue to £3m"], "as a prefix");
+      await w.pg.query(`update public.goals set description = 'The native apps on both stores' where id = $1::uuid`, [g2]);
+      eq(await find(w.bob, "native stores"), ["Ship the app"], "by description");
+      const row = (await asPerson<{ kind: string; meta: Record<string, unknown>; workspace_id: string }>(w.pg, w.bob,
+        `select kind, meta, workspace_id::text as workspace_id from public.search_all('ship app', '{}'::jsonb, 5) where kind = 'goal'`))[0];
+      eq([row.kind, row.workspace_id, row.meta.owner_id, row.meta.archived], ["goal", w.w1, w.bob, false], "the row says whose and where");
+      eq(await find(w.gus, "reading list"), ["Gus's own reading list"], "a guest finds his own personal goal");
+    });
+
+    await test("0052 attack: search never hands a goal to a guest, an outsider, or a member kept out of a leadership-only one", async () => {
+      eq(await find(w.gus, "revenue"), [], "a guest in w1");
+      eq(await find(w.gus, "revenue", { workspace_id: w.w1 }), [], "a guest naming w1");
+      eq(await find(w.carol, "revenue"), [], "an outsider");
+      eq(await find(w.carol, "revenue", { workspace_id: w.w1 }), [], "an outsider naming w1");
+      eq(await find(w.carol, "elsewhere"), ["Elsewhere's goal"], "her own team's");
+      eq(await find(w.bob, "sell company"), [], "a member, leadership only");
+      eq(await find(dan, "sell company"), ["Sell the company"], "its contributor");
+      eq(await find(w.alice, "sell company"), ["Sell the company"], "the owner");
+      eq(await find(w.bob, "reading list"), [], "someone else's personal goal");
+      const def = await one<{ invoker: boolean; anon: boolean }>(`select not p.prosecdef as invoker, has_function_privilege('anon', p.oid, 'execute') as anon
+        from pg_proc p where p.oid = 'public.search_all(text, jsonb, integer)'::regprocedure`);
+      eq(def, { invoker: true, anon: false }, "still runs as the caller, never for anon");
+    });
+
+    await test("0052: search's filters hold for goals (kinds, a workspace, a project, archived) and the other kinds still come back", async () => {
+      eq(await find(w.bob, "revenue", { kinds: ["task", "project"] }), [], "kinds without goal");
+      eq(await find(w.bob, "revenue", { kinds: ["goal"] }), ["Revenue to £2m", "Revenue to £3m"], "kinds: goal");
+      eq(await find(w.bob, "revenue", { project_id: w.launch }), [], "a project narrows the other kinds");
+      eq(await find(w.bob, "revenue", { workspace_id: "personal" }), [], "Personal only");
+      await w.pg.query(`update public.goals set archived_at = now() where id = $1::uuid`, [g1]);
+      eq(await find(w.bob, "revenue"), ["Revenue to £2m"], "archived: out of the way");
+      eq(await find(w.bob, "revenue", { include_archived: true }), ["Revenue to £2m", "Revenue to £3m"], "unless asked for");
+      await w.pg.query(`update public.goals set archived_at = null where id = $1::uuid`, [g1]);
+      const kinds = (await asPerson<{ kind: string }>(w.pg, w.alice, `select distinct kind from public.search_all('launch', '{}'::jsonb, 5)`)).map((r) => r.kind);
+      ok(kinds.includes("project") || kinds.includes("task"), `tasks and projects still found (${kinds.join(", ")})`);
+      ok((await one<{ ok: boolean }>(`select to_regclass('public.goals_fts_idx') is not null as ok`)).ok, "the goals' search index");
+    });
+  }
 }
 
 /* ============================================================ run */

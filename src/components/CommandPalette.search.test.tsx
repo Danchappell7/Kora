@@ -192,3 +192,34 @@ describe("⌘K search", () => {
     await waitFor(() => expect(screen.getByRole("group", { name: "Docs" })).toHaveTextContent("Decision log"));
   });
 });
+
+describe("⌘K: goals (0052)", () => {
+  const goals = [
+    { id: "g1", name: "Pricing that pays", status: "on_track" as const, workspaceId: "ws-1", icon: "💰" },
+    { id: "g2", name: "Grow weekly actives", description: "Mostly through better pricing", status: "at_risk" as const, workspaceId: "ws-1" },
+    { id: "g3", name: "Pricing we archived", status: "on_track" as const, workspaceId: "ws-1", archivedAt: "2026-09-01T00:00:00Z" },
+  ];
+  it("finds goals by name (then the ones whose description has the words) and opens the goal panel", () => {
+    const onOpenGoal = vi.fn(), onClose = vi.fn();
+    open({ goals, onOpenGoal, onClose });
+    type("pricing");
+    const group = screen.getByRole("group", { name: "Goals" });
+    expect(within(group).getAllByRole("option").map((o) => o.textContent)).toEqual([expect.stringContaining("Pricing that pays"), expect.stringContaining("Grow weekly actives")]);
+    fireEvent.click(within(group).getAllByRole("option")[0]);
+    expect(onOpenGoal).toHaveBeenCalledWith("g1");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("adds the server's goal hits (search_all, 0052) for goals on hand; nothing without a way to open one", async () => {
+    api.searchAll.mockResolvedValue([hit({ kind: "goal", id: "g2", title: "Grow weekly actives", snippet: `Mostly through better ${S}revenue${E}` })]);
+    open({ goals, onOpenGoal: vi.fn(), serverSearch: true });
+    type("revenue");
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Goals" })).getByRole("option")).toHaveTextContent("Grow weekly actives"));
+  });
+
+  it("no Goals group without the handler", () => {
+    open({ goals });
+    type("pricing");
+    expect(screen.queryByRole("group", { name: "Goals" })).toBeNull();
+  });
+});

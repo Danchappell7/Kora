@@ -171,7 +171,7 @@ const KIND_WORDS: Record<string, SearchHitKind> = table({
   people: "person", person: "person", member: "person", members: "person", teammate: "person", teammates: "person",
   colleague: "person", colleagues: "person", user: "person", users: "person",
 });
-const KIND_LABEL: Record<SearchHitKind, string> = { task: "Tasks", comment: "Comments", doc: "Docs", project: "Projects", person: "People" };
+const KIND_LABEL: Record<SearchHitKind, string> = { task: "Tasks", comment: "Comments", doc: "Docs", project: "Projects", person: "People", goal: "Goals" };
 /** the app's own nouns. The other kind words (user, page, document, reply, member, wiki…) are everyday words
  *  in titles ("user research", "page speed", "reply to client"), so they're a filter only before a clear
  *  connector ("pages mentioning…", "users named…") */
@@ -828,5 +828,5 @@ export function effectiveKinds(f: SearchFilters): SearchHitKind[] {
   if (f.kinds?.length) return f.kinds;
   if (f.authorId) return ["comment"];
   if (hasTaskOnlyFilters(f)) return ["task"];
-  return ["task", "comment", "doc", "project", "person"];
+  return ["task", "comment", "doc", "project", "person", "goal"];
 }

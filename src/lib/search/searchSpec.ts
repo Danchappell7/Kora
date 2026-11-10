@@ -47,7 +47,7 @@ export const EMPTY_PANEL: SearchPanel = {
 };
 const STATUSES: readonly Status[] = ["todo", "progress", "review", "blocked", "done"];
 const PRIORITIES: readonly Priority[] = ["low", "medium", "high", "urgent"];
-const KINDS: readonly SearchHitKind[] = ["task", "comment", "doc", "project", "person"];
+const KINDS: readonly SearchHitKind[] = ["task", "comment", "doc", "project", "person", "goal"];
 const DUES: readonly string[] = ["today", "week", "overdue", "has", "none"];
 
 /** Anything narrowing (the kind tab and the archived switch alone don't count). */

@@ -50,13 +50,13 @@ export function useUniversalSearch(a: UniversalSearchArgs): UniversalSearchResul
   const localKindsKey = a.localKinds?.join(",") ?? "";
   const local = useMemo<SearchHit[]>(() => {
     if (!a.active) return [];
-    const asked = a.filters.kinds ?? ["task", "comment", "doc", "project", "person"];
+    const asked = a.filters.kinds ?? ["task", "comment", "doc", "project", "person", "goal"];
     const kinds = a.localKinds ? asked.filter((k) => a.localKinds!.includes(k)) : asked;
     if (!kinds.length) return [];
     return localSearch({ ...a.local, text: a.text, filters: { ...a.filters, kinds }, limit: a.limit });
     // the local inputs are arrays the host keeps stable between renders
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a.active, key, localKindsKey, a.local.tasks, a.local.projects, a.local.members, a.local.comments, a.local.docs, a.local.currentUserId]);
+  }, [a.active, key, localKindsKey, a.local.tasks, a.local.projects, a.local.members, a.local.comments, a.local.docs, a.local.currentUserId, a.local.goals]);
 
   const wantServer = a.server ?? !!supabase;
   const [answer, setAnswer] = useState<{ key: string; hits: SearchHit[] } | null>(null);
