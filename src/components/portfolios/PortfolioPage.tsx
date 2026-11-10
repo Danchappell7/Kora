@@ -253,11 +253,14 @@ function PortfolioUpdateItem({ u, me, canWrite, lead, editing, onEdit }: { u: Po
   );
 }
 
-export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, members, me, readOnly = false, lead = false, acrossBusinesses, asks,
+export function PortfolioPage({ portfolio: pf, projects, seenProjects, tasks, statusUpdates, members, me, readOnly = false, lead = false, acrossBusinesses, asks,
   tab, onTab, onBack, onUpdate, onDelete, onOpenProject, aiPortfolio, onOpenInsights }: {
   portfolio: Portfolio;
   /** the projects it can hold: the workspace's (Personal: every business you're in) */
   projects: Project[];
+  /** 0058: every project of the workspace you can see, archived ones included (one it holds that isn't
+   *  here is counted, never named). Defaults to `projects`. */
+  seenProjects?: readonly Pick<Project, "id">[];
   /** the workspace's tasks, archived projects' included (Personal: every workspace's) */
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -292,6 +295,10 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
   const { updates: pfUpdates } = usePortfolioUpdates(pf.id);
   const findProject = (pid: string) => projects.find((p) => p.id === pid);
   const inPf = pf.projectIds.map(findProject).filter((p): p is Project => !!p);
+  // (0058: the ones it holds that you can't see; to the workspace's owner, who sees every project, none)
+  const pfWs = WORKSPACES.find((w) => w.id === pf.workspaceId);
+  const unseen = !across && accessOn(pfWs) && pfWs?.ownerId !== me
+    ? pf.projectIds.filter((id) => !(seenProjects ?? projects).some((p) => p.id === id)).length : 0;
   // (re-read when the day turns over in a tab left open)
   const rows = useMemo(() => portfolioRows(inPf, tasks, idx, statusUpdates, KANBO_TODAY, WORKSPACES),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -340,8 +347,8 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
         {/* how the programme is going, in the brief's voice */}
         <p className="kpf-sentence">{/[.!?]$/.test(sentence) ? sentence : `${sentence}.`}</p>
         {/* 0058: projects here you can't see are counted, never named */}
-        {!across && accessOn(WORKSPACES.find((w) => w.id === pf.workspaceId)) && pf.projectIds.length > inPf.length && (
-          <p className="kpf-sentence" style={{ fontSize: 13, color: "var(--ink-3)" }}>+{pf.projectIds.length - inPf.length} {pf.projectIds.length - inPf.length === 1 ? "project" : "projects"} you can't see</p>
+        {unseen > 0 && (
+          <p className="kpf-sentence" style={{ fontSize: 13, color: "var(--ink-3)" }}>+{unseen} {unseen === 1 ? "project" : "projects"} you can't see</p>
         )}
         {rows.length > 0 && (
           <p className="kpf-sentence-sub">{pct}% of the work is done{lands ? `, and it's due to land ${lands}` : ""}.{rows.some((r) => r.status.mismatch) ? " Kanbo sees more trouble in the work on the projects it marks." : ""}</p>

@@ -4185,6 +4185,8 @@ export default function App() {
   // (All businesses: yours in every workspace)
   const scoped = route.view === "tasks" ? (biz.all ? biz.mine : myTasks) : openProject ? allTasks.filter((t) => t.projectId === openProject.id) : allTasks;
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt);
+  // (archived ones too: what a goal or portfolio here can read, so one linked to a finished project isn't "one you can't see")
+  const wsAllProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace);
   // people you can assign/tag: active members of the ACTIVE workspace only, by
   // their profile name (then their invite name, then email). Personal resolves
   // to just you — you can never tag someone from another workspace.
@@ -4505,7 +4507,7 @@ export default function App() {
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         workspaceId={workspace} moveDeps={activeReadOnly ? undefined : moveDeps} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
-      case "goals": return <GoalsView key={route.tab ?? ""} quarter={route.tab} goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
+      case "goals": return <GoalsView key={route.tab ?? ""} quarter={route.tab} goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} seenProjects={wsAllProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
         statusUpdates={statusUpdates} onOpenGoal={openGoal} openGoalId={goalPanel?.id ?? null}
         extras={goalExtras} workspaceId={workspace} me={currentUserId} role={personal ? null : myRole ?? null} members={wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active")}
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
@@ -4527,7 +4529,7 @@ export default function App() {
           // who can own or follow it: the workspace's owners, admins and members (Personal: you)
           const pfPeople = personal ? [{ id: currentUserId, name: getMember(currentUserId)?.name ?? "You" }]
             : wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active" && m.role !== "guest" && m.userId).map((m) => ({ id: m.userId!, name: m.name }));
-          return <PortfolioPage portfolio={pf} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects} tasks={personal ? acrossReportTasks : reportTasks}
+          return <PortfolioPage portfolio={pf} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects} seenProjects={personal ? undefined : wsAllProjects} tasks={personal ? acrossReportTasks : reportTasks}
             statusUpdates={statusUpdates} members={pfPeople} me={currentUserId} readOnly={activeReadOnly} lead={isAdmin}
             acrossBusinesses={personal ? { workspaces } : undefined} asks={updateAsks} aiPortfolio={aiOn ? (facts: unknown) => store.aiPortfolio(facts) : undefined}
             tab={route.tab === "updates" ? "updates" : "table"} onTab={(t) => setRoute({ view: "portfolios", portfolioId: pf.id, ...(t === "updates" ? { tab: "updates" } : {}) }, { replace: true })}
@@ -4535,6 +4537,7 @@ export default function App() {
             onOpenInsights={personal || activeReadOnly ? undefined : () => { setInsightsPortfolio(workspace, pf.id); setRoute({ view: "analytics" }); }} />;
         }
         return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}
+          seenProjects={personal ? undefined : wsAllProjects} me={currentUserId}
           tasks={personal ? acrossReportTasks : reportTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} statusUpdates={statusUpdates}
           acrossBusinesses={personal ? { workspaces } : undefined} readOnly={activeReadOnly} asks={updateAsks}
           onOpenPortfolio={(id) => setRoute({ view: "portfolios", portfolioId: id })} onOpenProject={openProjectFromPf} />;

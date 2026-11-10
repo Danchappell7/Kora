@@ -34,6 +34,9 @@ import "./goals.css";
 export interface GoalsViewProps {
   goals: Goal[];
   projects: Project[];
+  /** 0058: every project of the workspace you can see, archived ones included (a goal reading its %
+   *  from one that isn't here reads as unknown). Defaults to `projects`. */
+  seenProjects?: readonly Pick<Project, "id">[];
   /** the workspace's tasks, archived projects' included: a goal linked to a finished,
    *  archived project keeps reading that project's progress instead of dropping to 0% */
   tasks: Task[];
@@ -96,7 +99,8 @@ export function GoalsView(props: GoalsViewProps) {
   }, [v2, goals, me, role]);
   const stable = useStableOrder(visible);
   // (0058: a goal reading its % from a project you can't see has none you can know)
-  const hidden = useMemo(() => hiddenProjectOf(projects, WORKSPACES), [projects]);
+  const seen = props.seenProjects ?? projects;
+  const hidden = useMemo(() => hiddenProjectOf(seen, WORKSPACES, me), [seen, me]);
   const reads = useMemo(() => readGoals(visible, tasks, today, hidden), [visible, tasks, today, hidden]);
   const links = extras?.links ?? [];
   const checkins = extras?.checkins ?? [];

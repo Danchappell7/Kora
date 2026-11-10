@@ -126,9 +126,14 @@ export function portfolioRows(projects: Project[], tasks: Task[], idx: TaskIndex
 type PfView = "cards" | "table";
 const readView = (): PfView => { try { return localStorage.getItem("kanbo-portfolio-view") === "table" ? "table" : "cards"; } catch { return "cards"; } };
 
-export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, acrossBusinesses, readOnly = false, asks, onOpenPortfolio }: {
+export function PortfoliosView({ portfolios, projects, seenProjects, me, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, acrossBusinesses, readOnly = false, asks, onOpenPortfolio }: {
   portfolios: Portfolio[];
   projects: Project[];
+  /** 0058: every project of the workspace you can see, archived ones included (one a portfolio holds
+   *  that isn't here is counted, never named). Defaults to `projects`. */
+  seenProjects?: readonly Pick<Project, "id">[];
+  /** you (the workspace's owner sees every project: one that isn't here was deleted) */
+  me?: string;
   /** the workspace's tasks, archived projects' included: a finished project that's been
    *  archived keeps its % in the portfolio, as on a goal linked to it */
   tasks: Task[];
@@ -204,7 +209,9 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                 // (Personal, across businesses: a project you can no longer see keeps its place, to be taken out)
                 const gone = across ? pf.projectIds.filter((id) => !findProject(id)) : [];
                 // 0058: in a workspace with project access on, the ones you can't see are counted, never named
-                const unseen = !across && accessOn(workspaces.find((w) => w.id === pf.workspaceId)) ? pf.projectIds.filter((id) => !findProject(id)).length : 0;
+                const pfWs = workspaces.find((w) => w.id === pf.workspaceId);
+                const unseen = !across && accessOn(pfWs) && !(me && pfWs?.ownerId === me)
+                  ? pf.projectIds.filter((id) => !(seenProjects ?? projects).some((p) => p.id === id)).length : 0;
                 const goneRows = (table: boolean) => gone.map((id) => {
                   const remove = <IconButton icon="x" size="sm" label={`Remove the project you can no longer see from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((x) => x !== id) })} />;
                   const why = <span className="kpj-card-meta">You've lost access to it, or it was deleted</span>;

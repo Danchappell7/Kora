@@ -41,7 +41,7 @@ export function useGoalFlow({ goals, extras, tasks, me, roleIn, members, today, 
   workspaces?: Workspace[];
 }): GoalFlow {
   const seen = useMemo(() => seeableGoals(goals, me, roleIn).filter((g) => !g.archivedAt), [goals, me, roleIn]);
-  const hidden = useMemo(() => (projects && workspaces ? hiddenProjectOf(projects, workspaces) : undefined), [projects, workspaces]);
+  const hidden = useMemo(() => (projects && workspaces ? hiddenProjectOf(projects, workspaces, me) : undefined), [projects, workspaces, me]);
   const reads = useMemo(() => readGoals(seen, tasks, today, hidden), [seen, tasks, today, hidden]);
   const links = useMemo(() => extras?.links ?? [], [extras]);
   const checkins = useMemo(() => extras?.checkins ?? [], [extras]);

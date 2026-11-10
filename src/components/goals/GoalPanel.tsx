@@ -108,7 +108,7 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
   const personal = (g.workspaceId ?? null) === null;
   const realProjects = projects.filter((p) => p.id !== "p-personal");
   // (0058: a goal reading its % from a project you can't see has none you can know)
-  const hidden = useMemo(() => hiddenProjectOf(projects, WORKSPACES), [projects]);
+  const hidden = useMemo(() => hiddenProjectOf(projects, WORKSPACES, me), [projects, me]);
   const reads = useMemo(() => readGoals(goals, tasks, today, hidden), [goals, tasks, today, hidden]);
   const read: GoalRead = reads.get(g.id) ?? readGoals([g], tasks, today, hidden).get(g.id)!;
   const prog = read.progress;

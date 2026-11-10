@@ -46,10 +46,16 @@ export const NEEDS_LINE: Record<NonNullable<GoalRead["needs"]>, string> = { targ
 export const HIDDEN_LINE = "Progress comes from a project you can't see";
 
 /** 0058: a goal whose % comes from a project you can't see: project access is on in its workspace,
- *  and the project isn't one of yours (`projects`: the ones loaded, or a meeting's audience's). */
-export function hiddenProjectOf(projects: readonly Pick<Project, "id">[], workspaces: readonly Pick<Workspace, "id" | "projectAccess">[]): (g: Goal) => boolean {
+ *  and the project isn't one of yours (`projects`: the ones loaded, archived ones too, or a meeting's
+ *  audience's). The workspace's owner (`me`) sees every project: to them one that isn't there has
+ *  been deleted, not hidden, and reads as it always did. */
+export function hiddenProjectOf(projects: readonly Pick<Project, "id">[], workspaces: readonly Pick<Workspace, "id" | "projectAccess" | "ownerId">[], me?: string): (g: Goal) => boolean {
   const ids = new Set(projects.map((p) => p.id));
-  return (g) => !!g.projectId && !ids.has(g.projectId) && accessOn(workspaces.find((w) => w.id === (g.workspaceId ?? null)));
+  return (g) => {
+    if (!g.projectId || ids.has(g.projectId)) return false;
+    const w = workspaces.find((x) => x.id === (g.workspaceId ?? null));
+    return accessOn(w) && !(me && w?.ownerId === me);
+  };
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
