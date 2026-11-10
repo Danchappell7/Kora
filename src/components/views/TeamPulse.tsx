@@ -74,7 +74,7 @@ const rowsFor = (text: string) =>
 type Person = { id: string; name: string; role?: string; guest?: boolean };
 type WriteUp = { status: "loading" } | { status: "ready"; text: string; ai: boolean; note?: string };
 
-export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, onDropTasksOnPerson, goalsSlot, meeting }: {
+export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, canKudos, onDropTasksOnPerson, goalsSlot, meeting }: {
   tasks: Task[];
   members: WorkspaceMember[];
   currentUserId: string;
@@ -98,6 +98,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   kudos?: Kudos[];
   /** (0048) told after this person gives or takes back kudos: the task's kudos now */
   onGiveKudos?: (taskId: string, next: Kudos[]) => void;
+  /** (0058) may you give kudos on this task (you can comment on it)? None given: yes */
+  canKudos?: (t: Task) => boolean;
   /** (0048) tasks dropped on a person's row (lib/dnd): reassign them (lib/dropActions reassignTasks) */
   onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
   /** (0052) the business's goals, after the team (components/goals TeamGoals) */
@@ -339,7 +341,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
               : facts.people.map((p) => (
                 <PulseRow key={p.id} p={p} tasks={tasks} people={people} doneLabel={doneLabel} onOpen={onOpen}
                   currentUserId={currentUserId} kudos={kudos} received={kudosBy[p.id]?.received ?? 0} kudosWhen={period === "week" ? "this week" : `since ${sinceWord}`}
-                  onKudos={onKudos} readOnly={readOnly} onDropTasksOnPerson={onDropTasksOnPerson} workspaceId={workspaceId} />
+                  onKudos={onKudos} canKudos={canKudos} readOnly={readOnly} onDropTasksOnPerson={onDropTasksOnPerson} workspaceId={workspaceId} />
               ))}
           </div>
         </div>
@@ -377,10 +379,11 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
 }
 
 /** One person's row: what they finished (with kudos), what's on today (blocked work first), and their week. */
-function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, received, kudosWhen, onKudos, readOnly, onDropTasksOnPerson, workspaceId }: {
+function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, received, kudosWhen, onKudos, canKudos, readOnly, onDropTasksOnPerson, workspaceId }: {
   p: PulsePerson; tasks: Task[]; people: Person[]; doneLabel: string; onOpen: (id: string) => void;
   currentUserId: string; kudos: Kudos[]; received: number; kudosWhen: string;
   onKudos: (taskId: string, next: Kudos[]) => void;
+  canKudos?: (t: Task) => boolean;
   readOnly: boolean;
   onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
   /** (0055) the workspace: "Off today" beside the name */
@@ -397,7 +400,8 @@ function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, r
   // or focus (touch: always beneath)
   const kudosFor = (t: Task): Trailing | null => {
     const list = kudosOnTask(kudos, t.id);
-    if (me) return list.length ? { node: <KudosTally kudos={list} taskId={t.id} people={people} /> } : null;
+    // (yours, or one you can only view: what it got, nothing to give)
+    if (me || (canKudos && !canKudos(t))) return list.length ? { node: <KudosTally kudos={list} taskId={t.id} people={people} /> } : null;
     return {
       float: list.length === 0,
       node: <KudosButton task={t} currentUserId={currentUserId} recipientName={p.name} kudos={list} people={people} onChange={(next) => onKudos(t.id, next)} />,

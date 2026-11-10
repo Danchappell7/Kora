@@ -915,6 +915,21 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       const g = await attempt(w.id.MC, `select public.give_kudos($1::uuid, '🎉') as r`, [w.task.PM]);
       ok(okOf(g), `to the assignee: ${errOf(g)}`);
     });
+    await test("0058, switch on: a viewer can't give kudos or change one (a note is a comment); switch off, they can as before", async () => {
+      for (const who of ["MV", "GV"] as const) {
+        const give = await attempt(w.id[who], `select public.give_kudos($1::uuid, '🎉', 'viewer note: well done on the payroll', null) as r`, [w.task.PM]);
+        ok(/not authorized/.test(errOf(give)), `${who} giving kudos with a note: ${errOf(give) || "given"}`);
+        // one planted past the triggers (given before they were a viewer), then changed
+        const edit = await attempt(w.id[who], `select public.update_kudos($1::uuid, '🔥', 'changed note') as r`, [w.task.PM],
+          [[`set session_replication_role = replica`, []],
+           [`insert into public.kudos (task_id, workspace_id, from_user, to_user, emoji) values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, '🎉')`, [w.task.PM, w.ws, w.id[who], w.id.ME]],
+           [`set session_replication_role = default`, []]]);
+        ok(/not authorized/.test(errOf(edit)), `${who} changing their kudos: ${errOf(edit) || "changed"}`);
+      }
+      const off = await attempt(w.id.MV, `select public.give_kudos($1::uuid, '🎉', 'well done', null) ->> 'note' as r`, [w.task.PM],
+        [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]]);
+      eq("rows" in off ? off.rows[0].r : errOf(off), "well done", "switch off: today's rule");
+    });
   }
 
   // ---------------------------------------------------------------- 9. an update's conversation (0054)

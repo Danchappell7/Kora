@@ -125,6 +125,7 @@ No new secrets and no new schedule.
   held notices and queued webhooks they can't see any more are dropped, and a
   webhook whose address they set is switched off ("the person who set its
   address no longer has access").
+- **Viewers** read and follow; they don't comment, react or give kudos.
 - **Signed-out requests** read none of a workspace's rows, as before: the rules
   apply to signed-in callers.
 - **Every change** to the switch, a visibility or a project's people touches

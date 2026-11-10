@@ -1766,10 +1766,11 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
           ? <Pill tone="neutral" icon="lock" title={audienceNote ? "You can view this task and comment on it" : "Guests can view this task and comment on it"}>View and comment</Pill>
           : <Pill tone="neutral" icon="eye" title="You can view this task and follow it">View only</Pill>)}
         <PresenceAvatars peers={viewers} size="sm" max={3} />
-        {/* 0048: kudos on a teammate's finished team task (guests too: it's a reaction); your own shows what you got */}
+        {/* 0048: kudos on a teammate's finished team task (guests too: it's a reaction; 0058: not a viewer); your own shows what you got */}
         {task.status === "done" && taskWs && task.assigneeId && (
           <Suspense fallback={null}>
-            <TaskKudos task={task} currentUserId={currentUserId} recipientName={getMember(task.assigneeId)?.name || "them"} size="sm" people={members} />
+            <TaskKudos task={task} currentUserId={currentUserId} recipientName={getMember(task.assigneeId)?.name || "them"} size="sm" people={members}
+              disabled={readOnly && !canComment} />
           </Suspense>
         )}
         {onToggleFollow && <IconButton icon="bell" size="sm" label="Follow task" pressed={following} onClick={() => onToggleFollow(task.id)} />}

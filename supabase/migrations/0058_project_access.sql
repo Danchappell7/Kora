@@ -1601,14 +1601,18 @@ begin
   raise exception 'approval not found';
 end; $$;
 
--- kudos (0048): its recipient can see the task
+-- kudos (0048): its recipient can see the task; from the app, its giver can comment on it (a viewer
+-- can't react, nor leave a note: give_kudos and update_kudos ask only can_see_task)
 create or replace function public.pa_trg_kudos() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare t record;
 begin
   select x.workspace_id, x.project_id into t from public.tasks x where x.id = new.task_id;
   if t.workspace_id is null or not public.pa_on(t.workspace_id) then return new; end if;
-  if public.pa_rank_for(new.to_user, t.workspace_id, t.project_id) < 1 then raise exception 'invalid recipient'; end if;
+  if public.pa_is_client() and not public.pa_restoring() and public.pa_rank_for(new.from_user, t.workspace_id, t.project_id) < 2 then
+    raise exception 'not authorized';
+  end if;
+  if tg_op = 'INSERT' and public.pa_rank_for(new.to_user, t.workspace_id, t.project_id) < 1 then raise exception 'invalid recipient'; end if;
   return new;
 end; $$;
 
@@ -1986,7 +1990,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('webhook_deliveries', 'trg_webhook_deliveries_pa_gate', 'before insert or update of state', 'pa_trg_webhook_deliveries_gate', null),
     ('webhooks', 'trg_webhooks_pa_url', 'before update of url', 'pa_trg_webhooks_url', null),
     ('approval_reviewers', 'trg_approval_reviewers_pa', 'before insert or update of decision', 'pa_trg_approval_reviewers', null),
-    ('kudos', 'trg_kudos_pa', 'before insert', 'pa_trg_kudos', null),
+    ('kudos', 'trg_kudos_pa', 'before insert or update of emoji, note', 'pa_trg_kudos', null),
     ('trash', 'trg_trash_pa_capture', 'before insert', 'pa_trg_trash_capture', null),
     ('trash', 'trg_trash_pa_restore', 'before update of restored_at', 'pa_trg_trash_restore', null),
     ('trash', 'trg_trash_pa_purge', 'before delete', 'pa_trg_trash_purge', null),

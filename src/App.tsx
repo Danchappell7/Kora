@@ -4618,8 +4618,8 @@ export default function App() {
         onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
         onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
         personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
-        // 0048: a task dropped on a person is handed to them (Undo); kudos read live
-        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson}
+        // 0048: a task dropped on a person is handed to them (Undo); kudos read live (0058: where you can comment)
+        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} canKudos={(t) => taskRank(t, accessNow()) >= 2}
         // 0056: Run meeting (never a guest's)
         meeting={workspace && !personal && !activeReadOnly ? { workspaceId: workspace, preset: "team", canLead: isAdmin } : null}
         goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;
