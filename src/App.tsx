@@ -44,7 +44,8 @@ import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject,
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { routeOf, pathOf, placeOf, tabsFor, titleOf, G_KEYS, type NavCtx, type PlaceTab } from "./lib/nav";
+import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
+import { buildExport } from "./lib/exportData";
 import { splitPersonal, withOverlay, writePlanOverlay, writeSectionOverlay, writeScoreOverlay, prunePlanOverlay, type PersonalKey } from "./lib/planOverlay";
 import { undoLast } from "./lib/undoStack";
 import { computeRisks, readCapacities } from "./lib/radar";
@@ -155,10 +156,11 @@ function addressFor(route: Route, opts: { task?: string | null; q?: string | nul
 const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.projectId ?? "") === (b.projectId ?? "") && (a.list ?? "") === (b.list ?? "") && (a.tab ?? "") === (b.tab ?? "");
 /** Where a route really goes for this person in this workspace: Personal has no
  *  Pulse (its /team is Insights), and guests have no Rules, the workspace's or a
- *  project's. Everything else goes where it says. */
+ *  project's, and none of the team's reporting (lib/nav guestRoute: People instead).
+ *  Everything else goes where it says. */
 function normaliseRoute(r: Route, ctx: { personal: boolean; guest: boolean }): Route {
   if (ctx.personal && r.view === "pulse") return { view: "analytics" };
-  if (ctx.guest && r.view === "automations") return { view: "projects" };
+  if (ctx.guest && hiddenFromGuest(r.view)) return guestRoute(r);
   // a project's address always names its tab: a bare /p/:id opens the view the project
   // was last shown in (List the first time), so Back and a reload come back to it
   if (r.view === "project" && r.projectId && (!r.tab || (ctx.guest && r.tab === "rules"))) {
@@ -649,6 +651,7 @@ export default function App() {
   const openSettingsRef = useRef<(s?: SettingsSection) => void>(() => {});
   const openFocusRef = useRef<(start?: boolean) => void>(() => {});
   const goRef = useRef<(r: Route) => void>(() => {});
+  const guestKeysRef = useRef(false);   // a guest here: their g-keys skip the team's reporting
   useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
       const h = el as HTMLElement | null;
@@ -703,7 +706,7 @@ export default function App() {
       if (modal()) { gPrefixRef.current = false; return; }
       if (gPrefixRef.current) {
         gPrefixRef.current = false;
-        const to = G_KEYS[e.key.toLowerCase()];
+        const to = gKeyRoute(e.key, { guest: guestKeysRef.current });
         if (to) { e.preventDefault(); goRef.current(to); }
         return;
       }
@@ -1199,27 +1202,14 @@ export default function App() {
   /** "Show my streak" / "Show my week's wins" / days off (onboarding.momentum). */
   const saveMomentum = useCallback((momentum: MomentumPrefs) => changeOnboarding({ ...onboardingRef.current, momentum }), [changeOnboarding]);
 
-  // download all of the user's data as JSON (user-initiated, their own data)
+  // download all of the user's data as JSON (user-initiated, their own data; lib/exportData:
+  // where they're a guest, only their own tasks and the projects they're in)
   const exportData = useCallback(() => {
-    const payload = {
-      app: "Kanbo",
-      exportedAt: new Date().toISOString(),
-      profile,
-      workspaces,
-      members: wsMembers.map((m) => ({ workspaceId: m.workspaceId, userId: m.userId, name: getMember(m.userId ?? "")?.name || m.name, email: m.email, role: m.role, status: m.status })),
-      projects,
-      sections,
-      customFields,
-      tags,
-      tasks: tasksRef.current ?? [],
-      goals,
-      portfolios,
-      statusUpdates,
-      automationRules,
-      forms,
-      savedSearches,
-      activity,
-    };
+    const { payload, limited } = buildExport({
+      me: userIdRef.current, profile, workspaces, members: wsMembers, projects, sections, customFields, tags,
+      tasks: tasksRef.current ?? [], goals, portfolios, statusUpdates, automationRules, forms, savedSearches, activity,
+      nameOf: (id) => getMember(id)?.name,
+    });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1227,7 +1217,7 @@ export default function App() {
     a.download = `kanbo-export-${toLocalISO(new Date())}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-    toastSuccess("Your data is downloading");
+    toastSuccess(limited ? "Your data is downloading. Where you're a guest, it has only your own tasks." : "Your data is downloading");
   }, [profile, workspaces, wsMembers, projects, sections, customFields, tags, goals, portfolios, statusUpdates, automationRules, forms, savedSearches, activity, toastSuccess]);
 
   const deleteAccount = useCallback(async () => {
@@ -2678,7 +2668,7 @@ export default function App() {
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
 
   // ---- goals / OKRs ----
-  type GoalPatch = Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
+  type GoalPatch = Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
   const createGoal = useCallback((name: string) => {
     const wsId = workspaceRef.current;
     if (denyGuest([wsId])) return;
@@ -3505,6 +3495,8 @@ export default function App() {
     return list.filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt && !archivedProjectIds.has(t.projectId));
   }, [projects, workspace]);
   const allTasks = useMemo(() => inWorkspace(tasks ?? []), [tasks, inWorkspace]);
+  // Goals and Portfolios: archived projects' tasks too, so a goal or portfolio row linked to one keeps its progress
+  const reportTasks = useMemo(() => (tasks ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt), [tasks, workspace]);
   const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
@@ -3732,6 +3724,7 @@ export default function App() {
   const isAdmin = myRole === "owner" || myRole === "admin";
   const personal = workspace === null;
   const navCtx: NavCtx = { personal, guest: activeReadOnly, admin: isAdmin };
+  guestKeysRef.current = activeReadOnly;
   const aiOn = appearance.ai !== false;
   const detailTask = detailId ? seen.find((t) => t.id === detailId) : undefined;
   const detailReadOnly = !!detailTask && roleIn(detailTask.workspaceId) === "guest";
@@ -3888,7 +3881,9 @@ export default function App() {
         }
         // 0047: Projects › Recycle bin (the page draws no title of its own)
         if (route.view === "bin") return { title: "Recycle bin", meta: activeWsName, actions: <Button variant="ghost" size="sm" icon="arrowLeft" onClick={() => setRoute({ view: "projects" })}>All projects</Button> };
-        const tabs = tabsFor("projects", navCtx);
+        const tabs = readableTabs(tabsFor("projects", navCtx), navCtx, {
+          goals: goals.some((g) => (g.workspaceId ?? null) === workspace), portfolios: portfolios.some((p) => (p.workspaceId ?? null) === workspace),
+        }, route.view);
         const counts: Record<string, number> = { automations: wsRules.length, forms: wsForms.length };
         return {
           title: "Projects", meta: activeWsName,
@@ -3936,6 +3931,8 @@ export default function App() {
   const loadMembers = assignees.map((a) => ({ ...a, guest: wsMembers.some((m) => m.userId === a.id && (m.workspaceId ?? null) === workspace && m.role === "guest") || undefined }));
 
   const renderMain = () => {
+    // a guest never sees the team's reporting, even for the moment before the route guard moves them on
+    if (activeReadOnly && hiddenFromGuest(route.view)) return null;
     switch (route.view) {
       // (the demo's Today keeps its illustrative day, already in the example calendars' colours)
       case "plan": return <TodayView tasks={myTasks} allTasks={allTasks} events={calEvents} calendarConnected={store.configured && calConnections.length > 0}
@@ -3963,7 +3960,7 @@ export default function App() {
       // Overview (the classic Home) keeps the workspace's tasks for its project cards and "is this
       // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
       // personal widgets — today's brief, focus queue, weekly chart — use yours
-      case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} />;
+      case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} showInsights={!activeReadOnly} />;
       case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} {...insightsNav} />;
       case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNav} />;
       // 0048 universal search: tasks, comments, docs, projects and people; saved as views (lib/views)
@@ -3986,8 +3983,9 @@ export default function App() {
         onOpenPerson={() => setRoute({ view: "team" })}
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
-      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
-      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} />;
+      // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
+      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly} />;
+      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} statusUpdates={statusUpdates} readOnly={activeReadOnly} />;
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)
@@ -4009,10 +4007,11 @@ export default function App() {
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
       case "calendar": return <CalendarView tasks={calScope === "team" ? allTasks : myTasks} onOpen={setDetailId} onPatch={guardedPatch} connections={calConnections} externalEvents={calEvents} warnings={calWarnings} syncing={calSyncing} readOnly={activeReadOnly}
         scope={calScope} onScopeChange={setCalScope} onOpenSettings={() => openSettings("calendar")} />;
+      // (Radar is the team's reporting: a guest's directory has no Risks column or At risk count from it)
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
-        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={risksByProject} />;
+        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject} />;
       // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)
       case "bin": return (
         <RecycleBin key={wsKey} workspaceId={workspace} workspaceName={activeWsName} role={workspace ? (myRole ?? null) : null} currentUserId={currentUserId}
@@ -4077,7 +4076,7 @@ export default function App() {
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus}
                 rules={{ ...rulesProps(openProject!.id), readOnly: activeReadOnly }} forms={{ ...formsProps(openProject!.id), readOnly: activeReadOnly }} /></Suspense>
             ),
-            notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
+            notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={activeReadOnly ? [] : risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
             // 0048 board: the project's settings ({} when none: its WIP limits are then everyone's); writers save one change at a time
             boardSettings: openProject!.boardSettings ?? {},
             onChangeBoardSettings: canEditProjectBoard(openProject!) ? (next: BoardSettings, change: BoardSettingsChange) => updateProject(openProject!.id, { boardSettings: next, boardSettingsChange: change }) : undefined,
@@ -4115,7 +4114,7 @@ export default function App() {
         </Suspense>
       )}
       myRole={myRole} guardRoute={false}
-      theme={resolvedTheme} onToggleTheme={flipTheme} teamBadge={!personal && signalRisks > 0 ? signalRisks : undefined}
+      theme={resolvedTheme} onToggleTheme={flipTheme} teamBadge={!personal && !activeReadOnly && signalRisks > 0 ? signalRisks : undefined}
       onOpenSearch={() => openPalette()} onOpenShortcuts={() => openSettings("shortcuts")} />
   );
 

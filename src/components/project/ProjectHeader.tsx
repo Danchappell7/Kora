@@ -16,7 +16,8 @@ import { STATUS_META, getMember, KANBO_TODAY, todayISO } from "../../data/data";
 import type { Task, Project, Status, StatusUpdate, StatusKind, IconName } from "../../data/types";
 import type { ProjectTab } from "../../app-types";
 import type { Risk } from "../../lib/radar";
-import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS } from "../../lib/statusDraft";
+import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor } from "../../lib/statusDraft";
+import { progressOf } from "../../lib/countRules";
 import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
 import { ComposerPanel, ComposerPopover, POP_STYLE, focusInPageComposer, useHasInPageComposer, useInPageComposer, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
 import { DraftInput } from "./DraftInput";
@@ -80,8 +81,7 @@ export function projectPeople(project: Project): string[] {
 /** A printable report of the project: every task, each sub-task under its parent. */
 export function printProjectReport(project: Project, allProjectTasks: Task[]): void {
   const tasks = allProjectTasks.filter((t) => !t.parentId);
-  const total = tasks.length;
-  const prog = total ? Math.round((tasks.filter((t) => t.status === "done").length / total) * 100) : 0;
+  const { total, pct: prog } = progressOf(allProjectTasks);
   const w = window.open("", "_blank"); if (!w) return;
   const esc = (s: unknown) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
   const kids = new Map<string, Task[]>();
@@ -281,7 +281,7 @@ export function ProjectNotice({ project, statusUpdates, risks, onOpenUpdates, on
   return (
     <div className="kpj-notice">
       {fresh && (
-        <button type="button" className="kpj-notice-part kpj-notice-update" onClick={onOpenUpdates} title={latest!.summary}>
+        <button type="button" className="kpj-notice-part kpj-notice-update" onClick={onOpenUpdates} title={updateAuthor(latest!) ? `${updateAuthor(latest!)}: ${latest!.summary}` : latest!.summary}>
           <span className="kpj-notice-lead">Update</span>
           <span className="kpj-notice-sep" aria-hidden="true">·</span>
           <span>{age!.label}</span>
@@ -374,10 +374,17 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
               {history.slice(0, shown).map((u, i) => {
                 const meta = STATUS_KIND_META[u.status];
                 const age = relDay(u.createdAt);
+                const by = updateAuthor(u);
                 return (
                   <li key={u.id}>
                     <div className="kpj-history-meta">
                       <Pill tone={STATUS_TONE[u.status] ?? "neutral"}>{meta?.label ?? u.status}</Pill>
+                      {by && (
+                        <span className="kpj-history-by" data-former={u.authorId && getMember(u.authorId) ? undefined : ""}>
+                          {u.authorId && getMember(u.authorId) && <Avatar id={u.authorId} size={18} />}
+                          {by}
+                        </span>
+                      )}
                       <span className="kpj-mono" title={new Date(u.createdAt).toLocaleString("en-GB")}>{fmtShortDay(u.createdAt, KANBO_TODAY)}</span>
                       {age.days < 14 && <span>· {age.label}</span>}
                       {/* the latest update can go to the team's Slack channel (the button renders
@@ -482,7 +489,8 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
           <dt>Status</dt>
           <dd>
             {(() => { const p = projectStatusPill(project, facts.latest); return <Pill tone={p.tone} title={p.title}>{p.label}</Pill>; })()}
-            <span className="kpj-card-meta">{kanbosRead(facts)}</span>
+            {/* (how fresh the update is, only when the pill and the stale note don't say it already) */}
+            <span className="kpj-card-meta">{kanbosRead(facts, { withUpdate: !stale && !!facts.latest })}</span>
             {editable && !facts.latest && (
               <select className="kpj-field" data-size="sm" value={project.status ?? ""} aria-label="Status set by hand"
                 onChange={(e) => onUpdate(project.id, { status: e.target.value })}>
@@ -590,9 +598,7 @@ export function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, sta
       (r as Promise<boolean>).then((ok) => { setPosting(false); if (ok) { setUpdText(""); setUpdOpen(false); } });
     } else { setUpdText(""); setUpdOpen(false); }
   };
-  const total = tasks.length;
-  const done = tasks.filter((t) => t.status === "done").length;
-  const prog = total ? Math.round((done / total) * 100) : 0;
+  const { total, done, pct: prog } = progressOf(allProjectTasks);
   const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
   const dueSoon = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
   // auto-computed RAG health — complements the manually-set project phase

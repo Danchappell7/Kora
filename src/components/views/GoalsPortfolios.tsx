@@ -5,11 +5,12 @@
    ============================================================ */
 import { useMemo, useState } from "react";
 import { Avatar, Button, DateChip, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
-import { getProject, getMember, projectProgress, KANBO_TODAY, toLocalISO } from "../../data/data";
+import { getProject, getMember, KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate } from "../../data/types";
 import { goalDescendants, goalProgressMap, goalTree, projectHealth, useStableOrder, type GoalProgress, type HealthKind } from "./reportingUtils";
 import { DraftInput } from "../project/DraftInput";
-import { fmtAge, fmtShortDay, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, type TaskIndex } from "../../lib/statusDraft";
+import { fmtAge, fmtShortDay, FORMER_MEMBER, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor, type TaskIndex } from "../../lib/statusDraft";
+import { combinedProgress, progressOf, projectPct } from "../../lib/countRules";
 import "../project/projects.css";
 
 type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
@@ -28,6 +29,8 @@ export const STATUS_KIND_META: Record<StatusKind, { label: string; color: string
 const KIND_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal" };
 const HEALTH_TONE: Record<HealthKind, Tone> = { complete: "ok", on_track: "ok", at_risk: "warn", off_track: "signal" };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** "Maya" for Maya Lin; "Former member" stays whole */
+const shortName = (name: string) => (name === FORMER_MEMBER ? name : name.split(/\s+/)[0] || name);
 
 /** An inline "add" row: a name field with Add and Cancel. */
 function Adder({ label, placeholder, onAdd, onCancel }: { label: string; placeholder: string; onAdd: (name: string) => void; onCancel: () => void }) {
@@ -45,19 +48,24 @@ function Adder({ label, placeholder, onAdd, onCancel }: { label: string; placeho
 }
 
 /* ---------------- GOALS / OKRs ---------------- */
-export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete }: {
+export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete, readOnly = false }: {
   goals: Goal[];
   projects: Project[];
+  /** the workspace's tasks, archived projects' included: a goal linked to a finished,
+   *  archived project keeps reading that project's progress instead of dropping to 0% */
   tasks: Task[];
   onCreate: (name: string) => void;
-  onUpdate: (id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>) => void;
+  onUpdate: (id: string, patch: Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>) => void;
   onDelete: (id: string) => void;
+  /** a guest: the goals to read, no controls (writes would only be refused) */
+  readOnly?: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const realProjects = projects.filter((p) => p.id !== "p-personal");
   // the whole tree, any depth (a sub-goal's own sub-goals used to vanish)
   const ordered = goalTree(useStableOrder(goals));
-  const progress = goalProgressMap(goals, (pid) => projectProgress(tasks, pid));
+  // a linked project's % is its top-level tasks done, as on its own header (lib/countRules)
+  const progress = goalProgressMap(goals, (pid) => projectPct(tasks, pid));
   const todayIso = toLocalISO(KANBO_TODAY);
   const numOr0 = (v: string) => { const n = Number(v); return v.trim() === "" || !isFinite(n) ? 0 : n; };
   // save a typed number (blank → 0) only when it differs, and show it as stored
@@ -67,6 +75,7 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
     return String(n);
   };
   const explainer = "Goals track a number you want to hit. Link one to a project and its progress fills in automatically.";
+  if (readOnly) return <GoalsReadOnly ordered={ordered} progress={progress} projects={realProjects} todayIso={todayIso} />;
   return (
     <div className="kpj-page">
       <div className="kpj-wrap">
@@ -86,7 +95,7 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
                   const meta = GOAL_STATUS[g.status] ?? GOAL_STATUS.on_track;
                   const prog: GoalProgress = progress.get(g.id) ?? { pct: 0, source: "manual", children: 0 };
                   const pct = prog.pct;
-                  const linkedProject = g.projectId ? (getProject(g.projectId) ?? realProjects.find((p) => p.id === g.projectId)) : undefined;
+                  const linkedProject = linkedOf(g, realProjects);
                   // a goal can't sit under itself or anything nested beneath it
                   const blocked = goalDescendants(goals, g.id); blocked.add(g.id);
                   const parentOptions = ordered.filter((o) => !blocked.has(o.g.id));
@@ -112,6 +121,8 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
                           }} />
                         </div>
                       </div>
+                      <DraftInput value={g.description ?? ""} placeholder="Add a description" label={`Description of ${g.name}`} multiline
+                        onCommit={(v) => onUpdate(g.id, { description: v })} className="kpj-name-input kpj-goal-desc" />
                       <div className="kpj-card-row">
                         <select className="kpj-field" data-size="sm" value={g.projectId ?? ""} onChange={(e) => onUpdate(g.id, { projectId: e.target.value || undefined })} style={{ maxWidth: 220 }} aria-label={`Project linked to ${g.name}`}>
                           <option value="">Not linked to a project</option>
@@ -142,11 +153,86 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
                         <Meter value={pct} height={6} label={`${g.name} progress`} />
                         <span className="kpj-mono">{pct}%</span>
                       </div>
-                      <div style={{ marginTop: 6 }}>
-                        {prog.source === "project" && <span className="kpj-goal-source">From project {linkedProject?.name ?? "—"}</span>}
-                        {prog.source === "subgoals" && <span className="kpj-goal-source" title="Enter a current value to track this goal's own number instead">Average of {plural(prog.children, "sub-goal")}</span>}
-                        {prog.source === "manual" && prog.subPct !== undefined && <span className="kpj-goal-source">Own value · {plural(prog.children, "sub-goal")} average {prog.subPct}%</span>}
+                      <GoalSource prog={prog} linked={linkedProject} />
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The project a goal is linked to, archived ones included (they keep their progress). */
+function linkedOf(g: Goal, projects: Project[]): Project | undefined {
+  return g.projectId ? (getProject(g.projectId) ?? projects.find((p) => p.id === g.projectId)) : undefined;
+}
+
+/** Where a goal's % comes from: its project (top-level tasks done), its sub-goals, or its own number. */
+function GoalSource({ prog, linked }: { prog: GoalProgress; linked?: Project }) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      {prog.source === "project" && (
+        <span className="kpj-goal-source" title="The share of the project's tasks that are done (sub-tasks count with their parent)">
+          From project {linked?.name ?? "—"}{linked?.archivedAt ? " (archived)" : ""}
+        </span>
+      )}
+      {prog.source === "subgoals" && <span className="kpj-goal-source" title="Enter a current value to track this goal's own number instead">Average of {plural(prog.children, "sub-goal")}</span>}
+      {prog.source === "manual" && prog.subPct !== undefined && <span className="kpj-goal-source">Own value · {plural(prog.children, "sub-goal")} average {prog.subPct}%</span>}
+    </div>
+  );
+}
+
+/** Goals for a guest: the same cards to read, with no fields, pickers or buttons
+ *  (a guest's changes would only be refused). Once 0051 is run, guests can't read
+ *  goals at all, and the page says who they're for instead. */
+function GoalsReadOnly({ ordered, progress, projects, todayIso }: {
+  ordered: { g: Goal; depth: number }[]; progress: Map<string, GoalProgress>; projects: Project[]; todayIso: string;
+}) {
+  return (
+    <div className="kpj-page">
+      <div className="kpj-wrap">
+        <div className="kpj-narrow">
+          {ordered.length === 0 ? (
+            <EmptyState art="target" title="Goals are for members"
+              body="Members of this workspace set its goals and track them here. As a guest you can still open every project and comment on its tasks." />
+          ) : (
+            <>
+              <div className="kpj-toolbar">
+                <p className="kpj-toolbar-note">The goals this workspace is working towards. Members keep them up to date; as a guest you can read them.</p>
+              </div>
+              <div className="kpj-stack">
+                {ordered.map(({ g, depth }) => {
+                  const meta = GOAL_STATUS[g.status] ?? GOAL_STATUS.on_track;
+                  const prog: GoalProgress = progress.get(g.id) ?? { pct: 0, source: "manual", children: 0 };
+                  const linked = linkedOf(g, projects);
+                  const overdue = !!g.due && g.due < todayIso && g.status !== "done" && prog.pct < 100;
+                  return (
+                    <article key={g.id} className="kpj-card kpj-goal" data-depth={depth || undefined} aria-label={`Goal ${g.name}`}
+                      style={depth ? ({ "--depth": Math.min(depth, 5) } as React.CSSProperties) : undefined}>
+                      <div className="kpj-card-head">
+                        {depth > 0 && <Icon name="arrowRight" size={14} sw={1.75} style={{ color: "var(--icon-quiet, var(--ink-4))" }} />}
+                        <h3 className="kpj-name-static" style={{ margin: 0 }}>{g.name}</h3>
+                        <div className="kpj-card-side"><Pill tone={meta.tone}>{meta.label}</Pill></div>
                       </div>
+                      {g.description && <p className="kpj-goal-desc-text">{g.description}</p>}
+                      {(g.due || overdue || (prog.source !== "project" && (g.target ?? 0) > 0)) && (
+                        <div className="kpj-card-row">
+                          {g.due && <DateChip size="sm" label={`Due date for ${g.name}`} value={g.due} tone="plain" readOnly onChange={() => undefined} />}
+                          {overdue && <Pill tone="signal">Overdue</Pill>}
+                          {prog.source !== "project" && (g.target ?? 0) > 0 && (
+                            <span className="kpj-card-meta kpj-mono">{g.current ?? 0} / {g.target}{g.unit ? ` ${g.unit}` : ""}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="kpj-goal-progress">
+                        <Meter value={prog.pct} height={6} label={`${g.name} progress`} />
+                        <span className="kpj-mono">{prog.pct}%</span>
+                      </div>
+                      <GoalSource prog={prog} linked={linked} />
                     </article>
                   );
                 })}
@@ -163,9 +249,11 @@ export function GoalsView({ goals, projects, tasks, onCreate, onUpdate, onDelete
 type PfView = "cards" | "table";
 const readView = (): PfView => { try { return localStorage.getItem("kanbo-portfolio-view") === "table" ? "table" : "cards"; } catch { return "cards"; } };
 
-export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject }: {
+export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, readOnly = false }: {
   portfolios: Portfolio[];
   projects: Project[];
+  /** the workspace's tasks, archived projects' included: a finished project that's been
+   *  archived keeps its % in the portfolio, as on a goal linked to it */
   tasks: Task[];
   /** project status updates, newest first — adds each project's latest call to its row */
   statusUpdates?: StatusUpdate[];
@@ -173,6 +261,8 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
   onUpdate: (id: string, patch: { name?: string; projectIds?: string[] }) => void;
   onDelete: (id: string) => void;
   onOpenProject: (projectId: string) => void;
+  /** a guest: the portfolios to read and open, no controls */
+  readOnly?: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [pickFor, setPickFor] = useState<string | null>(null);
@@ -187,16 +277,19 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
   return (
     <div className="kpj-page">
       <div className="kpj-wrap">
-        {portfolios.length === 0 && !adding ? (
+        {portfolios.length === 0 && readOnly ? (
+          <EmptyState art="briefcase" title="Portfolios are for members"
+            body="Members of this workspace group its projects here to see how they're going together. As a guest you can still open every project." />
+        ) : portfolios.length === 0 && !adding ? (
           <EmptyState art="briefcase" title="No portfolios yet" body={explainer}
             action={<Button variant="primary" icon="plus" onClick={() => setAdding(true)}>New portfolio</Button>} />
         ) : (
           <>
             <div className="kpj-toolbar">
-              <p className="kpj-toolbar-note">{explainer}</p>
+              <p className="kpj-toolbar-note">{readOnly ? "Projects grouped by the workspace's members. As a guest you can read them and open each project." : explainer}</p>
               <Segmented ariaLabel="Portfolio view" value={view} onChange={setView}
                 options={[{ value: "cards", label: "Cards" }, { value: "table", label: "Table" }]} />
-              <Button variant="primary" size="sm" icon="plus" onClick={() => setAdding(true)}>New portfolio</Button>
+              {!readOnly && <Button variant="primary" size="sm" icon="plus" onClick={() => setAdding(true)}>New portfolio</Button>}
             </div>
             {adding && <Adder label="New portfolio name" placeholder="Portfolio name, e.g. Q3 initiatives" onAdd={(n) => { onCreate(n); setAdding(false); }} onCancel={() => setAdding(false)} />}
             <div className={view === "cards" ? "kpj-stack" : undefined}>
@@ -206,9 +299,8 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                   const ptasks = idx.byProject.get(p.id) ?? [];
                   return { p, ptasks, health: projectHealth(ptasks, KANBO_TODAY), latest: projectUpdates(statusUpdates, p.id)[0] };
                 });
-                const allTasks = rows.reduce((a, r) => a + r.ptasks.length, 0);
-                const allDone = rows.reduce((a, r) => a + r.ptasks.filter((t) => t.status === "done").length, 0);
-                const combined = allTasks ? Math.round((allDone / allTasks) * 100) : 0;
+                // every top-level task across the portfolio's projects (lib/countRules), so it agrees with each row
+                const combined = combinedProgress(rows.flatMap((r) => r.ptasks), inPf.map((p) => p.id)).pct;
                 const offN = rows.filter((r) => r.health?.kind === "off_track").length;
                 const riskN = rows.filter((r) => r.health?.kind === "at_risk").length;
                 const summary = (
@@ -226,7 +318,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                         <h2 className="kpj-pf-exec-name">{pf.name}</h2>
                         {summary}
                       </div>
-                      {rows.length === 0 ? <p className="kpj-card-meta">No projects in this portfolio yet. Switch to Cards to add some.</p> : (
+                      {rows.length === 0 ? <p className="kpj-card-meta">{readOnly ? "No projects in this portfolio yet." : "No projects in this portfolio yet. Switch to Cards to add some."}</p> : (
                         <PortfolioTable rows={rows.map((r) => r.p)} tasks={tasks} idx={idx} statusUpdates={statusUpdates} label={`${pf.name} projects`} onOpenProject={onOpenProject} />
                       )}
                     </section>
@@ -239,12 +331,15 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                   <article key={pf.id} className="kpj-card" aria-label={`Portfolio ${pf.name}`}>
                     <div className="kpj-card-head">
                       <Icon name="briefcase" size={16} sw={1.75} style={{ color: "var(--icon-quiet, var(--ink-4))" }} />
-                      <DraftInput value={pf.name} required label={`Portfolio name: ${pf.name}`} onCommit={(v) => onUpdate(pf.id, { name: v })} className="kpj-name-input" />
+                      {readOnly ? <h3 className="kpj-name-static" style={{ margin: 0 }}>{pf.name}</h3>
+                        : <DraftInput value={pf.name} required label={`Portfolio name: ${pf.name}`} onCommit={(v) => onUpdate(pf.id, { name: v })} className="kpj-name-input" />}
                       <div className="kpj-card-side">
                         {summary}
-                        <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} aria-label={`Add a project to ${pf.name}`} onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)}>Project</Button>
-                        <IconButton icon="trash" size="sm" tone="danger" label={`Delete portfolio ${pf.name}`}
-                          onClick={() => { if (window.confirm(`Delete portfolio “${pf.name}”? The projects themselves are kept. This can't be undone.`)) onDelete(pf.id); }} />
+                        {!readOnly && <>
+                          <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} aria-label={`Add a project to ${pf.name}`} onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)}>Project</Button>
+                          <IconButton icon="trash" size="sm" tone="danger" label={`Delete portfolio ${pf.name}`}
+                            onClick={() => { if (window.confirm(`Delete portfolio “${pf.name}”? The projects themselves are kept. This can't be undone.`)) onDelete(pf.id); }} />
+                        </>}
                       </div>
                     </div>
                     {picking && (available.length > 0 ? (
@@ -258,19 +353,22 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                       </div>
                     ) : <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>Every project in this workspace is already in this portfolio.</p>)}
                     {rows.length === 0 ? (
-                      <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>No projects yet. Add one with + Project.</p>
+                      <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>{readOnly ? "No projects in this portfolio yet." : "No projects yet. Add one with + Project."}</p>
                     ) : rows.map(({ p, ptasks, health, latest }) => {
-                      const pct = projectProgress(tasks, p.id);
-                      const count = ptasks.filter((t) => !t.parentId).length;
+                      // top-level tasks, the same rule as the Table and the project's own header
+                      const { total: count, pct } = progressOf(ptasks);
+                      const by = latest ? updateAuthor(latest) : undefined;
                       const ownerName = p.ownerId ? (getMember(p.ownerId)?.name ?? "(former member)") : null;
                       return (
                         <div key={p.id} className="kpj-pf-row">
                           <ProjectDot color={p.color} size={10} />
-                          <button type="button" className="kpj-pf-open" onClick={() => onOpenProject(p.id)} aria-label={`Open project ${p.name}`}>{p.name}</button>
+                          <button type="button" className="kpj-pf-open" onClick={() => onOpenProject(p.id)} aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`}>
+                            {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
+                          </button>
                           <div className="kpj-pf-side">
                             {health && <Pill tone={HEALTH_TONE[health.kind]} title={`Kanbo's read: ${health.detail}`}>{health.label}</Pill>}
                             {latest && STATUS_KIND_META[latest.status] && (
-                              <Pill tone={KIND_TONE[latest.status]} title={`Latest update (${fmtShortDay(latest.createdAt, KANBO_TODAY)}): ${latest.summary}`}>
+                              <Pill tone={KIND_TONE[latest.status]} title={`Latest update (${fmtShortDay(latest.createdAt, KANBO_TODAY)}${by ? `, ${by}` : ""}): ${latest.summary}`}>
                                 Update: {STATUS_KIND_META[latest.status].label}
                               </Pill>
                             )}
@@ -285,7 +383,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                               <Meter value={pct} width={72} height={4} label={`${p.name} progress`} />
                               <span className="kpj-mono" aria-hidden="true">{pct}%</span>
                             </span>
-                            <IconButton icon="x" size="sm" label={`Remove ${p.name} from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((id) => id !== p.id) })} />
+                            {!readOnly && <IconButton icon="x" size="sm" label={`Remove ${p.name} from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((id) => id !== p.id) })} />}
                           </div>
                         </div>
                       );
@@ -322,19 +420,25 @@ function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject 
           const f = statusFacts(p, tasks, statusUpdates, KANBO_TODAY, idx);
           const stale = isStale(f, oldestTaskAge(idx.byProject.get(p.id) ?? [], p.id, KANBO_TODAY));
           const latest = f.latest;
+          const by = latest ? updateAuthor(latest) : undefined;
           return (
             <div key={p.id} role="row" className="kpj-tr kpj-exec-tr" onClick={() => onOpenProject(p.id)}>
               <div role="cell" className="kpj-td">
                 <span className="kpj-proj" style={{ padding: 0 }}>
                   <ProjectDot color={p.color} size={10} />
-                  <button type="button" className="kpj-pf-open" aria-label={`Open project ${p.name}`} onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>{p.name}</button>
+                  <button type="button" className="kpj-pf-open" aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`} title={p.archivedAt ? `${p.name} (archived)` : undefined}
+                    onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>
+                    {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
+                  </button>
                 </span>
               </div>
               <div role="cell" className="kpj-td">
                 {latest && STATUS_KIND_META[latest.status] ? (
                   <span className="kpj-exec-update">
                     <Pill tone={KIND_TONE[latest.status]}>{STATUS_KIND_META[latest.status].label}</Pill>
-                    <span className="kpj-exec-summary" title={latest.summary}>{latest.summary}</span>
+                    {/* who said it, in words (a tooltip alone is out of reach on a phone or the keyboard) */}
+                    {by && <span className="kpj-exec-by" data-former={latest.authorId && getMember(latest.authorId) ? undefined : ""}>{shortName(by)}</span>}
+                    <span className="kpj-exec-summary" title={by ? `${by}: ${latest.summary}` : latest.summary}>{latest.summary}</span>
                   </span>
                 ) : <Pill tone="neutral">No update</Pill>}
               </div>

@@ -67,6 +67,10 @@ describe("TeamPulse", () => {
     const radar = screen.getByRole("complementary", { name: "Radar" });
     expect(within(radar).getByText("Ship onboarding redesign is blocked")).toBeInTheDocument();
     expect(within(radar).getByText("Maya is over capacity")).toBeInTheDocument();
+    // the brief's "N risks need action" are Radar's red ones: the header says how many of all of them
+    const red = radar.querySelectorAll('.kradar-item[data-severity="signal"]').length;
+    expect(red).toBeGreaterThan(0);
+    expect(within(radar).getByText(new RegExp(`^${red} needs? action · Ranked by impact on this week$`))).toBeInTheDocument();
   });
 
   it("fills one button on the whole Radar: the top risk's first fix; every other fix is secondary or ghost", async () => {

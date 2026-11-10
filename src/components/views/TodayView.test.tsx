@@ -67,7 +67,7 @@ describe("TodayView: the brief", () => {
     expect(due).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(within(head).getByRole("button", { name: "launch deck" }));
     expect(props.onOpen).toHaveBeenCalledWith("deck");
-    fireEvent.click(within(brief).getByRole("button", { name: "Two risks need a look" }));
+    fireEvent.click(within(brief).getByRole("button", { name: "Two risks need action" }));
     expect(props.onOpenRisks).toHaveBeenCalled();
   });
 

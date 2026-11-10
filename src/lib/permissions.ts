@@ -31,8 +31,25 @@ export const ROLE_META: Record<Role, { label: string; blurb: string }> = {
   owner:  { label: "Owner",  blurb: "Full control, billing & ownership" },
   admin:  { label: "Admin",  blurb: "Manage members & settings" },
   member: { label: "Member", blurb: "Create and edit work" },
-  guest:  { label: "Guest",  blurb: "Can view and comment" },
+  // honest about today: until private projects land, a guest sees every project in the workspace
+  guest:  { label: "Guest",  blurb: "Can see every project and comment" },
 };
+
+/** The fuller line the People page shows for a guest (role picker, profile, badge). */
+export const GUEST_LINE = "Can see every project in this workspace and comment on its tasks, but can't change anything. Team reports (Pulse, Workload, Insights) are for members.";
+
+/** What to ask before removing someone: what they leave behind, said plainly.
+ *  `open` is their open tasks here, `owns` the projects they own here. */
+export function removeMemberQuestion(name: string, open: number, owns: number): string {
+  const first = name.trim().split(/\s+/)[0] || name;
+  const tasks = `${open} open ${open === 1 ? "task" : "tasks"}`;
+  const projects = `${owns} ${owns === 1 ? "project" : "projects"}`;
+  const left = open && owns ? `${first} has ${tasks} and owns ${projects}. They'll stay with ${first} until you hand them on. `
+    : open ? `${first} has ${tasks}. ${open === 1 ? "It'll" : "They'll"} stay assigned to ${first} until you hand ${open === 1 ? "it" : "them"} on. `
+    : owns ? `${first} owns ${projects}. ${owns === 1 ? "It'll" : "They'll"} stay in ${first}'s name until you hand ${owns === 1 ? "it" : "them"} on. `
+    : "";
+  return `Remove ${name} from this workspace? ${left}${left ? `${first} will` : "They'll"} also be taken off tasks they collaborate on or follow.`;
+}
 
 /** Can `actor` (the current user's role) change `target`'s role / remove them? */
 export function canManageMember(actor: Role | null | undefined, target: Role): boolean {

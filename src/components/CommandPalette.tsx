@@ -30,7 +30,7 @@ import { AiMark, Avatar, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from 
 import { AskKanbo, type AskKanboHandle, type AskSummary, type AskView, type AskVia } from "./AskKanbo";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProject, getMember, MEMBERS, PROJECTS, STATUS_META, todayISO } from "../data/data";
-import { GO_TARGETS, PLACES, navItems, titleOf, type GoTarget } from "../lib/nav";
+import { GO_TARGETS, PLACES, hiddenFromGuest, navItems, titleOf, type GoTarget } from "../lib/nav";
 import { parseTask, type NlpSpan } from "../lib/nlp";
 import { localAsk } from "../lib/askFallback";
 import { fmtDay } from "../lib/askActions";
@@ -404,7 +404,7 @@ export function CommandPalette({
       return { kind: "task", id: t.id, label: t.title, status: t.status, where, due, overdue: !!t.dueDate && t.dueDate < today && t.status !== "done" };
     };
     const actions = ACTIONS.filter((a) => !((a.id === "new-project" || a.id === "plan-project") && !canCreateProject) && !(guest && WRITES.has(a.id)));
-    const targets = GO_TARGETS.filter((g) => !(guest && g.route.view === "automations"));
+    const targets = GO_TARGETS.filter((g) => !(guest && hiddenFromGuest(g.route.view)));
     const crumbOf = (g: GoTarget): string | undefined => { const place = titleOf(g.route); return place !== g.label ? place : undefined; };
 
     if (!query) {
@@ -413,6 +413,7 @@ export function CommandPalette({
       for (const r of recent ?? []) {
         if (routes.length >= 5) break;
         if (routes.some((x) => x.kind === "go" && sameRoute(x.target.route, r))) continue;
+        if (guest && hiddenFromGuest(r.view)) continue;   // (somewhere you were before, in a workspace you're a member of)
         if (r.view === "project") {
           const p = projects?.find((x) => x.id === r.projectId) ?? (r.projectId ? getProject(r.projectId) : undefined);
           if (!p || p.archivedAt) continue;

@@ -12,6 +12,7 @@ import { getMember } from "../../data/data";
 import type { Task } from "../../data/types";
 import { fmtDayMonth, localDay } from "./reportingUtils";
 import type { Risk, RiskFix } from "../../lib/radar";
+import { riskTally } from "../../lib/countRules";
 import { focusWorkloadMember } from "./WorkloadView";
 
 function useOptionalToast() { try { return useToast(); } catch { return null; } }
@@ -41,6 +42,7 @@ export interface RadarPanelProps {
 }
 
 export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch, onOpenWorkload, tasks = [], loading, currentUserId, action }: RadarPanelProps) {
+  const tally = riskTally(risks);
   const toast = useOptionalToast();
   const headId = "kradar-" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // what was just done about each risk ("Nudged Sana"), until the list moves on. A change to a
@@ -95,7 +97,8 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
             <span className="sr-only">, {risks.length} {risks.length === 1 ? "risk" : "risks"}</span>
           </>}
         </h2>
-        <span className="kradar-sub">Ranked by impact on this week</span>
+        {/* the brief's "N risks need action" are these red ones (lib/countRules): the count above is all of them */}
+        <span className="kradar-sub">{!loading && tally.action > 0 && <>{tally.action} {tally.action === 1 ? "needs" : "need"} action · </>}Ranked by impact on this week</span>
         {action && <span className="kradar-act">{action}</span>}
       </header>
       {loading ? (

@@ -530,12 +530,17 @@ const rowToSection = (r: SectionRow): Section => ({ id: r.id, projectId: r.proje
 interface CustomFieldRow { id: string; project_id: string; workspace_id: string | null; name: string; type: string; options: string[] | null; position: number | null }
 const rowToCustomField = (r: CustomFieldRow): CustomFieldDef => ({ id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, name: r.name, type: r.type as CustomFieldDef["type"], options: r.options ?? [], position: r.position ?? undefined });
 interface SavedSearchRow { id: string; name: string; query: unknown }
-interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null; parent_id?: string | null; project_id?: string | null }
+interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null; parent_id?: string | null; project_id?: string | null; created_at?: string }
 const rowToGoal = (r: GoalRow): Goal => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: r.target ?? undefined, current: r.current ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined, parentId: r.parent_id ?? undefined, projectId: r.project_id ?? undefined });
-interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null }
+interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null; created_at?: string }
 const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [] });
-interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string }
-const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at });
+// author_id arrives with 0051 (null once the author's account is deleted); before
+// it, user_id is the poster — until an account deletion hands the row to the owner
+interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string; user_id?: string | null; author_id?: string | null }
+const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({
+  id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at,
+  authorId: "author_id" in r ? r.author_id ?? null : r.user_id ?? undefined,
+});
 interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
 const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: ((r.trigger as AutomationRule["trigger"]) || "task_created"), actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
 interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown; public_token?: string | null; public_enabled?: boolean | null }
@@ -694,6 +699,32 @@ async function loadAllTasks(client: SupabaseClient): Promise<TaskRow[]> {
   }
   return rows;
 }
+
+/** Every row of a smaller table (goals, portfolios, status updates) visible
+ *  under RLS, a page at a time, the way loadAllTasks reads tasks: an unpaged
+ *  select stops at 1,000 rows without a word. Keyset paging on id; the caller
+ *  sorts. Throws when the table can't be read (not there yet). */
+async function loadAllRows<T extends { id: string }>(client: SupabaseClient, table: string): Promise<T[]> {
+  const rows: T[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < 500; page++) {
+    let q = client.from(table).select("*").order("id", { ascending: true }).limit(TASK_PAGE);
+    if (after) q = q.gt("id", after);
+    const res = await q;
+    if (res.error) throw res.error;
+    const got = (res.data as T[] | null) ?? [];
+    rows.push(...got);
+    if (got.length < TASK_PAGE) break;
+    after = got[got.length - 1].id;
+  }
+  return rows;
+}
+const byText = (a: string | undefined, b: string | undefined) => (a ?? "").localeCompare(b ?? "");
+/** goals: by position (unset last), then oldest first, then id — a stable order, so lists don't reshuffle */
+const goalOrder = (a: GoalRow, b: GoalRow) =>
+  (a.position ?? Infinity) - (b.position ?? Infinity) || byText(a.created_at, b.created_at) || byText(a.id, b.id);
+/** portfolios: oldest first */
+const createdOrder = (a: { id: string; created_at?: string }, b: { id: string; created_at?: string }) => byText(a.created_at, b.created_at) || byText(a.id, b.id);
 
 /* ---------- task writes (raw: throw on failure, never queue) ---------- */
 /** Idempotent create: the row is written under an explicit id with
@@ -1413,6 +1444,13 @@ export const store = {
           id: "wm-" + i, workspaceId: "ws-foundrise", userId: m.id, email: m.email, name: m.name,
           role: m.type === "self" ? "owner" as const : "member" as const, status: "active" as const,
         }));
+        // Northlight Studio is Idris's, and Daniel is a guest there: read and comment only, no
+        // goals, portfolios or team reporting (as the live database has it since 0051)
+        const idris = MEMBERS.find((m) => m.id === "m-4"), self = MEMBERS.find((m) => m.type === "self");
+        if (idris && self) demoMembers.push(
+          { id: "wm-nl-0", workspaceId: "ws-northlight", userId: idris.id, email: idris.email, name: idris.name, role: "owner", status: "active" },
+          { id: "wm-nl-1", workspaceId: "ws-northlight", userId: self.id, email: self.email, name: self.name, role: "guest", status: "active" },
+        );
       }
       // a living inbox from the first load (anything already logged this session stays)
       if (!demoInboxSeeded) {
@@ -1578,17 +1616,16 @@ export const store = {
     let goals: Goal[] = [], portfolios: Portfolio[] = [], statusUpdates: StatusUpdate[] = [];
     // goals, portfolios, rules and forms in a stable server order, so lists
     // don't reshuffle between visits
+    // (paged: past 1,000 rows an unpaged read silently dropped the rest)
     try {
-      const { data: gData } = await supabase.from("goals").select("*").order("position", { ascending: true, nullsFirst: false }).order("created_at");
-      goals = ((gData as GoalRow[] | null) ?? []).map(rowToGoal);
+      goals = (await loadAllRows<GoalRow>(supabase, "goals")).sort(goalOrder).map(rowToGoal);
     } catch { /* table not present yet */ }
     try {
-      const { data: pData2 } = await supabase.from("portfolios").select("*").order("created_at");
-      portfolios = ((pData2 as PortfolioRow[] | null) ?? []).map(rowToPortfolio);
+      portfolios = (await loadAllRows<PortfolioRow>(supabase, "portfolios")).sort(createdOrder).map(rowToPortfolio);
     } catch { /* table not present yet */ }
     try {
-      const { data: suData } = await supabase.from("status_updates").select("*").order("created_at", { ascending: false });
-      statusUpdates = ((suData as StatusUpdateRow[] | null) ?? []).map(rowToStatusUpdate);
+      // newest first
+      statusUpdates = (await loadAllRows<StatusUpdateRow>(supabase, "status_updates")).sort((a, b) => byText(b.created_at, a.created_at) || byText(a.id, b.id)).map(rowToStatusUpdate);
     } catch { /* table not present yet */ }
     let automationRules: AutomationRule[] = [];
     try {
@@ -2127,10 +2164,11 @@ export const store = {
     if (error) throw error;
     return rowToGoal(data as GoalRow);
   },
-  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>): Promise<void> {
+  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>): Promise<void> {
     if (!supabase) return;
     const row: Record<string, unknown> = {};
     if ("name" in patch) row.name = patch.name;
+    if ("description" in patch) row.description = patch.description?.trim() || null;
     if ("target" in patch) row.target = patch.target ?? null;
     if ("current" in patch) row.current = patch.current ?? null;
     if ("unit" in patch) row.unit = patch.unit ?? null;
@@ -2173,7 +2211,7 @@ export const store = {
 
   /* ---------- project status updates ---------- */
   async createStatusUpdate(input: { workspaceId: string | null; projectId: string; summary: string; status: StatusKind }, userId: string): Promise<StatusUpdate> {
-    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, summary: input.summary, status: input.status, createdAt: new Date().toISOString() };
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, summary: input.summary, status: input.status, createdAt: new Date().toISOString(), authorId: userId };
     const uid = await authUid(userId);
     const { data, error } = await supabase.from("status_updates").insert({ user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, summary: input.summary, status: input.status }).select("*").single();
     if (error) throw error;

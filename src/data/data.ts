@@ -12,6 +12,7 @@ import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
 import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";
+import { projectPct } from "../lib/countRules";
 import { daysBetweenISO, nextDueDateFrom, parseLocalDay, seriesAnchorDay, shiftISO } from "../../supabase/functions/_shared/recurrence.ts";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
@@ -145,6 +146,8 @@ export let WORKSPACES: Workspace[] = [
   { id: null, name: "Personal", kind: "personal" },
   { id: "ws-foundrise", name: "Foundrise", kind: "team" },
   { id: "ws-reco", name: "Reco HQ", kind: "team" },
+  // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
+  { id: "ws-northlight", name: "Northlight Studio", kind: "team" },
 ];
 
 /* Each demo project wears its own emoji and spectrum hue (lib/projectIdentity.ts),
@@ -156,6 +159,7 @@ export let PROJECTS: Project[] = [
   { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
   { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"] },
   { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
+  { id: "p-northlight", name: "Website rebuild", emoji: "🧭", color: spectrumColor("lagoon"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
 ];
 
 /* Minimal reference data a brand-new (real) account starts with — one personal
@@ -331,6 +335,15 @@ export const TASKS: Task[] = [
   t({ title: "Security review sign-off", status: "review", priority: "high", projectId: "p-infra",
       assigneeId: "m-1", createdBy: "m-1", dueDate: thisWeek(2), tags: ["eng"], aiScore: 70, focusMin: 30, effortHours: 1,
       createdAt: daysAgoAt(3, 11, 50) }),
+  // Northlight Studio (Idris's workspace; Daniel is a guest there): its own work, nothing of Daniel's
+  t({ id: "t-nl-1", title: "Sitemap and page list", status: "done", priority: "medium", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(-5), completedAt: dayOffset(-6), focusMin: 45, createdAt: daysAgoAt(14, 10, 0) }),
+  t({ id: "t-nl-2", title: "Homepage copy", status: "progress", priority: "high", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(2), tags: ["writing"], focusMin: 90, createdAt: daysAgoAt(8, 9, 30) }),
+  t({ id: "t-nl-3", title: "Choose the studio photography", status: "review", priority: "medium", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(1), tags: ["design"], focusMin: 30, createdAt: daysAgoAt(6, 15, 0) }),
+  t({ id: "t-nl-4", title: "Booking widget on the class pages", status: "todo", priority: "medium", projectId: "p-northlight",
+      assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(9), dependencies: ["t-nl-2"], tags: ["eng"], focusMin: 120, createdAt: daysAgoAt(5, 11, 0) }),
 ];
 
 /* ---- meta ---- */
@@ -393,11 +406,8 @@ export function dueState(iso: string | undefined, status: Status): "none" | "ove
   if (diff === 1) return "soon";
   return "future";
 }
-export function projectProgress(tasks: Task[], projectId: string): number {
-  const list = tasks.filter((t) => t.projectId === projectId);
-  if (!list.length) return 0;
-  return Math.round((list.filter((t) => t.status === "done").length / list.length) * 100);
-}
+/** A project's % done: its top-level tasks, the one rule every screen uses (lib/countRules). */
+export const projectProgress = (tasks: Task[], projectId: string): number => projectPct(tasks, projectId);
 export function blockingTasks(task: Task, all: Task[]): Task[] {
   if (!task.dependencies?.length) return [];
   return task.dependencies
@@ -514,12 +524,15 @@ export const DEMO_PORTFOLIOS: Portfolio[] = [
   { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise" },
 ];
 
-/* Platform Infra has no update at all, so it reads as stale. */
+/* Platform Infra has no update at all, so it reads as stale. Each says who posted it;
+   the launch's first came from someone who has since left ("Former member"). */
 export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
-  { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise",
+  { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise", authorId: "m-3",
     summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way." },
-  { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise",
+  { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise", authorId: "m-self",
     summary: "Deck is the critical path; onboarding is blocked on tokens." },
+  { id: "su-launch-kickoff", projectId: "p-launch", status: "on_track", createdAt: daysAgoAt(23, 10, 10), workspaceId: "ws-foundrise", authorId: "m-left",
+    summary: "Kick-off done: scope agreed with sales and support, and the launch date is set." },
 ];
 
 /* Rules have no conditions yet, so "tag bugs" would tag every new launch task:

@@ -7,6 +7,7 @@ import { useRef } from "react";
 import type { Task, Goal, TagDef } from "../../data/types";
 import { csvCell, downloadCsv as downloadCsvText, toCsv } from "../../lib/exportTasks";
 import { DAY_MS, round1, localDay, fmtDayMonth, addDays, startOfWeekMon, workdays, taskLoadInWeek } from "../../lib/weekMath";
+import { progressOf } from "../../lib/countRules";
 
 // the day and week maths the shell needs too (Radar, Today's brief) live in lib/weekMath
 export { DAY_MS, round1, localDay, fmtDayMonth, addDays, startOfWeekMon, workdays, taskLoadInWeek };
@@ -500,12 +501,13 @@ export function projectHealth(tasks: Task[], today: Date): ProjectHealth | null 
   const done = tasks.filter((t) => t.status === "done").length;
   const overdue = tasks.filter((t) => { if (t.status === "done") return false; const d = localDay(t.dueDate); return !!d && d < todayMid; }).length;
   const blocked = tasks.filter((t) => t.status === "blocked").length;
-  const pct = Math.round((done / total) * 100);
+  // % done is top-level tasks, as on every other screen; "complete" still means every task, sub-tasks too
+  const pct = progressOf(tasks).pct;
   const bits: string[] = [];
   if (overdue) bits.push(`${overdue} overdue`);
   if (blocked) bits.push(`${blocked} blocked`);
   const detail = bits.length ? bits.join(" · ") : "nothing overdue or blocked";
-  if (pct === 100) return { kind: "complete", label: "Complete", detail: "all tasks done", overdue, blocked, total, pct };
+  if (done === total) return { kind: "complete", label: "Complete", detail: "all tasks done", overdue, blocked, total, pct };
   if (overdue >= 3 || overdue / total > 0.25 || (overdue >= 1 && blocked >= 2)) return { kind: "off_track", label: "Off track", detail, overdue, blocked, total, pct };
   if (overdue >= 1 || blocked >= 1) return { kind: "at_risk", label: "At risk", detail, overdue, blocked, total, pct };
   return { kind: "on_track", label: "On track", detail, overdue, blocked, total, pct };

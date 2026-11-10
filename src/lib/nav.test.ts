@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   PLACES, navItems, placeOf, tabsFor, pathOf, routeOf, canonicalPath, G_KEYS, GO_TARGETS, SHORTCUTS, titleOf, type NavCtx,
+  GUEST_HIDDEN_VIEWS, guestRoute, hiddenFromGuest, readableTabs, gKeyRoute,
 } from "./nav";
 import type { Route, ViewId, ProjectTab } from "../app-types";
 
@@ -162,6 +163,53 @@ describe("places", () => {
     expect(placeOf({ view: "analytics" })).toBe("team");
     expect(placeOf({ view: "reports" })).toBe("team");
     for (const view of VIEWS) expect(PLACES.map((p) => p.id)).toContain(placeOf({ view }));
+  });
+
+  it("give guests People only in Team: Pulse, Workload and Insights (Trends, Time & billing) are the team's reporting", () => {
+    expect(tabsFor("team", GUEST).map((t) => t.label)).toEqual(["People"]);
+    expect(navItems(GUEST).find((n) => n.id === "team")?.route).toEqual({ view: "team" });
+    expect(navItems(TEAM).find((n) => n.id === "team")?.route).toEqual({ view: "pulse" });
+    expect([...GUEST_HIDDEN_VIEWS].sort()).toEqual(["analytics", "automations", "pulse", "reports", "workload"]);
+    for (const v of ["pulse", "workload", "analytics", "reports"] as ViewId[]) {
+      expect(hiddenFromGuest(v)).toBe(true);
+      expect(guestRoute({ view: v })).toEqual({ view: "team" });
+    }
+    expect(guestRoute({ view: "automations" })).toEqual({ view: "projects" });
+    // Goals and Portfolios aren't route-guarded: guests read them, or are told who they're for
+    // (their tabs come and go with what there is to read: readableTabs)
+    for (const v of ["goals", "portfolios", "team", "projects", "home", "plan"] as ViewId[]) {
+      expect(hiddenFromGuest(v)).toBe(false);
+      expect(guestRoute({ view: v })).toEqual({ view: v });
+    }
+    // every address to the team's reporting is covered, aliases included
+    for (const path of ["/team", "/team/pulse", "/team/workload", "/team/insights", "/team/insights/trends", "/analytics", "/reports", "/workload"]) {
+      expect(guestRoute(routeOf(path)!).view).toBe("team");
+    }
+  });
+
+  it("offer a guest Goals and Portfolios only while there's something to read (the page they're on keeps its tab)", () => {
+    const labels = (ctx: NavCtx, has: { goals?: boolean; portfolios?: boolean }, current: ViewId) =>
+      readableTabs(tabsFor("projects", ctx), ctx, has, current).map((t) => t.label);
+    expect(labels(GUEST, {}, "projects")).toEqual(["All", "Requests"]);
+    expect(labels(GUEST, { goals: true }, "projects")).toEqual(["All", "Goals", "Requests"]);
+    expect(labels(GUEST, { goals: true, portfolios: true }, "projects")).toEqual(["All", "Portfolios", "Goals", "Requests"]);
+    expect(labels(GUEST, {}, "portfolios")).toEqual(["All", "Portfolios", "Requests"]);
+    // members always have both, empty or not (that's where they make the first one)
+    expect(labels(TEAM, {}, "projects")).toEqual(["All", "Portfolios", "Goals", "Rules", "Requests"]);
+  });
+
+  it("send a guest's g-keys nowhere for the team's reporting; G E is their Team, People", () => {
+    expect(gKeyRoute("a", { guest: true })).toBeUndefined();
+    expect(gKeyRoute("r", { guest: true })).toBeUndefined();
+    expect(gKeyRoute("e", { guest: true })).toEqual({ view: "team" });
+    expect(gKeyRoute("T", { guest: true })).toEqual({ view: "tasks" });
+    expect(gKeyRoute("a", { guest: false })).toEqual({ view: "analytics" });
+    expect(gKeyRoute("e", { guest: false })).toEqual({ view: "pulse" });
+    expect(gKeyRoute("z", { guest: false })).toBeUndefined();
+    for (const k of Object.keys(G_KEYS)) {
+      const to = gKeyRoute(k, { guest: true });
+      if (to) expect(hiddenFromGuest(to.view)).toBe(false);
+    }
   });
 
   it("give guests no Rules tab", () => {

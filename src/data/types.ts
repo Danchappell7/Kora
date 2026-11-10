@@ -234,6 +234,8 @@ export interface StatusUpdate {
   status: StatusKind;
   createdAt: string;
   workspaceId?: string | null;
+  /** who posted it; null once their account is deleted (shown as "Former member") */
+  authorId?: string | null;
 }
 
 export interface Comment {

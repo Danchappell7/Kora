@@ -18,6 +18,7 @@ import type { Priority, Status, Task } from "../data/types";
 import type { AskAction, AskContext, AskPatch, AskResult } from "./askTypes";
 import { parseDateText } from "./nlp";
 import { fmtDay, isIsoDay } from "./askActions";
+import { blockedAndWaiting, openBlockers } from "./countRules";
 
 export const LOCAL_HELP = "I can find, move, assign and mark tasks on-device. Try “what's overdue?” or “move my unstarted tasks this week to Monday”.";
 
@@ -500,7 +501,7 @@ function listIntent(q: string, tasks: Task[], ctx: AskContext): AskResult | null
   const possessive = (id: string) => (id === ctx.me ? "your" : `${firstNameOf(id, ctx)}'s`);
   const none = (label: string) => `Nothing${personId ? ` of ${personId === ctx.me ? "yours" : `${firstNameOf(personId, ctx)}'s`}` : ""} is ${label}${where}.`;
   /** "Two of Maya's tasks are overdue: “A” and “B”." — when one person owns them all, say so once instead of on every title */
-  const say = (list: Task[], label: string, note?: (t: Task) => string) => {
+  const sentence = (list: Task[], label: string, note?: (t: Task) => string) => {
     const owners = new Set(list.map((t) => t.assigneeId || ""));
     const one = personId ?? (owners.size === 1 && [...owners][0] ? [...owners][0] : null);
     const n = list.length;
@@ -508,17 +509,23 @@ function listIntent(q: string, tasks: Task[], ctx: AskContext): AskResult | null
       ? `${n === 1 ? "One" : num(n, true)} of ${possessive(one)} tasks ${plural(n, "is", "are")} ${label}${where}`
       : `${num(n, true)} ${plural(n, "task is", "tasks are")} ${label}${where}`;
     const whose = (t: Task) => note?.(t) || (one ? "" : t.assigneeId === ctx.me ? " (yours)" : t.assigneeId ? ` (${firstNameOf(t.assigneeId, ctx)})` : "");
-    return result(`${lead}: ${titles(list, 3, whose)}.`, [], list.map((t) => t.id));
+    return `${lead}: ${titles(list, 3, whose)}.`;
   };
+  const say = (list: Task[], label: string, note?: (t: Task) => string) => result(sentence(list, label, note), [], list.map((t) => t.id));
 
   if (/\b(blocked|stuck|waiting on)\b/.test(q)) {
-    const openIds = new Set(tasks.filter((x) => x.status !== "done").map((x) => x.id));
-    const list = pool.filter((t) => t.status === "blocked" || (t.dependencies ?? []).some((d) => openIds.has(d))).sort(byWork);
-    if (!list.length) return result(none("blocked"));
-    return say(list, "blocked", (t) => {
-      const on = (t.dependencies ?? []).map((d) => tasks.find((x) => x.id === d)).find((x) => x && x.status !== "done");
-      return on ? ` (waiting on ${quote(on)})` : "";
-    });
+    // one vocabulary (lib/countRules), as Radar, Pulse and the brief use it: "blocked" is the
+    // status; a task held up by unfinished work it depends on is "waiting on other work"
+    const byId = new Map(tasks.map((x) => [x.id, x]));
+    const split = blockedAndWaiting(pool, tasks);
+    const blocked = split.blocked.sort(byWork), waiting = split.waiting.sort(byWork);
+    const on = (t: Task) => { const b = openBlockers(t, byId)[0]; return b ? ` (waiting on ${quote(b)})` : ""; };
+    const WAITING = "waiting on other work";
+    if (/\bwaiting on\b/.test(q) && !/\b(blocked|stuck)\b/.test(q)) return waiting.length ? say(waiting, WAITING, on) : result(none(WAITING));
+    if (!blocked.length && !waiting.length) return result(none("blocked or waiting on other work"));
+    const parts = [blocked.length ? sentence(blocked, "blocked", on) : none("marked blocked")];
+    if (waiting.length) parts.push(sentence(waiting, WAITING, on));
+    return result(parts.join(" "), [], [...blocked, ...waiting].map((t) => t.id));
   }
   let label: string;
   let list: Task[];

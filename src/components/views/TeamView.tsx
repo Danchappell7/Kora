@@ -8,8 +8,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Icon, IconButton, Avatar, Button, EmptyState, Meter, Pill, SectionLabel, Segmented, Sheet, StatusGlyph, ProjectDot } from "../primitives";
-import { getProject, getMember, KANBO_TODAY } from "../../data/data";
-import { can, canManageMember, assignableRoles, ROLE_META } from "../../lib/permissions";
+import { getProject, getMember, KANBO_TODAY, PROJECTS } from "../../data/data";
+import { can, canManageMember, assignableRoles, removeMemberQuestion, GUEST_LINE, ROLE_META } from "../../lib/permissions";
 import type { Task, Workspace, WorkspaceMember, Role } from "../../data/types";
 import { AVATAR_ACCEPT, AVATAR_MESSAGES, avatarExtension, avatarMime } from "../../lib/avatarUpload";
 import { uiZoom } from "../../lib/appearance";
@@ -130,7 +130,7 @@ function memberName(m: WorkspaceMember): string {
     workspace (0041 RLS: active members read team rows) — say so, because
     "guest" usually implies narrower access than that. */
 function roleBlurb(r: Role): string {
-  return r === "guest" ? "Can view and comment — sees every project in this workspace" : ROLE_META[r]?.blurb ?? "";
+  return r === "guest" ? GUEST_LINE : ROLE_META[r]?.blurb ?? "";
 }
 
 const withArticle = (word: string) => (/^[aeiou]/i.test(word) ? "an " : "a ") + word;
@@ -229,9 +229,11 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, on
   const feedback = resendError
     ? resendError
     : resendInfo ? resendInfo.info
+    // (the link just copied is the latest thing done: it says what to do with it)
+    // the link is Kanbo's sign-up page: the invite is the email address, so say it has to be that exact one
+    : invite?.copied === "ok" ? `Link copied. Send it to them: they join by signing up or signing in with exactly ${m.email}. A different address won't see this workspace.`
+    : invite?.copied === "failed" ? `Couldn't copy automatically. The sign-up link is ${window.location.origin}/ and they need to use exactly ${m.email} to join.`
     : resend === "sent" || resend === "emailed" ? "If the email doesn't reach them, copy the sign-up link and send it yourself."
-    : invite?.copied === "ok" ? `Share it with them — they need to sign up with ${m.email} to join.`
-    : invite?.copied === "failed" ? `Couldn't copy automatically — the sign-up link is ${window.location.origin}/`
     : null;
   const tone = load ? loadTone(load.hours, load.capacity) : "ink";
   const hours = load ? `${round1(load.hours)}h / ${round1(load.capacity)}h` : "";
@@ -287,7 +289,8 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, on
             </Button>
           )}
           <Button size="sm" variant="ghost" icon={invite.copied === "ok" ? "check" : "link"} onClick={invite.onCopy}
-            aria-label={`Copy sign-up link for ${m.email}`} data-ok={invite.copied === "ok" || undefined}>
+            aria-label={`Copy sign-up link for ${m.email}`} data-ok={invite.copied === "ok" || undefined}
+            title={`Copies Kanbo's sign-up link. The invite is for ${m.email}, so they need to sign up or sign in with that exact address.`}>
             {invite.copied === "ok" ? "Link copied" : "Copy link"}
           </Button>
         </span>
@@ -300,7 +303,7 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, on
 /* Slide-over profile — role controls + role-gated task list. Hoisted so a
    realtime reload of members/tasks doesn't remount it (which wiped the
    Position draft and stole focus mid-typing). */
-function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, onRemoveMember, onOpen, onClose }: {
+function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, onRemoveMember, onOpen, onClose, onHandOn, handTo = [] }: {
   m: WorkspaceMember;
   name: string;
   isSelf: boolean;
@@ -314,13 +317,16 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
   onRemoveMember: (memberId: string) => void;
   onOpen?: (taskId: string) => void;
   onClose: () => void;
+  /** reassign tasks to someone (lib/dropActions reassignTasks): removing a member offers to hand their open work on */
+  onHandOn?: (taskIds: string[], userId: string) => void;
+  /** who their work can go to: this workspace's active owners, admins and members, them aside */
+  handTo?: { id: string; name: string }[];
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const memberId = m.userId ?? "";
   const assigned = tasks.filter((t) => t.assigneeId === memberId && !t.archivedAt);
   const openTasks = assigned.filter((t) => t.status !== "done").sort((a, b) => b.aiScore - a.aiScore);
   const doneN = assigned.length - openTasks.length;
-  const canSeeTasks = can(role, "manageMembers") || isSelf;   // managers, or yourself
   const manageRole = m.status === "active" && !!onSetRole && canManageMember(role, m.role) && !isSelf;
   // anyone who manages members, or the member themselves, can set the position/title
   const canEditTitle = !!onSetTitle && m.status === "active" && (can(role, "manageMembers") || isSelf);
@@ -335,6 +341,14 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
   const pending = m.status !== "active";
   const titleUnchanged = titleDraft.trim() === (m.title ?? "");
   const canLeaveOrRemove = (canManageMember(role, m.role) && !isSelf) || (isSelf && m.role !== "owner");
+  // removing someone who's joined: a step in the profile (not a browser dialog) that says what
+  // they leave behind and hands their open tasks on before they go
+  const [removing, setRemoving] = useState(false);
+  const owned = PROJECTS.filter((p) => (p.workspaceId ?? null) === workspace && p.ownerId === memberId && !p.archivedAt);
+  const others = handTo.filter((x) => x.id !== memberId);
+  const [handToId, setHandToId] = useState("");
+  const target = others.some((x) => x.id === handToId) ? handToId : others[0]?.id ?? "";
+  const first = name.trim().split(/\s+/)[0] || name;
   return (
     <Sheet open onClose={onClose} label={`${name} profile`} side="right" width={420} initialFocus={closeRef}>
       <div className="kprof">
@@ -386,11 +400,11 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
         )}
 
         <div className="kprof-field">
-          <SectionLabel count={m.status === "active" && canSeeTasks ? openTasks.length : undefined}>{isSelf ? "Your tasks" : "Assigned tasks"}</SectionLabel>
+          {/* everyone here can see a teammate's tasks (they're on the projects, Pulse and Workload too),
+              so the list is never locked: saying it was private would promise privacy Kanbo doesn't keep */}
+          <SectionLabel count={m.status === "active" ? openTasks.length : undefined}>{isSelf ? "Your tasks" : "Assigned tasks"}</SectionLabel>
           {m.status !== "active" ? (
             <p className="kprof-hint">They haven't joined the workspace yet.</p>
-          ) : !canSeeTasks ? (
-            <p className="kprof-locked"><Icon name="lock" size={14} sw={1.75} /> Only admins can view a teammate's tasks.</p>
           ) : openTasks.length === 0 ? (
             <p className="kprof-hint">No open tasks.</p>
           ) : (
@@ -416,13 +430,36 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
             {m.status === "active" && role === "owner" && onTransferOwnership && m.role !== "owner" && (
               <Button variant="secondary" icon="target" full onClick={() => { if (window.confirm(`Make ${name} the owner? You'll become an admin.`)) { onTransferOwnership(workspace, m.id); onClose(); } }}>Make owner</Button>
             )}
-            {canLeaveOrRemove && (
+            {canLeaveOrRemove && removing ? (
+              // leaving / removal also takes the person off this workspace's task followers and
+              // collaborators (0042 remove_member), and a re-invite doesn't put them back.
+              // What they leave behind (open tasks, projects they own) stays theirs until handed on.
+              <div className="kprof-confirm" role="group" aria-label={`Remove ${name}`}>
+                <p className="kprof-confirm-q">{removeMemberQuestion(name, openTasks.length, owned.length)}</p>
+                {openTasks.length > 0 && onHandOn && others.length > 0 && (
+                  <div className="kprof-inline">
+                    <select className="kfield-select kprof-handto" value={target} onChange={(e) => setHandToId(e.target.value)} aria-label={`Hand ${first}'s open tasks to`}>
+                      {others.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                    </select>
+                    <Button variant="secondary" icon="arrowRight" onClick={() => onHandOn(openTasks.map((t) => t.id), target)}>
+                      Hand on {openTasks.length === 1 ? "1 task" : `${openTasks.length} tasks`}
+                    </Button>
+                  </div>
+                )}
+                {owned.length > 0 && (
+                  <p className="kprof-hint">Change the owner of {owned.map((p) => p.name).join(", ")} in {owned.length === 1 ? "its" : "each project's"} About tab.</p>
+                )}
+                <div className="kprof-inline">
+                  <Button variant="danger" onClick={() => { onRemoveMember(m.id); onClose(); }}>Remove {first}</Button>
+                  <Button variant="ghost" onClick={() => setRemoving(false)}>Cancel</Button>
+                </div>
+              </div>
+            ) : canLeaveOrRemove && (
               <Button variant="secondary" icon="x" full className="kprof-remove" onClick={() => {
-                // leaving / removal also takes the person off this workspace's task followers and
-                // collaborators (0042 remove_member), and a re-invite doesn't put them back
+                if (!isSelf && !pending) { setRemoving(true); return; }
+                // leaving also takes you off this workspace's task followers and collaborators (0042 remove_member)
                 const q = isSelf ? "Leave this workspace? You'll also be taken off tasks you collaborate on or follow."
-                  : pending ? `Cancel the invite to ${m.email}? They won't be able to join with it.`
-                  : `Remove ${name} from this workspace? They'll also be taken off tasks they collaborate on or follow.`;
+                  : `Cancel the invite to ${m.email}? They won't be able to join with it.`;
                 if (window.confirm(q)) { onRemoveMember(m.id); onClose(); }
               }}>{isSelf ? "Leave workspace" : pending ? "Cancel invite" : "Remove from workspace"}</Button>
             )}
@@ -781,7 +818,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
             <ul className="kppl-list">
               {shownActive.map((m) => (
                 <PersonRow key={m.id} m={m} name={memberName(m)} isSelf={m.userId === currentUserId} openN={openCount(m)}
-                  working={m.userId ? working.get(m.userId) : undefined} load={loadOf(m)} onSelect={() => setSelectedId(m.id)}
+                  // (a guest doesn't get Workload, so not each person's hours here either)
+                  working={m.userId ? working.get(m.userId) : undefined} load={role === "guest" ? undefined : loadOf(m)} onSelect={() => setSelectedId(m.id)}
                   onDropTasks={role && role !== "guest" ? onDropTasksOnPerson : undefined} />
               ))}
             </ul>
@@ -870,7 +908,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
         <MemberProfile key={selected.id} m={selected} name={memberName(selected)} isSelf={selected.userId === currentUserId}
           role={role} workspace={workspace} tasks={tasks} inviteOptions={inviteOptions}
           onSetRole={onSetRole} onSetTitle={onSetTitle} onTransferOwnership={onTransferOwnership}
-          onRemoveMember={onRemoveMember} onOpen={onOpen} onClose={() => setSelectedId(null)} />
+          onRemoveMember={onRemoveMember} onOpen={onOpen} onClose={() => setSelectedId(null)}
+          onHandOn={role && role !== "guest" ? onDropTasksOnPerson : undefined}
+          handTo={active.filter((x) => x.userId && x.role !== "guest").map((x) => ({ id: x.userId!, name: memberName(x) }))} />
       )}
     </div>
   );
@@ -999,7 +1039,6 @@ const PEOPLE_CSS = `
 .kprof-stats dt { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kprof-stats dd { margin: 2px 0 0; font: 600 20px/28px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
 .kprof-stats dd[data-tone="ok"] { color: var(--ok, var(--st-done)); }
-.kprof-locked { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; border-radius: var(--r-md, 8px); background: var(--fill-1); font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kprof-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .kprof-task { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 0 8px; border: 0; border-radius: var(--r-sm, 6px); background: transparent;
   color: var(--ink); font: 500 14px/20px var(--font-ui, var(--font-display)); text-align: left; cursor: pointer; }
@@ -1007,6 +1046,9 @@ const PEOPLE_CSS = `
 .kprof-task > .truncate { flex: 1; min-width: 0; }
 .kprof-danger { display: flex; flex-direction: column; gap: 8px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--hairline); }
 .kprof-remove { color: var(--signal, var(--st-blocked)) !important; }
+.kprof-confirm { display: flex; flex-direction: column; gap: 12px; padding: 12px; border-radius: var(--r-md, 8px); background: var(--fill-1); }
+.kprof-confirm-q { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); text-wrap: pretty; }
+.kprof-handto { flex: 1; min-width: 0; }
 
 /* workspace settings (Settings › Workspace) */
 .kwsset { display: flex; flex-direction: column; gap: 24px; }

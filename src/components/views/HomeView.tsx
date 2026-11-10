@@ -7,7 +7,8 @@
 import { useState } from "react";
 import { Icon, Avatar, AiScore, CountUp, AiMark, Button, KanboLogo, Meter, ProjectDot, SectionLabel, StatusGlyph } from "../primitives";
 import { Sparkline } from "../charts";
-import { getProject, projectProgress, dueState, KANBO_TODAY, toLocalISO } from "../../data/data";
+import { getProject, dueState, KANBO_TODAY, toLocalISO } from "../../data/data";
+import { projectProgressOf } from "../../lib/countRules";
 import type { Task, Project, IconName } from "../../data/types";
 import type { Route } from "../../app-types";
 import { dayLong } from "./planCanvas";
@@ -61,7 +62,7 @@ export function StatTile({ kicker, value, icon, accent, delta, sub }: {
   );
 }
 
-export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam, canCreateProject = true }: {
+export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, setRoute, openFocus, onNewProject, onNewTask, onAutoPrioritize, aiBusy, calendarConnected, hasTeam, canCreateProject = true, showInsights = true }: {
   /** everything in the workspace — project cards, the clean-slate check and the "first task" step */
   tasks: Task[];
   /** the viewer's own work (assigned to them or collaborating) — the brief, stat tiles, focus queue and weekly chart.
@@ -70,6 +71,8 @@ export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, s
   projects: Project[]; userName?: string; onOpen: (id: string) => void; setRoute: (r: Route) => void; openFocus: () => void; onNewProject: () => void; onNewTask: () => void; onAutoPrioritize: () => void; aiBusy?: boolean; calendarConnected?: boolean; hasTeam?: boolean;
   /** false for a guest in this workspace — they can't create projects, so no "New project" / "Create a project" CTA */
   canCreateProject?: boolean;
+  /** false for a guest: Insights is the team's, so the weekly card has no "Details" link */
+  showInsights?: boolean;
 }) {
   // phones and tablets have no q key to press — point them at a button instead
   const touchOnly = useMediaQuery("(hover: none)");
@@ -235,7 +238,7 @@ export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, s
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Meter value={completionRate} tone="grad" width={64} label="Completion rate" />
             <span style={{ fontSize: 13, color: "var(--ink-2)" }}>{completionRate}% completion rate</span>
-            <Button variant="ghost" size="sm" style={{ marginLeft: "auto" }} onClick={() => setRoute({ view: "analytics" })}>Details</Button>
+            {showInsights && <Button variant="ghost" size="sm" style={{ marginLeft: "auto" }} onClick={() => setRoute({ view: "analytics" })}>Details</Button>}
           </div>
         </div>
       </div>
@@ -247,15 +250,15 @@ export function HomeView({ tasks, myTasks = tasks, projects, userName, onOpen, s
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 16 }}>
         {projects.filter((p) => p.workspaceId !== null || p.id === "p-personal").slice(0, 6).map((p) => {
-          const ptasks = tasks.filter((t) => t.projectId === p.id);
-          const prog = projectProgress(tasks, p.id);
+          // top-level tasks, the one progress rule (lib/countRules): the header, portfolios and goals say the same
+          const { total, pct: prog } = projectProgressOf(tasks, p.id);
           return (
             <button key={p.id} type="button" onClick={() => setRoute({ view: "project", projectId: p.id })} className="anim-fadeup clickable" style={{ ...card, padding: 16, textAlign: "left", border: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
                 <ProjectDot color={p.color} size={12} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="truncate" style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{ptasks.length} tasks</div>
+                  <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{total} {total === 1 ? "task" : "tasks"}</div>
                 </div>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>

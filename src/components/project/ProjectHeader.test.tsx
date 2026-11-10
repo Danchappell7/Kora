@@ -353,6 +353,30 @@ describe("ProjectPanels", () => {
     expect(box().value).toMatch(/^Finished 1 task this week/);
   });
 
+  it("Updates: each says who posted it, with a former member named as such", () => {
+    const withAuthors: StatusUpdate[] = [
+      { ...UPDATES[1], authorId: "m-1" },
+      { ...UPDATES[0], authorId: null },                       // their account was deleted
+      { id: "u0", projectId: P.id, status: "on_track", summary: "First thoughts", createdAt: ago(30), authorId: "m-gone" },   // left the team
+    ];
+    render(<ProjectPanels {...base({ statusUpdates: withAuthors })} />);
+    const items = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("Maya Lin");
+    expect(items[1]).toHaveTextContent("Former member");
+    expect(items[2]).toHaveTextContent("Former member");
+    expect(items[1].querySelector("[data-former]")).not.toBeNull();
+    expect(items[0].querySelector("[data-former]")).toBeNull();
+  });
+
+  it("Updates: a guest reads the team's updates (only goals and portfolios are for members, 0051), and none posted says so", () => {
+    const { unmount } = render(<ProjectPanels {...base({ readOnly: true })} />);
+    expect(within(screen.getByRole("list")).getAllByRole("listitem")).toHaveLength(UPDATES.length);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    unmount();
+    render(<ProjectPanels {...base({ readOnly: true, statusUpdates: [] })} />);
+    expect(screen.getByText("Nobody has posted an update on this project yet.")).toBeInTheDocument();
+  });
+
   it("Updates: a half-written update survives a tab switch, and is the header's draft too", () => {
     const { rerender } = render(<ProjectPanels {...base()} />);
     fireEvent.change(box(), { target: { value: "My careful update about the launch" } });
@@ -431,6 +455,16 @@ describe("ProjectPanels", () => {
     expect(onUpdate).toHaveBeenCalledWith("p-a", { ownerId: "m-1" });
     fireEvent.click(screen.getByRole("checkbox", { name: /Maya Lin/ }));
     expect(onUpdate).toHaveBeenCalledWith("p-a", { contributorIds: [] });
+  });
+
+  it("About: says there's no update once (the pill), not again in Kanbo's read; an update's age shows when nothing else says it", () => {
+    const { unmount } = render(<ProjectPanels {...base({ tab: "about", statusUpdates: [] })} />);
+    expect(screen.getByText("No update")).toBeInTheDocument();
+    expect(screen.queryByText(/no updates yet/)).toBeNull();
+    unmount();
+    const nineDaysAgo = (() => { const x = new Date(); x.setDate(x.getDate() - 9); return x.toISOString(); })();
+    render(<ProjectPanels {...base({ tab: "about", statusUpdates: [{ ...UPDATES[1], createdAt: nineDaysAgo }] })} />);
+    expect(screen.getByText(/· no update for 9 days$/)).toBeInTheDocument();
   });
 
   it("About: counts open work with its sub-tasks, as overdue and blocked do, so they always add up", () => {

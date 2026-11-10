@@ -185,6 +185,23 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("option", { name: /from a template/ })).not.toBeInTheDocument();
   });
 
+  it("guests aren't offered the team's reporting: Pulse, Workload, Insights and Trends", () => {
+    const { unmount } = open();
+    type("workload");
+    expect(within(screen.getByRole("group", { name: "Go to" })).getByRole("option", { name: /Workload/ })).toBeInTheDocument();
+    unmount();
+    open({ canAct: false, recent: [{ view: "analytics" }, { view: "goals" }] });
+    expect(within(screen.getByRole("group", { name: "Recent" })).queryByRole("option", { name: /Insights/ })).toBeNull();
+    expect(within(screen.getByRole("group", { name: "Recent" })).getByRole("option", { name: /Goals/ })).toBeInTheDocument();
+    for (const q of ["workload", "insights", "trends", "pulse"]) {
+      type(q);
+      const offered = [...(screen.queryByRole("group", { name: "Go to" })?.querySelectorAll('[role="option"]') ?? [])].map((o) => o.textContent).join(" | ");
+      expect(offered).not.toMatch(/Workload|Insights|Trends|Pulse/);
+    }
+    type("goals");
+    expect(within(screen.getByRole("group", { name: "Go to" })).getByRole("option", { name: /Goals/ })).toBeInTheDocument();
+  });
+
   it("guests don't get actions that create or change work", () => {
     open({ canAct: false });
     const actions = within(screen.getByRole("group", { name: "Actions" }));

@@ -213,6 +213,8 @@ const COMMAND_SYSTEM = [
   "- Dates and times can be set or moved, not cleared. If asked to clear one, say in the answer that Kanbo can't do that yet, and propose nothing for it.",
   `- cites: up to ${MAX_CITES} ids of the tasks your answer relies on, most important first. Tasks you propose changes to are already shown with the changes, so don't cite them again; leave cites empty when there's nothing more to show.`,
   "- \"Me\", \"my\" and \"I\" mean the person in <me>. \"Unstarted\" means status todo. \"This week\" runs Monday to Sunday. A weekday on its own means the next one after today; use <calendar> for dates.",
+  // the app's one vocabulary (src/lib/countRules.ts): Radar, Pulse and the brief count the same way
+  "- \"Blocked\" means status blocked. An open task whose blockedBy lists unfinished tasks, and that isn't marked blocked, is \"waiting on\" them: never call it blocked. When asked what's blocked, count the two separately and say which is which.",
   "- Tasks are listed most relevant first: open work, then what was finished in the last fortnight (completedAt). People appear by name; use <members> to find their ids.",
 ].join("\n");
 

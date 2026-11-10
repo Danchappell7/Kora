@@ -39,6 +39,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { appUrlFrom, esc, isEmail, isUuid, oneLine, renderEmail, sendEmail, tokenLink, whereEmail } from "../_shared/email.ts";
 import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 import { findUserByEmail } from "../_shared/users.ts";
+import { guestNote, roleLine } from "../_shared/inviteCopy.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -47,12 +48,6 @@ const CORS = {
 };
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } });
-
-const ROLE_LINE: Record<string, string> = {
-  admin: "an admin",
-  member: "a member",
-  guest: "a guest (you'll be able to view and comment)",
-};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -159,11 +154,14 @@ Deno.serve(async (req) => {
 
     // ---- the email ----
     const host = appUrl.replace(/^https?:\/\//, "");
+    const roleNote = guestNote(m.role, wsName);
     const { html, text } = renderEmail({
       heading: `Join ${wsName} on Kanbo`,
       paragraphs: [
         inviteeFirst ? `Hi ${esc(inviteeFirst)},` : "Hi,",
-        `<strong>${esc(inviter)}</strong> has invited you to join <strong>${esc(wsName)}</strong> on Kanbo as ${esc(ROLE_LINE[m.role] ?? "a member")}. Kanbo is where the team plans, assigns and tracks its work.`,
+        `<strong>${esc(inviter)}</strong> has invited you to join <strong>${esc(wsName)}</strong> on Kanbo as ${esc(roleLine(m.role))}. Kanbo is where the team plans, assigns and tracks its work.`,
+        // a guest is told what they'll see: every project, for now (private projects aren't here yet)
+        ...(roleNote ? [esc(roleNote)] : []),
         mode === "setup"
           ? "Accept the invite, choose a password and you'll go straight into the workspace."
           : `You already have a Kanbo account, so just sign in as <strong>${esc(email)}</strong> — you'll find ${esc(wsName)} in your workspace switcher.`,
