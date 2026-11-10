@@ -81,7 +81,8 @@ function world(over: {
     if (q.kind === "from" && q.name === "projects") {
       if (fail.projects) return { data: null, error: fail.projects };
       const ids = op(q, "in")?.[1] as string[];
-      return { data: projects.filter((p) => ids.includes(p.id as string)), error: null };
+      // (a team project in the tasks' workspace unless a test says otherwise)
+      return { data: projects.filter((p) => ids.includes(p.id as string)).map((p) => ({ workspace_id: "ws-1", user_id: YOU, ...p })), error: null };
     }
     return { data: null, error: null }; // rate_limits housekeeping etc.
   });
@@ -222,7 +223,7 @@ describe("ics-feed handler", () => {
     await run(w, req());
     const proj = w.log.find((q) => q.name === "projects")!;
     expect(op(proj, "in")).toEqual(["id", [P1]]);
-    expect(op(proj, "select")).toEqual(["id,name,archived_at"]);
+    expect(op(proj, "select")).toEqual(["id,name,archived_at,workspace_id,user_id"]);
     const unnamed = world({ tasks: [task({ id: T(1), plan_today: true, scheduled: 600, title: "Plain" })], projects: [{ id: P1, name: null, archived_at: null }] });
     const res = await run(unnamed, req());
     expect(res.status).toBe(200);
@@ -248,6 +249,40 @@ describe("ics-feed handler", () => {
     expect(body).toContain("SUMMARY:Live work · Launch");
     expect(body).toContain("SUMMARY:Due: Live work · Launch");
     expect(body.match(/BEGIN:VEVENT/g)).toHaveLength(2);
+  });
+
+  it("a project is named only where the task is really in it: a task of their own carrying another project's id names nothing (nor hides)", async () => {
+    // (tasks.project_id is free text: a member who can't see Private project PX put its id on a personal
+    // task, and someone else on a team task in their own workspace; the lookup runs with the service role)
+    const PX = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", PO = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const MINE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", THEIRS = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const w = world({
+      projects: [
+        { id: P1, name: "Launch", archived_at: null },
+        { id: PX, name: "Redundancies: Ops team (Q1)", archived_at: null },
+        { id: PO, name: "Acme acquisition", archived_at: "2026-09-30T12:00:00Z", workspace_id: "ws-2" },
+        { id: MINE, name: "My errands", archived_at: null, workspace_id: null, user_id: ME },
+        { id: THEIRS, name: "Their errands", archived_at: null, workspace_id: null, user_id: YOU },
+      ],
+      tasks: [
+        task({ id: T(1), title: "Lunch", project_id: PX, workspace_id: null, plan_today: true, scheduled: 600 }),
+        task({ id: T(2), title: "Prep", project_id: PO, workspace_id: "ws-3", plan_today: true, scheduled: 660 }),
+        task({ id: T(3), title: "Post", project_id: MINE, workspace_id: null, plan_today: true, scheduled: 720 }),
+        task({ id: T(4), title: "Pick up", project_id: THEIRS, workspace_id: null, plan_today: true, scheduled: 780 }),
+        task({ id: T(5), title: "Brief", project_id: P1, plan_today: true, scheduled: 840 }),
+      ],
+    });
+    const res = await run(w, req());
+    expect(res.status).toBe(200);
+    const body = (await res.text()).replace(/\r\n /g, "");
+    expect(body).not.toContain("Redundancies");
+    expect(body).not.toContain("Acme");
+    expect(body).not.toContain("Their errands");
+    expect(body).toContain("SUMMARY:Lunch\r\n");
+    expect(body).toContain("SUMMARY:Prep\r\n");          // another workspace's archived project hides nothing either
+    expect(body).toContain("SUMMARY:Pick up\r\n");
+    expect(body).toContain("SUMMARY:Post · My errands");
+    expect(body).toContain("SUMMARY:Brief · Launch");
   });
 
   it("a projects lookup error is a 503: without it the feed can't tell what's archived", async () => {

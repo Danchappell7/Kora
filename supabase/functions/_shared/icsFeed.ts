@@ -135,18 +135,28 @@ export async function loadFeedData(db: FeedDb, userId: string, today: string, da
 
   // their projects: names for "Task · Project", and which are archived (0039).
   // The app hides an archived project's tasks everywhere, so the feed must
-  // too; not knowing is a database error (503), not a guess.
+  // too; not knowing is a database error (503), not a guess. Read with the
+  // service role, so a project counts only where a task of theirs really is
+  // in it: a team task's own workspace's, or their own personal project for a
+  // personal task. tasks.project_id is free text, so anyone can put another
+  // project's id on a task of their own; that names nothing (and hides
+  // nothing). tasks_visible_to has already applied the project's own access.
   const projectNames: Record<string, string> = {};
   const archivedProjects = new Set<string>();
   const pids = [...new Set(tasks.map((t) => t.project_id).filter((p): p is string => !!p && UUID.test(p)))];
+  const found = new Map<string, { name: string | null; archived: boolean; ws: string | null; owner: string | null }>();
   for (let i = 0; i < pids.length; i += CHUNK) {
-    const { data, error } = await db.from("projects").select("id,name,archived_at").in("id", pids.slice(i, i + CHUNK));
+    const { data, error } = await db.from("projects").select("id,name,archived_at,workspace_id,user_id").in("id", pids.slice(i, i + CHUNK));
     if (error) throw new FeedError(String(error.message ?? error));
-    for (const p of (data ?? []) as { id: string; name: string | null; archived_at?: string | null }[]) {
-      if (!p?.id) continue;
-      if (p.name) projectNames[p.id] = p.name;
-      if (p.archived_at) archivedProjects.add(p.id);
+    for (const p of (data ?? []) as { id: string; name: string | null; archived_at?: string | null; workspace_id?: string | null; user_id?: string | null }[]) {
+      if (p?.id) found.set(p.id, { name: p.name, archived: !!p.archived_at, ws: p.workspace_id ?? null, owner: p.user_id ?? null });
     }
+  }
+  for (const t of tasks) {
+    const p = t.project_id ? found.get(t.project_id) : undefined;
+    if (!p || !(t.workspace_id ? p.ws === t.workspace_id : p.ws === null && p.owner === userId)) continue;
+    if (p.name) projectNames[t.project_id as string] = p.name;
+    if (p.archived) archivedProjects.add(t.project_id as string);
   }
   return { tasks, states, projectNames, archivedProjects };
 }
