@@ -1,9 +1,9 @@
 /* ============================================================
-   KANBO — a workspace's rollout plan (0058 workspaces.rollout): who
+   KANBO — a workspace's rollout plan (0057 workspaces.rollout): who
    champions Kanbo there, the pilot group that tries it first, and the
    go-live date. A leaf module the store reads it with at sign-in, and
    the Workspace health card writes it through.
-   Before 0058 the column isn't there: the plan reads as "not switched
+   Before 0057 the column isn't there: the plan reads as "not switched
    on yet" (rolloutOn()), never as empty.
    ============================================================ */
 import type { RolloutPlan } from "../data/types";
@@ -34,10 +34,10 @@ export function rolloutRow(plan: RolloutPlan | null): Record<string, unknown> | 
   return Object.keys(row).length ? row : null;
 }
 
-/* ---------- is 0058 in? (the sign-in read says; the demo always has it) ---------- */
+/* ---------- is 0057 in? (the sign-in read says; the demo always has it) ---------- */
 
 let schema: boolean | null = null;
-/** The sign-in read saw workspaces.rollout come back (even empty): 0058 is in. */
+/** The sign-in read saw workspaces.rollout come back (even empty): 0057 is in. */
 export function noteRolloutSchema(on: boolean): void { schema = on; }
 /** Can the rollout plan be read and saved here? Unknown (no team workspace read yet): only in the demo,
  *  as for update days (store.createWorkspace notes it for someone whose first load had no team workspace). */

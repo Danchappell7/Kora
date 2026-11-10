@@ -37,7 +37,7 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   onPlanWithKanbo?: (typedName: string) => void;
   /** business packs in the gallery, set up in this workspace (needs onApplyTemplate too; omit for templates only) */
   packs?: PackHost;
-  /** open on the packs and templates (0058: the first run's "Pick a pack", Get set up's pack item) */
+  /** open on the packs and templates (0057: the first run's "Pick a pack", Get set up's pack item) */
   startIn?: "team";
 }) {
   const [name, setName] = useState("");

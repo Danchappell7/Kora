@@ -1,6 +1,6 @@
 /* ============================================================
    KANBO — a business pack set up while provisioning a business (the
-   platform console, 0058). The admin owns the new workspace until its
+   platform console, 0057). The admin owns the new workspace until its
    owner joins, so the pack goes in through the same creates as
    anywhere else (the store's, as the admin), everything ticked; when
    the owner joins, the handover gives them what was set up for them

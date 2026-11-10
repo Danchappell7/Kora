@@ -12,7 +12,7 @@ afterEach(() => { vi.useRealTimers(); });
 const next = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls[fn.mock.calls.length - 1]?.[0] as OnboardingState;
 
 describe("Get set up", () => {
-  it("a team's owners (0058): pick a pack, bring your work in, invite your pilot group, set your update day, post your first update", () => {
+  it("a team's owners (0057): pick a pack, bring your work in, invite your pilot group, set your update day, post your first update", () => {
     const onAction = vi.fn();
     render(<SetupChecklist role="owner" workspaceId="ws-1" onboarding={{ checklist: { teams: { "ws-1": { pick_pack: "t" } } } }} signals={{}} onChange={vi.fn()} onAction={onAction} />);
     const card = screen.getByRole("region", { name: "Get set up" });

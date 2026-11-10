@@ -301,7 +301,7 @@ interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: 
 interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; title?: string | null; joined_at?: string | null; created_at?: string | null; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
   return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status, title: r.title ?? undefined,
-    // 0058: when they joined (absent before it), and when an invite went out
+    // 0057: when they joined (absent before it), and when an invite went out
     ...("joined_at" in r ? { joinedAt: r.joined_at ?? null } : {}),
     ...(r.status === "invited" && r.created_at ? { invitedAt: r.created_at } : {}) };
 }
@@ -1570,7 +1570,7 @@ export const store = {
           { id: "wm-nl-0", workspaceId: "ws-northlight", userId: idris.id, email: idris.email, name: idris.name, role: "owner", status: "active" },
           { id: "wm-nl-1", workspaceId: "ws-northlight", userId: self.id, email: self.email, name: self.name, role: "guest", status: "active" },
         );
-        // 0058: two people invited to Foundrise a week ago who haven't joined yet (the Workspace health card's
+        // 0057: two people invited to Foundrise a week ago who haven't joined yet (the Workspace health card's
         // "Resend all"), and Daniel joined Harbour Advisory three days ago (Today's "Welcome to Harbour Advisory")
         demoMembers.push(
           { id: "wm-inv-0", workspaceId: "ws-foundrise", userId: null, email: "priya@foundrise.co", name: "Priya Shah", role: "member", status: "invited", invitedAt: new Date(KANBO_TODAY.getTime() - 7 * 86_400_000).toISOString() },
@@ -1702,7 +1702,7 @@ export const store = {
         ...(w.created_at ? { createdAt: w.created_at } : {}),
         // 0053: the team's update day (null: weekly on Friday)
         ...("update_rhythm" in w ? { updateRhythm: parseRhythm(w.update_rhythm) } : {}),
-        // 0058: the rollout plan (null: nothing planned yet)
+        // 0057: the rollout plan (null: nothing planned yet)
         ...("rollout" in w ? { rollout: parseRollout(w.rollout) } : {}) })),
     ];
     // update days are read and set once 0053 is run (the column comes back, even when it's empty)
@@ -1894,7 +1894,7 @@ export const store = {
     const { error: mErr } = await supabase.from("workspace_members")
       .insert({ workspace_id: ws.id, user_id: uid, email: owner.email, name: owner.name, role: "owner", status: "active" });
     if (mErr) throw mErr;
-    // (someone whose first load had no team workspace learns here whether 0053's update days and 0058's rollout plan are in)
+    // (someone whose first load had no team workspace learns here whether 0053's update days and 0057's rollout plan are in)
     noteRhythmSchema("update_rhythm" in ws || rhythmOn());
     noteRolloutSchema("rollout" in ws);
     return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id, logoUrl: ws.logo_url ?? undefined,
@@ -1927,7 +1927,7 @@ export const store = {
     if (error) throw error;
   },
 
-  /** 0058: the workspace's rollout plan (owners and admins; null: start again). */
+  /** 0057: the workspace's rollout plan (owners and admins; null: start again). */
   async setWorkspaceRollout(workspaceId: string, plan: RolloutPlan | null): Promise<void> {
     if (!supabase) { demoWorkspaces = demoWorkspaces.map((w) => w.id === workspaceId ? { ...w, rollout: plan } : w); return; }
     const { error } = await supabase.rpc("set_workspace_rollout", { p_ws: workspaceId, p_rollout: rolloutRow(plan) });

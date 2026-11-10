@@ -48,7 +48,7 @@
 -- Needs 0041 (ws_role, can_act, approved_domains), 0042 (schema_migrations,
 -- is_admin with suspension, access_revoked, claim_invites), 0016 (sessions),
 -- 0032 (admin_audit) and 0038 (task_events). Works with or without
--- 0043–0057; goals change hands only once 0052's goals.owner_id is in.
+-- 0043–0056; goals change hands only once 0052's goals.owner_id is in.
 -- Idempotent: safe to run more than once (re-running keeps every join
 -- date, rollout plan and handover). 0041 drops the policies of the content
 -- tables when it's run again: none here are on them (workspace_handovers
@@ -64,12 +64,12 @@ begin
      or to_regprocedure('public.is_admin()') is null or to_regprocedure('public.access_revoked(uuid)') is null
      or to_regclass('public.schema_migrations') is null
      or not exists (select 1 from public.schema_migrations where version = '0042') then
-    raise exception '0058 needs 0041 and 0042 first: run them, then this file';
+    raise exception '0057 needs 0041 and 0042 first: run them, then this file';
   end if;
-  if to_regclass('public.sessions') is null then raise exception '0058 needs public.sessions (0016)'; end if;
-  if to_regclass('public.admin_audit') is null then raise exception '0058 needs public.admin_audit (0032)'; end if;
-  if to_regclass('public.task_events') is null then raise exception '0058 needs public.task_events (0038)'; end if;
-  if to_regclass('public.approved_domains') is null then raise exception '0058 needs public.approved_domains (0041)'; end if;
+  if to_regclass('public.sessions') is null then raise exception '0057 needs public.sessions (0016)'; end if;
+  if to_regclass('public.admin_audit') is null then raise exception '0057 needs public.admin_audit (0032)'; end if;
+  if to_regclass('public.task_events') is null then raise exception '0057 needs public.task_events (0038)'; end if;
+  if to_regclass('public.approved_domains') is null then raise exception '0057 needs public.approved_domains (0041)'; end if;
 end $pre$;
 
 -- ---------- 1. when someone joined ----------
@@ -425,13 +425,13 @@ revoke execute on function public.admin_workspace_adoption() from public, anon;
 grant execute on function public.admin_workspace_adoption() to authenticated;
 
 -- ---------- done: record it ----------
-insert into public.schema_migrations (version) values ('0058') on conflict (version) do nothing;
+insert into public.schema_migrations (version) values ('0057') on conflict (version) do nothing;
 
 -- ============================================================
 -- VERIFY (run after the migration; every column should be true):
 --
 -- select
---   exists (select 1 from public.schema_migrations where version = '0058')                             as recorded,
+--   exists (select 1 from public.schema_migrations where version = '0057')                             as recorded,
 --   exists (select 1 from information_schema.columns where table_schema = 'public'
 --            and table_name = 'workspace_members' and column_name = 'joined_at')                       as joined_at,
 --   exists (select 1 from pg_trigger where tgname = 'trg_member_joined_at')                              as joined_trigger,

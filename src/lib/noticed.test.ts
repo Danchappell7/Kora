@@ -112,7 +112,7 @@ describe("Kanbo noticed: a key result of yours behind pace (0052)", () => {
   });
 });
 
-describe("Kanbo noticed: leading a rollout (0058)", () => {
+describe("Kanbo noticed: leading a rollout (0057)", () => {
   const nudge = { id: "rollout:invited:ws:2", kind: "rollout" as const, tone: "accent" as const, icon: "users" as const, title: "2 people haven't joined Acme",
     body: "Priya and Jonas were invited but haven't signed in yet. A fresh invite often does it.", actions: [{ kind: "fix" as const, label: "Resend all", fix: "resend" }] };
   it("one fix, after your own work, and waved away for the day like any other", () => {

@@ -1,10 +1,9 @@
-# Database update 0058: rolling Kanbo out to a business
+# Database update 0057: rolling Kanbo out to a business
 
-Migration file: `supabase/migrations/0058_adoption_health.sql` (the commented
+Migration file: `supabase/migrations/0057_adoption_health.sql` (the commented
 source). It needs 0016, 0032, 0038, 0041 and 0042, works with or without
 0043–0056 (goals change hands only once 0052 is in), and is safe to run more
-than once: re-running keeps every join date, rollout plan and handover. There
-is no 0057.
+than once: re-running keeps every join date, rollout plan and handover.
 
 ## What it adds
 
@@ -22,7 +21,7 @@ is no 0057.
 1. Run the migration in the SQL editor:
    <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>
    (paste the whole file, press **Run**; "Success. No rows returned").
-   - *"0058 needs …"*: run the file it names, then this one again.
+   - *"0057 needs …"*: run the file it names, then this one again.
 2. Check it with the VERIFY block at the end of the file: every column should
    say `true`.
 
@@ -32,7 +31,7 @@ No functions to deploy, no new secrets and no new schedule.
 
 | If you run… | What happens |
 |---|---|
-| 0041 | Nothing changes here: 0058's table is its own, and 0041 doesn't touch its rules. |
+| 0041 | Nothing changes here: 0057's table is its own, and 0041 doesn't touch its rules. |
 | 0042 | Nothing changes here: 0042 replaces `claim_invites`, and the handover is a trigger on `workspace_members`, so it works with either. |
 
 ## How it works
@@ -48,6 +47,6 @@ No functions to deploy, no new secrets and no new schedule.
   quarter, who to ask and one or two tasks to start with. Shown once.
 - **Provision a business** (/admin): name, pack, the owner's email and,
   if you choose, their company domain. The steps show as they run.
-- **Before 0058 is run.** Everything works as it did. Activity and the
+- **Before 0057 is run.** Everything works as it did. Activity and the
   rollout plan say "Not switched on yet", the welcome card goes by account
-  age instead of join date, and the /admin panels say to run 0058.
+  age instead of join date, and the /admin panels say to run 0057.

@@ -1,4 +1,4 @@
-/* The rollout's screens (0058): the first run's fork and the team's one sheet (through OnboardingModal),
+/* The rollout's screens (0057): the first run's fork and the team's one sheet (through OnboardingModal),
    "Welcome to <workspace>", and Team › People › Workspace health with its fixes and the rollout plan. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
@@ -20,7 +20,7 @@ const host = (extra: Partial<TeamStartHost> = {}): TeamStartHost => ({
 });
 const base = { open: true, workspaceId: null, onSaveProfile: vi.fn(async () => {}), onCreateProject: vi.fn(), onFinish: vi.fn() };
 
-describe("the first run's fork (0058)", () => {
+describe("the first run's fork (0057)", () => {
   it("asks who Kanbo is for after the name; Just me goes on exactly as before", () => {
     const onCreateProject = vi.fn();
     render(<OnboardingModal {...base} onCreateProject={onCreateProject} profile={profile("Sam")} team={host()} />);
@@ -236,7 +236,7 @@ describe("Workspace health", () => {
     fireEvent.change(champ, { target: { value: "" } });
     expect(p.onSaveRollout).toHaveBeenLastCalledWith(null);
   });
-  it("before 0058: the plan and the activity say they aren't switched on yet, the rest still works", () => {
+  it("before 0057: the plan and the activity say they aren't switched on yet, the rest still works", () => {
     const h = healthProps();
     render(<WorkspaceHealthCard {...h} health={{ ...h.health, active: null }} activity="off" rolloutOn={false} />);
     expect(screen.getAllByText("Not switched on yet.")).toHaveLength(2);

@@ -4,7 +4,7 @@
 // that same version. See README.md. Not picked up by vitest.
 //
 //   node supabase/tests/pglite/run.mjs            both migration sets
-//   node supabase/tests/pglite/run.mjs 0047       only 0001..0047 + 0050..0056 + 0058
+//   node supabase/tests/pglite/run.mjs 0047       only 0001..0047 + 0050..0057
 //   node supabase/tests/pglite/run.mjs 0049       every migration
 import { build } from "esbuild";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";

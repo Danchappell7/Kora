@@ -14,7 +14,7 @@
    · work due while someone's away (0055: the caller passes it in,
      components/availability awayNoticed), with "Move to <the day
      they're back>";
-   · leading a team's rollout (0058): the one fix that helps it most
+   · leading a team's rollout (0057): the one fix that helps it most
      (the caller passes it in, lib/rollout healthNudge).
    "Not now" waves one away for the day (the view keeps that per
    person). Pure: no React, no storage, no clock of its own.
@@ -36,7 +36,7 @@ export type NoticedAction =
   | { kind: "update"; label: string; projectId: string }
   /** move the work due while someone's away to the day they're back, or (assignTo) give it to someone with room (0055) */
   | { kind: "away"; label: string; userId: string; taskIds: string[]; to: string; assignTo?: string }
-  /** one of the Workspace health card's fixes (0058, lib/rollout healthNudge): the host runs it */
+  /** one of the Workspace health card's fixes (0057, lib/rollout healthNudge): the host runs it */
   | { kind: "fix"; label: string; fix: string };
 
 export interface Noticed {

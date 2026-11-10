@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — the first run's team path (0058), the steps the first-run
+   KANBO — the first run's team path (0057), the steps the first-run
    sheet (OnboardingModal) shows after the name:
    • TeamFork: "Just me", "My team" or "A whole business". Just me goes
      on exactly as before (your first project, in Personal).

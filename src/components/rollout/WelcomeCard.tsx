@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — "Welcome to <workspace>" on Today (0058). For someone who
+   KANBO — "Welcome to <workspace>" on Today (0057). For someone who
    joined a team lately (lib/rollout shouldWelcome): their projects,
    their people, the team's top goal, who to ask and one or two
    starter tasks, so their first minute shows them the team and what

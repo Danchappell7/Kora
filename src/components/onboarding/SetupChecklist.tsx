@@ -1,6 +1,6 @@
 /* ============================================================
    KANBO — Today › "Get set up" card.                   [0048 → u1]
-   For a team's owners/admins (0058): pick a pack, bring your work in,
+   For a team's owners/admins (0057): pick a pack, bring your work in,
    invite your pilot group, set your update day, post your first update
    (in Personal: invite your team, connect a calendar, and for a site
    admin the company domain). For members: plan your day, complete a
@@ -45,7 +45,7 @@ export interface SetupChecklistProps {
   hidden?: readonly SetupItemId[];
   /** in Personal: its own short list (lib/onboardingItems PERSONAL_SETUP_ITEMS), not a team's rollout */
   personal?: boolean;
-  /** the team workspace a rollout item is ticked in (0058: they're ticked per workspace) */
+  /** the team workspace a rollout item is ticked in (0057: they're ticked per workspace) */
   workspaceId?: string | null;
   /** optional: Today's fold (TodayCardFold): folded, the card is one row until it's opened. Without it, the card is whole. */
   fold?: { folded: boolean; onFold: (folded: boolean) => void } | null;

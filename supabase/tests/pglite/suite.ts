@@ -3074,11 +3074,11 @@ async function meetingsSuite(w: World) {
 
 /* ============================================================ run */
 
-/* ============================================================ 0058: rolling Kanbo out */
+/* ============================================================ 0057: rolling Kanbo out */
 
 async function adoptionSuite(w: World) {
-  const has0058 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0058') as "on"`)).rows[0].on;
-  if (!has0058) return;
+  const has0057 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0057') as "on"`)).rows[0].on;
+  if (!has0057) return;
   const has0052 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0052') as "on"`)).rows[0].on;
   const one = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => (await w.pg.query<T>(sql, params)).rows[0];
   const person = async (email: string, opts: { ws?: string; role?: string; approved?: boolean } = {}) => {
@@ -3117,7 +3117,7 @@ async function adoptionSuite(w: World) {
   await w.pg.query(`insert into public.task_events (task_id, actor_id, field, old_value, new_value) values ($1::uuid, $2::uuid, 'status', 'todo', 'progress')`, [w.aliceTask, w.gus]);
   await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now(), now())`, [w.carol]);
 
-  await test("0058: a workspace's owner and admins see who's been active, by day and never by the minute", async () => {
+  await test("0057: a workspace's owner and admins see who's been active, by day and never by the minute", async () => {
     const a = await activity(w.alice, w.w1);
     const row = (u: string) => a.members.find((m) => m.user_id === u);
     eq(a.today, today, "today, in London");
@@ -3136,7 +3136,7 @@ async function adoptionSuite(w: World) {
     ok(elsewhere.includes(w.carol) && !elsewhere.includes(w.bob), "Elsewhere is carol's, without bob");
     eq((await activity(w.carol, w.w2)).members.map((m) => m.user_id), elsewhere, "carol reads her own business");
   });
-  await test("0058 attack: a member, a guest, an outsider and a suspended admin can't see who's active", async () => {
+  await test("0057 attack: a member, a guest, an outsider and a suspended admin can't see who's active", async () => {
     for (const [who, u] of [["member", w.bob], ["guest", w.gus], ["outsider", w.carol]] as const) await raises(activity(u, w.w1), /not authorized/).catch((e) => { throw new Error(`${who}: ${(e as Error).message}`); });
     await w.pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [pat]);
     await raises(activity(pat, w.w1), /not authorized/);
@@ -3146,7 +3146,7 @@ async function adoptionSuite(w: World) {
     eq((await asPerson(w.pg, w.alice, `select id from public.sessions where user_id = $1::uuid`, [w.bob])).length, 0, "alice reading bob's sessions");
   });
 
-  await test("0058: joined_at is the server's: set when an invite is claimed, kept as it was otherwise", async () => {
+  await test("0057: joined_at is the server's: set when an invite is claimed, kept as it was otherwise", async () => {
     const inv = (await asPerson<{ id: string; joined_at: string | null }>(w.pg, w.alice,
       `select (m).id::text as id, (m).joined_at::text as joined_at from (select public.invite_member($1::uuid, 'jo58@example.org', 'Jo', 'member') as m) x`, [w.w1]))[0];
     eq(inv.joined_at, null, "invited: not joined");
@@ -3161,7 +3161,7 @@ async function adoptionSuite(w: World) {
     eq((await one<{ j: string }>(`select joined_at::text as j from public.workspace_members where id = $1::uuid`, [inv.id])).j, after.j, "kept");
   });
 
-  await test("0058: the rollout plan is the owners' and admins' to set, with members as the champion and pilot group", async () => {
+  await test("0057: the rollout plan is the owners' and admins' to set, with members as the champion and pilot group", async () => {
     const r = (await rollout(w.alice, w.w1, { champion: w.bob, pilot: [pat, w.bob, pat], go_live: "2026-12-01" }))[0].r as Record<string, unknown>;
     eq(r.pilot, [pat, w.bob].sort(), "the pilot group, once each");
     eq((await wsRollout(w.w1) as Record<string, unknown>).champion, w.bob, "saved");
@@ -3171,7 +3171,7 @@ async function adoptionSuite(w: World) {
     await rollout(w.alice, w.w1, null);
     eq(await wsRollout(w.w1), null, "null: start again");
   });
-  await test("0058 attack: a member, a guest and an outsider can't set it; a guest or an outsider can't be the champion or in the pilot", async () => {
+  await test("0057 attack: a member, a guest and an outsider can't set it; a guest or an outsider can't be the champion or in the pilot", async () => {
     for (const u of [w.bob, w.gus, w.carol]) await raises(rollout(u, w.w1, { go_live: "2026-12-01" }), /not authorized/);
     await raises(rollout(w.alice, w.w1, { champion: w.gus }), /champion has to be a member/);
     await raises(rollout(w.alice, w.w1, { champion: w.carol }), /champion has to be a member/);
@@ -3179,7 +3179,7 @@ async function adoptionSuite(w: World) {
     await raises(rollout(w.alice, w.w1, { pilot: [w.gus] }), /pilot group has to be a member/);
     eq(await wsRollout(w.w1), null, "unchanged");
   });
-  await test("0058 attack: a rollout plan in any other shape is refused, by the function and by the column", async () => {
+  await test("0057 attack: a rollout plan in any other shape is refused, by the function and by the column", async () => {
     const many = Array.from({ length: 21 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
     for (const bad of [{ champion: "bob" }, { pilot: w.bob }, { pilot: [1] }, { go_live: "soon" }, { go_live: 20261201 }, { note: "x" }, { pilot: many }, ["x"], "x"]) {
       await raises(rollout(w.alice, w.w1, bad), /invalid rollout plan/);
@@ -3192,7 +3192,7 @@ async function adoptionSuite(w: World) {
   const revoked = await person("revoked58@harbourfit.co.uk", { approved: false });
   await w.pg.query(`insert into public.admin_audit (actor_id, actor_email, action, target, detail) values ($1::uuid, 'root58@example.org', 'approve', $2, 'Revoked access')`, [root, revoked]);
   let harbour: Provisioned | null = null;
-  await test("0058: a platform admin provisions a business: the workspace, the owner's invite, the domain, the handover", async () => {
+  await test("0057: a platform admin provisions a business: the workspace, the owner's invite, the domain, the handover", async () => {
     harbour = await provision(root, "  Harbour Fitness ", " Nina58@HarbourFit.co.uk ", "HarbourFit.co.uk", "boutique-fitness");
     const ws = harbour.workspace_id;
     eq(await one(`select name, owner_id::text as owner from public.workspaces where id = $1::uuid`, [ws]), { name: "Harbour Fitness", owner: root }, "the admin owns it while they set it up");
@@ -3209,7 +3209,7 @@ async function adoptionSuite(w: World) {
     // the admin owns it for now, so the app can set the pack up through the usual creates
     eq((await asPerson(w.pg, root, `insert into public.projects (user_id, owner_id, name, workspace_id, emoji, color) values ($1::uuid, $1::uuid, 'Studio launch', $2::uuid, '🏁', '#336699') returning id`, [root, ws])).length, 1, "can set it up");
   });
-  await test("0058 attack: nobody but a platform admin can provision a business", async () => {
+  await test("0057 attack: nobody but a platform admin can provision a business", async () => {
     const before = (await one<{ n: number }>(`select count(*)::int as n from public.workspaces`)).n;
     for (const u of [w.alice, w.bob, w.gus, w.carol, pat]) await raises(provision(u, "Sneaky Ltd", "boss@sneaky.example"), /not authorized/);
     // making yourself an admin through your own profile changes nothing (0041 keeps the flag the server's)
@@ -3223,7 +3223,7 @@ async function adoptionSuite(w: World) {
     eq((await one<{ n: number }>(`select count(*)::int as n from public.workspaces`)).n, before, "nothing made");
     eq((await one<{ n: number }>(`select count(*)::int as n from public.approved_domains where domain = 'sneaky.example'`)).n, 0, "no domain");
   });
-  await test("0058 attack: a public mail domain, a bad address, the admin as the owner and junk are refused, and nothing is half made", async () => {
+  await test("0057 attack: a public mail domain, a bad address, the admin as the owner and junk are refused, and nothing is half made", async () => {
     const before = (await one<{ n: number }>(`select count(*)::int as n from public.workspaces`)).n;
     await raises(provision(root, "Gmail Co", "boss@gmailco.example", "gmail.com"), /public email domain/);
     await raises(provision(root, "Gmail Co", "boss@gmailco.example", "Hotmail.co.uk"), /public email domain/);
@@ -3237,14 +3237,14 @@ async function adoptionSuite(w: World) {
     eq((await one<{ n: number }>(`select count(*)::int as n from public.workspaces`)).n, before, "nothing made");
     eq((await one<{ n: number }>(`select count(*)::int as n from public.approved_domains where domain = 'gmail.com'`)).n, 0, "gmail never approved");
   });
-  await test("0058 attack: the handovers table has no client access at all", async () => {
+  await test("0057 attack: the handovers table has no client access at all", async () => {
     for (const u of [root, w.alice]) {
       await raises(asPerson(w.pg, u, `select * from public.workspace_handovers`), /permission denied/);
       await raises(asPerson(w.pg, u, `insert into public.workspace_handovers (workspace_id, email) values ($1::uuid, 'me@example.org')`, [w.w1]), /permission denied/);
     }
   });
 
-  await test("0058: when the invited owner joins, the business is theirs, and what was set up for them is too (projects, open tasks, goals, portfolios)", async () => {
+  await test("0057: when the invited owner joins, the business is theirs, and what was set up for them is too (projects, open tasks, goals, portfolios)", async () => {
     const ws = harbour!.workspace_id;
     const project = (await one<{ id: string }>(`select id::text as id from public.projects where workspace_id = $1::uuid`, [ws])).id;
     const mk = async (title: string, status: string) => (await asPerson<{ id: string }>(w.pg, root,
@@ -3274,7 +3274,7 @@ async function adoptionSuite(w: World) {
     await asPerson(w.pg, nina, `select public.remove_member($1::uuid)`, [rootRow]);
     eq(await roleOf(ws, root), undefined, "gone, at her say");
   });
-  await test("0058 attack: someone else joining doesn't take the business, and an owner already chosen by hand stays", async () => {
+  await test("0057 attack: someone else joining doesn't take the business, and an owner already chosen by hand stays", async () => {
     const second = await provision(root, "Second Co", "own58@second.example");
     const ws = second.workspace_id;
     await asPerson(w.pg, root, `select public.invite_member($1::uuid, 'other58@second.example', 'Other', 'member')`, [ws]);
@@ -3292,7 +3292,7 @@ async function adoptionSuite(w: World) {
     eq((await one<{ done: boolean }>(`select done_at is not null as done from public.workspace_handovers where workspace_id = $1::uuid`, [ws])).done, true, "and the handover's closed");
   });
 
-  await test("0058 attack: a withdrawn owner's invite calls the handover off: the same address invited again (as a guest) takes nothing", async () => {
+  await test("0057 attack: a withdrawn owner's invite calls the handover off: the same address invited again (as a guest) takes nothing", async () => {
     const biz = await provision(root, "Typo Co", "typo58@typo.example");
     const ws = biz.workspace_id;
     // root withdraws the invite (a typo, say); a helper admin later invites the same address as a guest
@@ -3307,7 +3307,7 @@ async function adoptionSuite(w: World) {
     eq([await roleOf(ws, typo), await roleOf(ws, root), await roleOf(ws, helper)], ["guest", "owner", "admin"], "the guest stays a guest");
     eq((await one<{ n: number }>(`select count(*)::int as n from public.projects where workspace_id = $1::uuid and owner_id = $2::uuid`, [ws, typo])).n, 0, "no projects handed over");
   });
-  await test("0058 attack: an owner-to-be's invite changed to another role before they join hands nothing over", async () => {
+  await test("0057 attack: an owner-to-be's invite changed to another role before they join hands nothing over", async () => {
     const biz = await provision(root, "Changed Co", "boss58@changed.example");
     const ws = biz.workspace_id;
     await asPerson(w.pg, root, `select public.set_member_role($1::uuid, 'member')`, [biz.member_id]);
@@ -3317,7 +3317,7 @@ async function adoptionSuite(w: World) {
     eq(await roleOf(ws, boss), "member", "joined as the member they were made");
     eq((await one<{ done: boolean }>(`select done_at is not null as done from public.workspace_handovers where workspace_id = $1::uuid`, [ws])).done, true, "and the handover's closed");
   });
-  await test("0058: the workspace history names the admin who set it up for a handover's role changes, not the person joining", async () => {
+  await test("0057: the workspace history names the admin who set it up for a handover's role changes, not the person joining", async () => {
     const hasAudit = (await one<{ on: boolean }>(`select to_regclass('public.audit_events') is not null as "on"`)).on;
     if (!hasAudit) return;
     const biz = await provision(root, "History Co", "boss58@history.example");
@@ -3330,14 +3330,14 @@ async function adoptionSuite(w: World) {
     eq(rows, [{ actor: root, to: "admin", handover: true }, { actor: root, to: "owner", handover: true }], "both role changes are the admin's, marked as a handover");
     eq((await one<{ a: string }>(`select actor_id::text as a from public.audit_events where workspace_id = $1::uuid and action = 'member.joined'`, [biz.workspace_id])).a, boss, "joining is still hers");
   });
-  await test("0058 attack: public mail domains under any country ending, and UK ISPs, are never pre-approved", async () => {
+  await test("0057 attack: public mail domains under any country ending, and UK ISPs, are never pre-approved", async () => {
     for (const d of ["outlook.co.uk", "yahoo.fr", "hey.com", "fastmail.com", "pm.me", "ymail.com", "gmx.de", "web.de", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk", "hotmail.fr", "icloud.com"]) {
       await raises(provision(root, "Public Co", `boss@${d}`, d), /public email domain/).catch((e) => { throw new Error(`${d}: ${(e as Error).message}`); });
       eq((await one<{ n: number }>(`select count(*)::int as n from public.approved_domains where domain = $1`, [d])).n, 0, `${d} never approved`);
     }
     eq((await one<{ p: boolean }>(`select public.public_mail_domain('harbourfit.co.uk') or public.public_mail_domain('mailchimp.com') or public.public_mail_domain('webflow.io') as p`)).p, false, "a business's own domain is fine");
   });
-  await test("0058: a new workspace's activity starts on its first day (no one was active in it before)", async () => {
+  await test("0057: a new workspace's activity starts on its first day (no one was active in it before)", async () => {
     const fresh = await provision(root, "Fresh Co", "boss58@fresh.example");
     await w.pg.query(`update public.workspaces set created_at = now() - interval '2 days' where id = $1::uuid`, [fresh.workspace_id]);
     await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now() - interval '5 days', now() - interval '5 days')`, [root]);
@@ -3347,7 +3347,7 @@ async function adoptionSuite(w: World) {
     eq(a.members.find((m) => m.user_id === root)?.days, 0, "the admin's session five days ago isn't counted here");
   });
 
-  await test("0058: weekly-active numbers per workspace, for platform admins only", async () => {
+  await test("0057: weekly-active numbers per workspace, for platform admins only", async () => {
     type Row = { id: string; name: string; members: number; invited: number; weekly_active: number; done_week: number; handover_email: string | null; handover_done_at: string | null; pack: string | null };
     const rows = (await asPerson<{ r: Row[] }>(w.pg, root, `select public.admin_workspace_adoption() as r`))[0].r;
     const foundry = rows.find((r) => r.id === w.w1)!;
@@ -3365,15 +3365,15 @@ async function adoptionSuite(w: World) {
     eq((await one<{ ok: boolean }>(`select has_function_privilege('anon', 'public.admin_workspace_adoption()', 'execute') as ok`)).ok, false, "anon");
   });
 
-  await test("0058 twice, then 0041 and 0042 again: plans, join dates and handovers stay, and a handover still works", async () => {
+  await test("0057 twice, then 0041 and 0042 again: plans, join dates and handovers stay, and a handover still works", async () => {
     await rollout(w.alice, w.w1, { champion: w.bob, go_live: "2026-12-01" });
     const before = await one(`select count(*)::int as handovers, (select count(*)::int from public.workspace_members where joined_at is not null) as joined from public.workspace_handovers`);
-    await applyFile(w.pg, "0058_adoption_health.sql");
-    await applyFile(w.pg, "0058_adoption_health.sql");
+    await applyFile(w.pg, "0057_adoption_health.sql");
+    await applyFile(w.pg, "0057_adoption_health.sql");
     eq(await one(`select count(*)::int as handovers, (select count(*)::int from public.workspace_members where joined_at is not null) as joined from public.workspace_handovers`), before, "kept");
     // (jsonb keeps its keys shortest first)
     eq(await wsRollout(w.w1), { go_live: "2026-12-01", champion: w.bob }, "the plan");
-    eq((await one<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version = '0058'`)).n, 1, "recorded once");
+    eq((await one<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version = '0057'`)).n, 1, "recorded once");
     await applyFile(w.pg, "0041_security_hardening_2.sql");
     await applyFile(w.pg, "0042_rollout_hardening.sql");
     const third = await provision(root, "Third Co", "own58@third.example");
@@ -3385,7 +3385,7 @@ async function adoptionSuite(w: World) {
   });
 }
 
-/** Wave 3 together (0055, 0056, 0058; there's no 0057): each file again, twice, and 0041 and 0048 again
+/** Wave 3 together (0055, 0056 and 0057): each file again, twice, and 0041 and 0048 again
  *  after them, keep every policy, trigger, RLS switch and table grant the database had (the owner may run
  *  any of them again; a re-run of 0041 drops the content tables' policies and has to put them all back). */
 async function waveThreeRerunSuite(w: World, files: string[]) {
@@ -3407,21 +3407,21 @@ async function waveThreeRerunSuite(w: World, files: string[]) {
       if (d.length) throw new Error(`${after}: ${k} changed: ${d.slice(0, 6).join(" ; ")}${d.length > 6 ? ` (and ${d.length - 6} more)` : ""}`);
     }
   };
-  const wave = ["0055_shared_availability.sql", "0056_meetings.sql", "0058_adoption_health.sql"].filter((f) => files.includes(f));
-  await test("wave 3: 0055, 0056 and 0058 are all in, and nothing is numbered 0057", async () => {
+  const wave = ["0055_shared_availability.sql", "0056_meetings.sql", "0057_adoption_health.sql"].filter((f) => files.includes(f));
+  await test("wave 3: 0055, 0056 and 0057 are all in, numbered with no gap", async () => {
     eq(wave.length, 3, "wave 3's files in this set");
-    ok(!files.some((f) => f.startsWith("0057")), "no 0057");
+    ok(!files.some((f) => f.startsWith("0058")), "nothing numbered 0058 (0057 used to be)");
     const v = (await w.pg.query<{ v: string }>(`select version as v from public.schema_migrations where version in ('0055', '0056', '0057', '0058') order by version`)).rows.map((r) => r.v);
-    eq(v, ["0055", "0056", "0058"], "recorded");
+    eq(v, ["0055", "0056", "0057"], "recorded");
   });
   const before = await snapshot();
-  await test("wave 3: 0055, 0056 and 0058 each run twice more keep every policy, trigger and grant", async () => {
+  await test("wave 3: 0055, 0056 and 0057 each run twice more keep every policy, trigger and grant", async () => {
     for (const f of wave) { await applyFile(w.pg, f); await applyFile(w.pg, f); }
     await same(before, "after the files twice");
-    const n = (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version in ('0055', '0056', '0058')`)).rows[0].n;
+    const n = (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version in ('0055', '0056', '0057')`)).rows[0].n;
     eq(n, 3, "each recorded once");
   });
-  await test("wave 3: 0041 run again keeps every policy (its restore hooks put 0046/0051/0052/0054's back; 0055..0058 aren't touched)", async () => {
+  await test("wave 3: 0041 run again keeps every policy (its restore hooks put 0046/0051/0052/0054's back; 0055..0057 aren't touched)", async () => {
     await applyFile(w.pg, "0041_security_hardening_2.sql");
     await same(before, "after 0041");
   });
@@ -3435,10 +3435,10 @@ async function waveThreeRerunSuite(w: World, files: string[]) {
 
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
-  // 0051..0056 need only 0041/0042/0046/0047 (0052 also 0051), and 0058 0016/0032/0038/0041/0042: they run in the set without 0048/0049 too
-  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || (f.slice(0, 4) >= "0050" && f.slice(0, 4) <= "0056") || f.slice(0, 4) === "0058");
+  // 0051..0056 need only 0041/0042/0046/0047 (0052 also 0051), and 0057 0016/0032/0038/0041/0042: they run in the set without 0048/0049 too
+  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || (f.slice(0, 4) >= "0050" && f.slice(0, 4) <= "0057"));
   const setAll = all;
-  const sets: [string, string[]][] = [["0001..0047+0050..0056+0058", set47], ["0001..0058", setAll]];
+  const sets: [string, string[]][] = [["0001..0047+0050..0057", set47], ["0001..0057", setAll]];
   const only = argv[0];
   for (const [name, files] of sets) {
     if (only === "0047" && name !== sets[0][0]) continue;

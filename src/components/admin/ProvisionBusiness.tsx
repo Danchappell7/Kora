@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — /admin › Provision a business (0058). Platform admins only
+   KANBO — /admin › Provision a business (0057). Platform admins only
    (the console's gate, and admin_provision_business checks is_admin()
    again on the server). One form: the business's name, a pack, the
    owner's email and the company domain. It
@@ -11,7 +11,7 @@
         in anyone from it who's already waiting,
      5. hands it over: when the owner joins, they're the owner, what
         was set up becomes theirs, and you stay on as an admin.
-   Each step says how it went. Before 0058: "isn't switched on yet".
+   Each step says how it went. Before 0057: "isn't switched on yet".
    ============================================================ */
 import { useId, useState } from "react";
 import { Button, Icon } from "../primitives";

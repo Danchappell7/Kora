@@ -10,7 +10,7 @@
      task, so in Personal the approval step is shown as a task that
      explains it (a real request only when made in a team workspace).
    • "Get set up": a checklist card on Today until done or dismissed —
-     a team's owners and admins (0058): pick a pack, bring your work in,
+     a team's owners and admins (0057): pick a pack, bring your work in,
      invite your pilot group, set your update day, post your first update;
      Personal: invite your team, connect a calendar (a site admin: add
      your company domain); members (and guests): plan your day, complete
@@ -53,7 +53,7 @@ export const TOUR_ANCHORS = {
   planDay: '[data-tour="plan-day"]',
   taskPanel: '[data-tour="task-panel"]',
   inboxTriage: '[data-tour="inbox-triage"]',
-  // a team's rhythm (0058): Pulse's lede, the Goals page's summary, a project's Updates tab, My tasks › Waiting on
+  // a team's rhythm (0057): Pulse's lede, the Goals page's summary, a project's Updates tab, My tasks › Waiting on
   pulse: '[data-tour="pulse"]',
   goals: '[data-tour="goals"]',
   updates: '[aria-label="Project views"] [data-tab-id="updates"]',
@@ -92,7 +92,7 @@ export interface SetupFacts {
   installed?: boolean;
   /** push on here (lib/push isPushOnHere), or notification preferences saved */
   notificationsChosen?: boolean;
-  /* ---- a team's rollout (0058) ---- */
+  /* ---- a team's rollout (0057) ---- */
   /** live projects in the team workspace (a pack makes three or more) */
   projects?: number;
   /** tasks in the team workspace (an established team's work is already in) */

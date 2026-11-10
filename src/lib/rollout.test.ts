@@ -1,4 +1,4 @@
-/* lib/rollout (0058): Workspace health, Kanbo noticed's one next fix, "Welcome to <workspace>", the
+/* lib/rollout (0057): Workspace health, Kanbo noticed's one next fix, "Welcome to <workspace>", the
    first run's pilot emails; and lib/rolloutPlan, the rollout plan as stored. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Goal, GoalCheckin, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../data/types";
@@ -186,7 +186,7 @@ describe("Welcome to <workspace>", () => {
     // someone who joined later still is
     expect(shouldWelcome(input({ workspace: handedOver, membership: { role: "member", status: "active", joinedAt: daysAgo(1) } }))).toBe(true);
   });
-  it("before 0058 knew when people joined: a new account; once it does, people from before aren't welcomed", () => {
+  it("before 0057 knew when people joined: a new account; once it does, people from before aren't welcomed", () => {
     const before = { role: "member" as const, status: "active" as const };
     expect(shouldWelcome(input({ membership: before, accountCreatedAt: daysAgo(5) }))).toBe(true);
     expect(shouldWelcome(input({ membership: before, accountCreatedAt: daysAgo(40) }))).toBe(false);
@@ -234,7 +234,7 @@ describe("the first run's pilot group, and the words", () => {
   });
 });
 
-describe("the rollout plan as stored (0058 workspaces.rollout)", () => {
+describe("the rollout plan as stored (0057 workspaces.rollout)", () => {
   it("reads and writes its three parts, nothing else", () => {
     expect(parseRollout({ champion: "u1", pilot: ["u2", "u2", 3, "u3"], go_live: "2026-12-01", junk: true })).toEqual({ champion: "u1", pilot: ["u2", "u3"], goLive: "2026-12-01" });
     expect(parseRollout({ go_live: "soon" })).toBeNull();

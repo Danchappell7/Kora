@@ -11,7 +11,7 @@
    to a row each beside the rail, side by side, so the day keeps its
    room; one you open stays open for the day. (The day also keeps a
    minimum of its own: what's above it scrolls away instead.) A new
-   member's "Welcome to <workspace>" (0058) comes first.
+   member's "Welcome to <workspace>" (0057) comes first.
    Kanbo noticed also carries a rollout's one next fix for its leads.
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -105,7 +105,7 @@ export interface TodayViewProps {
   /* ---- 0055 (Today works without) ---- */
   /** work due while someone's away (components/availability useAwayNoticed): Kanbo noticed offers to move it */
   away?: { noticed: Noticed[]; onMove: (taskIds: string[], to: string, assignTo?: string) => void };
-  /* ---- 0058 (Today works without) ---- */
+  /* ---- 0057 (Today works without) ---- */
   /** "Welcome to <workspace>" for someone who joined lately: the first card under the brief, and its line in the brief */
   welcomeSlot?: TodayCardSlot;
   welcomeLine?: ReactNode;

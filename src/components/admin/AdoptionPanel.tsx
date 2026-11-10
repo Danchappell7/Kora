@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — /admin › Adoption by workspace (0058). Per workspace, for
+   KANBO — /admin › Adoption by workspace (0057). Per workspace, for
    platform admins (admin_workspace_adoption checks is_admin()): people
    active in the last 7 days out of everyone who's joined, invites
    still waiting, tasks done this week, the last day anyone worked
@@ -8,7 +8,7 @@
    Active means worked there this week (a task, a comment, an update);
    the admin who provisioned a business isn't one of its people, and a
    business still waiting for its owner reads "Not started", last.
-   Numbers only, never who did what or when in the day. Before 0058:
+   Numbers only, never who did what or when in the day. Before 0057:
    "isn't switched on yet".
    ============================================================ */
 import { useCallback, useEffect, useId, useState } from "react";
@@ -50,7 +50,7 @@ export function AdoptionPanel({ refreshKey = 0 }: { refreshKey?: number }) {
         </span>
       </div>
       {rows === null ? <p className="kadp-note">Loading…</p>
-        : rows === "off" ? <p className="kadp-note">Not switched on yet: run migration 0058.</p>
+        : rows === "off" ? <p className="kadp-note">Not switched on yet: run migration 0057.</p>
         : rows === "failed" ? <p className="kadp-note">Couldn't load the numbers. <button type="button" className="kadp-retry" onClick={load}>Try again</button></p>
         : list.length === 0 ? <p className="kadp-note">No workspaces yet.</p> : (
           <table className="kadp-table">

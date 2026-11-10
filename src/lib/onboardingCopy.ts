@@ -56,7 +56,7 @@ const STEP_INBOX: TourStep = {
   body: "Mentions, assignments and requests land here, sorted into what needs your reply, what's new to you and what's just for your information. R replies, A adds to Today, H snoozes and E archives.",
   touchBody: "Mentions, assignments and requests land here, sorted into what needs your reply, what's new to you and what's just for your information. Tap ⋯ on an item to reply, snooze or archive it.",
 };
-/* a team's rhythm (0058): who's doing what, the quarter's goals, each project's update, what you're waiting on */
+/* a team's rhythm (0057): who's doing what, the quarter's goals, each project's update, what you're waiting on */
 const STEP_WAITING: TourStep = {
   id: "waiting", anchor: "waiting", title: "Waiting on", route: { view: "tasks", tab: "waiting" },
   body: "Work you've handed to someone, or that's blocked on someone else, sits in My tasks › Waiting on, by person, so nothing slips through. Nudge them from there.",
@@ -113,7 +113,7 @@ const GUEST_WORDS: Readonly<Record<string, readonly [body: string, touchBody: st
   ],
 };
 
-/** Where the tour runs (0058): in a team workspace it shows the team's rhythm too. `projectId`: a project
+/** Where the tour runs (0057): in a team workspace it shows the team's rhythm too. `projectId`: a project
  *  whose Updates tab the updates step opens (none: that step is a centred card). */
 export interface TourContext { team?: boolean; projectId?: string | null }
 

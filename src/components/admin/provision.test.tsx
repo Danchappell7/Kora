@@ -1,4 +1,4 @@
-/* /admin › Provision a business and Adoption by workspace (0058), in the demo: the form's checks (a public
+/* /admin › Provision a business and Adoption by workspace (0057), in the demo: the form's checks (a public
    mail domain is never offered for approval), the steps as they go (workspace, pack, the owner's invite,
    the domain, the handover) and the new business's row in the adoption table. */
 import { describe, expect, it } from "vitest";

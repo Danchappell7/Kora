@@ -838,15 +838,15 @@ Any number of days can pass between the steps; nothing breaks while you wait.
 If 0041, 0046, 0047 or 0048 is ever run again, run the files after it again too,
 in order (each file's "Running other files again" table says why).
 
-### Step 18: Shared availability, meetings and rolling Kanbo out (database updates 0055, 0056 and 0058)
+### Step 18: Shared availability, meetings and rolling Kanbo out (database updates 0055, 0056 and 0057)
 
 Each person's week, time off and team-wide rates (0055); Run meeting with its
 recap (0056); and the welcome card, Workspace health, the rollout plan and
-/admin › Provision a business (0058). There is no 0057. Business packs need no
+/admin › Provision a business (0057). Business packs need no
 database change. The details are in
 [database-0055.md](docs/integrations/database-0055.md),
 [database-0056.md](docs/integrations/database-0056.md) and
-[database-0058.md](docs/integrations/database-0058.md).
+[database-0057.md](docs/integrations/database-0057.md).
 
 The website can go out before any of this. Until each file has run, the app
 keeps to what the database has: capacities stay on each device and nobody
@@ -862,12 +862,12 @@ steps; nothing breaks while you wait.
    0056 (there are no recaps until then).
 
    ```bash
-   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0058_adoption_health.sql ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && supabase functions deploy daily-reminders --no-verify-jwt --project-ref htnchiljplrnjkwimgla --use-api && echo "daily-reminders deployed."; unset SUPABASE_ACCESS_TOKEN
+   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0057_adoption_health.sql ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && supabase functions deploy daily-reminders --no-verify-jwt --project-ref htnchiljplrnjkwimgla --use-api && echo "daily-reminders deployed."; unset SUPABASE_ACCESS_TOKEN
    ```
-2. **Run 0055, 0056 and 0058, in that order**, each in the SQL editor
+2. **Run 0055, 0056 and 0057, in that order**, each in the SQL editor
    (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>):
    copy one with `pbcopy < ~/Downloads/kora-app/supabase/migrations/0055_shared_availability.sql`
-   (then `0056_meetings.sql`, `0058_adoption_health.sql`), paste, press **Run**
+   (then `0056_meetings.sql`, `0057_adoption_health.sql`), paste, press **Run**
    ("Success. No rows returned"), then run the VERIFY query at the end of that
    file (every column `true`) before the next one. Each is safe to run again,
    and each stops with a clear message if a file it needs isn't in.

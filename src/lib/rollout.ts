@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — rolling Kanbo out to a team (0058), the rules:
+   KANBO — rolling Kanbo out to a team (0057), the rules:
    · Workspace health, for a team's owners and admins: who was invited
      and hasn't joined, who's been active in the last 7 days (by day,
      never by the minute: workspace_activity), open tasks with no owner
@@ -262,13 +262,13 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
 
 /** how long after joining someone is welcomed */
 export const WELCOME_DAYS = 30;
-/** before 0058 records when people join: an account this new is new here */
+/** before 0057 records when people join: an account this new is new here */
 export const NEW_ACCOUNT_DAYS = 14;
 /** joined within this of the workspace being made: they made it */
 const MADE_IT_MS = 10 * 60_000;
 
 /** Should Today welcome `me` to this workspace? A team workspace they joined (not one they own, or made and
- *  handed over) in the last WELCOME_DAYS, that they haven't put the card away in. Before 0058 (no joinedAt
+ *  handed over) in the last WELCOME_DAYS, that they haven't put the card away in. Before 0057 (no joinedAt
  *  at all): a new account. */
 export function shouldWelcome(input: {
   me: string;
@@ -285,7 +285,7 @@ export function shouldWelcome(input: {
   // whoever made it (and has since handed it over, as a provisioning admin does) joined as it was made: not new here
   if (m.joinedAt && w.createdAt && Math.abs(Date.parse(m.joinedAt) - Date.parse(w.createdAt)) < MADE_IT_MS) return false;
   if (m.joinedAt) return daysSince(m.joinedAt, input.today) <= WELCOME_DAYS;
-  if (m.joinedAt === null) return false;   // 0058 is in: they joined before it kept the date, a while ago
+  if (m.joinedAt === null) return false;   // 0057 is in: they joined before it kept the date, a while ago
   return !!input.accountCreatedAt && daysSince(input.accountCreatedAt, input.today) <= NEW_ACCOUNT_DAYS;
 }
 

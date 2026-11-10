@@ -15,7 +15,7 @@
      the tour).
    • otherwise (the default): "Your five places", then "Take me to
      Today", so it never offers a tour that nothing would start.
-   With `team` (0058), after the name it asks who Kanbo is for: "Just
+   With `team` (0057), after the name it asks who Kanbo is for: "Just
    me" goes on exactly as before (your first project, in Personal);
    "My team" or "A whole business" names and creates the workspace,
    then one sheet offers a business pack, an import and a pilot-group
@@ -53,7 +53,7 @@ const PLACE_LINES: Record<PlaceId, string> = {
 
 const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project", "", "Who's Kanbo for?", "Name your workspace", "Set up your workspace"];
 /* the steps by number: 0 welcome · 1 your name · 2 your first project · 3 the last word ·
-   (0058, with `team`) 4 who it's for · 5 the workspace's name · 6 setting it up */
+   (0057, with `team`) 4 who it's for · 5 the workspace's name · 6 setting it up */
 const FORK = 4, TEAM_NAME = 5, TEAM_START = 6;
 const MINUTES_WORD = ["zero", "one", "two", "three", "four", "five"][TOUR_MINUTES] ?? String(TOUR_MINUTES);
 
@@ -95,7 +95,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   onStartTour?: () => void;
   /** "Skip the tour" (default: lib/onboarding declineTour — recorded as skipped) */
   onSkipTour?: () => void;
-  /** 0058: ask who Kanbo is for after the name, and set a team up (without it, the first run is the solo one) */
+  /** 0057: ask who Kanbo is for after the name, and set a team up (without it, the first run is the solo one) */
   team?: TeamStartHost;
 }) {
   const [step, setStep] = useState(0);
@@ -122,7 +122,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
     setLastName(profLast);
   }, [profFirst, profLast]);
 
-  // the team path (0058): which one, and the workspace it made
+  // the team path (0057): which one, and the workspace it made
   // (null until it's asked: the dots count the longest way, so the total never grows mid-way)
   const [kind, setKind] = useState<TeamKind | null>(null);
   const [made, setMade] = useState<{ id: string; name: string } | null>(null);

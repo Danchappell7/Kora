@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — Team › People › Workspace health (0058), for a team's
+   KANBO — Team › People › Workspace health (0057), for a team's
    owners and admins. How the rollout is taking, one line each, with
    one fix each:
      · invited but not joined ...................... Resend all
@@ -11,7 +11,7 @@
      · projects missing an update .................. Ask for updates
      · goals with no check-in for two weeks ........ Open goals
    and the rollout plan: a champion, a pilot group, a go-live date
-   (workspaces.rollout; "not switched on yet" before 0058).
+   (workspaces.rollout; "not switched on yet" before 0057).
    lib/rollout works the numbers out; the host does the fixes.
    ============================================================ */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -24,13 +24,13 @@ export type ActivityState = "loading" | "ok" | "off" | "failed";
 export interface WorkspaceHealthProps {
   workspaceName: string;
   health: WorkspaceHealth;
-  /** workspace_activity: loading, answered, not switched on yet (before 0058), or couldn't load */
+  /** workspace_activity: loading, answered, not switched on yet (before 0057), or couldn't load */
   activity: ActivityState;
   /** the workspace's active members (the rollout's pickers) */
   members: WorkspaceMember[];
   nameOf: (m: WorkspaceMember) => string;
   projects: Project[];
-  /** the rollout plan (null: none yet) and whether it can be saved here (0058) */
+  /** the rollout plan (null: none yet) and whether it can be saved here (0057) */
   rollout: RolloutPlan | null;
   rolloutOn: boolean;
   onSaveRollout: (plan: RolloutPlan | null) => void;

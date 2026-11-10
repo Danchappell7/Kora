@@ -50,7 +50,7 @@ export interface TourHostProps {
   onNavigate?: (route: Route) => void;
   /** a step that shows the task panel asks the app to open a task (the sample project's first, if any) */
   onOpenTask?: (taskId: string) => void;
-  /** where it runs (0058): in a team workspace the tour shows the team's rhythm too (Waiting on, Pulse, Goals, updates) */
+  /** where it runs (0057): in a team workspace the tour shows the team's rhythm too (Waiting on, Pulse, Goals, updates) */
   context?: TourContext;
 }
 

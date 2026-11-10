@@ -177,7 +177,7 @@ describe("taking the tour", () => {
   });
 });
 
-describe("in a team workspace (0058)", () => {
+describe("in a team workspace (0057)", () => {
   it("the team's rhythm too: Waiting on, Pulse, Goals and a project's updates, each in its place; resumed by its id", () => {
     const onNavigate = vi.fn();
     render(<TourHost role="owner" onboarding={{ tour: { step: "waiting", done: false } }} onChange={vi.fn()} onNavigate={onNavigate} context={{ team: true, projectId: "p-studio" }} />);

@@ -43,7 +43,7 @@ describe("the tour's steps", () => {
       }
     }
   });
-  it("in a team workspace (0058): Waiting on, Pulse, Goals and project updates too; a guest only reads the updates", () => {
+  it("in a team workspace (0057): Waiting on, Pulse, Goals and project updates too; a guest only reads the updates", () => {
     const team = { team: true, projectId: "p-1" };
     expect(tourSteps("owner", team).map((x) => x.id)).toEqual(["places", "search", "capture", "plan-day", "task-panel", "inbox-triage", "waiting", "pulse", "goals", "updates", "invite"]);
     expect(tourSteps("member", team).map((x) => x.id)).toEqual(["places", "search", "capture", "plan-day", "task-panel", "inbox-triage", "waiting", "pulse", "goals", "updates"]);
@@ -134,7 +134,7 @@ describe("the “Get set up” checklist", () => {
     expect(setupItemsFor("member")).toEqual([...SETUP_ITEMS.member]);
     expect(setupItemsFor("guest")).toEqual(["install_app", "set_notifications"]);
   });
-  it("a team's owners and admins get the rollout list (0058): no Slack, no company domain", () => {
+  it("a team's owners and admins get the rollout list (0057): no Slack, no company domain", () => {
     expect(SETUP_ITEMS.owner).toEqual(["pick_pack", "import_work", "invite_pilot", "set_update_day", "post_update"]);
     expect(SETUP_ITEMS.owner).not.toContain("connect_slack");
     expect(SETUP_ITEMS.owner).not.toContain("add_domain");

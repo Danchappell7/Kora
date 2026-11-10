@@ -1,4 +1,4 @@
-/* Rolling Kanbo out (0058), through the whole app in demo mode: the first run's team path (/?first-run
+/* Rolling Kanbo out (0057), through the whole app in demo mode: the first run's team path (/?first-run
    in the demo), "Welcome to Harbour Advisory" for Daniel, who joined it three days ago, Team › People ›
    Workspace health for Foundrise's owner, and Kanbo noticed's one next fix at Courtside Padel. */
 import { describe, it, expect, afterEach, beforeAll, beforeEach } from "vitest";

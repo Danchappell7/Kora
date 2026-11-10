@@ -25,7 +25,7 @@ function team(members: WorkspaceMember[], extra: Partial<Parameters<typeof TeamV
 const openInvite = () => { fireEvent.click(screen.getByRole("button", { name: "Invite people" })); return screen.getByLabelText("Emails"); };
 
 describe("TeamView", () => {
-  it("0058: opens on its invite sheet when asked (Get set up's pilot group), once; the health card can open it too", () => {
+  it("0057: opens on its invite sheet when asked (Get set up's pilot group), once; the health card can open it too", () => {
     const onInviteOpened = vi.fn();
     const healthSlot = vi.fn(({ openInvite: open }: { openInvite: () => void }) => <button type="button" onClick={open}>Health: invite</button>);
     const { unmount, props } = team([], { inviteNow: true, onInviteOpened, healthSlot });

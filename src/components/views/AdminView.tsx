@@ -977,7 +977,7 @@ export function AdminView({ currentEmail, currentUser }: { currentEmail?: string
       <AccountsPanel accounts={accounts} loading={loading} currentEmail={currentEmail} onReload={reloadAccounts} />
 
       <div style={{ height: 18 }} />
-      {/* 0058: set a business up for its owner, and see which businesses are taking to Kanbo */}
+      {/* 0057: set a business up for its owner, and see which businesses are taking to Kanbo */}
       <ProvisionBusiness me={me} onProvisioned={() => setProvisioned((n) => n + 1)} />
       <AdoptionPanel refreshKey={provisioned} />
       <WorkspacesPanel />

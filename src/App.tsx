@@ -3579,7 +3579,7 @@ export default function App() {
       // the browser's own install prompt where it has one; otherwise Settings › Notifications › Kanbo app explains
       case "install_app": void promptInstall().then((r) => { if (r === "unavailable") openSettings("notifications"); }, () => openSettings("notifications")); break;
       case "set_notifications": openSettings("notifications"); break;
-      // 0058: a team's rollout
+      // 0057: a team's rollout
       case "pick_pack": rolloutRef.current.openPackGallery(); break;
       case "import_work": openImport(); break;
       case "invite_pilot": setInviteNow(true); setRoute({ view: "team" }); break;
@@ -3806,7 +3806,7 @@ export default function App() {
     else if (biz.runs[0]) openInBusiness(biz.runs[0].id!, { kind: "risks" });
   }, [biz.group, biz.runs, setRoute, openInBusiness]);
 
-  /* ---- 0058 rolling Kanbo out: the first run's team path, the new member's welcome, Workspace health (components/rollout) ---- */
+  /* ---- 0057 rolling Kanbo out: the first run's team path, the new member's welcome, Workspace health (components/rollout) ---- */
   const roleHere = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role ?? null;
   const rollout = useRollout({
     me: currentUserId, workspace, view: route.view, role: roleHere ?? undefined, workspaces, setWorkspaces, members: wsMembers, projects, tasks: allTasks,
@@ -3854,7 +3854,7 @@ export default function App() {
     completedAny: allTasks.some((t) => t.status === "done" && t.assigneeId === currentUserId),
     installed: isStandalone() || installState() === "installed",
     notificationsChosen: pushHere || Object.keys(profile?.notifyPrefs ?? {}).length > 0,
-    // 0058: a team's rollout (packs, import, update day, first update)
+    // 0057: a team's rollout (packs, import, update day, first update)
     ...rollout.setupFacts,
   });
   // the company domain is a site admin's setting (Personal's list only); update days need 0053
@@ -4226,7 +4226,7 @@ export default function App() {
         goalFor={goalFlow.briefGoal} goalsBehind={biz.all ? goalFlow.behind() : goalFlow.behind(workspace)} onOpenGoal={openGoal}
         // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
         updates={todayUpdates} away={awayNudge}
-        // 0058: a new member's "Welcome to <workspace>", and a rollout's one next fix for its leads
+        // 0057: a new member's "Welcome to <workspace>", and a rollout's one next fix for its leads
         welcomeSlot={rollout.welcomeSlot ?? undefined} welcomeLine={rollout.welcomeLine ?? undefined} rollout={biz.all ? undefined : rollout.today}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
@@ -4639,7 +4639,7 @@ export default function App() {
         onPlanWithKanbo={activeReadOnly ? undefined : (typed) => openPlanner({ mode: "new", goal: typed || undefined })} /></Deferred>
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       {/* (tourAvailable: the TourHost below is mounted when a tour is asked for, so the sheet hands over to it) */}
-      {/* (0058: it asks who Kanbo is for; a team's pack and import open on their own sheets while it steps aside) */}
+      {/* (0057: it asks who Kanbo is for; a team's pack and import open on their own sheets while it steps aside) */}
       <Deferred when={onboardOpen && !welcomeOpen}><OnboardingModal open={onboardOpen && !welcomeOpen && !rollout.onboardingAside} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
         onGoToday={() => setRoute({ view: "plan" })} tourAvailable team={rollout.teamStart} /></Deferred>
       <Deferred when={newWorkspaceOpen}><NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} packs={newWorkspacePacks} /></Deferred>

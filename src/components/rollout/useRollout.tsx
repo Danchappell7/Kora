@@ -1,5 +1,5 @@
 /* ============================================================
-   KANBO — rolling Kanbo out (0058), the app's side, in one hook so
+   KANBO — rolling Kanbo out (0057), the app's side, in one hook so
    App only hands its state over and places what comes back:
    · the first run's team path (TeamStartHost for OnboardingModal):
      make the workspace, open the packs or the import for it (the
@@ -84,7 +84,7 @@ const nameOf = (m: WorkspaceMember) => (m.userId ? getMember(m.userId)?.name?.tr
 const lead = (r: Role | null | undefined) => r === "owner" || r === "admin";
 /** a team's "Get set up" rollout list is for a workspace this new (an established one isn't being set up) */
 export const SETUP_FRESH_DAYS = 60;
-/** the team owner's list before 0058 (the company domain was a site admin's only) */
+/** the team owner's list before 0057 (the company domain was a site admin's only) */
 const OLD_OWNER_ITEMS: readonly SetupItemId[] = ["invite_team", "connect_calendar", "connect_slack"];
 const pad = (n: number) => String(n).padStart(2, "0");
 const localDay = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? undefined : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };

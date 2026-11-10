@@ -7,7 +7,7 @@
    ============================================================ */
 import type { OnboardingChecklistState, SetupItemId, TourRole } from "../data/types";
 
-/** The checklist's items per role, in order. A team's owners and admins get the rollout list (0058:
+/** The checklist's items per role, in order. A team's owners and admins get the rollout list (0057:
  *  pick a pack, bring your work in, invite your pilot group, set your update day, post your first
  *  update); Slack is paused, and the company domain is the platform's to approve. */
 export const SETUP_ITEMS: Readonly<Record<TourRole, readonly SetupItemId[]>> = {

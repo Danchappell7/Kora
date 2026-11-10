@@ -1,5 +1,5 @@
 /* lib/rolloutApi against a (mocked) real backend: workspace_activity, admin_provision_business and
-   admin_workspace_adoption, their refusals, and before 0058 (no functions): "off", never an error. */
+   admin_workspace_adoption, their refusals, and before 0057 (no functions): "off", never an error. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { rpc } = vi.hoisted(() => ({ rpc: vi.fn() }));
@@ -20,7 +20,7 @@ describe("rolloutApi, signed in", () => {
     expect(await loadWorkspaceActivity("ws-1")).toEqual({ today: "2026-11-10", members: [{ userId: "u1", days: 4, lastDay: "2026-11-10" }], days: [{ day: "2026-11-10", people: 1 }] });
     expect(rpc).toHaveBeenCalledWith("workspace_activity", { p_ws: "ws-1" });
   });
-  it("before 0058: off; refused or broken: failed", async () => {
+  it("before 0057: off; refused or broken: failed", async () => {
     rpc.mockResolvedValue({ data: null, error: MISSING });
     expect(await loadWorkspaceActivity("ws-1")).toBe("off");
     rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "not authorized" } });
@@ -34,7 +34,7 @@ describe("rolloutApi, signed in", () => {
       .toEqual({ workspaceId: "ws-9", memberId: "m-9", domain: "acme.co", domainAdded: true, approved: 2 });
     expect(rpc).toHaveBeenCalledWith("admin_provision_business", { p_name: "Acme", p_owner_email: "boss@acme.co", p_domain: "acme.co", p_pack: "agency" });
   });
-  it("says why it was refused, and that it isn't switched on before 0058", async () => {
+  it("says why it was refused, and that it isn't switched on before 0057", async () => {
     rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "not authorized" } });
     await expect(provisionBusiness({ name: "Acme", ownerEmail: "boss@acme.co" }, ME)).rejects.toMatchObject({ reason: "not_allowed" });
     rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "a public email domain would let anyone in" } });
@@ -42,7 +42,7 @@ describe("rolloutApi, signed in", () => {
     rpc.mockResolvedValue({ data: null, error: { ...MISSING, message: "Could not find the function public.admin_provision_business" } });
     const e = await provisionBusiness({ name: "Acme", ownerEmail: "boss@acme.co" }, ME).catch((x) => x);
     expect(e).toBeInstanceOf(ProvisionError);
-    expect(e).toMatchObject({ reason: "off", message: expect.stringMatching(/0058/) });
+    expect(e).toMatchObject({ reason: "off", message: expect.stringMatching(/0057/) });
     rpc.mockResolvedValue({ data: {}, error: null });
     await expect(provisionBusiness({ name: "Acme", ownerEmail: "boss@acme.co" }, ME)).rejects.toMatchObject({ reason: "failed" });
   });
@@ -57,7 +57,7 @@ describe("rolloutApi, signed in", () => {
 });
 
 describe("the rollout plan, signed in", () => {
-  it("isn't offered until a read says 0058 is in (someone whose first load had no team workspace)", () => {
+  it("isn't offered until a read says 0057 is in (someone whose first load had no team workspace)", () => {
     resetRolloutSchema();
     expect(rolloutOn()).toBe(false);
     noteRolloutSchema(true);
@@ -68,7 +68,7 @@ describe("the rollout plan, signed in", () => {
   });
 });
 
-describe("public mail domains (as 0058's public_mail_domain)", () => {
+describe("public mail domains (as 0057's public_mail_domain)", () => {
   it("the big providers under any country ending, and UK ISPs; never a business's own", () => {
     for (const d of ["gmail.com", "outlook.co.uk", "yahoo.fr", "hotmail.fr", "gmx.de", "web.de", "ymail.com", "pm.me", "hey.com", "fastmail.com", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk"]) {
       expect(publicMailDomain(d), d).toBe(true);

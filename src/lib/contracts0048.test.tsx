@@ -221,7 +221,7 @@ describe("views, onboarding, search chips, board, kudos counts", () => {
   });
   it("the tour's roles, checklist items and anchors (each anchor is on a real element)", () => {
     expect([tourRoleOf("admin", false), tourRoleOf("member", false), tourRoleOf("guest", false), tourRoleOf(null, true)]).toEqual(["owner", "member", "guest", "owner"]);
-    // 0058: a team's owners get the rollout list (Slack is paused; the company domain is the platform's)
+    // 0057: a team's owners get the rollout list (Slack is paused; the company domain is the platform's)
     expect(SETUP_ITEMS.owner).toEqual(["pick_pack", "import_work", "invite_pilot", "set_update_day", "post_update"]);
     expect(SETUP_ITEMS.member).toEqual(["plan_day", "complete_task", "install_app", "set_notifications"]);
     const files = ["components/Sidebar.tsx", "components/Topbar.tsx", "components/views/TodayView.tsx", "components/TaskDetail.tsx", "components/views/InboxView.tsx",
@@ -229,7 +229,7 @@ describe("views, onboarding, search chips, board, kudos counts", () => {
     for (const sel of Object.values(TOUR_ANCHORS)) {
       const name = /data-tour="([^"]+)"/.exec(sel)?.[1];
       if (name) { expect(files.includes(`data-tour="${name}"`) || files.includes(`"${name}"`), name).toBe(true); continue; }
-      // (0058's tab anchors: a Tabs row by its label, and the tab by its id)
+      // (0057's tab anchors: a Tabs row by its label, and the tab by its id)
       const [, label, tab] = /\[aria-label="([^"]+)"\] \[data-tab-id="([^"]+)"\]/.exec(sel) ?? [];
       expect(files.includes(`"${label}"`) && files.includes("data-tab-id") && files.includes(`"${tab}"`), sel).toBe(true);
     }

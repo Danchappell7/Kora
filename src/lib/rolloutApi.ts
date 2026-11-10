@@ -1,11 +1,11 @@
 /* ============================================================
-   KANBO — rolling Kanbo out (0058), the server's side:
+   KANBO — rolling Kanbo out (0057), the server's side:
    · workspace_activity(ws): who's been active here in the last 7 days,
      by day (owners and admins only; the database checks);
    · admin_provision_business / admin_workspace_adoption: the platform
      console's "Provision a business" and per-workspace weekly actives
      (platform admins only; the database checks is_admin()).
-   Demo: a believable week from the seed. Before 0058 each answers
+   Demo: a believable week from the seed. Before 0057 each answers
    "off" (the card or panel says it isn't switched on yet), never an
    error.
    ============================================================ */
@@ -16,7 +16,7 @@ import { parseActivity, type WorkspaceActivity } from "./rollout";
 import { errText } from "./rowUtils";
 import { supabase } from "./supabase";
 
-/** A missing table, column or function: 0058 isn't run yet. */
+/** A missing table, column or function: 0057 isn't run yet. */
 export function notYet(e: unknown): boolean {
   const code = String((e as { code?: unknown } | null)?.code ?? "");
   return ["42P01", "42703", "42883", "PGRST202", "PGRST204", "PGRST205"].includes(code)
@@ -63,7 +63,7 @@ export async function loadWorkspaceActivity(workspaceId: string, members: readon
 
 /* ---------------- the platform console ---------------- */
 
-// Mail domains anyone can sign up with (0058 public_mail_domain, kept in step): pre-approving one would let anyone in.
+// Mail domains anyone can sign up with (0057 public_mail_domain, kept in step): pre-approving one would let anyone in.
 const PUBLIC_MAIL_PROVIDER = /^(gmail|googlemail|outlook|hotmail|live|windowslive|msn|yahoo|ymail|rocketmail|aol|aim|icloud|gmx|web|mail|email|yandex|ya|protonmail|proton|zoho|zohomail|tutanota|tuta|tutamail|fastmail|hushmail|mailbox|posteo|qq|163|126|yeah|sina|sohu|naver|daum|hanmail|rediffmail|t-online|freenet|orange|wanadoo|free|laposte|sfr|libero|virgilio|seznam|wp|o2|onet|interia|inbox|mail2world)\.([a-z]{2,6})(\.[a-z]{2,3})?$/;
 const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set(["me.com", "mac.com", "pm.me", "hey.com", "duck.com", "btinternet.com", "btopenworld.com",
   "bt.com", "sky.com", "virginmedia.com", "virgin.net", "ntlworld.com", "blueyonder.co.uk", "talktalk.net", "tiscali.co.uk",
@@ -117,7 +117,7 @@ export async function provisionBusiness(input: ProvisionInput, me: { id: string;
     p_name: input.name, p_owner_email: input.ownerEmail, p_domain: domain, p_pack: input.pack ?? null,
   });
   if (error) {
-    if (notYet(error)) throw new ProvisionError("off", "Provisioning isn't switched on yet: run migration 0058.");
+    if (notYet(error)) throw new ProvisionError("off", "Provisioning isn't switched on yet: run migration 0057.");
     throw provisionRefusal(errText(error));
   }
   const r = (data ?? {}) as Record<string, unknown>;
@@ -171,7 +171,7 @@ function parseAdoption(raw: unknown): AdoptionRow[] {
   });
 }
 
-/** Every workspace's adoption (platform admins; the database checks). "off" before 0058. */
+/** Every workspace's adoption (platform admins; the database checks). "off" before 0057. */
 export async function workspaceAdoption(workspaces: readonly Workspace[] = WORKSPACES): Promise<AdoptionRow[] | "off" | "failed"> {
   if (!supabase) {
     const today = KANBO_TODAY;

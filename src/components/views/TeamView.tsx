@@ -2,7 +2,7 @@
    KANBO — Team › People: who's here, what they're working on and how
    full their week is; invites (several at once), roles, and each
    person's profile. Owners and admins see the Workspace health card
-   (0058) above them. Plus WorkspaceSettingsPanel (logo, name, Close
+   (0057) above them. Plus WorkspaceSettingsPanel (logo, name, Close
    workspace), which Settings › Workspace renders — it's no longer on
    this page.
    ============================================================ */
@@ -610,9 +610,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   /** 0048: tasks dropped on a person's row (lib/dnd): reassign them (lib/dropActions reassignTasks).
    *  Without it, or for guests, the rows take no drops. */
   onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
-  /** 0058: owners and admins: the Workspace health card (components/rollout), above the people (given the invite sheet) */
+  /** 0057: owners and admins: the Workspace health card (components/rollout), above the people (given the invite sheet) */
   healthSlot?: ReactNode | ((page: { openInvite: () => void }) => ReactNode);
-  /** 0058: open on the invite sheet (Get set up's "Invite your pilot group"); said back once it's open */
+  /** 0057: open on the invite sheet (Get set up's "Invite your pilot group"); said back once it's open */
   inviteNow?: boolean;
   onInviteOpened?: () => void;
   /** The workspace settings moved to Settings › Workspace (WorkspaceSettingsPanel);
