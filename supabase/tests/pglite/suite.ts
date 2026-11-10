@@ -9,8 +9,16 @@
 // Each run applies 0050 twice. Legit flows first, then the attacks; then 0051's guest
 // lock, 0052's goal rules, waves 2 and 3, and 0058's project access (projectAccess.ts),
 // which also runs on its own on 0001..0050 + 0058 (the live database plus wave 4 alone).
+// The edge functions' own project-access checks (the REST API, MCP, the Slack app's
+// cards, _shared/projectAccess.ts) run with 0058 on every full set, and on
+// 0001..0050 (the live database, before 0058) the legit and attack flows run again
+// to show nothing about them changed there.
 // ============================================================
 import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
+import { handleApiRequest } from "../../functions/_shared/api/pipeline.ts";
+import { runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
+import { accessInstalled, personRankSql, projectAccess } from "../../functions/_shared/projectAccess.ts";
+import { loadCard, loadProjectCard, type SlackDb } from "../../functions/_shared/slackAppData.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
 import { MCP_RESOURCE } from "../../functions/_shared/mcp/metadata.ts";
 import { dateInZone } from "../../functions/_shared/mcp/myDay.ts";
@@ -97,6 +105,18 @@ async function toolOk(w: World, bearer: string, name: string, args: Record<strin
   if (r.isError) throw new Error(`${name} failed: ${r.content[0].text}`);
   return r.structuredContent;
 }
+/** The REST API (handleApiRequest, as the api function runs it) with an API key. */
+async function rest(w: World, key: string, method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {   // eslint-disable-line
+  const res = await handleApiRequest(new Request(`${w.deps.apiBase}${path}`, {
+    method, headers: { Authorization: `Bearer ${key}`, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  }), { db: w.deps.db, service: w.deps.service, verify: sqlVerifier(w.deps.service), appUrl: APP_URL, apiBase: w.deps.apiBase, log: () => undefined, sleep: async () => undefined });
+  const text = await res.text();
+  return { status: res.status, json: text ? JSON.parse(text) : null };
+}
+/** The Slack app's database (its cards are read as the person, through withUser). */
+const slackDb = (w: World): SlackDb => ({ withUser: (scope, fn) => w.deps.db.withUser(scope, fn), service: w.deps.service });
+
 async function toolRefused(w: World, bearer: string, name: string, args: Record<string, unknown>, like: RegExp) {
   const r = await tool(w, bearer, name, args);
   ok(r.isError === true, `${name} should have been refused, got ${JSON.stringify(r.structuredContent)}`);
@@ -3596,6 +3616,183 @@ async function projectAccessApiSuite(w: World) {
     ok((await names(bob)).includes("Board pay"), "list_projects");
     eq((await toolOk(w, bob, "get_task", { taskId: salary })).task.id, salary, "get_task");
   });
+
+  /* ---- the edge functions' own checks (Stage B): the service helpers, the API's, the Slack app's cards ---- */
+  await clearRates(w);
+  const aliceKey = (await asPerson<{ r: { key: string } }>(pg, w.alice, `select public.create_api_key('pa rest alice', null, 'write', null) as r`))[0].r.key;
+  await pg.query(`update public.profiles set first_name = 'Dora', last_name = 'Day' where id = $1::uuid`, [dora]);
+  const svc = () => projectAccess(w.deps.service);
+  const doraT = (await connect(w, dora)).access;
+  const people = [w.alice, w.bob, w.gus, dora, w.carol];
+  const projectsToo = [w.launch, pay, leads, "p-personal", "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a"];
+  const rankParity = async (caller: string, projects: string[]) => {
+    for (const u of people) for (const p of projects) {
+      const mine = (await asPerson<{ r: number }>(pg, caller, `select ${personRankSql("$1::text", "$2::uuid", "$3::text")} as r`, [u, w.w1, p]))[0].r;
+      const db = (await one<{ r: number }>(`select public.pa_rank_for($1::uuid, $2::uuid, $3::text) as r`, [u, w.w1, p])).r;
+      eq(mine, db, `rank of ${u === w.alice ? "alice" : u === w.bob ? "bob" : u === w.gus ? "gus" : u === dora ? "dora" : "carol"} on ${p === w.launch ? "Launch" : p === pay ? "Board pay" : p === leads ? "Hiring leads" : p}`);
+    }
+  };
+  await test("0058, functions, switch off: the service checks and the API's colleague rank say what they always did", async () => {
+    const a = svc();
+    eq(await a.visibleTaskIds(w.bob, [salary, hiring]), [salary, hiring], "bob sees both tasks");
+    eq(await a.canSeeProject(w.bob, pay), true, "Board pay");
+    eq([...await a.closedProjects(w.w1)], [], "nothing closed");
+    eq(await a.projectIsOpen(w.w1, pay), true, "open");
+    eq(a.before0058, false, "0058 is in");
+    eq((await w.deps.db.withUser({ userId: w.alice }, (tx) => accessInstalled(tx))), true, "the API sees it's in");
+    await rankParity(w.alice, projectsToo);
+  });
+  await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, true)`, [w.w1]);
+  await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [pay, dora]);
+  await test("0058, functions, switch on: the service checks follow the rank table", async () => {
+    const a = svc();
+    eq(await a.visibleTaskIds(w.bob, [salary, hiring]), [hiring], "bob: the members-only task he views, not the private one");
+    eq(await a.canSeeTask(w.gus, hiring), false, "gus isn't on Hiring leads");
+    eq([await a.canSeeProject(w.bob, pay), await a.canSeeProject(dora, pay), await a.canSeeProject(w.alice, pay)], [false, true, true], "Board pay");
+    eq(await a.usersWhoCanSeeTask(salary, [w.bob, dora, w.alice, w.gus]), [dora, w.alice], "who may hear about the salary task");
+    eq(await a.usersWhoCanSeeProject(leads, [w.gus, w.bob, dora]), [w.bob], "who may hear about Hiring leads");
+    eq([...await a.closedProjects(w.w1)].sort(), [pay, leads].map((x) => x.toLowerCase()).sort(), "the closed projects");
+    eq([await a.projectIsOpen(w.w1, w.launch), await a.projectIsOpen(w.w1, pay), await a.projectIsOpen(w.w1, "p-personal")], [true, false, true], "open or not");
+    eq([await a.projectRank(w.bob, w.w1, leads), await a.projectRank(dora, w.w1, pay), await a.projectRank(w.gus, w.w1, w.launch)], [1, 3, 2], "ranks");
+  });
+  await test("0058, functions, switch on: the API's colleague rank equals the database's own, read as the owner and as a viewer", async () => {
+    await rankParity(w.alice, projectsToo);
+    await rankParity(w.bob, [leads, w.launch]);   // bob views Hiring leads: he reads its people
+  });
+  await test("0058 via REST, switch on: writing into a project needs edit rights on it, and a viewer is told so", async () => {
+    const t = await rest(w, bobKey, "POST", "/tasks", { title: "Planted", projectId: leads });
+    eq([t.status, t.json?.error?.message], [403, "You can see this project but can't change it."], "a task");
+    const sec = await rest(w, bobKey, "POST", "/sections", { projectId: leads, name: "Mine" });
+    eq([sec.status, sec.json?.error?.message], [403, "You can see this project but can't change it."], "a section");
+    const pr = await rest(w, bobKey, "PATCH", `/projects/${leads}`, { name: "Renamed" });
+    eq(pr.status, 403, "the project");
+    const c = await rest(w, bobKey, "POST", `/tasks/${hiring}/comments`, { body: "Hi" });
+    eq([c.status, c.json?.error?.message], [403, "You can see this task but can't comment on it."], "a viewer's comment");
+    eq((await one<{ n: number }>(`select count(*)::int as n from public.tasks where title = 'Planted'`)).n, 0, "nothing planted");
+  });
+  await test("0058 via REST, switch on: an assignee must be able to see the project; a rule's who can't is skipped", async () => {
+    const no = await rest(w, aliceKey, "POST", "/tasks", { title: "Pay review", projectId: pay, assigneeId: w.bob });
+    eq([no.status, no.json?.error?.details?.fields?.assigneeId], [422, "That person can't see this project."], "bob can't see Board pay");
+    const yes = await rest(w, aliceKey, "POST", "/tasks", { title: "Pay review", projectId: pay, assigneeId: dora });
+    eq([yes.status, yes.json?.assigneeId], [201, dora], "dora's on it");
+    eq((await rest(w, aliceKey, "PATCH", `/tasks/${salary}`, { assigneeId: w.bob })).status, 422, "nor handed to bob later");
+    await pg.query(`insert into public.automation_rules (user_id, workspace_id, project_id, name, trigger, actions, enabled) values ($1::uuid, $2::uuid, $3, 'Pay to bob', 'task_created', $4::jsonb, true)`,
+      [w.alice, w.w1, pay, JSON.stringify([{ type: "set_assignee", value: w.bob }])]);
+    const ruled = await rest(w, aliceKey, "POST", "/tasks", { title: "Ruled", projectId: pay });
+    eq([ruled.status, ruled.json?.assigneeId], [201, null], "the rule's assignee can't see it: skipped");
+    await pg.exec(`delete from public.automation_rules where name = 'Pay to bob'`);
+  });
+  await test("0058 via REST, switch on: a task moved into a private project comes to you if its assignee can't see it there, and loses people who can't", async () => {
+    const made = await rest(w, aliceKey, "POST", "/tasks", { title: "Comp benchmarks", projectId: w.launch, assigneeId: w.bob });
+    eq(made.status, 201, "made in Launch");
+    const sub = await rest(w, aliceKey, "POST", "/tasks", { title: "Gather data", parentId: made.json.id, assigneeId: w.bob });
+    eq(sub.status, 201, "and a sub-task");
+    await pg.query(`update public.tasks set collaborators = array[$2, $3], followers = array[$2] where id = $1::uuid`, [made.json.id, w.bob, dora]);
+    const moved = await rest(w, aliceKey, "PATCH", `/tasks/${made.json.id}`, { projectId: pay });
+    eq(moved.status, 200, `moved: ${JSON.stringify(moved.json)}`);
+    const rows = (await pg.query<{ id: string; project_id: string; assignee_id: string; collaborators: string[]; followers: string[] }>(
+      `select id::text as id, project_id, assignee_id, collaborators, followers from public.tasks where id = any ($1::uuid[]) order by title`, [[made.json.id, sub.json.id]])).rows;
+    eq(rows.map((r) => [r.project_id, r.assignee_id]), [[pay, w.alice], [pay, w.alice]], "both in Board pay, both now alice's");
+    eq([rows[0].collaborators, rows[0].followers], [[dora], []], "bob dropped, dora kept");
+  });
+  await test("0058 via REST, switch on: projects say who can see them; a new one can be made private by those allowed", async () => {
+    eq((await rest(w, bobKey, "GET", `/projects/${w.launch}`)).json.visibility, "workspace", "Launch");
+    eq((await rest(w, aliceKey, "GET", `/projects/${pay}`)).json.visibility, "private", "Board pay");
+    const refused = await rest(w, bobKey, "POST", "/projects", { name: "Bob's secret", workspaceId: w.w1, visibility: "private" });
+    eq([refused.status, refused.json?.error?.message], [403, "You can't make private projects in this workspace."], "a member can't, by default");
+    const mine = await rest(w, bobKey, "POST", "/projects", { name: "Bob's team", workspaceId: w.w1, visibility: "members" });
+    eq([mine.status, mine.json?.visibility], [201, "members"], "a members-only one, read back by its owner");
+    const priv = await rest(w, aliceKey, "POST", "/projects", { name: "Exec", workspaceId: w.w1, visibility: "private" });
+    eq([priv.status, priv.json?.visibility], [201, "private"], "the owner can");
+    eq((await rest(w, aliceKey, "POST", "/projects", { name: "Default", workspaceId: w.w1 })).json?.visibility, "workspace", "left out: the workspace's default");
+    const bad = await rest(w, aliceKey, "POST", "/projects", { name: "Odd", workspaceId: w.w1, visibility: "secret" });
+    eq([bad.status, bad.json?.error?.details?.fields?.visibility], [422, "Use one of workspace, members, private."], "an unknown visibility");
+    const personal = await rest(w, aliceKey, "POST", "/projects", { name: "Mine", workspaceId: null, visibility: "private" });
+    eq([personal.status, personal.json?.error?.details?.fields?.visibility], [422, "A Personal project is only ever yours: leave visibility out."], "a personal project");
+    eq((await names(doraT)).includes("Exec"), false, "dora can't see the new private one");
+  });
+  await test("0058 via MCP, switch on: @names in a comment mean only people who can see the task's project", async () => {
+    const r = await toolOk(w, alice, "add_comment", { taskId: salary, body: "@Dora and @Bob, a look?" });
+    eq(r.mentioned, ["Dora Day"], "bob can't see Board pay");
+    ok(r.notes.join(" ").includes("Bob"), "and the answer says who it didn't reach");
+    const stored = (await one<{ m: string[] }>(`select mentions::text[] as m from public.comments where task_id = $1::uuid order by created_at desc limit 1`, [salary])).m;
+    eq(stored, [dora], "stored");
+  });
+  await test("0058, Slack link previews, switch on: a closed project's link (or its task's) is a neutral card; an open one isn't", async () => {
+    const db = slackDb(w);
+    eq((await loadCard(db, w.alice, w.w1, salary))?.closedProject, true, "a task in Board pay");
+    eq((await loadCard(db, w.bob, w.w1, hiring))?.closedProject, true, "a task in Hiring leads, shared by its viewer");
+    eq((await loadCard(db, w.bob, w.w1, w.aliceTask))?.closedProject, false, "a task in Launch");
+    eq((await loadProjectCard(db, w.alice, w.w1, pay))?.closedProject, true, "Board pay");
+    eq((await loadProjectCard(db, w.alice, w.w1, w.launch))?.closedProject, false, "Launch");
+    eq(await loadCard(db, w.bob, w.w1, salary), null, "bob can't see Board pay's task at all");
+  });
+  await test("0058, the webhook dispatcher, switch on: a private project's event goes only to endpoints whose viewer can see it; one never made is never claimed", async () => {
+    await pg.query(`update public.webhook_outbox set processed_at = now() where processed_at is null`);
+    const hook = async (by: string, path: string) => (await one<{ id: string }>(
+      `insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, $3, array['task.created'], $4) returning id::text as id`,
+      [w.w1, by, `https://hooks.example.com/${path}`, "whsec_" + "b".repeat(43)])).id;
+    const hooks = [await hook(w.alice, "alice"), await hook(w.bob, "bob")];
+    eq((await rest(w, aliceKey, "POST", "/tasks", { title: "Exec pay letter", projectId: pay })).status, 201, "a task in Board pay");
+    eq((await rest(w, aliceKey, "POST", "/tasks", { title: "Launch checklist", projectId: w.launch })).status, 201, "a task in Launch");
+    const sent: { to: string; body: string }[] = [];
+    await runDispatch({
+      service: w.deps.service, resolve: async () => ["93.184.216.34"], appUrl: APP_URL, log: () => undefined,
+      send: async (target, _h, body) => { sent.push({ to: target.path, body }); return { status: 200, reason: "OK" }; },
+    }, { deadlineMs: 5000 });
+    const got = (who: string) => sent.filter((x) => x.to === `/${who}`).map((x) => JSON.parse(x.body).data?.task?.title ?? JSON.parse(x.body).data?.title).sort();
+    eq(got("alice"), ["Exec pay letter", "Launch checklist"], "the owner's endpoint: both");
+    eq(got("bob"), ["Launch checklist"], "bob's: only what bob can see");
+    const pending = await one<{ n: number }>(`select count(*)::int as n from public.webhook_deliveries where webhook_id = any ($1::uuid[]) and state = 'pending'`, [hooks]);
+    eq(pending.n, 0, "nothing left waiting: the skipped one was never made, so never claimed");
+    await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [hooks]);
+  });
+  await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
+  await test("0058, functions, switch off again: open everywhere, and the API takes anyone in the workspace", async () => {
+    eq([...await svc().closedProjects(w.w1)], [], "nothing closed");
+    eq((await loadProjectCard(slackDb(w), w.alice, w.w1, pay))?.closedProject, false, "Board pay's card is open again");
+    const t = await rest(w, aliceKey, "POST", "/tasks", { title: "Off again", projectId: pay, assigneeId: w.bob });
+    eq([t.status, t.json?.assigneeId], [201, w.bob], "bob may be assigned");
+    eq((await rest(w, bobKey, "POST", `/tasks/${hiring}/comments`, { body: "Hi" })).status, 201, "and comment");
+  });
+}
+
+/* ============================================================ before 0058: the edge functions change nothing */
+
+/** The live database (0001..0050): the edge functions' project-access checks find nothing to ask, so every
+ *  answer is today's (the API, MCP, the Slack app's cards and the service checks). */
+async function beforeAccessSuite(w: World) {
+  if ((await w.pg.query<{ ok: boolean }>(`select to_regprocedure('public.pa_rank_core(boolean,text,text,boolean,text)') is not null as ok`)).rows[0].ok) return;
+  const pg = w.pg;
+  await clearRates(w);
+  const aliceKey = (await asPerson<{ r: { key: string } }>(pg, w.alice, `select public.create_api_key('before 0058', null, 'write', null) as r`))[0].r.key;
+  await test("before 0058: the service checks say 'missing' and answer today's rule, asked once", async () => {
+    const a = projectAccess(w.deps.service);
+    eq(await a.canSeeTask(w.bob, w.aliceTask), true, "bob, a member");
+    eq(a.before0058, true, "it knows 0058 isn't in");
+    eq(await a.visibleTaskIds(w.gus, [w.aliceTask, w.carolTask]), [w.aliceTask, w.carolTask], "unchanged (the caller's own workspace check still applies)");
+    eq([...await a.closedProjects(w.w1)], [], "nothing closed");
+    eq(await a.projectIsOpen(w.w1, w.launch), true, "open");
+    eq(await a.projectRank(w.bob, w.w1, w.launch), null, "no rank: use the workspace role");
+    eq(await w.deps.db.withUser({ userId: w.alice }, (tx) => accessInstalled(tx)), false, "the API sees it isn't in");
+  });
+  await test("before 0058: the REST API's projects and tasks are as they were", async () => {
+    const p = await rest(w, aliceKey, "GET", `/projects/${w.launch}`);
+    eq([p.status, "visibility" in p.json], [200, false], "no visibility field");
+    const made = await rest(w, aliceKey, "POST", "/projects", { name: "Plain", workspaceId: w.w1 });
+    eq([made.status, "visibility" in made.json], [201, false], "a new project, as before");
+    const asked = await rest(w, aliceKey, "POST", "/projects", { name: "Hidden", workspaceId: w.w1, visibility: "private" });
+    eq([asked.status, asked.json?.error?.details?.fields?.visibility], [422, "Project access isn't available yet, so leave visibility out."], "visibility can't be set yet");
+    const t = await rest(w, aliceKey, "POST", "/tasks", { title: "For bob", projectId: w.launch, assigneeId: w.bob });
+    eq([t.status, t.json?.assigneeId], [201, w.bob], "anyone in the workspace may be assigned");
+    const moved = await rest(w, aliceKey, "PATCH", `/tasks/${t.json.id}`, { projectId: made.json.id });
+    eq([moved.status, moved.json?.assigneeId], [200, w.bob], "and stays on it when it moves");
+    eq((await rest(w, aliceKey, "POST", `/tasks/${t.json.id}/comments`, { body: "@bob hi" })).status, 201, "comments as before");
+  });
+  await test("before 0058: a Slack link preview is a full card", async () => {
+    eq((await loadCard(slackDb(w), w.alice, w.w1, w.aliceTask))?.closedProject, false, "a task");
+    eq((await loadProjectCard(slackDb(w), w.alice, w.w1, w.launch))?.closedProject, false, "a project");
+  });
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -3609,6 +3806,20 @@ export async function main(argv: string[]): Promise<number> {
   const sets: [string, string[]][] = [["0001..0047+0050..0058", set47], ["0001..0058", setAll]];
   const only = argv[0];
   const checks = { test, eq, ok, raises };
+  if (!only || only === "0050") {
+    // the live database before wave 4: the API and MCP flows again, with the edge functions' 0058 checks in
+    current = "0001..0050 (before 0058)";
+    const t0 = Date.now();
+    const w = await buildWorld(set50);
+    await legitSuite(w);
+    await clearRates(w);
+    await attackSuite(w);
+    await clearRates(w);
+    await beforeAccessSuite(w);
+    console.log(`${current}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    await w.closeDriver();
+    await w.pg.close();
+  }
   if (!only || only === "0058") {
     current = "0001..0050 + 0058, then 0051..0057";
     const t0 = Date.now();
@@ -3618,7 +3829,7 @@ export async function main(argv: string[]): Promise<number> {
     await pg.close();
   }
   for (const [name, files] of sets) {
-    if (only === "0058") continue;
+    if (only === "0058" || only === "0050") continue;
     if (only === "0047" && name !== sets[0][0]) continue;
     if (only === "0049" && name !== sets[1][0]) continue;
     current = name;
