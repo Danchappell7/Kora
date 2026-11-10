@@ -89,6 +89,16 @@ the same rules as the app, enforced by the database:
   `DELETE` archives instead, and `PATCH {"archived": false}` restores.
 - A task always lives in its project's workspace; its assignee must be a
   member there (personal tasks: only you).
+- **Project access** (once a workspace's owner switches it on, database update
+  0058): a project is Whole workspace, Members only or Private, and you see,
+  comment on or edit it as your role on it allows. A project you can't see is
+  `404 not_found`; one you can see but not change answers
+  `403 forbidden` "You can see this project but can't change it." (a task in
+  it: "You can see this task but can't comment on it." when you can only
+  view). An assignee must be able to see the task's project
+  (`422 validation_failed`, "That person can't see this project."). Guests
+  see only the projects they're on, and only those projects' people in
+  `/members`.
 
 ## Endpoints
 
@@ -99,7 +109,7 @@ the same rules as the app, enforced by the database:
 | GET | `/members?workspace=` | A workspace's members (use `userId` as `assigneeId`) |
 | GET | `/projects?workspace=&include_archived=` | Projects (`workspace=personal` for personal ones) |
 | POST | `/projects` | Create a project |
-| GET / PATCH | `/projects/{id}` | Read / update (name, emoji, colour, description, status, archived) |
+| GET / PATCH | `/projects/{id}` | Read / update (name, emoji, colour, description, status, archived). Each project has `visibility` (`workspace`, `members` or `private`; `POST /projects` may set it, else the workspace's default); it's changed in Kanbo, not here |
 | GET | `/sections?project=` | A project's sections, in board order |
 | POST | `/sections` | Add a section |
 | GET | `/tasks` | List and filter tasks (below) |

@@ -185,6 +185,14 @@ curl -sS -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/notify" 
   to 07:00 on the wall clock on the nights the clocks change too. A time the
   clocks skip (01:30 on the last Sunday in March) means the moment just past
   the gap (02:30); one that happens twice means the first.
+- **Project access** (database update 0058, once a workspace's owner switches
+  it on): every notice follows it. Someone who can't see a task's project
+  isn't told about it (assigned, mentioned, a comment, an approval, kudos, an
+  update or an ask), a held notice is checked again before it goes, and the
+  digest and the morning due list name only work the person can see. The
+  database drops Inbox items and held notices for people who can't see the
+  work too, and clears what's waiting when a project becomes more private.
+  What's already been sent isn't taken back.
 - Snoozes are `notification_snoozes` rows: your own, for tasks you can see
   (guests too: it's your Inbox). The Inbox deletes a row once you've dealt
   with the thread that came back; the database tidies ended ones after 30 days.

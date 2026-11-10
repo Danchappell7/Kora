@@ -84,6 +84,12 @@ curl -s -X POST "https://htnchiljplrnjkwimgla.supabase.co/functions/v1/public-fo
 
 ## The rules it enforces
 
+- **Private projects aren't named** (database update 0058, once a
+  workspace's owner switches project access on). A form on a Members only or
+  Private project shows the form's own name, with no project name, emoji or
+  colour, and its requests go to someone who can edit that project (else the
+  workspace's owner).
+
 - **Strict whitelist.** Only `title`, `name`, `email`, `description`,
   `priority`, `dueDate` (and the honeypot `website`) are read; a field the
   form doesn't ask for is ignored. Everything else in the task (project,

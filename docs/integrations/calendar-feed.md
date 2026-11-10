@@ -113,6 +113,10 @@ calendar**. The panel offers:
   delete from public.calendar_feed_tokens where user_id = '<user id>';
   ```
 
+- **Project access** (database update 0058, once a workspace's owner switches
+  it on): the feed carries only tasks in projects the person can see, the
+  same as the app (it reads them through `tasks_visible_to`). A project that
+  becomes private drops out at the calendar app's next refresh.
 - **Time zones:** times are written in UTC, so every calendar app places them correctly. Planned slots are read as Europe/London wall-clock times, including on the two clock-change days.
 
 ## Troubleshooting

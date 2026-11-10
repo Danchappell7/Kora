@@ -210,6 +210,14 @@ It answers `{"due":1,"posted":1,…}` and the stand-up appears in the channel.
   - "Kanbo couldn't check that the daily post is running…" (quiet): `slack-post`
     isn't deployed, or is an older version without `status`.
   Members and guests never see these.
+- **Private projects stay out of the channel** (database update 0058, once a
+  workspace's owner switches project access on). A Slack channel counts as
+  the whole team's, so only Whole workspace projects are posted: the daily
+  stand-up counts the rest without naming them ("+3 tasks in private
+  projects"), Pulse's stand-up, risks and write-up leave them out ("Leaves out
+  private projects"), and a Members only or Private project's update isn't
+  offered for Slack (`slack-post` refuses it with "This project is private,
+  so it isn't posted to the team channel."). Owners get no exception.
 - **The daily stand-up** is written on the server from the workspace's tasks
   (what was finished since the last workday, what's in progress, due today,
   overdue and blocked, per person; people with nothing to report are left

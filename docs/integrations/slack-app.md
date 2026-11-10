@@ -35,6 +35,12 @@ updates. Both sit in **Settings › Calendar & integrations**.
   account's (or Slack didn't share one) an explicit "This Slack account is
   mine", so a link someone else sends you can't quietly tie their Slack to your
   Kanbo.
+- **Private projects unfurl as a neutral card** (database update 0058, once a
+  workspace's owner switches project access on). A link to a Members only or
+  Private project, or to a task in one, shows "A private Kanbo project" (or
+  "A task in a private Kanbo project") with only an Open in Kanbo button: no
+  title, status, assignee or counts, whoever pasted it. The Home tab and
+  replies only you see are yours, so they show what you can see.
 - **Kanbo always acts as the linked person.** Every task read and write runs in
   a transaction as them (`SET LOCAL ROLE authenticated` + their JWT claims), so
   row-level security decides exactly as in the app, through the public API's

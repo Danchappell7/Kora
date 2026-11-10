@@ -887,6 +887,77 @@ steps; nothing breaks while you wait.
 If 0041, 0042 or 0048 is ever run again, nothing here needs running again (each
 file's "Running other files again" table says why).
 
+### Step 19: Project access (database update 0058)
+
+Who can see each project: a per-business switch, **Project access**, that lets a
+project be Whole workspace, Members only or Private, and shows guests only the
+projects they're added to and those projects' people. Emails, push notices, the
+digest, Slack, webhooks, public forms, the API and Claude/ChatGPT follow it too.
+The details, the rank table and the rollback are in
+[database-0058.md](docs/integrations/database-0058.md).
+
+The website can go out before any of this, and running 0058 changes nothing
+anyone can see: every business starts with the switch **off**, and while it's
+off every person reads and writes exactly what they do today. Nothing changes
+until you turn it on for a business, and turning it off again puts everything
+back at once, with nothing lost.
+
+**Do it after Step 18, in this order.** Any number of days can pass between the
+steps; nothing breaks while you wait.
+
+1. **Deploy the nine functions** (no new secrets, no new schedule). They're
+   safe now, before 0058: until it's in they fall back to today's rule, and
+   with it in and the switch off they answer as today too.
+   - `notify`, `daily-reminders`: emails, push notices and the digest name only
+     work the person can see.
+   - `slack-post`, `slack-standup`, `slack-app`: only Whole workspace projects
+     are posted, stood up or unfurled with their titles (a private one is a
+     count, "+3 tasks in private projects", or "A private Kanbo project").
+   - `public-form`: a private project's form shows the form's name, never the
+     project's.
+   - `invite-member`: a guest's invite says they'll see only the projects
+     they're added to.
+   - `api`, `mcp`: no writes into a project you can only view, and no
+     assigning someone who can't see it.
+
+   It runs from `~/Downloads/kora-app` and stops with "The new code isn't in this
+   folder yet." (before asking for your token) if the folder doesn't have it.
+
+   ```bash
+   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0058_project_access.sql ] && [ -f supabase/functions/_shared/projectAccess.ts ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && R=htnchiljplrnjkwimgla && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-standup --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-post --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy public-form --no-verify-jwt --project-ref $R --use-api && supabase functions deploy invite-member --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && echo "All nine functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   ```
+2. **Run 0058** in the SQL editor
+   (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>), after
+   Step 18's files: copy it with
+   `pbcopy < ~/Downloads/kora-app/supabase/migrations/0058_project_access.sql`,
+   paste, press **Run** ("Success. No rows returned"), then run the VERIFY query
+   at the end of the file: every column `true`. If it stops with "0058 needs …",
+   run the file it names first, then 0058 again. It's safe to run again: it
+   keeps everyone's projects and settings, and adds nobody back.
+3. **Reload the app** and check: Settings › Workspace (as the business's owner)
+   shows **Project access** with the switch **off** and "When you turn it on:"
+   saying what would change for each guest. Admins and members don't see it.
+   Every project, lock-free, reads as before.
+4. **Turn it on for one business first.** Pick the one with the fewest guests.
+   In each guest's projects, open About › Contributors and tick them (a guest is
+   added as a commenter), until the preview names every guest with the projects
+   they should keep. Choose "New projects start as" and whether members may make
+   projects private, then switch it on and confirm. Then mark that business's
+   HR, finance and leadership projects Members only or Private (About › People &
+   access › Manage); it asks before anyone loses access and names them. Check
+   it as a guest would (or ask one): they see only their projects. Do the other
+   businesses on later days, one at a time.
+5. **Rollback, if you need it.** Switch Project access off in Settings ›
+   Workspace: instant, and the people, visibility and settings are kept for next
+   time. If the app can't be reached, in the SQL editor:
+   `update public.workspaces set project_access = false where id = '<workspace id>';`
+   (or `… where project_access;` for every business). The full undo, only if
+   0058 itself is broken, is `supabase/rollback/0058_project_access_undo.sql`
+   (its VERIFY block too); it keeps the data.
+
+If 0025, 0041, 0042, 0043, 0046, 0047 or 0048 is ever run again, nothing more
+is needed: each puts project access back itself (0052 to 0056 too).
+
 ---
 
 ## Reference

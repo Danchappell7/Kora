@@ -769,6 +769,14 @@ limit, for a delivery that already arrived, or for sending a test event again;
   endpoints are **switched off** ("the person who added it no longer has
   access") and nothing more is sent. A workspace owner or admin can delete it
   and add a new one.
+- **Project access** (database update 0058, once a workspace's owner switches
+  it on): an endpoint hears only about work its *viewer* can see, where the
+  viewer is whoever last set its address (or who added it). Changing the
+  address makes you the viewer. A task that moves into a project the viewer
+  can't see isn't sent (no "gone" event); deliveries still waiting when a
+  project becomes Members only or Private, or the viewer loses access, are
+  marked failed with "not sent: no longer visible", and "send again" doesn't
+  bring them back.
 - Endpoints, secrets and deliveries are in server-only tables; people manage
   them through checked database functions, never directly.
 
