@@ -1,9 +1,13 @@
 /* Meetings (0056) in the demo: Run meeting (or Join when one's live), the start sheet (what Kanbo found, the
-   kind, who's coming, where the notes go), the room (the presenter's keys move everyone; a viewer follows, steps
-   away and comes back; notes, decisions and actions; Make task through Extract tasks; End and the recap), an
-   ended meeting's recap with each action's state now, and where the buttons show (never for a guest). */
+   kind, who's coming, where the notes go and who reads them there), the room (the presenter's keys move everyone;
+   a viewer follows, steps away and comes back; notes, decisions and actions; an action's Make task in one click
+   with Undo, a decision's follow-up through Extract tasks; last meeting's loose actions made into tasks or
+   carried over; leaving says it's still live; End and the recap, a leadership meeting's notes never saved into a
+   doc by themselves), an ended meeting's recap with each action's state now, and where the buttons show (never
+   for a guest; the other kind of meeting beside Run meeting; nothing left live over 12 hours). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ToastProvider } from "../Toast";
 import { PROJECTS, TASKS, WORKSPACES, MEMBERS as PEOPLE, dayOffset } from "../../data/data";
 import type { Task, WorkspaceEvent, WorkspaceMember } from "../../data/types";
 import { getMeeting, listItems, memAct, resetMeetings, startMeeting } from "../../lib/meetings/sync";
@@ -38,8 +42,9 @@ const startOne = async (presenter = "m-self", o: { preset?: "team" | "leadership
 function Request() { const r = useMeetingRequest(); return <output data-testid="req">{r ? JSON.stringify(r) : ""}</output>; }
 const room = (id: string, me = "m-self", extra: Partial<Parameters<typeof MeetingRoom>[0]> = {}) => {
   const createTasks = vi.fn((rows: unknown[]): string[] => rows.map(() => "t-new"));
-  const props = { meetingId: id, data: data(me), onClose: vi.fn(), onOpenTask: vi.fn(), onOpenDoc: vi.fn(), createTasks, ...extra };
-  return { ...render(<MeetingRoom {...props} />), props: { ...props, createTasks } };
+  const deleteTask = vi.fn();
+  const props = { meetingId: id, data: data(me), onClose: vi.fn(), onOpenTask: vi.fn(), onOpenDoc: vi.fn(), createTasks, deleteTask, ...extra };
+  return { ...render(<ToastProvider><MeetingRoom {...props} /></ToastProvider>), props: { ...props, createTasks, deleteTask } };
 };
 const people = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>(".kmtg-people")!;
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 200)); });
@@ -59,6 +64,25 @@ describe("Run meeting", () => {
     const join = await screen.findByRole("button", { name: "Join Foundrise team meeting, live now" });
     fireEvent.click(join);
     expect(JSON.parse(screen.getByTestId("req").textContent!)).toEqual({ kind: "open", id: m.id });
+  });
+  it("a live meeting of the other kind sits beside Run meeting, never in its way", async () => {
+    const scope: MeetingScope = { workspaceId: WS, preset: "team", canLead: true };
+    await startOne("m-self", { preset: "leadership" });
+    render(<RunMeetingButton scope={scope} />);
+    expect(await screen.findByRole("button", { name: /^Join Foundrise team meeting, live now/ })).toHaveTextContent("Leadership · Live");
+    expect(screen.getByRole("button", { name: "Run meeting" })).toBeInTheDocument();
+  });
+  it("never offers to join a meeting left live over 12 hours", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 10, 9, 18));
+      await startOne();
+      vi.setSystemTime(new Date(2026, 10, 10, 9));
+      render(<RunMeetingButton scope={{ workspaceId: WS, preset: "team", canLead: true }} />);
+      await settle();
+      expect(screen.getByRole("button", { name: "Run meeting" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /live now/ })).toBeNull();
+    } finally { vi.useRealTimers(); }
   });
   it("Pulse offers it to the team, never to a guest", () => {
     const props = { tasks: live.filter((t) => t.workspaceId === WS), members: MEMBERS.filter((m) => m.workspaceId === WS), currentUserId: "m-self", workspaceName: "Foundrise",
@@ -87,12 +111,18 @@ describe("the start sheet", () => {
     expect(within(dialog).getByText(/^4 people/)).toBeInTheDocument();   // never the guest
     expect(within(dialog).getByText("Kanbo opens with")).toBeInTheDocument();
     expect((within(dialog).getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toMatch(/^Foundrise team meeting, /);
-    // who's coming: the team (you can't leave yourself out); the notes go in a project of yours
+    // who's coming: the team (you can't leave yourself out)
     expect(within(people(dialog)).getAllByRole("button", { pressed: true })).toHaveLength(4);
     for (const name of ["You", "Maya", "Sana", "Theo"]) expect(within(people(dialog)).getByRole("button", { name, pressed: true })).toBeInTheDocument();
     fireEvent.click(within(people(dialog)).getByRole("button", { name: "Theo" }));
     expect(within(people(dialog)).getByRole("button", { name: "Theo" })).toHaveAttribute("aria-pressed", "false");
-    expect(within(dialog).getByRole("combobox", { name: /Notes doc goes in/ })).toHaveValue("p-launch");
+    // the notes stay in the recap unless a project's chosen, and then it says who reads docs there
+    const notesGo = within(dialog).getByRole("combobox", { name: "Notes go" });
+    expect(notesGo).toHaveValue("");
+    expect(within(dialog).getByText("Only the people this meeting is for can read the recap.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "New Meetings project" })).toBeInTheDocument();
+    fireEvent.change(notesGo, { target: { value: "p-launch" } });
+    expect(within(dialog).getByText("Everyone at Foundrise, guests too, can read docs in its projects.")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Start meeting" }));
     await waitFor(() => expect(props.onStarted).toHaveBeenCalled());
     const m = props.onStarted.mock.calls[0][0];
@@ -102,7 +132,7 @@ describe("the start sheet", () => {
     expect(m.agenda.filter((a: AgendaItem) => a.kind === "person").map((a: AgendaItem & { personId: string }) => a.personId).sort()).toEqual(["m-1", "m-2", "m-3", "m-self"]);
     expect(m.agenda.some((a: AgendaItem) => a.kind === "actions")).toBe(true);
   });
-  it("a leadership meeting is for owners and admins, and offers a Leadership project for the notes", async () => {
+  it("a leadership meeting is for owners and admins; its notes stay in the recap unless someone chooses a doc, and says who'd read it", async () => {
     const { props } = sheet({ preset: "leadership" });
     const dialog = screen.getByRole("dialog", { name: "Run a meeting" });
     expect(within(dialog).getByRole("button", { name: "Leadership meeting" })).toHaveAttribute("aria-pressed", "true");
@@ -110,8 +140,13 @@ describe("the start sheet", () => {
     expect(within(people(dialog)).getAllByRole("button")).toHaveLength(1);
     expect(within(people(dialog)).getByRole("button", { name: "You" })).toBeDisabled();
     expect(within(dialog).getByText(/Guests never see them/)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "New Leadership project" }));
-    expect(props.onCreateProject).toHaveBeenCalledWith(expect.objectContaining({ name: "Leadership", workspaceId: WS }));
+    const notesGo = within(dialog).getByRole("combobox", { name: "Notes go" });
+    expect(notesGo).toHaveValue("");
+    // (no "Leadership" project is offered: everyone at the business would read it)
+    expect(within(dialog).queryByRole("button", { name: /New .* project/ })).toBeNull();
+    fireEvent.change(notesGo, { target: { value: "p-launch" } });
+    expect(within(dialog).getByText("Saved there only when you choose, at the end. Everyone at Foundrise, guests too, can read docs in its projects.")).toBeInTheDocument();
+    expect(props.onCreateProject).not.toHaveBeenCalled();
   });
   it("a Group meeting is leadership only, and never goes round one business's people", async () => {
     sheet({ preset: "leadership", workspaceIds: [WS, "ws-courtside"] });
@@ -124,7 +159,7 @@ describe("the start sheet", () => {
 });
 
 describe("the room", () => {
-  it("the presenter's keys move the agenda for everyone; Esc leaves without ending it", async () => {
+  it("the presenter's keys move the agenda for everyone; Esc leaves without ending it, and says it's still live", async () => {
     const m = await startOne();
     const { props } = room(m.id);
     await screen.findByRole("heading", { name: "Foundrise team meeting" });
@@ -141,6 +176,35 @@ describe("the room", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(props.onClose).toHaveBeenCalled();
     expect((await getMeeting(m.id))?.status).toBe("live");
+    expect(await screen.findByText("The meeting is still live, and you're presenting")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
+  });
+  it("Esc in an empty note goes back to the stage; only the next Esc leaves", async () => {
+    const m = await startOne();
+    const { props } = room(m.id);
+    await screen.findByRole("heading", { name: "Foundrise team meeting" });
+    const notes = screen.getByRole("complementary", { name: "Notes" });
+    const composer = within(notes).getByRole("textbox");
+    composer.focus();
+    fireEvent.keyDown(composer, { key: "Escape" });
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByRole("main"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+  it("on a phone, Previous, Next and Notes still have names, and the presenter can hand over", async () => {
+    const real = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ ...real(q), matches: q.includes("759px") })) as typeof window.matchMedia;
+    try {
+      const m = await startOne();
+      room(m.id);
+      await screen.findByRole("heading", { name: "Foundrise team meeting" });
+      expect(screen.getByRole("button", { name: "Previous" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Notes" })).toBeInTheDocument();
+      // the demo's teammates join a moment later: then Hand over shows
+      expect(await screen.findByRole("button", { name: "Hand over" }, { timeout: 4000 })).toBeInTheDocument();
+    } finally { window.matchMedia = real; }
   });
   it("watching, you follow the presenter; step away and come back to their place", async () => {
     const m = await startOne("m-1");
@@ -164,7 +228,7 @@ describe("the room", () => {
     await waitFor(async () => expect(await getMeeting(m.id)).toMatchObject({ presenterId: "m-self", place: 2, placeKey: "risks" }));
     expect(screen.getByRole("heading", { name: "Radar risks" })).toBeInTheDocument();
   });
-  it("logs a decision and an action with an owner on this item; Make task goes through Extract tasks and links the task", async () => {
+  it("logs a decision and an action with an owner on this item; an action's Make task is one click (with Undo), a decision's follow-up goes through Extract tasks", async () => {
     const m = await startOne();
     const { props } = room(m.id);
     await screen.findByRole("heading", { name: "Foundrise team meeting" });
@@ -181,20 +245,51 @@ describe("the room", () => {
     await within(notes).findByText("Book the load test");
     expect(within(notes).getByText("Theo")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Agenda" })).toHaveTextContent(/Maya Lin\s*2/);
-    // the action becomes a task (the review has Theo as its owner), and the line links to it
+    // the action becomes a task in one click: its owner, in the notes project, linked; Undo takes it back
     const line = within(notes).getByText("Book the load test").closest("li")!;
+    expect(within(line as HTMLElement).queryByRole("button", { name: "Follow-up task" })).toBeNull();
     fireEvent.click(within(line as HTMLElement).getByRole("button", { name: "Make task" }));
+    expect(props.createTasks).toHaveBeenCalledWith([{ title: "Book the load test", projectId: "p-launch", assigneeId: "m-2" }]);
+    expect(screen.queryByRole("dialog", { name: /tasks/i })).toBeNull();
+    await waitFor(async () => expect((await listItems(m.id)).find((i) => i.kind === "action")?.taskId).toBe("t-new"));
+    expect(await screen.findByText("Task made for Theo in Q3 Product Launch")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(props.deleteTask).toHaveBeenCalledWith("t-new");
+    await waitFor(async () => expect((await listItems(m.id)).find((i) => i.kind === "action")?.taskId).toBeNull());
+    // a decision's follow-up: Extract tasks reads the line
+    const decision = within(notes).getByText("Edge sessions ship Friday").closest("li")!;
+    fireEvent.click(within(decision as HTMLElement).getByRole("button", { name: "Follow-up task" }));
     const extract = await screen.findByRole("dialog", { name: /tasks/i });
-    expect(within(extract).getByRole("textbox")).toHaveValue("Actions\n- Theo to book the load test");
+    expect(within(extract).getByRole("textbox")).toHaveValue("Actions\n- Edge sessions ship Friday");
     await act(async () => {
       const go = within(extract).getAllByRole("button").find((b) => /^Find|^Read|^Next|^Review/.test(b.textContent ?? ""));
       fireEvent.click(go!);
       await new Promise((r) => setTimeout(r, 50));
     });
-    const create = await within(extract).findByRole("button", { name: /^Create 1 task/ });
-    fireEvent.click(create);
-    expect(props.createTasks).toHaveBeenCalledWith([expect.objectContaining({ title: expect.stringMatching(/^Book the load test/i), assigneeId: "m-2" })]);
-    await waitFor(async () => expect((await listItems(m.id)).find((i) => i.kind === "action")?.taskId).toBe("t-new"));
+    fireEvent.click(await within(extract).findByRole("button", { name: /^Create 1 task/ }));
+    expect(props.createTasks).toHaveBeenLastCalledWith([expect.objectContaining({ title: expect.stringMatching(/^Edge sessions ship/i) })]);
+    await waitFor(async () => expect((await listItems(m.id)).filter((i) => i.kind === "action" && i.taskId === "t-new")).toHaveLength(1));
+  });
+  it("last meeting's actions that never became tasks: Make task or Carry over, right there", async () => {
+    const r = await startMeeting({ workspaceId: WS, workspaceIds: [WS], preset: "team", title: "Foundrise team meeting", previousId: DEMO_TEAM_MEETING, me: "m-self",
+      attendees: ["m-1"], docProjectId: "p-launch", agenda: [AGENDA[0], { key: "actions", kind: "actions", title: "Last meeting's actions",
+        from: { id: DEMO_TEAM_MEETING, title: "Last week", endedAt: null }, actions: [
+          { itemId: "mi-demo-8", body: "Chase legal on the pricing page copy", ownerId: "m-3", taskId: null, due: dayOffset(-2) },
+          { itemId: "mi-x", body: "Print the launch one-pager", ownerId: "m-1", taskId: null, due: null },
+        ] }, AGENDA[3]] });
+    if (!r.ok) throw new Error(r.message);
+    const { props } = room(r.data.id);
+    await screen.findByRole("heading", { name: "Foundrise team meeting" });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(screen.getByRole("heading", { name: "Last meeting's actions" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Carry over: Print the launch one-pager" }));
+    await waitFor(async () => expect((await listItems(r.data.id)).map((i) => [i.body, i.ownerId, i.agendaKey, i.taskId]))
+      .toEqual([["Print the launch one-pager", "m-1", "actions", null]]));
+    expect(await screen.findByText("Carried over")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Make a task: Chase legal on the pricing page copy" }));
+    expect(props.createTasks).toHaveBeenCalledWith([{ title: "Chase legal on the pricing page copy", projectId: "p-launch", assigneeId: "m-3" }]);
+    await waitFor(async () => expect((await listItems(r.data.id)).find((i) => i.body.startsWith("Chase legal"))?.taskId).toBe("t-new"));
+    expect(screen.queryByRole("button", { name: /Carry over: Chase legal/ })).toBeNull();
   });
   it("the wrap-up ends it: the recap goes to everyone asked, and the room becomes the recap", async () => {
     const m = await startOne();
@@ -209,6 +304,18 @@ describe("the room", () => {
     expect(ended).toMatchObject({ status: "ended", endedBy: "m-self", docProjectId: "p-launch" });
     expect(ended?.docId).toBeTruthy();   // the notes doc was saved
     expect(screen.getByRole("button", { name: "Open notes doc" })).toBeInTheDocument();
+  });
+  it("a leadership meeting's notes never go into a project doc by themselves: only Save notes, which says who'd read it", async () => {
+    const m = await startOne("m-self", { preset: "leadership" });
+    room(m.id);
+    await screen.findByRole("heading", { name: "Foundrise team meeting" });
+    fireEvent.click(screen.getByRole("button", { name: "End meeting" }));
+    expect(screen.getByText("Everyone at Foundrise, guests too, can read docs in Q3 Product Launch.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save notes to Q3 Product Launch" })).toBeInTheDocument();
+    expect(screen.getByText(/^The recap goes to /)).not.toHaveTextContent(/doc/);
+    fireEvent.click(screen.getByRole("button", { name: /^End/ }));
+    expect(await screen.findByText("Recap", { selector: ".kmtg-eyebrow" })).toBeInTheDocument();
+    expect((await getMeeting(m.id))?.docId).toBeNull();
   });
   it("an ended meeting opens as its recap: each action and where it stands now", async () => {
     room(DEMO_TEAM_MEETING);

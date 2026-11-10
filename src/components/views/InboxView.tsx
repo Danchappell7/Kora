@@ -1238,7 +1238,7 @@ export function InboxView({
   } else if (segment === "updates") {
     body = updateItems.length ? (
       <section className="kinbox-group" aria-label="Updates">
-        <SectionLabel count={updateItems.length}>{updateItems.some((a) => a.kind === "update") ? "Project updates" : "Meeting recaps"}</SectionLabel>
+        <SectionLabel count={updateItems.length}>{!updateItems.some((a) => a.kind === "meeting") ? "Project updates" : updateItems.some((a) => a.kind !== "meeting") ? "Updates and recaps" : "Meeting recaps"}</SectionLabel>
         <div role="list" className="kinbox-rows">{topRows(rows)}</div>
         <p className="kinbox-note">{updateItems.some((a) => a.kind === "meeting")
           ? "Updates on the projects you own or work on, replies on yours, anything an update asks you, and the recaps of meetings you were in."

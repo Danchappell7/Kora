@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../../data/types";
 import {
-  actionState, agendaFacts, assembleAgenda, itemsLine, mayRun, meetingPeople, meetingTitle, overviewLede, PRESETS, sectionOf, type AgendaInput,
+  actionState, agendaFacts, assembleAgenda, goalsWords, itemsLine, mayRun, meetingPeople, meetingTitle, overviewLede, PRESETS, sectionOf, type AgendaInput,
 } from "./agenda";
 import { parseAgenda, type MeetingItem } from "./types";
 import { parseActivityMeta } from "../activityMeta";
@@ -64,6 +64,29 @@ describe("the agenda", () => {
     expect(f.people[2]).toMatchObject({ off: "Off today", offNow: true });
     expect(f.offToday).toEqual(["Ann"]);
     expect(JSON.stringify(f)).not.toContain("gus");
+  });
+  it("says whose work is waiting on someone's, and how much of theirs falls due while they're away", () => {
+    const f = agendaFacts(input({ tasks: [...TASKS, task({ id: "ann-due", assigneeId: "ann", dueDate: "2026-11-12" }), task({ id: "ann-later", assigneeId: "ann", dueDate: "2026-11-20" })],
+      offNote: (u) => (u === "ann" ? { label: "Off until Mon", now: true, from: "2026-11-09", to: "2026-11-13" } : null) }));
+    const ann = f.people.find((p) => p.personId === "ann")!;
+    expect(ann.offDue).toBe(1);
+    expect(ann.holding).toEqual([{ taskId: "blocked-max", title: "blocked-max", whoId: "max" }]);
+    expect(f.people.find((p) => p.personId === "max")!.holding).toBeUndefined();
+  });
+  it("counts goals the way Pulse and Goals do: a goal's key results that are behind sit inside it", () => {
+    const goals = [goal({ id: "g-grow", name: "Grow weekly actives", status: "at_risk" }), goal({ id: "kr-1", name: "Lift activation", status: "at_risk", parentId: "g-grow" }),
+      goal({ id: "kr-2", name: "Win back accounts", status: "off_track", parentId: "g-grow" }), goal({ id: "g-ship", name: "Ship v2", status: "on_track" }),
+      goal({ id: "kr-3", name: "Beta to 50 teams", status: "off_track", parentId: "g-ship" })];
+    const f = agendaFacts(input({ goals }));
+    expect(f.goals.map((g) => [g.id, g.krs?.map((k) => k.id) ?? [], g.parentName ?? null])).toEqual([
+      ["kr-3", [], "Ship v2"], ["g-grow", ["kr-2", "kr-1"], null],
+    ]);
+    expect([f.goalsBehind, f.keyResultsBehind]).toEqual([1, 1]);
+    expect(overviewLede(f, ["goals"]).map((p) => p.text).join("")).toBe("1 goal and 1 key result are behind pace.");
+    expect(goalsWords(f)).toBe("1 goal and 1 key result");
+    // and the stored agenda keeps them
+    const stored = parseAgenda(JSON.parse(JSON.stringify(assembleAgenda(f, ["goals"]))));
+    expect(stored.find((x) => x.kind === "goals")).toMatchObject({ goals: [{ id: "kr-3", parentName: "Ship v2" }, { id: "g-grow", krs: [{ id: "kr-2" }, { id: "kr-1" }] }] });
   });
   it("a team meeting never carries a leadership-only goal; a leadership one does", () => {
     expect(agendaFacts(input()).goals.map((g) => g.id)).toEqual(["g-team"]);

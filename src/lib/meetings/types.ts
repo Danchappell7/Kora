@@ -25,6 +25,10 @@ export interface AgendaGoal {
   id: string; name: string; pct: number; why: "off_track" | "at_risk" | "overdue" | "pace";
   /** "Behind pace by 12%", "Off track", "Past due at 40%" */
   line: string; ownerId?: string | null; workspaceId?: string | null; due?: string | null;
+  /** a key result whose goal isn't behind itself: the goal's name */
+  parentName?: string;
+  /** a goal's own key results that are behind too (counted with it, as Pulse and Goals count) */
+  krs?: { id: string; name: string; pct: number; line: string }[];
 }
 export interface AgendaProject {
   id: string; name: string; emoji?: string; color?: string;
@@ -42,6 +46,10 @@ export type AgendaItem =
       key: string; kind: "person"; title: string; personId: string; role?: string;
       /** "Off today", "Off until Mon" (never the reason) */
       off?: string; offNow?: boolean;
+      /** how many of their open tasks fall due while they're away */
+      offDue?: number;
+      /** others' work waiting on theirs: "Maya's “Ship onboarding”" (a few) */
+      holding?: { taskId: string; title: string; whoId: string | null }[];
       done: AgendaEntry[]; today: AgendaEntry[]; blocked: AgendaEntry[];
       /** how many more there were than shown */
       more: { done: number; today: number; blocked: number };
@@ -138,6 +146,9 @@ export function parseAgendaItem(raw: unknown): AgendaItem | null {
         key, kind: "person", title: title || "Someone", personId,
         ...(str(r.role, 80) ? { role: str(r.role, 80) } : {}),
         ...(str(r.off, 60) ? { off: str(r.off, 60), offNow: r.offNow === true } : {}),
+        ...(num(r.offDue) ? { offDue: Math.max(0, Math.round(num(r.offDue)!)) } : {}),
+        ...(list(r.holding).length ? { holding: list(r.holding).map((x) => { const o = obj(x); const taskId = str(o?.taskId, 64), t = str(o?.title, 200);
+          return taskId && t ? { taskId, title: t, whoId: str(o?.whoId, 64) ?? null } : null; }).filter((x): x is { taskId: string; title: string; whoId: string | null } => !!x).slice(0, 4) } : {}),
         done: entries(r.done), today: entries(r.today), blocked: entries(r.blocked),
         more: { done: Math.max(0, num(more?.done) ?? 0), today: Math.max(0, num(more?.today) ?? 0), blocked: Math.max(0, num(more?.blocked) ?? 0) },
         ...(load && num(load.hours) !== undefined && num(load.capacity) !== undefined ? { load: { hours: num(load.hours)!, capacity: num(load.capacity)! } } : {}),
@@ -156,8 +167,12 @@ export function parseAgendaItem(raw: unknown): AgendaItem | null {
         const o = obj(x);
         const id = str(o?.id, 64), name = str(o?.name, 200);
         if (!o || !id || !name) return null;
+        const krs = list(o.krs).map((k) => { const ko = obj(k); const kid = str(ko?.id, 64), kn = str(ko?.name, 200);
+          return ko && kid && kn ? { id: kid, name: kn, pct: Math.max(0, Math.min(100, Math.round(num(ko.pct) ?? 0))), line: str(ko.line, 120) ?? "" } : null; })
+          .filter((k): k is NonNullable<AgendaGoal["krs"]>[number] => !!k).slice(0, 12);
         return { id, name, pct: Math.max(0, Math.min(100, Math.round(num(o.pct) ?? 0))), why: WHYS.has(String(o.why)) ? o.why as AgendaGoal["why"] : "at_risk",
-          line: str(o.line, 120) ?? "", ownerId: str(o.ownerId, 64) ?? null, workspaceId: str(o.workspaceId, 64) ?? null, due: str(o.due, 10) ?? null };
+          line: str(o.line, 120) ?? "", ownerId: str(o.ownerId, 64) ?? null, workspaceId: str(o.workspaceId, 64) ?? null, due: str(o.due, 10) ?? null,
+          ...(str(o.parentName, 200) ? { parentName: str(o.parentName, 200) } : {}), ...(krs.length ? { krs } : {}) };
       }).filter((x): x is AgendaGoal => !!x).slice(0, 20) };
     case "projects":
       return { key: "projects", kind: "projects", title: title || "Projects to look at", projects: list(r.projects).map((x): AgendaProject | null => {

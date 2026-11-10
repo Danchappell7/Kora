@@ -9,7 +9,8 @@
        two decisions and three actions;
      • both recaps in Daniel's Inbox (kind "meeting").
    And the teammates act as their browsers would: start a team meeting
-   at Foundrise and Maya and Theo join a moment later; hand the agenda
+   at Foundrise and Maya and Sana join a moment later (Theo's off
+   today); hand the agenda
    to one of them and they present, a step every few seconds, so you
    see the room follow the presenter's place. Nothing leaves the browser.
    ============================================================ */
@@ -60,12 +61,12 @@ function seed(db: { meetings: Map<string, Meeting>; items: Map<string, MeetingIt
     agenda: agenda("The team finished 5 tasks. The launch deck is the critical path, and onboarding is waiting on design tokens.",
       [["Maya Lin", "person"], ["Theo Vance", "person"], ["Sana Rao", "person"], ["Daniel Okai", "person"], ["Radar risks", "risks"]]),
     place: 6, placeKey: "wrap", movedAt: teamEnd, presenterId: "m-1", startedBy: "m-1", startedAt: at(3, 10, 2), endedAt: teamEnd, endedBy: "m-1",
-    previousId: null, docId: null, docProjectId: "p-launch",
+    previousId: null, docId: null, docProjectId: null,
   });
   const w = (m: number) => at(3, 10, m);
   db.items.set(DEMO_TEAM_MEETING, [
     item(DEMO_TEAM_MEETING, "mi-demo-1", "decision", "Launch stays on the date we picked: the deck is the critical path", { by: "m-1", when: w(6), agendaKey: "overview" }),
-    item(DEMO_TEAM_MEETING, "mi-demo-2", "decision", "The design tokens v2 review moves to Wednesday", { by: "m-3", when: w(14), agendaKey: "person:Sana Rao" }),
+    item(DEMO_TEAM_MEETING, "mi-demo-2", "decision", "The design tokens v2 review moves to Monday", { by: "m-3", when: w(14), agendaKey: "person:Sana Rao" }),
     item(DEMO_TEAM_MEETING, "mi-demo-3", "note", "Theo has the demo video in hand; first cut by Friday", { by: "m-2", when: w(10), agendaKey: "person:Theo Vance" }),
     item(DEMO_TEAM_MEETING, "mi-demo-4", "action", "Record the product demo video", { by: "m-1", when: w(11), ownerId: "m-2", taskId: "t-24", due: dayOffset(0) }),
     item(DEMO_TEAM_MEETING, "mi-demo-5", "action", "Ship onboarding redesign to staging", { by: "m-1", when: w(9), ownerId: "m-1", taskId: "t-2", due: dayOffset(1) }),
@@ -81,7 +82,7 @@ function seed(db: { meetings: Map<string, Meeting>; items: Map<string, MeetingIt
     agenda: agenda("The clubhouse fit-out is off track and its update is missing; the winter league is on pace.",
       [["Goals behind pace", "goals"], ["Projects to look at", "projects"], ["Radar risks", "risks"]]),
     place: 4, placeKey: "wrap", movedAt: leadEnd, presenterId: "m-2", startedBy: "m-2", startedAt: at(1, 17, 0), endedAt: leadEnd, endedBy: "m-2",
-    previousId: null, docId: null, docProjectId: "p-clubhouse",
+    previousId: null, docId: null, docProjectId: null,
   });
   const l = (m: number) => at(1, 17, m);
   db.items.set(DEMO_LEAD_MEETING, [
@@ -98,9 +99,9 @@ function seed(db: { meetings: Map<string, Meeting>; items: Map<string, MeetingIt
 export function demoMeetingActivity(): Activity[] {
   return [
     { id: "a-demo-mtg-1", taskId: null, taskTitle: TEAM_TITLE, kind: "meeting", detail: "Maya Lin", createdAt: at(3, 10, 25),
-      meta: { meetingId: DEMO_TEAM_MEETING, workspaceId: "ws-foundrise", meetingPreset: "team", decisions: 2, actions: 5, projectId: "p-launch" } },
+      meta: { meetingId: DEMO_TEAM_MEETING, workspaceId: "ws-foundrise", meetingPreset: "team", decisions: 2, actions: 5 } },
     { id: "a-demo-mtg-2", taskId: null, taskTitle: LEAD_TITLE, kind: "meeting", detail: "Theo Vance", createdAt: at(1, 17, 40),
-      meta: { meetingId: DEMO_LEAD_MEETING, workspaceId: "ws-courtside", meetingPreset: "leadership", decisions: 2, actions: 3, projectId: "p-clubhouse" } },
+      meta: { meetingId: DEMO_LEAD_MEETING, workspaceId: "ws-courtside", meetingPreset: "leadership", decisions: 2, actions: 3 } },
   ];
 }
 
@@ -108,7 +109,8 @@ export function demoMeetingActivity(): Activity[] {
 
 /** Who comes to a demo meeting at each business (besides you). */
 const ROOM: Record<string, { team: string[]; leadership: string[] }> = {
-  "ws-foundrise": { team: ["m-1", "m-2"], leadership: [] },
+  // (Theo's off today in the demo: Maya and Sana come to Foundrise's)
+  "ws-foundrise": { team: ["m-1", "m-3"], leadership: [] },
   "ws-reco": { team: ["m-1"], leadership: [] },
   "ws-courtside": { team: ["m-2"], leadership: ["m-2"] },
   "ws-harbour": { team: ["m-3"], leadership: ["m-3"] },

@@ -2,8 +2,9 @@
    KANBO — the meeting's notes, beside the stage: what's been logged on
    this agenda item (or the whole meeting), and a one-line composer.
    A line is a note, a decision or an action (an action has an owner
-   and a day). Every line can become a task with an owner through
-   Extract tasks ("Make task"); one that has, shows its task's status.
+   and a day). An action becomes a task in one click ("Make task"); a
+   decision or a note can lead to one through Extract tasks ("Follow-up
+   task"); one that has, shows its task's status.
    Everyone in the room writes here, and sees the others' lines as
    they're added.
    ============================================================ */
@@ -49,14 +50,14 @@ export function NoteLine({ it, nameOf, taskById, onOpenTask, onMakeTask, onDelet
             <StatusGlyph status={task.status} size={14} /><span>{state?.label ?? "Task"}</span>
           </button>
         ) : it.taskId ? <span className="kmtg-line-meta">Task made</span>
-          : onMakeTask ? <button type="button" className="kmtg-line-make" onClick={() => onMakeTask(it)}><Icon name="plus" size={12} />Make task</button> : null}
+          : onMakeTask ? <button type="button" className="kmtg-line-make" onClick={() => onMakeTask(it)}><Icon name="plus" size={12} />{it.kind === "action" ? "Make task" : "Follow-up task"}</button> : null}
       </span>
       {onDelete && <IconButton icon="x" size="sm" label={`Remove “${it.body}”`} className="kmtg-line-del" onClick={() => onDelete(it)} />}
     </li>
   );
 }
 
-export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onAdd, onDelete, onMakeTask, nameOf, taskById, onOpenTask, composerRef, scope, onScope, whereOf }: {
+export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onAdd, onDelete, onMakeTask, nameOf, taskById, onOpenTask, composerRef, scope, onScope, whereOf, onEscape }: {
   items: readonly MeetingItem[];
   /** the item on the stage (null: the wrap-up, where lines are logged at large) */
   agendaKey: string | null;
@@ -74,6 +75,8 @@ export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onA
   onScope: (s: "item" | "all") => void;
   /** where a line was logged ("on Radar risks"), for the whole meeting's list */
   whereOf?: (it: MeetingItem) => string | undefined;
+  /** Esc in an empty composer: back to the room (the stage has the keys again) */
+  onEscape?: () => void;
 }) {
   const [kind, setKind] = useState<MeetingItemKind>("note");
   const [text, setText] = useState("");
@@ -93,7 +96,11 @@ export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onA
     if (ok) { setText(""); setDue(undefined); }
   };
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Escape" && text === "") { e.preventDefault(); (e.currentTarget as HTMLInputElement).blur(); }
+    if (e.key === "Escape" && text === "") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (onEscape) onEscape(); else (e.currentTarget as HTMLInputElement).blur();
+    }
   };
 
   return (

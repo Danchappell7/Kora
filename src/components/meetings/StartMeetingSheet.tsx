@@ -2,10 +2,14 @@
    KANBO — starting a meeting (0056). Kanbo has the agenda ready: the
    sheet shows what it found in each section (and how it would open),
    and you choose the kind (where you may run either), what's on it,
-   who's coming and which project keeps the notes doc. A leadership
-   meeting suggests a "Leadership" project (made here if there isn't
-   one); the business's last choice comes back next time. Before 0056
-   is run it says the meeting will run on this screen only.
+   who's coming and where the notes go: the recap only (read by the
+   people the meeting is for), or a doc in one of the business's
+   projects (read by everyone there, guests too, so it says so). A
+   team meeting suggests a "Meetings" project (made here if there
+   isn't one); a leadership or Group meeting keeps its notes in the
+   recap unless you choose otherwise, and even then saves the doc only
+   when you say. The business's last choice comes back next time.
+   Before 0056 is run it says the meeting will run on this screen only.
    ============================================================ */
 import { useEffect, useId, useMemo, useState } from "react";
 import { Avatar, Button, Icon, Segmented, Sheet, spectrumColor } from "../primitives";
@@ -13,9 +17,9 @@ import type { WorkspaceEvent } from "../../data/types";
 import type { NewProject } from "../../data/store";
 import { KANBO_TODAY, getMember, toLocalISO } from "../../data/data";
 import { readCapacities } from "../../lib/radar";
-import { awayNote, getAvailability, seesTimeOff } from "../../lib/availability";
+import { awayNote, awayStretch, getAvailability, seesTimeOff } from "../../lib/availability";
 import {
-  PRESETS, SECTION_LABEL, SECTION_ORDER, agendaFacts, assembleAgenda, meetingDay, meetingPeople, meetingTitle, mayRun, overviewLede, type AgendaFacts,
+  PRESETS, SECTION_LABEL, SECTION_ORDER, agendaFacts, assembleAgenda, goalsWords, meetingDay, meetingPeople, meetingTitle, mayRun, overviewLede, type AgendaFacts,
 } from "../../lib/meetings/agenda";
 import { isDemoMeetings, lastMeeting, startMeeting } from "../../lib/meetings/sync";
 import type { Meeting, MeetingItem, MeetingPreset, MeetingSection } from "../../lib/meetings/types";
@@ -25,7 +29,8 @@ import "./meetings.css";
 
 const HISTORY_DAYS = 30;
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
-const LEADERSHIP = "Leadership";
+/** the project a team meeting suggests for its notes */
+const MEETINGS = "Meetings";
 
 export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, onClose, onStarted }: {
   scope: MeetingScope;
@@ -77,7 +82,13 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
       statusUpdates: data.statusUpdates, today, events, previous: prev,
       capacitiesFor: (ws) => readCapacities(ws),
       // "Off today" (the label only: a reason never goes on an agenda everyone reads)
-      offNote: (user, ws) => { if (!seesTimeOff(ws, avail)) return null; const n = awayNote(user, toLocalISO(today), { ws }, avail); return n ? { label: n.label, now: n.now } : null; },
+      offNote: (user, ws) => {
+        if (!seesTimeOff(ws, avail)) return null;
+        const day = toLocalISO(today);
+        const n = awayNote(user, day, { ws }, avail);
+        const span = n ? awayStretch(user, day, 7, avail) : null;
+        return n ? { label: n.label, now: n.now, ...(span ? { from: span.from, to: span.to } : {}) } : null;
+      },
     });
   }, [preset, covered, host, members, me, data.tasks, data.goalTasks, projects, data.goals, data.statusUpdates, today, events, prev]);
   const chosen = SECTION_ORDER.filter((s) => sections.has(s));
@@ -89,21 +100,20 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
   const coming = people.filter((p) => !away.has(p.id));
 
   /* ---- where the notes go ---- */
+  // ("" is the recap only: read by the people the meeting is for. A project's docs are read by everyone at the business.)
   const hostProjects = useMemo(() => projects.filter((p) => p.workspaceId === host && !p.archivedAt), [projects, host]);
-  const leadershipProject = hostProjects.find((p) => p.name.trim().toLowerCase() === LEADERSHIP.toLowerCase() && !p.id.startsWith("tmp-"));
-  const [projectId, setProjectId] = useState<string>("");
+  const meetingsProject = hostProjects.find((p) => p.name.trim().toLowerCase() === MEETINGS.toLowerCase() && !p.id.startsWith("tmp-"));
+  const [projectId, setProjectId] = useState<string | null>(null);
   const [making, setMaking] = useState(false);
+  // the business's last choice (kept while it's there), else a team meeting's Meetings project, else the recap only
+  const last = prev?.meeting.docProjectId && hostProjects.some((p) => p.id === prev.meeting.docProjectId) ? prev.meeting.docProjectId : null;
+  const auto = loading ? "" : last ?? (preset === "team" ? meetingsProject?.id : undefined) ?? "";
+  const docProjectId = projectId !== null && (projectId === "" || hostProjects.some((p) => p.id === projectId)) ? projectId : auto;
   useEffect(() => {
-    // the business's last choice, else a Leadership project for a leadership meeting, else a project of yours
-    const last = prev?.meeting.docProjectId && hostProjects.some((p) => p.id === prev.meeting.docProjectId) ? prev.meeting.docProjectId : null;
-    const mine = hostProjects.find((p) => p.ownerId === me);
-    setProjectId((cur) => cur && hostProjects.some((p) => p.id === cur) ? cur
-      : last ?? (preset === "leadership" ? leadershipProject?.id : undefined) ?? mine?.id ?? hostProjects[0]?.id ?? "");
-  }, [prev, hostProjects, preset, leadershipProject, me]);
-  useEffect(() => {
-    if (making && leadershipProject) { setProjectId(leadershipProject.id); setMaking(false); }
-  }, [making, leadershipProject]);
+    if (making && meetingsProject) { setProjectId(meetingsProject.id); setMaking(false); }
+  }, [making, meetingsProject]);
   const guestsHere = members.some((m) => m.workspaceId === host && m.status === "active" && m.role === "guest");
+  const hostName = covered.find((w) => w.id === host)?.name ?? "this business";
 
   /* ---- start ---- */
   const [busy, setBusy] = useState(false);
@@ -113,16 +123,16 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
     const r = await startMeeting({
       workspaceId: host, workspaceIds: wss, preset, title: (title ?? autoTitle).trim() || autoTitle,
       agenda: assembleAgenda(facts, chosen), attendees: coming.map((p) => p.id),
-      docProjectId: projectId && !projectId.startsWith("tmp-") ? projectId : null, previousId: prev?.meeting.id ?? null, me,
+      docProjectId: docProjectId && !docProjectId.startsWith("tmp-") ? docProjectId : null, previousId: prev?.meeting.id ?? null, me,
     });
     setBusy(false);
     if (r.ok) onStarted(r.data);
     else setError(r.message);
   };
-  const makeLeadership = () => {
+  const makeMeetings = () => {
     if (!onCreateProject) return;
     setMaking(true);
-    onCreateProject({ name: LEADERSHIP, emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: host });
+    onCreateProject({ name: MEETINGS, emoji: "🗓️", color: spectrumColor("cobalt"), workspaceId: host });
   };
 
   const count = (s: MeetingSection) => facts.counts[s];
@@ -132,7 +142,7 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
     switch (s) {
       case "people": return group ? "One business at a time" : n ? `${n} ${n === 1 ? "person" : "people"}${facts.offToday.length ? `, ${facts.offToday.length} off today` : ""}` : "Nobody on the team yet";
       case "risks": return n ? `${n} ${n === 1 ? "risk" : "risks"}` : "Nothing on the Radar";
-      case "goals": return n ? `${n} behind` : "Every goal on pace";
+      case "goals": return n ? `${goalsWords(facts)} behind` : "Every goal on pace";
       case "projects": return n ? `${n} to look at` : "Nothing to look at";
       case "actions": return facts.from ? `${n} from ${facts.from.endedAt ? meetingDay(new Date(facts.from.endedAt)) : "last time"}` : "No meeting here yet";
     }
@@ -198,26 +208,31 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
               );
             })}
           </div>
+          {people.length === 1 && <p className="kmtg-hint">{group ? "Nobody else runs every one of these businesses, so this one's a review for yourself." : "Just you for now: a review for yourself."}</p>}
           {preset === "leadership" && <p className="kmtg-hint">Leadership meetings are for {group ? "people who run every one of these businesses" : "owners and admins"}. Guests never see them.</p>}
         </fieldset>
 
         <div className="kmtg-field">
-          <label className="kmtg-label" htmlFor={`${uid}-doc`}>Notes doc goes in</label>
+          <label className="kmtg-label" htmlFor={`${uid}-doc`}>Notes go</label>
           <span className="kmtg-row">
-            <select id={`${uid}-doc`} className="kmtg-select" value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={making}
-              aria-describedby={guestsHere && projectId ? `${uid}-guests` : undefined}>
-              {!hostProjects.length && <option value="">No project yet</option>}
-              {hostProjects.map((p) => <option key={p.id} value={p.id}>{p.emoji ? `${p.emoji} ` : ""}{p.name}</option>)}
+            <select id={`${uid}-doc`} className="kmtg-select" value={docProjectId} onChange={(e) => setProjectId(e.target.value)} disabled={making}
+              aria-describedby={`${uid}-dochint`}>
+              <option value="">In the recap only</option>
+              {hostProjects.map((p) => <option key={p.id} value={p.id}>Into a doc in {p.emoji ? `${p.emoji} ` : ""}{p.name}</option>)}
             </select>
-            {preset === "leadership" && !leadershipProject && onCreateProject && (
-              <Button size="sm" variant="ghost" icon="plus" onClick={makeLeadership} loading={making}>New Leadership project</Button>
+            {preset === "team" && !group && !meetingsProject && onCreateProject && (
+              <Button size="sm" variant="ghost" icon="plus" onClick={makeMeetings} loading={making}>New Meetings project</Button>
             )}
           </span>
-          {guestsHere && projectId && <span className="kmtg-hint" id={`${uid}-guests`}>Guests at this business can read the docs in its projects.</span>}
+          <span className="kmtg-hint" id={`${uid}-dochint`}>
+            {!docProjectId ? "Only the people this meeting is for can read the recap."
+              : preset === "team" ? `Everyone at ${hostName}${guestsHere ? ", guests too," : ""} can read docs in its projects.`
+              : `Saved there only when you choose, at the end. Everyone at ${hostName}${guestsHere ? ", guests too," : ""} can read docs in its projects.`}
+          </span>
         </div>
 
         {mode === "local" && !isDemoMeetings() && (
-          <p className="kmtg-note" role="note"><Icon name="alert" size={14} /> Shared meetings aren't switched on yet, so this one runs on your screen only: nobody else can follow it and no recap is sent. The notes doc still saves. Ask the workspace owner to run the 0056 update.</p>
+          <p className="kmtg-note" role="note"><Icon name="alert" size={14} /> Shared meetings aren't switched on yet, so this one runs on your screen only: nobody else can follow it and no recap is sent. Once they are, everyone can follow along and get the recap.</p>
         )}
       </div>
     </Sheet>

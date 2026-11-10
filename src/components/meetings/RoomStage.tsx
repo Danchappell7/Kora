@@ -1,11 +1,13 @@
 /* ============================================================
    KANBO — the meeting's stage: one agenda item at a time, set large
    enough to read on a screen across the room. Kanbo's read; a person
-   (done, today, blocked, who's off, their week); Radar's risks; goals
-   behind pace; projects to look at (the one pill, and why); last
-   meeting's actions with where each stands now (read live from the
-   task, as you can see it). A task opens in the task panel over the
-   room. The wrap-up lives in RoomWrap.
+   (done, today, blocked, who's off and what falls due meanwhile, whose
+   work is waiting on theirs, their week); Radar's risks; goals behind
+   pace (each with its key results behind); projects to look at (the
+   one pill, and why); last meeting's actions with where each stands
+   now (read live from the task, as you can see it), and, for one that
+   never became a task, Make task or Carry over. A task opens in the
+   task panel over the room. The wrap-up lives in RoomWrap.
    ============================================================ */
 import type { ReactNode } from "react";
 import { Avatar, Icon, Meter, ProjectTile, StatusGlyph } from "../primitives";
@@ -13,7 +15,7 @@ import { getMember, getProject, toLocalISO, KANBO_TODAY } from "../../data/data"
 import type { Task } from "../../data/types";
 import { loadTone } from "../../lib/radar";
 import { actionState } from "../../lib/meetings/agenda";
-import type { AgendaEntry, AgendaItem } from "../../lib/meetings/types";
+import type { AgendaAction, AgendaEntry, AgendaItem, MeetingItem } from "../../lib/meetings/types";
 
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
 
@@ -26,6 +28,10 @@ export interface StageContext {
   /** the agenda, for the overview's list */
   agenda: readonly AgendaItem[];
   onGo?: (index: number) => void;
+  /** last meeting's action, carried into this one (when it has been) */
+  carried?: (a: AgendaAction) => MeetingItem | undefined;
+  onCarry?: (a: AgendaAction) => void;
+  onMakeTaskFrom?: (a: AgendaAction) => void;
 }
 
 /** A person's mark: their avatar, else their initial. */
@@ -101,7 +107,7 @@ export function RoomStage({ item, ctx, extra }: { item: AgendaItem; ctx: StageCo
               <h2 className="kmtg-h">{item.title}</h2>
               <p className="kmtg-sub">
                 {item.role && <span>{item.role}</span>}
-                {item.off && <span className="kmtg-off" data-now={item.offNow || undefined}>{item.off}</span>}
+                {item.off && <span className="kmtg-off" data-now={item.offNow || undefined}>{item.off}{item.offDue ? ` · ${item.offDue} due while away` : ""}</span>}
               </p>
             </div>
             {item.load && (
@@ -118,6 +124,20 @@ export function RoomStage({ item, ctx, extra }: { item: AgendaItem; ctx: StageCo
             <Column label="Today" items={item.today} more={item.more.today} empty={item.offNow ? "Off today" : "Nothing on today"} ctx={ctx} />
             <Column label="Blocked" items={item.blocked} more={item.more.blocked} empty="Nothing blocked" ctx={ctx} tone={item.blocked.length ? "signal" : undefined} />
           </div>
+          {item.holding && item.holding.length > 0 && (
+            <p className="kmtg-holding">
+              <span className="kmtg-holding-k">Holding up</span>
+              {item.holding.map((h, i) => {
+                const who = h.whoId ? firstName(ctx.nameOf(h.whoId) ?? "") : "";
+                const live = ctx.taskById.get(h.taskId);
+                return (
+                  <span key={h.taskId}>{i > 0 && ", "}
+                    <button type="button" className="kmtg-holding-t" onClick={() => ctx.onOpenTask(h.taskId)} disabled={!live}>{who ? `${who}'s ` : ""}“{live?.title ?? h.title}”</button>
+                  </span>
+                );
+              })}
+            </p>
+          )}
           {extra}
         </div>
       );
@@ -154,7 +174,13 @@ export function RoomStage({ item, ctx, extra }: { item: AgendaItem; ctx: StageCo
                 <Icon name={(TONE_ICON[g.why] ?? "target") as "alert"} size={16} />
                 <span className="kmtg-rowi-text">
                   <span className="kmtg-rowi-t">{g.name}</span>
-                  <span className="kmtg-rowi-s">{g.line}{ctx.wsName?.(g.workspaceId) ? ` · ${ctx.wsName(g.workspaceId)}` : ""}</span>
+                  <span className="kmtg-rowi-s">{g.parentName ? `Key result of ${g.parentName} · ` : ""}{g.line}{ctx.wsName?.(g.workspaceId) ? ` · ${ctx.wsName(g.workspaceId)}` : ""}</span>
+                  {g.krs && g.krs.length > 0 && (
+                    <span className="kmtg-krs">
+                      <span className="kmtg-krs-h">{g.krs.length === 1 ? "1 key result behind" : `${g.krs.length} key results behind`}</span>
+                      {g.krs.map((k) => <span key={k.id} className="kmtg-kr"><span className="kmtg-kr-t">{k.name}</span><span className="kmtg-kr-n">{k.pct}% · {k.line}</span></span>)}
+                    </span>
+                  )}
                 </span>
                 <span className="kmtg-pct">
                   <span>{g.pct}%</span>
@@ -199,17 +225,26 @@ export function RoomStage({ item, ctx, extra }: { item: AgendaItem; ctx: StageCo
           {item.actions.length ? (
             <ul className="kmtg-rows">
               {item.actions.map((a) => {
-                const task = a.taskId ? ctx.taskById.get(a.taskId) : undefined;
-                const st = actionState(a, task, todayISO);
+                // one that never became a task: carried into this meeting (its task, once made), or a way to do either
+                const carried = !a.taskId ? ctx.carried?.(a) : undefined;
+                const taskId = a.taskId ?? carried?.taskId ?? null;
+                const task = taskId ? ctx.taskById.get(taskId) : undefined;
+                const st = carried && !taskId ? { state: "open" as const, label: "Carried over" } : actionState({ ...a, taskId }, task, todayISO);
                 return (
                   <li key={a.itemId} className="kmtg-rowi" data-state={st.state}>
                     {task ? <StatusGlyph status={task.status} size={16} /> : <Icon name={st.state === "overdue" ? "clock" : "circle"} size={16} />}
                     <span className="kmtg-rowi-text">
                       <span className="kmtg-rowi-t" data-done={st.state === "done" || undefined}>{task?.title ?? a.body}</span>
-                      <span className="kmtg-rowi-s" data-state={st.state}>{st.label}</span>
+                      <span className="kmtg-rowi-s" data-state={st.state}>{carried && taskId ? `Carried over · ${st.label}` : st.label}</span>
                     </span>
                     {a.ownerId && <span className="kmtg-owner"><PersonMark id={a.ownerId} name={ctx.nameOf(a.ownerId)} size={22} /><span>{firstName(ctx.nameOf(a.ownerId) ?? "")}</span></span>}
-                    {task && <button type="button" className="kmtg-open" onClick={() => ctx.onOpenTask(task.id)}>Open</button>}
+                    {task ? <button type="button" className="kmtg-open" onClick={() => ctx.onOpenTask(task.id)}>Open</button>
+                      : !taskId && !carried && (ctx.onMakeTaskFrom || ctx.onCarry) && (
+                        <span className="kmtg-acts">
+                          {ctx.onMakeTaskFrom && <button type="button" className="kmtg-open" onClick={() => ctx.onMakeTaskFrom!(a)} aria-label={`Make a task: ${a.body}`}>Make task</button>}
+                          {ctx.onCarry && <button type="button" className="kmtg-open" onClick={() => ctx.onCarry!(a)} aria-label={`Carry over: ${a.body}`}>Carry over</button>}
+                        </span>
+                      )}
                   </li>
                 );
               })}

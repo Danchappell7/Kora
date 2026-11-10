@@ -4545,7 +4545,7 @@ export default function App() {
           <Suspense fallback={null}>
             <MeetingsHost me={currentUserId} workspaces={workspaces} members={wsMembers} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
               statusUpdates={statusUpdates} loadEvents={(ws, since) => store.listWorkspaceEventsSince(ws, since)}
-              createTasks={(rows) => importTasks(rows, { verb: "Added" })} onCreateProject={createProject}
+              createTasks={(rows) => importTasks(rows, { verb: "Added" })} deleteTask={deleteTask} onCreateProject={createProject}
               aiExtract={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined} onOpenTask={setDetailId}
               onOpenDoc={(projectId, docId) => { const p = projects.find((x) => x.id === projectId); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId, tab: "docs", docId }); }} />
           </Suspense>

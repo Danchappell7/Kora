@@ -34,7 +34,9 @@ export interface MeetingsHostProps extends MeetingData {
   loadEvents: (workspaceId: string, sinceISO: string) => Promise<WorkspaceEvent[]>;
   /** make the reviewed tasks (Extract tasks): their ids in order, or nothing when they weren't made */
   createTasks?: (rows: Array<Partial<Task> & { title: string }>) => string[] | void;
-  /** make a project (the "Leadership" project for the notes) */
+  /** take back a task the room just made (Make task's Undo) */
+  deleteTask?: (id: string) => void;
+  /** make a project (the "Meetings" project for a team meeting's notes) */
   onCreateProject?: (input: NewProject) => void;
   aiExtract?: (text: string, context?: string) => Promise<AiOutcome<ExtractedTask[]>>;
   onOpenTask: (id: string) => void;
@@ -64,7 +66,7 @@ export function MeetingsHost(props: MeetingsHostProps) {
       {open && (
         <Suspense fallback={null}>
           <MeetingRoom key={open} meetingId={open} data={data} onClose={close}
-            createTasks={props.createTasks} aiExtract={props.aiExtract} onOpenTask={props.onOpenTask}
+            createTasks={props.createTasks} deleteTask={props.deleteTask} aiExtract={props.aiExtract} onOpenTask={props.onOpenTask}
             onOpenDoc={(projectId, docId) => { close(); props.onOpenDoc(projectId, docId); }}
             onOpenMeeting={(id) => setOpen(id)} />
         </Suspense>

@@ -1,7 +1,9 @@
 /* ============================================================
    KANBO — the end of a meeting. RoomWrap: the agenda's last item,
    with every decision and action logged, Turn into tasks (Extract
-   tasks over the lines that aren't tasks yet), the notes doc, and End
+   tasks over the lines that aren't tasks yet), the notes doc (a team
+   meeting's goes in as it ends; a leadership or Group meeting's only
+   with "Save notes to…", which says who can read it there), and End
    meeting (the recap goes to everyone asked or there). RoomRecap: a
    meeting once it's ended, as the Inbox opens it: what was decided,
    each action and where it stands now, the notes, and the doc.
@@ -56,7 +58,7 @@ function Lines({ title, items, ctx, empty }: { title: string; items: readonly Me
   );
 }
 
-export function RoomWrap({ items, ctx, live, canEnd, recipients, shared, docLabel, hasDoc, docBusy, ending, onSaveDoc, onOpenDoc, onExtract, onEnd }: {
+export function RoomWrap({ items, ctx, live, canEnd, recipients, shared, docLabel, docAudience, autoDoc = true, hasDoc, docBusy, ending, onSaveDoc, onOpenDoc, onExtract, onEnd }: {
   items: readonly MeetingItem[];
   ctx: WrapContext;
   live: boolean;
@@ -67,6 +69,10 @@ export function RoomWrap({ items, ctx, live, canEnd, recipients, shared, docLabe
   shared: boolean;
   /** "Q3 Product Launch" (where the notes doc goes), or nothing when there's no project */
   docLabel?: string;
+  /** who reads docs there ("Everyone at Foundrise, guests too, can read docs in Meetings.") */
+  docAudience?: string;
+  /** the doc saves itself as it ends (a team meeting); otherwise only with Save notes */
+  autoDoc?: boolean;
   hasDoc: boolean;
   docBusy: boolean;
   ending: boolean;
@@ -92,12 +98,17 @@ export function RoomWrap({ items, ctx, live, canEnd, recipients, shared, docLabe
         {hasDoc ? (onOpenDoc && <Button variant="secondary" icon="notes" onClick={onOpenDoc}>Open notes doc</Button>)
           : onSaveDoc && docLabel && <Button variant="secondary" icon="notes" onClick={onSaveDoc} loading={docBusy}>Save notes to {docLabel}</Button>}
       </div>
+      {!hasDoc && onSaveDoc && docLabel && docAudience && <p className="kmtg-hint">{docAudience}</p>}
       {live && canEnd && onEnd && (
         <div className="kmtg-end">
           <p className="kmtg-end-line">
-            {shared
-              ? who.length ? `The recap goes to ${listWords(who)}${who.length === 1 ? "'s Inbox" : "'s Inboxes"}${docLabel && !hasDoc ? `, and the notes into a doc in ${docLabel}` : ""}.` : `Nobody else was asked, so the recap is just for the record${docLabel && !hasDoc ? `; the notes go into a doc in ${docLabel}` : ""}.`
-              : `This meeting ran on your screen only, so nobody else is told${docLabel && !hasDoc ? `. The notes go into a doc in ${docLabel}` : ""}.`}
+            {(() => {
+              // (only a team meeting's notes go into a doc by themselves)
+              const doc = autoDoc && docLabel && !hasDoc ? docLabel : "";
+              return shared
+                ? who.length ? `The recap goes to ${listWords(who)}${who.length === 1 ? "'s Inbox" : "'s Inboxes"}${doc ? `, and the notes into a doc in ${doc}` : ""}.` : `Nobody else was asked, so the recap is just for the record${doc ? `; the notes go into a doc in ${doc}` : ""}.`
+                : `This meeting ran on your screen only, so nobody else is told${doc ? `. The notes go into a doc in ${doc}` : ""}.`;
+            })()}
           </p>
           <Button variant="hero" icon="check" onClick={onEnd} loading={ending}>{shared && who.length ? "End and send recap" : "End meeting"}</Button>
         </div>
@@ -107,12 +118,13 @@ export function RoomWrap({ items, ctx, live, canEnd, recipients, shared, docLabe
 }
 
 /** A meeting once it's ended: the recap. */
-export function RoomRecap({ meeting, items, ctx, ranBy, docLabel, hasDoc, docBusy, onSaveDoc, onOpenDoc, onExtract, onOpenPrevious }: {
+export function RoomRecap({ meeting, items, ctx, ranBy, docLabel, docAudience, hasDoc, docBusy, onSaveDoc, onOpenDoc, onExtract, onOpenPrevious }: {
   meeting: Meeting;
   items: readonly MeetingItem[];
   ctx: WrapContext;
   ranBy?: string;
   docLabel?: string;
+  docAudience?: string;
   hasDoc: boolean;
   docBusy: boolean;
   onSaveDoc?: () => void;
@@ -145,6 +157,7 @@ export function RoomRecap({ meeting, items, ctx, ranBy, docLabel, hasDoc, docBus
         {onExtract && (actions.some((a) => !a.taskId) || notes.length > 0 || decisions.length > 0) && <Button variant="secondary" icon="sparkles" onClick={onExtract}>Turn into tasks</Button>}
         {onOpenPrevious && <Button variant="ghost" icon="arrowLeft" onClick={onOpenPrevious}>The meeting before</Button>}
       </div>
+      {!hasDoc && onSaveDoc && docLabel && docAudience && <p className="kmtg-hint">{docAudience}</p>}
       <section className="kmtg-wrap-sec">
         <h3 className="kmtg-col-h">On the agenda</h3>
         <ol className="kmtg-plan kmtg-plan-quiet">

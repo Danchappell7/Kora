@@ -189,6 +189,22 @@
 .kmtg-open { flex-shrink: 0; height: 28px; padding: 0 10px; border: 0; border-radius: var(--r-sm, 6px); background: var(--fill-1); color: var(--ink-2); cursor: pointer;
   font: 600 12px/28px var(--font-ui, var(--font-display)); }
 .kmtg-open:hover { background: var(--fill-2); color: var(--ink); }
+.kmtg-acts { display: inline-flex; gap: 6px; flex-shrink: 0; }
+/* a goal's key results that are behind too, inside its row */
+.kmtg-krs { display: grid; gap: 4px; margin-top: 8px; padding: 8px 0 0 12px; border-left: 2px solid var(--hairline); }
+.kmtg-krs-h { font: 600 11px/16px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+.kmtg-kr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.kmtg-kr-t { font: 500 14px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); overflow-wrap: anywhere; }
+.kmtg-kr-n { font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+/* whose work is waiting on this person's */
+.kmtg-holding { margin: 16px 0 0; font: 500 15px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kmtg-holding-k { margin-right: 8px; font: 600 12px/22px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--signal-text, var(--signal, var(--st-blocked))); }
+.kmtg-holding-t { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: var(--hairline-strong, var(--hairline)); text-underline-offset: 3px; }
+.kmtg-holding-t:hover:not(:disabled) { color: var(--ink); text-decoration-color: currentColor; }
+.kmtg-holding-t:disabled { cursor: default; text-decoration: none; }
+/* a Group meeting's businesses, in the header */
+.kmtg-marks { display: inline-flex; flex-shrink: 0; }
+.kmtg-marks > * + * { margin-left: -6px; box-shadow: 0 0 0 2px var(--paper, var(--surface)); border-radius: 7px; }
 
 /* the wrap-up and the recap */
 .kmtg-wrap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
@@ -269,6 +285,7 @@
 .kmtg-room[data-phone] .kmtg-recap-wrap { padding: 24px 16px 48px; }
 .kmtg-room[data-phone] .kmtg-help { display: none; }
 .kmtg-room[data-phone] .kmtg-load { justify-items: start; }
+.kmtg-room[data-phone] .kmtg-acts { margin-left: 40px; }
 
 @media (prefers-reduced-motion: reduce) {
   .kmtg-room, .kmtg-livedot { animation: none; }

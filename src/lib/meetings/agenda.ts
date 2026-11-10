@@ -98,8 +98,9 @@ export interface AgendaInput {
   events?: WorkspaceEvent[];
   /** each business's capacities this week (its shared weeks, less time off) */
   capacitiesFor?: (workspaceId: string) => Record<string, number>;
-  /** "Off today" for someone at a business (the label only: never the reason), or null */
-  offNote?: (userId: string, workspaceId: string) => { label: string; now: boolean } | null;
+  /** "Off today" for someone at a business (the label only: never the reason), or null; `from`/`to`: the
+   *  stretch's days (YYYY-MM-DD), so the agenda can count what falls due while they're away */
+  offNote?: (userId: string, workspaceId: string) => { label: string; now: boolean; from?: string; to?: string } | null;
   /** the last meeting of this kind here, with its items: its actions open the next one */
   previous?: { meeting: Pick<Meeting, "id" | "title" | "endedAt">; items: readonly MeetingItem[] } | null;
 }
@@ -119,7 +120,16 @@ export interface AgendaFacts {
   /** last meeting's actions: done, and overdue now */
   actionsDone: number;
   actionsOverdue: number;
+  /** goals behind, counted the way Pulse and Goals count them (a goal, its key results inside it), and the
+   *  key results behind whose own goal isn't */
+  goalsBehind: number;
+  keyResultsBehind: number;
   counts: Record<MeetingSection, number>;
+}
+
+/** "2 goals", "1 goal and 1 key result", "2 key results" */
+export function goalsWords(f: Pick<AgendaFacts, "goalsBehind" | "keyResultsBehind">): string {
+  return [f.goalsBehind ? plural(f.goalsBehind, "goal") : "", f.keyResultsBehind ? plural(f.keyResultsBehind, "key result") : ""].filter(Boolean).join(" and ");
 }
 
 const roleOf = (members: readonly WorkspaceMember[], me: string, ws: string): Role | null =>
@@ -159,13 +169,24 @@ export function agendaFacts(input: AgendaInput): AgendaFacts {
       if (t.dueDate < todayISO) { const d = localDay(t.dueDate); return { note: `Overdue · due ${d ? fmtDayMonth(d) : t.dueDate}`, tone: "signal" }; }
       return t.dueDate === todayISO ? { note: "Due today" } : {};
     };
+    const open = (t: Task) => t.status !== "done" && !t.archivedAt;
     const item = (p: PulsePerson): AgendaFacts["people"][number] => {
       const off = input.offNote?.(p.id, ws) ?? null;
       if (off?.now) offToday.push(firstName(p.name));
+      // their open work due while they're away
+      const from = off?.from && off.from > todayISO ? off.from : todayISO;
+      const offDue = off?.to ? tasks.filter((t) => t.workspaceId === ws && t.assigneeId === p.id && open(t) && !t.isMilestone && !!t.dueDate
+        && t.dueDate.slice(0, 10) >= from && t.dueDate.slice(0, 10) <= off.to!).length : 0;
+      // others' open work waiting on theirs
+      const holding = tasks.filter((t) => t.workspaceId === ws && open(t) && t.assigneeId !== p.id
+        && (t.dependencies ?? []).some((id) => { const b = byId.get(id); return !!b && b.assigneeId === p.id && open(b); }))
+        .slice(0, 3).map((t) => ({ taskId: t.id, title: clip(t.title.replace(/\s+/g, " ").trim(), 120), whoId: t.assigneeId ?? null }));
       return {
         key: `person:${p.id}`, kind: "person", title: p.name, personId: p.id,
         ...(p.role ? { role: p.role } : {}),
         ...(off ? { off: off.label, offNow: off.now } : {}),
+        ...(offDue ? { offDue } : {}),
+        ...(holding.length ? { holding } : {}),
         done: p.done.slice(0, PER_LIST).map((t) => toEntry(t)),
         today: p.onToday.slice(0, PER_LIST).map((t) => { const n = dueNote(t); return toEntry(t, n.note, n.tone); }),
         blocked: p.blocked.slice(0, PER_LIST).map((t) => toEntry(t, waiting(t), "signal")),
@@ -200,10 +221,19 @@ export function agendaFacts(input: AgendaInput): AgendaFacts {
       goals: wsGoals, statusUpdates: input.statusUpdates, approvals: [], today, pace: groupGoalPace,
       ...(input.capacitiesFor ? { capacitiesFor: (id: string | null) => (id ? input.capacitiesFor!(id) : {}) } : {}),
     });
-    for (const g of digest.goals.behind) {
+    // (a key result sits inside its goal, as Pulse and Goals count them: "2 goals behind", not four)
+    const lineOf = (g: (typeof digest.goals.behind)[number]) => {
       const why = g.why === "off_track" ? "Off track" : g.why === "at_risk" ? "At risk" : g.why === "overdue" ? `Past due at ${g.pct}%` : "";
-      const line = [why, g.pace?.line && g.pace.line !== why ? g.pace.line : ""].filter(Boolean).join(" · ") || g.pace?.line || "Behind pace";
-      goals.push({ id: g.goal.id, name: clip(g.goal.name, 160), pct: g.pct, why: g.why, line, ownerId: g.goal.ownerId ?? null, workspaceId: w.id, due: g.goal.due ?? null });
+      return [why, g.pace?.line && g.pace.line !== why ? g.pace.line : ""].filter(Boolean).join(" · ") || g.pace?.line || "Behind pace";
+    };
+    const behind = digest.goals.behind;
+    const parentOf = (g: Goal) => (g.parentId ? wsGoals.find((x) => x.id === g.parentId && !x.archivedAt) : undefined);
+    for (const g of behind) {
+      const parent = parentOf(g.goal);
+      if (parent && behind.some((b) => b.goal.id === parent.id)) continue;   // shown inside its goal
+      const krs = behind.filter((k) => k.goal.parentId === g.goal.id).map((k) => ({ id: k.goal.id, name: clip(k.goal.name, 160), pct: k.pct, line: lineOf(k) }));
+      goals.push({ id: g.goal.id, name: clip(g.goal.name, 160), pct: g.pct, why: g.why, line: lineOf(g), ownerId: g.goal.ownerId ?? null, workspaceId: w.id, due: g.goal.due ?? null,
+        ...(parent ? { parentName: clip(parent.name, 160) } : {}), ...(krs.length ? { krs } : {}) });
     }
     for (const n of digest.projects.needs) {
       projects.push({
@@ -230,10 +260,12 @@ export function agendaFacts(input: AgendaInput): AgendaFacts {
     if (s === "overdue") actionsOverdue++;
   }
 
+  const goalsBehind = goals.filter((g) => !g.parentName).length;
+  const keyResultsBehind = goals.filter((g) => g.parentName).length;
   return {
     people, risks: risks.slice(0, PER_SECTION), goals: goals.slice(0, PER_SECTION), projects: projects.slice(0, PER_SECTION), actions,
     from: prev ? { id: prev.meeting.id, title: prev.meeting.title, endedAt: prev.meeting.endedAt } : null,
-    pulse, offToday, actionsDone, actionsOverdue,
+    pulse, offToday, actionsDone, actionsOverdue, goalsBehind, keyResultsBehind,
     counts: { people: people.length, risks: risks.length, goals: goals.length, projects: projects.length, actions: actions.length },
   };
 }
@@ -249,8 +281,11 @@ export function overviewLede(f: AgendaFacts, sections: readonly MeetingSection[]
     if (f.offToday.length) t(` ${listWords(f.offToday)} ${f.offToday.length === 1 ? "is" : "are"} off today.`);
   }
   const clauses: SentencePart[][] = [];
-  if (on.has("goals")) clauses.push(f.counts.goals === 0 ? [{ text: "every goal is on pace" }]
-    : [{ text: plural(f.counts.goals, "goal"), strong: true }, { text: f.counts.goals === 1 ? " is behind pace" : " are behind pace" }]);
+  if (on.has("goals")) {
+    const n = (f.goalsBehind ?? f.counts.goals) + (f.keyResultsBehind ?? 0);
+    clauses.push(n === 0 ? [{ text: "every goal is on pace" }]
+      : [{ text: goalsWords({ goalsBehind: f.goalsBehind ?? f.counts.goals, keyResultsBehind: f.keyResultsBehind ?? 0 }), strong: true }, { text: n === 1 ? " is behind pace" : " are behind pace" }]);
+  }
   if (on.has("projects")) clauses.push(f.counts.projects === 0 ? [{ text: "no project needs a look" }]
     : [{ text: plural(f.counts.projects, "project"), strong: true }, { text: f.counts.projects === 1 ? " needs a look" : " need a look" }]);
   if (on.has("risks")) clauses.push(f.counts.risks === 0 ? [{ text: "Radar is clear" }]

@@ -11,12 +11,17 @@
    · A timer: the meeting's time against its preset's time box, and how
      long the room has been on this item.
    · Notes, decisions and actions go in beside each item (N to write);
-     any line becomes a task with an owner through Extract tasks.
-   · The wrap-up saves the notes doc (the Meeting notes template, in the
-     project chosen at the start) and ends it: the recap goes to
-     everyone asked or there. An ended meeting opens as its recap.
-   Leaving (Esc, ×) never ends it. A task opens in the task panel,
-   which sits over the room.
+     an action becomes a task with its owner and day in one click (with
+     Undo), any other line through Extract tasks. Last meeting's actions
+     that never became tasks can be made into one, or carried over.
+   · The wrap-up ends it: the recap goes to everyone asked or there. A
+     team meeting's notes doc (the Meeting notes template, in the
+     project chosen at the start) is saved as it ends; a leadership or
+     Group meeting's only when someone chooses to (a project's docs are
+     read by everyone at the business). An ended meeting opens as its
+     recap.
+   Leaving (Esc, ×) never ends it: a toast says it's still live, with a
+   way back. A task opens in the task panel, which sits over the room.
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -38,9 +43,9 @@ import {
   addItem, deleteItem, endMeeting, getMeeting, handMeeting, isDemoMeetings, joinMeeting, listAttendees, listItems, meetingsMode, moveMeeting, presentMeeting, probeMeetings,
   setMeetingDoc, subscribeMeeting, updateItem, type ItemInput,
 } from "../../lib/meetings/sync";
-import type { AgendaItem, Meeting, MeetingAttendee, MeetingItem } from "../../lib/meetings/types";
+import type { AgendaAction, AgendaItem, Meeting, MeetingAttendee, MeetingItem } from "../../lib/meetings/types";
 import type { MeetingData } from "./MeetingsHost";
-import { refreshLiveMeetings } from "./meetingBus";
+import { refreshLiveMeetings, requestMeetingOpen } from "./meetingBus";
 import { PersonMark, RoomStage, type StageContext } from "./RoomStage";
 import { RoomNotes } from "./RoomNotes";
 import { RoomRecap, RoomWrap, type WrapContext } from "./RoomWrap";
@@ -61,13 +66,15 @@ export interface MeetingRoomProps {
   data: MeetingData;
   onClose: () => void;
   createTasks?: (rows: Array<Partial<Task> & { title: string }>) => string[] | void;
+  /** take back a task the room just made (Make task's Undo) */
+  deleteTask?: (id: string) => void;
   aiExtract?: (text: string, context?: string) => Promise<AiOutcome<ExtractedTask[]>>;
   onOpenTask: (id: string) => void;
   onOpenDoc: (projectId: string, docId: string) => void;
   onOpenMeeting?: (id: string) => void;
 }
 
-export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, onOpenTask, onOpenDoc, onOpenMeeting }: MeetingRoomProps) {
+export function MeetingRoom({ meetingId, data, onClose: close, createTasks, deleteTask, aiExtract, onOpenTask, onOpenDoc, onOpenMeeting }: MeetingRoomProps) {
   const { me, members, workspaces, projects } = data;
   const toast = useOptionalToast();
   const phone = useMediaQuery("(max-width: 759px)");
@@ -97,9 +104,11 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
           const next = c.meeting;
           setMeeting((cur) => {
             if (!cur) return next;
+            // (the agenda never changes once it starts: a change that came without it keeps the one here)
+            const withAgenda = !next.agenda.length && cur.agenda.length ? { ...next, agenda: cur.agenda } : next;
             // your own moves are on their way: keep your place until they land
             const mine = next.presenterId === me && (pendingMove.current || inFlight.current > 0);
-            return mine ? { ...next, place: cur.place, placeKey: cur.placeKey, movedAt: cur.movedAt } : next;
+            return mine ? { ...withAgenda, place: cur.place, placeKey: cur.placeKey, movedAt: cur.movedAt } : withAgenda;
           });
         }
         if (c.items) setItems(c.items);
@@ -257,11 +266,72 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
       }
     })();
   };
-  const makeTask = (it: MeetingItem) => setExtract({ text: makeTaskText(it, nameOf), from: it });
+  /* ---- the notes doc (only the project chosen at the start: none is the recap only) ---- */
+  const docProject = meeting?.docProjectId ? hostProjects.find((p) => p.id === meeting.docProjectId) : undefined;
+  // a team meeting's doc saves itself as it ends; a leadership or Group meeting's only when someone chooses to
+  const autoDoc = !!meeting && meeting.preset === "team" && meeting.workspaceIds.length === 1;
+  const hostName = host?.name ?? "this business";
+  const hostGuests = !!meeting && members.some((m) => m.workspaceId === meeting.workspaceId && m.status === "active" && m.role === "guest");
+  const docAudience = docProject ? `Everyone at ${hostName}${hostGuests ? ", guests too," : ""} can read docs in ${docProject.name}.` : undefined;
+
+  /* ---- one click: an action becomes a task (its owner and day), with Undo ---- */
+  // (the notes project, else the host project the owner's work is in, else one of yours)
+  const taskProjectFor = (ownerId: string | null): string | undefined => {
+    if (docProject) return docProject.id;
+    if (ownerId) {
+      const n = new Map<string, number>();
+      for (const t of data.tasks) if (t.assigneeId === ownerId && t.status !== "done" && hostProjects.some((p) => p.id === t.projectId)) n.set(t.projectId, (n.get(t.projectId) ?? 0) + 1);
+      const best = [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+      if (best) return best[0];
+    }
+    return hostProjects.find((p) => p.ownerId === me)?.id ?? hostProjects[0]?.id;
+  };
+  const quickTask = (body: string, ownerId: string | null, due: string | null): { id: string; project: string } | null => {
+    const projectId = taskProjectFor(ownerId);
+    if (!createTasks || !projectId) return null;
+    const ids = createTasks([{ title: body, projectId, ...(ownerId ? { assigneeId: ownerId } : {}), ...(due ? { dueDate: due } : {}) }]);
+    const id = Array.isArray(ids) ? ids[0] : undefined;
+    return id ? { id, project: hostProjects.find((p) => p.id === projectId)?.name ?? "the project" } : null;
+  };
+  const madeToast = (made: { id: string; project: string }, ownerId: string | null, undo: () => void) => {
+    const who = ownerId ? firstName(nameOf(ownerId) ?? "") : "";
+    toast?.action(`Task made${who ? ` for ${who}` : ""} in ${made.project}`, "Undo", () => { deleteTask?.(made.id); undo(); }, {});
+  };
+  const makeTask = (it: MeetingItem) => {
+    // a decision or a note: Extract tasks reads it (what to do, and who, isn't in the line itself)
+    if (it.kind !== "action" || it.taskId) { setExtract({ text: makeTaskText(it, nameOf), from: it }); return; }
+    const made = quickTask(it.body, it.ownerId, it.due);
+    if (!made) { setExtract({ text: makeTaskText(it, nameOf), from: it }); return; }
+    setItems((xs) => xs.map((x) => (x.id === it.id ? { ...x, taskId: made.id } : x)));
+    void linkWithRetry(() => updateItem({ ...it, taskId: made.id }));
+    madeToast(made, it.ownerId, () => {
+      setItems((xs) => xs.map((x) => (x.id === it.id ? { ...x, taskId: null } : x)));
+      void updateItem({ ...it, taskId: null });
+    });
+  };
   const extractAll = () => setExtract({ text: extractText(items, nameOf) });
 
-  /* ---- the notes doc ---- */
-  const docProject = meeting?.docProjectId ? hostProjects.find((p) => p.id === meeting.docProjectId) : hostProjects[0];
+  /* ---- last meeting's actions that never became tasks: make one, or carry it over ---- */
+  const norm = (x: string) => x.replace(/\s+/g, " ").trim().toLowerCase();
+  const carriedOf = useCallback((a: AgendaAction) => items.find((i) => i.kind === "action" && i.agendaKey === "actions"
+    && norm(i.body) === norm(a.body) && (i.ownerId ?? null) === (a.ownerId ?? null)), [items]);
+  // (carried into this meeting's actions, on its "Last meeting's actions" item, without the day that's passed)
+  const carry = async (a: AgendaAction): Promise<MeetingItem | null> => {
+    if (!meeting || carriedOf(a)) return null;
+    const r = await addItem(meeting.id, { kind: "action", body: a.body, agendaKey: "actions", ownerId: a.ownerId ?? null, due: null, taskId: null }, me);
+    if (!r.ok) { toast?.error(r.message); return null; }
+    setItems((xs) => (xs.some((x) => x.id === r.data.id) ? xs : [...xs, r.data]));
+    return r.data;
+  };
+  const makeTaskFrom = async (a: AgendaAction) => {
+    if (carriedOf(a)) return;
+    const made = quickTask(a.body, a.ownerId ?? null, null);
+    const it = await carry(a);
+    if (!made || !it) return;
+    setItems((xs) => xs.map((x) => (x.id === it.id ? { ...x, taskId: made.id } : x)));
+    void linkWithRetry(() => updateItem({ ...it, taskId: made.id }));
+    madeToast(made, a.ownerId ?? null, () => { void remove(it); });
+  };
   const [docBusy, setDocBusy] = useState(false);
   const savedDoc = useRef<{ docId: string; updatedAt: string } | null>(null);
   const saveDoc = async (opts: { quiet?: boolean } = {}): Promise<{ docId: string; projectId: string } | null> => {
@@ -303,7 +373,7 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
     if (!meeting) return;
     setEnding(true);
     if (pendingMove.current) { window.clearTimeout(pendingMove.current.timer); flush(); }
-    const doc = await saveDoc({ quiet: true });
+    const doc = autoDoc ? await saveDoc({ quiet: true }) : null;
     const r = await endMeeting(meeting.id, me, doc);
     setEnding(false);
     if (!r.ok) { toast?.error(r.message); return; }
@@ -313,6 +383,15 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
     toast?.success(who.length && (meetingsMode() === "shared" || isDemoMeetings()) ? `Recap sent to ${listWords(who)}` : "Meeting ended");
   };
   const goWrap = () => { const i = agenda.findIndex((a) => a.kind === "wrap"); if (i >= 0) go(i); };
+
+  /* ---- leaving: it carries on (say so, with the way back) ---- */
+  const onClose = () => {
+    if (meeting && live && (presenting || canEnd)) {
+      const id = meeting.id;
+      toast?.action(presenting ? "The meeting is still live, and you're presenting" : "The meeting is still live", "Back", () => requestMeetingOpen(id), {});
+    }
+    close();
+  };
 
   /* ---- keys ---- */
   const roomRef = useRef<HTMLDivElement>(null);
@@ -326,6 +405,7 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
       const at = document.activeElement;
       // only while the room has the keys (not a sheet, menu or the task panel over it)
       if (!room || (at && at !== document.body && !room.contains(at))) return;
+      if (notesOpen || agendaOpen || handOpen || extract) return;
       if (isEditableTarget(e.target)) return;
       const k = e.key;
       if (k === "Escape") { e.preventDefault(); if (help) setHelp(false); else onClose(); return; }
@@ -345,12 +425,14 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
 
   /* ---- the screen ---- */
   if (typeof document === "undefined") return null;
-  const stageCtx: StageContext = { taskById, nameOf, onOpenTask, wsName, agenda, onGo: live ? go : undefined };
+  const stageCtx: StageContext = { taskById, nameOf, onOpenTask, wsName, agenda, onGo: live ? go : undefined,
+    ...(canWrite ? { carried: carriedOf, onCarry: (a: AgendaAction) => void carry(a), onMakeTaskFrom: createTasks ? (a: AgendaAction) => void makeTaskFrom(a) : undefined } : {}) };
   const wrapCtx: WrapContext = { nameOf, taskById, onOpenTask, onMakeTask: canWrite && createTasks ? makeTask : undefined, onDelete: canWrite ? (it) => void remove(it) : undefined, agendaTitle, whereOf };
   const notes = meeting && live ? (
     <RoomNotes items={items} agendaKey={agendaKey} agendaTitle={agendaTitle} people={people} canWrite={canWrite} onAdd={add}
       onDelete={(it) => void remove(it)} onMakeTask={createTasks ? makeTask : undefined} nameOf={nameOf} taskById={taskById} onOpenTask={onOpenTask}
-      composerRef={composerRef} scope={scope} onScope={setScope} whereOf={whereOf} />
+      composerRef={composerRef} scope={scope} onScope={setScope} whereOf={whereOf}
+      onEscape={() => { if (phone) setNotesOpen(false); stageRef.current?.focus({ preventScroll: true }); }} />
   ) : null;
   const budget = meeting ? PRESETS[meeting.preset].minutes : 15;
 
@@ -358,7 +440,13 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
     <div ref={roomRef} className="kmtg-room" role="dialog" aria-modal="true" aria-label={meeting?.title ?? "Meeting"} data-phone={phone || undefined} data-ended={meeting && !live ? "" : undefined} data-kdnd-ignore="">
       <style>{BUSINESS_CSS}</style>
       <header className="kmtg-top">
-        {host && <WorkspaceMark workspace={host} size={28} />}
+        {meeting && meeting.workspaceIds.length > 1 ? (
+          // a Group meeting is every business's, not its host's
+          <span className="kmtg-marks" aria-hidden="true">
+            {meeting.workspaceIds.map((id) => workspaces.find((w) => w.id === id)).filter((w): w is NonNullable<typeof w> => !!w).slice(0, 3)
+              .map((w) => <WorkspaceMark key={w.id} workspace={w} size={20} />)}
+          </span>
+        ) : host && <WorkspaceMark workspace={host} size={28} />}
         <div className="kmtg-top-title">
           <h1 className="kmtg-title">{meeting?.title ?? "Meeting"}</h1>
           <p className="kmtg-top-sub">
@@ -376,9 +464,10 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
           </span>
         )}
         <span className="kmtg-top-acts">
-          {meeting && live && presenting && inRoom.length > 0 && !phone && (
+          {meeting && live && presenting && inRoom.length > 0 && (
             <>
-              <Button ref={handRef} size="sm" variant="ghost" icon="users" onClick={() => setHandOpen((o) => !o)} aria-haspopup="menu" aria-expanded={handOpen}>Hand over</Button>
+              {phone ? <IconButton ref={handRef} icon="users" label="Hand over" onClick={() => setHandOpen((o) => !o)} aria-haspopup="menu" aria-expanded={handOpen} />
+                : <Button ref={handRef} size="sm" variant="ghost" icon="users" onClick={() => setHandOpen((o) => !o)} aria-haspopup="menu" aria-expanded={handOpen}>Hand over</Button>}
               <Popover open={handOpen} anchorRef={handRef} onClose={() => setHandOpen(false)} role="menu" label="Hand over to" align="end" minWidth={200}>
                 <div className="kmtg-menu">
                   {inRoom.map((id) => (
@@ -407,7 +496,7 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
       ) : !live ? (
         <div className="kmtg-recap-wrap">
           <RoomRecap meeting={meeting} items={items} ctx={wrapCtx} ranBy={meeting.endedBy ? nameOf(meeting.endedBy) : undefined}
-            docLabel={docProject?.name} hasDoc={!!meeting.docId} docBusy={docBusy}
+            docLabel={docProject?.name} docAudience={docAudience} hasDoc={!!meeting.docId} docBusy={docBusy}
             onSaveDoc={canWrite && docProject ? () => void saveDoc() : undefined} onOpenDoc={() => void openDoc()}
             onExtract={canWrite && createTasks ? extractAll : undefined}
             onOpenPrevious={meeting.previousId && onOpenMeeting ? () => onOpenMeeting(meeting.previousId!) : undefined} />
@@ -429,7 +518,7 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
               )}
               {item && (item.kind === "wrap" ? (
                 <RoomWrap items={items} ctx={wrapCtx} live canEnd={canEnd} recipients={recipients} shared={meetingsMode() === "shared" || isDemoMeetings()}
-                  docLabel={docProject?.name} hasDoc={!!meeting.docId} docBusy={docBusy}
+                  docLabel={docProject?.name} docAudience={docAudience} autoDoc={autoDoc} hasDoc={!!meeting.docId} docBusy={docBusy}
                   onSaveDoc={canWrite && docProject ? () => void saveDoc() : undefined} onOpenDoc={() => void openDoc()}
                   onExtract={canWrite && createTasks ? extractAll : undefined} onEnd={() => void end()} ending={ending} />
               ) : <RoomStage item={item} ctx={stageCtx} />)}
@@ -437,7 +526,7 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
             {!phone && <aside className="kmtg-notes" aria-label="Notes">{notes}</aside>}
           </div>
           <footer className="kmtg-bottom">
-            <Button variant="secondary" icon="arrowLeft" onClick={() => go(idx - 1)} disabled={idx === 0} aria-keyshortcuts="ArrowLeft">{phone ? "" : "Previous"}</Button>
+            <Button variant="secondary" icon="arrowLeft" onClick={() => go(idx - 1)} disabled={idx === 0} aria-keyshortcuts="ArrowLeft" aria-label={phone ? "Previous" : undefined}>{phone ? "" : "Previous"}</Button>
             {phone ? (
               <button type="button" className="kmtg-pos" onClick={() => setAgendaOpen(true)} aria-label={`Agenda: ${idx + 1} of ${n}, ${item?.title ?? ""}`}>
                 <span className="kmtg-pos-n">{idx + 1} of {n}</span><span className="kmtg-pos-t">{item?.title}</span><Icon name="chevronDown" size={14} />
@@ -446,8 +535,9 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
               <span className="kmtg-pos"><span className="kmtg-pos-n">{idx + 1} of {n}</span><span className="kmtg-pos-t">{item?.title}</span>
                 <button type="button" className="kmtg-keys" onClick={() => setHelp((h) => !h)} aria-expanded={help}>Keys</button></span>
             )}
-            {phone && <Button variant="secondary" icon="notes" onClick={() => setNotesOpen(true)}>{items.length ? `${items.length}` : "Notes"}</Button>}
-            <Button variant={idx === n - 1 ? "secondary" : "primary"} iconRight="arrowRight" onClick={() => go(idx + 1)} disabled={idx >= n - 1} aria-keyshortcuts="ArrowRight">{phone ? "" : "Next"}</Button>
+            {phone && <Button variant="secondary" icon="notes" onClick={() => setNotesOpen(true)}
+              aria-label={items.length ? `Notes, ${items.length} logged` : "Notes"}>{items.length ? `${items.length}` : "Notes"}</Button>}
+            <Button variant={idx === n - 1 ? "secondary" : "primary"} iconRight="arrowRight" onClick={() => go(idx + 1)} disabled={idx >= n - 1} aria-keyshortcuts="ArrowRight" aria-label={phone ? "Next" : undefined}>{phone ? "" : "Next"}</Button>
           </footer>
           {help && (
             <div className="kmtg-help" role="note">
