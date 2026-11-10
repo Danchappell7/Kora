@@ -101,7 +101,7 @@ export function goalsBehind(goals: readonly Goal[], progress: ReadonlyMap<string
   const todayIso = iso(today);
   const out: GroupGoal[] = [];
   for (const g of goals) {
-    if (g.status === "done") continue;
+    if (g.status === "done" || g.archivedAt) continue;
     const prog = progress.get(g.id) ?? { pct: 0, source: "manual" as const, children: 0 };
     const pct = Math.round(prog.pct);
     const read = pace?.(g, prog, today) ?? undefined;
@@ -124,7 +124,8 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
   const idx = indexTasks(tasks);
 
   // goals: progress from linked projects (this business's tasks), sub-goal roll-ups, or their own numbers
-  const goals = allGoals.filter((g) => (g.workspaceId ?? null) === wsId);
+  // (an archived goal is out of the count: its quarter is over)
+  const goals = allGoals.filter((g) => (g.workspaceId ?? null) === wsId && !g.archivedAt);
   // (lib/countRules: top-level tasks, the rule the Goals page and each project's header use)
   const goalTasks = (input.goalTasks ?? all).filter((t) => (t.workspaceId ?? null) === wsId) as Task[];
   const pctOf = (pid: string) => projectProgressOf(goalTasks, pid).pct;

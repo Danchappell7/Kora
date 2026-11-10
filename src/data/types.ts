@@ -226,6 +226,10 @@ export interface Goal {
   /** how much it counts in its parent's roll-up (1 when unset) */
   weight?: number | null;
 }
+/** The fields a goal's write may change (0052's only once it's run). */
+export type GoalPatch = Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId"
+  | "ownerId" | "contributors" | "period" | "periodStart" | "periodEnd" | "startValue" | "direction" | "confidence" | "kind" | "visibility"
+  | "archivedAt" | "icon" | "color" | "pace" | "weight">>;
 /** 0052: one number (and how sure you are) posted against a goal */
 export interface GoalCheckin {
   id: string;

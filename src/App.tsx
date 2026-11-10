@@ -81,6 +81,9 @@ import type { HistoryLogProps } from "./components/bin/HistoryLog";
 import type { InsightsNavProps } from "./components/views/InsightsSummary";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
+import { useGoalWrites } from "./components/goals/useGoalWrites";
+import { groupGoalPace } from "./lib/goalPace";
+import type { GoalExtras, GoalPatch } from "./data/types";
 import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
@@ -225,6 +228,8 @@ export default function App() {
   const [customFields, setCustomFields] = useState<CustomFieldDef[]>([]);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
+  // 0052's check-ins and links (null until it's run: owners, quarters and check-ins stay off)
+  const [goalExtras, setGoalExtras] = useState<GoalExtras | null>(null);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [statusUpdates, setStatusUpdates] = useState<StatusUpdate[]>([]);
   const [automationRules, setAutomationRules] = useState<AutomationRule[]>([]);
@@ -832,7 +837,7 @@ export default function App() {
     setWorkspaces(ws.workspaces); setReferenceData({ workspaces: ws.workspaces });
     setWsMembers(ws.members); setProfile((cur) => (!initial && b.partial?.profile ? cur : b.profile));
     setSections((cur) => keepTmp(b.sections, cur)); setCustomFields((cur) => keepTmp(b.customFields, cur)); setSavedSearches((cur) => keepTmp(b.savedSearches, cur));
-    setGoals((cur) => keepTmp(b.goals, cur)); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
+    setGoals((cur) => keepTmp(b.goals, cur)); setGoalExtras(b.goalExtras ?? null); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
     setAutomationRules((cur) => keepTmp(b.automationRules, cur)); setForms((cur) => keepTmp(b.forms, cur));
     return true;
   }, [mergeServerTasks, applyProjects, applyTags, noteSchemaBehind]);
@@ -2681,13 +2686,13 @@ export default function App() {
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
 
   // ---- goals / OKRs ----
-  type GoalPatch = Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>;
-  const createGoal = useCallback((name: string) => {
+  // (0052's owner, quarter, parent and kind ride along in `extra` once it's run)
+  const createGoal = useCallback((name: string, extra?: GoalPatch) => {
     const wsId = workspaceRef.current;
     if (denyGuest([wsId])) return;
-    const tmp: Goal = { id: "tmp-goal-" + Date.now(), workspaceId: wsId, name, status: "on_track", current: 0, target: 100 };
+    const tmp: Goal = { id: "tmp-goal-" + Date.now(), workspaceId: wsId, name, status: "on_track", current: 0, target: 100, createdAt: new Date().toISOString(), ...extra };
     setGoals((g) => [...g, tmp]);
-    store.createGoal({ workspaceId: wsId, name, status: "on_track", current: 0, target: 100 }, userIdRef.current)
+    store.createGoal({ workspaceId: wsId, name, status: "on_track", current: 0, target: 100, extra }, userIdRef.current)
       .then((goal) => {
         const op = settleTmp(tmp.id, goal.id, (id, patch: GoalPatch) => store.updateGoal(id, patch), (id) => store.deleteGoal(id));
         setGoals((g) => (op.deleted ? g.filter((x) => x.id !== tmp.id) : swapTmp(g, tmp.id, { ...goal, ...op.patch })));
@@ -2706,6 +2711,8 @@ export default function App() {
     if (deferTmp(id)) return;
     store.deleteGoal(id).catch(saveFailed("deleteGoal", "Couldn't delete the goal."));
   }, [denyGuest, deferTmp, saveFailed]);
+  // 0052: check-ins and links (components/goals/useGoalWrites)
+  const goalWrites = useGoalWrites({ store, setGoals, setExtras: setGoalExtras, userIdRef, denyGuest, saveFailed });
 
   // ---- portfolios ----
   const createPortfolio = useCallback((name: string) => {
@@ -4070,10 +4077,12 @@ export default function App() {
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
-      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly} />;
+      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
+        extras={goalExtras} workspaceId={workspace} me={currentUserId} role={personal ? null : myRole ?? null} members={wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active")}
+        onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} />;
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}

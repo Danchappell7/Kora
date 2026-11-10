@@ -21,7 +21,7 @@ import {
   EVENTS, KANBO_TODAY,
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -558,9 +558,6 @@ const rowToCheckin = (r: GoalCheckinRow): GoalCheckin => ({
 interface GoalLinkRow { id: string; goal_id: string; workspace_id: string | null; kind: string; target_id: string; created_at?: string }
 const rowToGoalLink = (r: GoalLinkRow): GoalLink => ({ id: r.id, goalId: r.goal_id, workspaceId: r.workspace_id, kind: r.kind as GoalLinkKind, targetId: r.target_id, ...(r.created_at ? { createdAt: r.created_at } : {}) });
 /** A goal patch as goals columns (0052's only when they're in the patch). */
-export type GoalPatch = Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId"
-  | "ownerId" | "contributors" | "period" | "periodStart" | "periodEnd" | "startValue" | "direction" | "confidence" | "kind" | "visibility"
-  | "archivedAt" | "icon" | "color" | "pace" | "weight">>;
 function goalPatchRow(patch: GoalPatch): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   if ("name" in patch) row.name = patch.name;
