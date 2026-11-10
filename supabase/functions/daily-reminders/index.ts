@@ -28,6 +28,13 @@
 //     waits 55); what it doesn't reach goes straight back for the next run.
 //     Its claim outlasts any run, so a slow one is never sent twice.
 //
+// Project access (0058): this runs with the service role, so it checks the
+// projects itself. A due list and a digest name only tasks the person can
+// see, and a digest's task-less items only projects they can see
+// (_shared/projectAccess.ts, _shared/notifyAccess.ts). Before 0058, as
+// before. A check that can't be made skips that person this run (their
+// digest is tried again in 15 minutes); it never holds up anyone else's.
+//
 // Prefs (profiles.notify_prefs, default ON): "due_email" for the email,
 // "due_push" for the push; "delivery", "digest_time", "quiet_hours",
 // "timezone" (0048). Email needs RESEND_API_KEY, push the VAPID secrets;
@@ -59,6 +66,8 @@ import { addDays, digestDue, digestMoment, localParts, NOTIFY_KINDS, planDeliver
 import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestItem, type DigestUpdate, type DueTask } from "../_shared/notifyCompose.ts";
 import { digestUpdates, emptyRhythmReport, ownerPrefs, remindOwner, updateOwners, type RemindDeps } from "../_shared/updateReminders.ts";
 import { deliverNotice, drainQueue, supabaseDrainDeps, supabaseQueueStore, type SendOutcome } from "../_shared/notifyQueue.ts";
+import { AccessLookupFailed, projectAccess } from "../_shared/projectAccess.ts";
+import { digestItemProjects, projectsTheySee } from "../_shared/notifyAccess.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -167,15 +176,28 @@ async function dueReminders(supa: Supa, env: Env): Promise<Response> {
   }
 
   const store = supabaseQueueStore(supa);
-  let sent = 0, skipped = 0, failed = 0, already = 0, pushed = 0, held = 0, inDigest = 0;
+  const access = projectAccess(supa);
+  let sent = 0, skipped = 0, failed = 0, already = 0, pushed = 0, held = 0, inDigest = 0, unchecked = 0;
   await sweep(supa);
-  for (const [userId, list] of byAssignee) {
+  for (const [userId, assigned] of byAssignee) {
     // respect Settings → Notifications ("Due-date reminders" email / push, delivery, quiet hours); skip locked accounts
     const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended,approved").eq("id", userId).maybeSingle();
     if (prof?.suspended || prof?.approved === false) { skipped++; continue; }
     const prefs = resolveNotifyPrefs(prof?.notify_prefs ?? {});
     // on the daily digest, the due list is part of it
     if (prefs.delivery === "digest") { inDigest++; continue; }
+    // Project access (0058): only the tasks they can see. Can't tell: nothing for them this run, never unchecked
+    let list: TaskRow[];
+    try {
+      const mine = new Set(await access.visibleTaskIds(userId, assigned.map((t) => t.id)));
+      list = assigned.filter((t) => mine.has(t.id));
+    } catch (e) {
+      if (!(e instanceof AccessLookupFailed)) throw e;
+      console.warn("[due] project access:", e.message);
+      unchecked++;
+      continue;
+    }
+    if (!list.length) { skipped++; continue; }
     const sorted = [...list].sort((a, b) => a.due_date.localeCompare(b.due_date));
     const compact: DueTask[] = sorted.slice(0, HELD_DUE_TASKS).map((t) => ({ id: t.id, title: oneLine(t.title || "Untitled task").slice(0, 80), due_date: t.due_date }));
     const payload = { v: 1 as const, line: "", url: "/today", due: { today, tasks: compact, more: sorted.length - compact.length } };
@@ -230,7 +252,7 @@ async function dueReminders(supa: Supa, env: Env): Promise<Response> {
     if (r.result === "sent" || r.result === "failed") await sleep(550);   // Resend: ~2 requests a second
   }
 
-  return json({ sent, skipped, failed, alreadySentToday: already, pushed, held, inDigest, people: byAssignee.size, tasks: tasks.length });
+  return json({ sent, skipped, failed, alreadySentToday: already, pushed, held, inDigest, unchecked, people: byAssignee.size, tasks: tasks.length });
 }
 
 /** projects among these tasks' that are archived */
@@ -310,6 +332,12 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
     const { data } = await supa.from("tasks").select("id,user_id,workspace_id,archived_at").in("id", taskIds.slice(i, i + 200));
     for (const t of data ?? []) if (!t.archived_at && canSee(t)) visible.add(String(t.id));
   }
+  // Project access (0058): of those, the tasks they can see; a task-less item, by the project it names
+  // (a failed check throws: this digest waits for the next run)
+  const access = projectAccess(supa);
+  const shown = new Set(await access.visibleTaskIds(userId, [...visible]));
+  const itemProjects = access.before0058 ? new Map<string, string>() : await digestItemProjects(supa, items);
+  const projectIds = await projectsTheySee(access, userId, [...new Set(itemProjects.values())]);
   const { data: sn } = await supa.from("notification_snoozes").select("task_id").eq("user_id", userId).gt("until", now.toISOString());
   const snoozed = new Set<string>((sn ?? []).map((s: { task_id: string }) => String(s.task_id)));
   // a kind whose email they switched off stays out (a doc mention counts as a mention; 0056: a meeting's recap, as an update)
@@ -317,7 +345,7 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
     const k = (kind === "doc_mention" ? "mention" : kind === "meeting" ? "update" : kind) as NotifyKind;
     return NOTIFY_KINDS.includes(k) ? prefs.channel(k, "email") : true;
   };
-  const threads = digestThreads(filterDigestItems(items, visible, snoozed, wants));
+  const threads = digestThreads(filterDigestItems(items, shown, snoozed, wants, projectIds, (a) => itemProjects.get(a.id) ?? null));
 
   // what's due today (their timezone) or overdue
   const today = localParts(now, prefs.timezone).date;
@@ -328,7 +356,9 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
       .order("due_date").limit(100);
     const rows = (ts ?? []) as (DueTask & { user_id: string; workspace_id: string | null; project_id: string | null })[];
     const archived = await archivedProjectIds(supa, rows);
-    due = rows.filter((t) => canSee(t) && !(t.project_id && archived.has(t.project_id))).map((t) => ({ id: t.id, title: t.title, due_date: t.due_date }));
+    const open = rows.filter((t) => canSee(t) && !(t.project_id && archived.has(t.project_id)));
+    const theirs = new Set(await access.visibleTaskIds(userId, open.map((t) => t.id)));
+    due = open.filter((t) => theirs.has(t.id)).map((t) => ({ id: t.id, title: t.title, due_date: t.due_date }));
   }
 
   // your project updates (0053): on their day (or a follow-up day), or a lead asked and nothing's been posted since

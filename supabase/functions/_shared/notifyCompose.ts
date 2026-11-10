@@ -296,14 +296,29 @@ export function digestThreads(items: readonly DigestItem[]): DigestThread[] {
   return out.sort((a, b) => Number(b.mention) - Number(a.mention) || b.latest.localeCompare(a.latest));
 }
 
+/** The project a task-less Inbox item names in its meta (a project update's notice, say), or null. */
+export const digestMetaProject = (a: DigestItem): string | null => {
+  const p = a.meta?.project_id;
+  return typeof p === "string" && p ? p : null;
+};
+
 /**
- * What goes in someone's digest: items on tasks they can still see (a doc
- * mention or a notice has no task and always counts), not in a snoozed
- * thread, and of a kind whose email they haven't switched off.
+ * What goes in someone's digest: items on tasks they can still see, not in a
+ * snoozed thread, and of a kind whose email they haven't switched off. A doc
+ * mention or a notice has no task and counts, unless Project access (0058)
+ * says otherwise: `projectIds` is the projects they can still see (null:
+ * before 0058, or nothing to check, today's rule), and `projectOf` the
+ * project an item is about (null: none, so it counts).
  */
 export function filterDigestItems(items: readonly DigestItem[], visibleTasks: ReadonlySet<string>, snoozedTasks: ReadonlySet<string>,
-  wants: (kind: string) => boolean = () => true): DigestItem[] {
-  return items.filter((a) => (!a.task_id || (visibleTasks.has(a.task_id) && !snoozedTasks.has(a.task_id))) && wants(a.kind));
+  wants: (kind: string) => boolean = () => true, projectIds: ReadonlySet<string> | null = null,
+  projectOf: (a: DigestItem) => string | null = digestMetaProject): DigestItem[] {
+  const projectOk = (a: DigestItem) => {
+    if (!projectIds) return true;
+    const p = projectOf(a);
+    return !p || projectIds.has(p.toLowerCase());
+  };
+  return items.filter((a) => (a.task_id ? visibleTasks.has(a.task_id) && !snoozedTasks.has(a.task_id) : projectOk(a)) && wants(a.kind));
 }
 
 /** The digest email: unread updates by thread, then what's due, then your project updates (0053). null when there's nothing to say. */

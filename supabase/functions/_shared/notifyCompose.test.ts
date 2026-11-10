@@ -104,6 +104,26 @@ describe("the daily digest", () => {
     const kept = filterDigestItems(items, new Set(["deck", "budget"]), new Set(["budget"]), (k) => k !== "kudos");
     expect(kept.map((x) => x.id)).toEqual(["1", "4"]);
   });
+
+  it("Project access (0058): a task-less item counts only if they can still see the project it names", () => {
+    const PAY = "66666666-6666-4666-8666-666666666666", LAUNCH = "77777777-7777-4777-8777-777777777777";
+    const items = [
+      { ...item("1", "update", null, "Sana Rao", "1"), meta: { project_id: PAY } },
+      { ...item("2", "update", null, "Sana Rao", "2"), meta: { project_id: LAUNCH.toUpperCase() } },
+      item("3", "doc_mention", null, "Theo Vance", "3"),
+      item("4", "comment", "deck", "Sana Rao", "4"),
+    ];
+    const all = new Set(["deck"]), none = new Set<string>();
+    // before 0058 (null): today's rule, every task-less item counts
+    expect(filterDigestItems(items, all, none).map((x) => x.id)).toEqual(["1", "2", "3", "4"]);
+    expect(filterDigestItems(items, all, none, () => true, null).map((x) => x.id)).toEqual(["1", "2", "3", "4"]);
+    // with it: Board pay (PAY) went private; an item naming no project still counts
+    expect(filterDigestItems(items, all, none, () => true, new Set([LAUNCH])).map((x) => x.id)).toEqual(["2", "3", "4"]);
+    // the project an item is about can come from elsewhere (an update's, a doc's)
+    const of = (a: DigestItem) => (a.id === "3" ? PAY : null);
+    // (here only the doc mention names a project, Board pay's: it's left out; the others name none and count)
+    expect(filterDigestItems(items, all, none, () => true, new Set([LAUNCH]), of).map((x) => x.id)).toEqual(["1", "2", "4"]);
+  });
 });
 
 describe("kudos notices (0048: notify { kind: 'kudos' })", () => {

@@ -21,7 +21,9 @@
 //     recipient + channel + task, checks each notice again (they may have
 //     left the workspace, snoozed the thread, switched to the digest, or be
 //     in quiet hours now; a project update's notice: still in each project's
-//     workspace, the project live, the update or the ask still there) and
+//     workspace, the project live, the update or the ask still there; with
+//     Project access on (0058), still able to see the task or project; a
+//     held due list keeps only the tasks they can still see) and
 //     sends ONE message per group naming everyone
 //     and every mention. A lookup that fails (a passing database error) is
 //     never taken for "gone": those notices wait and are tried again.
@@ -40,6 +42,7 @@ import {
 import { ABOUT_MAX_PROJECTS, composeBundle, dueEmail, type Composed, type NoticePayload, type UpdateAbout } from "./notifyCompose.ts";
 import { dueDigestPush, pushToUser, type PushMessage, type VapidKeys } from "./webpush.ts";
 import { sendEmail } from "./email.ts";
+import { AccessLookupFailed, projectAccess } from "./projectAccess.ts";
 
 /** What the database's notify_queue accepts as kind. */
 export type QueueKind = NotifyKind | "digest";
@@ -202,6 +205,9 @@ export interface DrainDeps {
    *  live, and the update (or the ask) still there and unanswered? — throws when it can't tell. Given, an "update"
    *  notice that doesn't say what it's about isn't sent (there's nothing to check it by). */
   canSeeUpdate?(userId: string, about: UpdateAbout): Promise<boolean>;
+  /** a held due list's tasks (ids, in order) they can still see (0058) — throws when it can't tell. Given, a due
+   *  list left with nothing they can see isn't sent */
+  visibleTasks?(userId: string, taskIds: string[]): Promise<string[]>;
   /** throws when it can't tell */
   snoozedUntil(userId: string, taskId: string): Promise<Date | null>;
   send(userId: string, channel: NotifyChannel, msg: Composed): Promise<SendOutcome>;
@@ -289,9 +295,18 @@ export async function drainQueue(d: DrainDeps): Promise<DrainReport> {
     }
     const keep: QueueRow[] = [], drop: QueueRow[] = [], again: QueueRow[] = [], hold = new Map<number, QueueRow[]>();
     let failure: unknown = null;
-    for (const r of list) {
+    for (const held of list) {
+      let r = held;
       try {
         if (r.task_id && !(await memo(sees, `${userId}:${r.task_id}`, () => d.canSee(userId, r.task_id!)))) { drop.push(r); continue; }
+        // a held due list: only the tasks they can still see (a project may have gone private meanwhile)
+        const due = (r.payload as Partial<NoticePayload> | null)?.due;
+        if (due && Array.isArray(due.tasks) && d.visibleTasks) {
+          const still = new Set(await d.visibleTasks(userId, due.tasks.map((t) => String(t.id))));
+          const tasks = due.tasks.filter((t) => still.has(String(t.id)));
+          if (!tasks.length) { drop.push(r); continue; }
+          if (tasks.length !== due.tasks.length) r = { ...r, payload: { ...r.payload, due: { ...due, tasks } } };
+        }
         if (r.kind === "update" && d.canSeeUpdate) {
           const about = updateAboutOf(r.payload);
           const check = d.canSeeUpdate.bind(d);
@@ -304,7 +319,7 @@ export async function drainQueue(d: DrainDeps): Promise<DrainReport> {
         if (plan.action === "send") keep.push(r);
         else if (plan.action === "hold") (hold.get(plan.until.getTime()) ?? hold.set(plan.until.getTime(), []).get(plan.until.getTime())!).push(r);
         else drop.push(r);
-      } catch (e) { again.push(r); failure = e; }
+      } catch (e) { again.push(held); failure = e; }
     }
     if (again.length) await retry(again, failure);
     for (const [t, rs] of hold) { await d.store.rehold(rs, new Date(t)).catch(() => undefined); report.held += rs.length; }
@@ -542,6 +557,14 @@ export function supabaseDrainDeps(db: ServiceDb, env: SenderEnv & { appUrl: stri
   opts: { sleep?: (ms: number) => Promise<void> } = {}): DrainDeps {
   const sleep = opts.sleep ?? pause;
   const members = new Map<string, Promise<Set<string>>>();
+  // Project access (0058) for this run; before 0058 every answer is today's rule
+  const access = projectAccess(db);
+  const checked = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
+    try { return await fn(); } catch (e) {
+      if (e instanceof AccessLookupFailed) throw new LookupFailed(what, e);
+      throw e;
+    }
+  };
   // a failed read throws (and is remembered for this run): their notices wait for the next one
   const teamOf = (workspaceId: string) => {
     if (!members.has(workspaceId)) {
@@ -571,7 +594,9 @@ export function supabaseDrainDeps(db: ServiceDb, env: SenderEnv & { appUrl: stri
       if (error) throw new LookupFailed("task", error);
       if (!t || t.archived_at) return false;
       if (!t.workspace_id) return String(t.user_id) === userId;
-      return (await teamOf(String(t.workspace_id))).has(userId);
+      if (!(await teamOf(String(t.workspace_id))).has(userId)) return false;
+      // Project access (0058): still able to see this task's project
+      return checked("project access", () => access.canSeeTask(userId, taskId));
     },
     async canSeeUpdate(userId, about) {
       const ids = [...new Set(about.projects)];
@@ -584,6 +609,8 @@ export function supabaseDrainDeps(db: ServiceDb, env: SenderEnv & { appUrl: stri
       for (const p of rows) {
         if (p.archived_at || !p.workspace_id) return false;
         if (!(await teamOf(String(p.workspace_id))).has(userId)) return false;
+        // Project access (0058): still able to see the project
+        if (!(await checked("project access", () => access.canSeeProject(userId, String(p.id))))) return false;
       }
       if (about.updateId) {
         // (an update its author deleted takes its Inbox items with it: its email and push go too)
@@ -605,6 +632,7 @@ export function supabaseDrainDeps(db: ServiceDb, env: SenderEnv & { appUrl: stri
       }
       return true;
     },
+    visibleTasks: (userId, taskIds) => checked("project access", () => access.visibleTaskIds(userId, taskIds)),
     snoozedUntil: (userId, taskId) => readSnoozedUntil(db, userId, taskId),
     async send(userId, channel, msg) {
       const out = await sendComposed(db, userId, channel, msg, env);

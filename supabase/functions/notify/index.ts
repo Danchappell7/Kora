@@ -71,6 +71,13 @@
 // arbitrary Kanbo-branded mail to arbitrary people. "assigned" also needs
 // write access (guests are read-only, so they never assign anyone).
 //
+// Project access (0058, _shared/notifyAccess.ts): this runs with the service
+// role, so it checks the project itself. The caller must be able to see the
+// task, or the project for an update kind ("assigned": edit it), else the
+// same 404 as a task that isn't there; only recipients who can see it get an
+// email or a push. Before 0058, everyone in the workspace, as before. A check
+// that can't be made sends nothing (503); the Inbox still has it.
+//
 // Push is stricter, because it lands on a lock screen:
 //  - "assigned" pushes only to the task's assignee as the database has it,
 //    and only when the database shows the caller just made that assignment
@@ -105,6 +112,8 @@ import {
   type Notice, type SendOutcome,
 } from "../_shared/notifyQueue.ts";
 import { ASK_FRESH_MS, askOwnerVerdict, askVerdict, POSTED_FRESH_MS, postedRecipients, postedVerdict, type AskRow, type PostedRow, type UpdateProjectRow } from "../_shared/updateNotices.ts";
+import { projectAccess } from "../_shared/projectAccess.ts";
+import { projectNoticeGate, taskNoticeGate } from "../_shared/notifyAccess.ts";
 
 const EVENT_KINDS = new Set(["assigned", "mention", "comment"]);
 
@@ -119,9 +128,11 @@ const MAX_RECIPIENTS = 25;
 const SIDE_DRAIN = 25;
 
 interface TaskRow {
-  id: string; title: string | null; user_id: string; workspace_id: string | null; assignee_id: string | null;
+  id: string; title: string | null; user_id: string; workspace_id: string | null; project_id: string | null; assignee_id: string | null;
   followers: string[] | null; collaborators: string[] | null; archived_at: string | null; created_at: string | null;
 }
+/** the task an approval or kudos is on */
+interface NoticeTaskRow { id: string; title: string | null; archived_at: string | null; workspace_id: string | null; project_id: string | null }
 /** roles that may change tasks (0041 can_write); guests are read-only */
 const WRITERS = new Set(["owner", "admin", "member"]);
 
@@ -168,7 +179,7 @@ Deno.serve(async (req) => {
 
     // the task — title/recipients come from here, never from the request
     const { data: t } = await supa.from("tasks")
-      .select("id,title,user_id,workspace_id,assignee_id,followers,collaborators,archived_at,created_at")
+      .select("id,title,user_id,workspace_id,project_id,assignee_id,followers,collaborators,archived_at,created_at")
       .eq("id", taskId).maybeSingle<TaskRow>();
     if (!t) return json({ error: "task not found" }, 404);
     if (t.archived_at) return json({ ok: true, sent: 0, note: "archived" });
@@ -193,6 +204,10 @@ Deno.serve(async (req) => {
     if (!members.has(actorId)) return json({ error: "not allowed" }, 403);
     // only someone who can change tasks can have assigned one (guests can still comment)
     if (ev === "assigned" && !WRITERS.has(actorRole)) return json({ error: "not allowed" }, 403);
+    // Project access (0058): they must be able to see this task (and edit it, to have assigned it)
+    const access = projectAccess(supa);
+    const seen = await taskNoticeGate(access, { actorId, task: t, recipients: [], needsEdit: ev === "assigned", notFound: "task not found" });
+    if (!seen.ok) return json(seen.body, seen.status);
 
     // recipients by event, from the database
     let recips: string[] = [];
@@ -235,6 +250,10 @@ Deno.serve(async (req) => {
     recips = [...new Set(recips.map(String))]
       .filter((id) => UUID.test(id) && id !== actorId && members.has(id))
       .slice(0, MAX_RECIPIENTS);
+    // ...and only people who can see it are told (a project may be Members only or Private)
+    const told = await taskNoticeGate(access, { actorId, task: t, recipients: recips, callerChecked: true, notFound: "task not found" });
+    if (!told.ok) return json(told.body, told.status);
+    recips = told.recipients;
 
     const title = oneLine(t.title || "a task");
     const path = `/?task=${encodeURIComponent(taskId)}`;
@@ -403,12 +422,12 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
   const actorName = `${ap?.first_name ?? ""} ${ap?.last_name ?? ""}`.trim() || who?.user?.email || "Someone";
 
   // the approval, its reviews and its task — everything comes from here, never from the request
-  const { data: a } = await supa.from("approvals")
+  const { data: a } = (await supa.from("approvals")
     .select("id,task_id,workspace_id,requested_by,status,rule,title,note,created_at,resolved_at")
-    .eq("id", approvalId).maybeSingle<ApprovalRow>();
+    .eq("id", approvalId).maybeSingle()) as { data: ApprovalRow | null };
   if (!a) return json({ error: "approval not found" }, 404);
-  const { data: t } = await supa.from("tasks").select("id,title,archived_at,workspace_id").eq("id", a.task_id)
-    .maybeSingle<{ id: string; title: string | null; archived_at: string | null; workspace_id: string | null }>();
+  const { data: t } = (await supa.from("tasks").select("id,title,archived_at,workspace_id,project_id").eq("id", a.task_id)
+    .maybeSingle()) as { data: NoticeTaskRow | null };
   if (!t) return json({ error: "approval not found" }, 404);
   if (t.archived_at) return json({ ok: true, sent: 0, note: "archived" });
   // a task that has left the request's workspace took no request with it (0047 cancels it): nobody
@@ -417,13 +436,20 @@ async function approvalNotice(supa: Supa, req: Request, body: Record<string, unk
   // approvals are team-only: the caller can see the task if they're an active member (guests too)
   const members = await teamMembers(supa, a.workspace_id);
   if (!members.has(actorId)) return json({ error: "not allowed" }, 403);
+  // Project access (0058): the caller must be able to see the task
+  const access = projectAccess(supa);
+  const seen = await taskNoticeGate(access, { actorId, task: t, recipients: [], notFound: "approval not found" });
+  if (!seen.ok) return json(seen.body, seen.status);
   const { data: revs } = await supa.from("approval_reviewers").select("user_id,decision,comment,decided_at").eq("approval_id", a.id);
   const plan = planApprovalNotice(a, (revs ?? []) as ReviewerRow[], actorId);
   if ("skip" in plan) return json({ ok: true, sent: 0, note: plan.skip });
 
-  const recips = [...new Set(plan.recipients.map(String))]
-    .filter((id) => UUID.test(id) && id !== actorId && members.has(id))
-    .slice(0, MAX_RECIPIENTS);
+  const told = await taskNoticeGate(access, {
+    actorId, task: t, callerChecked: true, notFound: "approval not found",
+    recipients: [...new Set(plan.recipients.map(String))].filter((id) => UUID.test(id) && id !== actorId && members.has(id)).slice(0, MAX_RECIPIENTS),
+  });
+  if (!told.ok) return json(told.body, told.status);
+  const recips = told.recipients;
   const taskTitle = t.title || a.title || "";
   const path = `/?task=${encodeURIComponent(t.id)}`;
   const link = env.appUrl ? `${env.appUrl}${path}` : "";
@@ -478,16 +504,20 @@ async function kudosNotice(supa: Supa, req: Request, body: Record<string, unknow
   const { actorId, who, ap } = actor;
   const volume = await hit(supa, `${KEY_PREFIX}notify:${actorId}`, { windowSec: 600, max: 150 });
   if (!volume.allowed) return json({ error: "too many notifications — slow down", retryAfter: volume.retryAfter }, 429);
-  const { data: k } = await supa.from("kudos").select("id,task_id,workspace_id,from_user,to_user,emoji,note,created_at")
-    .eq("id", kudosId).maybeSingle<{ id: string; task_id: string; workspace_id: string; from_user: string; to_user: string; emoji: string; note: string | null; created_at: string }>();
+  const { data: k } = (await supa.from("kudos").select("id,task_id,workspace_id,from_user,to_user,emoji,note,created_at")
+    .eq("id", kudosId).maybeSingle()) as { data: { id: string; task_id: string; workspace_id: string; from_user: string; to_user: string; emoji: string; note: string | null; created_at: string } | null };
   // someone else's kudos (or none): nothing to say, and nothing given away about which exist
   if (!k || k.from_user !== actorId) return json({ error: "kudos not found" }, 404);
   if (Date.now() - Date.parse(k.created_at) > KUDOS_FRESH_MS) return json({ ok: true, sent: 0, note: "not new" });
-  const { data: t } = await supa.from("tasks").select("id,title,archived_at,workspace_id").eq("id", k.task_id)
-    .maybeSingle<{ id: string; title: string | null; archived_at: string | null; workspace_id: string | null }>();
+  const { data: t } = (await supa.from("tasks").select("id,title,archived_at,workspace_id,project_id").eq("id", k.task_id)
+    .maybeSingle()) as { data: NoticeTaskRow | null };
   if (!t || t.archived_at) return json({ ok: true, sent: 0, note: "no task" });
   const members = await teamMembers(supa, k.workspace_id);
   if (!members.has(actorId) || !members.has(k.to_user) || k.to_user === actorId) return json({ ok: true, sent: 0, note: "not a member" });
+  // Project access (0058): both of them must be able to see the task
+  const told = await taskNoticeGate(projectAccess(supa), { actorId, task: t, recipients: [k.to_user], notFound: "kudos not found" });
+  if (!told.ok) return json(told.body, told.status);
+  if (!told.recipients.length) return json({ ok: true, sent: 0, note: "no access" });
   const id = k.to_user;
   const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
   if (!person) return json({ ok: true, sent: 0, note: "recipient unavailable" });
@@ -550,6 +580,10 @@ async function updateAskNotice(supa: Supa, req: Request, body: Record<string, un
     .maybeSingle()) as { data: UpdateProjectRow | null };
   const owner = askOwnerVerdict(a, p, await teamRoles(supa, a.workspace_id), actorId);
   if (owner !== "ok" || !p) return json({ ok: true, sent: 0, note: owner });
+  // Project access (0058): the asker and the owner must both be able to see the project
+  const told = await projectNoticeGate(projectAccess(supa), { actorId, project: p, recipients: [a.owner_id], notFound: "ask not found" });
+  if (!told.ok) return json(told.body, told.status);
+  if (!told.recipients.length) return json({ ok: true, sent: 0, note: "no access" });
   const id = a.owner_id;
   const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
   if (!person) return json({ ok: true, sent: 0, note: "recipient unavailable" });
@@ -615,7 +649,10 @@ async function statusUpdateNotice(supa: Supa, req: Request, body: Record<string,
   if (!p || p.archived_at || p.workspace_id !== u.workspace_id) return json({ ok: true, sent: 0, note: "project changed" });
   const members = await teamMembers(supa, u.workspace_id);
   if (!members.has(actorId)) return json({ ok: true, sent: 0, note: "not a member" });
-  const recips = postedRecipients(u, actorId, members, MAX_RECIPIENTS);
+  // Project access (0058): the author must be able to see the project, and only the people asked who can are told
+  const told = await projectNoticeGate(projectAccess(supa), { actorId, project: p, recipients: postedRecipients(u, actorId, members, MAX_RECIPIENTS), notFound: "update not found" });
+  if (!told.ok) return json(told.body, told.status);
+  const recips = told.recipients;
   if (!recips.length) return json({ ok: true, sent: 0, note: "nobody asked" });
   // once per update, email and push alike (a replayed call tells nobody again)
   const once = await hit(supa, `${KEY_PREFIX}notify:status_update:${u.id}`, { windowSec: Math.ceil(POSTED_FRESH_MS / 1000) + 60 });

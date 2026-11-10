@@ -437,14 +437,15 @@ describe("a lookup that fails is never taken for gone", () => {
   });
 
   /** a PostgREST-ish client: each table answers `results[table]` */
-  function tablesDb(results: Record<string, { data: unknown; error: unknown }>) {
+  /** `rpcs`: 0058's project-access functions by name (left out: not there, as before 0058) */
+  function tablesDb(results: Record<string, { data: unknown; error: unknown }>, rpcs: Record<string, { data: unknown; error: unknown }> = {}) {
     const builder = (t: string) => {
       const q: Record<string, unknown> = {};
       for (const k of ["select", "eq", "maybeSingle"]) q[k] = () => q;
       (q as { then: unknown }).then = (res: (v: unknown) => unknown) => Promise.resolve(results[t] ?? { data: null, error: null }).then(res);
       return q;
     };
-    return { from: (t: string) => builder(t), rpc: vi.fn() };
+    return { from: (t: string) => builder(t), rpc: vi.fn(async (fn: string) => rpcs[fn] ?? { data: null, error: { code: "PGRST202", message: "Could not find the function" } }) };
   }
   const boom = { data: null, error: { message: "canceling statement due to statement timeout" } };
 
@@ -466,15 +467,42 @@ describe("a lookup that fails is never taken for gone", () => {
 
   it("canSee: a task or membership read error throws; a task gone, archived or not theirs is false", async () => {
     const env = { appUrl: "", vapid: null };
-    const team = { data: { user_id: "owner", workspace_id: "w1", archived_at: null }, error: null };
-    await expect(supabaseDrainDeps(tablesDb({ tasks: boom }), env).canSee("u", "t")).rejects.toBeInstanceOf(LookupFailed);
-    await expect(supabaseDrainDeps(tablesDb({ tasks: team, workspace_members: boom }), env).canSee("u", "t")).rejects.toBeInstanceOf(LookupFailed);
-    await expect(supabaseDrainDeps(tablesDb({ tasks: team, workspace_members: { data: [], error: null }, workspaces: boom }), env).canSee("u", "t"))
+    const [u, t, owner, x] = ["aaaaaaaa-0000-4000-8000-00000000000a", "bbbbbbbb-0000-4000-8000-00000000000b", "cccccccc-0000-4000-8000-00000000000c", "dddddddd-0000-4000-8000-00000000000d"];
+    const team = { data: { user_id: owner, workspace_id: "w1", archived_at: null }, error: null };
+    await expect(supabaseDrainDeps(tablesDb({ tasks: boom }), env).canSee(u, t)).rejects.toBeInstanceOf(LookupFailed);
+    await expect(supabaseDrainDeps(tablesDb({ tasks: team, workspace_members: boom }), env).canSee(u, t)).rejects.toBeInstanceOf(LookupFailed);
+    await expect(supabaseDrainDeps(tablesDb({ tasks: team, workspace_members: { data: [], error: null }, workspaces: boom }), env).canSee(u, t))
       .rejects.toBeInstanceOf(LookupFailed);
-    const fine = supabaseDrainDeps(tablesDb({ tasks: team, workspace_members: { data: [{ user_id: "u" }], error: null }, workspaces: { data: { owner_id: "owner" }, error: null } }), env);
-    expect([await fine.canSee("u", "t"), await fine.canSee("owner", "t"), await fine.canSee("x", "t")]).toEqual([true, true, false]);
-    expect(await supabaseDrainDeps(tablesDb({ tasks: { data: null, error: null } }), env).canSee("u", "t")).toBe(false);
-    expect(await supabaseDrainDeps(tablesDb({ tasks: { data: { ...team.data, archived_at: "2026-10-01" }, error: null } }), env).canSee("owner", "t")).toBe(false);
+    const fine = supabaseDrainDeps(tablesDb({ tasks: team, workspace_members: { data: [{ user_id: u }], error: null }, workspaces: { data: { owner_id: owner }, error: null } }), env);
+    expect([await fine.canSee(u, t), await fine.canSee(owner, t), await fine.canSee(x, t)]).toEqual([true, true, false]);
+    expect(await supabaseDrainDeps(tablesDb({ tasks: { data: null, error: null } }), env).canSee(u, t)).toBe(false);
+    expect(await supabaseDrainDeps(tablesDb({ tasks: { data: { ...team.data, archived_at: "2026-10-01" }, error: null } }), env).canSee(owner, t)).toBe(false);
+  });
+
+  it("canSee with Project access (0058): still in the workspace AND still able to see the task; a failed check waits", async () => {
+    const env = { appUrl: "", vapid: null };
+    const U = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", T = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const tables = { tasks: { data: { user_id: "owner", workspace_id: "w1", archived_at: null }, error: null },
+      workspace_members: { data: [{ user_id: U }], error: null }, workspaces: { data: { owner_id: "owner" }, error: null } };
+    // the project went private and they're not on it
+    const hidden = tablesDb(tables, { user_can_see_task: { data: false, error: null } });
+    expect(await supabaseDrainDeps(hidden, env).canSee(U, T)).toBe(false);
+    expect(hidden.rpc).toHaveBeenCalledWith("user_can_see_task", { p_user: U, p_task: T });
+    expect(await supabaseDrainDeps(tablesDb(tables, { user_can_see_task: { data: true, error: null } }), env).canSee(U, T)).toBe(true);
+    await expect(supabaseDrainDeps(tablesDb(tables, { user_can_see_task: boom }), env).canSee(U, T)).rejects.toBeInstanceOf(LookupFailed);
+    // someone who's left the workspace isn't asked about
+    const gone = tablesDb({ ...tables, workspace_members: { data: [], error: null } }, { user_can_see_task: { data: true, error: null } });
+    expect(await supabaseDrainDeps(gone, env).canSee(U, T)).toBe(false);
+    expect(gone.rpc).not.toHaveBeenCalled();
+  });
+
+  it("a held due list's tasks: before 0058 all of them; with it, the ones they can see; a failed check waits", async () => {
+    const env = { appUrl: "", vapid: null };
+    const U = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const T1 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1", T2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2";
+    expect(await supabaseDrainDeps(tablesDb({}), env).visibleTasks!(U, [T1, T2])).toEqual([T1, T2]);
+    expect(await supabaseDrainDeps(tablesDb({}, { user_visible_task_ids: { data: [T2], error: null } }), env).visibleTasks!(U, [T1, T2])).toEqual([T2]);
+    await expect(supabaseDrainDeps(tablesDb({}, { user_visible_task_ids: boom }), env).visibleTasks!(U, [T1])).rejects.toBeInstanceOf(LookupFailed);
   });
 
   it("emails from the drain are paced for Resend; push and 'nowhere to send' aren't", async () => {
@@ -541,6 +569,48 @@ describe("the drain's time and its claim", () => {
     await threads(w, 5);
     expect(await w.drain({ limit: 4, batch: 2 })).toMatchObject({ claimed: 4, batches: 2, sent: 4 });
     expect(await w.drain()).toMatchObject({ claimed: 1, batches: 1 });
+  });
+});
+
+describe("a held due list and Project access (0058)", () => {
+  const T1 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1", T2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2";
+  const dueNotice = (): Notice => ({
+    userId: "maya", channel: "email", kind: "due", eventKey: "due:2026-10-09", bundleKey: "due:2026-10-09", taskId: null, actorId: null, actorName: "", title: "",
+    payload: { v: 1, line: "", url: "/today", due: { today: "2026-10-09", more: 0, tasks: [
+      { id: T1, title: "Salary bands", due_date: "2026-10-08" }, { id: T2, title: "Send the deck", due_date: "2026-10-09" }] } },
+  });
+  it("goes with only the tasks they can still see", async () => {
+    const w = world();
+    await w.store.enqueue(dueNotice(), sec(0));
+    expect(await w.drain({ visibleTasks: async (_u, ids) => ids.filter((id) => id === T2) })).toMatchObject({ sent: 1, dropped: 0 });
+    const mail = w.sent[0].msg.email!;
+    expect(mail.subject).toBe("1 task due on Kanbo");
+    expect(mail.html).toContain("Send the deck");
+    expect(mail.html).not.toContain("Salary bands");
+  });
+  it("isn't sent when none are left; before 0058 (or without the check) every task goes", async () => {
+    const w = world();
+    await w.store.enqueue(dueNotice(), sec(0));
+    expect(await w.drain({ visibleTasks: async () => [] })).toMatchObject({ sent: 0, dropped: 1 });
+    const w2 = world();
+    await w2.store.enqueue(dueNotice(), sec(0));
+    expect(await w2.drain({ visibleTasks: async (_u, ids) => ids })).toMatchObject({ sent: 1 });
+    expect(w2.sent[0].msg.email!.html).toContain("Salary bands");
+    const w3 = world();
+    await w3.store.enqueue(dueNotice(), sec(0));
+    expect(await w3.drain()).toMatchObject({ sent: 1 });
+  });
+  it("a check that fails: it waits and is tried again, never sent unchecked", async () => {
+    const w = world();
+    await w.store.enqueue(dueNotice(), sec(0));
+    expect(await w.drain({ visibleTasks: async () => { throw new LookupFailed("project access", "connection reset"); } })).toMatchObject({ sent: 0, retried: 1, dropped: 0 });
+    expect(w.sent).toEqual([]);
+  });
+  it("a task notice they can no longer see (the project went private) is dropped", async () => {
+    const w = world();
+    await w.store.enqueue(notice("comment", "Sana Rao"), sec(0));
+    w.access.delete(`maya:${TASK}`);
+    expect(await w.drain()).toMatchObject({ sent: 0, dropped: 1 });
   });
 });
 
@@ -682,8 +752,10 @@ describe("supabaseDrainDeps.canSeeUpdate (the reads it makes)", () => {
   const U = "33333333-3333-4333-8333-333333333333";
   const A = "44444444-4444-4444-8444-444444444444";
   type Row = Record<string, unknown>;
-  /** supabase-js's chain over arrays of rows (select / eq / in / gt / limit / maybeSingle); `broken`: tables that error */
-  function rowsDb(tables: Record<string, Row[]>, broken: string[] = []) {
+  const MAYA = "aaaaaaaa-1111-4111-8111-00000000000a", BOSS = "bbbbbbbb-1111-4111-8111-00000000000b", THEO = "cccccccc-1111-4111-8111-00000000000c";
+  /** supabase-js's chain over arrays of rows (select / eq / in / gt / limit / maybeSingle); `broken`: tables that error;
+   *  `sees`: with 0058, user_can_see_project's answer (left out: before 0058) */
+  function rowsDb(tables: Record<string, Row[]>, broken: string[] = [], sees?: (user: string, project: string) => boolean | Error) {
     const from = (name: string) => {
       const ops: [string, unknown[]][] = [];
       const run = () => {
@@ -705,40 +777,52 @@ describe("supabaseDrainDeps.canSeeUpdate (the reads it makes)", () => {
       for (const m of ["select", "eq", "in", "gt", "limit", "order"]) b[m] = (...a: unknown[]) => { ops.push([m, a]); return b; };
       return b;
     };
-    return { from, rpc: vi.fn() };
+    const rpc = vi.fn(async (_fn: string, a: Record<string, unknown> = {}) => {
+      if (!sees) return { data: null, error: { code: "PGRST202", message: "Could not find the function" } };
+      const v = sees(String(a.p_user), String(a.p_project));
+      return v instanceof Error ? { data: null, error: { code: "57014", message: v.message } } : { data: v, error: null };
+    });
+    return { from, rpc };
   }
   const base = (over: Record<string, Row[]> = {}) => ({
-    projects: [{ id: P, workspace_id: "w1", owner_id: "maya", archived_at: null }],
-    workspace_members: [{ workspace_id: "w1", user_id: "maya", status: "active" }],
-    workspaces: [{ id: "w1", owner_id: "boss" }],
+    projects: [{ id: P, workspace_id: "w1", owner_id: MAYA, archived_at: null }],
+    workspace_members: [{ workspace_id: "w1", user_id: MAYA, status: "active" }],
+    workspaces: [{ id: "w1", owner_id: BOSS }],
     status_updates: [{ id: U, project_id: P, workspace_id: "w1", created_at: "2026-10-09T10:00:00Z" }],
-    update_asks: [{ id: A, project_id: P, owner_id: "maya", created_at: "2026-10-09T12:00:00Z" }],
+    update_asks: [{ id: A, project_id: P, owner_id: MAYA, created_at: "2026-10-09T12:00:00Z" }],
     ...over,
   });
-  const check = (tables: Record<string, Row[]>, about: { projects: string[]; updateId?: string; askId?: string }, who = "maya", broken: string[] = []) =>
-    supabaseDrainDeps(rowsDb(tables, broken), { appUrl: "", vapid: null }).canSeeUpdate!(who, about);
+  const check = (tables: Record<string, Row[]>, about: { projects: string[]; updateId?: string; askId?: string }, who = MAYA, broken: string[] = [],
+    sees?: (user: string, project: string) => boolean | Error) =>
+    supabaseDrainDeps(rowsDb(tables, broken, sees), { appUrl: "", vapid: null }).canSeeUpdate!(who, about);
 
   it("an Ask in an update: still in the workspace and the update still there", async () => {
     expect(await check(base(), { projects: [P], updateId: U })).toBe(true);
     expect(await check(base({ workspace_members: [] }), { projects: [P], updateId: U })).toBe(false);                       // removed meanwhile
-    expect(await check(base({ workspace_members: [{ workspace_id: "w1", user_id: "maya", status: "removed" }] }), { projects: [P], updateId: U })).toBe(false);
+    expect(await check(base({ workspace_members: [{ workspace_id: "w1", user_id: MAYA, status: "removed" }] }), { projects: [P], updateId: U })).toBe(false);
     expect(await check(base({ status_updates: [] }), { projects: [P], updateId: U })).toBe(false);                          // its author deleted it
-    expect(await check(base({ projects: [{ id: P, workspace_id: "w1", owner_id: "maya", archived_at: "2026-10-09T23:00:00Z" }] }), { projects: [P], updateId: U })).toBe(false);
+    expect(await check(base({ projects: [{ id: P, workspace_id: "w1", owner_id: MAYA, archived_at: "2026-10-09T23:00:00Z" }] }), { projects: [P], updateId: U })).toBe(false);
     expect(await check(base({ projects: [] }), { projects: [P] })).toBe(false);                                            // the project's gone
-    expect(await check(base({ workspace_members: [] }), { projects: [P] }, "boss")).toBe(true);                             // the workspace's owner
+    expect(await check(base({ workspace_members: [] }), { projects: [P] }, BOSS)).toBe(true);                             // the workspace's owner
   });
 
   it("an Ask for an update: still the project's owner, and nothing posted since the ask", async () => {
     expect(await check(base(), { projects: [P], askId: A })).toBe(true);
     expect(await check(base({ update_asks: [] }), { projects: [P], askId: A })).toBe(false);
-    expect(await check(base({ projects: [{ id: P, workspace_id: "w1", owner_id: "theo", archived_at: null }] }), { projects: [P], askId: A })).toBe(false);
+    expect(await check(base({ projects: [{ id: P, workspace_id: "w1", owner_id: THEO, archived_at: null }] }), { projects: [P], askId: A })).toBe(false);
     const answered = base({ status_updates: [{ id: "u2", project_id: P, workspace_id: "w1", created_at: "2026-10-09T18:00:00Z" }] });
     expect(await check(answered, { projects: [P], askId: A })).toBe(false);
   });
 
+  it("Project access (0058): still able to see each project; a failed check throws (the notice waits)", async () => {
+    expect(await check(base(), { projects: [P], updateId: U }, MAYA, [], () => true)).toBe(true);
+    expect(await check(base(), { projects: [P], updateId: U }, MAYA, [], () => false)).toBe(false);   // it went private
+    await expect(check(base(), { projects: [P], updateId: U }, MAYA, [], () => new Error("timeout"))).rejects.toBeInstanceOf(LookupFailed);
+  });
+
   it("a read that fails throws (the notice waits), never 'no'", async () => {
     for (const t of ["projects", "workspace_members", "status_updates", "update_asks"]) {
-      await expect(check(base(), { projects: [P], updateId: U, askId: A }, "maya", [t])).rejects.toBeInstanceOf(LookupFailed);
+      await expect(check(base(), { projects: [P], updateId: U, askId: A }, MAYA, [t])).rejects.toBeInstanceOf(LookupFailed);
     }
   });
 });
